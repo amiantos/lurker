@@ -8,6 +8,7 @@
       </div>
       <BufferList @edit-network="openEditNetwork" />
       <div class="sidebar-foot">
+        <button class="link" @click="showHighlights = true" title="highlights">@</button>
         <RouterLink class="link" to="/settings">settings</RouterLink>
         <button class="link" @click="signOut">sign out</button>
       </div>
@@ -23,7 +24,7 @@
     </header>
     <div v-if="active" class="topic-divider"></div>
 
-    <MessageList />
+    <MessageList :pending-scroll-id="pendingScrollId" />
     <MemberList v-if="active" />
     <MessageInput />
 
@@ -32,11 +33,16 @@
       :network="editingNetwork"
       @close="closeNetworkForm"
     />
+    <HighlightsModal
+      v-if="showHighlights"
+      @close="showHighlights = false"
+      @jump="onJumpToMessage"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { storeToRefs } from 'pinia';
 import { useAuthStore } from '../stores/auth.js';
@@ -44,11 +50,14 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useSocket } from '../composables/useSocket.js';
+import { startPresenceReporter, reportNow } from '../composables/usePresence.js';
+import { registerSW, syncWithSetting, onSWPushMessage } from '../composables/usePush.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import NetworkForm from '../components/NetworkForm.vue';
+import HighlightsModal from '../components/HighlightsModal.vue';
 
 const auth = useAuthStore();
 const networks = useNetworksStore();
@@ -59,7 +68,15 @@ const { connected } = useSocket();
 
 const showNetworkForm = ref(false);
 const editingNetwork = ref(null);
+const showHighlights = ref(false);
+const pendingScrollId = ref(null);
 const { activeKey } = storeToRefs(networks);
+
+function onJumpToMessage({ networkId, target, messageId }) {
+  networks.setActive(networkId, target);
+  buffers.markRead(networkId, target);
+  pendingScrollId.value = messageId;
+}
 
 function openAddNetwork() {
   editingNetwork.value = null;
@@ -94,6 +111,20 @@ const memberCount = computed(() => {
 onMounted(async () => {
   if (!settings.loaded) settings.fetchAll().catch(() => {});
   await networks.fetchAll();
+  startPresenceReporter();
+  reportNow();
+  registerSW().catch(() => { /* ignore */ });
+  onSWPushMessage((data) => {
+    if (data?.kind === 'jump') onJumpToMessage(data);
+  });
+  if (settings.effective('notifications.enabled')) {
+    syncWithSetting(true);
+  }
+});
+
+watch(() => settings.effective('notifications.enabled'), (enabled, prev) => {
+  if (enabled === prev) return;
+  syncWithSetting(!!enabled);
 });
 
 async function signOut() {

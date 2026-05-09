@@ -3,10 +3,37 @@ import cookie from 'cookie';
 import cookieParser from 'cookie-parser';
 import ircManager from './ircManager.js';
 import settingsService from './settingsService.js';
+import highlightRulesService from './highlightRulesService.js';
+import { matchEvent } from './highlightEngine.js';
+import * as pushService from './pushService.js';
 import { findSession } from '../db/sessions.js';
 import { findUserById } from '../db/users.js';
 import { listMessages, listBufferTargets, listSpeakers } from '../db/messages.js';
 import { SESSION_COOKIE } from '../middleware/auth.js';
+
+const DM_ELIGIBLE_TYPES = new Set(['message', 'action', 'notice']);
+
+function userNickFor(userId, networkId) {
+  const conn = ircManager.getConnection(userId, networkId);
+  return conn?.client?.user?.nick || conn?.network?.nick || null;
+}
+
+function isDmTarget(event, userNick) {
+  if (!userNick) return false;
+  if (!DM_ELIGIBLE_TYPES.has(event.type)) return false;
+  const target = event.target || '';
+  if (!target || target.startsWith('#') || target.startsWith(':server:')) return false;
+  return target.toLowerCase() === userNick.toLowerCase();
+}
+
+function decorateMessage(userId, event) {
+  if (!event || typeof event !== 'object') return event;
+  const compiled = highlightRulesService.getCompiled(userId);
+  const { matched, ruleId } = matchEvent(event, compiled);
+  const userNick = userNickFor(userId, event.networkId);
+  const dm = isDmTarget(event, userNick) && !event.self;
+  return { ...event, matched, matchedRuleId: ruleId, dm };
+}
 
 export function attachWsHub(httpServer, sessionSecret) {
   const wss = new WebSocketServer({ noServer: true });
@@ -39,12 +66,44 @@ export function attachWsHub(httpServer, sessionSecret) {
     for (const ws of set) if (ws.readyState === ws.OPEN) ws.send(json);
   }
 
+  function userHasVisibleClient(userId) {
+    const set = socketsByUser.get(userId);
+    if (!set) return false;
+    for (const ws of set) {
+      if (ws.readyState === ws.OPEN && ws.presence?.visible) return true;
+    }
+    return false;
+  }
+
+  function maybePush(userId, decorated) {
+    if (!decorated || (!decorated.matched && !decorated.dm)) return;
+    if (decorated.self) return;
+    if (userHasVisibleClient(userId)) return;
+    const network = ircManager.getConnection(userId, decorated.networkId)?.network;
+    pushService.deliver(userId, {
+      kind: decorated.dm ? 'dm' : 'highlight',
+      networkId: decorated.networkId,
+      networkName: network?.name || `net:${decorated.networkId}`,
+      target: decorated.target,
+      nick: decorated.nick,
+      text: decorated.text,
+      time: decorated.time,
+      messageId: decorated.id,
+    }).catch((err) => console.warn('[push] deliver failed:', err?.message || err));
+  }
+
   ircManager.on('event', (event) => {
-    fanOut(event.userId, { ...event, kind: 'irc' });
+    const decorated = decorateMessage(event.userId, event);
+    fanOut(event.userId, { ...decorated, kind: 'irc' });
+    maybePush(event.userId, decorated);
   });
 
   settingsService.on('event', ({ userId, changes, resetAll }) => {
     fanOut(userId, { kind: 'settings', changes: changes || {}, resetAll: !!resetAll });
+  });
+
+  highlightRulesService.on('change', ({ userId }) => {
+    fanOut(userId, { kind: 'highlight-rules-changed' });
   });
 
   function authenticateRequest(req) {
@@ -70,6 +129,7 @@ export function attachWsHub(httpServer, sessionSecret) {
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.userId = user.id;
+      ws.presence = { visible: false };
       addSocket(user.id, ws);
       onConnection(ws, user);
     });
@@ -101,7 +161,8 @@ export function attachWsHub(httpServer, sessionSecret) {
       targets.add(`:server:${conn.network.id}`);
       for (const ch of conn.channels.values()) targets.add(ch.name);
       for (const target of targets) {
-        const events = listMessages(conn.network.id, target, { limit: 50 });
+        const events = listMessages(conn.network.id, target, { limit: 50 })
+          .map((e) => decorateMessage(userId, e));
         const speakers = listSpeakers(conn.network.id, target);
         send(ws, {
           kind: 'backlog',
@@ -117,6 +178,9 @@ export function attachWsHub(httpServer, sessionSecret) {
   function handleClientMessage(ws, user, msg) {
     const userId = user.id;
     switch (msg.type) {
+      case 'presence':
+        ws.presence = { visible: !!msg.visible };
+        break;
       case 'send':
         ircManager.send(userId, msg.networkId, msg.target, msg.text);
         break;
@@ -148,7 +212,7 @@ export function attachWsHub(httpServer, sessionSecret) {
         const events = listMessages(msg.networkId, msg.target, {
           before: msg.before ? Number(msg.before) : undefined,
           limit,
-        });
+        }).map((e) => decorateMessage(userId, e));
         const speakers = listSpeakers(msg.networkId, msg.target);
         send(ws, {
           kind: 'history',

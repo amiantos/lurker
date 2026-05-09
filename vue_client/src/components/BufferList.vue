@@ -17,12 +17,18 @@
           :class="{
             active: isActive(net.id, buf.target),
             unread: buf.unread > 0,
+            highlighted: buf.highlighted > 0,
             server: isServerBuffer(buf),
           }"
           @click="select(net.id, buf.target)"
         >
           <span class="bullet">{{ bulletFor(buf) }}</span>
           <span class="label" :style="labelStyle(buf)">{{ labelFor(buf) }}</span>
+          <span
+            v-if="buf.highlighted > 0"
+            class="badge highlight"
+            :title="`${buf.highlighted} highlight${buf.highlighted === 1 ? '' : 's'}`"
+          >●</span>
           <span v-if="buf.unread > 0" class="badge">{{ buf.unread }}</span>
           <button
             v-if="buf.target.startsWith('#')"
@@ -180,6 +186,7 @@ function toggleNet(_) {
   border-left-color: var(--accent);
 }
 .channels li.unread .label { font-weight: 600; color: var(--fg); }
+.channels li.highlighted .label { color: var(--warn); }
 .channels li.server .label { color: var(--fg-muted); font-style: italic; }
 .bullet { color: var(--fg-muted); width: 10px; text-align: center; }
 .label {
@@ -192,6 +199,7 @@ function toggleNet(_) {
   color: var(--accent);
   padding: 0 2px;
 }
+.badge.highlight { color: var(--warn); }
 .part {
   background: none;
   border: none;

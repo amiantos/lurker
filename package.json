@@ -12,7 +12,8 @@
     "client:build": "npm run build --prefix vue_client",
     "client:preview": "npm run preview --prefix vue_client",
     "install:all": "npm install && npm install --prefix vue_client",
-    "start": "node server/server.js"
+    "start": "node server/server.js",
+    "test": "vitest run"
   },
   "keywords": [
     "irc",
@@ -30,10 +31,12 @@
     "express": "^4.21.0",
     "irc-framework": "^4.13.1",
     "uuid": "^10.0.0",
+    "web-push": "^3.6.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "concurrently": "^9.0.1",
-    "nodemon": "^3.1.7"
+    "nodemon": "^3.1.7",
+    "vitest": "^4.1.5"
   }
 }

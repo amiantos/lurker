@@ -47,6 +47,10 @@ import { useNickColors } from '../composables/useNickColors.js';
 import { formatTimestamp } from '../utils/timestamp.js';
 import NickRef from './NickRef.vue';
 
+const props = defineProps({
+  pendingScrollId: { type: [Number, String, null], default: null },
+});
+
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const settings = useSettingsStore();
@@ -93,6 +97,8 @@ function rowClass(row) {
     [`type-${row.m.type}`]: true,
     self: row.m.self,
     alt: row.alt,
+    highlight: !!row.m.matched,
+    dm: !!row.m.dm,
   };
 }
 
@@ -342,6 +348,19 @@ watch(() => networks.activeKey, async () => {
   scrollToBottom();
   ensureViewportFilled();
 });
+
+watch(() => props.pendingScrollId, async (id) => {
+  if (id == null) return;
+  await nextTick();
+  const el = scroller.value;
+  if (!el) return;
+  const target = el.querySelector(`[data-msg-id="${id}"]`);
+  if (!target) return;
+  stickToBottom.value = false;
+  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  target.classList.add('scroll-target');
+  setTimeout(() => target.classList.remove('scroll-target'), 1500);
+});
 </script>
 
 <style scoped>
@@ -384,6 +403,25 @@ watch(() => networks.activeKey, async () => {
 }
 .line.alt { background: var(--alt-bg); color: var(--alt-fg); }
 .line:hover { background: var(--bg-soft); }
+
+/* Matched highlight (rule fired) and DM lines: a left accent stripe and a
+   warm background tint. Sits above .alt so striping doesn't drown it out. */
+.line.highlight,
+.line.dm {
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  box-shadow: inset 3px 0 0 0 var(--warn);
+}
+.line.highlight.alt,
+.line.dm.alt {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+}
+.line.scroll-target {
+  animation: scroll-target-pulse 1.5s ease-out;
+}
+@keyframes scroll-target-pulse {
+  0%   { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  100% { background: transparent; }
+}
 
 .time {
   color: var(--fg-muted);

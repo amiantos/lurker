@@ -13,6 +13,80 @@
 
     <p v-if="error" class="error">{{ error }}</p>
 
+    <section class="rules-section">
+      <h2>highlight rules</h2>
+      <p class="rules-desc">
+        Rules whose pattern matches an incoming message mark it as a highlight (line accent + sidebar dot).
+        Auto-managed entries track each network's current nick and can only be enabled/disabled.
+      </p>
+      <p v-if="rulesError" class="error inline">{{ rulesError }}</p>
+      <ul class="rule-list">
+        <li v-for="rule in rulesStore.rules" :key="rule.id" class="rule" :class="{ auto: rule.auto_managed_network_id != null }">
+          <span class="lock" :title="rule.auto_managed_network_id != null ? 'auto-managed (network nick)' : 'user rule'">
+            {{ rule.auto_managed_network_id != null ? '🔒' : '' }}
+          </span>
+          <input
+            type="text"
+            class="pattern"
+            :value="rule.pattern"
+            :disabled="rule.auto_managed_network_id != null"
+            @change="onRuleField(rule, 'pattern', $event.target.value)"
+            placeholder="pattern"
+          />
+          <select
+            :value="rule.kind"
+            :disabled="rule.auto_managed_network_id != null"
+            @change="onRuleField(rule, 'kind', $event.target.value)"
+          >
+            <option value="plain">plain</option>
+            <option value="glob">glob</option>
+            <option value="regex">regex</option>
+          </select>
+          <label class="ck" title="case sensitive">
+            <input
+              type="checkbox"
+              :checked="rule.case_sensitive"
+              :disabled="rule.auto_managed_network_id != null"
+              @change="onRuleField(rule, 'case_sensitive', $event.target.checked)"
+            />
+            <span>Aa</span>
+          </label>
+          <label class="ck" title="enabled">
+            <input
+              type="checkbox"
+              :checked="rule.enabled"
+              @change="onRuleField(rule, 'enabled', $event.target.checked)"
+            />
+            <span>{{ rule.enabled ? 'on' : 'off' }}</span>
+          </label>
+          <button
+            class="link danger"
+            :disabled="rule.auto_managed_network_id != null"
+            @click="onRuleDelete(rule)"
+            title="delete rule"
+          >×</button>
+        </li>
+      </ul>
+      <div class="rule-add">
+        <input
+          v-model="newPattern"
+          type="text"
+          placeholder="add highlight pattern…"
+          @keydown.enter="onRuleAdd"
+        />
+        <select v-model="newKind">
+          <option value="plain">plain</option>
+          <option value="glob">glob</option>
+          <option value="regex">regex</option>
+        </select>
+        <label class="ck">
+          <input type="checkbox" v-model="newCaseSensitive" />
+          <span>Aa</span>
+        </label>
+        <button class="link" :disabled="!newPattern.trim()" @click="onRuleAdd">add</button>
+      </div>
+    </section>
+
     <p v-if="!settings.loaded && !filtered.length" class="muted">Loading settings…</p>
     <p v-else-if="!filtered.length" class="muted">No settings match.</p>
 
@@ -83,19 +157,65 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
+import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useSocket } from '../composables/useSocket.js';
 
 useSocket();
 
 const settings = useSettingsStore();
+const rulesStore = useHighlightRulesStore();
 const search = ref('');
 const modifiedOnly = ref(false);
 const error = ref('');
+const rulesError = ref('');
 const working = ref(false);
+
+const newPattern = ref('');
+const newKind = ref('plain');
+const newCaseSensitive = ref(false);
 
 onMounted(() => {
   if (!settings.loaded) settings.fetchAll().catch((e) => { error.value = e.message; });
+  if (!rulesStore.loaded) rulesStore.fetchAll().catch((e) => { rulesError.value = e.message; });
 });
+
+async function onRuleField(rule, field, value) {
+  rulesError.value = '';
+  try {
+    await rulesStore.update(rule.id, { [field]: value });
+  } catch (e) {
+    rulesError.value = e.message || 'update failed';
+    rulesStore.fetchAll().catch(() => { /* ignore */ });
+  }
+}
+
+async function onRuleDelete(rule) {
+  rulesError.value = '';
+  try {
+    await rulesStore.remove(rule.id);
+  } catch (e) {
+    rulesError.value = e.message || 'delete failed';
+  }
+}
+
+async function onRuleAdd() {
+  const pattern = newPattern.value.trim();
+  if (!pattern) return;
+  rulesError.value = '';
+  try {
+    await rulesStore.create({
+      pattern,
+      kind: newKind.value,
+      case_sensitive: newCaseSensitive.value,
+      enabled: true,
+    });
+    newPattern.value = '';
+    newKind.value = 'plain';
+    newCaseSensitive.value = false;
+  } catch (e) {
+    rulesError.value = e.message || 'create failed';
+  }
+}
 
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase();
@@ -259,4 +379,38 @@ async function onResetAll() {
   background: var(--bg-soft);
   padding: 0 4px;
 }
+
+.rules-section {
+  padding: 8px 12px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.rules-section h2 {
+  margin: 0 0 4px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: inherit;
+  font-weight: 600;
+}
+.rules-desc { color: var(--fg-muted); margin: 0 0 8px; }
+.error.inline { padding: 4px 0; border: none; }
+.rule-list { list-style: none; margin: 0 0 6px; padding: 0; }
+.rule {
+  display: grid;
+  grid-template-columns: 18px minmax(120px, 1fr) max-content max-content max-content max-content;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.rule.auto .pattern { color: var(--fg-muted); }
+.lock { font-size: 12px; color: var(--fg-muted); text-align: center; }
+.rule .ck { display: flex; align-items: center; gap: 4px; color: var(--fg-muted); cursor: pointer; }
+.rule-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.rule-add input[type="text"] { flex: 1; min-width: 200px; }
 </style>

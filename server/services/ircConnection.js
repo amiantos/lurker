@@ -1,5 +1,6 @@
 import IRC from 'irc-framework';
 import { insertMessage } from '../db/messages.js';
+import highlightRulesService from './highlightRulesService.js';
 
 const NON_PERSISTED_TYPES = new Set([
   'state', 'names', 'channel-joined', 'channel-parted', 'typing',
@@ -89,6 +90,11 @@ export class IrcConnection {
     c.on('registered', () => {
       this.userModes.clear();
       this.setState('connected', { nick: c.user.nick });
+      try {
+        highlightRulesService.upsertAutoNickRule(this.network.user_id, this.network.id, c.user.nick);
+      } catch (e) {
+        console.warn('[highlight] failed to upsert auto nick rule:', e?.message || e);
+      }
     });
     c.on('close', () => {
       this.userModes.clear();
@@ -179,6 +185,14 @@ export class IrcConnection {
     c.on('nick', (event) => {
       const oldLower = event.nick.toLowerCase();
       const newLower = event.new_nick.toLowerCase();
+      const isSelfNick = !!c.user.nick && c.user.nick.toLowerCase() === newLower;
+      if (isSelfNick) {
+        try {
+          highlightRulesService.upsertAutoNickRule(this.network.user_id, this.network.id, event.new_nick);
+        } catch (e) {
+          console.warn('[highlight] failed to update auto nick rule:', e?.message || e);
+        }
+      }
       for (const ch of this.channels.values()) {
         const member = ch.members.get(oldLower);
         if (member) {

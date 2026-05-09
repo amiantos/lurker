@@ -250,6 +250,17 @@ export const REGISTRY = Object.freeze([
       'If a smart-filtered nick speaks within this many minutes after their JOIN, ' +
       'the JOIN line is revealed. 0 disables unmasking.',
   },
+
+  // ─── Notifications ─────────────────────────────────────────────────────
+  {
+    key: 'notifications.enabled',
+    type: 'bool',
+    default: false,
+    description:
+      'Enable browser/system notifications for highlights and direct messages. ' +
+      'When enabled, this device subscribes to Web Push so the server can wake it ' +
+      'even when the tab is closed. Push only fires when no client of yours is visible.',
+  },
 ]);
 
 const BY_KEY = new Map(REGISTRY.map((opt) => [opt.key, opt]));

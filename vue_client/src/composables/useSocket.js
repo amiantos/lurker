@@ -3,10 +3,17 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useHighlightRulesStore } from '../stores/highlightRules.js';
 
 let socket = null;
 const connected = ref(false);
 let reconnectTimer = null;
+const openHandlers = new Set();
+
+export function onSocketOpen(handler) {
+  openHandlers.add(handler);
+  return () => openHandlers.delete(handler);
+}
 
 // If the tab has been hidden for more than this, ask the server for a fresh
 // snapshot on return. This collapses a long queue of buffered live events
@@ -38,12 +45,18 @@ function applyEvent(event) {
       }
       if (!event.self && networks.activeKey !== `${event.networkId}::${event.target}`) {
         buffers.markUnread(event.networkId, event.target);
+        if (event.matched || event.dm) {
+          buffers.markHighlight(event.networkId, event.target);
+        }
       }
       break;
     case 'notice':
       buffers.pushMessage(event);
       if (!event.self && networks.activeKey !== `${event.networkId}::${event.target}`) {
         buffers.markUnread(event.networkId, event.target);
+        if (event.matched || event.dm) {
+          buffers.markHighlight(event.networkId, event.target);
+        }
       }
       break;
     case 'join':
@@ -140,6 +153,11 @@ function handleMessage(raw) {
     settings.applyRemote(payload);
     return;
   }
+  if (payload.kind === 'highlight-rules-changed') {
+    const rules = useHighlightRulesStore();
+    if (rules.loaded) rules.applyServerChanged();
+    return;
+  }
 }
 
 function open() {
@@ -147,6 +165,9 @@ function open() {
   socket = new WebSocket(wsUrl());
   socket.onopen = () => {
     connected.value = true;
+    for (const handler of openHandlers) {
+      try { handler(); } catch (_) { /* ignore */ }
+    }
   };
   socket.onmessage = (ev) => handleMessage(ev.data);
   socket.onclose = () => {
