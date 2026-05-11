@@ -1,8 +1,8 @@
 import db from './index.js';
 
 const insertStmt = db.prepare(`
-  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra)
-  VALUES (@networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra)
+  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id)
+  VALUES (@networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId)
 `);
 
 export function insertMessage(row) {
@@ -16,6 +16,7 @@ export function insertMessage(row) {
     kind: row.kind ?? null,
     self: row.self ? 1 : 0,
     extra: row.extra ? JSON.stringify(row.extra) : null,
+    matchedRuleId: row.matchedRuleId ?? null,
   });
   return result.lastInsertRowid;
 }
@@ -31,6 +32,8 @@ function rowToEvent(row) {
     text: row.text,
     kind: row.kind,
     self: !!row.self,
+    matched: row.matched_rule_id != null,
+    matchedRuleId: row.matched_rule_id,
   };
   if (row.extra) {
     try {
@@ -97,20 +100,43 @@ export function countNewer(networkId, target, afterId) {
   ).get(networkId, target, afterId || 0).n;
 }
 
-// Returns events newer than `afterId`, oldest-first, capped at `limit`. Used
-// for unread highlight counting — we need the row content (nick/text) to run
-// the highlight engine, so a bare COUNT won't do. Same type allowlist as
-// countNewer so the highlight scan and the unread count agree on what's
-// countable.
-export function listNewer(networkId, target, afterId, limit = 500) {
-  const rows = db.prepare(
-    `SELECT * FROM messages
+// Cheap indexed count of unread highlights since `afterId`. Uses the partial
+// idx_messages_matched index — the old scan+decorate approach was replaced
+// once match state moved to insert time.
+export function countHighlightsNewer(networkId, target, afterId) {
+  return db.prepare(
+    `SELECT COUNT(*) AS n FROM messages
      WHERE network_id = ? AND target = ? AND id > ?
-       AND type IN ${COUNTABLE_TYPES_SQL}
-     ORDER BY id ASC
-     LIMIT ?`
-  ).all(networkId, target, afterId || 0, limit);
-  return rows.map(rowToEvent);
+       AND matched_rule_id IS NOT NULL`
+  ).get(networkId, target, afterId || 0).n;
+}
+
+// Highlight history feed for the /api/highlights endpoint. Scoped to a single
+// user via the networks join. Cursor pagination via `before` (a message id);
+// returns rows ordered newest-first.
+export function listUserHighlights(userId, { before, limit = 50 } = {}) {
+  const sql = before
+    ? `SELECT m.*, n.name AS network_name
+       FROM messages m
+       JOIN networks n ON n.id = m.network_id
+       WHERE n.user_id = ?
+         AND m.matched_rule_id IS NOT NULL
+         AND m.id < ?
+       ORDER BY m.id DESC
+       LIMIT ?`
+    : `SELECT m.*, n.name AS network_name
+       FROM messages m
+       JOIN networks n ON n.id = m.network_id
+       WHERE n.user_id = ?
+         AND m.matched_rule_id IS NOT NULL
+       ORDER BY m.id DESC
+       LIMIT ?`;
+  const params = before ? [userId, before, limit] : [userId, limit];
+  const rows = db.prepare(sql).all(...params);
+  return rows.map((row) => ({
+    ...rowToEvent(row),
+    networkName: row.network_name,
+  }));
 }
 
 const listSpeakersStmt = db.prepare(`

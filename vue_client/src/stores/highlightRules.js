@@ -9,8 +9,8 @@ export const useHighlightRulesStore = defineStore('highlightRules', {
     error: '',
   }),
   getters: {
-    userRules: (state) => state.rules.filter((r) => r.auto_managed_network_id == null),
-    autoRules: (state) => state.rules.filter((r) => r.auto_managed_network_id != null),
+    userRules: (state) => state.rules.filter((r) => !r.auto_managed),
+    autoRules: (state) => state.rules.filter((r) => r.auto_managed),
   },
   actions: {
     async fetchAll() {

@@ -4,11 +4,10 @@ import cookieParser from 'cookie-parser';
 import ircManager from './ircManager.js';
 import settingsService from './settingsService.js';
 import highlightRulesService from './highlightRulesService.js';
-import { matchEvent } from './highlightEngine.js';
 import * as pushService from './pushService.js';
 import { findSession } from '../db/sessions.js';
 import { findUserById } from '../db/users.js';
-import { listMessages, listBufferTargets, listSpeakers, countNewer, listNewer } from '../db/messages.js';
+import { listMessages, listBufferTargets, listSpeakers, countNewer, countHighlightsNewer } from '../db/messages.js';
 import { listReadStateForUser, setReadState } from '../db/bufferReads.js';
 import { addEntry as addInputHistory, listRecent as listRecentInputHistory } from '../db/inputHistory.js';
 import {
@@ -60,35 +59,29 @@ function isDirect(event) {
   return !!target && !target.startsWith('#') && !target.startsWith(':server:');
 }
 
+// Match state is persisted on each message at insert time (see
+// ircConnection.publish), so events already arrive with matched/matchedRuleId
+// populated — either from the live IRC pipeline or from rowToEvent for
+// backlog reads. This decoration only adds the per-broadcast `dm` flag and
+// normalizes the match fields so non-persisted events (typing, names, etc.)
+// don't surface as undefined.
 function decorateMessage(userId, event) {
   if (!event || typeof event !== 'object') return event;
-  const compiled = highlightRulesService.getCompiled(userId);
-  const { matched, ruleId } = matchEvent(event, compiled);
+  const matched = !!event.matched;
+  const matchedRuleId = event.matchedRuleId ?? null;
   const dm = isDirect(event) && !event.self;
-  return { ...event, matched, matchedRuleId: ruleId, dm };
+  return { ...event, matched, matchedRuleId, dm };
 }
-
-// Cap the highlight scan: a buffer with thousands of unread shouldn't grind
-// snapshot. Anything past the cap is reported via `highlightsCapped: true`
-// so the client can decorate (e.g. show "99+") rather than silently undercount.
-const HIGHLIGHT_SCAN_CAP = 500;
 
 function computeUnreadFor(userId, networkId, target, lastReadId) {
   const unread = countNewer(networkId, target, lastReadId);
-  if (unread === 0) {
-    return { lastReadId: lastReadId || 0, unread: 0, highlights: 0, highlightsCapped: false };
-  }
-  const newer = listNewer(networkId, target, lastReadId, HIGHLIGHT_SCAN_CAP);
-  let highlights = 0;
-  for (const e of newer) {
-    const dec = decorateMessage(userId, e);
-    if (dec.matched) highlights += 1;
-  }
+  const highlights = unread === 0 ? 0 : countHighlightsNewer(networkId, target, lastReadId);
   return {
     lastReadId: lastReadId || 0,
     unread,
     highlights,
-    highlightsCapped: unread > HIGHLIGHT_SCAN_CAP,
+    // Both counts are now indexed queries — no scan cap, no undercount.
+    highlightsCapped: false,
   };
 }
 

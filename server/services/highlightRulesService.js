@@ -72,7 +72,7 @@ class HighlightRulesService extends EventEmitter {
   update(id, userId, fields) {
     const existing = getRule(id, userId);
     if (!existing) return { ok: false, error: 'rule not found', status: 404 };
-    const isAutoManaged = existing.auto_managed_network_id != null;
+    const isAutoManaged = !!existing.auto_managed;
     const update = {};
     if ('pattern' in fields) {
       if (isAutoManaged) return { ok: false, error: 'cannot edit pattern of auto-managed rule', status: 400 };
@@ -107,7 +107,7 @@ class HighlightRulesService extends EventEmitter {
   remove(id, userId) {
     const existing = getRule(id, userId);
     if (!existing) return { ok: false, error: 'rule not found', status: 404 };
-    if (existing.auto_managed_network_id != null) {
+    if (existing.auto_managed) {
       return { ok: false, error: 'cannot delete auto-managed rule', status: 400 };
     }
     deleteRule(id, userId);

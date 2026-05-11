@@ -10,6 +10,7 @@ import authRouter from './routes/auth.js';
 import networksRouter from './routes/networks.js';
 import settingsRouter from './routes/settings.js';
 import highlightRulesRouter from './routes/highlightRules.js';
+import highlightsRouter from './routes/highlights.js';
 import pushRouter from './routes/push.js';
 import ircManager from './services/ircManager.js';
 import { attachWsHub } from './services/wsHub.js';
@@ -36,6 +37,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/networks', networksRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/highlight-rules', highlightRulesRouter);
+app.use('/api/highlights', highlightsRouter);
 app.use('/api/push', pushRouter);
 
 app.get('/api/health', (req, res) => {

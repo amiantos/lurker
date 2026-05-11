@@ -114,15 +114,23 @@ function migrate() {
       kind TEXT NOT NULL DEFAULT 'plain',
       case_sensitive INTEGER NOT NULL DEFAULT 0,
       enabled INTEGER NOT NULL DEFAULT 1,
-      auto_managed_network_id INTEGER,
+      auto_managed INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (auto_managed_network_id) REFERENCES networks(id) ON DELETE CASCADE
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_highlight_rules_user ON highlight_rules(user_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_highlight_rules_auto
-      ON highlight_rules(user_id, auto_managed_network_id)
-      WHERE auto_managed_network_id IS NOT NULL;
+
+    -- Auto-nick rules can be claimed by multiple networks (one rule per
+    -- (user, nick) pattern, attached to every network that uses that nick).
+    CREATE TABLE IF NOT EXISTS highlight_rule_networks (
+      rule_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      PRIMARY KEY (rule_id, network_id),
+      FOREIGN KEY (rule_id) REFERENCES highlight_rules(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_highlight_rule_networks_network
+      ON highlight_rule_networks(network_id);
 
     CREATE TABLE IF NOT EXISTS push_subscriptions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,10 +196,127 @@ function dropColumnIfExists(table, column) {
   }
 }
 
+function columnExists(table, column) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  return !!cols.find((c) => c.name === column);
+}
+
 migrate();
 ensureColumn('messages', 'extra', 'TEXT');
 ensureColumn('networks', 'sasl_account', 'TEXT');
 ensureColumn('networks', 'sasl_password', 'TEXT');
 dropColumnIfExists('users', 'password_hash');
+
+// Persist which rule matched each message so the highlights modal can read
+// from disk instead of scanning whatever happens to be loaded in client memory.
+// Partial index keeps it cheap — only matched rows live in the index.
+ensureColumn('messages', 'matched_rule_id', 'INTEGER');
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_matched
+         ON messages(network_id, target, id DESC)
+         WHERE matched_rule_id IS NOT NULL`);
+
+// Migrate highlight_rules from the old (user_id, auto_managed_network_id)
+// model — which produced a duplicate rule for every network sharing a nick —
+// to a many-to-many junction. Backfill is idempotent; safe to run every boot.
+ensureColumn('highlight_rules', 'auto_managed', 'INTEGER NOT NULL DEFAULT 0');
+
+const hasLegacyAutoColumn = columnExists('highlight_rules', 'auto_managed_network_id');
+
+if (hasLegacyAutoColumn) {
+  // Tag the new auto_managed flag from the old column, then mirror each old
+  // (rule, network) pairing into the junction table.
+  db.exec(`UPDATE highlight_rules
+           SET auto_managed = 1
+           WHERE auto_managed_network_id IS NOT NULL AND auto_managed = 0`);
+  db.exec(`INSERT OR IGNORE INTO highlight_rule_networks (rule_id, network_id)
+           SELECT id, auto_managed_network_id
+           FROM highlight_rules
+           WHERE auto_managed_network_id IS NOT NULL`);
+}
+
+// Collapse duplicate auto rules: keep the lowest id per (user, pattern,
+// case_sensitive), rewire any junction entries from the duplicates to the
+// canonical row, then delete the duplicates. Idempotent — running on a clean
+// set is a no-op.
+db.exec(`
+  WITH canonical AS (
+    SELECT MIN(id) AS keep_id, user_id, pattern, case_sensitive
+    FROM highlight_rules
+    WHERE auto_managed = 1
+    GROUP BY user_id, pattern, case_sensitive
+  )
+  UPDATE highlight_rule_networks
+  SET rule_id = (
+    SELECT c.keep_id FROM canonical c
+    JOIN highlight_rules r ON r.user_id = c.user_id
+                          AND r.pattern = c.pattern
+                          AND r.case_sensitive = c.case_sensitive
+    WHERE r.id = highlight_rule_networks.rule_id
+  )
+  WHERE rule_id IN (
+    SELECT r.id FROM highlight_rules r
+    JOIN canonical c ON r.user_id = c.user_id
+                    AND r.pattern = c.pattern
+                    AND r.case_sensitive = c.case_sensitive
+    WHERE r.auto_managed = 1 AND r.id <> c.keep_id
+  )
+`);
+
+db.exec(`DELETE FROM highlight_rules
+         WHERE auto_managed = 1
+           AND id NOT IN (
+             SELECT MIN(id) FROM highlight_rules
+             WHERE auto_managed = 1
+             GROUP BY user_id, pattern, case_sensitive
+           )`);
+
+// The legacy column had a foreign key to networks(id), and SQLite refuses to
+// ALTER TABLE DROP COLUMN on a column that's part of an FK definition. Rebuild
+// the table without the column (and without the legacy index that referenced
+// it) using the standard SQLite rebuild dance. Foreign keys are disabled
+// during the swap so the cascade from highlight_rule_networks.rule_id doesn't
+// wipe the junction when we drop the old table. ids are preserved, so junction
+// rows continue to point at the right rules.
+if (hasLegacyAutoColumn) {
+  const rebuild = db.transaction(() => {
+    db.exec(`DROP INDEX IF EXISTS uq_highlight_rules_auto`);
+    db.exec(`
+      CREATE TABLE highlight_rules_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        pattern TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'plain',
+        case_sensitive INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        auto_managed INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      )
+    `);
+    db.exec(`
+      INSERT INTO highlight_rules_new
+        (id, user_id, pattern, kind, case_sensitive, enabled, auto_managed, created_at)
+      SELECT
+        id, user_id, pattern, kind, case_sensitive, enabled, auto_managed, created_at
+      FROM highlight_rules
+    `);
+    db.exec(`DROP TABLE highlight_rules`);
+    db.exec(`ALTER TABLE highlight_rules_new RENAME TO highlight_rules`);
+  });
+  const prevFk = db.pragma('foreign_keys', { simple: true });
+  db.pragma('foreign_keys = OFF');
+  try {
+    rebuild();
+  } finally {
+    db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
+  }
+}
+
+// Indexes after any potential rebuild (rebuild drops the table and all its
+// indexes; CREATE IF NOT EXISTS handles both fresh and rebuilt paths).
+db.exec(`CREATE INDEX IF NOT EXISTS idx_highlight_rules_user ON highlight_rules(user_id)`);
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_rule_unique
+         ON highlight_rules(user_id, pattern, case_sensitive)
+         WHERE auto_managed = 1`);
 
 export default db;

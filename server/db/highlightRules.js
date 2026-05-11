@@ -9,7 +9,7 @@ function rowToRule(row) {
     kind: row.kind,
     case_sensitive: !!row.case_sensitive,
     enabled: !!row.enabled,
-    auto_managed_network_id: row.auto_managed_network_id,
+    auto_managed: !!row.auto_managed,
     created_at: row.created_at,
   };
 }
@@ -61,21 +61,59 @@ export function deleteRule(id, userId) {
   db.prepare('DELETE FROM highlight_rules WHERE id = ? AND user_id = ?').run(id, userId);
 }
 
+// Auto-nick rules are shared across every network that currently uses the same
+// nick. We detach the network from any prior auto rule, find-or-create one for
+// the new nick, attach the network, then sweep any auto rule that no longer
+// has any networks attached. A manual rule matching the same nick (same
+// pattern + plain/case-insensitive) suppresses auto-creation, since the
+// manual rule already covers the highlight.
+const findExistingStmt = db.prepare(`
+  SELECT id, auto_managed FROM highlight_rules
+  WHERE user_id = ? AND pattern = ? AND kind = 'plain' AND case_sensitive = 0
+  LIMIT 1
+`);
+const detachNetworkStmt = db.prepare(`
+  DELETE FROM highlight_rule_networks
+  WHERE network_id = ?
+    AND rule_id IN (SELECT id FROM highlight_rules
+                    WHERE user_id = ? AND auto_managed = 1)
+`);
+const attachNetworkStmt = db.prepare(`
+  INSERT OR IGNORE INTO highlight_rule_networks (rule_id, network_id) VALUES (?, ?)
+`);
+const insertAutoRuleStmt = db.prepare(`
+  INSERT INTO highlight_rules (user_id, pattern, kind, case_sensitive, enabled, auto_managed)
+  VALUES (?, ?, 'plain', 0, 1, 1)
+`);
+const sweepOrphanedAutoStmt = db.prepare(`
+  DELETE FROM highlight_rules
+  WHERE user_id = ? AND auto_managed = 1
+    AND id NOT IN (SELECT rule_id FROM highlight_rule_networks)
+`);
+
+const upsertAutoNickRuleTx = db.transaction((userId, networkId, nick) => {
+  detachNetworkStmt.run(networkId, userId);
+  const existing = findExistingStmt.get(userId, nick);
+  let ruleId = null;
+  if (existing) {
+    if (existing.auto_managed) {
+      attachNetworkStmt.run(existing.id, networkId);
+      ruleId = existing.id;
+    }
+    // Manual rule with the same triple already covers this nick — skip
+    // auto-creation. If the user later deletes their manual rule, the next
+    // reconnect / nick change will re-create the auto.
+  } else {
+    const result = insertAutoRuleStmt.run(userId, nick);
+    ruleId = result.lastInsertRowid;
+    attachNetworkStmt.run(ruleId, networkId);
+  }
+  sweepOrphanedAutoStmt.run(userId);
+  return ruleId;
+});
+
 export function upsertAutoNickRule(userId, networkId, nick) {
   if (!nick) return null;
-  const existing = db
-    .prepare('SELECT * FROM highlight_rules WHERE user_id = ? AND auto_managed_network_id = ?')
-    .get(userId, networkId);
-  if (existing) {
-    if (existing.pattern === nick) return rowToRule(existing);
-    db.prepare('UPDATE highlight_rules SET pattern = ? WHERE id = ?').run(nick, existing.id);
-    return rowToRule({ ...existing, pattern: nick });
-  }
-  const result = db
-    .prepare(`
-      INSERT INTO highlight_rules (user_id, pattern, kind, case_sensitive, enabled, auto_managed_network_id)
-      VALUES (?, ?, 'plain', 0, 1, ?)
-    `)
-    .run(userId, nick, networkId);
-  return getRule(result.lastInsertRowid, userId);
+  const ruleId = upsertAutoNickRuleTx(userId, networkId, nick);
+  return ruleId ? getRule(ruleId, userId) : null;
 }

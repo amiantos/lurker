@@ -5,62 +5,55 @@
         <h2>highlights</h2>
         <button class="link" @click="$emit('close')" title="close"><i class="fa-solid fa-xmark"></i></button>
       </header>
-      <ul v-if="matches.length" class="match-list">
+      <p v-if="store.error" class="error inline">{{ store.error }}</p>
+      <ul v-if="store.items.length" class="match-list">
         <li
-          v-for="m in matches"
+          v-for="m in store.items"
           :key="`${m.networkId}::${m.target}::${m.id}`"
           class="match"
           @click="onJump(m)"
         >
           <span class="time">{{ time(m.time) }}</span>
           <span class="loc">
-            <span class="net">{{ networkName(m.networkId) }}</span>
+            <span class="net">{{ m.networkName || networkName(m.networkId) }}</span>
             <span class="target">{{ targetLabel(m) }}</span>
           </span>
           <span class="nick" :style="nickStyle(m)">{{ m.nick }}</span>
           <span class="text">{{ m.text }}</span>
         </li>
       </ul>
-      <p v-else class="empty">No highlights in loaded buffers yet.</p>
+      <p v-else-if="store.loading" class="empty">Loading…</p>
+      <p v-else class="empty">No highlights yet.</p>
+      <footer v-if="store.hasMore || store.loading" class="foot">
+        <button
+          class="link"
+          :disabled="store.loading || !store.hasMore"
+          @click="store.loadMore()"
+        >{{ store.loading ? 'Loading…' : 'Load more' }}</button>
+      </footer>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { computed, onMounted } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
-import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useHighlightsStore } from '../stores/highlights.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { formatTimestamp } from '../utils/timestamp.js';
 
 const emit = defineEmits(['close', 'jump']);
 
 const networks = useNetworksStore();
-const buffers = useBuffersStore();
 const settings = useSettingsStore();
+const store = useHighlightsStore();
 const nicks = useNickColors();
 
 const tsFormat = computed(() => settings.effective('look.buffer.time_format'));
 
-const matches = computed(() => {
-  const out = [];
-  for (const buf of Object.values(buffers.buffers)) {
-    for (const m of buf.messages) {
-      // Highlights modal shows rule-matched lines only. DMs have their own
-      // buffer + unread badge as the signal; including them here would just
-      // duplicate that channel as a per-message list.
-      if (m.matched) {
-        out.push({ ...m, networkId: buf.networkId, target: buf.target });
-      }
-    }
-  }
-  out.sort((a, b) => {
-    const ta = Date.parse(a.time) || 0;
-    const tb = Date.parse(b.time) || 0;
-    return tb - ta;
-  });
-  return out.slice(0, 200);
+onMounted(() => {
+  store.loadInitial();
 });
 
 function time(iso) {
@@ -72,7 +65,7 @@ function networkName(id) {
 }
 
 function targetLabel(m) {
-  if (m.target.startsWith(':server:')) return '[server]';
+  if (m.target && m.target.startsWith(':server:')) return '[server]';
   return m.target;
 }
 
@@ -128,6 +121,7 @@ function onJump(m) {
   padding: 0 4px;
 }
 .link:hover { color: var(--fg); }
+.link:disabled { opacity: 0.5; cursor: default; }
 
 .match-list {
   list-style: none;
@@ -161,5 +155,16 @@ function onJump(m) {
   color: var(--fg-muted);
   font-style: italic;
   padding: 32px;
+}
+.error.inline {
+  color: var(--error, #d66);
+  padding: 8px 16px;
+  margin: 0;
+}
+.foot {
+  border-top: 1px solid var(--border);
+  padding: 8px 16px;
+  display: flex;
+  justify-content: center;
 }
 </style>

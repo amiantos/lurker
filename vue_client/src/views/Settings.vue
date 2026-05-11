@@ -96,21 +96,21 @@
       </p>
       <p v-if="rulesError" class="error inline">{{ rulesError }}</p>
       <ul class="rule-list">
-        <li v-for="rule in rulesStore.rules" :key="rule.id" class="rule" :class="{ auto: rule.auto_managed_network_id != null }">
-          <span class="lock" :title="rule.auto_managed_network_id != null ? 'auto-managed (network nick)' : 'user rule'">
-            {{ rule.auto_managed_network_id != null ? '🔒' : '' }}
+        <li v-for="rule in rulesStore.rules" :key="rule.id" class="rule" :class="{ auto: rule.auto_managed }">
+          <span class="lock" :title="rule.auto_managed ? 'auto-managed (network nick)' : 'user rule'">
+            {{ rule.auto_managed ? '🔒' : '' }}
           </span>
           <input
             type="text"
             class="pattern"
             :value="rule.pattern"
-            :disabled="rule.auto_managed_network_id != null"
+            :disabled="rule.auto_managed"
             @change="onRuleField(rule, 'pattern', $event.target.value)"
             placeholder="pattern"
           />
           <select
             :value="rule.kind"
-            :disabled="rule.auto_managed_network_id != null"
+            :disabled="rule.auto_managed"
             @change="onRuleField(rule, 'kind', $event.target.value)"
           >
             <option value="plain">plain</option>
@@ -121,7 +121,7 @@
             <input
               type="checkbox"
               :checked="rule.case_sensitive"
-              :disabled="rule.auto_managed_network_id != null"
+              :disabled="rule.auto_managed"
               @change="onRuleField(rule, 'case_sensitive', $event.target.checked)"
             />
             <span>Aa</span>
@@ -136,7 +136,7 @@
           </label>
           <button
             class="link danger"
-            :disabled="rule.auto_managed_network_id != null"
+            :disabled="rule.auto_managed"
             @click="onRuleDelete(rule)"
             title="delete rule"
           ><i class="fa-solid fa-xmark"></i></button>

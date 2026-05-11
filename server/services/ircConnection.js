@@ -2,6 +2,7 @@ import IRC from 'irc-framework';
 import { insertMessage, listRecentBufferTargets } from '../db/messages.js';
 import { isClosed } from '../db/closedBuffers.js';
 import highlightRulesService from './highlightRulesService.js';
+import { matchEvent } from './highlightEngine.js';
 
 const NON_PERSISTED_TYPES = new Set([
   'state', 'names', 'channel-joined', 'channel-parted', 'typing', 'away-state',
@@ -79,6 +80,17 @@ export class IrcConnection {
     };
 
     if (this.shouldPersist(event)) {
+      // Run the highlight engine before persisting so the match decision is
+      // stored on the row. The cheap path (engine gates on type & self) keeps
+      // this off the hot path for non-highlightable events.
+      let matchedRuleId = null;
+      try {
+        const compiled = highlightRulesService.getCompiled(this.network.user_id);
+        const { matched, ruleId } = matchEvent(event, compiled);
+        if (matched) matchedRuleId = ruleId;
+      } catch (e) {
+        console.warn('[highlight] match-on-insert failed:', e?.message || e);
+      }
       const id = insertMessage({
         networkId: this.network.id,
         target: event.target,
@@ -89,8 +101,11 @@ export class IrcConnection {
         kind: event.kind,
         self: event.self,
         extra: extractExtras(event),
+        matchedRuleId,
       });
       enriched.id = id;
+      enriched.matched = matchedRuleId != null;
+      enriched.matchedRuleId = matchedRuleId;
     }
 
     this.onEvent(enriched);
