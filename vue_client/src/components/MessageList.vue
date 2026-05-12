@@ -7,7 +7,13 @@
     <div v-if="!buffer?.hasMore && messages.length" class="notice">— start of history —</div>
     <p v-if="!messages.length" class="notice empty">No messages yet.</p>
     <template v-for="row in renderRows" :key="row.key">
-    <div v-if="row.divider" class="notice unread-divider">— unread —</div>
+    <div v-if="row.divider === 'unread'" class="notice unread-divider">— unread —</div>
+    <div v-else-if="row.divider === 'away'" class="notice presence-divider">
+      — away<template v-if="row.awayMessage">: {{ row.awayMessage }}</template> —
+    </div>
+    <div v-else-if="row.divider === 'back'" class="notice presence-divider">
+      — back (gone {{ formatDuration(row.awayAt, row.backAt) }}) —
+    </div>
     <div
       v-else
       class="line"
@@ -40,7 +46,6 @@
         <template v-else-if="row.m.type === 'topic'">topic set by <NickRef :nick="row.m.nick" /><template v-if="row.m.text">: <LinkedText :text="row.m.text" /></template></template>
         <template v-else-if="row.m.type === 'motd'"><LinkedText :text="row.m.text" /></template>
         <template v-else-if="row.m.type === 'error'"><LinkedText :text="row.m.text" /></template>
-        <template v-else-if="row.m.type === 'away' || row.m.type === 'back'"><LinkedText :text="row.m.text" /></template>
       </span>
     </div>
     </template>
@@ -61,7 +66,7 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import { segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
-import { formatTimestamp } from '../utils/timestamp.js';
+import { formatTimestamp, formatDuration } from '../utils/timestamp.js';
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 
@@ -127,6 +132,16 @@ const smartFilterJoin = computed(() => !!settings.effective('chat.smart_filter_j
 const smartFilterQuit = computed(() => !!settings.effective('chat.smart_filter_quit'));
 const smartFilterNick = computed(() => !!settings.effective('chat.smart_filter_nick'));
 
+// User-level self-presence (driven by user_away_state on the server). Each
+// network broadcasts the same payload, so reading from this buffer's network
+// is equivalent to reading user state. The server pseudo-buffer doesn't get
+// presence markers — it's noise-only.
+const awayState = computed(() => {
+  const b = buffer.value;
+  if (!b || b.target.startsWith(':server:')) return null;
+  return networks.states[b.networkId]?.away || null;
+});
+
 // One-pass walk over messages to (a) decide which rows the smart filter
 // should hide and (b) tag rows with alt-row striping. Striping is derived
 // from message id parity so it stays stable across smart-filter visibility
@@ -150,6 +165,24 @@ const renderRows = computed(() => {
   // yet, or pointer at 0 = brand-new buffer where every message is "first
   // time you're seeing this").
   let dividerInserted = dividerAfterId === 0;
+
+  // Self-presence anchors. The away divider lands before the first message
+  // newer than the user's last /away time; the back divider lands before the
+  // first message newer than the matching /back. Anchoring by message time
+  // (not id) means the markers stay correctly placed even if buffer history
+  // was prepended later — message ids are insertion-order, but `time` reflects
+  // when the message actually happened.
+  const aw = awayState.value;
+  const awaySinceMs = aw?.since ? Date.parse(aw.since) : null;
+  const backAtMs = aw?.backAt ? Date.parse(aw.backAt) : null;
+  let awayInserted = !awaySinceMs;
+  let backInserted = !backAtMs;
+  const pushAwayDivider = () => {
+    out.push({ divider: 'away', awayMessage: aw.message, awayAt: aw.since, key: 'presence-away' });
+  };
+  const pushBackDivider = () => {
+    out.push({ divider: 'back', awayAt: aw.since, backAt: aw.backAt, key: 'presence-back' });
+  };
 
   for (let i = 0; i < list.length; i++) {
     const m = list[i];
@@ -177,15 +210,31 @@ const renderRows = computed(() => {
     }
 
     if (hidden) continue;
+
+    const mTimeMs = Date.parse(m.time) || 0;
+    if (!awayInserted && mTimeMs > awaySinceMs) {
+      pushAwayDivider();
+      awayInserted = true;
+    }
+    if (!backInserted && mTimeMs > backAtMs) {
+      pushBackDivider();
+      backInserted = true;
+    }
     // Insert the unread divider before the first visible row with id past
     // the snapshot. Tolerates the exact-id row being filtered out: we just
     // pick the next surviving row past the boundary.
     if (!dividerInserted && m.id != null && m.id > dividerAfterId) {
-      out.push({ divider: true, key: 'unread-divider' });
+      out.push({ divider: 'unread', key: 'unread-divider' });
       dividerInserted = true;
     }
     out.push({ m, alt: (m.id & 1) === 1, key });
   }
+
+  // Both presence timestamps newer than every loaded message → markers land
+  // at the very end of the buffer (e.g. you went away after the most recent
+  // message and nothing has arrived yet).
+  if (!awayInserted) pushAwayDivider();
+  if (!backInserted) pushBackDivider();
   return out;
 });
 
@@ -203,9 +252,7 @@ function prefixText(m) {
     case 'nick':
     case 'mode':
     case 'topic':
-    case 'motd':
-    case 'away':
-    case 'back':    return '--';
+    case 'motd':    return '--';
     case 'error':   return '!!';
     default:        return '';
   }
@@ -332,6 +379,20 @@ function scrollToBottom() {
   if (!el) return;
   el.scrollTop = el.scrollHeight;
 }
+
+// Away/back markers are emitted from awayState, not from messages.value, so
+// the messages-array watcher below doesn't see them. When the user flips
+// state while pinned to the bottom, follow the new divider down — same
+// behavior as sending a normal message.
+watch(
+  [() => awayState.value?.since, () => awayState.value?.backAt],
+  async (next, prev) => {
+    if (next[0] === prev?.[0] && next[1] === prev?.[1]) return;
+    if (!stickToBottom.value) return;
+    await nextTick();
+    scrollToBottom();
+  },
+);
 
 // Watch the messages array shape so we can react to:
 //   - prepend (older history): pin the OLD first row's viewport position.
@@ -605,6 +666,27 @@ watch(() => props.pendingScrollId, async (id) => {
   content: '';
   flex: 1;
   border-top: 1px dashed var(--warn);
+  opacity: 0.6;
+}
+
+/* Self-presence markers (away / back). Same shape as the unread divider so
+   they read as a sibling kind of "structural" line, but in the muted fg
+   color since they're informational rather than action-required. */
+.presence-divider {
+  font-style: normal;
+  font-size: 0.85em;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.presence-divider::before,
+.presence-divider::after {
+  content: '';
+  flex: 1;
+  border-top: 1px dashed var(--fg-muted);
   opacity: 0.6;
 }
 </style>

@@ -78,17 +78,6 @@ export function listBufferTargets(networkId) {
     .map((r) => r.target);
 }
 
-// Targets that have had at least one message within the last `sinceDays` days.
-// Used by the /away marker fan-out so we don't splatter into long-cold DMs the
-// user hasn't touched in months.
-export function listRecentBufferTargets(networkId, sinceDays = 7) {
-  const sinceIso = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
-  return db
-    .prepare('SELECT DISTINCT target FROM messages WHERE network_id = ? AND time >= ? ORDER BY target')
-    .all(networkId, sinceIso)
-    .map((r) => r.target);
-}
-
 export function countOlder(networkId, target, beforeId) {
   return db.prepare(
     `SELECT COUNT(*) AS n FROM messages WHERE network_id = ? AND target = ? AND id < ?`

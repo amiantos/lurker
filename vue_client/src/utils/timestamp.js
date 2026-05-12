@@ -13,3 +13,23 @@ export function formatTimestamp(iso, fmt) {
   };
   return fmt.replace(TOKEN_RE, (t) => tokens[t]);
 }
+
+// Format an interval between two ISO timestamps for the back-from-away
+// divider ("back (gone 1h 23m)"). Sub-minute durations round up to "1m"
+// instead of showing "0m" since the divider would otherwise look broken on
+// a fast away/back toggle.
+export function formatDuration(fromIso, toIso) {
+  if (!fromIso || !toIso) return '';
+  const fromMs = Date.parse(fromIso);
+  const toMs = Date.parse(toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return '';
+  const totalMin = Math.max(1, Math.round((toMs - fromMs) / 60000));
+  const days = Math.floor(totalMin / 1440);
+  const hours = Math.floor((totalMin % 1440) / 60);
+  const mins = totalMin % 60;
+  const parts = [];
+  if (days) parts.push(`${days}d`);
+  if (hours) parts.push(`${hours}h`);
+  if (mins || parts.length === 0) parts.push(`${mins}m`);
+  return parts.join(' ');
+}

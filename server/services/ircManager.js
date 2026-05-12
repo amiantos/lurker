@@ -2,7 +2,24 @@ import { EventEmitter } from 'events';
 import { IrcConnection } from './ircConnection.js';
 import { listNetworksForUser, getNetwork, listChannels, upsertChannel, deleteChannel } from '../db/networks.js';
 import { reopenBuffer } from '../db/closedBuffers.js';
+import { getUserAwayState, writeAwayMarker, writeBackMarker } from '../db/userAwayState.js';
 import db from '../db/index.js';
+
+// Translate a user_away_state row into the in-memory shape IrcConnection
+// holds. Used both for seeding a brand-new connection on construction and
+// when a returning client triggers a snapshot.
+function awayStateFromRow(row) {
+  if (!row || !row.away_datetime) {
+    return { active: false, message: null, since: null, autoSet: false, backAt: null };
+  }
+  return {
+    active: !row.back_datetime,
+    message: row.away_message,
+    since: row.away_datetime,
+    autoSet: !!row.auto_set,
+    backAt: row.back_datetime,
+  };
+}
 
 class IrcManager extends EventEmitter {
   constructor() {
@@ -49,6 +66,10 @@ class IrcManager extends EventEmitter {
       onEvent: (event) => this.emit('event', event),
     });
     this._userMap(userId).set(networkId, conn);
+    // Seed self-presence from the per-user truth before the IRC handshake. The
+    // 'registered' handler in IrcConnection re-asserts AWAY off of this state,
+    // so it must be in place before connect() resolves the socket.
+    conn.applyAwayState(awayStateFromRow(getUserAwayState(userId)));
     conn.connect();
 
     conn.client.on('registered', () => {
@@ -167,21 +188,53 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
-  // Set AWAY across every connected network for this user. Returns the count
-  // of connections actually flipped (so the caller can decide whether to
-  // surface a "no networks" error).
+  // Canonical /away writer. Persists the user-level state in user_away_state,
+  // then fans the new state out to every IrcConnection so each one issues
+  // AWAY on its IRC server and publishes an away-state event. Auto-away
+  // (autoSet=true) is gated by the persisted current state so it can never
+  // overwrite a manual /away. Returns the count of connections that received
+  // the update.
   setAwayAll(userId, message, { autoSet = false } = {}) {
+    const trimmed = (message || '').trim();
+    if (!trimmed) return 0;
+    const current = getUserAwayState(userId);
+    const currentlyAway = !!(current && current.away_datetime && !current.back_datetime);
+    if (currentlyAway && !current.auto_set && autoSet) return 0;
+    const now = new Date().toISOString();
+    writeAwayMarker(userId, { awayDatetime: now, awayMessage: trimmed, autoSet });
+    const state = { active: true, message: trimmed, since: now, autoSet, backAt: null };
     let n = 0;
     for (const conn of this.listConnections(userId)) {
-      if (conn.setAway({ message, autoSet })) n += 1;
+      conn.applyAwayState(state);
+      n += 1;
     }
     return n;
   }
 
+  // Canonical /back writer. Records back_datetime against the existing
+  // user_away_state row (away_datetime/away_message/auto_set are preserved so
+  // the client can render the completed pair) and pushes the new state to
+  // every connection. Auto-clear (autoSet=true) is a no-op when the current
+  // away was manual; that's how scheduleAutoAway → socket-reconnect leaves a
+  // manual /away undisturbed.
   clearAwayAll(userId, { autoSet = false } = {}) {
+    const current = getUserAwayState(userId);
+    const currentlyAway = !!(current && current.away_datetime && !current.back_datetime);
+    if (!currentlyAway) return 0;
+    if (autoSet && !current.auto_set) return 0;
+    const now = new Date().toISOString();
+    writeBackMarker(userId, now);
+    const state = {
+      active: false,
+      message: current.away_message,
+      since: current.away_datetime,
+      autoSet: !!current.auto_set,
+      backAt: now,
+    };
     let n = 0;
     for (const conn of this.listConnections(userId)) {
-      if (conn.clearAway({ autoSet })) n += 1;
+      conn.applyAwayState(state);
+      n += 1;
     }
     return n;
   }

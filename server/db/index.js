@@ -87,6 +87,23 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_buffer_reads_user ON buffer_reads(user_id);
 
+    -- User-level self-presence state. /away applies across every IRC connection
+    -- the user has, so the truth lives once per user. The completed-pair shape
+    -- (both away_datetime and back_datetime set, kept until the next /away) is
+    -- what lets a returning client render both markers — "you went away here"
+    -- and "you came back here" — anchored by message timestamps. auto_set
+    -- preserves the manual-vs-auto distinction across server restarts so the
+    -- reconnect re-assert and the auto-clear-on-socket-return paths keep
+    -- working correctly after a process bounce.
+    CREATE TABLE IF NOT EXISTS user_away_state (
+      user_id INTEGER PRIMARY KEY,
+      away_datetime TEXT,
+      back_datetime TEXT,
+      away_message TEXT,
+      auto_set INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS closed_buffers (
       user_id INTEGER NOT NULL,
       network_id INTEGER NOT NULL,

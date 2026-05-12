@@ -91,8 +91,11 @@ const promptLabel = computed(() => {
 
 const awayLabel = computed(() => {
   if (!active.value) return '';
-  const msg = networks.states[active.value.networkId]?.away?.message;
-  return msg ? `(${msg})` : '';
+  // The server keeps `message` populated after /back so the buffer dividers
+  // can render the completed pair — gate on `active` so the prompt label
+  // disappears when the user is no longer away.
+  const away = networks.states[active.value.networkId]?.away;
+  return away?.active && away.message ? `(${away.message})` : '';
 });
 
 let typingState = null;

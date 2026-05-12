@@ -105,17 +105,22 @@ export const useBuffersStore = defineStore('buffers', {
     },
     replaceBacklog(networkId, target, events, speakers, readState, joined) {
       const buf = ensureBuffer(this, networkId, target);
+      // Drop legacy per-buffer away/back rows. The server stopped persisting
+      // these once self-presence moved to the away-state stream, but rows
+      // written before that change linger in the DB and would still render
+      // here. They age out naturally as new content arrives.
+      const filtered = events.filter((e) => e.type !== 'away' && e.type !== 'back');
       const existingMaxId = buf.messages[buf.messages.length - 1]?.id ?? 0;
       if (existingMaxId === 0) {
         // Initial seed (first connect, or a brand-new buffer we hadn't seen
         // pre-flap). Take the backlog wholesale.
-        buf.messages = events.slice(-MAX_PER_BUFFER);
-        buf.hasMore = events.length >= 50;
+        buf.messages = filtered.slice(-MAX_PER_BUFFER);
+        buf.hasMore = filtered.length >= 50;
       } else {
         // Gap-fill on reconnect: filter to events newer than what we already
         // have and append. Keeps live state intact when the server's backlog
         // overlaps with messages we received before the flap.
-        const fresh = events.filter((e) => e.id == null || e.id > existingMaxId);
+        const fresh = filtered.filter((e) => e.id == null || e.id > existingMaxId);
         if (fresh.length > 0) {
           const combined = [...buf.messages, ...fresh];
           buf.messages = combined.length > MAX_PER_BUFFER
@@ -130,15 +135,16 @@ export const useBuffersStore = defineStore('buffers', {
     },
     prependHistory(networkId, target, events, hasMore, speakers) {
       const buf = ensureBuffer(this, networkId, target);
-      // Dedupe against ids we already hold. The server can return overlapping
-      // rows when a history request races a live fan-out — pushMessage and
-      // replaceBacklog already guard their own paths; this keeps prepend
-      // consistent so a stale anchor or future race can't double a row.
+      // Dedupe against ids we already hold AND drop legacy away/back rows
+      // (no longer persisted; same rationale as replaceBacklog).
       const existing = new Set();
       for (const m of buf.messages) {
         if (m.id != null) existing.add(m.id);
       }
-      const fresh = events.filter((e) => e.id == null || !existing.has(e.id));
+      const fresh = events.filter((e) =>
+        (e.id == null || !existing.has(e.id))
+        && e.type !== 'away' && e.type !== 'back',
+      );
       buf.messages = [...fresh, ...buf.messages];
       const first = buf.messages[0];
       buf.oldestId = first?.id ?? buf.oldestId;

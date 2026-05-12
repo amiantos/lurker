@@ -141,12 +141,6 @@ function applyEvent(event) {
     case 'error':
       buffers.pushMessage({ ...event, target: event.target || `:server:${event.networkId}` });
       break;
-    case 'away':
-    case 'back':
-      // Marker line in every open buffer. Doesn't bump unread / highlight —
-      // it's the user's own action. Pre-formatted text comes from the server.
-      buffers.pushMessage(event);
-      break;
   }
 }
 
