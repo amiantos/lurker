@@ -39,6 +39,19 @@ export class IrcConnection {
     this.lagPingTimer = null;
     this.lagPendingToken = null;
     this.lagPendingSentAt = 0;
+    // Pre-registration nick-fallback state. Counts ERR_NICKNAMEINUSE hits while
+    // we're still trying to register; resets on every (re)connect so each socket
+    // gets a fresh ladder. Once 'registered' fires we stop auto-falling back,
+    // because a later 'nick in use' is the user's own /nick attempt.
+    this.preRegistered = true;
+    this.nickAttempt = 0;
+    // Nick-regain state. When set, we're sitting on a fallback nick and have a
+    // server-side MONITOR watch on the configured primary. Cleared once we
+    // reclaim it, or the user manually picks a different nick, or the socket
+    // dies. `pendingRegainSetup` defers the actual MONITOR + until ISUPPORT
+    // tells us the server supports it (005 arrives after 001/'registered').
+    this.regainNick = null;
+    this.pendingRegainSetup = false;
     this.bind();
   }
 
@@ -127,13 +140,36 @@ export class IrcConnection {
   bind() {
     const c = this.client;
 
-    c.on('registered', () => {
+    c.on('registered', (event) => {
       this.userModes.clear();
       this.lagMs = null;
+      // From here on, 'nick in use' is the user's /nick attempt — not us racing
+      // to register. Freeze the fallback ladder.
+      this.preRegistered = false;
+      // irc-framework's command-handler fires its 'all' proxy (which routes
+      // events to us via the client) BEFORE its own specific-event listener
+      // that updates `c.user.nick` to the registered nick. So at this moment
+      // `c.user.nick` is still the configured primary — useless for detecting
+      // fallback. Take the confirmed nick straight from the RPL_WELCOME payload.
+      const registeredNick = event?.nick || c.user.nick;
+      const fallbackUsed = this.nickAttempt > 0 && registeredNick !== this.network.nick;
       this.startLagPinger();
-      this.setState('connected', { nick: c.user.nick });
+      this.setState('connected', { nick: registeredNick });
+      if (fallbackUsed) {
+        this.publish({
+          type: 'notice',
+          target: this.serverTarget(),
+          nick: 'lurker',
+          text: `Connected as ${registeredNick} (configured nick ${this.network.nick} was unavailable).`,
+        });
+        // Defer the MONITOR + handshake until ISUPPORT tells us the server
+        // supports it. 005 always follows 001, so the 'server options' handler
+        // below will trip soon.
+        this.regainNick = this.network.nick;
+        this.pendingRegainSetup = true;
+      }
       try {
-        highlightRulesService.upsertAutoNickRule(this.network.user_id, this.network.id, c.user.nick);
+        highlightRulesService.upsertAutoNickRule(this.network.user_id, this.network.id, registeredNick);
       } catch (e) {
         console.warn('[highlight] failed to upsert auto nick rule:', e?.message || e);
       }
@@ -150,7 +186,71 @@ export class IrcConnection {
       this.userModes.clear();
       this.stopLagPinger();
       this.lagMs = null;
+      // Next socket starts a fresh fallback ladder from the configured nick.
+      this.preRegistered = true;
+      this.nickAttempt = 0;
+      // Drop the regain watch — the new socket will re-evaluate from scratch
+      // after re-registering. (MONITOR state is server-side and dies with the
+      // connection, so no explicit `MONITOR -` is needed here.)
+      this.regainNick = null;
+      this.pendingRegainSetup = false;
       this.setState('disconnected');
+    });
+
+    // ERR_NICKNAMEINUSE while we're still racing to register. Climb the
+    // fallback ladder (nick1, nick2, …, nick9) until the server accepts a
+    // NICK or we exhaust attempts. Post-registration hits are user-driven
+    // /nick attempts — surface a notice and leave the user in control.
+    c.on('nick in use', (event) => {
+      const requested = event?.nick || '';
+      if (!this.preRegistered) {
+        this.publish({
+          type: 'notice',
+          target: this.serverTarget(),
+          nick: 'lurker',
+          text: `Nick ${requested} is already in use.`,
+        });
+        return;
+      }
+      const next = computeFallbackNick(this.network.nick, this.nickAttempt);
+      this.nickAttempt += 1;
+      if (!next) {
+        this.publish({
+          type: 'error',
+          target: this.serverTarget(),
+          text: `Nick ${this.network.nick} and all numeric fallbacks are taken; giving up. Edit the network to pick a different nick.`,
+        });
+        try { this.client.quit('No available nickname'); } catch (_) { /* ignore */ }
+        return;
+      }
+      try { this.client.changeNick(next); } catch (_) { /* ignore */ }
+    });
+
+    // ISUPPORT (numeric 005) — irc-framework re-emits this once per line as
+    // it accumulates options. We use it to defer the MONITOR + setup until
+    // we know the server actually supports MONITOR (the token shows up as
+    // e.g. options.MONITOR === '100', the per-connection watch limit).
+    // Without this guard we'd send `MONITOR +` blind and trigger 421 on
+    // older ircds, which our 'irc error' path surfaces to the user.
+    c.on('server options', () => {
+      if (!this.pendingRegainSetup || !this.regainNick) return;
+      const opts = this.client.network?.options || {};
+      if (!opts.MONITOR) return;
+      this.pendingRegainSetup = false;
+      try { this.client.addMonitor(this.regainNick); } catch (_) { /* ignore */ }
+    });
+
+    // RPL_MONOFFLINE: a nick we're MONITORing has gone offline. If it's the
+    // primary we're trying to reclaim, race to grab it. If someone else snipes
+    // us we'll get ERR_NICKNAMEINUSE post-registration (a passive notice — no
+    // re-fallback) and the MONITOR watch stays live for another attempt.
+    c.on('users offline', (event) => {
+      if (!this.regainNick) return;
+      const target = this.regainNick.toLowerCase();
+      const nicks = Array.isArray(event?.nicks) ? event.nicks : [];
+      const match = nicks.some((n) => typeof n === 'string' && n.toLowerCase() === target);
+      if (!match) return;
+      try { this.client.changeNick(this.regainNick); } catch (_) { /* ignore */ }
     });
 
     c.on('pong', (event) => {
@@ -292,12 +392,36 @@ export class IrcConnection {
     c.on('nick', (event) => {
       const oldLower = event.nick.toLowerCase();
       const newLower = event.new_nick.toLowerCase();
-      const isSelfNick = !!c.user.nick && c.user.nick.toLowerCase() === newLower;
+      // irc-framework's command-handler runs the 'all' proxy (which routes
+      // events to us) BEFORE its specific-event listeners. So when we receive
+      // this event, `c.user.nick` is still the OLD nick — not the new one.
+      // Detect self by matching the event's old nick against the current
+      // tracked nick, mirroring what the framework's own listener does at
+      // client.js:265 before it updates user.nick.
+      const isSelfNick = !!c.user.nick && c.user.nick.toLowerCase() === oldLower;
       if (isSelfNick) {
         try {
           highlightRulesService.upsertAutoNickRule(this.network.user_id, this.network.id, event.new_nick);
         } catch (e) {
           console.warn('[highlight] failed to update auto nick rule:', e?.message || e);
+        }
+        // If a regain watch is active, tear it down on any self-nick change:
+        // either we just reclaimed the primary (publish a notice), or the user
+        // manually picked a different nick (their choice, drop the watch
+        // silently). Either way the watch is now stale.
+        if (this.regainNick) {
+          const reclaimed = newLower === this.regainNick.toLowerCase();
+          try { this.client.removeMonitor(this.regainNick); } catch (_) { /* ignore */ }
+          if (reclaimed) {
+            this.publish({
+              type: 'notice',
+              target: this.serverTarget(),
+              nick: 'lurker',
+              text: `Reclaimed nick ${this.regainNick}.`,
+            });
+          }
+          this.regainNick = null;
+          this.pendingRegainSetup = false;
         }
       }
       for (const ch of this.channels.values()) {
@@ -730,6 +854,19 @@ export class IrcConnection {
 
 const PREFIX_MODES = new Set(['q', 'a', 'o', 'h', 'v']);
 function isPrefixMode(letter) { return PREFIX_MODES.has(letter); }
+
+// Pure helper for the pre-registration nick-fallback ladder. The configured
+// nick is attempt -1 (already tried by `connect()` itself); on each subsequent
+// ERR_NICKNAMEINUSE we ask for index 0..N-1 here. Digits-only, no underscore
+// dance — modern ircds allow long nicks so the legacy 9-char cap is moot, and
+// `bob1` reads more clearly than `bob___`. Returns null once exhausted so the
+// caller can give up and notify the user.
+const NICK_FALLBACK_MAX = 9;
+export function computeFallbackNick(base, attemptIndex) {
+  if (!base) return null;
+  if (attemptIndex < 0 || attemptIndex >= NICK_FALLBACK_MAX) return null;
+  return `${base}${attemptIndex + 1}`;
+}
 
 // Render irc-framework's aggregated `whois` event into a small block of
 // human-readable lines. Order roughly mirrors what other IRC clients show:
