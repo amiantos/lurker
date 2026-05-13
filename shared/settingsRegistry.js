@@ -317,6 +317,30 @@ export const REGISTRY = Object.freeze([
       'show threshold. Useful if you want to keep an eye on round-trip latency.',
   },
 
+  // ─── Layout (collapsible side panels on desktop) ───────────────────────
+  {
+    key: 'look.layout.show_channel_list',
+    category: 'appearance',
+    group: 'layout',
+    type: 'bool',
+    default: true,
+    description:
+      'Show the channel/buffer list on the left of the desktop layout. ' +
+      'Turn off to reclaim horizontal space on cramped screens; a slim rail ' +
+      'with a chevron remains so you can re-open it. Has no effect on mobile.',
+  },
+  {
+    key: 'look.layout.show_member_list',
+    category: 'appearance',
+    group: 'layout',
+    type: 'bool',
+    default: true,
+    description:
+      'Show the channel members list on the right of the desktop layout. ' +
+      'Turn off to reclaim horizontal space; a slim rail with a chevron ' +
+      'remains so you can re-open it. Has no effect on mobile.',
+  },
+
   // ─── Smart filter (join/part/quit/nick noise) ─────────────────────────
   {
     key: 'chat.smart_filter',

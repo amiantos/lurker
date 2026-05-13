@@ -744,6 +744,7 @@ const GROUP_TITLES = {
   messages: 'message rows',
   members: 'member prefixes',
   nicks: 'nick coloring',
+  layout: 'layout',
   misc: 'misc',
   'smart-filter': 'smart filter',
   'auto-away': 'auto-away',

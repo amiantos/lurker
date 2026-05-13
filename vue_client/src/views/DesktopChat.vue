@@ -1,11 +1,25 @@
 <template>
-  <div class="chat" @click="onChatClick">
-    <aside class="sidebar">
+  <div
+    class="chat"
+    :class="{ 'sidebar-collapsed': !showChannels, 'members-collapsed': !showMembers }"
+    @click="onChatClick"
+  >
+    <aside class="sidebar" :class="{ collapsed: !showChannels }">
       <div class="sidebar-head">
-        <span class="logo">lurker</span>
-        <span v-if="!connected" class="status off" title="Disconnected">●</span>
+        <template v-if="showChannels">
+          <span class="logo">lurker</span>
+          <span v-if="!connected" class="status off" title="Disconnected">●</span>
+          <span class="head-spacer"></span>
+        </template>
+        <button
+          class="link toggle"
+          :title="showChannels ? 'Hide channel list' : 'Show channel list'"
+          @click="toggleChannels"
+        >
+          <i :class="showChannels ? 'fa-solid fa-angles-left' : 'fa-solid fa-angles-right'"></i>
+        </button>
       </div>
-      <BufferList />
+      <BufferList v-if="showChannels" />
       <div class="sidebar-foot">
         <RouterLink class="link" to="/settings" title="Settings"><i class="fa-solid fa-gear"></i></RouterLink>
         <button class="link" @click="showHighlights = true" title="Highlights"><i class="fa-regular fa-bell"></i></button>
@@ -37,11 +51,16 @@
           @click="showTopic = true"
         ><LinkedText :text="topic" /></button>
       </template>
+      <button
+        class="link members-toggle"
+        :title="showMembers ? 'Hide members' : 'Show members'"
+        @click="toggleMembers"
+      ><i class="fa-solid fa-users"></i></button>
     </header>
     <div v-if="active" class="topic-divider"></div>
 
     <MessageList :pending-scroll-id="pendingScrollId" />
-    <MemberList v-if="active" />
+    <MemberList v-if="active && showMembers" />
     <StatusBar />
     <MessageInput ref="messageInputRef" />
 
@@ -74,11 +93,12 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSocket } from '../composables/useSocket.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { useActiveBuffer } from '../composables/useActiveBuffer.js';
+import { useSettingsStore } from '../stores/settings.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
@@ -94,6 +114,7 @@ import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 const buffers = useBuffersStore();
 const { connected } = useSocket();
 const { active, topic, isServerBuffer, bufferLabel } = useActiveBuffer();
+const settings = useSettingsStore();
 
 const showNetworkForm = ref(false);
 const editingNetwork = ref(null);
@@ -103,6 +124,16 @@ const showChannelList = ref(false);
 const showUploads = ref(false);
 const pendingScrollId = ref(null);
 const messageInputRef = ref(null);
+
+const showChannels = computed(() => settings.effective('look.layout.show_channel_list'));
+const showMembers = computed(() => settings.effective('look.layout.show_member_list'));
+
+function toggleChannels() {
+  settings.setValue('look.layout.show_channel_list', !showChannels.value);
+}
+function toggleMembers() {
+  settings.setValue('look.layout.show_member_list', !showMembers.value);
+}
 
 // Forward stray clicks anywhere in the chat frame (topic bar, message list,
 // member list, sidebar gutter, etc.) into the message input. The selector
@@ -145,10 +176,16 @@ useChatBootstrap({ onJump: onJumpToMessage });
 <style scoped>
 /* WeeChat-style frame: the sidebar runs full height on the left; the topic
    and input bars span the full width to the right of it; and the message
-   list + nicklist sit between them. */
+   list + nicklist sit between them.
+
+   The sidebar and member-list columns are sized via CSS custom properties
+   so the .sidebar-collapsed / .members-collapsed modifier classes can shrink
+   either side to a 36px rail without touching the rest of the grid. */
 .chat {
+  --sidebar-w: 220px;
+  --members-w: 180px;
   display: grid;
-  grid-template-columns: 220px 1fr 180px;
+  grid-template-columns: var(--sidebar-w) 1fr var(--members-w);
   /* The 1px row owns the topic/messages divider as its own grid track,
      outside the scroll container. Putting the line inside .message-list
      (border-top, inset box-shadow) lets row backgrounds and hover states
@@ -165,6 +202,10 @@ useChatBootstrap({ onJump: onJumpToMessage });
   height: 100vh;
   overflow: hidden;
 }
+.chat.sidebar-collapsed { --sidebar-w: 36px; }
+/* Members column fully collapses — no rail. The reopen toggle lives in the
+   topic bar on the right, so there's nothing to leave behind. */
+.chat.members-collapsed { --members-w: 0px; }
 /* min-height/min-width 0 lets flex/scrolling children stay inside their row. */
 .chat > * { min-width: 0; min-height: 0; }
 
@@ -181,6 +222,7 @@ useChatBootstrap({ onJump: onJumpToMessage });
   align-items: center;
   gap: 8px;
 }
+.head-spacer { flex: 1; }
 .logo { color: var(--accent); font-weight: bold; }
 .status.off { color: var(--bad); }
 /* Pin the cog (settings) flush-left and the plus (add network) flush-right;
@@ -198,6 +240,20 @@ useChatBootstrap({ onJump: onJumpToMessage });
   justify-content: space-between;
   gap: 8px;
 }
+/* Collapsed rail: hide the brand, swap the foot to a vertical stack, and
+   center everything in the 36px column. Foot icons keep their muscle-memory
+   spot at the bottom of the sidebar; the toggle chevron sits up top. */
+.sidebar.collapsed .sidebar-head {
+  padding: 8px 0;
+  justify-content: center;
+}
+.sidebar.collapsed .sidebar-foot {
+  flex-direction: column;
+  padding: 8px 0;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .link {
   background: none;
   border: none;
@@ -208,6 +264,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
   text-decoration: none;
 }
 .link:hover { color: var(--fg); }
+.link.toggle { color: var(--fg-muted); }
+.link.toggle:hover { color: var(--fg); }
 
 .topic {
   grid-area: topic;
@@ -250,4 +308,9 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .members      { grid-area: members; border-left: 1px solid var(--border); }
 .status-bar   { grid-area: status; }
 .input        { grid-area: input; }
+
+/* Pin the members toggle to the far right of the topic bar regardless of
+   what's between it and the buffer label. The topic text shrinks first
+   (it has min-width: 0 + ellipsis) so the toggle stays put. */
+.topic .members-toggle { margin-left: auto; padding-left: 8px; }
 </style>
