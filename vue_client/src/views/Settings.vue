@@ -823,6 +823,7 @@ const GROUP_TITLES = {
   nicks: 'nick coloring',
   layout: 'layout',
   misc: 'misc',
+  consolidate: 'join/part consolidation',
   'smart-filter': 'smart filter',
   'auto-away': 'auto-away',
   provider: 'provider',

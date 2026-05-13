@@ -341,16 +341,46 @@ export const REGISTRY = Object.freeze([
       'remains so you can re-open it. Has no effect on mobile.',
   },
 
+  // ─── Join/part consolidation (IRCCloud-style summary line) ────────────
+  {
+    key: 'chat.consolidate_joins',
+    category: 'chat',
+    group: 'consolidate',
+    type: 'bool',
+    default: true,
+    description:
+      'Merge consecutive join/part/quit/nick events into a single summary line ' +
+      "per nick (e.g. \"Alice and Bob joined; Dave left; Eve → Eve_afk\"). " +
+      'Off shows every event individually. Composes with smart filter — events ' +
+      'the smart filter hides are excluded from the summary.',
+  },
+  {
+    key: 'chat.consolidate_max_names',
+    category: 'chat',
+    group: 'consolidate',
+    type: 'int',
+    min: 1,
+    max: 50,
+    default: 5,
+    description:
+      'In each category (joined / left / reconnected / renamed) of a summary ' +
+      'line, show at most this many nicks before collapsing the rest into ' +
+      '"and N others". Recent speakers (those tracked for nick completion) ' +
+      'are preferred when picking which names to show.',
+  },
+
   // ─── Smart filter (join/part/quit/nick noise) ─────────────────────────
   {
     key: 'chat.smart_filter',
     category: 'chat',
     group: 'smart-filter',
     type: 'bool',
-    default: true,
+    default: false,
     description:
       'Master switch for smart filtering of join/part/quit/nick noise. When enabled, ' +
-      'these events are hidden for nicks that have not recently spoken in the channel.',
+      'these events are hidden for nicks that have not recently spoken in the channel. ' +
+      'Off by default — the consolidation summary line above is usually a better fit, ' +
+      'but turn this on to also hide events for nicks who never chat.',
   },
   {
     key: 'chat.smart_filter_delay',

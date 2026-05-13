@@ -15,6 +15,31 @@
       — back (gone {{ formatDuration(row.awayAt, row.backAt) }}) —
     </div>
     <div
+      v-else-if="row.consolidation"
+      class="line"
+      :data-cons-first-id="row.firstId ?? null"
+      :data-cons-last-id="row.lastId ?? null"
+    >
+      <span class="time">{{ time(row.time) }}</span>
+      <span class="prefix p-cons">--</span>
+      <span class="body meta-body">
+        <template v-for="(g, gi) in row.groups" :key="gi"
+          ><template v-if="gi > 0">; </template
+          ><template v-for="(item, ii) in g.visible" :key="ii"
+            ><template v-if="ii > 0">{{ ii === g.visible.length - 1 && g.hidden === 0 ? ' and ' : ', ' }}</template
+            ><template v-if="g.kind === 'renamed'"
+              ><NickRef :nick="item.from" /> → <NickRef :nick="item.to" /></template
+            ><template v-else><NickRef :nick="item.nick" /></template
+          ></template
+          ><template v-if="g.hidden > 0">, and {{ g.hidden }} {{ g.hidden === 1 ? 'other' : 'others' }}</template
+          ><template v-if="g.kind === 'joined'"> joined</template
+          ><template v-else-if="g.kind === 'left'"> left</template
+          ><template v-else-if="g.kind === 'reconnected'"> reconnected</template
+          ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
+        ></template>
+      </span>
+    </div>
+    <div
       v-else
       class="line"
       :class="rowClass(row)"
@@ -67,6 +92,7 @@ import {
 } from '../composables/useScrollState.js';
 import { segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
 import { formatTimestamp, formatDuration } from '../utils/timestamp.js';
+import { consolidateRows } from '../utils/consolidate.js';
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 
@@ -131,6 +157,9 @@ const smartFilterUnmaskMs = computed(() => (settings.effective('chat.smart_filte
 const smartFilterJoin = computed(() => !!settings.effective('chat.smart_filter_join'));
 const smartFilterQuit = computed(() => !!settings.effective('chat.smart_filter_quit'));
 const smartFilterNick = computed(() => !!settings.effective('chat.smart_filter_nick'));
+
+const consolidateEnabled = computed(() => !!settings.effective('chat.consolidate_joins'));
+const consolidateMaxNames = computed(() => settings.effective('chat.consolidate_max_names') || 5);
 
 // User-level self-presence (driven by user_away_state on the server). Each
 // network broadcasts the same payload, so reading from this buffer's network
@@ -249,6 +278,20 @@ const renderRows = computed(() => {
   // message and nothing has arrived yet).
   if (!awayInserted) pushAwayDivider();
   if (!backInserted) pushBackDivider();
+
+  // Final pass: merge consecutive join/part/quit/nick rows into a single
+  // summary row when consolidation is enabled. Dividers break runs (we want
+  // the away/back/unread markers to land between events, not get swallowed
+  // by a multi-event group). Recent speakers come from the same `speakers`
+  // map nick completion uses, so the cap prefers nicks the reader knows.
+  if (consolidateEnabled.value) {
+    const speakers = buf?.speakers ? Object.keys(buf.speakers) : [];
+    return consolidateRows(out, {
+      enabled: true,
+      maxNames: consolidateMaxNames.value,
+      recentSpeakers: speakers,
+    });
+  }
   return out;
 });
 
@@ -613,7 +656,8 @@ watch(() => props.pendingScrollId, async (id) => {
 .prefix.p-topic,
 .prefix.p-motd,
 .prefix.p-away,
-.prefix.p-back  { color: var(--fg-muted); }
+.prefix.p-back,
+.prefix.p-cons  { color: var(--fg-muted); }
 
 .body {
   position: relative;
