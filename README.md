@@ -16,7 +16,7 @@ Lurker runs as an always-on server that stays connected to IRC on your behalf, k
 - **Customizable UI.** The beautiful retro terminal-style interface has 40+ settings to customize it how you want, and you can freely pin and rearrange channels and DMs.
 - **Installable.** Lurker is a PWA — install it as a native-feeling app on your phone, Mac, or PC straight from the browser.
 
-# Screenshot
+# Screenshot (as macOS PWA)
 
 <img src="screenshot.png" alt="Lurker IRC client screenshot" width="100%">
 
