@@ -101,9 +101,9 @@ export function useKeyboardShortcuts({ onOpenSwitcher, onOpenHelp, onOpenSearch 
     if (e.altKey && !isCmd(e) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
       const delta = e.key === 'ArrowDown' ? 1 : -1;
       const scope = e.shiftKey ? 'unread' : 'network';
-      // Skip when there's no buffer to leave from — input-history navigation
-      // also uses ArrowUp/ArrowDown but doesn't carry the Alt modifier, so
-      // the existing input handler is unaffected.
+      // MessageInput's keydown handler also listens for ArrowUp/ArrowDown
+      // (input history) but explicitly ignores them when Alt is held, so
+      // these buffer-nav combos don't double-trigger.
       e.preventDefault();
       step(delta, scope);
       return;

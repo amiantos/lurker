@@ -300,6 +300,9 @@ function resetCompletion() {
 
 function onKeydown(e) {
   if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    // Bare arrows only — Alt+Arrow is buffer navigation (handled globally in
+    // useKeyboardShortcuts), so don't hijack it for input history here.
+    if (e.altKey || e.metaKey || e.ctrlKey) return;
     handleHistoryNav(e);
     return;
   }
