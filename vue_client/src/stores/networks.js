@@ -44,8 +44,11 @@ export const useNetworksStore = defineStore('networks', {
     async connect(id) {
       await api(`/api/networks/${id}/connect`, { method: 'POST' });
     },
-    async disconnect(id) {
-      await api(`/api/networks/${id}/disconnect`, { method: 'POST' });
+    async disconnect(id, reason) {
+      await api(`/api/networks/${id}/disconnect`, {
+        method: 'POST',
+        ...(reason ? { body: { reason } } : {}),
+      });
     },
     async reconnect(id) {
       await api(`/api/networks/${id}/reconnect`, { method: 'POST' });

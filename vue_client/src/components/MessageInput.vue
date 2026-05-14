@@ -756,8 +756,15 @@ function handleCommand(line, networkId, target) {
       return sendOrToast({ type: 'raw', networkId, line: `MODE ${argLine}` }, line);
     }
     case 'quit': {
+      // Route through the intentional-disconnect path (POST .../disconnect →
+      // ircManager.stopNetwork → client.quit()), which sets irc-framework's
+      // requested_disconnect flag. Sending a raw QUIT line instead leaves that
+      // flag unset, so the socket close looks unexpected and auto-reconnects.
       const reason = argLine || 'lurker';
-      return sendOrToast({ type: 'raw', networkId, line: `QUIT :${reason}` }, line);
+      networks.disconnect(networkId, reason).catch((err) => {
+        localInfo(networkId, target, `/quit failed: ${err.message || 'could not disconnect'}`);
+      });
+      return true;
     }
     case 'list':
       return sendOrToast({ type: 'raw', networkId, line: argLine ? `LIST ${argLine}` : 'LIST' }, line);
