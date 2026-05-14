@@ -113,6 +113,7 @@ import { useSocket } from '../composables/useSocket.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { useActiveBuffer } from '../composables/useActiveBuffer.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useToastsStore } from '../stores/toasts.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
@@ -133,6 +134,7 @@ const buffers = useBuffersStore();
 const { connected } = useSocket();
 const { active, topic, isServerBuffer, bufferLabel } = useActiveBuffer();
 const settings = useSettingsStore();
+const toasts = useToastsStore();
 
 const showNetworkForm = ref(false);
 const editingNetwork = ref(null);
@@ -175,6 +177,13 @@ function onChatClick(e) {
 }
 
 function onJumpToMessage({ networkId, target, messageId }) {
+  // A notification can outlive its buffer — if the channel was closed since
+  // the push fired, activating would recreate an empty shell. Bail with a
+  // toast instead of stranding the UI in a half-state.
+  if (!buffers.isOpen(networkId, target)) {
+    toasts.push({ kind: 'info', title: 'Buffer is closed', ttlMs: 4000 });
+    return;
+  }
   buffers.activate(networkId, target);
   pendingScrollId.value = messageId;
 }

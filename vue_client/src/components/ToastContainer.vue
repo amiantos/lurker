@@ -31,6 +31,14 @@ const buffers = useBuffersStore();
 
 function onClick(t) {
   if (!t.networkId || !t.target) return;
+  // The buffer can be closed between the toast firing and the user clicking
+  // it; activating would recreate an empty shell. Replace the toast with a
+  // "closed" notice instead.
+  if (!buffers.isOpen(t.networkId, t.target)) {
+    toasts.dismiss(t.id);
+    toasts.push({ kind: 'info', title: 'Buffer is closed', ttlMs: 4000 });
+    return;
+  }
   buffers.activate(t.networkId, t.target);
   toasts.dismiss(t.id);
 }

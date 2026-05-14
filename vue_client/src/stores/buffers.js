@@ -66,6 +66,11 @@ export const useBuffersStore = defineStore('buffers', {
   getters: {
     list: (state) => Object.values(state.buffers),
     byKey: (state) => (k) => state.buffers[k] || null,
+    // True only while the buffer is live in the store. A closed buffer is
+    // dropped entirely (see drop()), so this is how callers tell "open" from
+    // "closed/parted-away" before activating — activate() would otherwise
+    // recreate an empty shell and strand the UI in a half-state.
+    isOpen: (state) => (networkId, target) => !!state.buffers[`${networkId}::${target}`],
     forNetwork: (state) => (networkId) => Object.values(state.buffers).filter((b) => b.networkId === networkId),
   },
   actions: {

@@ -108,6 +108,7 @@ import { useSocket } from '../composables/useSocket.js';
 import { useVisualViewportHeight } from '../composables/useViewport.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { useActiveBuffer } from '../composables/useActiveBuffer.js';
+import { useToastsStore } from '../stores/toasts.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
@@ -122,6 +123,7 @@ import SearchModal from '../components/SearchModal.vue';
 const buffers = useBuffersStore();
 const { connected } = useSocket();
 const { active, activeKey, isChannel, isServerBuffer, bufferLabel, topic } = useActiveBuffer();
+const toasts = useToastsStore();
 
 // Pin --viewport-h to the visualViewport height so the shell stays glued to
 // the visible region when the iOS soft keyboard pushes content up.
@@ -164,6 +166,13 @@ function goList() {
 }
 
 function onJumpToMessage({ networkId, target, messageId }) {
+  // A notification can outlive its buffer — if the channel was closed since
+  // the push fired, activating would recreate an empty shell. Bail with a
+  // toast instead of stranding the UI in a half-state.
+  if (!buffers.isOpen(networkId, target)) {
+    toasts.push({ kind: 'info', title: 'Buffer is closed', ttlMs: 4000 });
+    return;
+  }
   buffers.activate(networkId, target);
   pendingScrollId.value = messageId;
   screen.value = 'buffer';

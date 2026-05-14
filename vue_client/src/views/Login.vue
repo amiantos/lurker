@@ -30,8 +30,15 @@
         <form @submit.prevent="onCreateUser">
           <label>
             <span>Username</span>
-            <input v-model="username" autocomplete="username" autofocus required />
+            <input
+              v-model="username"
+              autocomplete="username"
+              autofocus
+              required
+              placeholder="lurker username"
+            />
           </label>
+          <p class="hint">Your Lurker account login — not the nick you'll use on IRC networks.</p>
           <template v-if="setupMethod === 'password'">
             <label>
               <span>Password</span>
