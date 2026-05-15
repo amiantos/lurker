@@ -68,6 +68,49 @@
             </li>
           </ul>
           <p v-else-if="pushSubsStore.loaded && thisClientEnabled" class="muted small">No other devices registered.</p>
+
+          <hr class="hl-sep" />
+          <h3 class="subhead">push filters</h3>
+          <p class="section-desc">
+            Conditions that suppress push notifications globally. Toasts are
+            unaffected — they only fire when you're at the desk anyway.
+          </p>
+          <div class="hl-notif">
+            <label class="hl-row">
+              <input
+                type="checkbox"
+                :checked="settings.effective('notifications.push.mute_when_away')"
+                @change="onCommit('notifications.push.mute_when_away', $event.target.checked)"
+              />
+              <span>mute push notifications when manually away</span>
+            </label>
+
+            <label class="hl-row">
+              <input
+                type="checkbox"
+                :checked="settings.effective('notifications.push.quiet_hours.enabled')"
+                @change="onCommit('notifications.push.quiet_hours.enabled', $event.target.checked)"
+              />
+              <span>quiet hours</span>
+            </label>
+
+            <div class="hl-row" :class="{ 'hl-row--dim': !quietHoursEnabled }">
+              <span class="hl-label">from</span>
+              <input
+                type="time"
+                :value="settings.effective('notifications.push.quiet_hours.start')"
+                :disabled="!quietHoursEnabled"
+                @change="onCommit('notifications.push.quiet_hours.start', $event.target.value)"
+              />
+              <span class="hl-label">to</span>
+              <input
+                type="time"
+                :value="settings.effective('notifications.push.quiet_hours.end')"
+                :disabled="!quietHoursEnabled"
+                @change="onCommit('notifications.push.quiet_hours.end', $event.target.value)"
+              />
+            </div>
+          </div>
         </section>
 
         <!-- ─── Highlights ─────────────────────────────────────────────── -->
@@ -593,6 +636,7 @@ const otherSubscriptions = computed(() =>
 // Sound choice list is the same enum across all signal types — read off any
 // one of the keys (they share a `choices` array in the registry).
 const soundChoices = computed(() => getOption('notifications.highlight.sound.choice')?.choices || []);
+const quietHoursEnabled = computed(() => !!settings.effective('notifications.push.quiet_hours.enabled'));
 
 // The three notification signal types, mirroring the unified-intent model on
 // the server: each is a single "notify me" toggle with an optional sound

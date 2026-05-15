@@ -714,6 +714,53 @@ export const REGISTRY = Object.freeze([
     description: 'Playback volume for the always-notify sound, 0–100.',
   },
 
+  // ─── Push-side filters ────────────────────────────────────────────────
+  // These only affect push delivery — toasts are unaffected (toasts require a
+  // visible client, which short-circuits push anyway). All off by default.
+  {
+    key: 'notifications.push.mute_when_away',
+    category: 'highlights',
+    group: 'push_filters',
+    type: 'bool',
+    default: false,
+    description:
+      "Suppress push notifications while you have a manual /away set. " +
+      "Auto-away (triggered when all your tabs close) is unaffected — that's " +
+      'the case push exists to cover.',
+  },
+  {
+    key: 'notifications.push.quiet_hours.enabled',
+    category: 'highlights',
+    group: 'push_filters',
+    type: 'bool',
+    default: false,
+    description:
+      'When on, push notifications are suppressed during the configured quiet ' +
+      "hours window. Toasts are unaffected — they only fire when you're at " +
+      'the desk anyway.',
+  },
+  {
+    key: 'notifications.push.quiet_hours.start',
+    category: 'highlights',
+    group: 'push_filters',
+    type: 'string',
+    default: '22:00',
+    description:
+      'Start of the quiet-hours window in HH:MM (24h), interpreted in your ' +
+      'system.timezone. When start > end the window wraps midnight (e.g. ' +
+      '22:00–07:00 means 10pm through 7am).',
+  },
+  {
+    key: 'notifications.push.quiet_hours.end',
+    category: 'highlights',
+    group: 'push_filters',
+    type: 'string',
+    default: '07:00',
+    description:
+      'End of the quiet-hours window in HH:MM (24h), interpreted in your ' +
+      'system.timezone.',
+  },
+
   // ─── System / locale ──────────────────────────────────────────────────
   {
     key: 'system.timezone',

@@ -30,6 +30,7 @@ import {
   getChannelNotifyAlways,
   setChannelNotifyAlways,
 } from '../db/channelNotify.js';
+import { getUserAwayState } from '../db/userAwayState.js';
 import { upsertChannel, ownsNetwork } from '../db/networks.js';
 import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
@@ -92,6 +93,33 @@ function buildAutoAwayMessage(userId) {
   const base = (effectiveSetting(userId, 'away.auto.message') || 'afk').trim() || 'afk';
   const tz = effectiveSetting(userId, 'system.timezone');
   return `${base} since ${fmtAwayTimestamp(new Date(), tz)}`;
+}
+
+// HH:MM (24h) into minutes-past-midnight, or null on a malformed value. The
+// quiet-hours settings are plain strings rather than integers so the UI can
+// use <input type="time"> directly without conversion juggling.
+function parseHHMM(s) {
+  if (typeof s !== 'string') return null;
+  const m = /^(\d{1,2}):(\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return h * 60 + min;
+}
+
+function currentMinutesInZone(date, timeZone) {
+  const tz = isValidTimeZone(timeZone) ? timeZone : null;
+  const p = wallClockParts(date, tz);
+  return Number(p.hour) * 60 + Number(p.minute);
+}
+
+// True when current is inside [start, end). When start > end the window
+// wraps midnight, e.g. 22:00–07:00 = [22:00, 24:00) ∪ [00:00, 07:00).
+function isInQuietWindow(currentMin, startMin, endMin) {
+  if (startMin === endMin) return false;
+  if (startMin < endMin) return currentMin >= startMin && currentMin < endMin;
+  return currentMin >= startMin || currentMin < endMin;
 }
 
 const DM_ELIGIBLE_TYPES = new Set(['message', 'action', 'notice']);
@@ -268,6 +296,25 @@ export function attachWsHub(httpServer, sessionSecret) {
         ? 'highlight'
         : 'always_notify';
     if (!effectiveSetting(userId, `notifications.${kindKey}.enabled`)) return;
+    // Suppress push while the user has a *manual* /away set. Auto-away is the
+    // case where push is needed most (all tabs closed), so it's deliberately
+    // not gated here.
+    if (effectiveSetting(userId, 'notifications.push.mute_when_away')) {
+      const away = getUserAwayState(userId);
+      if (away?.away_datetime && !away?.back_datetime && !away?.auto_set) return;
+    }
+    // Quiet hours: skip when inside the user's configured local-time window.
+    // Times compare in the user's system.timezone so DST transitions don't
+    // shift the window relative to wall-clock time.
+    if (effectiveSetting(userId, 'notifications.push.quiet_hours.enabled')) {
+      const startMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.start'));
+      const endMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.end'));
+      if (startMin != null && endMin != null) {
+        const tz = effectiveSetting(userId, 'system.timezone');
+        const currentMin = currentMinutesInZone(new Date(), tz);
+        if (isInQuietWindow(currentMin, startMin, endMin)) return;
+      }
+    }
     const network = ircManager.getConnection(userId, decorated.networkId)?.network;
     pushService.deliver(userId, {
       kind: kindKey,
