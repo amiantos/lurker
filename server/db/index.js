@@ -321,6 +321,24 @@ function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
     );
+
+    -- Slack-style per-buffer draft storage. Each row is the half-typed input
+    -- for one (user, network, target). Sparse — only buffers with a non-empty
+    -- body have a row; clearing the draft (send, manual clear, or empty body
+    -- after edits) deletes the row outright. updated_at is the last-write-wins
+    -- key for resolving cross-device races. Cascades on user and network so
+    -- account/network deletion cleans up implicitly.
+    CREATE TABLE IF NOT EXISTS user_drafts (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      target TEXT NOT NULL,
+      body TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, network_id, target),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_drafts_user ON user_drafts(user_id);
   `);
 }
 

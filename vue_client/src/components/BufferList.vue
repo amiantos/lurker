@@ -43,6 +43,12 @@
             <span class="label" :style="labelStyle(buf)">{{ labelFor(buf) }}</span>
             <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
             <span
+              v-if="hasDraft(buf)"
+              class="badge draft"
+              title="unsent draft"
+              aria-label="unsent draft"
+            ><i class="fa-solid fa-pencil"></i></span>
+            <span
               v-if="buf.highlighted > 0"
               class="badge highlight"
               :title="`${buf.highlighted} highlight${buf.highlighted === 1 ? '' : 's'}`"
@@ -70,6 +76,12 @@
           <span class="label" :style="labelStyle(buf)">{{ labelFor(buf) }}</span>
           <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
           <span
+            v-if="hasDraft(buf)"
+            class="badge draft"
+            title="unsent draft"
+            aria-label="unsent draft"
+          ><i class="fa-solid fa-pencil"></i></span>
+          <span
             v-if="buf.highlighted > 0"
             class="badge highlight"
             :title="`${buf.highlighted} highlight${buf.highlighted === 1 ? '' : 's'}`"
@@ -87,6 +99,7 @@ import { reactive, ref, watch } from 'vue';
 import draggable from 'vuedraggable';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useNickColors } from '../composables/useNickColors.js';
@@ -95,6 +108,7 @@ import { isPeerOffline as derivePeerOffline, isPeerAway as derivePeerAway } from
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const drafts = useDraftStore();
 const pins = usePinsStore();
 const channelNotify = useChannelNotifyStore();
 const nicks = useNickColors();
@@ -135,6 +149,10 @@ function serverHighlights(networkId) {
 // and isn't more actionable than "a lot".
 function unreadLabel(count) {
   return count > 999 ? '>999' : String(count);
+}
+
+function hasDraft(buf) {
+  return drafts.hasDraft(buf.networkId, buf.target);
 }
 
 function labelStyle(buf) {
@@ -414,6 +432,13 @@ function dmTitle(buf) {
   padding: 0 2px;
 }
 .badge.highlight { color: var(--warn); }
+/* Draft pencil is a passive "you've got unsent text here" cue, not an alert —
+   render it in the muted text color so it doesn't compete with unread/
+   highlight badges for attention. */
+.badge.draft {
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
 
 .empty { padding: 12px; color: var(--fg-muted); font-style: italic; }
 

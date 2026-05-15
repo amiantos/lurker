@@ -8,6 +8,7 @@ import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
+import { useDraftStore } from '../stores/drafts.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useSearchStore } from '../stores/search.js';
 import { usePinsStore } from '../stores/pins.js';
@@ -267,17 +268,32 @@ function handleMessage(raw) {
     const networks = useNetworksStore();
     const buffers = useBuffersStore();
     const inputHistory = useInputHistoryStore();
+    const drafts = useDraftStore();
     const closedKey = `${payload.networkId}::${payload.target}`;
     if (networks.activeKey === closedKey) networks.activeKey = null;
     buffers.drop(payload.networkId, payload.target);
     // History rows survive on the server (re-seeded if the buffer reopens);
     // we just drop the in-memory mirror so it doesn't go stale.
     inputHistory.drop(payload.networkId, payload.target);
+    // Drafts for a closed buffer are cleared server-side too (wsHub's
+    // close-buffer handler). Mirror that locally so a future reopen starts
+    // empty rather than restoring the pre-close draft.
+    drafts.drop(payload.networkId, payload.target);
     return;
   }
   if (payload.kind === 'input-history-added') {
     const inputHistory = useInputHistoryStore();
     inputHistory.add(payload.networkId, payload.target, payload.text);
+    return;
+  }
+  if (payload.kind === 'draft-snapshot') {
+    const drafts = useDraftStore();
+    drafts.seed(payload.drafts || []);
+    return;
+  }
+  if (payload.kind === 'draft-updated') {
+    const drafts = useDraftStore();
+    drafts.applyRemoteUpdate(payload.networkId, payload.target, payload.body);
     return;
   }
   if (payload.kind === 'chanlist-state') {

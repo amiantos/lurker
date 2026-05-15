@@ -7,6 +7,7 @@ import cookieParser from 'cookie-parser';
 import ircManager from './ircManager.js';
 import settingsService from './settingsService.js';
 import highlightRulesService from './highlightRulesService.js';
+import draftsService from './draftsService.js';
 import * as pushService from './pushService.js';
 import { findSession } from '../db/sessions.js';
 import { findUserById, touchUserLastSeen } from '../db/users.js';
@@ -402,6 +403,18 @@ export function attachWsHub(httpServer, sessionSecret) {
     fanOut(userId, { kind: 'highlight-rules-changed' });
   });
 
+  // Drafts fan out to every tab of the same user. `originWs` is the socket
+  // that triggered the change (if any) and gets excluded so the originator
+  // doesn't clobber its own optimistic state with a stale echo. HTTP-driven
+  // writes (sendBeacon on tab close) pass null and reach every tab.
+  draftsService.on('change', ({ userId, networkId, target, body, originWs }) => {
+    fanOut(
+      userId,
+      { kind: 'draft-updated', networkId, target, body },
+      originWs ? { exceptWs: originWs } : undefined,
+    );
+  });
+
   // When a user is deleted, their WS connections are still authenticated
   // against a session that just got cascade-deleted. Stale handlers would
   // write to per-user tables (buffer_reads, user_settings, …) that no
@@ -487,6 +500,10 @@ export function attachWsHub(httpServer, sessionSecret) {
   function sendSnapshot(ws, userId) {
     const networks = ircManager.snapshotForUser(userId);
     send(ws, { kind: 'snapshot', networks });
+    // Drafts ship once per snapshot, separate from per-buffer backlog frames —
+    // the keying is global to the user, not per-buffer, so a single message is
+    // cheaper than fanning a body field into every backlog row.
+    send(ws, { kind: 'draft-snapshot', drafts: draftsService.snapshotForUser(userId) });
     const readState = listReadStateForUser(userId);
     const closed = closedKeySetForUser(userId);
     let maxSentId = ws.sinceId || 0;
@@ -613,6 +630,9 @@ export function attachWsHub(httpServer, sessionSecret) {
           const conn = ircManager.getConnection(userId, networkId);
           if (conn) conn.untrackDmPeer(target);
         }
+        // Drop any draft for the now-closed buffer. The client mirror also
+        // drops it on `buffer-closed`, so the cleanup happens on both sides.
+        draftsService.clear(userId, networkId, target, ws);
         fanOut(userId, { kind: 'buffer-closed', networkId, target });
         break;
       }
@@ -746,6 +766,21 @@ export function attachWsHub(httpServer, sessionSecret) {
         // The originating socket already added it optimistically, so skip it
         // to avoid a duplicate append.
         fanOut(userId, { kind: 'input-history-added', networkId, target, text }, { exceptWs: ws });
+        break;
+      }
+      case 'draft-set': {
+        const networkId = Number(msg.networkId);
+        const target = typeof msg.target === 'string' ? msg.target : '';
+        const body = typeof msg.body === 'string' ? msg.body : '';
+        if (!networkId || !target || target.startsWith(':server:')) break;
+        draftsService.set(userId, networkId, target, body, ws);
+        break;
+      }
+      case 'draft-clear': {
+        const networkId = Number(msg.networkId);
+        const target = typeof msg.target === 'string' ? msg.target : '';
+        if (!networkId || !target) break;
+        draftsService.clear(userId, networkId, target, ws);
         break;
       }
       case 'pin-buffer': {

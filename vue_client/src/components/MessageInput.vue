@@ -24,7 +24,7 @@
       :autocapitalize="systemFeatures.autocapitalize"
       @keydown="onKeydown"
       @paste="onPaste"
-      @blur="resetCompletion"
+      @blur="onBlur"
     />
     <input
       ref="fileInputEl"
@@ -57,6 +57,7 @@ import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
+import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 import { useToastsStore } from '../stores/toasts.js';
@@ -70,10 +71,10 @@ import NickPicker from './NickPicker.vue';
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const inputHistory = useInputHistoryStore();
+const drafts = useDraftStore();
 const settings = useSettingsStore();
 const uploads = useUploadsStore();
 const toasts = useToastsStore();
-const text = ref('');
 const inputEl = ref(null);
 const formEl = ref(null);
 const fileInputEl = ref(null);
@@ -84,6 +85,25 @@ let pickerTokenStart = -1;
 let pickerTokenEnd = -1;
 
 const active = computed(() => networks.activeBuffer);
+
+// Input contents are server-side per-buffer drafts — switching channels swaps
+// the input bar's body to that buffer's draft (or empty). v-model writes go
+// through the setter, which records the optimistic local update and schedules
+// a debounced WS flush; the typing-state side effects in onInput run here
+// (not in a watch(text)) so remote `draft-updated` echoes from other tabs
+// don't fire fake "active" typing notifications.
+const text = computed({
+  get() {
+    const a = active.value;
+    return a ? drafts.forBuffer(a.networkId, a.target) : '';
+  },
+  set(value) {
+    const a = active.value;
+    if (!a) return;
+    drafts.setLocal(a.networkId, a.target, value);
+    onInput();
+  },
+});
 const buffer = computed(() => (active.value
   ? buffers.byKey(`${active.value.networkId}::${active.value.target}`)
   : null));
@@ -323,6 +343,14 @@ function resetCompletion() {
   completion = null;
 }
 
+function onBlur() {
+  resetCompletion();
+  // Force the active buffer's draft to the server now rather than waiting on
+  // the debounce timer — covers refocus into a different tab or mobile
+  // app-switch without losing the in-progress text.
+  if (active.value) drafts.flushBuffer(active.value.networkId, active.value.target);
+}
+
 function onKeydown(e) {
   if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
     // Bare arrows only — Alt+Arrow is buffer navigation (handled globally in
@@ -465,24 +493,44 @@ function onInput() {
   }, 3000);
 }
 
-watch(text, onInput);
-
 watch(active, (newActive, oldActive) => {
   resetCompletion();
   closePicker();
   resetHistoryNav();
-  // A switch between buffers carries the draft along (text is component-
-  // level, not per-buffer) but any unused split-confirm token doesn't
-  // transfer — a fresh buffer is a fresh consent decision.
+  // A switch between buffers swaps the draft text via the `text` computed,
+  // but any unused split-confirm token doesn't transfer — a fresh buffer is
+  // a fresh consent decision.
   pendingSplitConfirm = false;
+  // Drain any pending debounced flush for the buffer we're leaving so the
+  // server's row reflects the latest body before the next tab sees us
+  // switching away. flushBuffer is a no-op if nothing is pending.
+  if (oldActive) drafts.flushBuffer(oldActive.networkId, oldActive.target);
   if (oldActive && (!newActive || oldActive.target !== newActive.target || oldActive.networkId !== newActive.networkId)) {
     endTypingTo(oldActive);
   }
+  // Re-evaluate the outgoing-split estimate for the new buffer's draft. The
+  // setter-driven onInput path handles this for keystrokes, but a bare
+  // switch doesn't run the setter, so StatusBar's SPLIT/FLOOD indicator
+  // would otherwise carry over stale state from the previous buffer.
+  if (newActive) {
+    const { chunks, isAction } = computeChunks(text.value);
+    setComposingState({ chunks, isAction });
+  } else {
+    setComposingState({ chunks: 0, isAction: false });
+  }
 });
+
+function onPagehide() {
+  // Tab close / navigate-away — the WS may already be tearing down, so ship
+  // any un-flushed drafts through sendBeacon instead. Idempotent on the
+  // server, so a stray pagehide that doesn't actually unload is harmless.
+  drafts.flushAllForBeacon();
+}
 
 onBeforeUnmount(() => {
   if (active.value) endTypingTo(active.value);
   if (unsubInsert) { unsubInsert(); unsubInsert = null; }
+  if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPagehide);
 });
 
 function insertUrlAtCaret(url) {
@@ -514,6 +562,7 @@ function insertUrlAtCaret(url) {
 let unsubInsert = null;
 onMounted(() => {
   unsubInsert = onInsertUrl(insertUrlAtCaret);
+  if (typeof window !== 'undefined') window.addEventListener('pagehide', onPagehide);
 });
 
 function blobFromClipboardItem(item) {
@@ -591,6 +640,10 @@ function commitInput(raw, networkId, target) {
   inputHistory.add(networkId, target, raw);
   socketSend({ type: 'input-history-add', networkId, target, text: raw });
   text.value = '';
+  // Empty the draft on the server immediately rather than waiting on the
+  // debounce — otherwise a quick send + buffer-close race could leave the
+  // row with the old body. flushBuffer drains the pending timer.
+  drafts.flushBuffer(networkId, target);
   pendingSplitConfirm = false;
   setComposingState({ chunks: 0, isAction: false });
   resetHistoryNav();

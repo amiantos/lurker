@@ -17,6 +17,7 @@ import highlightsRouter from './routes/highlights.js';
 import pushRouter from './routes/push.js';
 import adminRouter from './routes/admin.js';
 import uploadsRouter from './routes/uploads.js';
+import draftsRouter from './routes/drafts.js';
 import ircManager from './services/ircManager.js';
 import { attachWsHub } from './services/wsHub.js';
 import { purgeExpiredSessions } from './db/sessions.js';
@@ -46,6 +47,7 @@ app.use('/api/highlights', highlightsRouter);
 app.use('/api/push', pushRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/uploads', uploadsRouter);
+app.use('/api/drafts', draftsRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
