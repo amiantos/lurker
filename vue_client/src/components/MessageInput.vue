@@ -20,7 +20,6 @@
       :placeholder="placeholder"
       :disabled="!active"
       autocomplete="off"
-      spellcheck="false"
       @keydown="onKeydown"
       @paste="onPaste"
       @blur="resetCompletion"
