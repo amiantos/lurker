@@ -11,19 +11,17 @@
          leaving scrollTop near the top so maybeRequestHistory cascades. -->
     <div v-if="!buffer?.hasMore && messages.length" class="notice">— start of history —</div>
     <p v-if="!messages.length" class="notice empty">No messages yet.</p>
-    <div class="vrow-spacer" :style="{ height: topSpacerHeight + 'px' }"></div>
-    <template v-for="row in visibleRows" :key="row.key">
-    <div v-if="row.divider === 'unread'" :ref="getRowRefSetter(row.key)" class="notice unread-divider">— unread —</div>
-    <div v-else-if="row.divider === 'away'" :ref="getRowRefSetter(row.key)" class="notice presence-divider">
+    <template v-for="row in renderRows" :key="row.key">
+    <div v-if="row.divider === 'unread'" class="notice unread-divider">— unread —</div>
+    <div v-else-if="row.divider === 'away'" class="notice presence-divider">
       — away<template v-if="row.awayMessage">: {{ row.awayMessage }}</template> —
     </div>
-    <div v-else-if="row.divider === 'back'" :ref="getRowRefSetter(row.key)" class="notice presence-divider">
+    <div v-else-if="row.divider === 'back'" class="notice presence-divider">
       — back (gone {{ formatDuration(row.awayAt, row.backAt) }}) —
     </div>
-    <div v-else-if="row.divider === 'date'" :ref="getRowRefSetter(row.key)" class="notice date-divider">{{ row.dateStr }}</div>
+    <div v-else-if="row.divider === 'date'" class="notice date-divider">{{ row.dateStr }}</div>
     <div
       v-else-if="row.consolidation"
-      :ref="getRowRefSetter(row.key)"
       class="line"
       :data-cons-first-id="row.firstId ?? null"
       :data-cons-last-id="row.lastId ?? null"
@@ -49,7 +47,6 @@
     </div>
     <div
       v-else
-      :ref="getRowRefSetter(row.key)"
       class="line"
       :class="rowClass(row)"
       :data-msg-id="row.m.id ?? null"
@@ -83,12 +80,11 @@
       </span>
     </div>
     </template>
-    <div class="vrow-spacer" :style="{ height: bottomSpacerHeight + 'px' }"></div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, watchPostEffect, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -331,175 +327,6 @@ const renderRows = computed(() => {
   return out;
 });
 
-// === Virtualization ===
-// Render only the rows near the viewport. The scroller is still a CSS subgrid,
-// so rows must remain direct children — we use a top spacer + visible slice +
-// bottom spacer instead of absolute positioning or transforms. Row heights are
-// measured by a per-row ResizeObserver and cached by row.key (stable for
-// messages, consolidations, and dividers alike). Unmeasured rows fall back to
-// a running-average estimate.
-const VIRTUAL_OVERSCAN_PX = 200;
-const DEFAULT_ROW_HEIGHT = 24;
-
-const rowHeights = new Map();
-const heightVersion = ref(0);
-const estimatedRowHeight = ref(DEFAULT_ROW_HEIGHT);
-const scrollTopRef = ref(0);
-const clientHeightRef = ref(0);
-const rowEls = new Map();
-let rowObserver = null;
-// Counter so programmatic scrollTop writes (prepend math, ResizeObserver
-// height adjustment) don't get reinterpreted as user scrolling. Decremented
-// once per onScroll fire.
-let suppressScrollHandler = 0;
-
-function refreshEstimate() {
-  if (rowHeights.size === 0) return;
-  let sum = 0;
-  for (const h of rowHeights.values()) sum += h;
-  estimatedRowHeight.value = sum / rowHeights.size;
-}
-
-function setRowEl(el, key) {
-  if (el) {
-    el.dataset.rowKey = key;
-    rowEls.set(key, el);
-    if (rowObserver) rowObserver.observe(el);
-    // Sync-measure here so heights are populated before paint; the
-    // ResizeObserver will also fire shortly after and reconcile any layout
-    // settling (font load, late style application).
-    const h = el.offsetHeight;
-    if (h > 0 && rowHeights.get(key) !== h) {
-      rowHeights.set(key, h);
-      heightVersion.value++;
-    }
-  } else {
-    const prev = rowEls.get(key);
-    if (prev && rowObserver) rowObserver.unobserve(prev);
-    rowEls.delete(key);
-  }
-}
-
-// Vue calls function refs on every patch. With an inline arrow,
-// `(el) => setRowEl(el, row.key)`, the identity changes per render — so Vue
-// invokes old(null) then new(el), tearing down and re-attaching the observer
-// for every visible row on every scroll tick. Memoizing by key gives Vue a
-// stable identity so it only fires on real mount/unmount.
-const rowRefSetters = new Map();
-function getRowRefSetter(key) {
-  let fn = rowRefSetters.get(key);
-  if (!fn) {
-    fn = (el) => setRowEl(el, key);
-    rowRefSetters.set(key, fn);
-  }
-  return fn;
-}
-
-function onRowResize(entries) {
-  const el = scroller.value;
-  let cacheChanged = false;
-  let aboveDelta = 0;
-  const cum = cumulativeHeights.value;
-  const rows = renderRows.value;
-  const keyToIndex = new Map();
-  for (let i = 0; i < rows.length; i++) keyToIndex.set(rows[i].key, i);
-  const scrollTop = el ? el.scrollTop : 0;
-  for (const entry of entries) {
-    const key = entry.target.dataset.rowKey;
-    if (!key) continue;
-    const newH = entry.target.offsetHeight;
-    if (newH <= 0) continue;
-    const oldH = rowHeights.get(key);
-    if (oldH === newH) continue;
-    rowHeights.set(key, newH);
-    cacheChanged = true;
-    const idx = keyToIndex.get(key);
-    if (idx != null && el) {
-      const usedH = oldH ?? estimatedRowHeight.value;
-      // If this row sat above the viewport (its bottom edge ≤ scrollTop),
-      // any height change shifts visible content; bump scrollTop to pin.
-      const oldRowTop = cum[idx];
-      if (oldRowTop + usedH <= scrollTop) {
-        aboveDelta += (newH - usedH);
-      }
-    }
-  }
-  if (!cacheChanged) return;
-  heightVersion.value++;
-  refreshEstimate();
-  if (!el) return;
-  if (stickToBottom.value) {
-    suppressScrollHandler++;
-    el.scrollTop = el.scrollHeight;
-  } else if (aboveDelta !== 0) {
-    suppressScrollHandler++;
-    el.scrollTop = scrollTop + aboveDelta;
-  }
-}
-
-const cumulativeHeights = computed(() => {
-  heightVersion.value; // dep
-  const rows = renderRows.value;
-  const cum = new Array(rows.length + 1);
-  cum[0] = 0;
-  const est = estimatedRowHeight.value;
-  for (let i = 0; i < rows.length; i++) {
-    cum[i + 1] = cum[i] + (rowHeights.get(rows[i].key) ?? est);
-  }
-  return cum;
-});
-
-const totalHeight = computed(() => {
-  const cum = cumulativeHeights.value;
-  return cum[cum.length - 1] || 0;
-});
-
-function lowerBound(arr, target) {
-  let lo = 0;
-  let hi = arr.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >>> 1;
-    if (arr[mid] < target) lo = mid + 1;
-    else hi = mid;
-  }
-  return lo;
-}
-
-const visibleRange = computed(() => {
-  const cum = cumulativeHeights.value;
-  const n = renderRows.value.length;
-  if (n === 0) return { start: 0, end: 0 };
-  const top = scrollTopRef.value;
-  const bot = top + clientHeightRef.value;
-  const overscan = VIRTUAL_OVERSCAN_PX;
-  let start = Math.max(0, lowerBound(cum, top - overscan) - 1);
-  let end = Math.min(n, lowerBound(cum, bot + overscan));
-  if (end <= start) end = Math.min(n, start + 1);
-  return { start, end };
-});
-
-const visibleRows = computed(() => {
-  const { start, end } = visibleRange.value;
-  return renderRows.value.slice(start, end);
-});
-
-const topSpacerHeight = computed(() => cumulativeHeights.value[visibleRange.value.start] || 0);
-const bottomSpacerHeight = computed(() => {
-  const cum = cumulativeHeights.value;
-  const n = renderRows.value.length;
-  return (cum[n] || 0) - (cum[visibleRange.value.end] || 0);
-});
-
-// Mirror of totalHeight, updated post-DOM-flush. The messages-array watcher
-// fires pre-flush; if it reads totalHeight.value directly it gets the NEW
-// value (computeds re-evaluate on access). Capturing the post-flush value in
-// a separate ref gives the prepend math a stable "previous" snapshot to diff
-// against the new total after await nextTick.
-const lastTotalHeight = ref(0);
-watchPostEffect(() => {
-  lastTotalHeight.value = totalHeight.value;
-});
-
 // What goes in column 2. For chat lines this is the nick (right-aligned);
 // for system events it's a tiny indicator glyph (-->, <--, --, !!).
 function prefixText(m) {
@@ -630,16 +457,6 @@ function onScroll() {
   const el = scroller.value;
   if (!el) return;
   const ch = el.clientHeight;
-  // Always sync the reactive position refs so visibleRange recomputes the
-  // window even when this scroll event is programmatic (prepend math, jump,
-  // ResizeObserver adjustment) and the user-scroll logic below is suppressed.
-  scrollTopRef.value = el.scrollTop;
-  clientHeightRef.value = ch;
-  if (suppressScrollHandler > 0) {
-    suppressScrollHandler--;
-    lastClientHeight = ch;
-    return;
-  }
   if (ch !== lastClientHeight) {
     lastClientHeight = ch;
     return;
@@ -709,22 +526,24 @@ watch(
     // bottom) on every single message.
     const appended = lastChanged && oldLastId != null
       && messages.value.some((m) => m.id === oldLastId);
-    // Pure prepend: pin visual position by bumping scrollTop by the change in
-    // total virtual height. With windowing, the prepended rows live in the top
-    // spacer (not rendered as DOM nodes), so heights are estimated from the
-    // running average — drift per prepend is bounded by (actual - estimate) ×
-    // prependedCount and is small in steady state. If the running average is
-    // way off, a later measurement-driven adjustment via onRowResize will
-    // correct it as those rows scroll into view.
+    // Pure prepend: anchor by element ID so re-flow from changing column
+    // widths or differing message heights doesn't drift the math. With the
+    // loading notice gone from the template, the OLD DOM and NEW DOM share
+    // the same set of [data-msg-id] elements with stable identity above
+    // and below the prepend boundary.
     if (firstChanged && !lastChanged && grew && oldFirstId != null) {
-      const oldTotal = lastTotalHeight.value;
+      const anchor = el.querySelector(`[data-msg-id="${oldFirstId}"]`);
+      const anchorOldTop = anchor ? anchor.offsetTop : null;
       const oldScrollTop = el.scrollTop;
+      const oldScrollHeight = el.scrollHeight;
       await nextTick();
-      const newTotal = totalHeight.value;
-      const delta = newTotal - oldTotal;
-      if (delta > 0) {
-        suppressScrollHandler++;
-        el.scrollTop = oldScrollTop + delta;
+      const anchorNew = anchorOldTop != null
+        ? el.querySelector(`[data-msg-id="${oldFirstId}"]`)
+        : null;
+      if (anchorNew) {
+        el.scrollTop = anchorNew.offsetTop - (anchorOldTop - oldScrollTop);
+      } else {
+        el.scrollTop = el.scrollHeight - oldScrollHeight + oldScrollTop;
       }
       ensureViewportFilled();
       return;
@@ -768,26 +587,8 @@ watch(
 // nextTick after setup resolves after the initial render, so scroller.value
 // is populated by the time scrollToBottom runs.
 watch(() => networks.activeKey, async () => {
-  // Drop the previous buffer's measured heights and per-row setters — the new
-  // buffer has different message ids, so cache entries can't be reused and
-  // would grow unbounded across sessions otherwise. Keep estimatedRowHeight;
-  // the running average is still useful as a default for the new buffer.
-  rowHeights.clear();
-  rowRefSetters.clear();
-  heightVersion.value++;
   stickToBottom.value = true;
   resetScrollState();
-  // Pre-position scrollTopRef at the estimated bottom of the new buffer so
-  // the first virtualized render after the switch shows the bottom slice
-  // straight away. Without this, scrollTopRef carries over from the previous
-  // buffer's scroll position and the user sees a wrong middle-slice for one
-  // frame before scrollToBottom() snaps the real scroller to the bottom.
-  const el = scroller.value;
-  if (el) {
-    const rowCount = renderRows.value.length;
-    const estTotal = rowCount * estimatedRowHeight.value;
-    scrollTopRef.value = Math.max(0, estTotal - el.clientHeight);
-  }
   await nextTick();
   scrollToBottom();
   ensureViewportFilled();
@@ -817,30 +618,15 @@ function onScrollerResize() {
   const el = scroller.value;
   if (!el) return;
   lastClientHeight = el.clientHeight;
-  clientHeightRef.value = el.clientHeight;
-  // Width changes (window resize, breakpoint cross) re-wrap content, but per-
-  // row ResizeObservers fire for every currently-rendered row on layout, so
-  // cumulativeHeights updates organically without needing to clear the cache.
-  // Off-window rows keep stale heights until they're re-rendered, which is
-  // acceptable — they're invisible.
   if (!stickToBottom.value) return;
-  suppressScrollHandler++;
   el.scrollTop = el.scrollHeight;
 }
 
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined' && scroller.value) {
     lastClientHeight = scroller.value.clientHeight;
-    clientHeightRef.value = scroller.value.clientHeight;
-    scrollTopRef.value = scroller.value.scrollTop;
     scrollerObserver = new ResizeObserver(onScrollerResize);
     scrollerObserver.observe(scroller.value);
-    rowObserver = new ResizeObserver(onRowResize);
-    // setRowEl can fire during the initial patch flush (before this hook), at
-    // which point rowObserver was still null and the els went unobserved.
-    // Pick them up now so post-mount size changes (font load, late style
-    // application) still fire onRowResize.
-    for (const el of rowEls.values()) rowObserver.observe(el);
   }
   nowTimer = setInterval(() => { now.value = Date.now(); }, 60_000);
 });
@@ -850,13 +636,7 @@ onBeforeUnmount(() => {
     scrollerObserver.disconnect();
     scrollerObserver = null;
   }
-  if (rowObserver) {
-    rowObserver.disconnect();
-    rowObserver = null;
-  }
   if (nowTimer) { clearInterval(nowTimer); nowTimer = null; }
-  rowEls.clear();
-  rowHeights.clear();
 });
 
 watch(() => props.pendingScrollId, async (id) => {
@@ -864,33 +644,9 @@ watch(() => props.pendingScrollId, async (id) => {
   await nextTick();
   const el = scroller.value;
   if (!el) return;
-  // With virtualization the target row may not be in the rendered window. We
-  // find its index in renderRows, jump scrollTop to the row's approximate
-  // virtual offset (which brings it into the window on the next render), then
-  // hand off to scrollIntoView for the smooth-scroll fine adjustment and the
-  // existing pulse animation. If the target isn't in renderRows at all the
-  // buffer slice doesn't include it — that's #176's job, no-op here.
-  const rows = renderRows.value;
-  let idx = -1;
-  for (let i = 0; i < rows.length; i++) {
-    const m = rows[i].m;
-    if (m && m.id != null && m.id == id) {
-      idx = i;
-      break;
-    }
-  }
-  if (idx === -1) return;
-  stickToBottom.value = false;
-  setStuckToBottom(false);
-  const cum = cumulativeHeights.value;
-  const rowTop = cum[idx];
-  const rowH = (cum[idx + 1] || rowTop) - rowTop;
-  const approxTarget = Math.max(0, rowTop - (el.clientHeight - rowH) / 2);
-  suppressScrollHandler++;
-  el.scrollTop = approxTarget;
-  await nextTick();
   const target = el.querySelector(`[data-msg-id="${id}"]`);
   if (!target) return;
+  stickToBottom.value = false;
   target.scrollIntoView({ block: 'center', behavior: 'smooth' });
   target.classList.add('scroll-target');
   setTimeout(() => target.classList.remove('scroll-target'), 1500);
@@ -927,15 +683,6 @@ watch(() => props.pendingScrollId, async (id) => {
   column-gap: 0;
   row-gap: 0;
   line-height: 1.55;
-}
-
-/* Virtualization spacers — zero-content grid rows whose height is set
-   inline from topSpacerHeight / bottomSpacerHeight. They span all columns
-   so the subgrid keeps inferring column widths from .line children only,
-   and they contribute nothing to grid-template-columns sizing. */
-.vrow-spacer {
-  grid-column: 1 / -1;
-  min-height: 0;
 }
 
 .line {
