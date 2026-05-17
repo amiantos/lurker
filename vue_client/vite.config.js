@@ -18,17 +18,23 @@ export default defineConfig(({ mode }) => {
   // locally-trusted cert so the dev hostname (mapped to 127.0.0.1 in /etc/hosts)
   // works without browser warnings.
   const host = env.VITE_DEV_HOST || 'irc.local.bradroot.me';
+  // Opt-in LAN mode for testing on a phone: `VITE_LAN_HOST=Xerxes.local npm
+  // run dev` binds to 0.0.0.0 over plain HTTP, skipping mkcert so the device
+  // doesn't need to trust a local CA. Password login still works; WebAuthn
+  // and Service Worker / push features do not (they require a secure context).
+  const lanHost = env.VITE_LAN_HOST;
 
   return {
-    plugins: [vue(), mkcert()],
+    plugins: lanHost ? [vue()] : [vue(), mkcert()],
     // Build-time constant so the About panel can show the app version without
     // an API round-trip.
     define: {
       __APP_VERSION__: JSON.stringify(pkg.version),
     },
     server: {
-      host,
+      host: lanHost ? true : host,
       port: 5173,
+      allowedHosts: lanHost ? true : undefined,
       // Allow imports from the repo root (one level up from vue_client/),
       // so client code can import the shared settings registry directly
       // instead of maintaining a mirrored copy.
