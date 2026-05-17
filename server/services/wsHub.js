@@ -404,11 +404,17 @@ export function attachWsHub(httpServer, sessionSecret) {
     // the live session) wouldn't otherwise reappear in the client's buffer
     // list until a page refresh. Re-emit a fresh snapshot to every active
     // socket so the buffer list always reflects the server's source of truth.
+    //
+    // Pass freshNetworkId so the just-connected network ships its backlog
+    // wholesale — ws.sinceId has been advanced by live events on OTHER
+    // networks, so a cursor read against this network's persisted history
+    // (all id <= sinceId) would return zero events and leave the user
+    // staring at an empty buffer until a page refresh.
     if (event.type === 'state' && event.state === 'connected') {
       const set = socketsByUser.get(event.userId);
       if (set) {
         for (const ws of set) {
-          if (ws.readyState === ws.OPEN) sendSnapshot(ws, event.userId);
+          if (ws.readyState === ws.OPEN) sendSnapshot(ws, event.userId, event.networkId);
         }
       }
     }
@@ -524,7 +530,7 @@ export function attachWsHub(httpServer, sessionSecret) {
     ws.on('error', () => removeSocket(user.id, ws));
   }
 
-  function sendSnapshot(ws, userId) {
+  function sendSnapshot(ws, userId, freshNetworkId = null) {
     const networks = ircManager.snapshotForUser(userId);
     send(ws, { kind: 'snapshot', networks });
     // Drafts ship once per snapshot, separate from per-buffer backlog frames —
@@ -541,6 +547,12 @@ export function attachWsHub(httpServer, sessionSecret) {
       // a stale closed flag (shouldn't normally exist since joining clears it,
       // but defensive against autorejoin/state races).
       for (const ch of conn.channels.values()) targets.add(ch.name);
+      // Fresh-network branch: this connection just came online, so the client
+      // has never received a backlog frame for any of its buffers this
+      // session. ws.sinceId has been advanced by live events on other
+      // networks, so a cursor read would return nothing — ship the full
+      // recent slice instead.
+      const isFreshNetwork = freshNetworkId != null && conn.network.id === freshNetworkId;
       for (const target of targets) {
         if (target.startsWith(':server:')) {
           // Server pseudo-buffer is uncloseable — never filter.
@@ -555,7 +567,7 @@ export function attachWsHub(httpServer, sessionSecret) {
         // dedupe still makes a later full re-fetch safe.
         const sinceId = ws.sinceId || 0;
         const events = (
-          sinceId > 0
+          sinceId > 0 && !isFreshNetwork
             ? listMessages(conn.network.id, target, { afterId: sinceId, limit: 500 })
             : listMessages(conn.network.id, target, { limit: 200 })
         ).map((e) => decorateMessage(userId, e));

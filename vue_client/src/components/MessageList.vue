@@ -973,6 +973,11 @@ watch(() => props.pendingScrollId, async (id) => {
 .message-list.compact .line.cont-author {
   margin-top: 0;
 }
+/* Client-side dividers (unread/away/back/date) also mark a cluster boundary,
+   so give them the same top gap as .line in compact mode. */
+.message-list.compact .notice {
+  margin-top: 10px;
+}
 .message-list.compact .line > .head {
   grid-area: head;
   display: flex;

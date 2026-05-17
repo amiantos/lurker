@@ -113,6 +113,9 @@ function applyEvent(event) {
       if (!buffers.pushMessage(event)) break;
       buffers.setTopic(event.networkId, event.target, event.text);
       break;
+    case 'channel-topic':
+      buffers.setTopic(event.networkId, event.target, event.topic);
+      break;
     case 'mode':
       buffers.pushMessage(event);
       break;

@@ -43,7 +43,7 @@
             @click="select(net.id, buf.target)"
             @contextmenu.prevent="onBufferContextMenu($event, buf)"
           >
-            <span class="label" :style="labelStyle(buf)">{{ labelFor(buf) }}</span>
+            <span class="label">{{ labelFor(buf) }}</span>
             <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
             <span
               v-if="hasDraft(buf)"
@@ -88,7 +88,7 @@
           @click="select(net.id, buf.target)"
           @contextmenu.prevent="onBufferContextMenu($event, buf)"
         >
-          <span class="label" :style="labelStyle(buf)">{{ labelFor(buf) }}</span>
+          <span class="label">{{ labelFor(buf) }}</span>
           <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
           <span
             v-if="hasDraft(buf)"
@@ -129,7 +129,6 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useSettingsStore } from '../stores/settings.js';
-import { useNickColors } from '../composables/useNickColors.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
 import { isPeerOffline as derivePeerOffline, isPeerAway as derivePeerAway } from '../utils/peerPresence.js';
 
@@ -138,7 +137,6 @@ const buffers = useBuffersStore();
 const drafts = useDraftStore();
 const pins = usePinsStore();
 const settings = useSettingsStore();
-const nicks = useNickColors();
 const bufferActions = useBufferActions();
 
 // Buffer-list display settings — feed both the row CSS (bold gate) and the
@@ -195,14 +193,6 @@ function unreadLabel(count) {
 
 function hasDraft(buf) {
   return drafts.hasDraft(buf.networkId, buf.target);
-}
-
-function labelStyle(buf) {
-  if (!isDmBuffer(buf)) return null;
-  const selfNick = networks.states[buf.networkId]?.nick;
-  if (selfNick && buf.target.toLowerCase() === selfNick.toLowerCase()) return null;
-  const c = nicks.color(buf.target);
-  return c ? { color: c } : null;
 }
 
 function labelFor(buf) {
@@ -436,12 +426,11 @@ function dmTitle(buf) {
    buffer. Apply opacity to the whole row so badges, labels, and tree guides
    all dim together; unread/highlight colors still come through. */
 .channels li.not-joined { opacity: 0.5; }
-/* DM peer state. Away nicks lose their per-user color and render in the muted
-   gray used by away members in the channel nicklist; offline nicks also pick
-   up the asterisk marker (`.peer-mark`). Override the inline label color set
-   by labelStyle() since that's specified as a style attribute. */
+/* DM peer state. Away nicks render in the muted gray used by away members in
+   the channel nicklist; offline nicks also pick up the asterisk marker
+   (`.peer-mark`). */
 .channels li.peer-away .label,
-.channels li.peer-offline .label { color: var(--fg-muted) !important; }
+.channels li.peer-offline .label { color: var(--fg-muted); }
 .peer-mark {
   color: var(--fg-muted);
   font-weight: 600;

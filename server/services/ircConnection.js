@@ -709,7 +709,15 @@ export class IrcConnection {
     c.on('topic', (event) => {
       const ch = this.upsertChannel(event.channel);
       ch.topic = event.topic;
-      this.publish({ type: 'topic', target: event.channel, nick: event.nick, text: event.topic });
+      if (event.nick) {
+        // Live TOPIC change — persist + render in the message list.
+        this.publish({ type: 'topic', target: event.channel, nick: event.nick, text: event.topic });
+      } else {
+        // RPL_TOPIC on join — sync the topic bar without printing a row, so
+        // rejoining an already-open buffer doesn't repeat the same topic line
+        // every time.
+        this.publishEphemeral({ type: 'channel-topic', target: event.channel, topic: event.topic });
+      }
     });
 
     c.on('mode', (event) => {
