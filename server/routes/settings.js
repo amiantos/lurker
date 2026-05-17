@@ -27,11 +27,6 @@ router.patch('/', (req, res) => {
   res.json({ values: result.values });
 });
 
-router.delete('/all', (req, res) => {
-  const result = settingsService.resetAll(req.user.id);
-  res.json({ values: result.values });
-});
-
 router.delete('/:key', (req, res) => {
   const result = settingsService.reset(req.user.id, req.params.key);
   if (!result.ok) return res.status(400).json({ error: result.error });

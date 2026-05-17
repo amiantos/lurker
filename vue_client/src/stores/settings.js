@@ -83,15 +83,7 @@ export const useSettingsStore = defineStore('settings', {
       const { values } = await api(`/api/settings/${encodeURIComponent(key)}`, { method: 'DELETE' });
       this.values = { ...(values || {}) };
     },
-    async resetAll() {
-      const { values } = await api('/api/settings/all', { method: 'DELETE' });
-      this.values = { ...(values || {}) };
-    },
-    applyRemote({ changes, resetAll }) {
-      if (resetAll) {
-        this.values = {};
-        return;
-      }
+    applyRemote({ changes }) {
       if (!changes) return;
       const next = { ...this.values };
       for (const [key, value] of Object.entries(changes)) {

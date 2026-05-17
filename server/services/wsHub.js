@@ -420,12 +420,11 @@ export function attachWsHub(httpServer, sessionSecret) {
     }
   });
 
-  settingsService.on('event', ({ userId, changes, resetAll }) => {
-    fanOut(userId, { kind: 'settings', changes: changes || {}, resetAll: !!resetAll });
+  settingsService.on('event', ({ userId, changes }) => {
+    fanOut(userId, { kind: 'settings', changes: changes || {} });
     // If the user toggled / shortened auto-away while disconnected, re-evaluate
     // the pending timer with the new value.
-    const touchedAway = resetAll
-      || (changes && ('away.auto.enabled' in changes || 'away.auto.delay_seconds' in changes));
+    const touchedAway = changes && ('away.auto.enabled' in changes || 'away.auto.delay_seconds' in changes);
     if (touchedAway && (socketsByUser.get(userId)?.size || 0) === 0) {
       clearAutoAwayTimer(userId);
       scheduleAutoAway(userId);

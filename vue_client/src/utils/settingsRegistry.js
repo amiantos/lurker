@@ -5,9 +5,15 @@
 // data + shared helpers and adds getDefault(), the lookup pattern the
 // Settings UI uses to seed inputs before the user-saved values arrive.
 
-import { REGISTRY, getOption, defaultsAsObject } from '../../../shared/settingsRegistry.js';
+import {
+  REGISTRY,
+  getOption,
+  defaultsAsObject,
+  CATEGORIES,
+  GROUPS,
+} from '../../../shared/settingsRegistry.js';
 
-export { REGISTRY, getOption, defaultsAsObject };
+export { REGISTRY, getOption, defaultsAsObject, CATEGORIES, GROUPS };
 
 export function getDefault(key) {
   const opt = getOption(key);

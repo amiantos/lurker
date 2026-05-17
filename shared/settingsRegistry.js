@@ -9,12 +9,15 @@
 //
 // `category` + `group` drive the Settings UI sidebar and subheadings. The
 // server ignores both fields; they exist purely so the client can build a
-// table-of-contents layout without parsing key prefixes.
+// table-of-contents layout without parsing key prefixes. `label` is the
+// human-readable headline shown in the UI; the dotted key shows as a subtitle
+// for power-user reference. `description` remains the longer help text.
 
 export const REGISTRY = Object.freeze([
   // ─── Fonts ─────────────────────────────────────────────────────────────
   {
     key: 'look.font.family',
+    label: 'Font family',
     category: 'appearance',
     group: 'fonts',
     type: 'string',
@@ -25,6 +28,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.font.size',
+    label: 'Font size',
     category: 'appearance',
     group: 'fonts',
     type: 'int',
@@ -35,6 +39,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.font.weight',
+    label: 'Font weight',
     category: 'appearance',
     group: 'fonts',
     type: 'int',
@@ -49,6 +54,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.font.smoothing_macos',
+    label: 'Terminal-style font smoothing (macOS)',
     category: 'appearance',
     group: 'fonts',
     type: 'bool',
@@ -62,6 +68,7 @@ export const REGISTRY = Object.freeze([
   // ─── Core palette (Monokai Pro / Brad's iTerm theme) ───────────────────
   {
     key: 'look.color.bg',
+    label: 'Background',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -70,6 +77,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.bg_soft',
+    label: 'Soft background (hover / active)',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -78,6 +86,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.fg',
+    label: 'Foreground (text)',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -86,6 +95,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.fg_muted',
+    label: 'Muted text',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -94,6 +104,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.accent',
+    label: 'Accent',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -102,6 +113,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.link',
+    label: 'Link color',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -112,6 +124,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.good',
+    label: 'Good / connected',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -120,6 +133,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.warn',
+    label: 'Warning',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -128,6 +142,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.bad',
+    label: 'Error / disconnected',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -136,6 +151,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.border',
+    label: 'Borders',
     category: 'appearance',
     group: 'palette',
     type: 'color',
@@ -146,6 +162,7 @@ export const REGISTRY = Object.freeze([
   // ─── Alternating message rows ─────────────────────────────────────────
   {
     key: 'look.color.message.alt_bg',
+    label: 'Alternating row background',
     category: 'appearance',
     group: 'messages',
     type: 'color',
@@ -156,6 +173,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.message.alt_fg',
+    label: 'Alternating row text',
     category: 'appearance',
     group: 'messages',
     type: 'color',
@@ -169,6 +187,7 @@ export const REGISTRY = Object.freeze([
   // ─── Per-line display collapsing (nick / timestamp dedupe) ────────────
   {
     key: 'look.message.layout',
+    label: 'Message layout',
     category: 'appearance',
     group: 'messages',
     type: 'enum',
@@ -186,6 +205,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.message.collapse_authors',
+    label: 'Collapse repeated authors',
     category: 'appearance',
     group: 'messages',
     type: 'bool',
@@ -199,6 +219,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.message.collapse_authors_window',
+    label: 'Author collapse window (minutes)',
     category: 'appearance',
     group: 'messages',
     type: 'int',
@@ -213,6 +234,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.message.collapse_timestamps',
+    label: 'Collapse repeated timestamps',
     category: 'appearance',
     group: 'messages',
     type: 'bool',
@@ -226,6 +248,7 @@ export const REGISTRY = Object.freeze([
   // ─── Member-list mode prefixes ────────────────────────────────────────
   {
     key: 'look.color.member.owner',
+    label: 'Owner prefix (~)',
     category: 'appearance',
     group: 'members',
     type: 'color',
@@ -234,6 +257,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.member.admin',
+    label: 'Admin prefix (&)',
     category: 'appearance',
     group: 'members',
     type: 'color',
@@ -242,6 +266,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.member.op',
+    label: 'Op prefix (@)',
     category: 'appearance',
     group: 'members',
     type: 'color',
@@ -250,6 +275,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.member.halfop',
+    label: 'Half-op prefix (%)',
     category: 'appearance',
     group: 'members',
     type: 'color',
@@ -258,6 +284,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.member.voice',
+    label: 'Voiced prefix (+)',
     category: 'appearance',
     group: 'members',
     type: 'color',
@@ -272,6 +299,7 @@ export const REGISTRY = Object.freeze([
   // two-color buffer states; flip unread_display to dial down the numbers.
   {
     key: 'look.color.buffer.unread',
+    label: 'Unread row color',
     category: 'appearance',
     group: 'buffer-list',
     type: 'color',
@@ -284,6 +312,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.color.buffer.highlight',
+    label: 'Highlighted row color',
     category: 'appearance',
     group: 'buffer-list',
     type: 'color',
@@ -294,6 +323,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.buffer_list.unread_bold',
+    label: 'Bold unread rows',
     category: 'appearance',
     group: 'buffer-list',
     type: 'bool',
@@ -305,6 +335,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.buffer_list.unread_display',
+    label: 'Unread indicator display',
     category: 'appearance',
     group: 'buffer-list',
     type: 'enum',
@@ -321,6 +352,7 @@ export const REGISTRY = Object.freeze([
   // ─── Nick coloring ────────────────────────────────────────────────────
   {
     key: 'look.nick.colors',
+    label: 'Nick color palette',
     category: 'appearance',
     group: 'nicks',
     type: 'string-list',
@@ -336,6 +368,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.nick.self_color',
+    label: 'Your own nick color',
     category: 'appearance',
     group: 'nicks',
     type: 'color',
@@ -346,6 +379,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.nick.color_stop_chars',
+    label: 'Trailing characters to ignore',
     category: 'appearance',
     group: 'nicks',
     type: 'string',
@@ -356,6 +390,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.nick.color_hash',
+    label: 'Nick hash algorithm',
     category: 'appearance',
     group: 'nicks',
     type: 'enum',
@@ -367,6 +402,7 @@ export const REGISTRY = Object.freeze([
   // ─── Misc look ────────────────────────────────────────────────────────
   {
     key: 'look.action.italic',
+    label: 'Italicize /me actions',
     category: 'appearance',
     group: 'misc',
     type: 'bool',
@@ -375,6 +411,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.buffer.time_format',
+    label: 'Message timestamp format',
     category: 'appearance',
     group: 'misc',
     type: 'string',
@@ -385,6 +422,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.buffer.time_format_compact',
+    label: 'Compact-layout timestamp format',
     category: 'appearance',
     group: 'misc',
     type: 'string',
@@ -398,6 +436,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.bar.time_format',
+    label: 'Status-bar clock format',
     category: 'appearance',
     group: 'misc',
     type: 'string',
@@ -408,6 +447,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.bar.lag_min_show_ms',
+    label: 'Lag indicator threshold (ms)',
     category: 'appearance',
     group: 'misc',
     type: 'int',
@@ -421,6 +461,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.bar.lag_alarm_ms',
+    label: 'Lag alarm threshold (ms)',
     category: 'appearance',
     group: 'misc',
     type: 'int',
@@ -434,6 +475,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.bar.lag_always_show',
+    label: 'Always show lag value',
     category: 'appearance',
     group: 'misc',
     type: 'bool',
@@ -446,6 +488,7 @@ export const REGISTRY = Object.freeze([
   // ─── Layout (collapsible side panels on desktop) ───────────────────────
   {
     key: 'look.layout.show_channel_list',
+    label: 'Show channel list (desktop)',
     category: 'appearance',
     group: 'layout',
     type: 'bool',
@@ -457,6 +500,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'look.layout.show_member_list',
+    label: 'Show member list (desktop)',
     category: 'appearance',
     group: 'layout',
     type: 'bool',
@@ -470,6 +514,7 @@ export const REGISTRY = Object.freeze([
   // ─── Join/part consolidation (IRCCloud-style summary line) ────────────
   {
     key: 'chat.consolidate_joins',
+    label: 'Consolidate join/part/quit/nick events',
     category: 'chat',
     group: 'consolidate',
     type: 'bool',
@@ -482,6 +527,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'chat.consolidate_max_names',
+    label: 'Max nicks per summary category',
     category: 'chat',
     group: 'consolidate',
     type: 'int',
@@ -502,6 +548,7 @@ export const REGISTRY = Object.freeze([
   // this on to send splits silently like a traditional client.
   {
     key: 'chat.allow_split_messages',
+    label: 'Allow long messages to split',
     category: 'chat',
     group: 'composing',
     type: 'bool',
@@ -518,6 +565,7 @@ export const REGISTRY = Object.freeze([
   // ─── Smart filter (join/part/quit/nick noise) ─────────────────────────
   {
     key: 'chat.smart_filter',
+    label: 'Smart filter (hide noise from quiet users)',
     category: 'chat',
     group: 'smart-filter',
     type: 'bool',
@@ -530,6 +578,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'chat.smart_filter_delay',
+    label: '"Recently spoke" window (minutes)',
     category: 'chat',
     group: 'smart-filter',
     type: 'int',
@@ -543,6 +592,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'chat.smart_filter_join',
+    label: 'Filter joins',
     category: 'chat',
     group: 'smart-filter',
     type: 'bool',
@@ -551,6 +601,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'chat.smart_filter_quit',
+    label: 'Filter parts and quits',
     category: 'chat',
     group: 'smart-filter',
     type: 'bool',
@@ -559,6 +610,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'chat.smart_filter_nick',
+    label: 'Filter nick changes',
     category: 'chat',
     group: 'smart-filter',
     type: 'bool',
@@ -567,6 +619,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'chat.smart_filter_join_unmask',
+    label: 'Reveal join when user speaks (minutes)',
     category: 'chat',
     group: 'smart-filter',
     type: 'int',
@@ -581,6 +634,7 @@ export const REGISTRY = Object.freeze([
   // ─── Auto-away (sets you AWAY when no client is connected) ────────────
   {
     key: 'away.auto.enabled',
+    label: 'Auto-set away when no client connected',
     category: 'away',
     group: 'auto-away',
     type: 'bool',
@@ -592,6 +646,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'away.auto.delay_seconds',
+    label: 'Auto-away delay (seconds)',
     category: 'away',
     group: 'auto-away',
     type: 'int',
@@ -604,6 +659,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'away.auto.message',
+    label: 'Auto-away message',
     category: 'away',
     group: 'auto-away',
     type: 'string',
@@ -617,6 +673,7 @@ export const REGISTRY = Object.freeze([
   // ─── Image uploads ────────────────────────────────────────────────────
   {
     key: 'uploads.provider',
+    label: 'Upload provider',
     category: 'uploads',
     group: 'provider',
     type: 'enum',
@@ -629,6 +686,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.image.max_dimension',
+    label: 'Max image dimension (longest edge)',
     category: 'uploads',
     group: 'pipeline',
     type: 'int',
@@ -641,6 +699,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.image.quality',
+    label: 'JPEG re-encode quality',
     category: 'uploads',
     group: 'pipeline',
     type: 'int',
@@ -651,6 +710,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.image.max_upload_mb',
+    label: 'Max upload size (MB)',
     category: 'uploads',
     group: 'pipeline',
     type: 'int',
@@ -663,6 +723,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.paste.enabled',
+    label: 'Upload pasted images',
     category: 'uploads',
     group: 'pipeline',
     type: 'bool',
@@ -673,6 +734,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.catbox.userhash',
+    label: 'Catbox userhash',
     category: 'uploads',
     group: 'catbox',
     type: 'secret',
@@ -683,6 +745,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.hoarder.url',
+    label: 'Hoarder URL',
     category: 'uploads',
     group: 'hoarder',
     type: 'string',
@@ -693,6 +756,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'uploads.hoarder.api_key',
+    label: 'Hoarder API key',
     category: 'uploads',
     group: 'hoarder',
     type: 'secret',
@@ -711,7 +775,8 @@ export const REGISTRY = Object.freeze([
   // only matters when the master is on.
   {
     key: 'notifications.highlight.enabled',
-    category: 'highlights',
+    label: 'Highlight notifications',
+    category: 'notifications',
     group: 'alerts',
     type: 'bool',
     default: true,
@@ -722,7 +787,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.highlight.sound.enabled',
-    category: 'highlights',
+    label: 'Highlight sound',
+    category: 'notifications',
     group: 'alerts',
     type: 'bool',
     default: false,
@@ -732,7 +798,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.highlight.sound.choice',
-    category: 'highlights',
+    label: 'Highlight sound choice',
+    category: 'notifications',
     group: 'alerts',
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
@@ -743,7 +810,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.highlight.sound.volume',
-    category: 'highlights',
+    label: 'Highlight sound volume',
+    category: 'notifications',
     group: 'alerts',
     type: 'int',
     min: 0,
@@ -754,7 +822,8 @@ export const REGISTRY = Object.freeze([
 
   {
     key: 'notifications.dm.enabled',
-    category: 'highlights',
+    label: 'DM notifications',
+    category: 'notifications',
     group: 'alerts',
     type: 'bool',
     default: true,
@@ -764,7 +833,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.dm.sound.enabled',
-    category: 'highlights',
+    label: 'DM sound',
+    category: 'notifications',
     group: 'alerts',
     type: 'bool',
     default: false,
@@ -774,7 +844,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.dm.sound.choice',
-    category: 'highlights',
+    label: 'DM sound choice',
+    category: 'notifications',
     group: 'alerts',
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
@@ -785,7 +856,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.dm.sound.volume',
-    category: 'highlights',
+    label: 'DM sound volume',
+    category: 'notifications',
     group: 'alerts',
     type: 'int',
     min: 0,
@@ -796,7 +868,8 @@ export const REGISTRY = Object.freeze([
 
   {
     key: 'notifications.always_notify.enabled',
-    category: 'highlights',
+    label: 'Always-notify channel notifications',
+    category: 'notifications',
     group: 'alerts',
     type: 'bool',
     default: true,
@@ -807,7 +880,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.always_notify.sound.enabled',
-    category: 'highlights',
+    label: 'Always-notify sound',
+    category: 'notifications',
     group: 'alerts',
     type: 'bool',
     default: true,
@@ -817,7 +891,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.always_notify.sound.choice',
-    category: 'highlights',
+    label: 'Always-notify sound choice',
+    category: 'notifications',
     group: 'alerts',
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
@@ -828,7 +903,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.always_notify.sound.volume',
-    category: 'highlights',
+    label: 'Always-notify sound volume',
+    category: 'notifications',
     group: 'alerts',
     type: 'int',
     min: 0,
@@ -842,7 +918,8 @@ export const REGISTRY = Object.freeze([
   // visible client, which short-circuits push anyway). All off by default.
   {
     key: 'notifications.push.mute_when_away',
-    category: 'highlights',
+    label: 'Mute push when manually away',
+    category: 'notifications',
     group: 'push_filters',
     type: 'bool',
     default: false,
@@ -853,7 +930,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.push.quiet_hours.enabled',
-    category: 'highlights',
+    label: 'Push quiet hours',
+    category: 'notifications',
     group: 'push_filters',
     type: 'bool',
     default: false,
@@ -864,7 +942,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.push.quiet_hours.start',
-    category: 'highlights',
+    label: 'Quiet hours start',
+    category: 'notifications',
     group: 'push_filters',
     type: 'string',
     default: '22:00',
@@ -875,7 +954,8 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'notifications.push.quiet_hours.end',
-    category: 'highlights',
+    label: 'Quiet hours end',
+    category: 'notifications',
     group: 'push_filters',
     type: 'string',
     default: '07:00',
@@ -891,6 +971,7 @@ export const REGISTRY = Object.freeze([
   // common ask is autocapitalize, which mangles nicks and commands).
   {
     key: 'input.spellcheck',
+    label: 'Spellcheck input',
     category: 'input',
     group: 'system_features',
     type: 'bool',
@@ -902,6 +983,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'input.autocorrect',
+    label: 'Autocorrect input',
     category: 'input',
     group: 'system_features',
     type: 'bool',
@@ -915,6 +997,7 @@ export const REGISTRY = Object.freeze([
   },
   {
     key: 'input.autocorrect_force_mobile',
+    label: 'Force autocorrect on mobile',
     category: 'input',
     group: 'system_features',
     type: 'bool',
@@ -930,6 +1013,7 @@ export const REGISTRY = Object.freeze([
   // ─── Input bar (autocomplete UI) ──────────────────────────────────────
   {
     key: 'input.suggestion_strip_on_desktop',
+    label: 'Use suggestion strip on desktop',
     category: 'input',
     group: 'autocomplete',
     type: 'bool',
@@ -945,6 +1029,7 @@ export const REGISTRY = Object.freeze([
   // ─── System / locale ──────────────────────────────────────────────────
   {
     key: 'system.timezone',
+    label: 'Timezone',
     category: 'system',
     group: 'locale',
     type: 'string',
@@ -969,3 +1054,57 @@ export function defaultsAsObject() {
   for (const opt of REGISTRY) out[opt.key] = opt.default;
   return out;
 }
+
+// ─── Sidebar taxonomy ─────────────────────────────────────────────────────
+//
+// Ordered list of categories shown in the Settings sidebar. `kind: 'registry'`
+// categories are auto-rendered by RegistryPane.vue from REGISTRY entries with
+// the matching `category` field. `kind: 'bespoke'` categories have a custom
+// pane component (NotificationsPane.vue, HighlightsPane.vue, etc.) that
+// hand-renders its controls, optionally also reading registry settings.
+//
+// The `system` registry category is intentionally absent — system.timezone is
+// auto-synced from the browser and not user-facing.
+// Order reflects what the user is controlling, in flow order:
+// visual → send-side cluster → receive-side cluster → presence → admin →
+// personal → meta. Sidebar renders top-to-bottom; the first category is also
+// the redirect target when navigating to bare /settings.
+export const CATEGORIES = Object.freeze([
+  { id: 'appearance',    label: 'Appearance',    kind: 'registry' },
+  { id: 'chat',          label: 'Chat',          kind: 'registry' },
+  { id: 'input',         label: 'Input bar',     kind: 'registry' },
+  { id: 'uploads',       label: 'Uploads',       kind: 'registry' },
+  { id: 'notifications', label: 'Notifications', kind: 'bespoke'  },
+  { id: 'highlights',    label: 'Highlights',    kind: 'bespoke'  },
+  { id: 'ignores',       label: 'Ignores',       kind: 'bespoke'  },
+  { id: 'away',          label: 'Away',          kind: 'registry' },
+  { id: 'users',         label: 'Users',         kind: 'bespoke', adminOnly: true },
+  { id: 'account',       label: 'Account',       kind: 'bespoke'  },
+  { id: 'about',         label: 'About',         kind: 'bespoke'  },
+]);
+
+// Sub-group labels used inside a category pane (one heading per `group` field
+// in REGISTRY). Groups without an entry here fall back to the raw group id.
+export const GROUPS = Object.freeze({
+  fonts: 'Fonts',
+  palette: 'Colors',
+  messages: 'Message rows',
+  members: 'Member prefixes',
+  'buffer-list': 'Buffer list',
+  nicks: 'Nick coloring',
+  layout: 'Layout',
+  misc: 'Misc',
+  consolidate: 'Join/part consolidation',
+  composing: 'Composing',
+  'smart-filter': 'Smart filter',
+  'auto-away': 'Auto-away',
+  provider: 'Provider',
+  pipeline: 'Image pipeline',
+  catbox: 'catbox.moe',
+  hoarder: 'Hoarder',
+  alerts: 'Alerts',
+  push_filters: 'Push filters',
+  system_features: 'System text features',
+  autocomplete: 'Autocomplete',
+  locale: 'Locale',
+});

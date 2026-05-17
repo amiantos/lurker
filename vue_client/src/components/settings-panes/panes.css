@@ -1,0 +1,108 @@
+/*
+ * Copyright (c) 2026 Brad Root
+ * SPDX-License-Identifier: Elastic-2.0
+ *
+ * Shared chrome for every Settings pane: section header, sub-headings, helper
+ * text, link-style buttons, device-list rows, errors. Imported unscoped from
+ * each pane so the rules apply across all of them with no duplication.
+ */
+
+.settings-pane {
+  padding: 16px;
+}
+.settings-pane > * { max-width: 70ch; }
+.settings-pane h2 {
+  margin: 0 0 6px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 1.05em;
+  font-weight: 600;
+}
+.settings-pane .section-desc {
+  color: var(--fg-muted);
+  margin: 0 0 12px;
+}
+.settings-pane .subhead {
+  margin: 18px 0 6px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+.settings-pane > .subhead:first-of-type { margin-top: 4px; }
+
+.settings-pane .link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 2px 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.settings-pane .link:hover:not(:disabled) { color: var(--fg); }
+.settings-pane .link:disabled { opacity: 0.4; cursor: not-allowed; }
+.settings-pane .link.danger { color: var(--bad); }
+
+.settings-pane .error.inline {
+  color: var(--bad);
+  padding: 0 0 6px;
+  margin: 0;
+}
+.settings-pane .muted {
+  color: var(--fg-muted);
+  padding: 16px;
+  font-style: italic;
+}
+.settings-pane .muted.small {
+  font-size: 0.95em;
+  padding: 4px 0;
+  font-style: normal;
+}
+
+/* Compact single-line row used by device lists, passkeys, users, invites. */
+.settings-pane .device-list { list-style: none; margin: 0; padding: 0; }
+.settings-pane .device {
+  display: grid;
+  grid-template-columns: 1fr max-content max-content;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.settings-pane .device:first-child { border-top: none; }
+.settings-pane .device:hover { background: var(--bg-soft); }
+.settings-pane .device .ua { color: var(--fg); }
+.settings-pane .device .last-seen {
+  color: var(--fg-muted);
+  font-size: 0.95em;
+}
+
+.settings-pane .hl-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 28px 0 22px;
+  width: 100%;
+}
+
+/* Row layout for label + control(s) — used in notification toggles, quiet
+   hours, etc. */
+.settings-pane .hl-notif {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 0 0;
+}
+.settings-pane .hl-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-pane .hl-row select { min-width: 160px; }
+.settings-pane .hl-row input[type="range"] { width: 220px; }
+.settings-pane .hl-row--dim { color: var(--fg-muted); }
+.settings-pane .hl-label {
+  color: var(--fg-muted);
+  min-width: 7em;
+}

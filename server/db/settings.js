@@ -31,7 +31,3 @@ export function setUserSetting(userId, key, value) {
 export function deleteUserSetting(userId, key) {
   db.prepare('DELETE FROM user_settings WHERE user_id = ? AND key = ?').run(userId, key);
 }
-
-export function deleteAllUserSettings(userId) {
-  db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
-}

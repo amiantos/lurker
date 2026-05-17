@@ -6,7 +6,6 @@ import { validate, getOption } from './settingsRegistry.js';
 import {
   setUserSetting,
   deleteUserSetting,
-  deleteAllUserSettings,
   getUserSettings,
 } from '../db/settings.js';
 
@@ -52,14 +51,6 @@ class SettingsService extends EventEmitter {
     deleteUserSetting(userId, key);
     this.emit('event', { userId, changes: { [key]: opt.default } });
     return { ok: true, values: getUserSettings(userId) };
-  }
-
-  resetAll(userId) {
-    deleteAllUserSettings(userId);
-    // Best-effort broadcast: tell clients to reload defaults for any key that was set.
-    // Simplest signal: emit a special "reset-all" so clients can clear their overrides map.
-    this.emit('event', { userId, resetAll: true });
-    return { ok: true, values: {} };
   }
 }
 
