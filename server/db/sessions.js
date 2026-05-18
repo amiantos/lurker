@@ -30,5 +30,10 @@ export function deleteSession(token) {
 }
 
 export function purgeExpiredSessions() {
-  db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
+  // expires_at is written as ISO 8601 ('YYYY-MM-DDTHH:MM:SS.sssZ') while
+  // datetime('now') returns SQLite-local format ('YYYY-MM-DD HH:MM:SS').
+  // Lexical compare of the two formats puts ISO greater for same-day rows
+  // (the literal 'T' > ' '), so wrap both sides in datetime() to normalize
+  // them onto the same scale before comparing.
+  db.prepare("DELETE FROM sessions WHERE datetime(expires_at) < datetime('now')").run();
 }
