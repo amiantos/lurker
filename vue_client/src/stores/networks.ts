@@ -21,13 +21,25 @@ export interface PeerPresenceEntry {
   awayMessage: string | null;
 }
 
+// User-level self-presence, broadcast per network from the away-state stream.
+// Mirrors the in-memory shape ircManager/IrcConnection hold (`AwayState`
+// there); `message` and `since` stay populated after /back so the buffer
+// dividers can render the completed away→back pair.
+export interface AwayState {
+  active: boolean;
+  message: string | null;
+  since: string | null;
+  autoSet: boolean;
+  backAt: string | null;
+}
+
 export interface NetworkState {
   networkId: number;
   channels: string[];
   state?: string;
   nick?: string;
   userModes?: string;
-  away?: string | null;
+  away?: AwayState | null;
   peerPresence?: Record<string, PeerPresenceEntry>;
   lagMs?: number | null;
 }

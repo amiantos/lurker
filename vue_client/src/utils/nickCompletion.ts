@@ -24,8 +24,8 @@
 
 interface MemberObject {
   nick?: string;
-  user?: string;
-  host?: string;
+  user?: string | null;
+  host?: string | null;
 }
 
 type Member = string | MemberObject;

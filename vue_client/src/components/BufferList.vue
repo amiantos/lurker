@@ -132,7 +132,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import draggable from 'vuedraggable';
-import { useNetworksStore } from '../stores/networks.js';
+import { useNetworksStore, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
@@ -322,10 +322,8 @@ function isUnjoined(buf: Buffer, networkId: number): boolean {
   return networks.states[networkId]?.state !== 'connected';
 }
 
-function peerOf(buf: Buffer): { state?: string; stateAt?: string } | null {
-  const entry = networks.states[buf.networkId]?.peerPresence?.[buf.target.toLowerCase()];
-  if (!entry) return null;
-  return { state: entry.state ?? undefined, stateAt: entry.stateAt ?? undefined };
+function peerOf(buf: Buffer): PeerPresenceEntry | null {
+  return networks.states[buf.networkId]?.peerPresence?.[buf.target.toLowerCase()] ?? null;
 }
 function isPeerOffline(buf: Buffer): boolean {
   return isDmBuffer(buf) && derivePeerOffline(peerOf(buf));

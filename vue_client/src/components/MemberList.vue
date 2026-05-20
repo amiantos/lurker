@@ -48,30 +48,26 @@ import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import IgnoreModal from './IgnoreModal.vue';
 
-// BufferMember in the store omits user/host fields that the server sends.
-// Extend locally to reflect the actual wire shape.
-type Member = BufferMember & { user?: string | null; host?: string | null };
-
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const nicks = useNickColors();
 const memberActions = useMemberActions();
 const ignores = useIgnoresStore();
-const modalMember = ref<Member | null>(null);
+const modalMember = ref<BufferMember | null>(null);
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
-const members = computed((): Member[] => (buffer.value?.members as Member[]) || []);
+const members = computed((): BufferMember[] => buffer.value?.members || []);
 const selfNick = computed(() => {
   const b = buffer.value;
   if (!b) return null;
   return networks.states[b.networkId]?.nick || null;
 });
 
-function isSelf(m: Member): boolean {
+function isSelf(m: BufferMember): boolean {
   const sn = selfNick.value;
   return !!sn && nickOf(m).toLowerCase() === sn.toLowerCase();
 }
-function nickStyle(m: Member): { color: string } | null {
+function nickStyle(m: BufferMember): { color: string } | null {
   // Away members render in a flat muted color — the .away CSS rule wins
   // regardless of inline style, but skipping the inline color keeps the DOM
   // honest.
@@ -83,16 +79,16 @@ function nickStyle(m: Member): { color: string } | null {
 
 const PREFIX_ORDER = ['~', '&', '@', '%', '+', ''];
 
-function nickOf(m: Member): string {
+function nickOf(m: BufferMember): string {
   return m.nick;
 }
-function userOf(m: Member): string | null {
+function userOf(m: BufferMember): string | null {
   return m.user ?? null;
 }
-function hostOf(m: Member): string | null {
+function hostOf(m: BufferMember): string | null {
   return m.host ?? null;
 }
-function modesOf(m: Member): string[] {
+function modesOf(m: BufferMember): string[] {
   return Array.isArray(m?.modes) ? m.modes : [];
 }
 
@@ -105,24 +101,24 @@ function menuContext() {
   return {
     networkId: buffer.value?.networkId ?? 0,
     isSelf,
-    onIgnore: (m: Member) => {
+    onIgnore: (m: BufferMember) => {
       modalMember.value = m;
     },
   };
 }
-function onRowClick(e: MouseEvent, m: Member): void {
+function onRowClick(e: MouseEvent, m: BufferMember): void {
   if (!buffer.value || isSelf(m)) return;
   memberActions.openMenuFor(m, menuContext(), e.clientX, e.clientY);
 }
-function onRowContextMenu(e: MouseEvent, m: Member): void {
+function onRowContextMenu(e: MouseEvent, m: BufferMember): void {
   if (!buffer.value || isSelf(m)) return;
   memberActions.openMenuFor(m, menuContext(), e.clientX, e.clientY);
 }
-function onActionsClick(e: MouseEvent, m: Member): void {
+function onActionsClick(e: MouseEvent, m: BufferMember): void {
   if (!buffer.value || isSelf(m)) return;
   memberActions.openMenuFromButton(m, menuContext(), e.currentTarget as Element);
 }
-function prefixOf(m: Member): string {
+function prefixOf(m: BufferMember): string {
   const modes = modesOf(m);
   if (modes.includes('q')) return '~';
   if (modes.includes('a')) return '&';
@@ -131,14 +127,14 @@ function prefixOf(m: Member): string {
   if (modes.includes('v')) return '+';
   return '';
 }
-function prefixClass(m: Member): string {
+function prefixClass(m: BufferMember): string {
   const p = prefixOf(m);
   return p ? `mode-${p}` : '';
 }
-function isAway(m: Member): boolean {
+function isAway(m: BufferMember): boolean {
   return !!m?.away;
 }
-function liClass(m: Member): string[] {
+function liClass(m: BufferMember): string[] {
   const classes: string[] = [];
   const p = prefixClass(m);
   if (p) classes.push(p);

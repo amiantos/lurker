@@ -1,14 +1,15 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Derive UX state from a peer presence row. The row carries only the most
-// recent transition ({ state, stateAt }); these helpers translate that to
-// the boolean states BufferList / StatusBar care about.
+// Derive UX state from a peer presence entry. An entry records the most
+// recent transition; these helpers translate its `state` into the boolean
+// states BufferList / StatusBar care about.
 
-interface PeerPresenceRow {
-  state?: string;
-  stateAt?: string;
-}
+import type { PeerPresenceEntry } from '../stores/networks.js';
+
+// Only `state` is consulted here — narrow to it so callers can pass a full
+// PeerPresenceEntry without the two shapes drifting apart.
+type PeerPresenceRow = Pick<PeerPresenceEntry, 'state'>;
 
 export function isPeerOffline(peer: PeerPresenceRow | null | undefined): boolean {
   return peer?.state === 'offline';

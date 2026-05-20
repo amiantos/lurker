@@ -42,6 +42,10 @@ export interface BufferMember {
   nick: string;
   modes: string[];
   away: boolean;
+  // user/host are sent by the server alongside the nicklist; they're optional
+  // because pre-upgrade backlog and bare JOIN-derived members may lack them.
+  user?: string | null;
+  host?: string | null;
 }
 
 export interface TypingEntry {

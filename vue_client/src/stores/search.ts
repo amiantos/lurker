@@ -15,6 +15,8 @@ export interface SearchResult {
   nick: string;
   body: string;
   createdAt: string;
+  // Sender hostmask, when known — drives client-side ignore filtering.
+  userhost?: string | null;
 }
 
 // Full-text message search. WS-based (like chanlist) rather than REST — the

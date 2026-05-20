@@ -42,15 +42,8 @@ const emit = defineEmits<{
 const store = useBookmarksStore();
 const ignores = useIgnoresStore();
 
-// The API response includes `userhost` alongside the declared BookmarkMessage
-// fields. Cast the store items to HistoryMessage (which has an open index
-// signature) so they're compatible with HistoryMessageRow's :message prop.
-type BookmarkRow = HistoryMessage & { userhost?: string | null };
-
 const visibleItems = computed(() =>
-  (store.items as BookmarkRow[]).filter(
-    (m) => !ignores.isIgnored(m.networkId, m.nick, m.userhost ?? ''),
-  ),
+  store.items.filter((m) => !ignores.isIgnored(m.networkId, m.nick, m.userhost ?? '')),
 );
 
 onMounted(() => {

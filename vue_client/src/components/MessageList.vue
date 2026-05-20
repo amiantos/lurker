@@ -180,7 +180,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import type { CSSProperties } from 'vue';
-import { useNetworksStore } from '../stores/networks.js';
+import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useIgnoresStore } from '../stores/ignores.js';
@@ -454,21 +454,10 @@ const effectiveCollapseTimestamps = computed(() => collapseTimestampsEnabled.val
 // is equivalent to reading user state. The server pseudo-buffer doesn't get
 // presence markers — it's noise-only.
 
-// The `away` field in NetworkState is typed as `string | null` but the runtime
-// value is this richer object (applyAwayState sets it from ircManager's shape).
-interface AwayStateObject {
-  active: boolean;
-  message: string | null;
-  since: string | null;
-  autoSet: boolean;
-  backAt: string | null;
-}
-
-const awayState = computed((): AwayStateObject | null => {
+const awayState = computed((): AwayState | null => {
   const b = buffer.value;
   if (!b || b.target.startsWith(':server:')) return null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (networks.states[b.networkId]?.away as any) || null;
+  return networks.states[b.networkId]?.away || null;
 });
 
 // Away/back markers stop being useful once the user has been back a while —

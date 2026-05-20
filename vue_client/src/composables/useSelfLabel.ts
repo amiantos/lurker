@@ -28,14 +28,13 @@ export function useSelfLabel(): SelfLabelState {
   const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 
   const channelPrefix = computed(() => {
-    const buf = buffer.value as any;
-    if (!buf || !buf.target?.startsWith('#')) return '';
-    const state = (networks.states as any)[buf.networkId];
-    const nick = state?.nick;
+    const buf = buffer.value;
+    if (!buf || !buf.target.startsWith('#')) return '';
+    const nick = networks.states[buf.networkId]?.nick;
     if (!nick) return '';
     const lc = nick.toLowerCase();
-    const me = (buf.members || []).find((m: any) => (m.nick || m).toLowerCase() === lc);
-    const modes = me && typeof me === 'object' ? me.modes || [] : [];
+    const me = buf.members.find((m) => m.nick.toLowerCase() === lc);
+    const modes = me?.modes ?? [];
     for (const letter of PROMPT_PREFIX_RANK) {
       if (modes.includes(letter)) return PROMPT_PREFIX[letter];
     }
@@ -44,7 +43,7 @@ export function useSelfLabel(): SelfLabelState {
 
   const promptLabel = computed(() => {
     if (!active.value) return '—';
-    const state = (networks.states as any)[active.value.networkId];
+    const state = networks.states[active.value.networkId];
     const nick = state?.nick;
     if (!nick) return '—';
     const modes = state?.userModes || '';
@@ -57,7 +56,7 @@ export function useSelfLabel(): SelfLabelState {
     // The server keeps `message` populated after /back so the buffer dividers
     // can render the completed pair — gate on `active` so the label
     // disappears when the user is no longer away.
-    const away = (networks.states as any)[active.value.networkId]?.away;
+    const away = networks.states[active.value.networkId]?.away;
     return away?.active && away.message ? `(${away.message})` : '';
   });
 

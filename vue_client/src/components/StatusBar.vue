@@ -153,19 +153,16 @@ const peerStatusLabel = computed(() => {
   if (!peer) return '';
   const a = active.value;
   if (!a) return '';
-  // Cast through unknown to satisfy PeerPresenceRow's `state?: string` vs PeerPresenceEntry's `state: string | null`.
-  const p = peer as { state?: string; awayMessage?: string | null };
-  if (isPeerOffline(p)) return `${a.target} is offline`;
-  if (isPeerAway(p)) {
-    return p.awayMessage ? `${a.target} is away: ${p.awayMessage}` : `${a.target} is away`;
+  if (isPeerOffline(peer)) return `${a.target} is offline`;
+  if (isPeerAway(peer)) {
+    return peer.awayMessage ? `${a.target} is away: ${peer.awayMessage}` : `${a.target} is away`;
   }
   return '';
 });
 const peerStatusClass = computed(() => {
   const peer = peerForActive.value;
   if (!peer) return '';
-  const p = peer as { state?: string };
-  return isPeerOffline(p) ? 'offline' : 'away';
+  return isPeerOffline(peer) ? 'offline' : 'away';
 });
 
 const typingNicks = computed(() => {

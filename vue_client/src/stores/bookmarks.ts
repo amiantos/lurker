@@ -20,6 +20,8 @@ export interface BookmarkMessage {
   nick: string;
   body: string;
   createdAt: string;
+  // Sender hostmask, when known — drives client-side ignore filtering.
+  userhost?: string | null;
 }
 
 export const useBookmarksStore = defineStore('bookmarks', {

@@ -57,7 +57,7 @@ const ignores = useIgnoresStore();
 // filtered after results arrive so /unignore restores the rows without
 // re-issuing the query.
 const visibleResults = computed(() =>
-  store.results.filter((m) => !ignores.isIgnored(m.networkId, m.nick, (m as any).userhost ?? '')),
+  store.results.filter((m) => !ignores.isIgnored(m.networkId, m.nick, m.userhost ?? '')),
 );
 
 const inputEl = ref<HTMLInputElement | null>(null);
