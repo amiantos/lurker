@@ -7,10 +7,10 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
 #
-# Requires a `.env` file beside this compose defining LURKER_DOMAIN (and,
-# optionally, ACME_EMAIL), plus the Caddyfile from this repo's deploy/
-# directory saved next to it. Caddy obtains a Let's Encrypt certificate for
-# LURKER_DOMAIN automatically — the domain must already resolve to this host.
+# Requires a `.env` file beside this compose defining LURKER_DOMAIN and
+# ADMIN_EMAIL, plus the Caddyfile from this repo's deploy/ directory saved
+# next to it. Caddy obtains a Let's Encrypt certificate for LURKER_DOMAIN
+# automatically — the domain must already resolve to this host.
 #
 # deploy/digitalocean-cloud-init.sh wires all of this up unattended; see the
 # "Deploy on DigitalOcean" section of the README.
@@ -24,9 +24,11 @@ services:
       - '80:80'
       - '443:443'
     environment:
-      # Caddy substitutes these into the Caddyfile's {$VAR} placeholders.
+      # Caddy substitutes these into the Caddyfile's {$VAR} placeholders. The
+      # container var stays ACME_EMAIL (the Caddyfile reads {$ACME_EMAIL}); its
+      # value is the operator's ADMIN_EMAIL from the .env file.
       LURKER_DOMAIN: ${LURKER_DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@${LURKER_DOMAIN}}
+      ACME_EMAIL: ${ADMIN_EMAIL}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -39,6 +41,16 @@ services:
     # the base file's `8015:8015` host binding is dropped here — Lurker is
     # then reachable only through Caddy, i.e. only over HTTPS.
     ports: !reset []
+    # A public domain with HTTPS is exactly what passkeys (WebAuthn) and web
+    # push need, so configure both here from the same .env values Caddy uses.
+    # An HTTPS deployment is then feature-complete with no further admin —
+    # users just opt in per device from Lurker's settings. These entries
+    # merge into the environment list from the base compose file.
+    environment:
+      - WEBAUTHN_RP_ID=${LURKER_DOMAIN}
+      - WEBAUTHN_RP_NAME=Lurker
+      - WEBAUTHN_ORIGIN=https://${LURKER_DOMAIN}
+      - VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
 
 volumes:
   caddy_data:

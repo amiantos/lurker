@@ -49,13 +49,15 @@ Then open <http://localhost:8015> and create your admin account. Username + pass
 For a public, HTTPS-enabled Lurker on a fresh droplet — no SSH required:
 
 1. Create a droplet — the Docker Marketplace image at the smallest size is fine (vanilla Ubuntu 24.04 LTS works too).
-2. At droplet creation, expand **Additional Options** and enable **User Scripts** (DigitalOcean's label for cloud-init user data — older guides call it "User data" or "Startup scripts"). Paste in the contents of [`deploy/digitalocean-cloud-init.sh`](deploy/digitalocean-cloud-init.sh), after editing `LURKER_DOMAIN` near the top of the script to your domain (e.g. `irc.yourdomain.com`).
+2. At droplet creation, expand **Additional Options** and enable **User Scripts** (DigitalOcean's label for cloud-init user data — older guides call it "User data" or "Startup scripts"). Paste in the contents of [`deploy/digitalocean-cloud-init.sh`](deploy/digitalocean-cloud-init.sh), after filling in the two required values near the top of the script — `LURKER_DOMAIN` (your domain, e.g. `irc.yourdomain.com`) and `ADMIN_EMAIL` (your email address).
 3. Once the droplet exists, copy its public IP and add a DNS `A` record pointing your domain at it.
 4. Give it a few minutes, then visit your domain.
 
 You don't need the droplet's IP before creating it: the droplet boots and starts Caddy _before_ DNS exists, and Caddy keeps retrying Let's Encrypt until your `A` record resolves — so HTTPS comes up automatically a few minutes after you set the DNS record. (If you'd rather the certificate be ready the moment the droplet boots, reserve a [Reserved IP](https://docs.digitalocean.com/products/networking/reserved-ips/) first, point DNS at it, then create the droplet and assign that Reserved IP.)
 
-Leave `LURKER_DOMAIN` empty for a plain-HTTP deployment instead — skip the DNS steps and open `http://<droplet-ip>:8015` directly. Deploy progress is logged to `/var/log/lurker-deploy.log` on the droplet.
+Passkeys and web push notifications are configured automatically — the deploy derives the WebAuthn and push settings from your domain and email — so you can enable them per device from Lurker's in-app settings without touching the server.
+
+Deploy progress is logged to `/var/log/lurker-deploy.log` on the droplet.
 
 **Updating:** SSH in (or open the DigitalOcean web console) and run:
 

@@ -124,7 +124,7 @@ If you already run Caddy, Traefik, nginx, or another reverse proxy with an autom
 
 ### Passkeys (WebAuthn)
 
-Lurker works fine with just username + password — passkeys are a quality-of-life addition (fingerprint / Face ID / hardware key login). To enable them, set three environment variables that match the public origin your browsers actually hit:
+Lurker works fine with just username + password — passkeys are a quality-of-life addition (fingerprint / Face ID / hardware key login). (The [one-shot DigitalOcean deploy](README.md#deploy-on-digitalocean-one-shot) sets these up for you.) To enable them elsewhere, set three environment variables that match the public origin your browsers actually hit:
 
 ```yaml
 environment:
@@ -141,7 +141,7 @@ Restart Lurker, log in with your password, then visit **Settings → Passkeys** 
 
 ### Web Push notifications
 
-Lurker supports background push notifications for highlights and DMs, delivered to your installed PWA even when the tab is closed. To enable:
+Lurker supports background push notifications for highlights and DMs, delivered to your installed PWA even when the tab is closed. (The [one-shot DigitalOcean deploy](README.md#deploy-on-digitalocean-one-shot) sets `VAPID_SUBJECT` for you.) To enable it elsewhere:
 
 1. Set a valid `VAPID_SUBJECT` (the contact address embedded in outgoing push JWTs — APNs requires a real domain):
 

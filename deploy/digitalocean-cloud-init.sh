@@ -12,24 +12,33 @@
 #
 #   * install Docker + the Compose plugin (skipped if already present, so
 #     this works on both the Docker Marketplace image and vanilla Ubuntu)
-#   * fetch Lurker and start it under Docker Compose
-#   * optionally front it with Caddy for automatic HTTPS (Let's Encrypt)
+#   * fetch Lurker, front it with Caddy for automatic HTTPS (Let's Encrypt),
+#     and start everything under Docker Compose
+#   * configure passkeys and web push — HTTPS makes both possible, so the
+#     instance comes up feature-complete with no post-install server admin
 #   * add a small swapfile on low-RAM droplets and configure the firewall
 #
 # Everything is logged to /var/log/lurker-deploy.log — view that from the
 # DigitalOcean droplet console if a deploy doesn't come up as expected.
 #
-# ─── Edit these two values before pasting ───────────────────────────────────
+# ─── Required: fill in BOTH values before pasting ───────────────────────────
+#
+# This deploy always serves Lurker over HTTPS. HTTPS isn't a nicety here — it
+# is what makes passkeys, web push, and secure browser sessions work — so
+# there is no plain-HTTP option, and both values below are required. The
+# script aborts if either is left blank.
 
-# Public domain for an HTTPS deployment, e.g. "irc.example.com".
-#   * Set it → Lurker is served over HTTPS via Caddy. The domain must
-#              already have a DNS A/AAAA record pointing at this droplet.
-#   * Empty  → Lurker is served over plain HTTP on port 8015.
+# The public domain Lurker will be served on, e.g. "irc.example.com".
+# Caddy obtains a Let's Encrypt certificate for it automatically. Once the
+# droplet exists, point a DNS A record for this domain at the droplet's IP
+# (the deploy log prints it); Caddy keeps retrying until that record resolves.
 LURKER_DOMAIN=""
 
-# Let's Encrypt contact address (used only when LURKER_DOMAIN is set).
-# Leave empty to default to admin@<LURKER_DOMAIN>.
-ACME_EMAIL=""
+# Your email address. It is used for two things, both of which need a real,
+# reachable address: the Let's Encrypt certificate contact (renewal and
+# expiry notices), and the contact embedded in web-push messages, which
+# Apple, Google, and Mozilla's push services require.
+ADMIN_EMAIL=""
 
 # ─── No edits needed below this line ────────────────────────────────────────
 
@@ -46,6 +55,25 @@ exec > >(tee -a "$DEPLOY_LOG") 2>&1
 log() { echo "[lurker-deploy $(date -u +%H:%M:%S)] $*"; }
 
 log "=== Lurker deploy started $(date -u +%FT%TZ) ==="
+
+# Both settings are mandatory. Fail early and loudly — before installing
+# anything — rather than half-deploying; the log is the only place this
+# message will surface, since cloud-init runs with no console.
+require_config() {
+  local missing=0
+  if [ -z "$LURKER_DOMAIN" ]; then
+    log "ERROR: LURKER_DOMAIN is empty — set it near the top of this script."
+    missing=1
+  fi
+  if [ -z "$ADMIN_EMAIL" ]; then
+    log "ERROR: ADMIN_EMAIL is empty — set it near the top of this script."
+    missing=1
+  fi
+  if [ "$missing" -ne 0 ]; then
+    log "Aborting: LURKER_DOMAIN and ADMIN_EMAIL are both required."
+    exit 1
+  fi
+}
 
 # ── Prerequisites ───────────────────────────────────────────────────────────
 
@@ -126,13 +154,13 @@ ensure_swap() {
   fi
 }
 
-# UFW: open SSH *first* so a bad rule can't lock us out, then the ports the
-# chosen deployment mode actually needs.
+# UFW: open SSH *first* so a bad rule can't lock us out, then HTTP/HTTPS for
+# Caddy. Lurker's own 8015 is never published on the host (the Caddy overlay
+# drops that binding), so it stays internal to the Docker network.
 #
 # Note: Docker publishes container ports straight into iptables, bypassing
-# UFW — so the real isolation of Lurker's 8015 in HTTPS mode comes from
-# docker-compose.caddy.yml dropping its host port binding, not from the
-# `ufw deny` below (kept only as belt-and-suspenders).
+# UFW — so the `ufw deny 8015` below is only belt-and-suspenders; the real
+# isolation comes from docker-compose.caddy.yml not binding 8015 at all.
 configure_firewall() {
   if ! command -v ufw >/dev/null 2>&1; then
     log "ufw not installed — skipping firewall configuration."
@@ -140,13 +168,9 @@ configure_firewall() {
   fi
   log "Configuring UFW firewall (SSH allowed first)..."
   ufw allow 22/tcp
-  if [ -n "$LURKER_DOMAIN" ]; then
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw deny 8015/tcp
-  else
-    ufw allow 8015/tcp
-  fi
+  ufw allow 80/tcp
+  ufw allow 443/tcp
+  ufw deny 8015/tcp
   ufw --force enable
   ufw status verbose || true
 }
@@ -157,40 +181,29 @@ deploy() {
   mkdir -p "$INSTALL_DIR"
   cd "$INSTALL_DIR"
 
-  log "Fetching docker-compose.yml..."
+  log "Fetching compose files and Caddyfile..."
   curl -fsSL -o docker-compose.yml "$REPO_RAW/docker-compose.yml"
+  curl -fsSL -o docker-compose.caddy.yml "$REPO_RAW/docker-compose.caddy.yml"
+  curl -fsSL -o Caddyfile "$REPO_RAW/deploy/Caddyfile"
 
-  if [ -n "$LURKER_DOMAIN" ]; then
-    if [ -z "$ACME_EMAIL" ]; then
-      ACME_EMAIL="admin@${LURKER_DOMAIN}"
-    fi
-    log "LURKER_DOMAIN is set ($LURKER_DOMAIN) — deploying with Caddy + HTTPS."
-    curl -fsSL -o docker-compose.caddy.yml "$REPO_RAW/docker-compose.caddy.yml"
-    curl -fsSL -o Caddyfile "$REPO_RAW/deploy/Caddyfile"
-
-    # Compose interpolates LURKER_DOMAIN/ACME_EMAIL into docker-compose.caddy.yml
-    # (and Caddy reads them to fill the Caddyfile). COMPOSE_FILE records the
-    # overlay so plain `docker compose` commands — including future updates —
-    # pick up Caddy automatically, no `-f` flags needed.
-    cat > .env <<EOF
+  # Compose interpolates LURKER_DOMAIN/ADMIN_EMAIL into docker-compose.caddy.yml
+  # — Caddy reads them for TLS, Lurker reads them for passkeys and push.
+  # COMPOSE_FILE records the overlay so plain `docker compose` commands —
+  # including future `pull` + `up -d` updates — pick up Caddy automatically.
+  cat > .env <<EOF
 LURKER_DOMAIN=${LURKER_DOMAIN}
-ACME_EMAIL=${ACME_EMAIL}
+ADMIN_EMAIL=${ADMIN_EMAIL}
 COMPOSE_FILE=docker-compose.yml:docker-compose.caddy.yml
 EOF
 
-    compose pull
-    compose up -d
-    compose ps
-  else
-    log "LURKER_DOMAIN is empty — deploying plain HTTP on port 8015."
-    compose pull
-    compose up -d
-    compose ps
-  fi
+  compose pull
+  compose up -d
+  compose ps
 }
 
 # ── Run ─────────────────────────────────────────────────────────────────────
 
+require_config
 ensure_curl
 install_docker
 wait_for_docker
@@ -198,15 +211,13 @@ ensure_swap
 deploy
 configure_firewall
 
+PUBLIC_IP=$(curl -fsS --max-time 5 \
+  http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address \
+  2>/dev/null || echo "this droplet's public IP")
+
 log "=== Lurker deploy finished $(date -u +%FT%TZ) ==="
-if [ -n "$LURKER_DOMAIN" ]; then
-  log "Lurker is running. If a DNS A record for ${LURKER_DOMAIN} isn't already"
-  log "pointing at this droplet's IP, add it now — Caddy retries Let's Encrypt"
-  log "until it resolves, then https://${LURKER_DOMAIN} serves over HTTPS."
-  log "To enable passkeys / web push, see SELF_HOSTING.md (Optional features)."
-else
-  PUBLIC_IP=$(curl -fsS --max-time 5 \
-    http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address \
-    2>/dev/null || echo "<droplet-ip>")
-  log "Open http://${PUBLIC_IP}:8015 and create your admin account."
-fi
+log "Lurker is running. Point a DNS A record for ${LURKER_DOMAIN} at"
+log "${PUBLIC_IP} if you haven't already — Caddy retries Let's Encrypt"
+log "until it resolves, then https://${LURKER_DOMAIN} serves over HTTPS."
+log "Passkeys and web push are pre-configured; once you've created your"
+log "admin account, opt in per device from Lurker's settings."
