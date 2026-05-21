@@ -373,6 +373,10 @@ function menuContext(m: ChatMessage): MessageContext {
 }
 
 function onLineContextMenu(e: MouseEvent, m: ChatMessage | undefined) {
+  // Desktop keeps the browser's native right-click menu — message actions are
+  // reachable from the hover three-dots button. The in-app menu is a touch
+  // affordance, opened via long-press on mobile. See issue #20.
+  if (!isMobile.value) return;
   if (!eligibleForActions(m)) return;
   e.preventDefault();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

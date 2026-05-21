@@ -6,6 +6,9 @@
 <template>
   <section id="account" class="settings-pane">
     <h2>account</h2>
+    <p v-if="auth.user" class="account-identity">
+      Signed in as <strong>{{ auth.user.username }}</strong>
+    </p>
     <p class="section-desc">
       You can sign in with a passkey, a password, or both. Removing your last sign-in method would
       lock you out, so it's blocked.
@@ -243,6 +246,14 @@ async function signOut() {
 
 <style src="./panes.css"></style>
 <style scoped>
+.account-identity {
+  margin: 0 0 12px;
+  color: var(--fg-muted);
+}
+.account-identity strong {
+  color: var(--fg);
+  font-weight: 600;
+}
 .passkey .ua input[type='text'] {
   width: 100%;
   background: transparent;

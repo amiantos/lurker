@@ -52,6 +52,24 @@ function pickKindKey(event: NotifyEvent): ToastKind | null {
   return null;
 }
 
+// Per-source notification throttle. A burst from one sender — the classic
+// case is ChanServ answering /HELP with a dozen back-to-back NOTICEs — should
+// land as a single toast + sound rather than a wall of them. Once a source
+// notifies, repeats from that same source within this window are dropped
+// outright (no queue). The key is per network + buffer + nick + kind, so
+// distinct senders are unaffected: two people pinging you still both fire.
+const NOTIFY_THROTTLE_MS = 3000;
+const lastNotifyAt = new Map<string, number>();
+
+function throttled(event: NotifyEvent, kind: ToastKind): boolean {
+  const key = `${event.networkId}::${event.target ?? ''}::${event.nick ?? '?'}::${kind}`;
+  const now = Date.now();
+  const prev = lastNotifyAt.get(key);
+  if (prev !== undefined && now - prev < NOTIFY_THROTTLE_MS) return true;
+  lastNotifyAt.set(key, now);
+  return false;
+}
+
 export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   if (!event || event.self) return;
   const kindKey = pickKindKey(event);
@@ -71,6 +89,9 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
 
   const settings = useSettingsStore();
   if (!settings.effective(`notifications.${kindKey}.enabled`)) return;
+
+  // Collapse a rapid burst from one source into a single toast + sound.
+  if (throttled(event, kindKey)) return;
 
   const networks = useNetworksStore();
   const toasts = useToastsStore();

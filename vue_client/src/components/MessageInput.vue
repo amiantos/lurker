@@ -926,7 +926,12 @@ function toastSendFailure(error: string, body: string): void {
 function commitInput(raw: string, networkId: number, target: string): void {
   inputHistory.add(networkId, target, raw);
   socketSend({ type: 'input-history-add', networkId, target, text: raw });
-  text.value = '';
+  // Clear the draft for the buffer the send came FROM, addressed explicitly
+  // rather than through `text.value` (whose setter targets whatever buffer is
+  // active *now*). A command like `/msg nick text` calls buffers.activate()
+  // before we reach here, so writing through `text.value` would clear the new
+  // DM's draft and strand the command in the channel's input. See issue #4.
+  drafts.setLocal(networkId, target, '');
   // Empty the draft on the server immediately rather than waiting on the
   // debounce — otherwise a quick send + buffer-close race could leave the
   // row with the old body. flushBuffer drains the pending timer.
