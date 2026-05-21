@@ -33,7 +33,7 @@
   "dependencies": {
     "@simplewebauthn/server": "^13.3.0",
     "archiver": "^8.0.0",
-    "better-sqlite3": "^11.7.0",
+    "better-sqlite3": "^12.10.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
