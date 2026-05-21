@@ -205,6 +205,7 @@ import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type { MessageContext } from '../composables/useMessageActions.js';
 import { useLongPress } from '../composables/useLongPress.js';
+import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -1042,6 +1043,18 @@ function onScrollerResize() {
   el.scrollTop = el.scrollHeight;
 }
 
+// Report which buffer's messages are on screen so toast suppression can tell
+// "looking at this buffer" apart from networks.activeKey's looser "last-opened
+// buffer" (see useHighlightNotifier.shouldNotifyInApp). This component mounts
+// only while a buffer's messages are actually rendered, so its lifecycle is
+// the signal: follow activeKey while mounted, clear on unmount (Settings
+// route, mobile list/members screen, system console).
+watch(
+  () => networks.activeKey,
+  (key) => setViewedBuffer(key),
+  { immediate: true },
+);
+
 onMounted(() => {
   if (typeof ResizeObserver !== 'undefined' && scroller.value) {
     lastClientHeight = scroller.value.clientHeight;
@@ -1054,6 +1067,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  setViewedBuffer(null);
   if (scrollerObserver) {
     scrollerObserver.disconnect();
     scrollerObserver = null;
