@@ -58,7 +58,7 @@
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.1",
     "@types/yauzl": "^2.10.3",
-    "@vitest/coverage-v8": "^4.1.6",
+    "@vitest/coverage-v8": "^4.1.7",
     "concurrently": "^9.0.1",
     "oxfmt": "^0.51.0",
     "oxlint": "^1.66.0",
