@@ -79,22 +79,24 @@ function hasStyle(seg: RenderSegment): boolean {
   return segmentHasStyle(seg);
 }
 
-// Clicking a channel name mirrors IRCCloud. If the buffer is already open in
-// this client, just switch to it. Otherwise hand off to the server, which
-// decides (see the `open-buffer` handler): a channel with persisted history —
-// even one the user has since /closed — is reopened and re-seeded without
-// re-JOINing; a channel we've genuinely never visited gets joined. The client
-// can't make this call itself — closed buffers are filtered out of its
-// snapshot, so a since-closed channel is locally indistinguishable from a
-// brand-new one.
+// Clicking a channel name mirrors IRCCloud. IRC channel names are
+// case-insensitive but a buffer is keyed by one canonical casing, so match
+// the network's open buffers case-insensitively: if one already exists here,
+// just switch to it. Otherwise hand off to the server (`open-buffer`), which
+// reopens a since-closed buffer — re-seeding its history, no re-JOIN — or
+// joins a never-visited channel, then replies `buffer-opened` with the
+// canonical target for us to focus. We don't activate optimistically: the
+// message's casing may differ from the canonical one, and a mis-cased
+// activate would leave a stray empty buffer behind.
 function openChannel(channel: string): void {
   const nid = props.networkId;
   if (nid == null) return;
-  if (buffers.byKey(`${nid}::${channel}`)) {
-    buffers.activate(nid, channel);
+  const lower = channel.toLowerCase();
+  const existing = buffers.forNetwork(nid).find((b) => b.target.toLowerCase() === lower);
+  if (existing) {
+    buffers.activate(nid, existing.target);
     return;
   }
   socketSend({ type: 'open-buffer', networkId: nid, target: channel });
-  buffers.activate(nid, channel);
 }
 </script>

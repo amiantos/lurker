@@ -174,6 +174,11 @@ function isInQuietWindow(currentMin: number, startMin: number, endMin: number): 
 
 const DM_ELIGIBLE_TYPES = new Set(['message', 'action', 'notice']);
 
+// IRC channel names start with '#' (or '&' for server-local channels).
+function isChannelTarget(target: string): boolean {
+  return target.startsWith('#') || target.startsWith('&');
+}
+
 // Structural DM detection: ircConnection routes any direct message into a
 // buffer keyed by the *other* person's nick, so by the time we see an event
 // here the target is no longer your own nick. Anything that's not a channel
@@ -731,7 +736,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     target: string,
   ): void {
     const conn = ircManager.getConnection(userId, networkId);
-    if (!conn) return;
     const events = listMessages(networkId, target, { limit: 200 }).map((e) =>
       decorateMessage(userId, e),
     );
@@ -743,7 +747,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       target,
       events,
       speakers: listSpeakers(networkId, target),
-      joined: target.startsWith('#') ? conn.channels.has(target.toLowerCase()) : true,
+      // A channel counts as joined only while a live connection is tracking
+      // it; a stopped/offline network has no connection, so treat it as
+      // parted rather than refusing to ship the history at all.
+      joined: isChannelTarget(target) ? !!conn?.channels.has(target.toLowerCase()) : true,
       lastReadId: counts.lastReadId,
       unread: counts.unread,
       highlights: counts.highlights,
@@ -814,20 +821,28 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         ircManager.joinChannel(userId, msg.networkId as number, msg.channel as string);
         break;
       case 'open-buffer': {
-        // A clicked channel name. If the channel has persisted history — even
-        // one the user has since /closed — reopen its buffer and re-seed it
-        // without re-JOINing (mirrors IRCCloud: clicking a channel you've been
-        // in just takes you to its buffer). A channel with no history is one
-        // we've never visited, so clicking it joins.
+        // A clicked channel name. Resolve it against buffers that already
+        // have persisted history — case-insensitively, since IRC channel
+        // names are case-insensitive but message rows store one canonical
+        // casing. A match (even a since-/closed buffer) is reopened and
+        // re-seeded without a re-JOIN — mirrors IRCCloud: clicking a channel
+        // you've been in just takes you to its buffer. A channel with no
+        // history anywhere is one we've never visited, so it gets joined.
+        // Either way we reply `buffer-opened` with the resolved target so the
+        // requesting tab focuses the right buffer without guessing the casing.
         const networkId = Number(msg.networkId);
-        const target = typeof msg.target === 'string' ? msg.target : '';
-        if (!networkId || !target || target.startsWith(':server:')) break;
-        const hasHistory = listMessages(networkId, target, { limit: 1 }).length > 0;
-        if (hasHistory) {
-          reopenBuffer(userId, networkId, target);
-          sendBufferBacklog(ws, userId, networkId, target);
-        } else if (target.startsWith('#') || target.startsWith('&')) {
-          ircManager.joinChannel(userId, networkId, target);
+        const requested = typeof msg.target === 'string' ? msg.target : '';
+        if (!networkId || !requested || requested.startsWith(':server:')) break;
+        const canonical = listBufferTargets(networkId).find(
+          (t) => t.toLowerCase() === requested.toLowerCase(),
+        );
+        if (canonical) {
+          reopenBuffer(userId, networkId, canonical);
+          sendBufferBacklog(ws, userId, networkId, canonical);
+          send(ws, { kind: 'buffer-opened', networkId, target: canonical });
+        } else if (isChannelTarget(requested)) {
+          ircManager.joinChannel(userId, networkId, requested);
+          send(ws, { kind: 'buffer-opened', networkId, target: requested });
         }
         break;
       }

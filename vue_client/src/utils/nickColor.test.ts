@@ -97,6 +97,14 @@ describe('splitTextByTokens — channel detection', () => {
     ]);
   });
 
+  it('stops a channel name at a colon (RFC 2812 chanstring)', () => {
+    expect(parse('ping #ops:admins now')).toEqual([
+      { text: 'ping ' },
+      { text: '#ops', channel: '#ops' },
+      { text: ':admins now' },
+    ]);
+  });
+
   it('trims trailing sentence punctuation off a channel', () => {
     expect(parse('see (#foo).')).toEqual([
       { text: 'see (' },

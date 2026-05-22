@@ -418,6 +418,16 @@ function handleMessage(raw: string): void {
     bookmarks.applyUpdate({ messageId: payload.messageId, saved: !!payload.saved });
     return;
   }
+  if (payload.kind === 'buffer-opened') {
+    // Reply to our own `open-buffer` request: the server resolved the
+    // canonical target — reopened a since-closed buffer, or joined a new
+    // channel. Focus it now. For a reopen the `backlog` frame sent just
+    // before this already recreated the buffer; for a join the channel-joined
+    // flow will. activate() ensures the buffer exists either way.
+    const buffers = useBuffersStore();
+    buffers.activate(payload.networkId, payload.target);
+    return;
+  }
   if (payload.kind === 'buffer-reopened') {
     // Server cleared the closed flag because a new persisted message landed.
     // The client doesn't need to do anything here — the matching `irc` event
