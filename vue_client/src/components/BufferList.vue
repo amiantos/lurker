@@ -4,40 +4,94 @@
 -->
 
 <template>
-  <nav class="buffer-list" :class="{ 'unread-bold': unreadBold }">
-    <div v-for="net in networks.networks" :key="net.id" class="net">
-      <div
-        class="net-head"
-        :class="{ active: isActive(net.id, serverTarget(net.id)) }"
-        :title="`Open ${net.name} server buffer`"
-        @click="select(net.id, serverTarget(net.id))"
-      >
-        <span class="indicator" :class="stateClass(net.id)"></span>
-        <span class="name">{{ net.name }}</span>
-        <span
-          v-if="serverHighlights(net.id) > 0 && showHighlightBadge"
-          class="badge highlight"
-          :title="`${serverHighlights(net.id)} highlight${serverHighlights(net.id) === 1 ? '' : 's'}`"
-          >●</span
+  <div class="buffer-list-frame">
+    <nav
+      ref="scroller"
+      class="buffer-list"
+      :class="{ 'unread-bold': unreadBold }"
+      @scroll="scheduleRecompute"
+    >
+      <div v-for="net in networks.networks" :key="net.id" class="net">
+        <div
+          class="net-head"
+          :class="netHeadClasses(net.id)"
+          :title="`Open ${net.name} server buffer`"
+          @click="select(net.id, serverTarget(net.id))"
         >
-        <span v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0" class="badge">{{
-          unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id)))
-        }}</span>
-      </div>
+          <span class="indicator" :class="stateClass(net.id)"></span>
+          <span class="name">{{ net.name }}</span>
+          <span
+            v-if="serverHighlights(net.id) > 0 && showHighlightBadge"
+            class="badge highlight"
+            :title="`${serverHighlights(net.id)} highlight${serverHighlights(net.id) === 1 ? '' : 's'}`"
+            >●</span
+          >
+          <span v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0" class="badge">{{
+            unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id)))
+          }}</span>
+        </div>
 
-      <draggable
-        v-if="(pinnedBufsByNet[net.id] || []).length"
-        :list="pinnedBufsByNet[net.id]"
-        item-key="target"
-        tag="ul"
-        class="channels pinned"
-        :animation="120"
-        ghost-class="drag-ghost"
-        @start="dragging = true"
-        @end="onPinDragEnd(net.id)"
-      >
-        <template #item="{ element: buf }">
+        <draggable
+          v-if="(pinnedBufsByNet[net.id] || []).length"
+          :list="pinnedBufsByNet[net.id]"
+          item-key="target"
+          tag="ul"
+          class="channels pinned"
+          :animation="120"
+          ghost-class="drag-ghost"
+          @start="dragging = true"
+          @end="onPinDragEnd(net.id)"
+        >
+          <template #item="{ element: buf }">
+            <li
+              :class="rowClasses(buf, net.id)"
+              :title="dmTitle(buf)"
+              @click="select(net.id, buf.target)"
+              @contextmenu.prevent="onBufferContextMenu($event, buf)"
+            >
+              <span class="label">{{ labelFor(buf) }}</span>
+              <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
+              <span
+                v-if="hasDraft(buf)"
+                class="badge draft"
+                title="unsent draft"
+                aria-label="unsent draft"
+                ><i class="fa-solid fa-pencil"></i
+              ></span>
+              <span
+                v-if="buf.highlighted > 0 && showHighlightBadge"
+                class="badge highlight"
+                :title="`${buf.highlighted} highlight${buf.highlighted === 1 ? '' : 's'}`"
+                >●</span
+              >
+              <span v-if="countFor(buf.unread, buf.highlighted) > 0" class="badge">{{
+                unreadLabel(countFor(buf.unread, buf.highlighted))
+              }}</span>
+              <button
+                v-if="!isServerBuffer(buf)"
+                type="button"
+                class="row-actions"
+                title="Actions"
+                aria-label="Buffer actions"
+                @click.stop="onRowActionsClick($event, buf)"
+                @contextmenu.stop.prevent
+              >
+                <i class="fa-solid fa-ellipsis-vertical"></i>
+              </button>
+            </li>
+          </template>
+        </draggable>
+
+        <div
+          v-if="(pinnedBufsByNet[net.id] || []).length && unpinnedBufs(net.id).length"
+          class="pin-divider"
+          aria-hidden="true"
+        ></div>
+
+        <ul v-if="unpinnedBufs(net.id).length" class="channels">
           <li
+            v-for="buf in unpinnedBufs(net.id)"
+            :key="buf.target"
             :class="rowClasses(buf, net.id)"
             :title="dmTitle(buf)"
             @click="select(net.id, buf.target)"
@@ -73,64 +127,35 @@
               <i class="fa-solid fa-ellipsis-vertical"></i>
             </button>
           </li>
-        </template>
-      </draggable>
-
-      <div
-        v-if="(pinnedBufsByNet[net.id] || []).length && unpinnedBufs(net.id).length"
-        class="pin-divider"
-        aria-hidden="true"
-      ></div>
-
-      <ul v-if="unpinnedBufs(net.id).length" class="channels">
-        <li
-          v-for="buf in unpinnedBufs(net.id)"
-          :key="buf.target"
-          :class="rowClasses(buf, net.id)"
-          :title="dmTitle(buf)"
-          @click="select(net.id, buf.target)"
-          @contextmenu.prevent="onBufferContextMenu($event, buf)"
-        >
-          <span class="label">{{ labelFor(buf) }}</span>
-          <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
-          <span
-            v-if="hasDraft(buf)"
-            class="badge draft"
-            title="unsent draft"
-            aria-label="unsent draft"
-            ><i class="fa-solid fa-pencil"></i
-          ></span>
-          <span
-            v-if="buf.highlighted > 0 && showHighlightBadge"
-            class="badge highlight"
-            :title="`${buf.highlighted} highlight${buf.highlighted === 1 ? '' : 's'}`"
-            >●</span
-          >
-          <span v-if="countFor(buf.unread, buf.highlighted) > 0" class="badge">{{
-            unreadLabel(countFor(buf.unread, buf.highlighted))
-          }}</span>
-          <button
-            v-if="!isServerBuffer(buf)"
-            type="button"
-            class="row-actions"
-            title="Actions"
-            aria-label="Buffer actions"
-            @click.stop="onRowActionsClick($event, buf)"
-            @contextmenu.stop.prevent
-          >
-            <i class="fa-solid fa-ellipsis-vertical"></i>
-          </button>
-        </li>
-      </ul>
-    </div>
-    <p v-if="!networks.networks.length" class="empty">
-      No networks yet — add one with the + button.
-    </p>
-  </nav>
+        </ul>
+      </div>
+      <p v-if="!networks.networks.length" class="empty">
+        No networks yet — add one with the + button.
+      </p>
+    </nav>
+    <button
+      v-if="unreadAbove"
+      type="button"
+      class="unread-edge top"
+      :class="{ 'is-highlight': highlightAbove }"
+      title="Unread buffers above — click to scroll into view"
+      aria-label="Scroll to unread buffers above"
+      @click="scrollToUnread('up')"
+    ></button>
+    <button
+      v-if="unreadBelow"
+      type="button"
+      class="unread-edge bottom"
+      :class="{ 'is-highlight': highlightBelow }"
+      title="Unread buffers below — click to scroll into view"
+      aria-label="Scroll to unread buffers below"
+      @click="scrollToUnread('down')"
+    ></button>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, onUpdated, reactive, ref, watch } from 'vue';
 import draggable from 'vuedraggable';
 import { useNetworksStore, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
@@ -337,14 +362,191 @@ function dmTitle(buf: Buffer): string | undefined {
   if (isPeerAway(buf)) return `${buf.target} is away`;
   return undefined;
 }
+
+// The network header doubles as the server buffer's row, so it carries the
+// same unread/highlighted hooks the channel rows do — both the styling and
+// the out-of-view detection below treat it as just another unread row.
+function netHeadClasses(networkId: number): Record<string, boolean> {
+  return {
+    active: isActive(networkId, serverTarget(networkId)),
+    unread: serverUnread(networkId) > 0,
+    highlighted: serverHighlights(networkId) > 0,
+  };
+}
+
+// ── Out-of-view unread indicator ───────────────────────────────────────────
+// When unread buffers are scrolled past the top or bottom edge of the list, a
+// thin accent bar appears at that edge (IRCCloud-style). Detection walks the
+// rendered unread rows and compares each against the scroller's viewport box.
+const scroller = ref<HTMLElement | null>(null);
+const unreadAbove = ref(false);
+const unreadBelow = ref(false);
+const highlightAbove = ref(false);
+const highlightBelow = ref(false);
+
+// A row counts as out of view only when it's *fully* past an edge — a
+// partially visible unread row is considered seen and raises no bar. The bar
+// takes the highlight colour when any of the off-screen unread rows that way
+// is a highlight, mirroring the row label colours.
+function recomputeEdges(): void {
+  const sc = scroller.value;
+  if (!sc) {
+    unreadAbove.value = unreadBelow.value = false;
+    highlightAbove.value = highlightBelow.value = false;
+    return;
+  }
+  const view = sc.getBoundingClientRect();
+  let above = false;
+  let below = false;
+  let hlAbove = false;
+  let hlBelow = false;
+  for (const el of sc.querySelectorAll('.unread, .highlighted')) {
+    const r = el.getBoundingClientRect();
+    const isHighlight = el.classList.contains('highlighted');
+    if (r.bottom <= view.top + 1) {
+      above = true;
+      hlAbove = hlAbove || isHighlight;
+    } else if (r.top >= view.bottom - 1) {
+      below = true;
+      hlBelow = hlBelow || isHighlight;
+    }
+  }
+  unreadAbove.value = above;
+  unreadBelow.value = below;
+  highlightAbove.value = hlAbove;
+  highlightBelow.value = hlBelow;
+}
+
+// Coalesce the scroll / resize / re-render triggers into one measure per
+// frame — getBoundingClientRect forces layout, so we don't want it per event.
+let rafId = 0;
+function scheduleRecompute(): void {
+  if (rafId) return;
+  rafId = requestAnimationFrame(() => {
+    rafId = 0;
+    recomputeEdges();
+  });
+}
+
+// Bring the unread row nearest the clicked edge into view; repeated clicks
+// then walk through the rest.
+function scrollToUnread(dir: 'up' | 'down'): void {
+  const sc = scroller.value;
+  if (!sc) return;
+  const view = sc.getBoundingClientRect();
+  let target: Element | null = null;
+  let best = dir === 'up' ? -Infinity : Infinity;
+  for (const el of sc.querySelectorAll('.unread, .highlighted')) {
+    const r = el.getBoundingClientRect();
+    if (dir === 'up' && r.bottom <= view.top + 1) {
+      if (r.bottom > best) {
+        best = r.bottom;
+        target = el;
+      }
+    } else if (dir === 'down' && r.top >= view.bottom - 1) {
+      if (r.top < best) {
+        best = r.top;
+        target = el;
+      }
+    }
+  }
+  target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+let resizeObserver: ResizeObserver | null = null;
+onMounted(() => {
+  // Guard like MessageList does: ResizeObserver is missing in some SSR/test
+  // contexts. The onUpdated remeasure still covers content changes there.
+  if (typeof ResizeObserver !== 'undefined' && scroller.value) {
+    resizeObserver = new ResizeObserver(scheduleRecompute);
+    resizeObserver.observe(scroller.value);
+  }
+  recomputeEdges();
+});
+// The list re-renders on every unread-count change — that's the cue to
+// remeasure which unread rows are now off-screen. recomputeEdges only writes
+// refs, and same-value writes don't re-render, so this can't loop.
+onUpdated(scheduleRecompute);
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  if (rafId) cancelAnimationFrame(rafId);
+});
 </script>
 
 <style scoped>
+/* The frame is the component root: a non-scrolling, positioned box that holds
+   the scrollable nav plus the absolutely-pinned out-of-view unread bars. It
+   takes the flex slot the .buffer-list used to occupy in the sidebar. */
+.buffer-list-frame {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
 .buffer-list {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 4px 0;
+}
+/* IRCCloud-style affordance: a thin accent bar pinned to the top or bottom
+   edge of the list when unread buffers are scrolled out of view that way.
+   Clicking it scrolls the nearest off-screen unread buffer into view.
+   The visible bar is drawn by a 3px ::before stripe — the surrounding
+   button is taller (and transparent) purely to give the affordance an
+   easy-to-click/tap hit area without making the visual any thicker. */
+.unread-edge {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 12px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  z-index: 5;
+}
+/* The global `button:hover` paints `--bg-soft`, which would show as a 12px
+   strip over the buffer list. Keep the button transparent — the ::before
+   stripe is the only visual. */
+.unread-edge:hover {
+  background: transparent;
+}
+.unread-edge.top {
+  top: 0;
+}
+.unread-edge.bottom {
+  bottom: 0;
+}
+.unread-edge::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--buffer-unread);
+}
+.unread-edge.top::before {
+  top: 0;
+}
+.unread-edge.bottom::before {
+  bottom: 0;
+}
+.unread-edge.is-highlight::before {
+  background: var(--buffer-highlight);
+}
+/* Grow the visible stripe a touch on hover/focus so the affordance reads as
+   interactive — the button's own hit area is already comfortably large. */
+.unread-edge:hover::before {
+  height: 5px;
+}
+.unread-edge:focus-visible::before {
+  height: 5px;
+  outline: 1px solid var(--fg);
+  outline-offset: -1px;
 }
 .net {
   padding: 4px 0 6px;
