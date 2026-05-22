@@ -218,6 +218,7 @@ interface IrcRun {
   underline: boolean;
   strike: boolean;
   fg: number | null;
+  bg: number | null;
 }
 
 // Walk the IRC formatting state machine and emit runs of text, each tagged
@@ -227,7 +228,7 @@ interface IrcRun {
 //   \x11 monospace                                       — consumed (no-op,
 //                                                          we're already mono)
 //   \x0F                                                 — reset all
-//   \x03[FG[,BG]] mIRC colour                            — FG kept, BG dropped
+//   \x03[FG[,BG]] mIRC colour                            — FG and BG kept
 //   \x04[hex6[,hex6]] truecolour                         — consumed, dropped
 function parseIrcFormatting(text: string): IrcRun[] {
   const runs: IrcRun[] = [];
@@ -236,10 +237,11 @@ function parseIrcFormatting(text: string): IrcRun[] {
     underline = false,
     strike = false;
   let fg: number | null = null;
+  let bg: number | null = null;
   let buf = '';
   const flush = (): void => {
     if (!buf) return;
-    runs.push({ text: buf, bold, italic, underline, strike, fg });
+    runs.push({ text: buf, bold, italic, underline, strike, fg, bg });
     buf = '';
   };
   let i = 0;
@@ -278,6 +280,7 @@ function parseIrcFormatting(text: string): IrcRun[] {
       flush();
       bold = italic = underline = strike = false;
       fg = null;
+      bg = null;
       i++;
       continue;
     }
@@ -289,17 +292,22 @@ function parseIrcFormatting(text: string): IrcRun[] {
         digits += text[i++];
       }
       if (digits === '') {
+        // A bare \x03 closes the colour run — resets both fg and bg.
         fg = null;
+        bg = null;
       } else {
         fg = parseInt(digits, 10);
         if (text[i] === ',' && text[i + 1] >= '0' && text[i + 1] <= '9') {
-          // Consume background but don't render it.
           i++;
           let bgDigits = '';
           while (bgDigits.length < 2 && i < text.length && text[i] >= '0' && text[i] <= '9') {
             bgDigits += text[i++];
           }
+          bg = parseInt(bgDigits, 10);
         }
+        // A foreground with no trailing background leaves bg as-is, per the
+        // modern IRC formatting spec — \x0304 recolours text but keeps
+        // whatever background was already in effect.
       }
       continue;
     }
@@ -325,6 +333,7 @@ function parseIrcFormatting(text: string): IrcRun[] {
 
 export interface TextSegmentStyle {
   color?: string;
+  backgroundColor?: string;
   fontWeight?: string;
   fontStyle?: string;
   textDecoration?: string;
@@ -340,6 +349,11 @@ export interface RenderSegment {
   underline?: boolean;
   strike?: boolean;
   fg?: number | null;
+  bg?: number | null;
+  // A run whose fg and bg are the same colour: invisible text the renderer
+  // shows as a click-to-reveal spoiler. Carries no fg/bg — SpoilerText draws
+  // its own box — but keeps any bold/italic/underline/strike for the reveal.
+  spoiler?: boolean;
 }
 
 // Build a Vue inline-style object for a segment. Colour precedence: an
@@ -355,6 +369,9 @@ export function segmentInlineStyle(seg: RenderSegment, selfColor: string | null)
   } else if (seg.self && selfColor) {
     style.color = selfColor;
   }
+  if (seg.bg != null && MIRC_PALETTE[seg.bg]) {
+    style.backgroundColor = MIRC_PALETTE[seg.bg];
+  }
   if (seg.bold) style.fontWeight = 'bold';
   if (seg.italic) style.fontStyle = 'italic';
   const decos: string[] = [];
@@ -369,6 +386,7 @@ export function segmentHasStyle(seg: RenderSegment): boolean {
     seg.color ||
     seg.self ||
     seg.fg != null ||
+    seg.bg != null ||
     seg.bold ||
     seg.italic ||
     seg.underline ||
@@ -407,9 +425,11 @@ function splitRunIntoSegments(
 // nick splitting run on the cleaned text inside each formatting run.
 //
 // Returned segment shapes (callers branch on these in order):
+//   { text, spoiler, ...fmt }           — hidden run (fg===bg); render as a
+//                                         click-to-reveal box, never an <a>
 //   { url, text, ...fmt }               — clickable link (with formatting)
 //   { text, color?, self?, ...fmt }     — nick / plain text (with formatting)
-// where fmt is { bold?, italic?, underline?, strike?, fg? }.
+// where fmt is { bold?, italic?, underline?, strike?, fg?, bg? }.
 export function splitTextByTokens(
   text: string | null | undefined,
   nickSet: Set<string> | null | undefined,
@@ -426,7 +446,16 @@ export function splitTextByTokens(
     if (run.italic) fmt.italic = true;
     if (run.underline) fmt.underline = true;
     if (run.strike) fmt.strike = true;
+    // A run whose foreground and background are the same colour is invisible
+    // text — the IRC spoiler convention. Emit it as one opaque segment and
+    // skip URL / nick splitting: a linked URL or a coloured nick rendered
+    // inside the run would stay visible and leak the hidden content.
+    if (run.fg != null && run.bg != null && run.fg === run.bg) {
+      out.push({ text: run.text, spoiler: true, ...fmt });
+      continue;
+    }
     if (run.fg != null) fmt.fg = run.fg;
+    if (run.bg != null) fmt.bg = run.bg;
     for (const seg of splitRunIntoSegments(run.text, nickSet, selfLower, colorFn)) {
       out.push({ ...seg, ...fmt });
     }

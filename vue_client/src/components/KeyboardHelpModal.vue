@@ -54,6 +54,7 @@ const shortcuts = computed<ShortcutRow[]>(() => [
   { keys: [MOD, 'B'], label: 'Bold (wraps selection with mIRC code)' },
   { keys: [MOD, 'I'], label: 'Italic (wraps selection with mIRC code)' },
   { keys: [MOD, 'U'], label: 'Underline (wraps selection with mIRC code)' },
+  { keys: ['||text||'], label: 'Spoiler — hidden until clicked' },
   { keys: [MOD, '/'], label: 'Show this help panel' },
 ]);
 </script>

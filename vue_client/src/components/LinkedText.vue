@@ -5,8 +5,9 @@
 
 <template>
   <template v-for="(seg, i) in segments" :key="i">
+    <SpoilerText v-if="seg.spoiler" :seg="seg" />
     <a
-      v-if="seg.url"
+      v-else-if="seg.url"
       class="msg-link"
       :href="seg.url"
       target="_blank"
@@ -24,6 +25,7 @@ import { computed } from 'vue';
 import type { CSSProperties } from 'vue';
 import type { RenderSegment } from '../utils/nickColor.js';
 import { splitTextByTokens, segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
+import SpoilerText from './SpoilerText.vue';
 
 // Renders a plain-text string with URLs auto-linked and IRC formatting
 // (bold/italic/underline/strike + mIRC fg colours) applied. Used by every

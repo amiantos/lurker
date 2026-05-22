@@ -102,8 +102,9 @@
           <span class="body" :class="bodyClass(row.m)">
             <template v-if="hasInlineText(row.m)">
               <template v-for="(seg, j) in textSegments(row.m)" :key="j">
+                <SpoilerText v-if="seg.spoiler" :seg="seg" />
                 <a
-                  v-if="seg.url"
+                  v-else-if="seg.url"
                   class="msg-link"
                   :href="seg.url"
                   target="_blank"
@@ -201,6 +202,7 @@ import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared
 import { collapseDisplay } from '../utils/collapseDisplay.js';
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
+import SpoilerText from './SpoilerText.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type { MessageContext } from '../composables/useMessageActions.js';

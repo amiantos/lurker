@@ -67,7 +67,7 @@
     <MircColorPicker
       v-if="showFormatButton"
       :open="colorPickerOpen"
-      @color="onPickColor"
+      @apply="onApplyColor"
       @reset="onPickReset"
       @close="closeColorPicker"
     />
@@ -115,6 +115,7 @@ import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
 import { requestScrollToBottom } from '../composables/useScrollState.js';
 import { setComposingState } from '../composables/useComposing.js';
 import { chunkCountForSay, chunkCountForAction } from '../utils/messageSplit.js';
+import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
 import NickPicker from './NickPicker.vue';
 import NickSuggestionStrip from './NickSuggestionStrip.vue';
@@ -244,9 +245,11 @@ const longMessageUploading = ref(false);
 function bodyForSplit(raw: string): { body: string; isAction: boolean } {
   if (!raw) return { body: '', isAction: false };
   // // escape: `//foo` is a literal `/foo` message, not a command, so it does
-  // pass through PRIVMSG and is subject to the splitter.
-  if (raw.startsWith('//')) return { body: raw.slice(1), isAction: false };
-  if (raw[0] !== '/') return { body: raw, isAction: false };
+  // pass through PRIVMSG and is subject to the splitter. Plain and //-escaped
+  // messages also get the `||spoiler||` rewrite on send, so count the
+  // post-rewrite bytes here or the split estimate drifts low.
+  if (raw.startsWith('//')) return { body: applySpoilerMarkup(raw.slice(1)), isAction: false };
+  if (raw[0] !== '/') return { body: applySpoilerMarkup(raw), isAction: false };
   const m = raw.match(/^\/(\w+)\s*(.*)$/s);
   if (!m) return { body: '', isAction: false };
   const cmd = m[1].toLowerCase();
@@ -514,11 +517,16 @@ function closeColorPicker() {
   colorPickerOpen.value = false;
 }
 
-function onPickColor(code: string): void {
-  // `code` is a 2-digit string ("00".."15"). A bare \x03 with no digits would
-  // close any open colour run, but for a deliberate pick we always emit
-  // digits so the colour actually takes effect.
-  wrapOrInsertFormatting(FMT_COLOR + code, FMT_COLOR);
+function onApplyColor(fg: string | null, bg: string | null): void {
+  // `fg`/`bg` are 2-digit codes ("00".."15") staged in the picker, either of
+  // which may be null. Build one \x03 code from them: with both set the text
+  // keeps the chosen foreground over the chosen background; a background-only
+  // pick emits foreground 99 (mIRC "default") so just the background fills in.
+  let opening: string;
+  if (fg && bg) opening = `${FMT_COLOR}${fg},${bg}`;
+  else if (fg) opening = FMT_COLOR + fg;
+  else opening = `${FMT_COLOR}99,${bg}`;
+  wrapOrInsertFormatting(opening, FMT_COLOR);
   closeColorPicker();
 }
 
@@ -1064,7 +1072,10 @@ async function submit() {
 
   if (!sendable.value) return;
 
-  const wireText = escapedSlash ? raw.slice(1) : raw;
+  // Rewrite `||spoiler||` into IRC spoiler codes on the way out. History keeps
+  // the typed `||…||` form (commitInput is given `raw`), so up-arrow
+  // round-trips the editable text rather than raw control codes.
+  const wireText = applySpoilerMarkup(escapedSlash ? raw.slice(1) : raw);
   const pending = socketSendWithAck({ type: 'send', networkId, target, text: wireText });
   if (!pending) {
     // Socket isn't open — don't clear the input, don't pollute history. The
