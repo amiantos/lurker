@@ -55,12 +55,7 @@
           >
         </span>
       </div>
-      <div
-        v-else
-        class="line"
-        :class="rowClass(row)"
-        :data-msg-id="row.m?.id ?? null"
-      >
+      <div v-else class="line" :class="rowClass(row)" :data-msg-id="row.m?.id ?? null">
         <template v-if="compactMode && row.m?.type === 'message'">
           <!-- Compact-mode message rows (IRCCloud-style): nick on its own
              head line above the body; body row carries the body and a

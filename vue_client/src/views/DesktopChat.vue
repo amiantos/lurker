@@ -278,7 +278,10 @@ async function measureFootWrap() {
   const last = (el.children[el.children.length - 1] as HTMLElement).offsetTop;
   footWrapped.value = first !== last;
 }
-watch(() => settings.effective('look.font.size'), () => void measureFootWrap());
+watch(
+  () => settings.effective('look.font.size'),
+  () => void measureFootWrap(),
+);
 onMounted(measureFootWrap);
 
 // User count for the active channel buffer. Sits in the topic bar (next to
