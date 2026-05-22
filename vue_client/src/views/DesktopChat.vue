@@ -413,12 +413,16 @@ useChatBootstrap({ onJump: onJumpToMessage });
    scales to any number of middle icons without re-tuning the column count.
    Matches the input bar's single-line height (8px padding + 1lh content +
    1px border) so the sidebar-foot's top border lines up with the input
-   bar's top border. */
+   bar's top border. flex-wrap so a large `look.font.size` setting (which
+   scales icons but not the fixed 220px sidebar) wraps the rightmost icons
+   to a second row inside the foot instead of overflowing into the input
+   bar to the right (issue #64). */
 .sidebar-foot {
   margin-top: auto;
   padding: 8px 12px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
