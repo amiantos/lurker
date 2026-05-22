@@ -1546,7 +1546,10 @@ function handleCommand(line: string, networkId: number, target: string): boolean
       // ircManager.stopNetwork → client.quit()), which sets irc-framework's
       // requested_disconnect flag. Sending a raw QUIT line instead leaves that
       // flag unset, so the socket close looks unexpected and auto-reconnects.
-      const reason = argLine || 'lurker';
+      // With no reason given, send none so the server falls back to its
+      // default quit message (DEFAULT_QUIT_MESSAGE) — the same line used for
+      // an auto-disconnect.
+      const reason = argLine || undefined;
       networks.disconnect(networkId, reason).catch((err) => {
         localInfo(networkId, target, `/quit failed: ${err.message || 'could not disconnect'}`);
       });
