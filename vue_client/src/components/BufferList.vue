@@ -455,8 +455,12 @@ function scrollToUnread(dir: 'up' | 'down'): void {
 
 let resizeObserver: ResizeObserver | null = null;
 onMounted(() => {
-  resizeObserver = new ResizeObserver(scheduleRecompute);
-  if (scroller.value) resizeObserver.observe(scroller.value);
+  // Guard like MessageList does: ResizeObserver is missing in some SSR/test
+  // contexts. The onUpdated remeasure still covers content changes there.
+  if (typeof ResizeObserver !== 'undefined' && scroller.value) {
+    resizeObserver = new ResizeObserver(scheduleRecompute);
+    resizeObserver.observe(scroller.value);
+  }
   recomputeEdges();
 });
 // The list re-renders on every unread-count change — that's the cue to
@@ -489,18 +493,27 @@ onBeforeUnmount(() => {
 }
 /* IRCCloud-style affordance: a thin accent bar pinned to the top or bottom
    edge of the list when unread buffers are scrolled out of view that way.
-   Clicking it scrolls the nearest off-screen unread buffer into view. */
+   Clicking it scrolls the nearest off-screen unread buffer into view.
+   The visible bar is drawn by a 3px ::before stripe — the surrounding
+   button is taller (and transparent) purely to give the affordance an
+   easy-to-click/tap hit area without making the visual any thicker. */
 .unread-edge {
   position: absolute;
   left: 0;
   right: 0;
-  height: 3px;
+  height: 12px;
   margin: 0;
   padding: 0;
   border: none;
-  background: var(--buffer-unread);
+  background: transparent;
   cursor: pointer;
   z-index: 5;
+}
+/* The global `button:hover` paints `--bg-soft`, which would show as a 12px
+   strip over the buffer list. Keep the button transparent — the ::before
+   stripe is the only visual. */
+.unread-edge:hover {
+  background: transparent;
 }
 .unread-edge.top {
   top: 0;
@@ -508,14 +521,29 @@ onBeforeUnmount(() => {
 .unread-edge.bottom {
   bottom: 0;
 }
-.unread-edge.is-highlight {
+.unread-edge::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--buffer-unread);
+}
+.unread-edge.top::before {
+  top: 0;
+}
+.unread-edge.bottom::before {
+  bottom: 0;
+}
+.unread-edge.is-highlight::before {
   background: var(--buffer-highlight);
 }
-/* Grow a touch on hover/focus so the bar reads as an interactive target. */
-.unread-edge:hover {
+/* Grow the visible stripe a touch on hover/focus so the affordance reads as
+   interactive — the button's own hit area is already comfortably large. */
+.unread-edge:hover::before {
   height: 5px;
 }
-.unread-edge:focus-visible {
+.unread-edge:focus-visible::before {
   height: 5px;
   outline: 1px solid var(--fg);
   outline-offset: -1px;
