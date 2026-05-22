@@ -4,35 +4,21 @@
 -->
 
 <template>
-  <template v-for="(seg, i) in segments" :key="i">
-    <SpoilerText v-if="seg.spoiler" :seg="seg" />
-    <a
-      v-else-if="seg.url"
-      class="msg-link"
-      :href="seg.url"
-      target="_blank"
-      rel="noreferrer noopener"
-      :style="styleFor(seg)"
-      >{{ seg.text }}</a
-    >
-    <span v-else-if="hasStyle(seg)" :style="styleFor(seg)">{{ seg.text }}</span>
-    <template v-else>{{ seg.text }}</template>
-  </template>
+  <RenderSegments :segments="segments" />
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { CSSProperties } from 'vue';
-import type { RenderSegment } from '../utils/nickColor.js';
-import { splitTextByTokens, segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
-import SpoilerText from './SpoilerText.vue';
+import { splitTextByTokens } from '../utils/nickColor.js';
+import RenderSegments from './RenderSegments.vue';
 
 // Renders a plain-text string with URLs auto-linked and IRC formatting
-// (bold/italic/underline/strike + mIRC fg colours) applied. Used by every
-// line type in MessageList that doesn't go through nick coloring (motd,
-// errors, part reasons, etc.) and by the topic bar in Chat.vue. Lines that
-// DO get nick coloring (message/notice/action) call splitTextByTokens
-// directly with a real nickSet.
+// (bold/italic/underline/strike + mIRC fg/bg colours + spoilers) applied.
+// Used by every line type in MessageList that doesn't go through nick
+// coloring (motd, errors, part reasons, etc.) and by the topic bar. Lines
+// that DO get nick coloring (message/notice/action) build their segments
+// with a real nickSet and hand them straight to RenderSegments — the actual
+// segment rendering is shared, only the splitting differs.
 const props = withDefaults(
   defineProps<{
     text?: string;
@@ -41,10 +27,4 @@ const props = withDefaults(
 );
 
 const segments = computed(() => splitTextByTokens(props.text, null, null, null));
-function styleFor(seg: RenderSegment): CSSProperties {
-  return segmentInlineStyle(seg, null) as CSSProperties;
-}
-function hasStyle(seg: RenderSegment) {
-  return segmentHasStyle(seg);
-}
 </script>

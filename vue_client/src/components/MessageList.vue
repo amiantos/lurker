@@ -75,20 +75,7 @@
             }}</span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
-            <template v-for="(seg, j) in textSegments(row.m)" :key="j">
-              <SpoilerText v-if="seg.spoiler" :seg="seg" />
-              <a
-                v-else-if="seg.url"
-                class="msg-link"
-                :href="seg.url"
-                target="_blank"
-                rel="noreferrer noopener"
-                :style="segStyle(seg)"
-                >{{ seg.text }}</a
-              >
-              <span v-else-if="segHasStyle(seg)" :style="segStyle(seg)">{{ seg.text }}</span>
-              <template v-else>{{ seg.text }}</template>
-            </template>
+            <RenderSegments :segments="textSegments(row.m)" :self-color="selfColor" />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
         </template>
@@ -101,22 +88,11 @@
             >{{ row.continuationAuthor ? '' : prefixText(row.m) }}</span
           >
           <span class="body" :class="bodyClass(row.m)">
-            <template v-if="hasInlineText(row.m)">
-              <template v-for="(seg, j) in textSegments(row.m)" :key="j">
-                <SpoilerText v-if="seg.spoiler" :seg="seg" />
-                <a
-                  v-else-if="seg.url"
-                  class="msg-link"
-                  :href="seg.url"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  :style="segStyle(seg)"
-                  >{{ seg.text }}</a
-                >
-                <span v-else-if="segHasStyle(seg)" :style="segStyle(seg)">{{ seg.text }}</span>
-                <template v-else>{{ seg.text }}</template>
-              </template>
-            </template>
+            <RenderSegments
+              v-if="hasInlineText(row.m)"
+              :segments="textSegments(row.m)"
+              :self-color="selfColor"
+            />
             <template v-else-if="row.m?.type === 'join'"
               ><NickRef :nick="row.m.nick ?? ''" /> joined</template
             >
@@ -196,14 +172,13 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
-import { segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
 import { formatTimestamp, formatDuration, formatDate, formatDayLabel } from '../utils/timestamp.js';
 import { consolidateRows } from '../utils/consolidate.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
 import { collapseDisplay } from '../utils/collapseDisplay.js';
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
-import SpoilerText from './SpoilerText.vue';
+import RenderSegments from './RenderSegments.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type { MessageContext } from '../composables/useMessageActions.js';
@@ -276,7 +251,9 @@ const nicks = useNickColors();
 const { isMobile } = useViewport();
 
 const actionItalic = computed(() => !!settings.effective('look.action.italic'));
-const selfColor = computed(() => settings.effective('look.nick.self_color'));
+const selfColor = computed<string | null>(
+  () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
+);
 // Compact mode uses its own format setting so users can run the per-line
 // time column at lower precision (default HH:mm) without affecting their
 // standard-layout timestamps. Note: `tsFormat` is referenced via `time()`
@@ -719,13 +696,6 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     ) as RenderSegment[];
   }
   return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
-}
-
-function segStyle(seg: RenderSegment): CSSProperties {
-  return segmentInlineStyle(seg, selfColor.value as string | null) as CSSProperties;
-}
-function segHasStyle(seg: RenderSegment) {
-  return segmentHasStyle(seg);
 }
 
 // Template helpers for consolidation row items — vue-tsc can't narrow
