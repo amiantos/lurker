@@ -526,7 +526,6 @@ export class IrcConnection {
       if (limit === 0 || this.useMonitor) return;
       this.useMonitor = true;
       this.monitorLimit = limit;
-      console.log(`[presence:${this.network.id}] MONITOR detected (limit ${limit})`);
       systemLog.log({
         userId: this.network.user_id,
         scope: this.logScope(),
@@ -560,7 +559,6 @@ export class IrcConnection {
     // there's no conflict to filter.
     c.on('users online', (event: Record<string, unknown>) => {
       const nicks: string[] = Array.isArray(event?.nicks) ? (event.nicks as string[]) : [];
-      console.log(`[presence:${this.network.id}] users online: [${nicks.join(', ')}]`);
       if (nicks.length > 0) {
         systemLog.log({
           userId: this.network.user_id,
@@ -583,7 +581,6 @@ export class IrcConnection {
     //      tracked-peer gate inside markPeerEvent filters out anything else.
     c.on('users offline', (event: Record<string, unknown>) => {
       const nicks: string[] = Array.isArray(event?.nicks) ? (event.nicks as string[]) : [];
-      console.log(`[presence:${this.network.id}] users offline: [${nicks.join(', ')}]`);
       if (nicks.length > 0) {
         systemLog.log({
           userId: this.network.user_id,
@@ -1352,9 +1349,6 @@ export class IrcConnection {
   markPeerEvent(nick: string, state: PeerState, awayMessage: string | null = null): void {
     const canonical = this.eligiblePeer(nick);
     if (!canonical) {
-      console.log(
-        `[presence:${this.network.id}] markPeerEvent ${nick} → ${state} SKIP (not tracked)`,
-      );
       return;
     }
     const prev = getPeerPresence(this.network.id, canonical);
@@ -1365,17 +1359,11 @@ export class IrcConnection {
     else if (state === 'away') allowed = prevState !== 'away';
     else if (state === 'back') allowed = prevState === 'away';
     if (!allowed) {
-      console.log(
-        `[presence:${this.network.id}] markPeerEvent ${canonical} → ${state} SKIP (prev=${prevState})`,
-      );
       return;
     }
     const stateAt = new Date().toISOString();
     const message = state === 'away' ? awayMessage || null : null;
     const next = writePeerState(this.network.id, canonical, state, stateAt, message);
-    console.log(
-      `[presence:${this.network.id}] markPeerEvent ${canonical} ${prevState || 'null'} → ${state}${message ? ` (${message})` : ''}`,
-    );
     this.publishPeerPresence(canonical, next);
   }
 
@@ -1393,9 +1381,6 @@ export class IrcConnection {
     const cap = this.monitorLimit > 0 ? this.monitorLimit : peers.length;
     const watched = peers.slice(0, cap);
     const overflow = peers.length - watched.length;
-    console.log(
-      `[presence:${this.network.id}] seeding MONITOR for ${watched.length} peer(s): [${watched.join(', ')}]${overflow ? ` (+${overflow} overflow)` : ''}`,
-    );
     if (overflow > 0) {
       this.publish({
         type: 'notice',
@@ -1410,17 +1395,14 @@ export class IrcConnection {
     const MAX = 400;
     let chunk: string[] = [];
     let len = 0;
-    let batches = 0;
     const flush = () => {
       if (chunk.length === 0) return;
       const line = 'MONITOR + ' + chunk.join(',');
-      console.log(`[presence:${this.network.id}] → ${line}`);
       try {
         this.client.raw(line);
       } catch (_) {
         /* ignore */
       }
-      batches += 1;
       chunk = [];
       len = 0;
     };
@@ -1437,9 +1419,6 @@ export class IrcConnection {
     // current state of every monitored nick, so it backfills anyone the
     // initial + didn't volunteer state for. markPeerEvent's idempotency
     // gate eats duplicate replies, so this is safe to send unconditionally.
-    console.log(
-      `[presence:${this.network.id}] → MONITOR S (status refresh after ${batches} seed batch(es))`,
-    );
     try {
       this.client.raw('MONITOR S');
     } catch (_) {
@@ -1462,9 +1441,6 @@ export class IrcConnection {
     const lower = nick.toLowerCase();
     if (this.trackedDmPeers.has(lower)) return false;
     this.trackedDmPeers.add(lower);
-    console.log(
-      `[presence:${this.network.id}] trackDmPeer ${nick} (useMonitor=${this.useMonitor}, size=${this.trackedDmPeers.size})`,
-    );
     if (this.useMonitor && this.state === 'connected') {
       if (this.trackedDmPeers.size > this.monitorLimit) {
         // Over-limit add: keep the in-memory tracking but skip MONITOR.
