@@ -27,6 +27,7 @@
       :spellcheck="systemFeatures.spellcheck"
       :autocorrect="systemFeatures.autocorrect"
       :autocapitalize="systemFeatures.autocapitalize"
+      v-bind="comboboxAttrs"
       @keydown="onKeydown"
       @paste="onPaste"
       @blur="onBlur"
@@ -78,8 +79,10 @@
       :buffer="buffer"
       :self-nick="ownNick"
       :anchor="formEl"
+      :listbox-id="nickListboxId"
       @select="onPickerSelect"
       @close="closePicker"
+      @active-change="pickerActiveOptionId = $event"
     />
     <NickSuggestionStrip
       v-show="stripOpen"
@@ -114,7 +117,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, onMounted } from 'vue';
+import { ref, computed, watch, onBeforeUnmount, onMounted, useId } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
@@ -161,6 +164,27 @@ const pickerQuery = ref('');
 const nickPickerEl = ref<InstanceType<typeof NickPicker> | null>(null);
 let pickerTokenStart = -1;
 let pickerTokenEnd = -1;
+// ARIA combobox wiring for the @-picker (issue #55). The textarea is the
+// combobox; the picker panel is the listbox popup. The id is generated once
+// per MessageInput instance and shared with NickPicker so the textarea can
+// point aria-controls / aria-activedescendant at matching elements. The
+// active option id is mirrored from NickPicker's `active-change` emit —
+// empty string when the picker is closed or has no rows, which we surface
+// as `undefined` on the attribute so it doesn't reference a missing element.
+const nickListboxId = useId();
+const pickerActiveOptionId = ref('');
+const comboboxAttrs = computed(() =>
+  pickerOpen.value
+    ? ({
+        role: 'combobox',
+        'aria-haspopup': 'listbox',
+        'aria-autocomplete': 'list',
+        'aria-expanded': 'true',
+        'aria-controls': nickListboxId,
+        'aria-activedescendant': pickerActiveOptionId.value || undefined,
+      } as const)
+    : {},
+);
 const stripOpen = ref(false);
 const stripQuery = ref('');
 let stripTokenStart = -1;

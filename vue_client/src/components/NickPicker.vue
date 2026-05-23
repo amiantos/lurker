@@ -4,11 +4,19 @@
 -->
 
 <template>
+  <!-- ARIA combobox + listbox pattern: focus stays on the host textarea
+       (which carries role="combobox") while this panel renders the listbox
+       popup. The textarea announces the active row via aria-activedescendant
+       pointing at an option's id — see `optionId()` below for the format the
+       host is expected to mirror. -->
   <div
     v-if="open && rows.length"
     ref="panelEl"
     class="nick-picker"
     :style="panelStyle"
+    role="listbox"
+    :id="listboxId"
+    aria-label="Nick completion suggestions"
     @pointerdown.stop
   >
     <div
@@ -16,6 +24,9 @@
       :key="row.lc + ':' + row.index"
       class="row"
       :class="{ active: row.index === activeIndex }"
+      role="option"
+      :id="optionId(row.index)"
+      :aria-selected="row.index === activeIndex"
       @pointerdown.prevent="pick(row.nick)"
       @mouseenter="activeIndex = row.index"
     >
@@ -39,6 +50,10 @@ const props = withDefaults(
     buffer?: Buffer | null;
     selfNick?: string;
     anchor?: HTMLElement | null;
+    // ARIA wiring: the host (MessageInput) owns the id namespace so its
+    // textarea can set aria-controls / aria-activedescendant against
+    // matching ids without timing or ref-unwrap gymnastics.
+    listboxId?: string;
   }>(),
   {
     open: false,
@@ -46,12 +61,18 @@ const props = withDefaults(
     buffer: null,
     selfNick: '',
     anchor: null,
+    listboxId: '',
   },
 );
 
 const emit = defineEmits<{
   select: [nick: string];
   close: [];
+  // Fires whenever the active option id changes — either because the user
+  // moved the highlight or because the candidate list rebuilt. Empty string
+  // means no active option (picker closed or no rows). The host mirrors this
+  // value into the textarea's aria-activedescendant.
+  'active-change': [optionId: string];
 }>();
 
 const ignores = useIgnoresStore();
@@ -94,6 +115,13 @@ const renderedRows = computed(() => rows.value.slice().reverse());
 
 function pick(nick: string) {
   emit('select', nick);
+}
+
+// Stable per-row id for aria-activedescendant. Indexes the original
+// candidate order, not the reversed render order, so the host's "active"
+// pointer matches `activeIndex` directly.
+function optionId(index: number): string {
+  return `${props.listboxId}-opt-${index}`;
 }
 
 // Keyboard navigation, driven from MessageInput's textarea keydown handler:
@@ -196,6 +224,15 @@ watch(
     }
   },
 );
+
+// The id the host should expose via aria-activedescendant. Empty when the
+// picker isn't actually showing anything (closed or no rows) so the host
+// can clear the attribute and not point at a non-existent element.
+const activeOptionId = computed(() =>
+  props.open && rows.value.length > 0 ? optionId(activeIndex.value) : '',
+);
+
+watch(activeOptionId, (id) => emit('active-change', id), { immediate: true });
 </script>
 
 <style scoped>

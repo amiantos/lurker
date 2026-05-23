@@ -4,9 +4,15 @@
 -->
 
 <template>
+  <!-- Listbox semantics so the strip reads as a group of completion options
+       under VoiceOver/TalkBack rather than a row of stray buttons. The strip
+       has no active state (it's tap-only — keyboard nav lives on the desktop
+       NickPicker), so chips carry role="option" but no aria-selected. -->
   <div
     class="nick-suggestion-strip"
     :class="{ visible: rows.length > 0 }"
+    role="listbox"
+    aria-label="Nick suggestions"
     @pointerdown.stop
     @mousedown.prevent.stop
   >
@@ -24,7 +30,7 @@
     <div
       v-for="row in rows"
       :key="row.lc"
-      role="button"
+      role="option"
       class="chip"
       :style="row.color ? { color: row.color } : null"
       @mousedown.prevent
