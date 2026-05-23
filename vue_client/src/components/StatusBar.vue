@@ -274,6 +274,13 @@ function onReturnToPresent() {
   color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
+  /* Match the input bar's line-height (1.4 — tighter than the body default
+     of 1.55 used for message text). Status + input are sibling rows of
+     bottom chrome and need to share a content height; without this they
+     drift apart and the sidebar-foot (also overridden to 1.4 below) and
+     the input bar end up at different heights even with identical box
+     padding. */
+  line-height: 1.4;
 }
 .seg {
   flex: 0 0 auto;

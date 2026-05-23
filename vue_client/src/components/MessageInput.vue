@@ -1696,8 +1696,14 @@ textarea {
   /* Native content-driven sizing: the browser grows/shrinks the textarea
      in a single layout pass with content height baked in, so siblings
      (the message-list) never see a transient 'auto' state. max-height
-     caps growth at 16 rows; beyond that it scrolls internally. */
+     caps growth at 16 rows; beyond that it scrolls internally. min-height
+     locks the empty/initial size to exactly one rendered line at this
+     line-height so the row doesn't shift the moment a first character
+     lands — `field-sizing: content` otherwise switches from the browser's
+     intrinsic `rows="1"` height to the content-derived height on first
+     keystroke, and the two can disagree by ~1px. */
   field-sizing: content;
+  min-height: 1.4em;
   max-height: calc(1.4em * 16);
 }
 textarea:focus {

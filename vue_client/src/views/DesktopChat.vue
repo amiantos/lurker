@@ -37,7 +37,7 @@
         </button>
       </div>
       <BufferList v-if="showChannels" />
-      <div class="sidebar-foot">
+      <div ref="footEl" class="sidebar-foot" :class="{ 'foot-wrapped': footWrapped }">
         <RouterLink class="link" to="/settings" title="Settings"
           ><i class="fa-solid fa-gear"></i
         ></RouterLink>
@@ -148,7 +148,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import type { Network } from '../stores/networks.js';
 import type { BufferLike } from '../composables/useBufferActions.js';
 import type { Buffer } from '../stores/buffers.js';
@@ -255,6 +255,50 @@ useKeyboardShortcuts({
 });
 
 const showChannels = computed(() => settings.effective('look.layout.show_channel_list'));
+
+// Sidebar-foot wrap detector. At large `look.font.size` settings the six icons
+// overflow the fixed 220px sidebar and flex-wrap to a second row. Browser's
+// natural wrap packs as-many-as-fit on row 1 (5+1 or 4+2 looks lopsided);
+// we'd rather show a clean 3+3 split. Measure offsetTop of first vs last
+// icon in the natural flex layout — when they differ, the row wrapped, and
+// `.foot-wrapped` swaps the flex layout for a 3-column grid. The class is
+// stripped before measuring so we read the flex state, not our own override
+// (otherwise the icons would always be on different rows and we'd be stuck
+// in 3+3 even after the user shrinks the font back down). The detector
+// also bails out and clears the flag while the sidebar is collapsed: the
+// collapsed rail uses `flex-direction: column` so every icon stacks on its
+// own row, which would otherwise stick the flag true and force the 3-col
+// grid on re-expand even at default font.
+const footEl = ref<HTMLElement | null>(null);
+const footWrapped = ref(false);
+async function measureFootWrap() {
+  const el = footEl.value;
+  if (!el || el.children.length < 2) return;
+  if (!showChannels.value) {
+    footWrapped.value = false;
+    return;
+  }
+  if (footWrapped.value) {
+    footWrapped.value = false;
+    await nextTick();
+  }
+  const first = (el.children[0] as HTMLElement).offsetTop;
+  const last = (el.children[el.children.length - 1] as HTMLElement).offsetTop;
+  footWrapped.value = first !== last;
+}
+watch(
+  () => settings.effective('look.font.size'),
+  () => void measureFootWrap(),
+);
+// Re-measure when the sidebar expands — we cleared the flag on collapse, so
+// without this the foot would stay flex-wrapped (5+1 / 4+2) even at fonts
+// that triggered the grid before the user collapsed.
+watch(showChannels, async (open) => {
+  if (!open) return;
+  await nextTick();
+  void measureFootWrap();
+});
+onMounted(measureFootWrap);
 
 // User count for the active channel buffer. Sits in the topic bar (next to
 // the members-toggle button) rather than the status bar — the count is a
@@ -411,17 +455,41 @@ useChatBootstrap({ onJump: onJumpToMessage });
 /* Pin the cog (settings) flush-left and the plus (add network) flush-right;
    the middle icons distribute evenly between them. Flex with space-between
    scales to any number of middle icons without re-tuning the column count.
-   Matches the input bar's single-line height (8px padding + 1lh content +
-   1px border) so the sidebar-foot's top border lines up with the input
-   bar's top border. */
+   `padding: 1ch 12px 8px` (not the original symmetric 8px) makes the foot's
+   top padding scale with the font the way the status bar's does — both have
+   `padding-top: 1ch` — so the foot's top border lines up with the status
+   bar's top border at any font size in the two-row wrapped state, and the
+   top icon row sits the same `1ch` below its border as the status text does
+   below its own. Bottom stays at 8px so the bottom row stays vertically
+   centered with the input bar's text (whose box also has `padding: 8px`).
+   flex-wrap so a large `look.font.size` setting (which scales icons but
+   not the fixed 220px sidebar) wraps the rightmost icons to a second row
+   inside the foot instead of overflowing into the input bar to the right
+   (issue #64). */
 .sidebar-foot {
   margin-top: auto;
-  padding: 8px 12px;
+  padding: 1ch 12px 8px;
   border-top: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  /* Match the input bar's line-height (1.4) — the body default of 1.55
+     would leave the foot's content row visibly taller than the input's
+     content row at the same font size. See the matching override on
+     .status-bar. */
+  line-height: 1.4;
+}
+/* When the icons wrap, swap to a 3-column grid so the six icons split
+   evenly into 2 rows of 3 instead of the browser's natural "as many as fit
+   then leftovers" packing (which lands at 5+1 or 4+2 at borderline fonts).
+   Only kicks in when the foot is expanded — the collapsed rail's own
+   flex-column override below takes precedence. */
+.sidebar:not(.collapsed) .sidebar-foot.foot-wrapped {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  justify-items: center;
 }
 /* Collapsed rail: hide the brand, swap the foot to a vertical stack, and
    center everything in the 36px column. Foot icons keep their muscle-memory
