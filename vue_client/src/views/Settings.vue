@@ -166,19 +166,11 @@ watch(
 
 <style scoped>
 .settings-page {
-  /* Same shell discipline as .chat / .mchat / .modal: pin to the
-     visualViewport so the page shrinks when the iOS soft keyboard opens
-     (otherwise on iPad-in-desktop-layout, fields below the keyboard fall
-     under it and become unreachable), and translateY by --viewport-y so
-     focusing an input doesn't push the whole page offscreen. --viewport-h
-     and --viewport-y are set globally by useVisualViewportHeight() in
-     App.vue; on real desktops both are no-ops. See issue #11. */
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--viewport-h, 100dvh);
-  transform: translateY(var(--viewport-y, 0));
+  /* See issue #85: previous `position: fixed + transform: translateY`
+     workaround caused visible jank and was removed. iOS scrolls the
+     page naturally when an input is focused; fields above the
+     auto-scroll point may end up offscreen above. */
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }

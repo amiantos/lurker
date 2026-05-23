@@ -267,25 +267,15 @@ useChatBootstrap({ onJump: onJumpToMessage });
 </script>
 
 <style scoped>
-/* The shell is a fixed-position single-column flex stack pinned to the
-   *visual* viewport, not the layout viewport. This is what defeats iOS
-   Safari's keyboard-opens-and-scrolls-the-page-up behavior:
-     - position: fixed + top: 0 alone isn't enough — iOS still scrolls the
-       layout viewport when an input is focused, dragging fixed elements
-       along with it.
-     - height: var(--viewport-h) shrinks the shell to the visible area so
-       the input sits above the keyboard instead of behind it.
-     - translateY(var(--viewport-y)) cancels out Safari's auto-scroll so
-       the top of the shell lines up with the top of the visible area.
-   The 100dvh / 0 fallbacks keep the layout sensible on first paint and on
-   browsers without visualViewport. */
+/* Single-column flex stack sized to the dynamic viewport. iOS scrolls
+   the page naturally when the keyboard opens; the textarea at the
+   bottom of the shell stays visible just above the keyboard, and the
+   upper content (sidebar / topic / older messages) scrolls off the
+   top of the visible area until the user dismisses the keyboard. See
+   issue #85 for the full investigation — multiple workarounds were
+   tried and each made things worse on at least one device. */
 .mchat {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--viewport-h, 100dvh);
-  transform: translateY(var(--viewport-y, 0));
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;

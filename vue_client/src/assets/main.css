@@ -76,7 +76,11 @@
 html,
 body,
 #app {
-  height: 100%;
+  /* `100dvh` tracks the dynamic viewport on iOS — shrinks when the soft
+     keyboard opens. Without this, body/html stay at full layout-viewport
+     height while the shell (also `100dvh`) shrinks, leaving body area
+     below the shell that iOS's auto-scroll exposes. See issue #85. */
+  height: 100dvh;
   margin: 0;
   background: var(--bg);
   color: var(--fg);
@@ -89,9 +93,15 @@ body,
   text-rendering: optimizeLegibility;
 }
 
-/* Whole app behaves like a CLI window — no body-level scroll. */
+/* Whole app behaves like a CLI window — no document-level scroll.
+   `overscroll-behavior: none` kills the rubber-band bounce at the
+   edges. (Earlier attempts to use `position: fixed` on body to fully
+   lock iOS drag-scroll didn't help — iOS overrides it for keyboard
+   accommodation. See issue #85.) */
+html,
 body {
   overflow: hidden;
+  overscroll-behavior: none;
 }
 
 a {

@@ -971,8 +971,8 @@ watch(scrollToBottomToken, async () => {
 });
 
 // Anything that shrinks MessageList's clientHeight (iOS soft keyboard sliding
-// up via --viewport-h; the message-input textarea auto-growing past one row;
-// the desktop window resizing) shrinks the visible window from the bottom
+// up and scrolling the page; the message-input textarea auto-growing past one
+// row; the desktop window resizing) shrinks the visible window from the bottom
 // without moving scrollTop — so a user pinned to the latest message ends up
 // with the tail of the conversation hidden behind whatever just grew.
 // ResizeObserver fires after layout settles, so scrollHeight is current; the

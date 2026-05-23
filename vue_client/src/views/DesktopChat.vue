@@ -396,19 +396,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
     'sidebar messages members'
     'sidebar status   status'
     'sidebar input    input';
-  /* iPad runs this layout (width > 768px). Mirror .mchat's shell discipline:
-     pin to the visualViewport so the URL-bar collapse / soft-keyboard scroll
-     can't push the top or bottom of the grid offscreen. --viewport-h tracks
-     the actually-visible height; --viewport-y cancels iOS's auto-scroll on
-     focus. Both vars come from useVisualViewportHeight() in App.vue, with
-     100dvh / 0 as first-paint fallbacks. On real desktops the visualViewport
-     equals the window, so this is a no-op there. See issue #11. */
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--viewport-h, 100dvh);
-  transform: translateY(var(--viewport-y, 0));
+  /* Height sized to the dynamic viewport. iOS scrolls the page
+     naturally when the keyboard opens; the input row at the bottom
+     stays visible above the keyboard, and the upper portion (sidebar,
+     topic, older messages) scrolls off the top of the visible area.
+     See issue #85. */
+  height: 100dvh;
   overflow: hidden;
 }
 .chat.sidebar-collapsed {

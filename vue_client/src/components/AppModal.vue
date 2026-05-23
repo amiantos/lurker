@@ -99,18 +99,12 @@ onMounted(() => {
 
 <style scoped>
 .modal {
-  /* Size to the visualViewport rather than the layout viewport. On iOS
-     Safari `inset: 0` + bare `100vh` overshoots — the layout viewport
-     includes the URL-bar zone, so the modal box (and the card centered
-     inside it) extended below the visible bottom on iPad. --viewport-h /
-     --viewport-y come from useVisualViewportHeight() in App.vue; on real
-     desktops both are no-ops. See issue #11. */
+  /* Overlay the page, sized to the dynamic viewport. See issue #85:
+     previous `transform: translateY(--viewport-y)` workaround was
+     removed because it caused visible jank. */
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--viewport-h, 100dvh);
-  transform: translateY(var(--viewport-y, 0));
+  inset: 0;
+  height: 100dvh;
   background: var(--bg);
   display: flex;
   justify-content: center;

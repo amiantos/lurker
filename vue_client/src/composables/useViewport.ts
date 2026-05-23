@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { Ref } from 'vue';
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref } from 'vue';
 
 // Mobile breakpoint. The desktop layout is a 220 + 1fr + 180 = 400px-of-chrome
 // grid, so anything below ~720px gets squeezed beyond repair. 768px is a
@@ -37,47 +37,4 @@ function onChange(e: MediaQueryListEvent): void {
 export function useViewport(): ViewportState {
   ensureInit();
   return { isMobile };
-}
-
-function update(): void {
-  const vv = window.visualViewport;
-  const h = vv ? vv.height : window.innerHeight;
-  const y = vv ? vv.offsetTop : 0;
-  document.documentElement.style.setProperty('--viewport-h', `${h}px`);
-  document.documentElement.style.setProperty('--viewport-y', `${y}px`);
-}
-
-// visualViewport tracks the actual visible area, which on iOS Safari shrinks
-// when the soft keyboard opens. We write both:
-//
-//   --viewport-h: visible height. Lets the mobile shell shrink so the input
-//   ends up just above the keyboard instead of below it.
-//
-//   --viewport-y: how far the visual viewport has been pushed down inside
-//   the layout viewport. When the user focuses an input, iOS Safari scrolls
-//   the layout viewport upward to keep the input visible — for a fixed-
-//   position element that would mean it scrolls offscreen with the page.
-//   translateY-ing the shell by --viewport-y undoes that auto-scroll so the
-//   shell stays glued to the actual visible area.
-//
-// Together with position: fixed on .mchat, these defeat the iOS quirk where
-// focusing an input pushes the whole app up and leaves a gray gutter below.
-export function useVisualViewportHeight(): void {
-  onMounted(() => {
-    if (typeof window === 'undefined') return;
-    update();
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', update);
-      window.visualViewport.addEventListener('scroll', update);
-    }
-    window.addEventListener('resize', update);
-  });
-  onBeforeUnmount(() => {
-    if (typeof window === 'undefined') return;
-    if (window.visualViewport) {
-      window.visualViewport.removeEventListener('resize', update);
-      window.visualViewport.removeEventListener('scroll', update);
-    }
-    window.removeEventListener('resize', update);
-  });
 }
