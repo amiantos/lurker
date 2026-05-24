@@ -247,16 +247,17 @@ watch(searchEl, (el) => {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  gap: 1px;
-  margin: 1px 0 4px;
+  gap: 2px;
+  margin: 2px 0 4px;
   max-height: 240px;
   overflow: hidden;
+  padding-left: 16px;
 }
 .sidebar-subnav-enter-active,
 .sidebar-subnav-leave-active {
   transition:
-    max-height 160ms ease,
-    opacity 120ms ease;
+    max-height 220ms ease-out,
+    opacity 220ms ease;
 }
 .sidebar-subnav-enter-from,
 .sidebar-subnav-leave-to {
@@ -266,7 +267,7 @@ watch(searchEl, (el) => {
 .sidebar-sublink {
   color: var(--fg-muted);
   text-decoration: none;
-  padding: 3px 16px 3px 32px;
+  padding: 4px 16px;
   font-size: 0.9em;
   line-height: 1.35;
   text-transform: lowercase;
