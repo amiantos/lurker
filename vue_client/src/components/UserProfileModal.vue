@@ -118,22 +118,38 @@
         </div>
       </section>
 
-      <!-- Empty / loading state -->
-      <section v-if="!hasIdentity && !hasActivity" class="section status">
-        <p v-if="isNotFound" class="muted">
-          No such nick — {{ nick }} isn't on the network right now.
-        </p>
-        <p v-else class="muted">
+      <!-- Transient waiting state — only while we're genuinely in the dark.
+           If we already know they're offline (MONITOR or not_found whois)
+           the presence dot in the header carries that, so we skip the
+           redundant line and let "Your note" stand on its own. -->
+      <section v-if="!hasIdentity && !hasActivity && !isOffline" class="section status">
+        <p class="muted">
           <i class="fa-solid fa-circle-notch fa-spin"></i> Waiting for whois reply…
         </p>
       </section>
     </div>
 
     <footer class="footer">
-      <button type="button" class="btn-secondary" @click="onSendDm" :disabled="isSelf">
+      <!-- Send DM and Ignore are meaningless while the peer is offline —
+           DMs would bounce and there's no hostmask to build an ignore rule
+           from. Hide entirely rather than disable so the modal doesn't read
+           as "you could do this if only…". -->
+      <button
+        v-if="!isOffline"
+        type="button"
+        class="btn-secondary"
+        @click="onSendDm"
+        :disabled="isSelf"
+      >
         <i class="fa-solid fa-envelope"></i> Send DM
       </button>
-      <button type="button" class="btn-secondary" @click="onIgnore" :disabled="isSelf">
+      <button
+        v-if="!isOffline"
+        type="button"
+        class="btn-secondary"
+        @click="onIgnore"
+        :disabled="isSelf"
+      >
         <i class="fa-solid fa-ban"></i> Ignore…
       </button>
       <span class="spacer"></span>
@@ -220,6 +236,10 @@ const presenceLabel = computed(() => {
 const isNotFound = computed(
   () => (whois.value as { error?: string } | null)?.error === 'not_found',
 );
+// "Offline" for footer/empty-state purposes: either MONITOR has confirmed
+// they're not on the network, or WHOIS came back with no-such-nick. Both
+// mean Send DM / Ignore have nothing to bite on.
+const isOffline = computed(() => isPeerOffline(peer.value) || isNotFound.value);
 
 const hostmask = computed(() => {
   if (!whois.value) return '';
