@@ -43,7 +43,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import type { Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useSettingsStore } from '../stores/settings.js';
@@ -140,6 +140,10 @@ watch(
 
 const contentEl = ref<HTMLElement | null>(null);
 const activeAppearanceSubsectionId = ref<string>('');
+// During smooth anchor scrolling, keep the clicked subsection active until
+// scrolling settles so the scroll-spy does not animate through every heading.
+let pendingAppearanceSubsectionId = '';
+let scrollSpyReleaseTimer: ReturnType<typeof setTimeout> | null = null;
 
 onMounted(() => {
   if (!settings.loaded) {
@@ -150,6 +154,10 @@ onMounted(() => {
   nextTick(() => {
     updateActiveAppearanceSubsection();
   });
+});
+
+onBeforeUnmount(() => {
+  clearPendingAppearanceSubsection();
 });
 
 // Switching panels swaps the pane component inside the same scrolling
@@ -171,14 +179,23 @@ watch(activeCategoryId, async () => {
 
 function updateActiveAppearanceSubsection() {
   if (activeCategoryId.value !== 'appearance') {
+    clearPendingAppearanceSubsection();
     activeAppearanceSubsectionId.value = '';
     return;
   }
 
   const root = contentEl.value;
   if (!root) return;
+
+  if (pendingAppearanceSubsectionId) {
+    activeAppearanceSubsectionId.value = pendingAppearanceSubsectionId;
+    releaseScrollSpyAfterScrollSettles();
+    return;
+  }
+
   const headings = Array.from(root.querySelectorAll<HTMLElement>('[data-setting-group]'));
   if (!headings.length) {
+    clearPendingAppearanceSubsection();
     activeAppearanceSubsectionId.value = '';
     return;
   }
@@ -203,16 +220,42 @@ function updateActiveAppearanceSubsection() {
   activeAppearanceSubsectionId.value = active.dataset.settingGroup || '';
 }
 
+function clearPendingAppearanceSubsection() {
+  pendingAppearanceSubsectionId = '';
+  if (scrollSpyReleaseTimer !== null) {
+    clearTimeout(scrollSpyReleaseTimer);
+    scrollSpyReleaseTimer = null;
+  }
+}
+
+function holdActiveAppearanceSubsection(id: string) {
+  pendingAppearanceSubsectionId = id;
+  activeAppearanceSubsectionId.value = id;
+  releaseScrollSpyAfterScrollSettles();
+}
+
+function releaseScrollSpyAfterScrollSettles() {
+  if (scrollSpyReleaseTimer !== null) {
+    clearTimeout(scrollSpyReleaseTimer);
+  }
+  scrollSpyReleaseTimer = setTimeout(() => {
+    pendingAppearanceSubsectionId = '';
+    scrollSpyReleaseTimer = null;
+    updateActiveAppearanceSubsection();
+  }, 120);
+}
+
 function scrollGroupIntoView(groupEl: HTMLElement) {
   const root = contentEl.value;
   if (!root) return;
   const rootRect = root.getBoundingClientRect();
   const groupRect = groupEl.getBoundingClientRect();
+  const groupId = groupEl.dataset.settingGroup;
+  if (groupId) holdActiveAppearanceSubsection(groupId);
   root.scrollTo({
     top: root.scrollTop + groupRect.top - rootRect.top - 12,
     behavior: 'smooth',
   });
-  activeAppearanceSubsectionId.value = groupEl.dataset.settingGroup || '';
 }
 
 async function scrollToAppearanceSubsection(id: string) {
