@@ -136,44 +136,72 @@ onBeforeUnmount(() => {
 .context-menu {
   position: fixed;
   z-index: 300;
-  min-width: 140px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
-  padding: 4px 0;
-  font-size: 0.95em;
+  min-width: 160px;
+  /* `width: auto` on a position:fixed element near the right edge gets
+     shrink-wrapped to the available viewport space, which wraps long labels
+     before the clamp watcher gets a chance to shift the menu left. `max-content`
+     ignores the viewport constraint and sizes to the widest unwrapped item, so
+     the clamp logic then sees the real width and repositions correctly. */
+  width: max-content;
+  /* --bg-soft elevates the menu visually above the page (which uses --bg) so
+     the popup reads as a distinct surface without needing a visible border
+     (--border resolves to --bg-soft in the default theme, so a plain border
+     against page bg was invisible anyway). The drop shadow + the brighter
+     surface together do the floating-layer job. */
+  background: var(--bg-soft);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  padding: 0;
   color: var(--fg);
   user-select: none;
 }
 .item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  padding: 6px 12px;
+  /* Asymmetric horizontal padding: more on the right so the label has
+     breathing room from the menu edge — reads tight at 12px once the menu
+     widens out for a long label. */
+  padding: 8px 16px 8px 14px;
   background: none;
   border: none;
   color: inherit;
   font: inherit;
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
 }
 .item:hover:not(:disabled) {
-  background: var(--bg-soft);
+  /* Stronger wash now that the surface beneath is --bg-soft rather than --bg,
+     so the hover still reads against the elevated menu colour. */
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.item:hover:not(:disabled) .icon {
+  color: var(--accent);
 }
 .item:disabled {
   color: var(--fg-muted);
   cursor: default;
 }
+/* FontAwesome solid glyphs are biased toward the top of their em box (bell,
+   thumbtack, etc. have visual weight near the top), so geometric centering
+   reads as the icon sitting slightly high relative to the label's x-height.
+   A 1px downward nudge optically aligns the icon body with the text. */
 .icon {
   display: inline-flex;
-  width: 14px;
+  align-items: center;
   justify-content: center;
+  width: 16px;
+  flex-shrink: 0;
   color: var(--fg-muted);
+  transform: translateY(1px);
 }
 .divider {
   height: 1px;
-  background: var(--border);
-  margin: 4px 0;
+  /* Use --bg as the divider colour now that the menu surface is --bg-soft —
+     a 1px line in the page background colour cuts cleanly through the
+     elevated surface. */
+  background: var(--bg);
+  margin: 0;
 }
 </style>

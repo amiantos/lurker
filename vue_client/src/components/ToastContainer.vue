@@ -10,7 +10,7 @@
         v-for="t in toasts.items"
         :key="t.id"
         class="toast"
-        :class="{ clickable: !!t.networkId }"
+        :class="[`kind-${t.kind}`, { clickable: !!t.networkId }]"
         @click="onClick(t)"
       >
         <div class="row">
@@ -63,13 +63,34 @@ function onClick(t: Toast) {
 .toast {
   pointer-events: auto;
   background: var(--bg);
-  border: 1px solid var(--accent);
-  border-left-width: 3px;
-  padding: 8px 10px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--toast-accent, var(--accent));
+  padding: 10px 12px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   color: var(--fg);
-  font-size: 0.95em;
-  animation: toast-in 140ms ease-out;
+  animation: toast-in 160ms ease-out;
+}
+/* Each kind drives a single CSS variable so the left bar and title pick up the
+   same color without duplicating selectors. Defaults to --accent (purple) for
+   any future kind that doesn't get its own rule. */
+.toast.kind-highlight {
+  --toast-accent: var(--warn);
+}
+.toast.kind-dm,
+.toast.kind-notify {
+  --toast-accent: var(--accent);
+}
+.toast.kind-always_notify {
+  --toast-accent: var(--good);
+}
+.toast.kind-info {
+  --toast-accent: var(--fg-muted);
+}
+.toast.kind-warn {
+  --toast-accent: var(--warn);
+}
+.toast.kind-error {
+  --toast-accent: var(--bad);
 }
 .toast.clickable {
   cursor: pointer;
@@ -80,15 +101,18 @@ function onClick(t: Toast) {
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 .title {
   flex: 1;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--toast-accent, var(--accent));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.toast.kind-info .title {
+  color: var(--fg);
 }
 .x {
   background: none;
@@ -97,13 +121,14 @@ function onClick(t: Toast) {
   cursor: pointer;
   font: inherit;
   padding: 0 2px;
+  line-height: 1;
 }
 .x:hover {
   color: var(--fg);
 }
 .body {
   color: var(--fg);
-  margin-top: 2px;
+  margin-top: 4px;
   white-space: pre-wrap;
   word-break: break-word;
   display: -webkit-box;
@@ -114,11 +139,11 @@ function onClick(t: Toast) {
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    transform: translateX(8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(0);
   }
 }
 </style>
