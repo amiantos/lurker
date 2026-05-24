@@ -139,12 +139,7 @@ That means the smallest useful change is to make the `h3.subhead` itself the tar
 Recommended attributes:
 
 ```vue
-<h3
-  v-if="groups.length > 1"
-  class="subhead"
-  :id="grp.id"
-  :data-setting-group="grp.id"
->
+<h3 v-if="groups.length > 1" class="subhead" :id="grp.id" :data-setting-group="grp.id">
   {{ grp.title }}
 </h3>
 ```
