@@ -21,7 +21,8 @@ registerVerb({
     properties: {
       query: {
         type: 'string',
-        description: 'Free-text query. Multiple whitespace-separated terms are ANDed together.',
+        description:
+          'Free-text query. Multiple whitespace-separated terms are ANDed together. Optional when at least one structured filter (networkId/target/nick) is provided — filter-only searches return matches without an FTS pass.',
       },
       networkId: {
         type: 'integer',
@@ -47,7 +48,6 @@ registerVerb({
         description: 'Optional. Return only matches with id < before, for backward pagination.',
       },
     },
-    required: ['query'],
     additionalProperties: false,
   },
   handler(ctx: VerbContext, input: Record<string, unknown>) {
