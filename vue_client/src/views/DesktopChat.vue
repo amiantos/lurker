@@ -83,7 +83,7 @@
         v-if="isServerBuffer"
         type="button"
         class="link word server-right-start"
-        @click="showChannelList = true"
+        @click="active && channelListModal.open(active.networkId)"
       >
         Channel List
       </button>
@@ -131,8 +131,8 @@
     <MessageInput v-if="!isSystemConsole" ref="messageInputRef" />
 
     <NetworkForm
-      v-if="showNetworkForm"
-      :network="editingNetwork ?? undefined"
+      v-if="networkEditor.isOpen"
+      :network="networkEditor.editingNetwork ?? undefined"
       @close="closeNetworkForm"
     />
     <HighlightsModal
@@ -148,9 +148,9 @@
       @close="showTopic = false"
     />
     <ChannelListModal
-      v-if="showChannelList && active"
-      :network-id="active.networkId"
-      @close="showChannelList = false"
+      v-if="channelListModal.isOpen && channelListModal.networkId !== null"
+      :network-id="channelListModal.networkId!"
+      @close="channelListModal.close()"
     />
     <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
     <QuickSwitcher v-if="showSwitcher" @close="showSwitcher = false" />
@@ -173,7 +173,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import type { Network } from '../stores/networks.js';
 import type { BufferLike } from '../composables/useBufferActions.js';
 import type { Buffer } from '../stores/buffers.js';
@@ -205,6 +205,8 @@ import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
+import { useChannelListModal } from '../composables/useChannelListModal.js';
+import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 
 const networks = useNetworksStore();
@@ -221,12 +223,11 @@ const nickNotes = useNickNotesStore();
 const whois = useWhoisStore();
 const bufferActions = useBufferActions();
 
-const showNetworkForm = ref(false);
-const editingNetwork = ref<Network | null>(null);
+const channelListModal = reactive(useChannelListModal());
+const networkEditor = reactive(useNetworkEditor());
 const showHighlights = ref(false);
 const showBookmarks = ref(false);
 const showTopic = ref(false);
-const showChannelList = ref(false);
 const showUploads = ref(false);
 const showSwitcher = ref(false);
 const showSearch = ref(false);
@@ -251,11 +252,11 @@ function openBufferActions() {
 // Any modal open? Type-ahead must not steal focus from a modal's own fields.
 const anyModalOpen = computed(
   () =>
-    showNetworkForm.value ||
+    networkEditor.isOpen ||
     showHighlights.value ||
     showBookmarks.value ||
     showTopic.value ||
-    showChannelList.value ||
+    channelListModal.isOpen ||
     showUploads.value ||
     showSwitcher.value ||
     showSearch.value ||
@@ -391,16 +392,13 @@ function onChatClick(e: MouseEvent) {
 const onJumpToMessage = useJumpToMessage({ pendingScrollId });
 
 function openAddNetwork() {
-  editingNetwork.value = null;
-  showNetworkForm.value = true;
+  networkEditor.open();
 }
 function openEditNetwork(net: Network) {
-  editingNetwork.value = net;
-  showNetworkForm.value = true;
+  networkEditor.open(net);
 }
 function closeNetworkForm() {
-  showNetworkForm.value = false;
-  editingNetwork.value = null;
+  networkEditor.close();
 }
 
 function editActiveNetwork() {
