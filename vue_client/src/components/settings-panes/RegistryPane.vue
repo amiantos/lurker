@@ -14,7 +14,9 @@
     <p v-if="error" class="error inline">{{ error }}</p>
 
     <template v-for="grp in groups" :key="grp.id">
-      <h3 v-if="groups.length > 1" class="subhead">{{ grp.title }}</h3>
+      <h3 v-if="groups.length > 1" :id="grp.id" class="subhead" :data-setting-group="grp.id">
+        {{ grp.title }}
+      </h3>
       <ul class="rows">
         <SettingsRow
           v-for="opt in grp.items"

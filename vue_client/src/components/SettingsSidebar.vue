@@ -42,14 +42,40 @@
           {{ cat.label }}
         </option>
       </select>
-      <RouterLink
-        v-for="cat in visibleCategories"
-        :key="cat.id"
-        :to="{ name: 'settings', params: { category: cat.id } }"
-        class="sidebar-link"
-        :class="{ active: cat.id === activeCategoryId }"
-        >{{ cat.label }}</RouterLink
-      >
+      <template v-for="cat in visibleCategories" :key="cat.id">
+        <RouterLink
+          :to="{ name: 'settings', params: { category: cat.id } }"
+          class="sidebar-link"
+          :class="{ active: cat.id === activeCategoryId }"
+          >{{ cat.label }}</RouterLink
+        >
+        <Transition name="sidebar-subnav">
+          <nav
+            v-if="
+              cat.id === 'appearance' &&
+              activeCategoryId === 'appearance' &&
+              appearanceSubsections.length > 1
+            "
+            class="sidebar-subnav"
+            aria-label="appearance subsections"
+          >
+            <RouterLink
+              v-for="subsection in appearanceSubsections"
+              :key="subsection.id"
+              class="sidebar-sublink"
+              :class="{ active: subsection.id === activeAppearanceSubsectionId }"
+              :to="{
+                name: 'settings',
+                params: { category: 'appearance' },
+                hash: `#${subsection.id}`,
+              }"
+              @click="$emit('selectAppearanceSubsection', subsection.id)"
+            >
+              {{ subsection.label }}
+            </RouterLink>
+          </nav>
+        </Transition>
+      </template>
     </template>
 
     <!-- Search mode: flat list of matching settings with breadcrumb. -->
@@ -79,7 +105,18 @@ import { REGISTRY, CATEGORIES } from '../utils/settingsRegistry.js';
 const props = defineProps<{
   activeCategoryId: string;
   visibleCategories: SettingCategory[];
+  appearanceSubsections: SettingsSubsection[];
+  activeAppearanceSubsectionId: string;
 }>();
+
+defineEmits<{
+  selectAppearanceSubsection: [id: string];
+}>();
+
+interface SettingsSubsection {
+  id: string;
+  label: string;
+}
 
 const router = useRouter();
 const searchInput = ref('');
@@ -171,7 +208,6 @@ watch(searchEl, (el) => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1px;
 }
 
 .search-wrap {
@@ -204,6 +240,62 @@ watch(searchEl, (el) => {
   color: var(--fg);
   background: var(--bg-soft);
   border-left-color: var(--accent);
+}
+
+.sidebar-subnav {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  margin-bottom: 4px;
+  max-height: 240px;
+  overflow: hidden;
+}
+.sidebar-subnav-enter-active,
+.sidebar-subnav-leave-active {
+  transition:
+    max-height 220ms ease-out,
+    opacity 220ms ease;
+}
+.sidebar-subnav-enter-from,
+.sidebar-subnav-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.sidebar-sublink {
+  color: var(--fg-muted);
+  text-decoration: none;
+  padding: 4px 16px 4px 30px;
+  font-size: 0.9em;
+  line-height: 1.35;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  position: relative;
+}
+.sidebar-sublink::before {
+  content: '';
+  position: absolute;
+  left: 18px;
+  top: 0;
+  height: 50%;
+  width: 8px;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  pointer-events: none;
+}
+.sidebar-sublink:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: 18px;
+  top: 50%;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--border);
+  pointer-events: none;
+}
+.sidebar-sublink:hover,
+.sidebar-sublink.active {
+  color: var(--fg);
+  background: var(--bg-soft);
 }
 
 .result {
@@ -280,6 +372,9 @@ watch(searchEl, (el) => {
     background-size: 10px 6px;
   }
   .sidebar-link {
+    display: none;
+  }
+  .sidebar-subnav {
     display: none;
   }
 }

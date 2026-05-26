@@ -26,9 +26,12 @@
       <SettingsSidebar
         :active-category-id="activeCategoryId"
         :visible-categories="visibleCategories"
+        :appearance-subsections="appearanceSubsections"
+        :active-appearance-subsection-id="activeAppearanceSubsectionId"
+        @select-appearance-subsection="scrollToAppearanceSubsection"
       />
 
-      <main class="content" ref="contentEl">
+      <main class="content" ref="contentEl" @scroll="updateActiveAppearanceSubsection">
         <component
           v-if="activePaneComponent"
           :is="activePaneComponent"
@@ -40,13 +43,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue';
 import type { Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSocket } from '../composables/useSocket.js';
-import { CATEGORIES } from '../utils/settingsRegistry.js';
+import { CATEGORIES, GROUPS, REGISTRY } from '../utils/settingsRegistry.js';
 import SettingsSidebar from '../components/SettingsSidebar.vue';
 import RegistryPane from '../components/settings-panes/RegistryPane.vue';
 import NotificationsPane from '../components/settings-panes/NotificationsPane.vue';
@@ -101,6 +104,24 @@ const activePaneComponent = computed(() => {
   return RegistryPane;
 });
 
+interface SettingsSubsection {
+  id: string;
+  label: string;
+}
+
+const appearanceSubsections = computed<SettingsSubsection[]>(() => {
+  const seen = new Set<string>();
+  const subsections: SettingsSubsection[] = [];
+  for (const opt of REGISTRY) {
+    if (opt.category !== 'appearance') continue;
+    const id = opt.group || '_';
+    if (seen.has(id)) continue;
+    seen.add(id);
+    subsections.push({ id, label: GROUPS[id] || id });
+  }
+  return subsections;
+});
+
 // Redirect bare /settings (or /settings/<unknown>) to the canonical first
 // category so the URL always names the visible pane. Mirrors the macOS-Settings
 // behavior: closing and re-opening lands you somewhere concrete, not on a
@@ -118,6 +139,14 @@ watch(
 );
 
 const contentEl = ref<HTMLElement | null>(null);
+const activeAppearanceSubsectionId = ref<string>('');
+// During smooth anchor scrolling, keep the clicked subsection active until
+// scrolling settles so the scroll-spy does not animate through every heading.
+let pendingAppearanceSubsectionId = '';
+let scrollSpyReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+// Tracks a subsection id that scrollToAppearanceSubsection already scrolled to
+// so the hash watcher can skip the redundant second scroll.
+let pendingGroupScrollId = '';
 
 onMounted(() => {
   if (!settings.loaded) {
@@ -125,6 +154,13 @@ onMounted(() => {
       error.value = e.message;
     });
   }
+  nextTick(() => {
+    updateActiveAppearanceSubsection();
+  });
+});
+
+onBeforeUnmount(() => {
+  clearPendingAppearanceSubsection();
 });
 
 // Switching panels swaps the pane component inside the same scrolling
@@ -135,10 +171,104 @@ onMounted(() => {
 // targeted row into view itself).
 watch(activeCategoryId, async () => {
   await nextTick();
-  if (route.hash) return;
+  if (route.hash) {
+    updateActiveAppearanceSubsection();
+    return;
+  }
   const root = contentEl.value;
   if (root) root.scrollTop = 0;
+  updateActiveAppearanceSubsection();
 });
+
+function updateActiveAppearanceSubsection() {
+  if (activeCategoryId.value !== 'appearance') {
+    clearPendingAppearanceSubsection();
+    activeAppearanceSubsectionId.value = '';
+    return;
+  }
+
+  const root = contentEl.value;
+  if (!root) return;
+
+  if (pendingAppearanceSubsectionId) {
+    activeAppearanceSubsectionId.value = pendingAppearanceSubsectionId;
+    releaseScrollSpyAfterScrollSettles();
+    return;
+  }
+
+  const headings = Array.from(root.querySelectorAll<HTMLElement>('[data-setting-group]'));
+  if (!headings.length) {
+    clearPendingAppearanceSubsection();
+    activeAppearanceSubsectionId.value = '';
+    return;
+  }
+
+  const rootTop = root.getBoundingClientRect().top;
+  const activationOffset = 24;
+  let active = headings[0];
+
+  for (const heading of headings) {
+    const distanceFromTop = heading.getBoundingClientRect().top - rootTop;
+    if (distanceFromTop <= activationOffset) {
+      active = heading;
+    } else {
+      break;
+    }
+  }
+
+  if (root.scrollTop + root.clientHeight >= root.scrollHeight - 2) {
+    active = headings[headings.length - 1];
+  }
+
+  activeAppearanceSubsectionId.value = active.dataset.settingGroup || '';
+}
+
+function clearPendingAppearanceSubsection() {
+  pendingAppearanceSubsectionId = '';
+  if (scrollSpyReleaseTimer !== null) {
+    clearTimeout(scrollSpyReleaseTimer);
+    scrollSpyReleaseTimer = null;
+  }
+}
+
+function holdActiveAppearanceSubsection(id: string) {
+  pendingAppearanceSubsectionId = id;
+  activeAppearanceSubsectionId.value = id;
+  releaseScrollSpyAfterScrollSettles();
+}
+
+function releaseScrollSpyAfterScrollSettles() {
+  if (scrollSpyReleaseTimer !== null) {
+    clearTimeout(scrollSpyReleaseTimer);
+  }
+  scrollSpyReleaseTimer = setTimeout(() => {
+    pendingAppearanceSubsectionId = '';
+    scrollSpyReleaseTimer = null;
+    updateActiveAppearanceSubsection();
+  }, 120);
+}
+
+function scrollGroupIntoView(groupEl: HTMLElement) {
+  const root = contentEl.value;
+  if (!root) return;
+  const rootRect = root.getBoundingClientRect();
+  const groupRect = groupEl.getBoundingClientRect();
+  const groupId = groupEl.dataset.settingGroup;
+  if (groupId && activeCategoryId.value === 'appearance') holdActiveAppearanceSubsection(groupId);
+  root.scrollTo({
+    top: root.scrollTop + groupRect.top - rootRect.top - 12,
+    behavior: 'smooth',
+  });
+}
+
+async function scrollToAppearanceSubsection(id: string) {
+  pendingGroupScrollId = id;
+  await nextTick();
+  const root = contentEl.value;
+  if (!root) return;
+  const groupEl = root.querySelector<HTMLElement>(`[data-setting-group="${CSS.escape(id)}"]`);
+  if (groupEl) scrollGroupIntoView(groupEl);
+}
 
 // Search-results in the sidebar route to /settings/<cat>#<setting.key>. When
 // the hash changes (or the route resolves with a hash), find the row tagged
@@ -153,11 +283,22 @@ watch(
     const target = hash.startsWith('#') ? hash.slice(1) : hash;
     const root = contentEl.value;
     if (!root) return;
-    const el = root.querySelector(`[data-setting-key="${CSS.escape(target)}"]`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.classList.add('flash-target');
-      setTimeout(() => el.classList.remove('flash-target'), 1400);
+    const settingEl = root.querySelector<HTMLElement>(`[data-setting-key="${CSS.escape(target)}"]`);
+    if (settingEl) {
+      settingEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      settingEl.classList.add('flash-target');
+      setTimeout(() => settingEl.classList.remove('flash-target'), 1400);
+      updateActiveAppearanceSubsection();
+      return;
+    }
+
+    const groupEl = root.querySelector<HTMLElement>(`[data-setting-group="${CSS.escape(target)}"]`);
+    if (groupEl) {
+      if (target === pendingGroupScrollId) {
+        pendingGroupScrollId = '';
+        return;
+      }
+      scrollGroupIntoView(groupEl);
     }
   },
   { immediate: true },
