@@ -17,6 +17,7 @@
           :class="netHeadClasses(net.id)"
           :title="`Open ${net.name} server buffer`"
           @click="select(net.id, serverTarget(net.id))"
+          @contextmenu.prevent="networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)"
         >
           <span class="indicator" :class="stateClass(net.id)"></span>
           <span class="name">{{ net.name }}</span>
@@ -29,6 +30,23 @@
           <span v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0" class="badge">{{
             unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id)))
           }}</span>
+          <button
+            type="button"
+            class="net-action-channels"
+            :disabled="!isNetworkConnected(net)"
+            title="Channel List"
+            @click.stop="networkActions.openChannelList(net)"
+          >
+            <i class="fa-solid fa-hashtag"></i>
+          </button>
+          <button
+            type="button"
+            class="net-action-overflow"
+            title="Network options"
+            @click.stop="networkActions.openMenuFromButton(net, $event.currentTarget as Element)"
+          >
+            <i class="fa-solid fa-ellipsis-vertical"></i>
+          </button>
         </div>
 
         <!-- Touch delay (200ms, touch-only) so a quick swipe over the pinned
@@ -175,12 +193,13 @@ import {
   watch,
 } from 'vue';
 import draggable from 'vuedraggable';
-import { useNetworksStore, type PeerPresenceEntry } from '../stores/networks.js';
+import { useNetworksStore, type Network, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
+import { useNetworkActions } from '../composables/useNetworkActions.js';
 import {
   isPeerOffline as derivePeerOffline,
   isPeerAway as derivePeerAway,
@@ -192,6 +211,11 @@ const drafts = useDraftStore();
 const pins = usePinsStore();
 const settings = useSettingsStore();
 const bufferActions = useBufferActions();
+const networkActions = useNetworkActions();
+
+function isNetworkConnected(net: Network): boolean {
+  return networks.states[net.id]?.state === 'connected';
+}
 
 // Buffer-list display settings — feed both the row CSS (bold gate) and the
 // badge logic. `unread_display` picks between four modes:
@@ -615,6 +639,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.04em;
   cursor: pointer;
   border-left: 2px solid transparent;
+  position: relative;
 }
 /* Gate :hover behind (hover: hover) so iPad-in-desktop-layout (width > 768px,
    touch-only) doesn't get the iOS sticky-hover two-tap: with bare :hover the
@@ -629,6 +654,56 @@ onBeforeUnmount(() => {
   background: var(--bg-soft);
   border-left-color: var(--accent);
 }
+
+/* Hover action buttons on network rows — mirrors .channels .row-actions pattern. */
+.net-action-channels,
+.net-action-overflow {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 4px;
+  background: var(--bg-soft);
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+.net-action-overflow {
+  right: 4px;
+}
+.net-action-channels {
+  right: 28px;
+}
+@media (hover: hover) {
+  .net-head:hover .net-action-channels,
+  .net-head:hover .net-action-overflow {
+    opacity: 1;
+  }
+  .net-head:hover .net-action-channels:disabled {
+    opacity: 0.35;
+  }
+  .net-action-channels:hover,
+  .net-action-overflow:hover {
+    color: var(--fg);
+  }
+}
+.net-action-overflow:focus-visible,
+.net-action-channels:focus-visible {
+  opacity: 1;
+}
+.net-action-channels:disabled {
+  pointer-events: none;
+}
+@media (max-width: 768px) {
+  .net-action-channels,
+  .net-action-overflow {
+    display: none;
+  }
+}
+
 .name {
   flex: 1;
   color: var(--fg);
