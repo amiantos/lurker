@@ -3,7 +3,12 @@
 
 import IRC, { ircLineParser } from 'irc-framework';
 import type { Client as IrcClient } from 'irc-framework';
-import { insertMessage, hasMessageForTarget, listBufferTargets } from '../db/messages.js';
+import {
+  insertMessage,
+  hasMessageForTarget,
+  listBufferTargets,
+  COUNTABLE_TYPES,
+} from '../db/messages.js';
 import type { Network } from '../db/networks.js';
 import { upsertChannel } from '../db/networks.js';
 import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
@@ -266,11 +271,13 @@ export class IrcConnection {
         console.warn('[highlight] match-on-insert failed:', (e as Error)?.message || e);
       }
       // Stamp from_ignored at insert time so unread/highlight counts can
-      // exclude ignored senders without a per-query mask scan. Self messages
-      // can't be ignored; nick-less system rows have no sender to match.
+      // exclude ignored senders without a per-query mask scan. Only the
+      // countable chat types ever read this column — gating to COUNTABLE_TYPES
+      // skips the DB lookup on high-churn JOIN/PART/QUIT/NICK/KICK/etc.
+      // Self messages can't be ignored; nick-less system rows have no sender.
       let fromIgnored = false;
       const nick = event.nick as string | null | undefined;
-      if (nick && !event.self) {
+      if (COUNTABLE_TYPES.has(event.type) && nick && !event.self) {
         try {
           const masks = listIgnoredMasks({
             userId: this.network.user_id,
