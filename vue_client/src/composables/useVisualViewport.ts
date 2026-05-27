@@ -113,5 +113,9 @@ export function installVisualViewport(): void {
 }
 
 export function useVisualViewport(): VisualViewportState {
+  // Self-init so callers don't have to remember to bootstrap separately —
+  // the `initialized` guard inside makes this idempotent with the explicit
+  // call in main.ts. Matches the pattern in useViewport.
+  installVisualViewport();
   return { keyboardOpen };
 }

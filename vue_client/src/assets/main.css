@@ -48,6 +48,27 @@
   }
 }
 
+/* Home-indicator clearance for desktop-layout shells (DesktopChat on iPad
+   PWA landscape, Settings, modals). Mobile chat's .mchat handles its own
+   inset via .composer-host so it's deliberately not listed here. Only
+   applies in PWA standalone — Mobile Safari's bottom chrome already
+   covers the home indicator. The :root[data-keyboard-open] override
+   collapses the inset when the soft keyboard is up (keyboard covers the
+   home-indicator zone). */
+@media (display-mode: standalone) {
+  .chat,
+  .settings-page,
+  .modal {
+    box-sizing: border-box;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+:root[data-keyboard-open='true'] .chat,
+:root[data-keyboard-open='true'] .settings-page,
+:root[data-keyboard-open='true'] .modal {
+  padding-bottom: 0;
+}
+
 * {
   box-sizing: border-box;
 }

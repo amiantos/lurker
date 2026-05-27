@@ -343,8 +343,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
    regression (returns phantom positive values after keyboard dismiss).
    The body-level `touch-action: none` (see main.css) is what stops iOS
    from drag-scrolling the document despite overflow:hidden. Safe-area
-   home-indicator clearance lives on the input element (see
-   MessageInput.vue) so it can't compete with the shell's geometry. */
+   home-indicator clearance lives on .composer-host (below) — wrapping
+   MessageInput so it can't compete with the shell's geometry. */
 .mchat {
   height: 100dvh;
   display: flex;
@@ -479,10 +479,17 @@ useChatBootstrap({ onJump: onJumpToMessage });
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
   scrollbar-width: none;
-  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 .composer-host::-webkit-scrollbar {
   display: none;
+}
+/* env(safe-area-inset-bottom) only applies in PWA standalone. Mobile
+   Safari's own bottom chrome already keeps content above the home
+   indicator, so applying the inset there leaves a redundant gap. */
+@media (display-mode: standalone) {
+  .composer-host {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
 }
 .composer-host.keyboard-open {
   padding-bottom: 0;
