@@ -63,7 +63,15 @@ const color = computed(() => {
 
 const wrapperStyle = computed<CSSProperties>(() => {
   const c = color.value;
-  if (!c) return {};
+  if (!c) {
+    // No chosen colour to honour (out-of-range mIRC index, or a RenderSegment
+    // hand-built without fg). Keep the wrapper inheriting the .spoiler base
+    // background (var(--fg-muted)) unrevealed, then fade to the neutral tint
+    // on reveal — same behaviour as before customisation.
+    return revealed.value
+      ? { background: 'color-mix(in srgb, var(--fg-muted) 22%, transparent)' }
+      : {};
+  }
   return revealed.value
     ? // Faint tint of the chosen colour so the affordance survives the reveal.
       { background: `color-mix(in srgb, ${c} 22%, transparent)` }

@@ -53,7 +53,7 @@
         class="swatch"
         tabindex="0"
         :class="{ picked: staged[slot] === entry.code }"
-        :style="{ backgroundColor: entry.hex }"
+        :style="{ backgroundColor: entry.color }"
         :title="`mIRC ${entry.code}`"
         :aria-label="`mIRC colour ${entry.code}`"
         @mousedown.prevent
@@ -120,7 +120,10 @@ const mircPalette = useMircPalette();
 const swatches = computed(() =>
   Array.from({ length: 16 }, (_, i) => ({
     code: i.toString().padStart(2, '0'),
-    hex: mircColor(i, mircPalette.value) ?? '#ffffff',
+    // Any CSS colour value the user's palette resolves to — hex, rgb(),
+    // var(--name), color-mix(...). Falls back to white only if the lookup
+    // returns null, which shouldn't happen for indices 0-15.
+    color: mircColor(i, mircPalette.value) ?? '#ffffff',
   })),
 );
 
@@ -159,8 +162,8 @@ watch(
 // it doesn't — so the slot buttons double as a preview of the staged colour.
 function chipStyle(code: string | null): Record<string, string> {
   if (!code) return {};
-  const hex = swatches.value.find((p) => p.code === code)?.hex;
-  return hex ? { backgroundColor: hex } : {};
+  const c = swatches.value.find((p) => p.code === code)?.color;
+  return c ? { backgroundColor: c } : {};
 }
 
 function pick(code: string): void {
