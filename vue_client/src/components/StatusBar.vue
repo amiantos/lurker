@@ -4,8 +4,8 @@
 -->
 
 <template>
-  <div v-if="active" class="status-wrap">
-    <div class="status-bar" :class="{ compact }">
+  <div v-if="active" class="status-bar">
+    <div class="bar" :class="{ compact }">
       <span v-if="!compact" class="seg clock">{{ clock }}</span>
       <span v-if="!compact" class="seg buffer"
         ><template v-if="targetLabel"
@@ -336,15 +336,17 @@ function onReturnToPresent() {
 </script>
 
 <style scoped>
-/* Positioning context for the composer overlays. The wrap has no chrome of
-   its own — it's just there so the strips can pin to .status-bar's bounds
-   via `position: absolute; inset: 0;` and the colour picker can anchor to
-   the wrap's bottom-right with overflow no longer in the way. */
-.status-wrap {
+/* The component root carries no chrome of its own — it's a positioning
+   context so the strips can pin to the inner bar via `position: absolute;
+   inset: 0;` and the colour picker can anchor to the bottom-right without
+   the inner row's `overflow: hidden` clipping it. Keeping the `.status-bar`
+   class on the root preserves the contract with consumers' scoped-CSS
+   selectors (DesktopChat's grid placement, MobileChat's flex sizing). */
+.status-bar {
   position: relative;
   flex: 0 0 auto;
 }
-.status-bar {
+.bar {
   display: flex;
   align-items: center;
   gap: 1ch;

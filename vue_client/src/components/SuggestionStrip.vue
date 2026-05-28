@@ -85,7 +85,7 @@ watch(
 /* Overlays StatusBar's row with the same chrome — same padding, same
    border-top, same background — so the bar visually disappears under the
    strip while it's active. Positioned absolute to fill the parent
-   .status-wrap (StatusBar's positioning container). */
+   .status-bar (StatusBar's component root). */
 .suggestion-strip {
   position: absolute;
   inset: 0;

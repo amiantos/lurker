@@ -181,10 +181,10 @@ function apply(): void {
 </script>
 
 <style scoped>
-/* Anchored to the bottom-right of StatusBar's .status-wrap, so the picker
-   pops up out of the bar toward the message list (extending upward, since
-   the bar's content area is short). The 6px bottom offset gives a small
-   gap between the picker and the composer underneath. */
+/* Anchored to StatusBar's bottom-right, so the picker pops up out of the
+   bar toward the message list (extending upward, since the bar's content
+   area is short). The 6px bottom offset gives a small gap between the
+   picker and the composer underneath. */
 .mirc-picker {
   position: absolute;
   right: 12px;
