@@ -21,7 +21,6 @@ export interface ComposerOverlayState {
   // pushed by the host (MessageInput) so candidate building and ignore
   // filtering stay in one place and mirror the emoji flow.
   nickOpen: boolean;
-  nickQuery: string;
   nickItems: NickStripItem[];
   nickActiveIndex: number;
   // Emoji `:shortcode:` strip.
@@ -34,7 +33,6 @@ export interface ComposerOverlayState {
 
 const state = reactive<ComposerOverlayState>({
   nickOpen: false,
-  nickQuery: '',
   nickItems: [],
   nickActiveIndex: 0,
   emojiOpen: false,
@@ -72,9 +70,8 @@ export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
   if (h.onColorClose) onColorClose = h.onColorClose;
 }
 
-export function setNickStrip(open: boolean, query = '', items: NickStripItem[] = []): void {
+export function setNickStrip(open: boolean, items: NickStripItem[] = []): void {
   state.nickOpen = open;
-  state.nickQuery = query;
   state.nickItems = items;
   state.nickActiveIndex = 0;
 }

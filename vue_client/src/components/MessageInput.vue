@@ -932,7 +932,7 @@ function refreshPicker() {
       const items =
         buf && active.value ? buildNickStripItems(buf, active.value.networkId, prefix) : [];
       if (items.length > 0) {
-        setNickStrip(true, prefix, items);
+        setNickStrip(true, items);
         stripTokenStart = start;
         stripTokenEnd = end;
       } else {

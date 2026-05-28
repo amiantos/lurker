@@ -71,6 +71,19 @@ const emit = defineEmits<{
 
 const rootEl = ref<HTMLElement | null>(null);
 
+// `v-show` (not `v-if`) preserves the strip's scrollLeft across hides, so
+// reopening with a new candidate set could land the new chip 0 off-screen
+// to the left of the previous session's scroll position — and the
+// activeIndex watcher below wouldn't fire because activeIndex stayed at 0.
+// Reset scrollLeft on the closed→open transition (items.length 0 → >0) so
+// every fresh open starts at chip 0.
+watch(
+  () => props.items.length > 0,
+  (visible, wasVisible) => {
+    if (visible && !wasVisible && rootEl.value) rootEl.value.scrollLeft = 0;
+  },
+);
+
 // When the host shifts activeIndex via keyboard nav, pull the chip into
 // view if the row has overflowed horizontally. Watching the prop keeps the
 // strip declarative — no imperative ref method needed.
