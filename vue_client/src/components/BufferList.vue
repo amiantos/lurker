@@ -17,7 +17,9 @@
           :class="netHeadClasses(net.id)"
           :title="`Open ${net.name} server buffer`"
           @click="select(net.id, serverTarget(net.id))"
-          @contextmenu.prevent="networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)"
+          @contextmenu.prevent="
+            networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)
+          "
         >
           <span class="indicator" :class="stateClass(net.id)"></span>
           <span class="name">{{ net.name }}</span>
