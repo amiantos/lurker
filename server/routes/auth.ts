@@ -241,7 +241,7 @@ router.post('/setup/password', (req: Request, res: Response) => {
 
 // Public status probe. Returns the bare minimum the UI needs to render the
 // landing page — no info about who created the invite or for whom.
-router.get('/invite/:token', (req: Request, res: Response) => {
+router.get('/invite/:token', (req: Request<{ token: string }>, res: Response) => {
   const result = inviteStatus(req.params.token);
   if (result.status === 'valid') {
     res.json({ valid: true });
@@ -256,7 +256,7 @@ router.get('/invite/:token', (req: Request, res: Response) => {
 
 router.post(
   '/invite/:token/options',
-  asyncHandler(async (req: Request, res: Response) => {
+  asyncHandler(async (req: Request<{ token: string }>, res: Response) => {
     const result = inviteStatus(req.params.token);
     if (result.status !== 'valid') {
       res.status(404).json({ error: 'invalid or used invite' });
@@ -303,7 +303,7 @@ router.post(
 
 router.post(
   '/invite/:token/verify',
-  asyncHandler(async (req: Request, res: Response) => {
+  asyncHandler(async (req: Request<{ token: string }>, res: Response) => {
     const challengeToken = req.signedCookies?.[CHALLENGE_COOKIE];
     const entry = consumeChallenge(challengeToken);
     clearChallengeCookie(res);
@@ -376,7 +376,7 @@ router.post(
 
 // Password redemption of an invite. Mirrors /invite/:token/options +
 // /invite/:token/verify but with no WebAuthn dance.
-router.post('/invite/:token/password', (req: Request, res: Response) => {
+router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Response) => {
   const result = inviteStatus(req.params.token);
   if (result.status !== 'valid') {
     res.status(404).json({ error: 'invalid or used invite' });
