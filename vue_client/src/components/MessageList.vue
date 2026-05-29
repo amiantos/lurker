@@ -18,19 +18,27 @@
     <div v-if="!buffer?.hasMoreOlder && messages.length" class="notice">— start of history —</div>
     <p v-if="!messages.length" class="notice empty">No messages yet.</p>
     <template v-for="row in renderRows" :key="row.key">
-      <div v-if="row.divider === 'unread'" class="notice unread-divider">— unread —</div>
+      <div v-if="row.divider === 'unread'" class="notice unread-divider">
+        <span class="notice-label">unread</span>
+      </div>
       <div v-else-if="row.divider === 'away'" class="notice presence-divider">
-        — away<template v-if="row.awayMessage">: {{ row.awayMessage }}</template> —
+        <span class="notice-label"
+          >away<template v-if="row.awayMessage">: {{ row.awayMessage }}</template></span
+        >
       </div>
       <div v-else-if="row.divider === 'back'" class="notice presence-divider">
-        — back (gone {{ formatDuration(row.awayAt ?? '', row.backAt ?? '') }}) —
+        <span class="notice-label">back (gone {{ formatDuration(row.awayAt ?? '', row.backAt ?? '') }})</span>
       </div>
-      <div v-else-if="row.divider === 'date'" class="notice date-divider">{{ row.dateStr }}</div>
+      <div v-else-if="row.divider === 'date'" class="notice date-divider">
+        <span class="notice-label">{{ row.dateStr }}</span>
+      </div>
       <div v-else-if="row.divider === 'cleared'" class="notice cleared-divider">
-        cleared {{ formatDateTime(row.clearedAt ?? '') }}
-        <button type="button" class="cleared-undo" @click="onUnclearClick">
-          Show earlier messages
-        </button>
+        <span class="notice-label"
+          >cleared {{ formatDateTime(row.clearedAt ?? '') }}
+          <button type="button" class="cleared-undo" @click="onUnclearClick">
+            Show earlier messages
+          </button></span
+        >
       </div>
       <div
         v-else-if="row.consolidation"
@@ -1412,6 +1420,7 @@ watch(
 .unread-divider::after {
   content: '';
   flex: 1;
+  min-width: var(--space-7);
   border-top: 1px dashed var(--warn);
   opacity: 0.6;
 }
@@ -1439,8 +1448,22 @@ watch(
 .cleared-divider::after {
   content: '';
   flex: 1;
+  min-width: var(--space-7);
   border-top: 1px dashed var(--fg-muted);
   opacity: 0.6;
+}
+
+/* Center label for all flanked markers. Shrinks and wraps as a centered block
+   between the two rules (which floor at min-width and stay vertically centered),
+   so long labels — the unbounded /away reason worst case — wrap cleanly instead
+   of crowding out the lines. overflow-wrap: anywhere only breaks mid-word as a
+   last resort for an unbreakable token; word boundaries are preferred so the
+   uppercase + letter-spacing styling stays readable. */
+.notice-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 /* Undo affordance on the /clear divider — text-only button styled inline
