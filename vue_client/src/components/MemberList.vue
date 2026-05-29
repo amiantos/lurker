@@ -62,6 +62,14 @@ const selfNick = computed(() => {
   if (!b) return null;
   return networks.states[b.networkId]?.nick || null;
 });
+// The current user's own modes in this channel, used to gate the operator
+// actions in the member context menu.
+const selfModes = computed<string[]>(() => {
+  const sn = selfNick.value;
+  if (!sn) return [];
+  const me = members.value.find((m) => nickOf(m).toLowerCase() === sn.toLowerCase());
+  return me && Array.isArray(me.modes) ? me.modes : [];
+});
 
 function isSelf(m: BufferMember): boolean {
   const sn = selfNick.value;
@@ -104,6 +112,8 @@ function menuContext() {
     onIgnore: (m: BufferMember) => {
       modalMember.value = m;
     },
+    channel: buffer.value?.target ?? null,
+    selfModes: selfModes.value,
   };
 }
 function onRowClick(e: MouseEvent, m: BufferMember): void {

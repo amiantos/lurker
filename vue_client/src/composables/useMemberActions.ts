@@ -6,17 +6,26 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useContextMenu } from './useContextMenu.js';
+import { socketSend } from './useSocket.js';
 
 export interface MemberLike {
   nick: string;
   modes?: string[];
   away?: boolean;
+  user?: string | null;
+  host?: string | null;
 }
 
 export interface MemberContext {
   networkId: number;
   isSelf(member: MemberLike | string): boolean;
   onIgnore(member: MemberLike | string): void;
+  // Channel-operator wiring. When `channel` is a channel target and the
+  // current user holds an op-ish mode in it (`selfModes`), buildItems appends
+  // kick/ban/op/voice actions. Both optional so non-channel callers (or any
+  // future caller that doesn't supply them) simply get the base menu.
+  channel?: string | null;
+  selfModes?: string[];
 }
 
 export interface MemberActionsAPI {
@@ -39,6 +48,40 @@ export interface MemberActionsAPI {
 
 function nickOf(m: MemberLike | string): string {
   return typeof m === 'string' ? m : m.nick;
+}
+
+function modesOf(m: MemberLike | string): string[] {
+  return typeof m === 'string' || !Array.isArray(m.modes) ? [] : m.modes;
+}
+
+// Modes that grant moderation power (kick/ban/voice). Halfop (h) counts here.
+const MODERATE_MODES = ['q', 'a', 'o', 'h'];
+// Modes that grant op management (+o/-o). Plain halfops usually can't op, so
+// they're excluded — keeps the action off the menu rather than letting the
+// server bounce it.
+const OP_MODES = ['q', 'a', 'o'];
+
+function hasAny(modes: string[], wanted: string[]): boolean {
+  return wanted.some((m) => modes.includes(m));
+}
+
+// Host ban by default (*!*@host). Falls back to a nick mask only when the
+// host isn't known yet — channel members normally have it backfilled from the
+// WHO issued on join, the same source the Ignore modal relies on.
+function maskFor(member: MemberLike | string): string {
+  const host = typeof member === 'string' ? null : member.host;
+  return host ? `*!*@${host}` : `${nickOf(member)}!*@*`;
+}
+
+// Optional kick reason. null = the operator cancelled (abort the action);
+// '' = no reason (send a bare KICK).
+function promptKickReason(): string | null {
+  const r = window.prompt('Kick reason (optional):', '');
+  return r === null ? null : r.trim();
+}
+
+function kickLine(channel: string, nick: string, reason: string): string {
+  return reason ? `KICK ${channel} ${nick} :${reason}` : `KICK ${channel} ${nick}`;
 }
 
 // Shared menu items for a member of a channel. Exposed as a composable so
@@ -84,6 +127,67 @@ export function useMemberActions(): MemberActionsAPI {
         onClick: () => ctx.onIgnore(member),
       },
     ];
+
+    // Channel-operator actions, gated on the current user's own modes in this
+    // channel. Each sends a raw IRC line and lets the server's MODE/KICK echo
+    // update state — the same path the /kick and /mode slash commands use, so
+    // no optimistic mutation here.
+    const channel =
+      typeof ctx.channel === 'string' && ctx.channel.startsWith('#') ? ctx.channel : null;
+    const selfModes = Array.isArray(ctx.selfModes) ? ctx.selfModes : [];
+    if (channel && hasAny(selfModes, MODERATE_MODES)) {
+      const networkId = ctx.networkId;
+      const targetModes = modesOf(member);
+      const send = (l: string) => socketSend({ type: 'raw', networkId, line: l });
+      const ch = channel;
+
+      items.push({ divider: true });
+
+      if (hasAny(selfModes, OP_MODES)) {
+        const opped = targetModes.includes('o');
+        items.push({
+          label: opped ? 'Take op' : 'Give op',
+          icon: 'fa-solid fa-shield-halved',
+          onClick: () => send(`MODE ${ch} ${opped ? '-' : '+'}o ${nick}`),
+        });
+      }
+
+      const voiced = targetModes.includes('v');
+      items.push({
+        label: voiced ? 'Remove voice' : 'Give voice',
+        icon: voiced ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone',
+        onClick: () => send(`MODE ${ch} ${voiced ? '-' : '+'}v ${nick}`),
+      });
+
+      items.push({
+        label: 'Kick…',
+        icon: 'fa-solid fa-user-slash',
+        onClick: () => {
+          const reason = promptKickReason();
+          if (reason === null) return;
+          send(kickLine(ch, nick, reason));
+        },
+      });
+
+      items.push({
+        label: 'Ban',
+        icon: 'fa-solid fa-gavel',
+        onClick: () => send(`MODE ${ch} +b ${maskFor(member)}`),
+      });
+
+      items.push({
+        label: 'Kick + ban…',
+        icon: 'fa-solid fa-user-lock',
+        onClick: () => {
+          const reason = promptKickReason();
+          if (reason === null) return;
+          // Ban before kick so the target can't rejoin in the gap.
+          send(`MODE ${ch} +b ${maskFor(member)}`);
+          send(kickLine(ch, nick, reason));
+        },
+      });
+    }
+
     return items;
   }
 
