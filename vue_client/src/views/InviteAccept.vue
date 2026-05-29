@@ -122,11 +122,11 @@ async function onAccept() {
 }
 .card {
   border: 1px solid var(--accent);
-  padding: 20px 24px;
+  padding: var(--space-8) var(--space-9);
   width: 360px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-6);
 }
 h1 {
   margin: 0;
@@ -144,7 +144,7 @@ h1 {
 }
 .warning {
   margin: 0;
-  padding: 8px 10px;
+  padding: var(--space-4) var(--space-5);
   border: 1px solid var(--warn, var(--accent));
   color: var(--warn, var(--accent));
   background: transparent;
@@ -152,13 +152,13 @@ h1 {
 form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-6);
   margin: 0;
 }
 label {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--space-2);
   color: var(--fg-muted);
 }
 label span {
@@ -167,7 +167,7 @@ label span {
 }
 button {
   cursor: pointer;
-  padding: 8px 12px;
+  padding: var(--space-4) var(--space-6);
 }
 .error {
   margin: 0;
@@ -179,6 +179,5 @@ button {
 .hint {
   margin: 0;
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 </style>

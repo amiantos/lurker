@@ -187,21 +187,21 @@ function apply(): void {
    picker and the composer underneath. */
 .mirc-picker {
   position: absolute;
-  right: 12px;
-  bottom: 6px;
+  right: var(--space-6);
+  bottom: var(--space-3);
   background: var(--bg);
   border: 1px solid var(--border);
-  padding: 6px;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  z-index: 6;
+  gap: var(--space-3);
+  z-index: var(--z-raised);
 }
 .swatch-grid {
   display: grid;
   grid-template-columns: repeat(8, 1.4em);
   grid-auto-rows: 1.4em;
-  gap: 4px;
+  gap: var(--space-2);
 }
 .swatch {
   border: 1px solid var(--border);
@@ -221,17 +221,17 @@ function apply(): void {
 .row {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-6);
 }
 .slots {
-  gap: 4px;
+  gap: var(--space-2);
 }
 .slot {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--space-2);
   padding: 1px 0;
   color: var(--fg-muted);
   border: 1px solid var(--border);
@@ -254,7 +254,7 @@ function apply(): void {
   width: 0.9em;
   height: 0.9em;
   border: 1px solid var(--border);
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
 }
 .action {
   color: var(--fg-muted);

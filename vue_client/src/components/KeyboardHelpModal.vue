@@ -74,7 +74,7 @@ const shortcuts = computed<ShortcutRow[]>(() => [
   border-collapse: collapse;
 }
 .list td {
-  padding: 6px 0;
+  padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
@@ -84,20 +84,19 @@ const shortcuts = computed<ShortcutRow[]>(() => [
 .keys {
   white-space: nowrap;
   width: 1%;
-  padding-right: 16px;
+  padding-right: var(--space-7);
 }
 kbd {
   font: inherit;
-  font-size: 0.85em;
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  padding: 1px 6px;
+  padding: 1px var(--space-3);
   margin: 0 1px;
-  color: var(--fg);
+  color: var(--fg-muted);
 }
 .plus {
   color: var(--fg-muted);
-  margin: 0 2px;
+  margin: 0 var(--space-1);
 }
 .label {
   color: var(--fg);

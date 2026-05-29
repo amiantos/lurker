@@ -95,9 +95,9 @@ async function onDragEnd() {
 .network {
   display: grid;
   grid-template-columns: max-content max-content 1fr;
-  gap: 12px;
+  gap: var(--space-6);
   align-items: center;
-  padding: 8px 4px;
+  padding: var(--space-4) var(--space-2);
   border-top: 1px solid var(--border);
 }
 .network:first-child {
@@ -109,7 +109,7 @@ async function onDragEnd() {
 .grip {
   color: var(--fg-muted);
   cursor: grab;
-  padding: 0 2px;
+  padding: 0 var(--space-1);
 }
 .grip:active {
   cursor: grabbing;

@@ -129,7 +129,7 @@ watch(
   display: flex;
   align-items: center;
   gap: 1ch;
-  padding: 1ch 12px 0;
+  padding: 1ch var(--space-6) 0;
   background: var(--bg);
   border-top: 1px solid var(--border);
   white-space: nowrap;
@@ -137,7 +137,7 @@ watch(
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  z-index: 5;
+  z-index: var(--z-raised);
   opacity: 0;
   pointer-events: none;
   transition: opacity 80ms linear;
@@ -159,7 +159,7 @@ watch(
   /* Horizontal padding only — vertical padding would make the chip taller
      than the nick strip's chips, and `align-items: center` on the strip
      would then push the emoji glyph above the StatusBar's text baseline. */
-  padding: 0 6px;
+  padding: 0 var(--space-3);
   font: inherit;
   color: var(--fg);
   cursor: pointer;

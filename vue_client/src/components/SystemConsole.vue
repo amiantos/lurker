@@ -75,19 +75,19 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px 12px;
+  padding: var(--space-3) var(--space-6);
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   line-height: 1.4;
 }
 .notice.empty {
   color: var(--fg-muted);
   font-style: italic;
-  padding: 12px;
+  padding: var(--space-6);
 }
 .row {
   display: grid;
   grid-template-columns: auto auto 1fr;
-  gap: 8px;
+  gap: var(--space-4);
   align-items: baseline;
 }
 .time {
@@ -103,9 +103,9 @@ watch(
   word-break: break-word;
 }
 .row.lvl-warn .text {
-  color: var(--warn, #d9a300);
+  color: var(--warn);
 }
 .row.lvl-error .text {
-  color: var(--bad, #d33);
+  color: var(--bad);
 }
 </style>

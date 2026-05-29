@@ -140,8 +140,8 @@ function onIgnoreRemove(networkId: number, mask: string) {
 .rule-add {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 10px;
+  gap: var(--space-4);
+  padding-top: var(--space-5);
 }
 .rule-add input[type='text'] {
   flex: 1;

@@ -78,16 +78,15 @@ onMounted(() => {
 .body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-6);
 }
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-2);
 }
 .label-text {
   color: var(--fg-muted);
-  font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -95,7 +94,7 @@ input {
   background: var(--bg-soft);
   color: var(--fg);
   border: 1px solid var(--border);
-  padding: 6px 8px;
+  padding: var(--space-3) var(--space-4);
   font: inherit;
 }
 input:focus {
@@ -105,7 +104,6 @@ input:focus {
 .preview {
   margin: 0;
   color: var(--fg-muted);
-  font-size: 0.9em;
   line-height: 1.45;
 }
 .preview {
@@ -113,21 +111,21 @@ input:focus {
 }
 code {
   background: var(--bg-soft);
-  padding: 0 4px;
-  border-radius: 2px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
 }
 .actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
 }
 .btn-primary,
 .btn-secondary {
   background: none;
   border: 1px solid var(--border);
   color: var(--fg);
-  padding: 6px 14px;
+  padding: var(--space-3) var(--space-6);
   cursor: pointer;
   font: inherit;
 }

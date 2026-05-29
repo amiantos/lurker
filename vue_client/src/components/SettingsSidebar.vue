@@ -204,19 +204,19 @@ watch(searchEl, (el) => {
   flex: 0 0 auto;
   width: 14em;
   border-right: 1px solid var(--border);
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
 }
 
 .search-wrap {
-  padding: 4px 12px 8px;
+  padding: var(--space-2) var(--space-6) var(--space-4);
 }
 .search {
   width: 100%;
   font: inherit;
-  padding: 4px 6px;
+  padding: var(--space-2) var(--space-3);
   line-height: 1.4;
 }
 .search:focus {
@@ -227,7 +227,7 @@ watch(searchEl, (el) => {
 .sidebar-link {
   color: var(--fg-muted);
   text-decoration: none;
-  padding: 4px 16px;
+  padding: var(--space-2) var(--space-7);
   text-transform: lowercase;
   letter-spacing: 0.04em;
   border-left: 2px solid transparent;
@@ -246,7 +246,7 @@ watch(searchEl, (el) => {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  margin-bottom: 4px;
+  margin-bottom: var(--space-2);
   max-height: 240px;
   overflow: hidden;
 }
@@ -264,8 +264,7 @@ watch(searchEl, (el) => {
 .sidebar-sublink {
   color: var(--fg-muted);
   text-decoration: none;
-  padding: 4px 16px 4px 30px;
-  font-size: 0.9em;
+  padding: var(--space-2) var(--space-7) var(--space-2) 30px;
   line-height: 1.35;
   text-transform: lowercase;
   letter-spacing: 0.03em;
@@ -305,7 +304,7 @@ watch(searchEl, (el) => {
   text-align: left;
   font: inherit;
   cursor: pointer;
-  padding: 6px 16px;
+  padding: var(--space-3) var(--space-7);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -322,13 +321,11 @@ watch(searchEl, (el) => {
   color: var(--fg-muted);
   text-transform: lowercase;
   letter-spacing: 0.04em;
-  font-size: 0.85em;
 }
 .result-key {
   color: var(--fg-muted);
   background: var(--bg-soft);
-  padding: 0 4px;
-  font-size: 0.85em;
+  padding: 0 var(--space-2);
   align-self: flex-start;
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -336,7 +333,7 @@ watch(searchEl, (el) => {
 
 .no-match {
   color: var(--fg-muted);
-  padding: 8px 16px;
+  padding: var(--space-4) var(--space-7);
 }
 
 /* The compact picker is mobile-only — the full vertical list of RouterLinks
@@ -355,14 +352,14 @@ watch(searchEl, (el) => {
   .mobile-picker {
     display: block;
     width: calc(100% - 24px);
-    margin: 0 12px 8px;
+    margin: 0 var(--space-6) var(--space-4);
     font: inherit;
     /* Strip the native dropdown chrome so the select sizes identically to the
        search input above (UA select styling otherwise trims its vertical
        size below an <input>'s, even with the same padding/border). */
     appearance: none;
     -webkit-appearance: none;
-    padding: 4px 24px 4px 6px;
+    padding: var(--space-2) var(--space-9) var(--space-2) var(--space-3);
     line-height: 1.4;
     /* Inline SVG chevron replaces the now-stripped native arrow so the user
        still has a visual "I can tap this" cue. Color follows --fg-muted. */

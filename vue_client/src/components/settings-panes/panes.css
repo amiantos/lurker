@@ -8,40 +8,38 @@
  */
 
 .settings-pane {
-  padding: 16px;
+  padding: var(--space-7);
 }
 .settings-pane > * {
   max-width: 70ch;
 }
 .settings-pane h2 {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-3);
   color: var(--accent);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 1.05em;
   font-weight: 600;
 }
 .settings-pane .section-desc {
   color: var(--fg-muted);
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-6);
 }
 .settings-pane .subhead {
-  margin: 18px 0 6px;
+  margin: var(--space-7) 0 var(--space-3);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.9em;
   font-weight: 600;
 }
 .settings-pane > .subhead:first-of-type {
-  margin-top: 4px;
+  margin-top: var(--space-2);
 }
 
 .settings-pane .link {
   background: none;
   border: none;
   color: var(--accent);
-  padding: 2px 6px;
+  padding: var(--space-1) var(--space-3);
   cursor: pointer;
   font: inherit;
 }
@@ -58,17 +56,17 @@
 
 .settings-pane .error.inline {
   color: var(--bad);
-  padding: 0 0 6px;
+  padding: 0 0 var(--space-3);
   margin: 0;
 }
 .settings-pane .muted {
   color: var(--fg-muted);
-  padding: 16px;
+  padding: var(--space-7);
   font-style: italic;
 }
 .settings-pane .muted.small {
-  font-size: 0.95em;
-  padding: 4px 0;
+  color: var(--fg-muted);
+  padding: var(--space-2) 0;
   font-style: normal;
 }
 
@@ -81,9 +79,9 @@
 .settings-pane .device {
   display: grid;
   grid-template-columns: 1fr max-content max-content;
-  gap: 12px;
+  gap: var(--space-6);
   align-items: center;
-  padding: 6px 0;
+  padding: var(--space-3) 0;
   border-top: 1px solid var(--border);
 }
 .settings-pane .device:first-child {
@@ -97,13 +95,12 @@
 }
 .settings-pane .device .last-seen {
   color: var(--fg-muted);
-  font-size: 0.95em;
 }
 
 .settings-pane .hl-sep {
   border: none;
   border-top: 1px solid var(--border);
-  margin: 28px 0 22px;
+  margin: var(--space-9) 0 var(--space-9);
   width: 100%;
 }
 
@@ -112,13 +109,13 @@
 .settings-pane .hl-notif {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 4px 0 0;
+  gap: var(--space-3);
+  padding: var(--space-2) 0 0;
 }
 .settings-pane .hl-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-5);
 }
 .settings-pane .hl-row select {
   min-width: 160px;

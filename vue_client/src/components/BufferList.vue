@@ -549,7 +549,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 4px 0;
+  padding: var(--space-2) 0;
 }
 /* IRCCloud-style affordance: a thin accent bar pinned to the top or bottom
    edge of the list when unread buffers are scrolled out of view that way.
@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
   border: none;
   background: transparent;
   cursor: pointer;
-  z-index: 5;
+  z-index: var(--z-raised);
 }
 /* The global `button:hover` paints `--bg-soft`, which would show as a 12px
    strip over the buffer list. Keep the button transparent — the ::before
@@ -609,17 +609,17 @@ onBeforeUnmount(() => {
   outline-offset: -1px;
 }
 .net {
-  padding: 4px 0 6px;
+  padding: var(--space-2) 0 var(--space-3);
 }
 .net + .net {
   border-top: 1px solid var(--border);
-  margin-top: 4px;
+  margin-top: var(--space-2);
 }
 .net-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-5);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -668,8 +668,8 @@ onBeforeUnmount(() => {
 .channels li {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 10px 2px 24px;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-5) var(--space-1) var(--space-9);
   cursor: pointer;
   border-left: 2px solid transparent;
   position: relative;
@@ -680,7 +680,7 @@ onBeforeUnmount(() => {
 .channels li::before {
   content: '';
   position: absolute;
-  left: 12px;
+  left: var(--space-6);
   top: 0;
   height: 50%;
   width: 8px;
@@ -692,7 +692,7 @@ onBeforeUnmount(() => {
 .channels li:not(:last-child)::after {
   content: '';
   position: absolute;
-  left: 12px;
+  left: var(--space-6);
   top: 50%;
   bottom: 0;
   width: 0;
@@ -706,7 +706,7 @@ onBeforeUnmount(() => {
 .channels.pinned:has(+ .pin-divider) li:last-child::after {
   content: '';
   position: absolute;
-  left: 12px;
+  left: var(--space-6);
   top: 50%;
   bottom: 0;
   width: 0;
@@ -750,7 +750,7 @@ onBeforeUnmount(() => {
 .peer-mark {
   color: var(--fg-muted);
   font-weight: 600;
-  margin-left: 2px;
+  margin-left: var(--space-1);
 }
 .label {
   flex: 1;
@@ -760,7 +760,7 @@ onBeforeUnmount(() => {
 }
 .badge {
   color: var(--accent);
-  padding: 0 2px;
+  padding: 0 var(--space-1);
 }
 .badge.highlight {
   color: var(--buffer-highlight);
@@ -770,7 +770,6 @@ onBeforeUnmount(() => {
    highlight badges for attention. */
 .badge.draft {
   color: var(--fg-muted);
-  font-size: 0.85em;
 }
 
 /* Hover three-dots: absolute-positioned so it doesn't displace badges on
@@ -782,10 +781,10 @@ onBeforeUnmount(() => {
    DMs) or single-tap (members) instead. */
 .channels .row-actions {
   position: absolute;
-  right: 4px;
+  right: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-  padding: 0 4px;
+  padding: 0 var(--space-2);
   background: var(--bg-soft);
   border: none;
   color: var(--fg-muted);
@@ -817,7 +816,7 @@ onBeforeUnmount(() => {
 }
 
 .empty {
-  padding: 12px;
+  padding: var(--space-6);
   color: var(--fg-muted);
   font-style: italic;
 }
@@ -838,7 +837,7 @@ onBeforeUnmount(() => {
 .pin-divider::before {
   content: '';
   position: absolute;
-  left: 12px;
+  left: var(--space-6);
   top: 0;
   bottom: 0;
   border-left: 1px solid var(--border);
@@ -846,8 +845,8 @@ onBeforeUnmount(() => {
 .pin-divider::after {
   content: '';
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: var(--space-6);
+  right: var(--space-6);
   top: 50%;
   border-top: 1px solid var(--border);
 }

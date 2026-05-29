@@ -96,8 +96,8 @@ const bodyStyle = computed<CSSProperties>(() => {
 
 <style scoped>
 .spoiler {
-  border-radius: 3px;
-  padding: 0 3px;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-2);
   /* Wrapper-style overrides this for coloured spoilers; the var(--fg-muted)
      fallback covers older snapshots whose segments lack fg. */
   background: var(--fg-muted);

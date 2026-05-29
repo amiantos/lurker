@@ -377,20 +377,20 @@ function copyHostmask() {
 .body {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--space-8);
   overflow-y: auto;
   flex: 1;
   min-height: 0;
   /* Break out of card padding so the scrollbar sits against the card
      border; padding keeps section content visually aligned. */
   margin: 0 calc(-1 * var(--card-pad-x));
-  padding: 0 var(--card-pad-x) 8px;
+  padding: 0 var(--card-pad-x) var(--space-4);
 }
 
 .presence {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   color: var(--fg);
   font-weight: 600;
 }
@@ -402,10 +402,10 @@ function copyHostmask() {
   background: var(--fg-muted);
 }
 .presence.online .dot {
-  background: var(--good, #4ec27e);
+  background: var(--good);
 }
 .presence.away .dot {
-  background: var(--warn, #d4a256);
+  background: var(--warn);
 }
 .presence.offline .dot {
   background: var(--bad);
@@ -414,13 +414,13 @@ function copyHostmask() {
   background: var(--fg-muted);
 }
 .away-msg {
-  margin-left: 8px;
+  margin-left: var(--space-4);
   color: var(--fg-muted);
   font-weight: 400;
 }
 
 .section h3 {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-4);
   color: var(--accent);
   font-weight: 700;
   text-transform: lowercase;
@@ -430,8 +430,8 @@ function copyHostmask() {
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
-  column-gap: 16px;
-  row-gap: 6px;
+  column-gap: var(--space-7);
+  row-gap: var(--space-3);
   margin: 0;
 }
 dt {
@@ -456,31 +456,31 @@ code {
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 10px;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
 }
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-2);
   border: 1px solid var(--border);
-  padding: 2px 8px;
-  border-radius: 999px;
+  padding: var(--space-1) var(--space-4);
+  border-radius: var(--radius-pill);
   color: var(--fg);
 }
 .chip.good {
-  border-color: var(--good, #4ec27e);
-  color: var(--good, #4ec27e);
+  border-color: var(--good);
+  color: var(--good);
 }
 .chip.warn {
-  border-color: var(--warn, #d4a256);
-  color: var(--warn, #d4a256);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 .channels {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 10px;
+  gap: var(--space-2) var(--space-5);
 }
 .channel {
   background: none;
@@ -506,13 +506,13 @@ code {
 .note.empty {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-6);
 }
 .meta {
-  margin: 8px 0 0;
+  margin: var(--space-4) 0 0;
   color: var(--fg-muted);
   display: flex;
-  gap: 12px;
+  gap: var(--space-6);
   align-items: baseline;
 }
 
@@ -522,21 +522,21 @@ code {
   color: var(--accent);
   cursor: pointer;
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 .link.inline:hover {
   text-decoration: underline;
 }
 
 .status {
-  padding: 12px 0;
+  padding: var(--space-6) 0;
 }
 
 .footer {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 16px;
+  gap: var(--space-4);
+  padding-top: var(--space-7);
   border-top: 1px solid var(--border);
 }
 .footer .spacer {
@@ -546,12 +546,12 @@ code {
   background: none;
   border: 1px solid var(--border);
   color: var(--fg);
-  padding: 6px 12px;
+  padding: var(--space-3) var(--space-6);
   cursor: pointer;
   font: inherit;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 .btn-secondary:hover:not(:disabled) {
   background: var(--bg-soft);

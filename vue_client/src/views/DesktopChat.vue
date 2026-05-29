@@ -496,11 +496,11 @@ useChatBootstrap({ onJump: onJumpToMessage });
   flex-direction: column;
 }
 .sidebar-head {
-  padding: 8px 12px;
+  padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .head-spacer {
   flex: 1;
@@ -539,13 +539,13 @@ useChatBootstrap({ onJump: onJumpToMessage });
    (issue #64). */
 .sidebar-foot {
   margin-top: auto;
-  padding: 1ch 12px 8px;
+  padding: 1ch var(--space-6) var(--space-4);
   border-top: 1px solid var(--border);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-4);
   /* Match the input bar's line-height (1.4) — the body default of 1.55
      would leave the foot's content row visibly taller than the input's
      content row at the same font size. See the matching override on
@@ -566,13 +566,13 @@ useChatBootstrap({ onJump: onJumpToMessage });
    center everything in the 36px column. Foot icons keep their muscle-memory
    spot at the bottom of the sidebar; the toggle chevron sits up top. */
 .sidebar.collapsed .sidebar-head {
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   justify-content: center;
 }
 .sidebar.collapsed .sidebar-foot {
   flex-direction: column;
-  padding: 8px 0;
-  gap: 8px;
+  padding: var(--space-4) 0;
+  gap: var(--space-4);
   justify-content: flex-end;
 }
 
@@ -580,7 +580,7 @@ useChatBootstrap({ onJump: onJumpToMessage });
   background: none;
   border: none;
   color: var(--accent);
-  padding: 0 4px;
+  padding: 0 var(--space-2);
   cursor: pointer;
   font: inherit;
   text-decoration: none;
@@ -597,7 +597,7 @@ useChatBootstrap({ onJump: onJumpToMessage });
 
 .topic {
   grid-area: topic;
-  padding: 8px 12px;
+  padding: var(--space-4) var(--space-6);
   display: flex;
   align-items: baseline;
   gap: 1ch;
@@ -676,25 +676,25 @@ button.buffer.link:hover {
 .topic .buffer-cog,
 .topic .server-right-start {
   margin-left: auto;
-  padding-left: 8px;
+  padding-left: var(--space-4);
 }
 .topic .network-cog {
-  padding-left: 8px;
+  padding-left: var(--space-4);
 }
 .topic .buffer-cog + .members-toggle {
   margin-left: 0;
-  padding-left: 4px;
+  padding-left: var(--space-2);
 }
 .topic .members-toggle {
   margin-left: auto;
-  padding-left: 8px;
+  padding-left: var(--space-4);
 }
 /* Word-button styling for the server-buffer affordances (Channel List,
    Disconnect/Reconnect). They cluster on the right alongside the
    network-cog — the first one (Channel List) carries margin-left:auto via
    .server-right-start, and the rest follow it in DOM order. */
 .topic .link.word {
-  padding: 0 6px;
+  padding: 0 var(--space-3);
 }
 .topic .member-count {
   color: var(--fg-muted);

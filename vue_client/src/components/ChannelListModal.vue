@@ -200,9 +200,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 .filter {
@@ -211,7 +211,7 @@ onBeforeUnmount(() => {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
   font: inherit;
 }
 .filter:focus {
@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border);
   color: var(--fg);
   font: inherit;
-  padding: 4px 10px;
+  padding: var(--space-2) var(--space-5);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -237,7 +237,6 @@ onBeforeUnmount(() => {
 }
 .meta {
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 
 /* On mobile the filter + refresh button consume the full row; push the
@@ -252,13 +251,12 @@ onBeforeUnmount(() => {
 .sort-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-bottom: 8px;
-  margin-bottom: 4px;
+  gap: var(--space-6);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-2);
 }
 .sort-label {
   color: var(--fg-muted);
-  font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -300,7 +298,7 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 .list-item {
-  padding: 8px 8px;
+  padding: var(--space-4) var(--space-4);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
@@ -311,7 +309,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-6);
 }
 .list-item-title {
   color: var(--accent);
@@ -323,14 +321,12 @@ onBeforeUnmount(() => {
 }
 .list-item-meta {
   color: var(--fg-muted);
-  font-size: 0.9em;
   white-space: nowrap;
   flex-shrink: 0;
 }
 .list-item-sub {
   color: var(--fg-muted);
-  font-size: 0.9em;
-  margin-top: 2px;
+  margin-top: var(--space-1);
   line-height: 1.4;
   word-break: break-word;
 }
@@ -341,13 +337,13 @@ onBeforeUnmount(() => {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 8px;
+  padding: var(--space-4);
   list-style: none;
 }
 .empty {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 32px;
+  padding: var(--space-10);
 }
 </style>

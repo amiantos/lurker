@@ -34,6 +34,68 @@
   --mono: 'Input Mono', 'Input', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --font-size: 14px;
   --font-weight: 400;
+
+  /* ----------------------------------------------------------------------
+     Internal design tokens.
+
+     Everything ABOVE this line is user-themeable: useTheme() rewrites it on
+     :root from the settings store. Everything BELOW is static — internal
+     consistency only, deliberately NOT wired into the settings registry.
+     Don't add these to COLOR_VARS / settingsRegistry; they're for us, not
+     the user.
+     ---------------------------------------------------------------------- */
+
+  /* Spacing — a 4px-derived rhythm (2px steps at the low end where the dense
+     IRC chrome needs them, 4px steps higher up). These are the values that
+     were already in use across the components; tokenizing them just stops a
+     stray 7px or 13px from sneaking in unnoticed. Use for gap / padding /
+     margin only — NOT for borders (always 1px) or one-off layout widths. */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 16px;
+  --space-8: 20px;
+  --space-9: 24px;
+  --space-10: 32px;
+
+  /* z-index ladder — named by role so stacking order is legible at the call
+     site and there's one place to see the whole hierarchy. Values preserve
+     the order the app already shipped with; add new layers here rather than
+     inventing bare numbers in components.
+       base    in-flow lift (sticky headers, bg layers)
+       raised  lifts above sibling content within a component
+       modal   modal/overlay shells (AppModal, QuickSwitcher)
+       toast   toast stack — sits above modals so notifications stay visible
+       menu    context menus
+       popover input autocomplete (NickPicker) — top of the stack */
+  --z-base: 1;
+  --z-raised: 5;
+  --z-modal: 100;
+  --z-toast: 200;
+  --z-menu: 300;
+  --z-popover: 1000;
+
+  /* Modal/overlay scrim — the dimmed backdrop behind a full-screen overlay.
+     Currently the QuickSwitcher; AppModal uses a solid --bg backdrop, and the
+     rgba(0,0,0,*) on context menus / toasts / the nick picker are drop
+     shadows, not scrims. */
+  --scrim: rgba(0, 0, 0, 0.5);
+
+  /* Icon sizing. Icons are graphics, not text, so they're allowed to scale
+     independently of the one-font-size rule (which governs text hierarchy).
+     em-relative so they track the base size. Use on icon-only controls where
+     a glyph needs more presence than body text. */
+  --icon-md: 1.1em;
+  --icon-lg: 1.2em;
+
+  /* Corner radii. The app is intentionally flat (most things are square);
+     these are the few deliberate exceptions. */
+  --radius-sm: 2px;
+  --radius-md: 6px;
+  --radius-pill: 999px;
 }
 
 /* Mobile bumps the base size to 16px. Two reasons: iOS Safari auto-zooms

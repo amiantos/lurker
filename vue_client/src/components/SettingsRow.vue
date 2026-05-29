@@ -127,8 +127,8 @@ function formatDefault(opt: SettingOption): string {
 .row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 0 8px 8px;
+  gap: var(--space-2);
+  padding: var(--space-4) 0 var(--space-4) var(--space-4);
   border-top: 1px solid var(--border);
   border-left: 2px solid transparent;
   list-style: none;
@@ -149,7 +149,7 @@ function formatDefault(opt: SettingOption): string {
 .head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-5);
 }
 .headline {
   font-weight: 600;
@@ -157,21 +157,20 @@ function formatDefault(opt: SettingOption): string {
 .type {
   color: var(--fg-muted);
   border: 1px solid var(--border);
-  padding: 0 4px;
+  padding: 0 var(--space-2);
   text-transform: lowercase;
-  font-size: 0.85em;
 }
 .key-sub code {
   color: var(--fg-muted);
   background: var(--bg-soft);
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 .desc {
   color: var(--fg-muted);
 }
 
 .editor {
-  margin-top: 2px;
+  margin-top: var(--space-1);
 }
 .editor input[type='text'],
 .editor select {
@@ -188,18 +187,18 @@ function formatDefault(opt: SettingOption): string {
 .editor .bool {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   cursor: pointer;
 }
 .editor .color-edit {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .editor .secret-edit {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .editor .secret-edit input {
   flex: 1;
@@ -215,11 +214,10 @@ function formatDefault(opt: SettingOption): string {
 }
 .default-line {
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 .default-line code {
   background: var(--bg-soft);
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 
 .link {
@@ -243,6 +241,6 @@ function formatDefault(opt: SettingOption): string {
   color: var(--bad);
 }
 .link.reset {
-  font-size: 0.85em;
+  color: var(--fg-muted);
 }
 </style>

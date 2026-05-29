@@ -105,7 +105,7 @@ function onJump(m: HistoryMessage): void {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 .link:hover {
   color: var(--accent);
@@ -115,7 +115,9 @@ function onJump(m: HistoryMessage): void {
   cursor: default;
 }
 .sound-toggle {
-  font-size: 1.1em;
+  /* Icon-only button — size the glyph (fa-solid is already weight 900, so
+     font-weight here would be a no-op). */
+  font-size: var(--icon-md);
 }
 
 .match-list {
@@ -132,17 +134,17 @@ function onJump(m: HistoryMessage): void {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 8px;
+  padding: var(--space-4);
 }
 .empty {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 32px;
+  padding: var(--space-10);
 }
 .error.inline {
   color: var(--bad);
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   margin: 0;
 }
 </style>
