@@ -31,6 +31,7 @@
             unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id)))
           }}</span>
           <button
+            v-if="!hasUnreadIndicator(serverBuf(net.id))"
             type="button"
             class="net-action-channels"
             :disabled="!isNetworkConnected(net)"
@@ -40,6 +41,7 @@
             <i class="fa-solid fa-hashtag"></i>
           </button>
           <button
+            v-if="!hasUnreadIndicator(serverBuf(net.id))"
             type="button"
             class="net-action-overflow"
             title="Network options"
@@ -236,7 +238,8 @@ function countFor(unread: number, highlights: number): number {
 // highlight badges. When the row has unread state, the badge wins — the
 // kebab stays hidden so it doesn't overlay the indicator the user is
 // scanning for. Right-click on the row still opens the same action menu.
-function hasUnreadIndicator(buf: Buffer): boolean {
+function hasUnreadIndicator(buf: Buffer | null): boolean {
+  if (!buf) return false;
   return (
     (buf.highlighted > 0 && showHighlightBadge.value) || countFor(buf.unread, buf.highlighted) > 0
   );
