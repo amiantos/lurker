@@ -37,7 +37,7 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
-    "express": "^4.21.0",
+    "express": "^4.22.2",
     "irc-framework": "^4.13.1",
     "multer": "^2.1.1",
     "sharp": "^0.34.5",
