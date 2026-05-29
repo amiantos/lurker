@@ -596,14 +596,16 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
   // While the desktop @-nick picker is open with candidates it owns the
-  // navigation keys: arrows move the highlight, Tab/Enter confirm it. This
-  // runs ahead of the history-nav, Tab-completion, and Enter-submit handlers
-  // below so they don't double-fire. Escape is left to NickPicker's own
-  // document listener. Gated on hasCandidates() so a no-match token like
-  // `@zzz` still lets Enter send and Tab fall through to word completion.
-  // Skipped entirely during an IME composition so the same arrows/Tab/Enter
-  // stay free to drive the IME's candidate window. The picker is desktop-only
-  // — the mobile suggestion strip never opens it.
+  // navigation keys: arrows move the highlight, Tab confirms it. This runs
+  // ahead of the history-nav, Tab-completion, and Enter-submit handlers below
+  // so they don't double-fire. Enter is intentionally NOT an accept key — it
+  // always sends, even with the picker open (use Tab or click to accept); a
+  // key that means "send" shouldn't quietly mean "complete" when a picker
+  // happens to be up. Escape is left to NickPicker's own document listener.
+  // Gated on hasCandidates() so a no-match token like `@zzz` lets Tab fall
+  // through to word completion. Skipped entirely during an IME composition so
+  // the same arrows/Tab stay free to drive the IME's candidate window. The
+  // picker is desktop-only — the mobile suggestion strip never opens it.
   if (pickerOpen.value && !e.isComposing && nickPickerEl.value?.hasCandidates()) {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
@@ -615,20 +617,18 @@ function onKeydown(e: KeyboardEvent): void {
       e.preventDefault();
       nickPickerEl.value.confirmActive();
       return;
-    } else if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      nickPickerEl.value.confirmActive();
-      return;
     }
   }
   // The mobile/compact nick strip owns navigation keys while open with
   // candidates — same shape as the emoji block below, and as the desktop
   // @-picker above. All four arrows cycle the highlight (Down/Right next,
-  // Up/Left previous), Tab/Enter confirm the active chip, Escape closes the
+  // Up/Left previous), Tab confirms the active chip, Escape closes the
   // strip. refreshPicker ensures the strip and the @-picker are never open
   // at once, so the two blocks can't both fire. Tab here intentionally
   // confirms the highlighted chip rather than falling through to in-place
   // Tab-completion — the strip is the primary completion UI when it's up.
+  // Enter is deliberately left out as an accept key — it always sends (tap a
+  // chip or press Tab to accept).
   if (overlay.nickOpen && !e.isComposing && hasNickCandidates()) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -651,23 +651,20 @@ function onKeydown(e: KeyboardEvent): void {
       e.preventDefault();
       confirmNickActive();
       return;
-    } else if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      confirmNickActive();
-      return;
     }
   }
   // The emoji suggester owns the navigation keys while it's open with
   // candidates — all four arrows cycle the highlight (Down/Right step toward
-  // the next chip, Up/Left toward the previous), Tab/Enter confirm, Escape
+  // the next chip, Up/Left toward the previous), Tab confirms, Escape
   // closes. Runs ahead of the history-nav and Enter-submit handlers so they
-  // don't double-fire. Hijacking Left/Right means the caret can't move inside
-  // the shortcode while the strip is up — acceptable, since the caret sits at
-  // the end of the `:query` anyway and Escape frees it. Bare arrows only:
-  // modifier+arrow still does its normal caret jump / buffer-nav. Skipped
-  // during an IME composition. The emoji strip and the nick picker are never
-  // open at once (refreshPicker closes one before opening the other), so the
-  // two blocks can't both fire.
+  // don't double-fire. Enter is intentionally not an accept key — it always
+  // sends (tap a chip or press Tab to accept). Hijacking Left/Right means the
+  // caret can't move inside the shortcode while the strip is up — acceptable,
+  // since the caret sits at the end of the `:query` anyway and Escape frees
+  // it. Bare arrows only: modifier+arrow still does its normal caret jump /
+  // buffer-nav. Skipped during an IME composition. The emoji strip and the
+  // nick picker are never open at once (refreshPicker closes one before
+  // opening the other), so the two blocks can't both fire.
   if (overlay.emojiOpen && !e.isComposing && hasEmojiCandidates()) {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -687,10 +684,6 @@ function onKeydown(e: KeyboardEvent): void {
         return;
       }
     } else if (e.key === 'Tab') {
-      e.preventDefault();
-      confirmEmojiActive();
-      return;
-    } else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       confirmEmojiActive();
       return;
