@@ -27,7 +27,9 @@
         >
       </div>
       <div v-else-if="row.divider === 'back'" class="notice presence-divider">
-        <span class="notice-label">back (gone {{ formatDuration(row.awayAt ?? '', row.backAt ?? '') }})</span>
+        <span class="notice-label"
+          >back (gone {{ formatDuration(row.awayAt ?? '', row.backAt ?? '') }})</span
+        >
       </div>
       <div v-else-if="row.divider === 'date'" class="notice date-divider">
         <span class="notice-label">{{ row.dateStr }}</span>
