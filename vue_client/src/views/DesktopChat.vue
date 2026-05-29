@@ -394,16 +394,13 @@ const onJumpToMessage = useJumpToMessage({ pendingScrollId });
 function openAddNetwork() {
   networkEditor.open();
 }
-function openEditNetwork(net: Network) {
-  networkEditor.open(net);
-}
 function closeNetworkForm() {
   networkEditor.close();
 }
 
 function editActiveNetwork() {
   const net = active.value?.network as Network | undefined;
-  if (net) openEditNetwork(net);
+  if (net) networkEditor.open(net);
 }
 
 // State-aware connect/disconnect for the server buffer header. We label the

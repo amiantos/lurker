@@ -30,25 +30,29 @@
           <span v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0" class="badge">{{
             unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id)))
           }}</span>
-          <button
-            v-if="!hasUnreadIndicator(serverBuf(net.id))"
-            type="button"
-            class="net-action-channels"
-            :disabled="!isNetworkConnected(net)"
-            title="Channel List"
-            @click.stop="networkActions.openChannelList(net)"
-          >
-            <i class="fa-solid fa-hashtag"></i>
-          </button>
-          <button
-            v-if="!hasUnreadIndicator(serverBuf(net.id))"
-            type="button"
-            class="net-action-overflow"
-            title="Network options"
-            @click.stop="networkActions.openMenuFromButton(net, $event.currentTarget as Element)"
-          >
-            <i class="fa-solid fa-ellipsis-vertical"></i>
-          </button>
+          <div v-if="!hasUnreadIndicator(serverBuf(net.id))" class="net-actions">
+            <button
+              type="button"
+              class="net-action"
+              :disabled="!isNetworkConnected(net)"
+              title="Channel List"
+              aria-label="Channel list"
+              @click.stop="networkActions.openChannelList(net)"
+              @contextmenu.stop.prevent
+            >
+              <i class="fa-solid fa-hashtag"></i>
+            </button>
+            <button
+              type="button"
+              class="net-action"
+              title="Network options"
+              aria-label="Network options"
+              @click.stop="networkActions.openMenuFromButton(net, $event.currentTarget as Element)"
+              @contextmenu.stop.prevent
+            >
+              <i class="fa-solid fa-ellipsis-vertical"></i>
+            </button>
+          </div>
         </div>
 
         <!-- Touch delay (200ms, touch-only) so a quick swipe over the pinned
@@ -669,50 +673,44 @@ onBeforeUnmount(() => {
 }
 
 /* Hover action buttons on network rows — mirrors .channels .row-actions pattern. */
-.net-action-channels,
-.net-action-overflow {
+.net-actions {
   position: absolute;
+  right: var(--space-2);
   top: 50%;
   transform: translateY(-50%);
-  padding: 0 4px;
+  display: flex;
+  background: var(--bg-soft);
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+.net-action {
+  padding: 0 var(--space-2);
   background: var(--bg-soft);
   border: none;
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
   line-height: 1;
-  opacity: 0;
-  transition: opacity 80ms linear;
-}
-.net-action-overflow {
-  right: 4px;
-}
-.net-action-channels {
-  right: 28px;
 }
 @media (hover: hover) {
-  .net-head:hover .net-action-channels,
-  .net-head:hover .net-action-overflow {
+  .net-head:hover .net-actions {
     opacity: 1;
   }
-  .net-head:hover .net-action-channels:disabled {
+  .net-head:hover .net-action:disabled {
     opacity: 0.35;
   }
-  .net-action-channels:hover,
-  .net-action-overflow:hover {
+  .net-action:hover {
     color: var(--fg);
   }
 }
-.net-action-overflow:focus-visible,
-.net-action-channels:focus-visible {
+.net-actions:focus-within {
   opacity: 1;
 }
-.net-action-channels:disabled {
+.net-action:disabled {
   pointer-events: none;
 }
 @media (max-width: 768px) {
-  .net-action-channels,
-  .net-action-overflow {
+  .net-actions {
     display: none;
   }
 }

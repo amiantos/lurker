@@ -39,7 +39,8 @@ export function useNetworkActions() {
     ];
   }
 
-  function openMenuFromButton(net: Network, buttonEl: Element): void {
+  function openMenuFromButton(net: Network, buttonEl: Element | null): void {
+    if (!buttonEl) return;
     const rect = buttonEl.getBoundingClientRect();
     menu.open(buildItems(net), rect.left, rect.bottom + 2, buttonEl);
   }
