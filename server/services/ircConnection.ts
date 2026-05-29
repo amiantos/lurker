@@ -1664,7 +1664,15 @@ export class IrcConnection {
     this.client.action(target, text);
   }
   raw(line: string): void {
-    this.client.raw(line);
+    // Strip CR/LF/NUL before the line hits the socket. irc-framework's
+    // writeLine appends its own \r\n and writes verbatim, so any embedded
+    // newline in a caller-built line (a kick reason, topic, ban host, etc.)
+    // would split into a second injected IRC command. Sanitizing here covers
+    // every raw call site — slash commands and the member-menu op actions
+    // alike — rather than scrubbing each interpolated string at its source.
+    // Matching control chars is the whole point, so the lint rule is moot here.
+    // eslint-disable-next-line no-control-regex
+    this.client.raw(line.replace(/[\u000d\u000a\u0000]/g, ''));
   }
   sendTyping(target: string, state: string): void {
     // Suppress typing TAGMSGs to peers we know are offline — otherwise each
