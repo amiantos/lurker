@@ -262,6 +262,5 @@ button.primary {
 .hint {
   margin: 0;
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 </style>

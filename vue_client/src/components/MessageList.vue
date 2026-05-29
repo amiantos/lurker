@@ -1401,7 +1401,6 @@ watch(
 .unread-divider {
   color: var(--warn);
   font-style: normal;
-  font-size: 0.85em;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: var(--space-2) 0;
@@ -1425,7 +1424,6 @@ watch(
 .date-divider,
 .cleared-divider {
   font-style: normal;
-  font-size: 0.85em;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   padding: var(--space-2) 0;

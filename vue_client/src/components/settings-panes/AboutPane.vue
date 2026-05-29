@@ -71,7 +71,6 @@ const appVersion = APP_VERSION;
 .about-links .about-label {
   color: var(--fg-muted);
   text-transform: uppercase;
-  font-size: 0.8em;
   letter-spacing: 0.04em;
   min-width: 60px;
 }

@@ -191,7 +191,6 @@ async function onRevoke(token: ApiToken) {
 .create-form label span {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.85em;
 }
 .create-form label.check span {
   text-transform: none;

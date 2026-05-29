@@ -159,7 +159,6 @@ function formatDefault(opt: SettingOption): string {
   border: 1px solid var(--border);
   padding: 0 var(--space-2);
   text-transform: lowercase;
-  font-size: 0.85em;
 }
 .key-sub code {
   color: var(--fg-muted);
@@ -215,7 +214,6 @@ function formatDefault(opt: SettingOption): string {
 }
 .default-line {
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 .default-line code {
   background: var(--bg-soft);
@@ -243,6 +241,6 @@ function formatDefault(opt: SettingOption): string {
   color: var(--bad);
 }
 .link.reset {
-  font-size: 0.85em;
+  color: var(--fg-muted);
 }
 </style>

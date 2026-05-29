@@ -18,7 +18,6 @@
   color: var(--accent);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 1.05em;
   font-weight: 600;
 }
 .settings-pane .section-desc {
@@ -30,7 +29,6 @@
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.9em;
   font-weight: 600;
 }
 .settings-pane > .subhead:first-of-type {
@@ -67,7 +65,7 @@
   font-style: italic;
 }
 .settings-pane .muted.small {
-  font-size: 0.95em;
+  color: var(--fg-muted);
   padding: var(--space-2) 0;
   font-style: normal;
 }
@@ -97,7 +95,6 @@
 }
 .settings-pane .device .last-seen {
   color: var(--fg-muted);
-  font-size: 0.95em;
 }
 
 .settings-pane .hl-sep {

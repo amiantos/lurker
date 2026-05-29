@@ -183,7 +183,6 @@ async function onRuleAdd() {
   color: var(--fg-muted);
 }
 .lock {
-  font-size: 12px;
   color: var(--fg-muted);
   text-align: center;
 }

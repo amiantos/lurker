@@ -183,7 +183,6 @@ function copyInviteUrl(url: string) {
   border: 1px solid var(--accent);
   padding: 0 var(--space-2);
   margin-left: var(--space-3);
-  font-size: 0.85em;
   text-transform: uppercase;
 }
 .invite-actions {
@@ -198,7 +197,6 @@ function copyInviteUrl(url: string) {
   align-items: center;
   gap: var(--space-3);
   color: var(--fg-muted);
-  font-size: 0.95em;
 }
 .invite-fresh code {
   background: var(--bg-soft);
@@ -215,11 +213,11 @@ function copyInviteUrl(url: string) {
   background: var(--bg-soft);
   padding: 1px var(--space-2);
   word-break: break-all;
-  font-size: 0.9em;
+  color: var(--fg-muted);
 }
 .invite-status {
   text-transform: uppercase;
-  font-size: 0.8em;
+  color: var(--fg-muted);
   padding: 0 var(--space-2);
   border: 1px solid var(--border);
 }

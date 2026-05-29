@@ -265,7 +265,6 @@ watch(searchEl, (el) => {
   color: var(--fg-muted);
   text-decoration: none;
   padding: var(--space-2) var(--space-7) var(--space-2) 30px;
-  font-size: 0.9em;
   line-height: 1.35;
   text-transform: lowercase;
   letter-spacing: 0.03em;
@@ -322,13 +321,11 @@ watch(searchEl, (el) => {
   color: var(--fg-muted);
   text-transform: lowercase;
   letter-spacing: 0.04em;
-  font-size: 0.85em;
 }
 .result-key {
   color: var(--fg-muted);
   background: var(--bg-soft);
   padding: 0 var(--space-2);
-  font-size: 0.85em;
   align-self: flex-start;
   max-width: 100%;
   overflow-wrap: anywhere;

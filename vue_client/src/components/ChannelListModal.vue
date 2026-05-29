@@ -237,7 +237,6 @@ onBeforeUnmount(() => {
 }
 .meta {
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 
 /* On mobile the filter + refresh button consume the full row; push the
@@ -258,7 +257,6 @@ onBeforeUnmount(() => {
 }
 .sort-label {
   color: var(--fg-muted);
-  font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -323,13 +321,11 @@ onBeforeUnmount(() => {
 }
 .list-item-meta {
   color: var(--fg-muted);
-  font-size: 0.9em;
   white-space: nowrap;
   flex-shrink: 0;
 }
 .list-item-sub {
   color: var(--fg-muted);
-  font-size: 0.9em;
   margin-top: var(--space-1);
   line-height: 1.4;
   word-break: break-word;

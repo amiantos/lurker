@@ -770,7 +770,6 @@ onBeforeUnmount(() => {
    highlight badges for attention. */
 .badge.draft {
   color: var(--fg-muted);
-  font-size: 0.85em;
 }
 
 /* Hover three-dots: absolute-positioned so it doesn't displace badges on

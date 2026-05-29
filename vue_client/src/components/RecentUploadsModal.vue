@@ -215,14 +215,12 @@ function formatBytes(n: number) {
 }
 .url {
   color: var(--fg-muted);
-  font-size: 0.9em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .sub {
   color: var(--fg-muted);
-  font-size: 0.85em;
   margin-top: var(--space-1);
 }
 .row-actions {
@@ -257,6 +255,6 @@ function formatBytes(n: number) {
 }
 .empty.small {
   padding: var(--space-4) 0;
-  font-size: 0.9em;
+  color: var(--fg-muted);
 }
 </style>

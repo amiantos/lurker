@@ -78,8 +78,7 @@ onMounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: inherit;
-  font-size: 0.95em;
-  color: var(--fg);
+  color: var(--fg-muted);
 }
 .foot {
   padding-top: var(--space-6);

@@ -115,7 +115,7 @@ function onJump(m: HistoryMessage): void {
   cursor: default;
 }
 .sound-toggle {
-  font-size: 1.1em;
+  font-weight: 600;
 }
 
 .match-list {

@@ -88,12 +88,11 @@ const shortcuts = computed<ShortcutRow[]>(() => [
 }
 kbd {
   font: inherit;
-  font-size: 0.85em;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   padding: 1px var(--space-3);
   margin: 0 1px;
-  color: var(--fg);
+  color: var(--fg-muted);
 }
 .plus {
   color: var(--fg-muted);

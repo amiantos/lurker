@@ -445,7 +445,6 @@ function formatUA(ua: string | null | undefined): string {
 }
 .notif-signal-title {
   margin: 0 0 var(--space-2);
-  font-size: 0.92em;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg);

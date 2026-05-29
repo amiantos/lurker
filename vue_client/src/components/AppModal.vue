@@ -209,7 +209,6 @@ onMounted(() => {
 .subtitle {
   margin: var(--space-4) 0 0;
   color: var(--fg-muted);
-  font-size: 0.9em;
 }
 .head-actions {
   display: flex;
@@ -223,7 +222,7 @@ onMounted(() => {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  font-size: 1.2em;
+  font-weight: 600;
   padding: var(--space-2) var(--space-4);
 }
 .close-btn:hover {

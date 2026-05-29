@@ -246,7 +246,6 @@ watch(
   font-weight: 500;
 }
 .badge {
-  font-size: 0.85em;
   color: var(--fg-muted);
   font-style: italic;
 }

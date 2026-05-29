@@ -87,7 +87,6 @@ onMounted(() => {
 }
 .label-text {
   color: var(--fg-muted);
-  font-size: 0.85em;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -105,7 +104,6 @@ input:focus {
 .preview {
   margin: 0;
   color: var(--fg-muted);
-  font-size: 0.9em;
   line-height: 1.45;
 }
 .preview {
