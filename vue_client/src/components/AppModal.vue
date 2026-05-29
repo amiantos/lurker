@@ -222,7 +222,9 @@ onMounted(() => {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  font-weight: 600;
+  /* Icon-only button — size the glyph, not text weight (fa-solid is already
+     weight 900). */
+  font-size: var(--icon-lg);
   padding: var(--space-2) var(--space-4);
 }
 .close-btn:hover {

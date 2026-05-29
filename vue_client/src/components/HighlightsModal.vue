@@ -115,7 +115,9 @@ function onJump(m: HistoryMessage): void {
   cursor: default;
 }
 .sound-toggle {
-  font-weight: 600;
+  /* Icon-only button — size the glyph (fa-solid is already weight 900, so
+     font-weight here would be a no-op). */
+  font-size: var(--icon-md);
 }
 
 .match-list {

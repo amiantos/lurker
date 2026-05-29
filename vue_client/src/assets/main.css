@@ -78,9 +78,18 @@
   --z-menu: 300;
   --z-popover: 1000;
 
-  /* Modal/overlay scrim — the dimmed backdrop behind context menus, the
-     quick switcher, toasts, etc. Was raw rgba(0,0,0,~0.5) in four places. */
+  /* Modal/overlay scrim — the dimmed backdrop behind a full-screen overlay.
+     Currently the QuickSwitcher; AppModal uses a solid --bg backdrop, and the
+     rgba(0,0,0,*) on context menus / toasts / the nick picker are drop
+     shadows, not scrims. */
   --scrim: rgba(0, 0, 0, 0.5);
+
+  /* Icon sizing. Icons are graphics, not text, so they're allowed to scale
+     independently of the one-font-size rule (which governs text hierarchy).
+     em-relative so they track the base size. Use on icon-only controls where
+     a glyph needs more presence than body text. */
+  --icon-md: 1.1em;
+  --icon-lg: 1.2em;
 
   /* Corner radii. The app is intentionally flat (most things are square);
      these are the few deliberate exceptions. */
