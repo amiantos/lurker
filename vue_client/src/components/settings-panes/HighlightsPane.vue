@@ -169,8 +169,8 @@ async function onRuleAdd() {
   display: grid;
   grid-template-columns: 18px minmax(120px, 1fr) max-content max-content max-content max-content;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
   border-top: 1px solid var(--border);
 }
 .rule:first-child {
@@ -183,22 +183,21 @@ async function onRuleAdd() {
   color: var(--fg-muted);
 }
 .lock {
-  font-size: 12px;
   color: var(--fg-muted);
   text-align: center;
 }
 .rule .ck {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-2);
   color: var(--fg-muted);
   cursor: pointer;
 }
 .rule-add {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 10px;
+  gap: var(--space-4);
+  padding-top: var(--space-5);
 }
 .rule-add input[type='text'] {
   flex: 1;

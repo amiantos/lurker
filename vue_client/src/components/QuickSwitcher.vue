@@ -173,12 +173,12 @@ onMounted(() => {
 .modal {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 12vh;
-  z-index: 100;
+  z-index: var(--z-modal);
 }
 .card {
   background: var(--bg);
@@ -192,8 +192,8 @@ onMounted(() => {
 .head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--border);
 }
 .filter {
@@ -202,7 +202,7 @@ onMounted(() => {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
   font: inherit;
 }
 .filter:focus {
@@ -215,7 +215,7 @@ onMounted(() => {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 .link:hover {
   color: var(--fg);
@@ -232,8 +232,8 @@ onMounted(() => {
 .row {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  padding: 4px 12px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-6);
   cursor: pointer;
 }
 .row.active {
@@ -257,6 +257,6 @@ onMounted(() => {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 24px;
+  padding: var(--space-9);
 }
 </style>

@@ -233,7 +233,7 @@ async function remove(): Promise<void> {
 .net-form {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-5);
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -245,7 +245,7 @@ async function remove(): Promise<void> {
 label {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--space-2);
   color: var(--fg-muted);
 }
 label span {
@@ -268,7 +268,7 @@ label textarea {
 }
 label small {
   color: var(--fg-muted);
-  margin-top: 2px;
+  margin-top: var(--space-1);
   text-transform: none;
   letter-spacing: normal;
 }
@@ -276,7 +276,7 @@ label small {
   align-self: flex-start;
   background: transparent;
   border: 0;
-  padding: 4px 0;
+  padding: var(--space-2) 0;
   color: var(--accent);
   cursor: pointer;
   text-transform: lowercase;
@@ -287,11 +287,11 @@ label small {
 .advanced {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-5);
 }
 .row {
   display: flex;
-  gap: 8px;
+  gap: var(--space-4);
   align-items: end;
 }
 /* min-width:0 lets a flex item shrink below its content's intrinsic width —
@@ -314,7 +314,7 @@ label small {
 .check {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .check input {
   width: auto;
@@ -328,8 +328,8 @@ label small {
 .actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 6px;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
 }
 .spacer {
   flex: 1;

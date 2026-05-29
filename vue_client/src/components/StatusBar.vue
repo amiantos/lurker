@@ -352,7 +352,7 @@ function onReturnToPresent() {
   display: flex;
   align-items: center;
   gap: 1ch;
-  padding: 1ch 12px 0;
+  padding: 1ch var(--space-6) 0;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
   white-space: nowrap;

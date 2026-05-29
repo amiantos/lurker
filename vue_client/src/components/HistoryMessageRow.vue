@@ -127,7 +127,7 @@ const nickStyle = computed((): CSSProperties | null => {
 <style scoped>
 .row {
   position: relative;
-  padding: 8px 10px;
+  padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
 }
@@ -138,8 +138,8 @@ const nickStyle = computed((): CSSProperties | null => {
 
 .remove {
   position: absolute;
-  top: 6px;
-  right: 6px;
+  top: var(--space-3);
+  right: var(--space-3);
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg-muted);
@@ -151,7 +151,7 @@ const nickStyle = computed((): CSSProperties | null => {
   cursor: pointer;
   opacity: 0;
   padding: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .row:hover .remove {
   opacity: 1;
@@ -169,9 +169,9 @@ const nickStyle = computed((): CSSProperties | null => {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-4);
   color: var(--fg-muted);
-  margin-bottom: 6px;
+  margin-bottom: var(--space-3);
 }
 .where {
   min-width: 0;

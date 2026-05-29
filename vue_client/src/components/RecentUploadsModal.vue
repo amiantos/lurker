@@ -146,7 +146,7 @@ function formatBytes(n: number) {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 .link:hover {
   color: var(--accent);
@@ -156,8 +156,8 @@ function formatBytes(n: number) {
 }
 
 .error {
-  margin: 0 0 8px;
-  padding: 8px 0;
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4) 0;
   color: var(--bad);
   border-bottom: 1px solid var(--border);
 }
@@ -181,10 +181,10 @@ function formatBytes(n: number) {
   grid-template-columns: 80px 1fr max-content;
   /* Tight column-gap so the thumb hugs the meta text. The meta→actions
      edge gets its own breathing room via margin-left on .row-actions. */
-  column-gap: 4px;
-  row-gap: 8px;
+  column-gap: var(--space-2);
+  row-gap: var(--space-4);
   align-items: center;
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
 }
 .thumb-link {
@@ -215,21 +215,19 @@ function formatBytes(n: number) {
 }
 .url {
   color: var(--fg-muted);
-  font-size: 0.9em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .sub {
   color: var(--fg-muted);
-  font-size: 0.85em;
-  margin-top: 2px;
+  margin-top: var(--space-1);
 }
 .row-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--space-4);
   align-items: center;
-  margin-left: 12px;
+  margin-left: var(--space-6);
 }
 
 /* Phone widths: stack the actions under the thumb+meta block instead of
@@ -238,7 +236,7 @@ function formatBytes(n: number) {
 @media (max-width: 768px) {
   .row {
     grid-template-columns: 80px 1fr;
-    row-gap: 8px;
+    row-gap: var(--space-4);
   }
   .row-actions {
     grid-column: 1 / -1;
@@ -246,17 +244,17 @@ function formatBytes(n: number) {
     margin-left: 0;
   }
   .row-actions .link {
-    padding: 6px 10px;
+    padding: var(--space-3) var(--space-5);
   }
 }
 
 .empty {
-  padding: 24px 0;
+  padding: var(--space-9) 0;
   color: var(--fg-muted);
   text-align: center;
 }
 .empty.small {
-  padding: 8px 0;
-  font-size: 0.9em;
+  padding: var(--space-4) 0;
+  color: var(--fg-muted);
 }
 </style>

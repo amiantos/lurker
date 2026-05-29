@@ -49,29 +49,28 @@ const appVersion = APP_VERSION;
 <style src="./panes.css"></style>
 <style scoped>
 .about-warning {
-  margin: 20px 0 0;
-  padding: 8px 10px;
+  margin: var(--space-8) 0 0;
+  padding: var(--space-4) var(--space-5);
   border: 1px solid var(--warn, var(--accent));
   color: var(--warn, var(--accent));
   background: transparent;
 }
 .about-links {
   list-style: none;
-  margin: 8px 0 0;
+  margin: var(--space-4) 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-3);
 }
 .about-links li {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-5);
 }
 .about-links .about-label {
   color: var(--fg-muted);
   text-transform: uppercase;
-  font-size: 0.8em;
   letter-spacing: 0.04em;
   min-width: 60px;
 }

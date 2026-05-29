@@ -364,8 +364,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
@@ -408,7 +408,7 @@ useChatBootstrap({ onJump: onJumpToMessage });
   background: none;
   border: none;
   color: var(--accent);
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
   cursor: pointer;
   font: inherit;
   text-decoration: none;
@@ -435,7 +435,7 @@ useChatBootstrap({ onJump: onJumpToMessage });
   color: var(--accent);
   cursor: pointer;
   font: inherit;
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
   min-height: 36px;
   white-space: nowrap;
 }

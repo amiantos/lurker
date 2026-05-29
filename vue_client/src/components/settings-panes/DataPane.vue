@@ -176,36 +176,36 @@ function formatBytes(n: number): string {
 <style scoped>
 .counts {
   list-style: disc;
-  padding-left: 24px;
-  margin: 4px 0 10px;
+  padding-left: var(--space-9);
+  margin: var(--space-2) 0 var(--space-5);
   color: var(--fg-muted);
 }
 .counts li {
-  padding: 2px 0;
+  padding: var(--space-1) 0;
 }
 
 .opt {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 0;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
 }
 
 .actions {
   display: flex;
   gap: 1ch;
   align-items: center;
-  padding-top: 6px;
+  padding-top: var(--space-3);
 }
 
 .picker {
-  padding-top: 6px;
+  padding-top: var(--space-3);
 }
 .chosen-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 0;
+  gap: var(--space-6);
+  padding: var(--space-3) 0;
 }
 .chosen-row .filename {
   color: var(--fg);

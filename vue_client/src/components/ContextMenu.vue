@@ -135,7 +135,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .context-menu {
   position: fixed;
-  z-index: 300;
+  z-index: var(--z-menu);
   min-width: 160px;
   /* `width: auto` on a position:fixed element near the right edge gets
      shrink-wrapped to the available viewport space, which wraps long labels
@@ -157,12 +157,12 @@ onBeforeUnmount(() => {
 .item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-5);
   width: 100%;
   /* Asymmetric horizontal padding: more on the right so the label has
      breathing room from the menu edge — reads tight at 12px once the menu
      widens out for a long label. */
-  padding: 8px 16px 8px 14px;
+  padding: var(--space-4) var(--space-7) var(--space-4) var(--space-6);
   background: none;
   border: none;
   color: inherit;

@@ -181,46 +181,44 @@ function copyInviteUrl(url: string) {
 .user-row .role-tag {
   color: var(--accent);
   border: 1px solid var(--accent);
-  padding: 0 4px;
-  margin-left: 6px;
-  font-size: 0.85em;
+  padding: 0 var(--space-2);
+  margin-left: var(--space-3);
   text-transform: uppercase;
 }
 .invite-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 0 10px;
+  gap: var(--space-6);
+  padding: 0 0 var(--space-5);
   flex-wrap: wrap;
 }
 .invite-fresh {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
   color: var(--fg-muted);
-  font-size: 0.95em;
 }
 .invite-fresh code {
   background: var(--bg-soft);
-  padding: 1px 4px;
+  padding: 1px var(--space-2);
   word-break: break-all;
 }
 .invite-row .ua {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-3);
 }
 .invite-url {
   background: var(--bg-soft);
-  padding: 1px 4px;
+  padding: 1px var(--space-2);
   word-break: break-all;
-  font-size: 0.9em;
+  color: var(--fg-muted);
 }
 .invite-status {
   text-transform: uppercase;
-  font-size: 0.8em;
-  padding: 0 4px;
+  color: var(--fg-muted);
+  padding: 0 var(--space-2);
   border: 1px solid var(--border);
 }
 .invite-status.status-pending {

@@ -69,7 +69,7 @@ function onRemove(m: HistoryMessage): void {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  padding: 0 4px;
+  padding: 0 var(--space-2);
 }
 .link:hover {
   color: var(--accent);
@@ -91,16 +91,16 @@ function onRemove(m: HistoryMessage): void {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 32px;
+  padding: var(--space-10);
 }
 .error.inline {
   color: var(--bad);
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   margin: 0;
 }
 .foot {
   border-top: 1px solid var(--border);
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   display: flex;
   justify-content: center;
 }

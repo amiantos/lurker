@@ -1696,7 +1696,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
      first line as the textarea grows downward across multiple lines. */
   align-items: flex-start;
   gap: 1ch;
-  padding: 8px 12px;
+  padding: var(--space-4) var(--space-6);
   /* Containing block for the desktop NickPicker's anchor logic — the
      position:fixed picker still reads coordinates off the form. */
   position: relative;
@@ -1721,7 +1721,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
   border: none;
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0 var(--space-1);
   font-size: inherit;
   line-height: 1.4;
 }
@@ -1735,7 +1735,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
 .format-btn {
   color: var(--fg-muted);
   cursor: pointer;
-  padding: 0 2px;
+  padding: 0 var(--space-1);
   line-height: 1.4;
   user-select: none;
   /* Avoids iOS double-tap-zoom delay so the picker opens promptly on touch. */

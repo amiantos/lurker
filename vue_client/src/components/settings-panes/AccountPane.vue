@@ -247,7 +247,7 @@ async function signOut() {
 <style src="./panes.css"></style>
 <style scoped>
 .account-identity {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-6);
   color: var(--fg-muted);
 }
 .account-identity strong {
@@ -259,42 +259,41 @@ async function signOut() {
   background: transparent;
   border: 1px solid transparent;
   color: var(--fg);
-  padding: 2px 4px;
+  padding: var(--space-1) var(--space-2);
 }
 .passkey .ua input[type='text']:hover,
 .passkey .ua input[type='text']:focus {
   border-color: var(--border);
 }
 .passkey-add {
-  padding-top: 8px;
+  padding-top: var(--space-4);
 }
 
 .password-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
   max-width: 360px;
 }
 .password-form label {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   color: var(--fg-muted);
 }
 .password-form label span {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.85em;
 }
 .password-actions {
   display: flex;
   gap: 1ch;
   align-items: center;
-  margin-top: 2px;
+  margin-top: var(--space-1);
 }
 .signout-row {
-  margin-top: 16px;
+  margin-top: var(--space-7);
   display: flex;
   justify-content: flex-start;
 }

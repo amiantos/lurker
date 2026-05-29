@@ -1126,7 +1126,7 @@ watch(
      prepend watcher in <script setup> handles position preservation
      manually with a known-stable anchor (the OLD first message). */
   overflow-anchor: none;
-  padding: 4px 12px;
+  padding: var(--space-2) var(--space-6);
   display: grid;
   /* Nick column has a 16ch floor (matching the most common modern NICKLEN)
      so the layout is consistent across buffers regardless of who's talking,
@@ -1173,7 +1173,7 @@ watch(
 .row-actions {
   position: absolute;
   top: 50%;
-  right: 4px;
+  right: var(--space-2);
   transform: translateY(-50%);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1186,9 +1186,9 @@ watch(
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
-  z-index: 1;
+  z-index: var(--z-base);
   padding: 0;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 .line:hover .row-actions,
 .row-actions:focus-visible {
@@ -1296,7 +1296,7 @@ watch(
 @media (max-width: 768px) {
   .message-list:not(.compact) {
     grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
-    padding: 4px 8px;
+    padding: var(--space-2) var(--space-4);
   }
   .message-list:not(.compact) .time {
     display: none;
@@ -1317,7 +1317,7 @@ watch(
 .message-list.compact {
   /* Single content column — the 3-col subgrid alignment goes away. */
   grid-template-columns: minmax(0, 1fr);
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
 }
 .message-list.compact .line {
   /* Per-row grid: head spans both content columns above the body row;
@@ -1333,13 +1333,13 @@ watch(
   align-items: baseline;
   column-gap: 0.75ch;
   row-gap: 0;
-  padding: 2px 0;
+  padding: var(--space-1) 0;
   /* Group separator: every non-continuation line marks the start of a new
      visual cluster (message head, action, notice, system event,
      consolidation summary). Transparent (not padding) so adjacent hover
      backgrounds don't touch across the gap. Adjacent siblings collapse
      vertical margins, so back-to-back clusters get one 10px gap, not 20px. */
-  margin-top: 10px;
+  margin-top: var(--space-5);
 }
 /* Continuation message rows render only body + time — no head, no cluster
    start — and should sit tight under the previous line. */
@@ -1349,7 +1349,7 @@ watch(
 /* Client-side dividers (unread/away/back/date) also mark a cluster boundary,
    so give them the same top gap as .line in compact mode. */
 .message-list.compact .notice {
-  margin-top: 10px;
+  margin-top: var(--space-5);
 }
 .message-list.compact .line > .head {
   grid-area: head;
@@ -1390,7 +1390,7 @@ watch(
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 6px 0;
+  padding: var(--space-3) 0;
   margin: 0;
 }
 
@@ -1401,13 +1401,12 @@ watch(
 .unread-divider {
   color: var(--warn);
   font-style: normal;
-  font-size: 0.85em;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  padding: 4px 0;
+  padding: var(--space-2) 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .unread-divider::before,
 .unread-divider::after {
@@ -1425,13 +1424,12 @@ watch(
 .date-divider,
 .cleared-divider {
   font-style: normal;
-  font-size: 0.85em;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  padding: 4px 0;
+  padding: var(--space-2) 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .presence-divider::before,
 .presence-divider::after,

@@ -51,21 +51,21 @@ function onClick(t: Toast) {
 <style scoped>
 .toast-stack {
   position: fixed;
-  top: 12px;
-  right: 12px;
+  top: var(--space-6);
+  right: var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  z-index: 200;
+  gap: var(--space-4);
+  z-index: var(--z-toast);
   pointer-events: none;
-  max-width: min(360px, calc(100vw - 24px));
+  max-width: min(360px, calc(100vw - var(--space-9)));
 }
 .toast {
   pointer-events: auto;
   background: var(--bg);
   border: 1px solid var(--border);
   border-left: 4px solid var(--toast-accent, var(--accent));
-  padding: 10px 12px;
+  padding: var(--space-5) var(--space-6);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   color: var(--fg);
   animation: toast-in 160ms ease-out;
@@ -101,7 +101,7 @@ function onClick(t: Toast) {
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .title {
   flex: 1;
@@ -120,7 +120,7 @@ function onClick(t: Toast) {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  padding: 0 2px;
+  padding: 0 var(--space-1);
   line-height: 1;
 }
 .x:hover {
@@ -128,7 +128,7 @@ function onClick(t: Toast) {
 }
 .body {
   color: var(--fg);
-  margin-top: 4px;
+  margin-top: var(--space-2);
   white-space: pre-wrap;
   word-break: break-word;
   display: -webkit-box;

@@ -176,7 +176,7 @@ const sorted = computed(() => {
 ul {
   list-style: none;
   margin: 0;
-  padding: 4px 0;
+  padding: var(--space-2) 0;
   overflow: auto;
   flex: 1;
   min-height: 0;
@@ -184,8 +184,8 @@ ul {
 li {
   display: flex;
   align-items: baseline;
-  gap: 2px;
-  padding: 1px 10px;
+  gap: var(--space-1);
+  padding: 1px var(--space-5);
   min-width: 0;
   user-select: none;
   cursor: pointer;
@@ -208,7 +208,7 @@ li:hover {
   bottom: 0;
   display: flex;
   align-items: center;
-  padding: 0 8px 0 16px;
+  padding: 0 var(--space-4) 0 var(--space-7);
   background: linear-gradient(to right, transparent 0, var(--bg-soft) 12px);
   border: none;
   color: var(--fg-muted);

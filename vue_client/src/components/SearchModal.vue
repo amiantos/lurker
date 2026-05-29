@@ -162,14 +162,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .search-row {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-6);
 }
 .filter {
   width: 100%;
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
-  padding: 8px 10px;
+  padding: var(--space-4) var(--space-5);
   font: inherit;
 }
 .filter:focus {
@@ -191,17 +191,17 @@ onBeforeUnmount(() => {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 8px;
+  padding: var(--space-4);
 }
 .empty {
   text-align: center;
   color: var(--fg-muted);
   font-style: italic;
-  padding: 32px;
+  padding: var(--space-10);
 }
 .error.inline {
   color: var(--bad);
-  padding: 8px 0;
+  padding: var(--space-4) 0;
   margin: 0;
 }
 </style>

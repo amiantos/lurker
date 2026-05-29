@@ -58,17 +58,17 @@ onMounted(() => {
 
 <style scoped>
 .desc {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-6);
   color: var(--fg-muted);
 }
 .desc code {
   background: var(--bg-soft);
-  padding: 1px 4px;
-  border-radius: 2px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
 }
 .preview {
-  margin: 0 0 12px;
-  padding: 8px 12px;
+  margin: 0 0 var(--space-6);
+  padding: var(--space-4) var(--space-6);
   background: var(--bg-soft);
   border: 1px solid var(--border);
   overflow: auto;
@@ -78,15 +78,14 @@ onMounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
   font-family: inherit;
-  font-size: 0.95em;
-  color: var(--fg);
+  color: var(--fg-muted);
 }
 .foot {
-  padding-top: 12px;
+  padding-top: var(--space-6);
   border-top: 1px solid var(--border);
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-4);
 }
 .btn {
   background: var(--bg-soft);
@@ -94,7 +93,7 @@ onMounted(() => {
   color: var(--fg);
   cursor: pointer;
   font: inherit;
-  padding: 6px 14px;
+  padding: var(--space-3) var(--space-6);
 }
 .btn:hover:not(:disabled) {
   border-color: var(--accent);

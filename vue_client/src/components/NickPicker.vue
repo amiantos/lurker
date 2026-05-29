@@ -211,23 +211,23 @@ watch(
 <style scoped>
 .nick-picker {
   position: fixed;
-  left: 8px;
-  right: 8px;
+  left: var(--space-4);
+  right: var(--space-4);
   max-width: 480px;
   margin: 0 auto;
   max-height: 50vh;
   overflow-y: auto;
   background: var(--bg-soft);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.4);
-  z-index: 1000;
+  z-index: var(--z-popover);
 }
 .row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: var(--space-6);
   min-height: 44px;
   cursor: pointer;
   border-bottom: 1px solid var(--border);
@@ -246,7 +246,6 @@ watch(
   font-weight: 500;
 }
 .badge {
-  font-size: 0.85em;
   color: var(--fg-muted);
   font-style: italic;
 }

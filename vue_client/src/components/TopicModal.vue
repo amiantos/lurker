@@ -38,7 +38,7 @@ const word = 'topic';
   /* Break out of card padding so the scrollbar sits against the card
      border; padding keeps content visually aligned with the rest. */
   margin: 0 calc(-1 * var(--card-pad-x));
-  padding: 16px var(--card-pad-x) 0;
+  padding: var(--space-7) var(--card-pad-x) 0;
   overflow-y: auto;
   flex: 1;
   min-height: 0;

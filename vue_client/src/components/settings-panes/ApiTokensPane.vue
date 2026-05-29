@@ -172,26 +172,25 @@ async function onRevoke(token: ApiToken) {
 .create-form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
   max-width: 360px;
 }
 .create-form label {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
   color: var(--fg-muted);
 }
 .create-form label.check {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-4);
   color: var(--fg);
 }
 .create-form label span {
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-size: 0.85em;
 }
 .create-form label.check span {
   text-transform: none;
@@ -202,17 +201,17 @@ async function onRevoke(token: ApiToken) {
   display: flex;
   gap: 1ch;
   align-items: center;
-  margin-top: 2px;
+  margin-top: var(--space-1);
 }
 
 .reveal {
-  margin: 12px 0;
-  padding: 10px 12px;
+  margin: var(--space-6) 0;
+  padding: var(--space-5) var(--space-6);
   border: 1px solid var(--accent);
   background: var(--bg-soft);
 }
 .reveal-warning {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-3);
   color: var(--fg);
 }
 .reveal-row {
@@ -227,7 +226,7 @@ async function onRevoke(token: ApiToken) {
   word-break: break-all;
   user-select: all;
   background: var(--bg);
-  padding: 4px 8px;
+  padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
   min-width: 0;
 }
