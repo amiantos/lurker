@@ -32,7 +32,7 @@ router.patch('/', (req: Request, res: Response) => {
   res.json({ values: result.values });
 });
 
-router.delete('/:key', (req: Request, res: Response) => {
+router.delete('/:key', (req: Request<{ key: string }>, res: Response) => {
   const result = settingsService.reset(req.user!.id, req.params.key);
   if (!result.ok) {
     res.status(400).json({ error: result.error });

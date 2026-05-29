@@ -104,7 +104,7 @@ router.post('/invites', (req: Request, res: Response) => {
   res.json({ invite: publicInvite(full || row, { origin }) });
 });
 
-router.delete('/invites/:token', (req: Request, res: Response) => {
+router.delete('/invites/:token', (req: Request<{ token: string }>, res: Response) => {
   const token = req.params.token;
   if (!token) {
     res.status(400).json({ error: 'missing token' });
