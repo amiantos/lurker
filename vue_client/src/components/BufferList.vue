@@ -17,6 +17,9 @@
           :class="netHeadClasses(net.id)"
           :title="`Open ${net.name} server buffer`"
           @click="select(net.id, serverTarget(net.id))"
+          @contextmenu.prevent="
+            networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)
+          "
         >
           <span class="indicator" :class="stateClass(net.id)"></span>
           <span class="name">{{ net.name }}</span>
@@ -29,6 +32,29 @@
           <span v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0" class="badge">{{
             unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id)))
           }}</span>
+          <div v-if="!hasUnreadIndicator(serverBuf(net.id))" class="net-actions">
+            <button
+              type="button"
+              class="net-action"
+              :disabled="!isNetworkConnected(net)"
+              title="Channel List"
+              aria-label="Channel list"
+              @click.stop="networkActions.openChannelList(net)"
+              @contextmenu.stop.prevent
+            >
+              <i class="fa-solid fa-hashtag"></i>
+            </button>
+            <button
+              type="button"
+              class="net-action"
+              title="Network options"
+              aria-label="Network options"
+              @click.stop="networkActions.openMenuFromButton(net, $event.currentTarget as Element)"
+              @contextmenu.stop.prevent
+            >
+              <i class="fa-solid fa-ellipsis-vertical"></i>
+            </button>
+          </div>
         </div>
 
         <!-- Touch delay (200ms, touch-only) so a quick swipe over the pinned
@@ -175,12 +201,13 @@ import {
   watch,
 } from 'vue';
 import draggable from 'vuedraggable';
-import { useNetworksStore, type PeerPresenceEntry } from '../stores/networks.js';
+import { useNetworksStore, type Network, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
+import { useNetworkActions } from '../composables/useNetworkActions.js';
 import {
   isPeerOffline as derivePeerOffline,
   isPeerAway as derivePeerAway,
@@ -192,6 +219,11 @@ const drafts = useDraftStore();
 const pins = usePinsStore();
 const settings = useSettingsStore();
 const bufferActions = useBufferActions();
+const networkActions = useNetworkActions();
+
+function isNetworkConnected(net: Network): boolean {
+  return networks.states[net.id]?.state === 'connected';
+}
 
 // Buffer-list display settings — feed both the row CSS (bold gate) and the
 // badge logic. `unread_display` picks between four modes:
@@ -212,7 +244,8 @@ function countFor(unread: number, highlights: number): number {
 // highlight badges. When the row has unread state, the badge wins — the
 // kebab stays hidden so it doesn't overlay the indicator the user is
 // scanning for. Right-click on the row still opens the same action menu.
-function hasUnreadIndicator(buf: Buffer): boolean {
+function hasUnreadIndicator(buf: Buffer | null): boolean {
+  if (!buf) return false;
   return (
     (buf.highlighted > 0 && showHighlightBadge.value) || countFor(buf.unread, buf.highlighted) > 0
   );
@@ -625,6 +658,7 @@ onBeforeUnmount(() => {
   letter-spacing: 0.04em;
   cursor: pointer;
   border-left: 2px solid transparent;
+  position: relative;
 }
 /* Gate :hover behind (hover: hover) so iPad-in-desktop-layout (width > 768px,
    touch-only) doesn't get the iOS sticky-hover two-tap: with bare :hover the
@@ -639,6 +673,50 @@ onBeforeUnmount(() => {
   background: var(--bg-soft);
   border-left-color: var(--accent);
 }
+
+/* Hover action buttons on network rows — mirrors .channels .row-actions pattern. */
+.net-actions {
+  position: absolute;
+  right: var(--space-2);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  background: var(--bg-soft);
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+.net-action {
+  padding: 0 var(--space-2);
+  background: var(--bg-soft);
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+@media (hover: hover) {
+  .net-head:hover .net-actions {
+    opacity: 1;
+  }
+  .net-head:hover .net-action:disabled {
+    opacity: 0.35;
+  }
+  .net-action:hover {
+    color: var(--fg);
+  }
+}
+.net-actions:focus-within {
+  opacity: 1;
+}
+.net-action:disabled {
+  pointer-events: none;
+}
+@media (max-width: 768px) {
+  .net-actions {
+    display: none;
+  }
+}
+
 .name {
   flex: 1;
   color: var(--fg);
