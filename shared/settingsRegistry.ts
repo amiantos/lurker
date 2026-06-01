@@ -31,6 +31,14 @@ interface BaseOption {
   // where the cell — not the tenant — owns this knob. The server ignores the
   // flag; it is purely a client-side rendering gate (A3). Self-hosted
   // (standalone) instances show everything as before.
+  //
+  // CONVENTION: this is presentation only — it does NOT stop a tenant from
+  // writing the setting via PUT /api/settings. That's fine for *cosmetic*
+  // knobs, but any cost / abuse / security lever marked selfHostedOnly MUST
+  // ALSO be enforced server-side in node edition (e.g. the cell sourcing the
+  // value from operator config and ignoring the tenant's), or the gate is
+  // trivially bypassable. The upload pipeline limits (uploads.image.*) are the
+  // reference pattern: hidden here, enforced in the cell's upload route.
   selfHostedOnly?: boolean;
 }
 
