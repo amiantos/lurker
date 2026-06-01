@@ -21,6 +21,7 @@ import uploadsRouter from './routes/uploads.js';
 import draftsRouter from './routes/drafts.js';
 import { exportsRouter, importRouter } from './routes/exports.js';
 import apiTokensRouter from './routes/apiTokens.js';
+import configRouter from './routes/config.js';
 import ircManager from './services/ircManager.js';
 import { attachWsHub } from './services/wsHub.js';
 import './services/verbs/index.js';
@@ -29,12 +30,15 @@ import { requireApiAuth } from './middleware/apiAuth.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
 import { resolveSessionSecret } from './utils/sessionSecret.js';
+import { getEdition } from './utils/edition.js';
 
 const PORT = Number(process.env.PORT || 8010);
+const EDITION = getEdition();
 const { secret: SESSION_SECRET, source: sessionSecretSource } = resolveSessionSecret();
 if (sessionSecretSource === 'generated') {
   console.log('[lurker] generated new session secret in data/session-secret.key');
 }
+console.log(`[lurker] edition: ${EDITION}`);
 
 const app = express();
 
@@ -56,6 +60,7 @@ app.use('/api/drafts', draftsRouter);
 app.use('/api/exports', exportsRouter);
 app.use('/api/imports', importRouter);
 app.use('/api/api-tokens', apiTokensRouter);
+app.use('/api/config', configRouter);
 
 app.use('/mcp', requireApiAuth, mcpRouter);
 
@@ -84,7 +89,7 @@ attachWsHub(server, SESSION_SECRET);
 purgeExpiredSessions();
 setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
 
-systemLog.log({ scope: 'server', text: 'Lurker server starting up' });
+systemLog.log({ scope: 'server', text: `Lurker server starting up (edition: ${EDITION})` });
 
 ircManager.initAll();
 
