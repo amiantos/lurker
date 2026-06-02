@@ -145,12 +145,12 @@ function fmtAwayTimestamp(date: Date, timeZone: unknown): string {
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}${sign}${pad(Math.floor(aoff / 60))}${pad(aoff % 60)}`;
 }
 
-function buildAutoAwayMessage(userId: number): string {
+function buildAutoAwayMessage(userId: number, since: Date): string {
   const base =
     ((effectiveSetting(userId, 'away.auto.message') as string | undefined) || 'afk').trim() ||
     'afk';
   const tz = effectiveSetting(userId, 'system.timezone');
-  return `${base} since ${fmtAwayTimestamp(new Date(), tz)}`;
+  return `${base} since ${fmtAwayTimestamp(since, tz)}`;
 }
 
 // HH:MM (24h) into minutes-past-midnight, or null on a malformed value. The
@@ -368,14 +368,18 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     if (!enabled) return;
     const rawDelay = Number(effectiveSetting(userId, 'away.auto.delay_seconds'));
     const delaySec = Number.isFinite(rawDelay) && rawDelay > 0 ? rawDelay : 30;
+    // The user went idle the moment we scheduled this timer, not when it fires
+    // `delaySec` later — backdate the away "since" to now so it reflects when
+    // they actually stepped away (#155).
+    const afkSince = new Date();
     const t = setTimeout(() => {
       autoAwayTimers.delete(userId);
       // Re-check: a client may have become visible during the delay.
       // "Visible" rather than "connected" so a backgrounded tab — which the
       // push pipeline already treats as absent — counts as absent here too.
       if (userHasVisibleClient(userId)) return;
-      const message = buildAutoAwayMessage(userId);
-      ircManager.setAwayAll(userId, message, { autoSet: true });
+      const message = buildAutoAwayMessage(userId, afkSince);
+      ircManager.setAwayAll(userId, message, { autoSet: true, since: afkSince });
     }, delaySec * 1000);
     t.unref?.();
     autoAwayTimers.set(userId, t);

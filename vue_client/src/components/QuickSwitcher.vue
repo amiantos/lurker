@@ -114,8 +114,11 @@ const allRows = computed<Row[]>(() => {
 const rows = computed<Row[]>(() => {
   const q = query.value.trim().toLowerCase();
   if (!q) return allRows.value;
+  // Match only on the channel/DM label, not the network name — a bare network
+  // keyword ("libera") surfacing every buffer in that network is noise, and
+  // there's no multi-keyword "libera amiantos" syntax to make it useful (#153).
   return allRows.value.filter((r) => {
-    return r.label.toLowerCase().includes(q) || r.networkName.toLowerCase().includes(q);
+    return r.label.toLowerCase().includes(q);
   });
 });
 

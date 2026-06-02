@@ -36,7 +36,7 @@ import { registerIdent, unregisterIdent, isIdentdEnabled } from './identd.js';
 // announcement — gives operators a quick read on what client + version is
 // being used. Per-disconnect overrides (network removal, no-nick failure,
 // etc.) pass their own reason and bypass this default.
-const DEFAULT_QUIT_MESSAGE = `Lurker ${APP_VERSION} (the truth is out there) https://github.com/amiantos/lurker`;
+const DEFAULT_QUIT_MESSAGE = `Lurker ${APP_VERSION} (the truth is out there) https://lurker.chat`;
 
 const NON_PERSISTED_TYPES = new Set([
   'state',

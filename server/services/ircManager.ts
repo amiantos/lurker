@@ -280,15 +280,22 @@ class IrcManager extends EventEmitter {
   // (autoSet=true) is gated by the persisted current state so it can never
   // overwrite a manual /away. Returns the count of connections that received
   // the update.
-  setAwayAll(userId: number, message: string, { autoSet = false } = {}): number {
+  // `since` backdates the away timestamp — auto-away passes the moment the user
+  // went idle rather than when the timer fired (#155). Manual /away omits it and
+  // gets "now".
+  setAwayAll(
+    userId: number,
+    message: string,
+    { autoSet = false, since }: { autoSet?: boolean; since?: Date } = {},
+  ): number {
     const trimmed = (message || '').trim();
     if (!trimmed) return 0;
     const current = getUserAwayState(userId) as AwayStateRow | null;
     const currentlyAway = !!(current && current.away_datetime && !current.back_datetime);
     if (currentlyAway && !current!.auto_set && autoSet) return 0;
-    const now = new Date().toISOString();
-    writeAwayMarker(userId, { awayDatetime: now, awayMessage: trimmed, autoSet });
-    const state = { active: true, message: trimmed, since: now, autoSet, backAt: null };
+    const awayAt = (since ?? new Date()).toISOString();
+    writeAwayMarker(userId, { awayDatetime: awayAt, awayMessage: trimmed, autoSet });
+    const state = { active: true, message: trimmed, since: awayAt, autoSet, backAt: null };
     let n = 0;
     for (const conn of this.listConnections(userId)) {
       conn.applyAwayState(state);
