@@ -69,9 +69,12 @@ export function startIdentd(port: number): void {
   const srv = createIdentdServer();
   srv.on('error', (err: Error) => {
     // A failed bind (EACCES without the privilege to bind :113, or EADDRINUSE)
-    // must not take down the whole server — log and carry on without identd.
+    // must not take down the whole server — log and carry on without identd. If
+    // the error arrives after we were already listening, close the listener so
+    // it can't keep accepting connections once we drop our reference to it.
     console.error(`[identd] failed to listen on :${port}: ${err.message}`);
-    server = null;
+    if (srv.listening) srv.close();
+    if (server === srv) server = null;
   });
   srv.listen(port, () => console.log(`[identd] listening on :${port}`));
   server = srv;

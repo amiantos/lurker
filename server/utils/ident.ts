@@ -26,7 +26,7 @@ export function deriveIdent(opts: {
 }): string {
   if (opts.nodeMode) {
     const m = /^acct-(\d+)$/.exec(opts.accountUsername.trim());
-    if (m) return `u${m[1]}`;
+    if (m) return sanitizeIdent(`u${m[1]}`);
     // Fallback (e.g. the operator's own admin account on a cell): stay stable +
     // ident-safe rather than inventing an id.
     return sanitizeIdent(opts.accountUsername) || 'user';
