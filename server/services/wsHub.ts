@@ -82,12 +82,16 @@ type WsPayload = Record<string, unknown>;
 // A paused account is read-only, so these are rejected while reads (snapshot,
 // history, search, chanlist-search) and local view state (read markers, pins,
 // drafts, bookmarks, nicklist collapse) still work. open-buffer can resolve to
-// a JOIN, so it's blocked too.
+// a JOIN, so it's blocked; close-buffer is blocked because its disconnected
+// fallback flips channels.joined=0 — a network-state mutation a read-only
+// account shouldn't make (no PART goes out, since paused accounts hold no
+// connection, but the persisted join intent would still change).
 const PAUSED_BLOCKED_TYPES = new Set([
   'send',
   'action',
   'join',
   'open-buffer',
+  'close-buffer',
   'part',
   'raw',
   'probe-presence',

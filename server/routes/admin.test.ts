@@ -16,7 +16,7 @@ const ctx = setupTestDb('routes-admin');
 
 const fakeManager = {
   disposed: [] as Array<[number, string]>,
-  suspended: [] as Array<[number, string]>,
+  suspended: [] as number[],
   resumed: [] as number[],
   reset() {
     this.disposed = [];
@@ -26,8 +26,10 @@ const fakeManager = {
   disposeUser(userId: number, reason: string) {
     this.disposed.push([userId, reason]);
   },
-  suspendUser(userId: number, reason: string) {
-    this.suspended.push([userId, reason]);
+  // Mirrors the real ircManager.suspendUser(userId) — one arg, no reason (the
+  // QUIT uses the default message).
+  suspendUser(userId: number) {
+    this.suspended.push(userId);
   },
   resumeUser(userId: number) {
     this.resumed.push(userId);
@@ -161,7 +163,7 @@ describe('POST /api/admin/users/:id/pause and /resume', () => {
     const res = await adminAgent.post(`/api/admin/users/${target.id}/pause`);
     expect(res.status).toBe(200);
     expect(findUserById(target.id)?.is_paused).toBe(1);
-    expect(fakeManager.suspended.find(([uid]) => uid === target.id)).toBeTruthy();
+    expect(fakeManager.suspended).toContain(target.id);
 
     const list = await adminAgent.get('/api/admin/users');
     const row = list.body.users.find((u: { id: number }) => u.id === target.id);
