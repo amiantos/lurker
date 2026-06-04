@@ -7,7 +7,6 @@ import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
 import yauzl from 'yauzl';
-import Database from 'better-sqlite3';
 import type { User } from '../db/users.js';
 import type { Network } from '../db/networks.js';
 
@@ -251,7 +250,9 @@ describe('export under concurrent IRC writes (lurker#175 regression)', () => {
       tls: true,
       nick: 'c',
     }) as Network;
-    for (let i = 0; i < 3000; i += 1) {
+    // Several pages' worth (MESSAGE_PAGE = 2000) so the paged stream yields to
+    // the loop multiple times, giving the writer below room to interleave.
+    for (let i = 0; i < 8000; i += 1) {
       insertMessage({
         networkId: net.id,
         target: '#c',
@@ -265,38 +266,47 @@ describe('export under concurrent IRC writes (lurker#175 regression)', () => {
 
     const sink = new PassThrough();
     const chunks: Buffer[] = [];
+    sink.on('data', (c: Buffer) => chunks.push(c));
+
+    // Hammer the SAME shared connection the export reads from. The export pages
+    // its reads with discrete `.all()` queries and never holds a cursor across
+    // a yield, so these writes must not throw "database connection is busy" —
+    // the crash that took the process down on the old `.iterate()` design
+    // (lurker#175).
+    // Finite burst: keyset pagination reads "current" rows, so an unbounded
+    // writer would keep pushing ids past the cursor and the export would never
+    // reach an empty page. A real bouncer writes far slower than the export
+    // pages, so it always catches up; cap the burst to model that.
+    const LIVE_WRITE_CAP = 200;
     let liveWrites = 0;
     let writeError: unknown = null;
-    sink.on('data', (chunk: Buffer) => {
-      chunks.push(chunk);
-      // The readonly export cursor is open right now. On the old single shared
-      // connection this insert threw "database connection is busy" and crashed
-      // the process (lurker#175); on a separate connection it must succeed.
-      if (liveWrites < 100) {
-        try {
-          insertMessage({
-            networkId: net.id,
-            target: '#c',
-            time: '2026-05-17T10:05:00Z',
-            type: 'message',
-            nick: 'c',
-            text: `live ${liveWrites}`,
-            self: false,
-          });
-          liveWrites += 1;
-        } catch (e) {
-          writeError = e;
-        }
+    let building = true;
+    const pump = (): void => {
+      if (!building || liveWrites >= LIVE_WRITE_CAP) return;
+      try {
+        insertMessage({
+          networkId: net.id,
+          target: '#c',
+          time: '2026-05-17T10:05:00Z',
+          type: 'message',
+          nick: 'c',
+          text: `live ${liveWrites}`,
+          self: false,
+        });
+        liveWrites += 1;
+      } catch (e) {
+        writeError = e;
+        building = false;
+        return;
       }
-    });
+      setImmediate(pump);
+    };
+    setImmediate(pump);
 
-    // The export reads from its OWN readonly connection (as the worker does);
-    // insertMessage writes on the shared singleton. WAL lets them coexist.
-    const reader = new Database(process.env.DATABASE_PATH as string, { readonly: true });
     try {
-      await buildExportZip(reader, u.id, { includeMessages: true }, sink);
+      await buildExportZip(db, u.id, { includeMessages: true }, sink);
     } finally {
-      reader.close();
+      building = false;
     }
 
     expect(writeError).toBeNull();

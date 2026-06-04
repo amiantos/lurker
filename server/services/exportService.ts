@@ -89,33 +89,49 @@ function projectRow(
   return out;
 }
 
-// How often to fire the progress callback while streaming messages. Cheap to
-// emit (the job manager throttles WS fan-out on top of this), but no point
-// calling it for every single row.
-const PROGRESS_EVERY = 2000;
+// Rows read (and progress reported) per page. Big enough that per-page query
+// overhead is negligible, small enough that the synchronous chunk between
+// event-loop yields stays short.
+const MESSAGE_PAGE = 2000;
 
-function* messagesNdjsonGenerator(
+// Stream a user's messages as NDJSON, paginated by id (keyset), yielding to the
+// event loop between pages.
+//
+// This is the heart of the lurker#175 fix. Each page is a discrete `.all()`
+// that runs to completion and releases its statement BEFORE we await — we never
+// hold an `.iterate()` cursor open across a yield. So even though the export
+// reads on the same shared better-sqlite3 connection the IRC bouncer writes on,
+// a concurrent insert landing between pages can't trip "this database
+// connection is busy executing a query" (the crash that took the process down).
+// The per-page `setImmediate` also keeps the loop responsive on a large export.
+async function* messagesNdjsonGenerator(
   db: Database,
   userId: number,
   total: number,
   onProgress?: ExportProgressFn,
-): Generator<string> {
+): AsyncGenerator<string> {
   const def = EXPORT_TABLES.messages as ExportTableDefWithScope;
   const { where, params } = scopeFilter(def.scope, userId);
   const cols = def.columns.join(', ');
-  const cursor = db
-    .prepare(`SELECT ${cols} FROM messages ${where} ORDER BY id ASC`)
-    .iterate(...params);
+  const pageStmt = db.prepare(
+    `SELECT ${cols} FROM messages ${where} AND id > ? ORDER BY id ASC LIMIT ${MESSAGE_PAGE}`,
+  );
+  let lastId = 0;
   let processed = 0;
-  for (const row of cursor) {
-    processed += 1;
-    // `total` is a COUNT(*) taken just before this iteration; a write committing
-    // between the two can make the stream yield more rows than the count. Report
-    // max(total, processed) so the denominator never trails the numerator.
-    if (onProgress && processed % PROGRESS_EVERY === 0) {
-      onProgress(processed, Math.max(total, processed));
+  for (;;) {
+    const rows = pageStmt.all(...params, lastId) as Array<Record<string, unknown> & { id: number }>;
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      lastId = row.id;
+      processed += 1;
+      yield JSON.stringify(projectRow(row, def)) + '\n';
     }
-    yield JSON.stringify(projectRow(row as Record<string, unknown>, def)) + '\n';
+    // `total` is a COUNT(*) taken before the walk; a write committing mid-export
+    // can push the actual row count past it, so report max(total, processed) to
+    // keep the denominator from trailing the numerator.
+    if (onProgress) onProgress(processed, Math.max(total, processed));
+    // Hand the loop back between pages; the next page resumes at id > lastId.
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
   if (onProgress) onProgress(processed, Math.max(total, processed));
 }
@@ -178,11 +194,11 @@ function getSchemaVersion(db: Database): number {
 // archive has been finalized (every byte is in destStream's buffer or
 // further downstream). Rejects if archiver emits an error.
 //
-// `db` is the connection to read from. In production this is the export
-// worker's own readonly connection; in tests it can be the singleton or a
-// second connection. The caller owns Content-Type / Content-Disposition (when
-// piping to an HTTP response) — we don't set them here so the function stays
-// reusable from the worker (piping to a file) and tests (piping to a stream).
+// `db` is the connection to read from — the shared singleton in production
+// (the paged message stream above keeps that safe under concurrent writes).
+// The caller owns Content-Type / Content-Disposition (when piping to an HTTP
+// response); we don't set them here so the function stays reusable from the
+// job runner (piping to a file) and tests (piping to a stream).
 export async function buildExportZip(
   db: Database,
   userId: number,

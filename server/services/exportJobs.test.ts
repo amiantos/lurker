@@ -5,7 +5,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import Database from 'better-sqlite3';
 import type { Network } from '../db/networks.js';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-test-exportjobs-'));
@@ -24,30 +23,9 @@ beforeAll(async () => {
   ({ insertMessage } = await import('../db/messages.js'));
   jobs = await import('./exportJobs.js');
   dataExports = await import('../db/dataExports.js');
-  const { buildExportZip } = await import('./exportService.js');
-
-  // In-process build runner: same separate-readonly-connection semantics as the
-  // production worker, but runnable under vitest.
-  jobs.setExportBuildRunnerForTests(async (spec, onProgress) => {
-    const reader = new Database(process.env.DATABASE_PATH!, { readonly: true });
-    try {
-      const out = fs.createWriteStream(spec.outPath);
-      await buildExportZip(
-        reader,
-        spec.userId,
-        { includeMessages: spec.includeMessages },
-        out,
-        onProgress,
-      );
-      return { byteSize: fs.statSync(spec.outPath).size };
-    } finally {
-      reader.close();
-    }
-  });
 });
 
 afterAll(() => {
-  jobs.setExportBuildRunnerForTests(null);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

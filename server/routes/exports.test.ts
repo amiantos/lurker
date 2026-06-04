@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import fs from 'fs';
 import { PassThrough } from 'stream';
 import Database from 'better-sqlite3';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
@@ -25,11 +24,10 @@ let alice: User;
 let bob: User;
 let aliceNet: Network;
 
-let exportJobs: typeof import('../services/exportJobs.js');
 let buildExportZip: typeof import('../services/exportService.js').buildExportZip;
 
-// Build an export buffer the same way the worker would, but in-process (vitest
-// can't transform a .ts worker entry loaded via node:worker_threads).
+// Build an export buffer to attach to the import tests. A one-shot read on a
+// throwaway connection — no concurrent writers, so a readonly handle is fine.
 async function exportToBuffer(userId: number, includeMessages: boolean): Promise<Buffer> {
   const reader = new Database(ctx.dbPath, { readonly: true });
   const sink = new PassThrough();
@@ -62,26 +60,7 @@ beforeAll(async () => {
   const { createNetwork } = await import('../db/networks.js');
   const { insertMessage } = await import('../db/messages.js');
   const { exportsRouter, importRouter } = await import('./exports.js');
-  exportJobs = await import('../services/exportJobs.js');
   ({ buildExportZip } = await import('../services/exportService.js'));
-
-  // Run the background build in-process on its own readonly connection.
-  exportJobs.setExportBuildRunnerForTests(async (spec, onProgress) => {
-    const reader = new Database(ctx.dbPath, { readonly: true });
-    try {
-      const out = fs.createWriteStream(spec.outPath);
-      await buildExportZip(
-        reader,
-        spec.userId,
-        { includeMessages: spec.includeMessages },
-        out,
-        onProgress,
-      );
-      return { byteSize: fs.statSync(spec.outPath).size };
-    } finally {
-      reader.close();
-    }
-  });
 
   alice = createUser('exports-alice');
   bob = createUser('exports-bob');
@@ -109,7 +88,6 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  exportJobs.setExportBuildRunnerForTests(null);
   ctx.cleanup();
 });
 

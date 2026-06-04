@@ -4,22 +4,25 @@
 // Lifecycle for per-user data-export jobs.
 //
 // A request to export account data creates a data_exports row and kicks off a
-// background build that runs OFF the main event loop and OFF the shared db
-// connection — a worker_thread with its own readonly SQLite connection (see
-// services/exportWorker.ts). The worker writes a .lurk archive to
-// data/exports/<token>.lurk; this module updates the row, relays progress to
-// the user's open tabs over the WebSocket, and serves the lifecycle endpoints.
+// background build that writes a .lurk archive to data/exports/<token>.lurk;
+// this module updates the row, relays progress to the user's open tabs over the
+// WebSocket, and serves the lifecycle endpoints.
 //
-// This module runs on the main thread, so importing the db singleton here is
-// fine (and necessary — it relays to wsHub, reads/writes data_exports). Only
-// the worker must avoid the singleton.
+// The build runs IN-PROCESS via buildExportZip, which streams messages in
+// keyset-paginated pages and yields to the event loop between them (see
+// exportService). That's what keeps it off the critical path without a worker
+// thread: no long-lived cursor is held on the shared connection (so a
+// concurrent IRC write can't crash the process — lurker#175) and the loop stays
+// responsive on a large export. We deliberately do NOT use worker_threads: tsx's
+// module resolution doesn't propagate into worker threads on Node 22 (the
+// deployed runtime), so a worker entry can't import the app's `.js`-specified
+// TS modules there.
 
-import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import path from 'node:path';
 import db, { DATABASE_FILE } from '../db/index.js';
 import { fanOutToUser } from './wsHub.js';
-import { buildExportFilename, countExportMessages } from './exportService.js';
+import { buildExportFilename, buildExportZip, countExportMessages } from './exportService.js';
 import * as systemLog from './systemLog.js';
 import {
   createExportJob,
@@ -44,13 +47,11 @@ const EXPORTS_DIR = path.join(path.dirname(DATABASE_FILE), 'exports');
 // decrypted network passwords doesn't linger.
 const TTL_HOURS = 24;
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
-// WS fan-out is throttled to this cadence (the worker already only reports
-// every PROGRESS_EVERY rows); status changes always emit immediately.
+// WS fan-out is throttled to this cadence (the builder reports once per page);
+// status changes always emit immediately.
 const PROGRESS_THROTTLE_MS = 800;
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
-// Live workers keyed by job id, so shutdown can terminate them.
-const activeWorkers = new Map<number, Worker>();
 const lastEmitAt = new Map<number, number>();
 
 function ensureExportsDir(): void {
@@ -106,76 +107,6 @@ function emit(userId: number, jobId: number): void {
   fanOutToUser(userId, { kind: 'export', job: toClientJob(row) });
 }
 
-// ---- build runner (injectable for tests) ----
-//
-// In production this spawns the worker_thread. Tests swap in an in-process
-// runner that opens its own readonly connection and builds directly — same
-// separate-connection semantics, but runnable under vitest (which doesn't
-// transform .ts files loaded by node:worker_threads).
-
-export interface BuildSpec {
-  jobId: number;
-  dbPath: string;
-  userId: number;
-  includeMessages: boolean;
-  outPath: string;
-}
-export type BuildRunner = (
-  spec: BuildSpec,
-  onProgress: (processed: number, total: number) => void,
-) => Promise<{ byteSize: number }>;
-
-function spawnWorkerBuild(
-  spec: BuildSpec,
-  onProgress: (processed: number, total: number) => void,
-): Promise<{ byteSize: number }> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./exportWorker.js', import.meta.url), {
-      workerData: {
-        dbPath: spec.dbPath,
-        userId: spec.userId,
-        includeMessages: spec.includeMessages,
-        outPath: spec.outPath,
-      },
-    });
-    activeWorkers.set(spec.jobId, worker);
-    let settled = false;
-    worker.on(
-      'message',
-      (msg: {
-        type: string;
-        processed?: number;
-        total?: number;
-        byteSize?: number;
-        message?: string;
-      }) => {
-        if (msg.type === 'progress') {
-          onProgress(msg.processed ?? 0, msg.total ?? 0);
-        } else if (msg.type === 'done') {
-          settled = true;
-          resolve({ byteSize: msg.byteSize ?? 0 });
-        } else if (msg.type === 'error') {
-          settled = true;
-          reject(new Error(msg.message || 'export worker failed'));
-        }
-      },
-    );
-    worker.on('error', (err) => {
-      if (!settled) reject(err);
-    });
-    worker.on('exit', (code) => {
-      if (!settled) reject(new Error(`export worker exited (code ${code}) before completing`));
-    });
-  });
-}
-
-let buildRunner: BuildRunner = spawnWorkerBuild;
-
-/** Test seam: override the build runner (pass null to restore the worker). */
-export function setExportBuildRunnerForTests(fn: BuildRunner | null): void {
-  buildRunner = fn ?? spawnWorkerBuild;
-}
-
 function relayProgress(jobId: number, userId: number, processed: number, total: number): void {
   updateProgress(jobId, processed, total);
   const now = Date.now();
@@ -184,21 +115,25 @@ function relayProgress(jobId: number, userId: number, processed: number, total: 
   emit(userId, jobId);
 }
 
+// Build the archive in-process. buildExportZip streams messages in paged
+// chunks and yields to the loop between them, so this coexists with live IRC
+// traffic on the shared connection without holding a cursor open or starving
+// the loop. The artifact is 0600 — it carries decrypted network passwords and
+// is only handed back over the authenticated download endpoint.
 async function runBuild(
   job: ExportJob,
   opts: { userId: number; includeMessages: boolean; outPath: string; filename: string },
 ): Promise<void> {
   try {
-    const { byteSize } = await buildRunner(
-      {
-        jobId: job.id,
-        dbPath: DATABASE_FILE,
-        userId: opts.userId,
-        includeMessages: opts.includeMessages,
-        outPath: opts.outPath,
-      },
+    const out = fs.createWriteStream(opts.outPath, { mode: 0o600 });
+    await buildExportZip(
+      db,
+      opts.userId,
+      { includeMessages: opts.includeMessages },
+      out,
       (processed, total) => relayProgress(job.id, opts.userId, processed, total),
     );
+    const byteSize = fs.statSync(opts.outPath).size;
     markDone(job.id, {
       filePath: opts.outPath,
       filename: opts.filename,
@@ -222,7 +157,6 @@ async function runBuild(
       text: `Export job ${job.id} failed: ${err instanceof Error ? err.message : String(err)}`,
     });
   } finally {
-    activeWorkers.delete(job.id);
     lastEmitAt.delete(job.id);
   }
 }
@@ -284,8 +218,9 @@ function sweepOrphanFiles(): void {
 
 /**
  * Boot recovery: any job still marked pending/running was orphaned by a
- * restart (its worker died with the process). Fail it, drop its partial file,
- * then sweep expired artifacts and orphan files. Call once at startup.
+ * restart (its in-process build was abandoned when the process exited). Fail
+ * it, drop its partial file, then sweep expired artifacts and orphan files.
+ * Call once at startup.
  */
 export function recoverInterruptedExports(): void {
   ensureExportsDir();
@@ -310,13 +245,11 @@ export function stopExportSweeper(): void {
   }
 }
 
-/** Terminate any in-flight worker. Called on graceful shutdown. */
+// Stop the sweeper on graceful shutdown. An in-flight in-process build is
+// simply abandoned when the process exits; boot recovery fails its orphaned
+// row and removes the partial artifact on next start.
 export function shutdownExportJobs(): void {
   stopExportSweeper();
-  for (const worker of activeWorkers.values()) {
-    void worker.terminate();
-  }
-  activeWorkers.clear();
 }
 
 /** The absolute path an artifact would live at — used by the download route. */
