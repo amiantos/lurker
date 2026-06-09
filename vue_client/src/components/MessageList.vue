@@ -1123,8 +1123,13 @@ watch(scrollToUnreadToken, async () => {
     const wantKey = networks.activeKey;
     buffers.loadAround(buf.networkId, buf.target, dividerAfterId);
     // loadAround rolls loadingHistory back to false synchronously if the send
-    // failed (offline) — nothing is in flight, so don't arm the watcher.
-    if (!buf.loadingHistory) return;
+    // failed (offline) — nothing will land to drive the scroll, and there's no
+    // more history to pull, so fall back to centering the top-pinned divider so
+    // the click still has a visible effect.
+    if (!buf.loadingHistory) {
+      scrollDividerIntoView();
+      return;
+    }
     // applyAroundSlice clears loadingHistory when the around response replaces
     // buf.messages; that false transition is our "slice landed" signal (more
     // reliable than messages.length, which can be unchanged when both the live
