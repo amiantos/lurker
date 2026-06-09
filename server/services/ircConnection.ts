@@ -1882,12 +1882,6 @@ function isPrefixMode(letter: string): boolean {
   return PREFIX_MODES.has(letter);
 }
 
-// Pure helper for the pre-registration nick-fallback ladder. The configured
-// nick is attempt -1 (already tried by `connect()` itself); on each subsequent
-// ERR_NICKNAMEINUSE we ask for index 0..N-1 here. Digits-only, no underscore
-// dance — modern ircds allow long nicks so the legacy 9-char cap is moot, and
-// `bob1` reads more clearly than `bob___`. Returns null once exhausted so the
-// caller can give up and notify the user.
 // The source address the cell binds its outbound IRC sockets to (irc-framework
 // forwards this as the socket's `localAddress` — see its transports/net.js). On
 // a hosted cell this is set to the droplet's DigitalOcean anchor IP, which DO
@@ -1901,6 +1895,12 @@ export function ircOutgoingAddr(): string | undefined {
   return addr || undefined;
 }
 
+// Pure helper for the pre-registration nick-fallback ladder. The configured
+// nick is attempt -1 (already tried by `connect()` itself); on each subsequent
+// ERR_NICKNAMEINUSE we ask for index 0..N-1 here. Digits-only, no underscore
+// dance — modern ircds allow long nicks so the legacy 9-char cap is moot, and
+// `bob1` reads more clearly than `bob___`. Returns null once exhausted so the
+// caller can give up and notify the user.
 const NICK_FALLBACK_MAX = 9;
 export function computeFallbackNick(
   base: string | undefined | null,
