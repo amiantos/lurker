@@ -9,11 +9,15 @@
     <p v-if="auth.user" class="account-identity">
       Signed in as <strong>{{ auth.user.username }}</strong>
     </p>
-    <p v-if="config.isNode" class="section-desc">
-      Your account sign-in is managed at
-      <a href="https://lurker.chat" target="_blank" rel="noopener">lurker.chat</a> — passkeys and
-      passwords are set on your account there, not on this server.
-    </p>
+    <template v-if="config.isNode">
+      <p class="section-desc">
+        Your sign-in methods and password are managed on your hosted Lurker account, not on this
+        server. Account management lives there too — coming soon.
+      </p>
+      <p class="section-desc">
+        Manage your subscription and payment details on the <a href="/billing">billing</a> page.
+      </p>
+    </template>
     <p v-else class="section-desc">
       You can sign in with a passkey, a password, or both. Removing your last sign-in method would
       lock you out, so it's blocked.
