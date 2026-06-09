@@ -22,6 +22,10 @@ declare module 'irc-framework' {
     account?: { account: string; password: string };
     auto_reconnect?: boolean;
     auto_reconnect_max_retries?: number;
+    // Source address to bind the outbound socket to (the transport forwards it
+    // as net/tls.connect's `localAddress`). Used to pin a hosted cell's IRC
+    // egress to its stable Reserved IP. Omitted → OS picks the source.
+    outgoing_addr?: string;
     enable_chghost?: boolean;
     enable_setname?: boolean;
     enable_echomessage?: boolean;

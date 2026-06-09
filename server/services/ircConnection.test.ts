@@ -1,9 +1,32 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { ircLineParser } from 'irc-framework';
-import { computeFallbackNick, formatServerNumeric } from './ircConnection.js';
+import { computeFallbackNick, formatServerNumeric, ircOutgoingAddr } from './ircConnection.js';
+
+describe('ircOutgoingAddr', () => {
+  const original = process.env.LURKER_IRC_OUTGOING_ADDR;
+  afterEach(() => {
+    if (original === undefined) delete process.env.LURKER_IRC_OUTGOING_ADDR;
+    else process.env.LURKER_IRC_OUTGOING_ADDR = original;
+  });
+
+  it('is undefined when the env var is unset', () => {
+    delete process.env.LURKER_IRC_OUTGOING_ADDR;
+    expect(ircOutgoingAddr()).toBeUndefined();
+  });
+
+  it('is undefined for an empty or whitespace-only value', () => {
+    process.env.LURKER_IRC_OUTGOING_ADDR = '   ';
+    expect(ircOutgoingAddr()).toBeUndefined();
+  });
+
+  it('returns the trimmed source address when set', () => {
+    process.env.LURKER_IRC_OUTGOING_ADDR = '  10.18.0.5  ';
+    expect(ircOutgoingAddr()).toBe('10.18.0.5');
+  });
+});
 
 describe('computeFallbackNick', () => {
   it('appends 1..9 in order', () => {

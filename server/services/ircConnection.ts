@@ -1696,6 +1696,11 @@ export class IrcConnection {
       gecos: this.network.realname || nick,
       password: this.network.server_password || undefined,
       account,
+      // Bind the outbound socket to the cell's configured source IP so every
+      // network this cell serves egresses from one stable address (its Reserved
+      // IP via the DO anchor). undefined off the hosted service → OS picks, as
+      // before. irc-framework reads this as `outgoing_addr` (→ localAddress).
+      outgoing_addr: ircOutgoingAddr(),
       auto_reconnect: true,
       auto_reconnect_max_retries: 0,
       // Request the `chghost` cap so SASL-cloaked vhost changes (Libera et al.)
@@ -1883,6 +1888,19 @@ function isPrefixMode(letter: string): boolean {
 // dance — modern ircds allow long nicks so the legacy 9-char cap is moot, and
 // `bob1` reads more clearly than `bob___`. Returns null once exhausted so the
 // caller can give up and notify the user.
+// The source address the cell binds its outbound IRC sockets to (irc-framework
+// forwards this as the socket's `localAddress` — see its transports/net.js). On
+// a hosted cell this is set to the droplet's DigitalOcean anchor IP, which DO
+// NATs to the cell's stable Reserved IP — so the IP that networks rDNS-resolve
+// and query identd on survives a droplet rebuild (control-plane #47). Left unset
+// on self-host and in dev, where the OS picks the source as before; a
+// whitespace-only value is treated as unset. The app stays cloud-agnostic — it
+// binds whatever address it's handed and never reasons about DO itself.
+export function ircOutgoingAddr(): string | undefined {
+  const addr = (process.env.LURKER_IRC_OUTGOING_ADDR || '').trim();
+  return addr || undefined;
+}
+
 const NICK_FALLBACK_MAX = 9;
 export function computeFallbackNick(
   base: string | undefined | null,
