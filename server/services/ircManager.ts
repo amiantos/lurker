@@ -4,6 +4,7 @@
 import { EventEmitter } from 'events';
 import { IrcConnection } from './ircConnection.js';
 import * as systemLog from './systemLog.js';
+import connectScheduler from './connectScheduler.js';
 import {
   listNetworksForUser,
   getNetwork,
@@ -82,8 +83,13 @@ class IrcManager extends EventEmitter {
   }
 
   initForUser(userId: number): void {
+    // Bulk path — cold-start autoconnect (via initAll) and un-pause resume. The
+    // herd of connects this fans out is exactly what issue #236 throttles, so
+    // route it through the per-host scheduler. Interactive single-network
+    // connect/reconnect routes call startNetwork directly (deferrable omitted)
+    // and stay immediate.
     for (const network of listNetworksForUser(userId)) {
-      if (network.autoconnect) this.startNetwork(userId, network.id);
+      if (network.autoconnect) this.startNetwork(userId, network.id, { deferrable: true });
     }
   }
 
@@ -95,7 +101,11 @@ class IrcManager extends EventEmitter {
     for (const id of userIds) this.initForUser(id);
   }
 
-  startNetwork(userId: number, networkId: number): IrcConnection | null {
+  startNetwork(
+    userId: number,
+    networkId: number,
+    opts: { deferrable?: boolean } = {},
+  ): IrcConnection | null {
     // Paused accounts never hold a live IRC connection. This single gate is the
     // linchpin of the pause feature: it covers boot-time autoconnect
     // (initForUser → initAll), the explicit connect/reconnect routes, and
@@ -113,18 +123,36 @@ class IrcManager extends EventEmitter {
       onEvent: (event) => this.emit('event', event),
     });
     this.connectionsForUser(userId).set(networkId, conn);
-    systemLog.log({
-      userId,
-      scope: `net:${network.name}`,
-      text: `Starting connection to ${network.host}:${network.port}${network.tls ? ' (TLS)' : ''}`,
-    });
     // Seed self-presence from the per-user truth before the IRC handshake. The
     // 'registered' handler in IrcConnection re-asserts AWAY off of this state,
-    // so it must be in place before connect() resolves the socket.
+    // so it must be in place before connect() resolves the socket. Safe to set
+    // now even when the actual connect() is deferred — it only mutates
+    // in-memory state and publishes (no AWAY emitted while disconnected).
     conn.applyAwayState(awayStateFromRow(getUserAwayState(userId) as AwayStateRow | null));
-    conn.connect();
 
     const connRef = conn;
+    // Open the socket. Logged here (not at enqueue) so the "Starting connection"
+    // line lands when the connect actually fires, and revalidated because a
+    // deferred launch may have sat in the scheduler queue while the connection
+    // was paused/suspended, disposed, stopped, or replaced by restartNetwork —
+    // in every one of those cases the user's map no longer points at this exact
+    // object, so we bail instead of opening an orphan socket.
+    const launch = (): void => {
+      if (this.getConnection(userId, networkId) !== connRef || connRef.disposed) return;
+      systemLog.log({
+        userId,
+        scope: `net:${network.name}`,
+        text: `Starting connection to ${network.host}:${network.port}${network.tls ? ' (TLS)' : ''}`,
+      });
+      connRef.connect();
+    };
+    if (opts.deferrable) {
+      // Stagger bulk (re)connects per destination host so a fleet-wide restart
+      // doesn't flood one IRC network from our IP. See connectScheduler / #236.
+      connectScheduler.schedule(network.host, launch);
+    } else {
+      launch();
+    }
     conn.client.on('registered', () => {
       const names = listChannels(networkId)
         .filter((c) => c.joined)
@@ -401,6 +429,9 @@ class IrcManager extends EventEmitter {
   }
 
   shutdown(): void {
+    // Drop any queued (not-yet-fired) connect launches first — otherwise a
+    // staggered launch could fire against a connection we're about to tear down.
+    connectScheduler.reset();
     for (const userMap of this.byUser.values()) {
       for (const conn of userMap.values()) {
         try {
