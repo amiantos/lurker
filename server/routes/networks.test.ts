@@ -125,6 +125,17 @@ describe('POST /api/networks', () => {
     expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(true);
   });
 
+  it('500s and does not connect if createNetwork returns undefined', async () => {
+    const networksDb = await import('../db/networks.js');
+    const spy = vi.spyOn(networksDb, 'createNetwork').mockReturnValueOnce(undefined);
+    fakeManager.reset();
+    const res = await makeNet(aliceAgent, { name: 'doomed-create' });
+    expect(res.status).toBe(500);
+    // A failed creation must not leave a dangling connection attempt behind.
+    expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(false);
+    spy.mockRestore();
+  });
+
   it('upserts default_channel into the channels list', async () => {
     const created = await makeNet(aliceAgent, { name: 'with-default', default_channel: '#dev' });
     expect(
