@@ -249,6 +249,14 @@ textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
+/* Dim placeholders well below real input text (and below --fg-muted) so users
+   don't mistake the hint for content they typed. opacity:1 neutralises
+   Firefox's default placeholder dimming so our colour is what shows. */
+input::placeholder,
+textarea::placeholder {
+  color: color-mix(in srgb, var(--fg-muted) 55%, var(--bg));
+  opacity: 1;
+}
 
 /* Subtle scrollbar that matches the flat aesthetic. */
 *::-webkit-scrollbar {
