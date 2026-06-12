@@ -7,16 +7,12 @@
   <div v-if="active" class="status-bar">
     <div class="bar" :class="{ compact }">
       <span v-if="!compact" class="seg clock">{{ clock }}</span>
-      <span v-if="!compact" class="seg buffer"
+      <span class="seg buffer"
         ><template v-if="targetLabel"
           ><span v-if="networkLabel" class="net">{{ networkLabel }}/</span
           ><span class="name">{{ targetLabel }}</span></template
         ><span v-else class="name">{{ networkLabel }}</span
         ><span v-if="modeSuffix" class="modes">{{ modeSuffix }}</span></span
-      >
-      <span v-if="compact" class="seg self"
-        ><span class="name">{{ promptLabel }}</span
-        ><span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span></span
       >
       <!-- Jump-to-unread. Scrolls (usually up) to the pinned unread divider
          when it's off-screen and the user hasn't scrolled it into view yet
@@ -110,7 +106,6 @@ import {
   requestScrollToUnread,
 } from '../composables/useScrollState.js';
 import { useComposing } from '../composables/useComposing.js';
-import { useSelfLabel } from '../composables/useSelfLabel.js';
 import { formatTimestamp } from '../utils/timestamp.js';
 import { isPeerOffline, isPeerAway } from '../utils/peerPresence.js';
 import SuggestionStrip from './SuggestionStrip.vue';
@@ -130,13 +125,13 @@ import type { EmojiMatch } from '../utils/emojiData.js';
 
 withDefaults(
   defineProps<{
-    // Mobile/petite mode: drops the clock and buffer-name segments entirely
-    // (the buffer name is already in the input placeholder, the clock isn't
-    // worth the row), and renders the self identity (nick + channel-prefix + user
-    // modes + away) here instead — freeing the input row to be just `>`,
-    // textarea, and the paperclip. Also hides lag so the typing/split/upload
-    // signals stay legible at phone widths. (The scroll affordances —
-    // jump-to-unread and return-to-present — render in both modes.)
+    // Mobile/petite mode: drops the clock segment (not worth the row at phone
+    // widths) and hides lag so the typing/split/upload signals stay legible.
+    // The buffer name (network/channel + modes) renders in both modes; the
+    // self identity (nick + channel-prefix + user modes + away) moves to the
+    // input placeholder on mobile, freeing the input row to be just `>`,
+    // textarea, and the paperclip. (The scroll affordances — jump-to-unread
+    // and return-to-present — render in both modes.)
     compact?: boolean;
   }>(),
   { compact: false },
@@ -149,7 +144,6 @@ const uploads = useUploadsStore();
 const ignores = useIgnoresStore();
 const nickColors = useNickColors();
 const composing = useComposing();
-const { promptLabel, awayLabel } = useSelfLabel();
 
 // SPLIT (warn) at 2 chunks, FLOOD (bad) at 3+. Lives just before the typing
 // indicator so heavy composers can see it without taking their eyes off the
@@ -408,14 +402,6 @@ function onJumpToUnread() {
 }
 .seg.buffer .modes {
   color: var(--fg-muted);
-}
-/* Mobile-only self identity. Accent for the nick to mirror how the
-   input prompt rendered it on desktop; warn-colored away tail. */
-.seg.self .name {
-  color: var(--accent);
-}
-.seg.self .away {
-  color: var(--warn);
 }
 .seg.lag {
   color: var(--fg-muted);

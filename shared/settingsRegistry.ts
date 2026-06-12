@@ -785,7 +785,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'chat',
     group: 'viewing',
     type: 'bool',
-    default: false,
+    default: true,
     description:
       'When enabled, clicking a URL to an image opens it in an in-app viewer instead ' +
       'of a new browser tab. Cmd/Ctrl-click always opens in a new tab.',

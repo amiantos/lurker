@@ -268,16 +268,14 @@ const placeholder = computed(() => {
   // `/raw <line>` was cryptic; `/help` is the discoverable entry point and the
   // server buffer is exactly where someone goes looking for it.
   if (isServer.value) return 'try /help';
-  // Mobile drops the buffer name from the header and the compact status bar
-  // shows self/away instead, so the channel/peer context has no persistent home
-  // — the placeholder carries it, mirroring the desktop status bar's
-  // `network/target`. Modes are left off: they're volatile and belong in the
-  // status bar, not a glanceable hint. Desktop keeps `try /help` since the
-  // status bar already shows the buffer there.
+  // Mobile shows network/channel in the compact status bar now, so the
+  // placeholder carries the self identity (nick + channel-prefix + user modes)
+  // instead, with the away marker appended when set — mirroring what the input
+  // prompt renders on desktop. Desktop keeps `try /help` since the prompt
+  // already shows the identity there.
   if (isMobile.value) {
-    const net = a.network?.name;
-    // Network forced lowercase to match the status bar's `net/#chan` styling.
-    return net ? `${net.toLowerCase()}/${a.target}` : a.target;
+    const self = promptLabel.value;
+    return awayLabel.value ? `${self} ${awayLabel.value}` : self;
   }
   return 'try /help';
 });
@@ -304,11 +302,11 @@ const systemFeatures = computed(() => {
     autocapitalize: autocorrectOn ? 'sentences' : 'off',
   };
 });
-// Prompt identity (nick + channel prefix + user modes) and away marker are
-// shared with the compact status bar — see useSelfLabel. On mobile we don't
-// render the prompt label here at all (the status bar carries it instead);
-// the local computed is gated on !isMobile so we ship just `>` in mobile
-// mode and free the input row for the textarea.
+// Prompt identity (nick + channel prefix + user modes) and away marker — see
+// useSelfLabel. On mobile we don't render the prompt label inline here (the
+// template gates it on !isMobile so the input row stays just `>` + textarea);
+// instead it feeds the placeholder above, since the compact status bar now
+// shows network/channel rather than the self identity.
 const { promptLabel, awayLabel } = useSelfLabel();
 const { isMobile } = useViewport();
 

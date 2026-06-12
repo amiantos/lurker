@@ -43,10 +43,10 @@
         <button class="icon back" title="Back" @click="goList">
           <i class="fa-solid fa-arrow-left"></i>
         </button>
-        <!-- Channels and DMs drop the name here — the message input's
-             placeholder carries net/#chan on mobile, so a header copy is just
-             redundant clutter (#222). The server buffer (placeholder is
-             "try /help") and the system console (no input row at all) have no
+        <!-- Channels and DMs drop the name here — the compact status bar
+             carries net/#chan on mobile, so a header copy is just redundant
+             clutter (#222). The server buffer (input placeholder is "try /help")
+             and the system console (no input row at all) have no
              other persistent label, so they keep an explicit title. Otherwise
              the bar holds only buffer-scoped actions: search & highlights open
              pre-filtered to this buffer (in:<target> on:<network>), members

@@ -305,28 +305,78 @@ const stickToBottom = ref(true);
 const { scrollToBottomToken, scrollToUnreadToken } = useScrollState();
 
 // Unread-divider visibility tracking. The divider is pinned for the whole
-// visit (dividerAfterId snapshot), so once the user has scrolled it into view
-// we stop nagging them with the "Jump to unread" button for the rest of the
-// visit — reset on buffer switch. An IntersectionObserver on the (single)
-// divider element drives setUnreadAnchor: off-screen-and-unseen surfaces the
-// button with an up/down arrow, on-screen clears it and flips unreadSeen.
+// visit (dividerAfterId snapshot). The "Jump to unread" button exists to catch
+// the case where you land in a channel and the marker is off-screen, so it
+// surfaces only while the marker has neither been seen nor timed out this
+// visit, and auto-retires UNREAD_BUTTON_TTL_MS after it first appears so it
+// doesn't linger obnoxiously (#246). All of seen/expired/element reset on
+// buffer switch. An IntersectionObserver on the (single) divider element
+// drives setUnreadAnchor: off-screen-and-unseen surfaces the button with an
+// up/down arrow, on-screen clears it and flips unreadSeen.
 let unreadDividerEl: HTMLElement | null = null;
 let unreadObserver: IntersectionObserver | null = null;
 let unreadSeen = false;
+let unreadExpired = false;
+let unreadExpiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+// The button earns its keep in the first moments after you land in a channel
+// and can't see the marker; if you don't jump then, you probably won't — so it
+// gets a few seconds in the sun, then retires for the rest of the visit (#246).
+const UNREAD_BUTTON_TTL_MS = 5000;
+
+function startUnreadExpiry(): void {
+  if (unreadExpiryTimer || unreadExpired) return;
+  unreadExpiryTimer = setTimeout(() => {
+    unreadExpiryTimer = null;
+    unreadExpired = true;
+    setUnreadAnchor(null);
+  }, UNREAD_BUTTON_TTL_MS);
+}
+
+function clearUnreadExpiry(): void {
+  if (unreadExpiryTimer) {
+    clearTimeout(unreadExpiryTimer);
+    unreadExpiryTimer = null;
+  }
+}
 
 function evaluateUnread(entry: IntersectionObserverEntry): void {
   if (entry.isIntersecting) {
     unreadSeen = true;
+    clearUnreadExpiry();
     setUnreadAnchor(null);
     return;
   }
-  if (unreadSeen) {
+  // Off-screen. Stay quiet once the marker has been seen this visit OR the
+  // button has already had its run — new messages shoving the divider off the
+  // top (while you read the live tail) must not re-summon it (#246).
+  if (unreadSeen || unreadExpired) {
     setUnreadAnchor(null);
     return;
   }
   const top = entry.boundingClientRect.top;
   const rootTop = entry.rootBounds?.top ?? scroller.value?.getBoundingClientRect().top ?? 0;
   setUnreadAnchor(top < rootTop ? 'up' : 'down');
+  startUnreadExpiry();
+}
+
+// At buffer entry the IntersectionObserver hasn't delivered its first callback
+// yet — and if new messages shove the marker off-screen before it does, the
+// only state IO ever reports is "off-screen", which would wrongly surface the
+// button (#246). Seed unreadSeen synchronously from the divider's geometry
+// right after the entry scroll settles, so a marker that was on screen when you
+// arrived counts as seen even if it scrolls away a moment later.
+function seedUnreadSeen(): void {
+  const el = scroller.value;
+  const divider = unreadDividerEl;
+  if (!el || !divider) return;
+  const er = el.getBoundingClientRect();
+  const dr = divider.getBoundingClientRect();
+  if (dr.bottom > er.top && dr.top < er.bottom) {
+    unreadSeen = true;
+    clearUnreadExpiry();
+    setUnreadAnchor(null);
+  }
 }
 
 // Vue function ref on the unread divider: called with the element when it
@@ -1063,9 +1113,12 @@ watch(
   async () => {
     stickToBottom.value = true;
     unreadSeen = false;
+    unreadExpired = false;
+    clearUnreadExpiry();
     resetScrollState();
     await nextTick();
     scrollToBottom();
+    seedUnreadSeen();
     ensureViewportFilled();
   },
   { immediate: true },
@@ -1190,7 +1243,12 @@ onMounted(() => {
   if (typeof IntersectionObserver !== 'undefined' && scroller.value) {
     unreadObserver = new IntersectionObserver(
       (entries) => {
-        const entry = entries[entries.length - 1];
+        // Honor a "was visible" entry anywhere in the batch: a visible→hidden
+        // pair can land together when new messages shove the marker off the top
+        // in the same frame, and taking only the last entry would drop the
+        // "seen" half and wrongly keep the button alive (#246). Fall back to
+        // the latest position when nothing in the batch was intersecting.
+        const entry = entries.find((e) => e.isIntersecting) ?? entries[entries.length - 1];
         if (entry) evaluateUnread(entry);
       },
       { root: scroller.value, threshold: 0 },
@@ -1214,6 +1272,7 @@ onBeforeUnmount(() => {
     unreadObserver.disconnect();
     unreadObserver = null;
   }
+  clearUnreadExpiry();
   if (nowTimer) {
     clearInterval(nowTimer);
     nowTimer = null;
