@@ -1738,7 +1738,7 @@ export class IrcConnection {
     // ERR_UNKNOWNCOMMAND, which our 'irc error' handler surfaces as a toast —
     // so an ungated send spams an error on each keystroke. Typing indicators
     // are a best-effort nicety; no cap, no send.
-    if (!this.client.network.cap.enabled.includes('message-tags')) return;
+    if (!(this.client.network?.cap?.enabled || []).includes('message-tags')) return;
     // Suppress typing TAGMSGs to peers we know are offline — otherwise each
     // keystroke generates an ERR_NOSUCHNICK reply that lands as a persisted
     // error in the DM buffer (and pings push subscribers). The user finds
