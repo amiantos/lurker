@@ -2046,8 +2046,10 @@ function handleCommand(line: string, networkId: number, target: string): boolean
     case 'cycle':
     case 'hop': {
       // Part then immediately rejoin the CURRENT channel; the whole arg line is
-      // an optional part reason. IRC processes the two lines in order, so no
-      // rejoin race.
+      // an optional part reason. Both legs go through the structured part/join
+      // WS types — NOT a raw JOIN — so the persisted joined flag flips false and
+      // back to true. A raw JOIN bypasses ircManager.joinChannel and would leave
+      // joined=false in the DB, breaking reconnect auto-join after a cycle.
       if (!isChannelTarget(target)) {
         localInfo(networkId, target, 'usage: /cycle [reason] — run inside a channel');
         return true;
@@ -2055,12 +2057,15 @@ function handleCommand(line: string, networkId: number, target: string): boolean
       if (!sendOrToast({ type: 'part', networkId, channel: target, reason: argLine }, line)) {
         return false;
       }
-      return sendOrToast({ type: 'raw', networkId, line: `JOIN ${target}` }, line);
+      return sendOrToast({ type: 'join', networkId, channel: target }, line);
     }
     case 'notice': {
       // Routed through the server's send_notice verb (not a raw NOTICE) so it
       // publishes a self-copy back to every tab — IRC servers don't echo your
       // own NOTICE, so a raw forward would vanish with nothing in the buffer.
+      // ackedSend (not sendOrToast) so a not-connected / validation failure
+      // surfaces as a toast instead of silently clearing the input — there's no
+      // optimistic bubble, the server's self-publish is what renders on success.
       const who = rest[0];
       // Preserve the body's internal spacing by slicing past the target rather
       // than re-joining the \s+-split rest (mirrors /topic).
@@ -2073,7 +2078,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
         localInfo(networkId, target, 'usage: /notice <target> <text>');
         return true;
       }
-      return sendOrToast({ type: 'notice', networkId, target: who, text: body }, body);
+      return ackedSend({ type: 'notice', networkId, target: who, text: body }, body);
     }
     case 'slap': {
       // mIRC's classic: a CTCP ACTION with the canonical trout line, so it rides
