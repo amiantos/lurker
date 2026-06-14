@@ -162,7 +162,19 @@ describe('bouncer behavior', () => {
         }),
       })),
       send: vi.fn<(userId: number, networkId: number, target: string, text: string) => boolean>(
-        () => true,
+        (userId, networkId, target, text) => {
+          manager.emit('event', {
+            userId,
+            networkId,
+            type: 'message',
+            target,
+            nick: 'liveNick',
+            text,
+            self: true,
+            time: '2026-06-14T12:03:00.000Z',
+          });
+          return true;
+        },
       ),
       action: vi.fn<(userId: number, networkId: number, target: string, text: string) => boolean>(
         () => true,
@@ -233,6 +245,20 @@ describe('bouncer behavior', () => {
       time: '2026-06-14T12:02:00.000Z',
     });
     await waitFor(() => received.join('').includes('live line'));
+
+    expect(received.join('')).not.toContain('PRIVMSG #test :hello');
+
+    manager.emit('event', {
+      userId: user.id,
+      networkId: network.id,
+      type: 'message',
+      target: '#test',
+      nick: 'liveNick',
+      text: 'sent elsewhere',
+      self: true,
+      time: '2026-06-14T12:04:00.000Z',
+    });
+    await waitFor(() => received.join('').includes('sent elsewhere'));
 
     socket.clientWrite('QUIT :done\r\n');
     await once(socket, 'close');

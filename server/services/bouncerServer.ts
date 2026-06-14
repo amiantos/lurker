@@ -14,6 +14,7 @@ import type { Network } from '../db/networks.js';
 import { listBufferTargets, listMessages } from '../db/messages.js';
 import type { MessageEvent } from '../db/messages.js';
 import * as systemLog from './systemLog.js';
+import { splitAction, splitSay } from './messageSplit.js';
 
 const BACKLOG_LIMIT = 50;
 const SERVER_NAME = 'lurker';
@@ -251,6 +252,7 @@ export class BouncerSession {
   private auth: AuthContext | null = null;
   private registered = false;
   private closed = false;
+  private pendingSelfEchoes: Array<{ type: string; target: string; text: string }> = [];
   private boundEvent = (event: unknown) => this.onManagerEvent(event);
 
   constructor(socket: Socket, deps: BouncerDeps, onDone: () => void) {
@@ -427,14 +429,20 @@ export class BouncerSession {
     if (!target || !text) return;
     if (text.startsWith(CTCP_ACTION_PREFIX) && text.endsWith('\x01')) {
       const action = text.slice(CTCP_ACTION_PREFIX.length, -1);
+      const pendingLen = this.pendingSelfEchoes.length;
+      this.trackPendingSelfEcho('action', target, action);
       if (!this.deps.manager.action(this.auth!.userId, this.auth!.network.id, target, action)) {
+        this.pendingSelfEchoes.length = pendingLen;
         this.localNotice(
           `Network ${this.auth!.network.name} is not connected; ACTION was not sent.`,
         );
       }
       return;
     }
+    const pendingLen = this.pendingSelfEchoes.length;
+    this.trackPendingSelfEcho('message', target, text);
     if (!this.deps.manager.send(this.auth!.userId, this.auth!.network.id, target, text)) {
+      this.pendingSelfEchoes.length = pendingLen;
       this.localNotice(
         `Network ${this.auth!.network.name} is not connected; message was not sent.`,
       );
@@ -445,7 +453,10 @@ export class BouncerSession {
     const target = line.params[0];
     const text = line.params[1] || '';
     if (!target || !text) return;
+    const pendingLen = this.pendingSelfEchoes.length;
+    this.trackPendingSelfEcho('notice', target, text);
     if (!this.deps.manager.notice(this.auth!.userId, this.auth!.network.id, target, text)) {
+      this.pendingSelfEchoes.length = pendingLen;
       this.localNotice(`Network ${this.auth!.network.name} is not connected; NOTICE was not sent.`);
     }
   }
@@ -479,8 +490,31 @@ export class BouncerSession {
       this.emitNames({ name: event.target, topic: null, members });
       return;
     }
+    if (this.consumePendingSelfEcho(event)) return;
     const rendered = eventToIrcLine(event, this.currentNick());
     if (rendered) this.write(rendered);
+  }
+
+  private trackPendingSelfEcho(type: string, target: string, text: string): void {
+    const chunks = type === 'action' ? splitAction(text) : splitSay(text);
+    for (const chunk of chunks) this.pendingSelfEchoes.push({ type, target, text: chunk });
+    if (this.pendingSelfEchoes.length > 200) {
+      this.pendingSelfEchoes.splice(0, this.pendingSelfEchoes.length - 200);
+    }
+  }
+
+  private consumePendingSelfEcho(event: Record<string, unknown>): boolean {
+    if (!event.self) return false;
+    const type = typeof event.type === 'string' ? event.type : '';
+    if (type !== 'message' && type !== 'action' && type !== 'notice') return false;
+    const target = typeof event.target === 'string' ? event.target : '';
+    const text = typeof event.text === 'string' ? event.text : '';
+    const idx = this.pendingSelfEchoes.findIndex(
+      (pending) => pending.type === type && pending.target === target && pending.text === text,
+    );
+    if (idx === -1) return false;
+    this.pendingSelfEchoes.splice(idx, 1);
+    return true;
   }
 
   private emitSelfJoin(target: string): void {
