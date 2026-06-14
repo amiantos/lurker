@@ -101,8 +101,6 @@ interface EnrichedEvent extends IrcEvent {
   alt?: boolean;
   matched?: boolean;
   matchedRuleId?: number | null;
-  friend?: boolean;
-  friendContactId?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +158,8 @@ export class IrcConnection {
   trackedDmPeers: Set<string>;
   // Lowercased friend nick -> contact id, for this network. Hydrated on
   // 'registered' from contact_targets and kept live via trackFriend/
-  // untrackFriend. Doubles as the O(1) insert-time marking lookup (stamp
-  // friend_contact_id) AND a presence-eligibility source alongside DM peers.
+  // untrackFriend. A presence-eligibility source alongside DM peers, so friends
+  // ride the same MONITOR + away/back rails.
   trackedFriends: Map<string, number>;
   useMonitor: boolean;
   monitorLimit: number;
@@ -326,12 +324,6 @@ export class IrcConnection {
           console.warn('[ignore] match-on-insert failed:', (e as Error)?.message || e);
         }
       }
-      // Stamp the contact id when the sender is on this user's watch list, so
-      // the cross-network Friends buffer reads marked rows. O(1) lookup against
-      // the in-memory trackedFriends map — no DB hit on the insert hot path.
-      // Self rows and nick-less system rows never match.
-      const friendContactId =
-        nick && !event.self ? (this.trackedFriends.get(nick.toLowerCase()) ?? null) : null;
       const { id, alt } = insertMessage({
         networkId: this.network.id,
         target: event.target as string,
@@ -343,7 +335,6 @@ export class IrcConnection {
         self: event.self as boolean | undefined,
         extra: extractExtras(event),
         matchedRuleId,
-        friendContactId,
         userhost: (event.userhost as string | null | undefined) ?? null,
         fromIgnored,
       });
@@ -351,8 +342,6 @@ export class IrcConnection {
       enriched.alt = alt;
       enriched.matched = matchedRuleId != null;
       enriched.matchedRuleId = matchedRuleId;
-      enriched.friend = friendContactId != null;
-      enriched.friendContactId = friendContactId;
     }
 
     this.onEvent(enriched);

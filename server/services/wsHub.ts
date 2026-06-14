@@ -988,8 +988,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     send(ws, { kind: 'system-log-snapshot', lines: systemLog.getRecent(userId) });
     // Friends/contacts seed: the user's full contact list (display name, notify
     // flag, per-network watch targets). User-level, so one message rather than a
-    // per-network field. Drives the Friends buffer nicklist + the came-online
-    // toast gate; the feed messages themselves load via REST /api/friends-feed.
+    // per-network field. Drives the FRIENDS overview/sidebar + the came-online
+    // toast gate.
     send(ws, { kind: 'contacts-snapshot', contacts: ircManager.listContacts(userId) });
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);

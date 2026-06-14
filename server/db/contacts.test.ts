@@ -33,15 +33,11 @@ beforeAll(async () => {
 afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 describe('schema', () => {
-  it('messages has friend_contact_id + partial index', () => {
+  it('contact_targets has the is_primary column', () => {
     const cols = (
-      dbDefault.prepare(`PRAGMA table_info(messages)`).all() as Array<{ name: string }>
+      dbDefault.prepare(`PRAGMA table_info(contact_targets)`).all() as Array<{ name: string }>
     ).map((c) => c.name);
-    expect(cols).toContain('friend_contact_id');
-    const idx = dbDefault
-      .prepare(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_messages_friend'`)
-      .get();
-    expect(idx).toBeTruthy();
+    expect(cols).toContain('is_primary');
   });
 });
 

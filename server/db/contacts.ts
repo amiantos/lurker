@@ -7,8 +7,8 @@ import db from './index.js';
 // display name + the per-contact "toast me when they come online" flag. Each
 // contact has a set of `contact_targets` — the (network, nick) pairs to watch —
 // so the same person can be followed under different nicks on different
-// networks. The cross-network Friends buffer is a view over messages stamped
-// with friend_contact_id; presence rides the existing MONITOR rails.
+// networks. Presence rides the existing MONITOR rails; the FRIENDS UI is an
+// overview of contacts + their per-network reachability.
 
 /** A contact with its per-network watch targets, as returned to callers. */
 export interface ContactRecord {

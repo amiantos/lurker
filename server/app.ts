@@ -18,7 +18,6 @@ import networksRouter from './routes/networks.js';
 import settingsRouter from './routes/settings.js';
 import highlightRulesRouter from './routes/highlightRules.js';
 import highlightsRouter from './routes/highlights.js';
-import friendsFeedRouter from './routes/friendsFeed.js';
 import bookmarksRouter from './routes/bookmarks.js';
 import pushRouter from './routes/push.js';
 import adminRouter from './routes/admin.js';
@@ -57,7 +56,6 @@ export function buildApp(sessionSecret: string): Express {
   app.use('/api/settings', settingsRouter);
   app.use('/api/highlight-rules', highlightRulesRouter);
   app.use('/api/highlights', highlightsRouter);
-  app.use('/api/friends-feed', friendsFeedRouter);
   app.use('/api/bookmarks', bookmarksRouter);
   app.use('/api/push', pushRouter);
   app.use('/api/admin', adminRouter);

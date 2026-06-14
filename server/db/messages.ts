@@ -18,7 +18,6 @@ interface MessageRow {
   userhost: string | null;
   alt: number;
   matched_rule_id: number | null;
-  friend_contact_id: number | null;
   from_ignored: number;
 }
 
@@ -42,8 +41,6 @@ export interface MessageEvent {
   alt: boolean;
   matched: boolean;
   matchedRuleId: number | null;
-  friend: boolean;
-  friendContactId: number | null;
   fromIgnored: boolean;
   [key: string]: unknown;
 }
@@ -66,7 +63,6 @@ export interface MessageInput {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   extra?: Record<string, any> | null; // untyped IRC extra fields
   matchedRuleId?: number | null;
-  friendContactId?: number | null;
   userhost?: string | null;
   fromIgnored?: boolean;
 }
@@ -89,9 +85,9 @@ export interface MaxIdByBufferRow {
 // Non-striped types pass through with alt=0; the value is meaningless for them
 // and the client never reads it.
 const insertStmt = db.prepare(`
-  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, friend_contact_id, userhost, from_ignored, alt)
+  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, alt)
   VALUES (
-    @networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @friendContactId, @userhost, @fromIgnored,
+    @networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored,
     CASE WHEN @type IN ('message', 'action', 'notice')
          THEN 1 - COALESCE(
            (SELECT alt FROM messages
@@ -118,7 +114,6 @@ export function insertMessage(row: MessageInput): { id: number | bigint; alt: bo
     self: row.self ? 1 : 0,
     extra: row.extra ? JSON.stringify(row.extra) : null,
     matchedRuleId: row.matchedRuleId ?? null,
-    friendContactId: row.friendContactId ?? null,
     userhost: row.userhost ?? null,
     fromIgnored: row.fromIgnored ? 1 : 0,
   });
@@ -142,8 +137,6 @@ function rowToEvent(row: MessageRow): MessageEvent {
     alt: row.alt === 1,
     matched: row.matched_rule_id != null,
     matchedRuleId: row.matched_rule_id,
-    friend: row.friend_contact_id != null,
-    friendContactId: row.friend_contact_id,
     fromIgnored: row.from_ignored === 1,
   };
   if (row.extra) {
@@ -419,7 +412,6 @@ export function searchMessages(
     target,
     nick,
     matched,
-    friend,
     before,
     limit = 50,
   }: {
@@ -428,16 +420,15 @@ export function searchMessages(
     target?: string;
     nick?: string;
     matched?: boolean;
-    friend?: boolean;
     before?: number;
     limit?: number;
   } = {},
 ): MessageEventWithNetwork[] {
   const text = typeof query === 'string' ? query.trim() : '';
   // Nothing to search on — no free text and no structured filter. With
-  // `matched`/`friend` the empty case is meaningful ("all my highlights" /
-  // "all my friends' messages"), so skip the early-out for those.
-  if (!text && !networkId && !target && !nick && !matched && !friend) return [];
+  // `matched` the empty case is meaningful ("all my highlights"), so skip the
+  // early-out for it.
+  if (!text && !networkId && !target && !nick && !matched) return [];
 
   let from = 'messages m JOIN networks n ON n.id = m.network_id';
   const where: string[] = [
@@ -451,11 +442,6 @@ export function searchMessages(
   // (WHERE matched_rule_id IS NOT NULL) is available to the planner.
   if (matched) {
     where.push('m.matched_rule_id IS NOT NULL');
-  }
-  // Placed early so the partial idx_messages_friend index is available to the
-  // planner. Powers the cross-network Friends buffer feed.
-  if (friend) {
-    where.push('m.friend_contact_id IS NOT NULL');
   }
 
   if (text) {

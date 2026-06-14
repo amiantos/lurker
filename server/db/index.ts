@@ -596,16 +596,6 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_matched
          ON messages(network_id, target, id DESC)
          WHERE matched_rule_id IS NOT NULL`);
 
-// Stamp the contact id when a message's sender is on the user's watch list, so
-// the cross-network Friends buffer reads marked rows from disk instead of
-// scanning loaded buffers. Same shape as matched_rule_id; partial index keeps
-// it cheap — only friend rows live in the index. Set once at insert from the
-// connection's in-memory trackedFriends map; never recomputed.
-ensureColumn('messages', 'friend_contact_id', 'INTEGER');
-db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_friend
-         ON messages(network_id, target, id DESC)
-         WHERE friend_contact_id IS NOT NULL`);
-
 // Which of a contact's per-network targets is the "primary" — the DM that
 // opens when you click the friend in the FRIENDS sidebar group. Exactly one
 // per contact (enforced at the app layer); the rest are watch-only.
