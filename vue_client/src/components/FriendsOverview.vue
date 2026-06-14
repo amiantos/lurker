@@ -44,10 +44,14 @@
             <span class="tstate">{{ friends.presenceForTarget(t.networkId, t.nick) }}</span>
             <span class="row-actions">
               <button
-                v-if="friends.presenceForTarget(t.networkId, t.nick) !== 'offline'"
                 type="button"
                 class="icon-btn"
-                title="Open DM"
+                :disabled="friends.presenceForTarget(t.networkId, t.nick) === 'offline'"
+                :title="
+                  friends.presenceForTarget(t.networkId, t.nick) === 'offline'
+                    ? 'Offline'
+                    : 'Open DM'
+                "
                 aria-label="Open DM"
                 @click="friends.openDmTarget(t.networkId, t.nick)"
               >
@@ -220,8 +224,12 @@ function summary(c: Contact): string {
   font: inherit;
   padding: 0 var(--space-1);
 }
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   color: var(--fg);
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 .link {
   background: none;
