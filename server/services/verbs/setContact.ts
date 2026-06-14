@@ -35,6 +35,11 @@ registerVerb({
           additionalProperties: false,
         },
       },
+      primaryNetworkId: {
+        type: 'integer',
+        description:
+          'Which target network the DM opens to when the friend is clicked. Defaults to the first target.',
+      },
     },
     required: ['displayName', 'targets'],
     additionalProperties: false,
@@ -54,11 +59,13 @@ registerVerb({
           nick: typeof t.nick === 'string' ? t.nick : '',
         }))
       : [];
+    const primaryNetworkId = input.primaryNetworkId != null ? Number(input.primaryNetworkId) : null;
     const saved = ircManager.setContact(ctx.userId, {
       contactId,
       displayName,
       notifyOnline,
       targets,
+      primaryNetworkId,
     });
     if (!saved) {
       throw Object.assign(new Error('contact not found'), { code: 'not_found' });

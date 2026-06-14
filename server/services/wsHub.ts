@@ -1560,6 +1560,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               displayName: msg.displayName,
               notifyOnline: msg.notifyOnline,
               targets: msg.targets,
+              primaryNetworkId: msg.primaryNetworkId,
             },
           );
         } catch (_) {

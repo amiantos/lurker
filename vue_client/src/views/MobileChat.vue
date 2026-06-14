@@ -61,7 +61,7 @@
           <i class="fa-regular fa-bell"></i>
         </button>
         <button
-          v-if="isChannel || isFriendsBuffer"
+          v-if="isChannel"
           class="icon"
           title="Members"
           aria-label="Members"
@@ -201,7 +201,6 @@ const {
   topic,
   isSystemConsole,
   isVirtual,
-  isFriendsBuffer,
 } = useActiveBuffer();
 const bufferActions = useBufferActions();
 const menu = useContextMenu();

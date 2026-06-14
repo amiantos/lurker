@@ -606,6 +606,11 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_friend
          ON messages(network_id, target, id DESC)
          WHERE friend_contact_id IS NOT NULL`);
 
+// Which of a contact's per-network targets is the "primary" — the DM that
+// opens when you click the friend in the FRIENDS sidebar group. Exactly one
+// per contact (enforced at the app layer); the rest are watch-only.
+ensureColumn('contact_targets', 'is_primary', 'INTEGER NOT NULL DEFAULT 0');
+
 // Per-(network, target) alt-row parity, computed at insert time so the client
 // can stripe chat lines without doing its own counting. Only chat-shaped types
 // (message/action/notice) flip the bit; system events store 0 and are never

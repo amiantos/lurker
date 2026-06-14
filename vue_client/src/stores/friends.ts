@@ -6,7 +6,7 @@ import { api } from '../api.js';
 import { socketSend } from '../composables/useSocket.js';
 import { useNetworksStore } from './networks.js';
 import { useBuffersStore } from './buffers.js';
-import type { BufferMember, BufferMessage } from './buffers.js';
+import type { BufferMessage } from './buffers.js';
 
 // Friends / contacts. The server is the source of truth: contacts ship in the
 // `contacts-snapshot` on connect and `contact-updated`/`contact-deleted` echoes
@@ -21,6 +21,7 @@ const PAGE_SIZE = 200;
 export interface ContactTarget {
   networkId: number;
   nick: string;
+  isPrimary: boolean;
 }
 
 export interface Contact {
@@ -28,6 +29,12 @@ export interface Contact {
   displayName: string;
   notifyOnline: boolean;
   targets: ContactTarget[];
+}
+
+// The target whose DM opens when the friend is clicked in the FRIENDS group:
+// the one flagged primary, else the first. Null only for a target-less contact.
+export function primaryTargetOf(contact: Contact): ContactTarget | null {
+  return contact.targets.find((t) => t.isPrimary) ?? contact.targets[0] ?? null;
 }
 
 export interface FriendEditorState {
@@ -90,35 +97,19 @@ export const useFriendsStore = defineStore('friends', {
   },
   actions: {
     // ---- snapshot + live sync ----
+    // Presence for the FRIENDS sidebar rows is derived live from peerPresence
+    // via the isOnline getter, so contact changes just replace the list.
     applySnapshot(contacts: Contact[]) {
       this.contacts = (contacts || []).map(normalizeContact);
-      this.refreshMembers();
     },
     applyContactUpdated(contact: Contact) {
       const c = normalizeContact(contact);
       const idx = this.contacts.findIndex((x) => x.id === c.id);
       if (idx >= 0) this.contacts[idx] = c;
       else this.contacts.push(c);
-      this.refreshMembers();
     },
     applyContactDeleted(contactId: number) {
       this.contacts = this.contacts.filter((c) => c.id !== contactId);
-      this.refreshMembers();
-    },
-
-    // ---- nicklist (contacts × presence) ----
-    // Rebuild the synthetic :friends: member list. Called on snapshot, on
-    // contact changes, and after each peer-presence update (presence is cheap
-    // and the friend set is small). Offline/away/unknown all render muted via
-    // MemberList's `away` styling — distinguishing them is a later refinement.
-    refreshMembers() {
-      const networks = useNetworksStore();
-      const members: BufferMember[] = this.contacts.map((c) => ({
-        nick: c.displayName,
-        modes: [],
-        away: !c.targets.some((t) => targetOnline(networks, t)),
-      }));
-      useBuffersStore().setFriendMembers(members);
     },
 
     // ---- editor (Configure Friend modal) ----
@@ -143,7 +134,8 @@ export const useFriendsStore = defineStore('friends', {
       contactId?: number | null;
       displayName: string;
       notifyOnline: boolean;
-      targets: ContactTarget[];
+      targets: Array<{ networkId: number; nick: string }>;
+      primaryNetworkId: number | null;
     }) {
       socketSend({
         type: 'set-contact',
@@ -151,6 +143,7 @@ export const useFriendsStore = defineStore('friends', {
         displayName: payload.displayName,
         notifyOnline: payload.notifyOnline,
         targets: payload.targets,
+        primaryNetworkId: payload.primaryNetworkId,
       });
     },
     removeContact(contactId: number) {
@@ -198,7 +191,11 @@ function normalizeContact(c: Contact): Contact {
     displayName: c.displayName,
     notifyOnline: !!c.notifyOnline,
     targets: Array.isArray(c.targets)
-      ? c.targets.map((t) => ({ networkId: Number(t.networkId), nick: t.nick }))
+      ? c.targets.map((t) => ({
+          networkId: Number(t.networkId),
+          nick: t.nick,
+          isPrimary: !!t.isPrimary,
+        }))
       : [],
   };
 }

@@ -137,7 +137,7 @@ export const EXPORT_TABLES = Object.freeze({
     scope: 'via_network',
     section: 'data',
     fkRekey: { contact_id: 'contacts', network_id: 'networks' },
-    columns: ['contact_id', 'network_id', 'nick'],
+    columns: ['contact_id', 'network_id', 'nick', 'is_primary'],
   },
 
   messages: {

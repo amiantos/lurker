@@ -15,7 +15,13 @@ export interface ContactRecord {
   id: number;
   displayName: string;
   notifyOnline: boolean;
-  targets: Array<{ networkId: number; nick: string }>;
+  targets: Array<{ networkId: number; nick: string; isPrimary: boolean }>;
+}
+
+export interface ContactTargetInput {
+  networkId: number;
+  nick: string;
+  isPrimary?: boolean;
 }
 
 const insertContactStmt = db.prepare(`
@@ -47,12 +53,13 @@ const deleteTargetsStmt = db.prepare(`
 `);
 
 const insertTargetStmt = db.prepare(`
-  INSERT INTO contact_targets (contact_id, network_id, nick)
-  VALUES (@contactId, @networkId, @nick)
+  INSERT INTO contact_targets (contact_id, network_id, nick, is_primary)
+  VALUES (@contactId, @networkId, @nick, @isPrimary)
 `);
 
 const targetsForUserStmt = db.prepare(`
-  SELECT ct.contact_id AS contactId, ct.network_id AS networkId, ct.nick AS nick
+  SELECT ct.contact_id AS contactId, ct.network_id AS networkId, ct.nick AS nick,
+         ct.is_primary AS isPrimary
   FROM contact_targets ct
   JOIN contacts c ON c.id = ct.contact_id
   WHERE c.user_id = ?
@@ -63,7 +70,8 @@ const targetsForNetworkStmt = db.prepare(`
 `);
 
 const targetsForContactStmt = db.prepare(`
-  SELECT network_id AS networkId, nick FROM contact_targets WHERE contact_id = ?
+  SELECT network_id AS networkId, nick, is_primary AS isPrimary
+  FROM contact_targets WHERE contact_id = ?
 `);
 
 const findContactByTargetStmt = db.prepare(`
@@ -124,14 +132,20 @@ export function updateContactMeta({
   });
 }
 
-/** Replace a contact's watch targets wholesale (delete-then-insert, atomic). */
+/** Replace a contact's watch targets wholesale (delete-then-insert, atomic).
+ *  Caller is responsible for ensuring exactly one target has isPrimary. */
 export const setContactTargets = db.transaction(
-  (contactId: number, targets: Array<{ networkId: number; nick: string }>) => {
+  (contactId: number, targets: ContactTargetInput[]) => {
     deleteTargetsStmt.run(contactId);
     for (const t of targets) {
       const nick = (t.nick || '').trim();
       if (!nick) continue;
-      insertTargetStmt.run({ contactId, networkId: t.networkId, nick });
+      insertTargetStmt.run({
+        contactId,
+        networkId: t.networkId,
+        nick,
+        isPrimary: t.isPrimary ? 1 : 0,
+      });
     }
   },
 );
@@ -148,10 +162,13 @@ export function getContact(contactId: number, userId: number): ContactRecord | n
     | undefined;
   if (!row) return null;
   const contact = rowToContact(row);
-  contact.targets = targetsForContactStmt.all(contactId) as Array<{
-    networkId: number;
-    nick: string;
-  }>;
+  contact.targets = (
+    targetsForContactStmt.all(contactId) as Array<{
+      networkId: number;
+      nick: string;
+      isPrimary: number;
+    }>
+  ).map((t) => ({ networkId: t.networkId, nick: t.nick, isPrimary: !!t.isPrimary }));
   return contact;
 }
 
@@ -169,8 +186,11 @@ export function listContactsForUser(userId: number): ContactRecord[] {
     contactId: number;
     networkId: number;
     nick: string;
+    isPrimary: number;
   }>) {
-    byId.get(t.contactId)?.targets.push({ networkId: t.networkId, nick: t.nick });
+    byId
+      .get(t.contactId)
+      ?.targets.push({ networkId: t.networkId, nick: t.nick, isPrimary: !!t.isPrimary });
   }
   return contacts;
 }

@@ -559,6 +559,7 @@ class IrcManager extends EventEmitter {
       displayName: string;
       notifyOnline: boolean;
       targets: Array<{ networkId: number; nick: string }>;
+      primaryNetworkId?: number | null;
     },
   ): ContactRecord | null {
     const displayName = (input.displayName || '').trim();
@@ -566,18 +567,25 @@ class IrcManager extends EventEmitter {
       throw Object.assign(new Error('displayName is empty'), { code: 'invalid_input' });
     }
     const ownedNetworkIds = new Set(listNetworksForUser(userId).map((n) => n.id));
-    const cleaned: Array<{ networkId: number; nick: string }> = [];
+    const cleaned: Array<{ networkId: number; nick: string; isPrimary: boolean }> = [];
     for (const t of input.targets || []) {
       const networkId = Number(t.networkId);
       const nick = typeof t.nick === 'string' ? t.nick.trim() : '';
       if (!nick || !ownedNetworkIds.has(networkId)) continue;
       const owner = findContactIdByTarget(userId, networkId, nick);
       if (owner != null && owner !== input.contactId) continue; // another contact owns it
-      cleaned.push({ networkId, nick });
+      cleaned.push({ networkId, nick, isPrimary: false });
+    }
+    // Exactly one primary — the DM that opens when the friend is clicked. Honor
+    // the requested network if it survived filtering; otherwise fall back to the
+    // first target so there's always a launch destination.
+    if (cleaned.length) {
+      const wanted = cleaned.find((t) => t.networkId === Number(input.primaryNetworkId));
+      (wanted ?? cleaned[0]).isPrimary = true;
     }
 
     let contactId = input.contactId ?? null;
-    let prevTargets: Array<{ networkId: number; nick: string }> = [];
+    let prevTargets: Array<{ networkId: number; nick: string; isPrimary: boolean }> = [];
     if (contactId != null) {
       const existing = getContact(contactId, userId);
       if (!existing) return null;

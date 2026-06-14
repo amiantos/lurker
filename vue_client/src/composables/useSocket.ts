@@ -213,8 +213,6 @@ function applyEvent(event: any): void {
         awayMessage: event.awayMessage,
       });
       const friends = useFriendsStore();
-      // Friend nicklist tint follows presence.
-      friends.refreshMembers();
       // Came-online toast: only on a real online transition (the server emits
       // 'online' only on offline→online), only for a watched contact whose
       // notify_online flag is set, gated by the notifications setting.

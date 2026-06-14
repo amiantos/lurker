@@ -26,7 +26,18 @@
             :disabled="!row.enabled"
             placeholder="nick on this network"
           />
+          <label class="net-primary" :class="{ dim: !row.enabled }" title="Open this DM on click">
+            <input
+              v-model="primaryNetworkId"
+              type="radio"
+              name="primary-net"
+              :value="row.networkId"
+              :disabled="!row.enabled"
+            />
+            <span>primary</span>
+          </label>
         </div>
+        <p class="meta">The primary network is the DM that opens when you click the friend.</p>
       </fieldset>
 
       <label class="notify">
@@ -84,6 +95,11 @@ const rows = reactive<NetRow[]>(
 
 const displayName = ref(editorContact?.displayName ?? prefill?.nick ?? '');
 const notifyOnline = ref(editorContact?.notifyOnline ?? false);
+// Which network's DM opens on click. Seed from the existing primary, else the
+// nick we were opened on, else the first watched network.
+const primaryNetworkId = ref<number | null>(
+  editorContact?.targets.find((t) => t.isPrimary)?.networkId ?? prefill?.networkId ?? null,
+);
 
 const targets = computed(() =>
   rows
@@ -94,11 +110,19 @@ const canSave = computed(() => !!displayName.value.trim() && targets.value.lengt
 
 function confirm() {
   if (!canSave.value) return;
+  // Resolve the primary to an actually-watched target (the chosen one may have
+  // been unchecked); fall back to the first. The server defaults too.
+  const tgts = targets.value;
+  const primaryNetworkIdResolved =
+    tgts.find((t) => t.networkId === primaryNetworkId.value)?.networkId ??
+    tgts[0]?.networkId ??
+    null;
   friends.saveContact({
     contactId: editorContact?.id ?? null,
     displayName: displayName.value.trim(),
     notifyOnline: notifyOnline.value,
-    targets: targets.value,
+    targets: tgts,
+    primaryNetworkId: primaryNetworkIdResolved,
   });
   friends.closeEditor();
 }
@@ -165,6 +189,17 @@ input[type='text']:disabled {
 }
 .net-nick {
   flex: 1;
+}
+.net-primary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.net-primary.dim {
+  opacity: 0.4;
 }
 .notify {
   display: flex;

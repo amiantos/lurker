@@ -571,9 +571,6 @@ export const useBuffersStore = defineStore('buffers', {
         buf.messages.splice(0, buf.messages.length - MAX_PER_BUFFER);
       return true;
     },
-    setFriendMembers(members: BufferMember[]) {
-      this.ensureFriendsBuffer().members = members;
-    },
     setTopic(networkId: number | string, target: string, topic: string | null) {
       const buf = ensureBuffer(this, networkId, target);
       buf.topic = topic;

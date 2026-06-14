@@ -181,7 +181,8 @@ describe('ircManager contacts', () => {
       targets: [{ networkId: net.id, nick: 'darc' }],
     });
     expect(a).toMatchObject({ displayName: 'Darc', notifyOnline: true });
-    expect(a!.targets).toEqual([{ networkId: net.id, nick: 'darc' }]);
+    // A lone target is the primary by default.
+    expect(a!.targets).toEqual([{ networkId: net.id, nick: 'darc', isPrimary: true }]);
 
     // A target on a network the caller doesn't own is filtered out.
     const otherNet = createNetwork(other.id, {
@@ -199,7 +200,7 @@ describe('ircManager contacts', () => {
         { networkId: otherNet.id, nick: 'pwn' },
       ],
     });
-    expect(b!.targets).toEqual([{ networkId: net.id, nick: 'sneaky' }]);
+    expect(b!.targets).toEqual([{ networkId: net.id, nick: 'sneaky', isPrimary: true }]);
 
     // (network, nick) already owned by contact `a` can't be claimed by another.
     const c = ircManager.setContact(user.id, {
@@ -216,6 +217,37 @@ describe('ircManager contacts', () => {
         .toSorted(),
     ).toEqual(['Darc', 'Sneaky', 'Thief']);
     expect(ircManager.listContacts(other.id)).toEqual([]);
+  });
+
+  it('honors the requested primary target, falling back to the first', () => {
+    const user = createUser('irc-contacts-primary');
+    const n1 = createNetwork(user.id, { name: 'n1', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+    const n2 = createNetwork(user.id, { name: 'n2', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+
+    const chosen = ircManager.setContact(user.id, {
+      displayName: 'Multi',
+      notifyOnline: false,
+      targets: [
+        { networkId: n1.id, nick: 'm1' },
+        { networkId: n2.id, nick: 'm2' },
+      ],
+      primaryNetworkId: n2.id,
+    })!;
+    expect(chosen.targets.find((t) => t.networkId === n2.id)!.isPrimary).toBe(true);
+    expect(chosen.targets.find((t) => t.networkId === n1.id)!.isPrimary).toBe(false);
+
+    // A primary that isn't among the targets falls back to the first target.
+    const fallback = ircManager.setContact(user.id, {
+      contactId: chosen.id,
+      displayName: 'Multi',
+      notifyOnline: false,
+      targets: [
+        { networkId: n1.id, nick: 'm1' },
+        { networkId: n2.id, nick: 'm2' },
+      ],
+      primaryNetworkId: 999999,
+    })!;
+    expect(fallback.targets.find((t) => t.networkId === n1.id)!.isPrimary).toBe(true);
   });
 
   it('deletes a contact only for its owner', () => {

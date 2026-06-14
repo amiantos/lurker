@@ -11,21 +11,36 @@
       :class="{ 'unread-bold': unreadBold }"
       @scroll="scheduleRecompute"
     >
-      <!-- Virtual buffers (cross-network). The :system: console stays the
-           sidebar logo button; the Friends buffer lives here. -->
-      <div class="virtual-buffers">
+      <!-- FRIENDS pseudo-network: a cross-network gathering of DM shortcuts. The
+           header opens the compilation feed (:friends:); each row opens that
+           friend's DM on their primary network. The :system: console stays the
+           sidebar logo button. -->
+      <div v-if="friends.contacts.length || isFriendsActive" class="net friends-net">
         <div
-          class="net-head friends-row"
+          class="net-head"
           :class="{ active: isFriendsActive }"
-          title="Open Friends buffer"
+          title="Open Friends feed"
           @click="selectFriends"
         >
           <span class="indicator friends-icon"><i class="fa-solid fa-user-group"></i></span>
-          <span class="name">Friends</span>
+          <span class="name">FRIENDS</span>
           <span v-if="onlineFriendCount > 0" class="badge" :title="`${onlineFriendCount} online`">{{
             onlineFriendCount
           }}</span>
         </div>
+        <ul v-if="friends.contacts.length" class="channels">
+          <li
+            v-for="c in friends.contacts"
+            :key="c.id"
+            :class="{ active: isFriendDmActive(c), 'peer-offline': !friends.isOnline(c.id) }"
+            :title="`Open DM with ${c.displayName}`"
+            @click="openFriendDm(c)"
+            @contextmenu.prevent="editFriend(c)"
+          >
+            <span class="label">{{ c.displayName }}</span>
+            <span v-if="!friends.isOnline(c.id)" class="peer-mark" aria-hidden="true">*</span>
+          </li>
+        </ul>
       </div>
 
       <div v-for="net in networks.networks" :key="net.id" class="net">
@@ -220,7 +235,7 @@ import {
 import draggable from 'vuedraggable';
 import { useNetworksStore, type Network, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
-import { useFriendsStore } from '../stores/friends.js';
+import { useFriendsStore, primaryTargetOf, type Contact } from '../stores/friends.js';
 import { FRIENDS_KEY } from '../lib/virtualBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
@@ -440,6 +455,21 @@ function selectFriends(): void {
   buffers.ensureFriendsBuffer();
   // Lazy first load — the feed isn't fetched until the buffer is opened.
   if (!friends.loaded) friends.loadFeed();
+}
+// Clicking a friend opens their DM on the primary network — the FRIENDS group
+// is a cross-network launcher/pin list for DMs. A target-less contact (none
+// watched) falls back to opening its editor.
+function openFriendDm(c: Contact): void {
+  const t = primaryTargetOf(c);
+  if (t) select(t.networkId, t.nick);
+  else friends.openEditorForContact(c);
+}
+function isFriendDmActive(c: Contact): boolean {
+  const t = primaryTargetOf(c);
+  return !!t && networks.activeKey === `${t.networkId}::${t.nick}`;
+}
+function editFriend(c: Contact): void {
+  friends.openEditorForContact(c);
 }
 
 function stateClass(networkId: number): string {

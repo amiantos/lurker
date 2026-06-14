@@ -66,7 +66,18 @@ describe('createContact / setContactTargets / getContact', () => {
       { networkId: net!.id, nick: '   ' }, // blank → skipped
     ]);
     const got = mod.getContact(id, user.id);
-    expect(got!.targets).toEqual([{ networkId: net2!.id, nick: 'jaybird' }]);
+    expect(got!.targets).toEqual([{ networkId: net2!.id, nick: 'jaybird', isPrimary: false }]);
+  });
+
+  it('persists the is_primary flag', () => {
+    const id = mod.createContact({ userId: user.id, displayName: 'Prime', notifyOnline: false });
+    mod.setContactTargets(id, [
+      { networkId: net!.id, nick: 'p1', isPrimary: false },
+      { networkId: net2!.id, nick: 'p2', isPrimary: true },
+    ]);
+    const got = mod.getContact(id, user.id);
+    expect(got!.targets.find((t) => t.nick === 'p2')!.isPrimary).toBe(true);
+    expect(got!.targets.find((t) => t.nick === 'p1')!.isPrimary).toBe(false);
   });
 
   it('scopes reads to the owner', () => {

@@ -256,7 +256,6 @@ const {
   bufferLabel,
   isSystemConsole,
   isVirtual,
-  isFriendsBuffer,
 } = useActiveBuffer();
 
 function openSystemConsole() {
@@ -422,8 +421,6 @@ const memberCount = computed(() => {
 // look.layout.show_member_list default applies. DMs and server buffers have no
 // member list at all, so the toggle and panel are hidden for them entirely.
 const showMembers = computed(() => {
-  // The Friends buffer always shows its (synthetic) nicklist.
-  if (isFriendsBuffer.value) return true;
   if (!isChannel.value || !active.value) return false;
   const { networkId, target } = active.value;
   const override = nicklistCollapse.override(networkId, target);
