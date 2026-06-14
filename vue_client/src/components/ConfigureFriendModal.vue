@@ -46,8 +46,8 @@
       </label>
 
       <p class="meta">
-        Presence shows in real time on networks that support MONITOR; elsewhere it updates when you
-        share a channel.
+        Due to differences in network support for MONITOR and AWAY, presence tracking may be
+        unreliable. Away state tracking depends on sharing a channel with your friend.
       </p>
 
       <div class="actions">
