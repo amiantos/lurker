@@ -5,8 +5,10 @@ import { onBeforeUnmount, onMounted } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { usePinsStore } from '../stores/pins.js';
+import { useFriendsStore } from '../stores/friends.js';
 import { socketSend } from './useSocket.js';
 import { flattenBufferOrder, flattenUnreadOrder } from '../utils/bufferOrder.js';
+import { FRIENDS_KEY } from '../lib/virtualBuffers.js';
 
 export interface KeyboardShortcutsOptions {
   onOpenSwitcher?: () => void;
@@ -42,12 +44,25 @@ export function useKeyboardShortcuts({
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
   const pins = usePinsStore();
+  const friends = useFriendsStore();
+
+  // The FRIENDS group as the sidebar shows it: a feed header (only when there
+  // are contacts) + each friend's primary DM, with those DMs excluded from
+  // their real network so nav doesn't visit them twice.
+  function friendsOrder() {
+    return {
+      dms: friends.primaryDmEntries,
+      excludeKeys: friends.primaryDmKeys,
+      feedKey: friends.contacts.length ? FRIENDS_KEY : undefined,
+    };
+  }
 
   function order() {
     return flattenBufferOrder({
       networks: networks.networks,
       buffers,
       pins,
+      friends: friendsOrder(),
     });
   }
 
@@ -56,7 +71,15 @@ export function useKeyboardShortcuts({
       networks: networks.networks,
       buffers,
       pins,
+      friends: friendsOrder(),
     });
+  }
+
+  // Activate the right way for the entry: the virtual FRIENDS feed goes through
+  // the friends store (select + lazy-load); everything else is a real buffer.
+  function activateEntry(entry: { networkId: string | number; target: string; key: string }): void {
+    if (entry.key === FRIENDS_KEY) friends.activateFeed();
+    else buffers.activate(entry.networkId, entry.target);
   }
 
   function activeNetworkId(): number | null {
@@ -74,7 +97,7 @@ export function useKeyboardShortcuts({
     }
     if (list.length === 0) return;
     const activeKey = networks.activeKey;
-    let idx = list.findIndex((e) => `${e.networkId}::${e.target}` === activeKey);
+    let idx = list.findIndex((e) => e.key === activeKey);
     if (idx === -1) {
       // Active buffer isn't in the filtered list (e.g. unread navigation when
       // current buffer has no unread). Pick the first item in the requested
@@ -83,7 +106,7 @@ export function useKeyboardShortcuts({
     }
     const next = (idx + delta + list.length) % list.length;
     const target = list[next];
-    if (target) buffers.activate(target.networkId, target.target);
+    if (target) activateEntry(target);
   }
 
   function onKeydown(e: KeyboardEvent): void {

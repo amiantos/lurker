@@ -8,6 +8,7 @@ import { useNetworksStore } from './networks.js';
 import { useBuffersStore } from './buffers.js';
 import type { BufferMessage } from './buffers.js';
 import { isPeerOnline, isPeerAway, isPeerOffline } from '../utils/peerPresence.js';
+import { FRIENDS_KEY } from '../lib/virtualBuffers.js';
 
 // Friends / contacts. The server is the source of truth: contacts ship in the
 // `contacts-snapshot` on connect and `contact-updated`/`contact-deleted` echoes
@@ -42,6 +43,12 @@ export interface FriendEditorState {
   open: boolean;
   contact: Contact | null; // set when editing an existing contact
   prefill: { networkId: number; nick: string } | null; // set when adding from a nick
+}
+
+// Case-insensitive alphabetical by display name. Array sort is stable, so
+// equal names keep their prior relative order.
+function byDisplayName(a: Contact, b: Contact): number {
+  return a.displayName.localeCompare(b.displayName, undefined, { sensitivity: 'base' });
 }
 
 export type FriendPresence = 'online' | 'away' | 'offline' | 'unknown';
@@ -99,6 +106,29 @@ export const useFriendsStore = defineStore('friends', {
       }
       return set;
     },
+    // Ordered { networkId, target } for each friend's primary DM, in sidebar
+    // (contacts) order, with the target resolved to an existing DM buffer's case
+    // when one is open. Used by keyboard nav / quick-switch so the FRIENDS rows
+    // walk in the same order they render.
+    primaryDmEntries(state): Array<{ networkId: number; target: string }> {
+      const buffers = useBuffersStore();
+      const out: Array<{ networkId: number; target: string }> = [];
+      for (const c of state.contacts) {
+        const t = primaryTargetOf(c);
+        if (!t) continue;
+        const lower = t.nick.toLowerCase();
+        const existing = buffers
+          .forNetwork(t.networkId)
+          .find(
+            (b) =>
+              b.target.toLowerCase() === lower &&
+              !b.target.startsWith('#') &&
+              !b.target.startsWith(':'),
+          );
+        out.push({ networkId: t.networkId, target: existing ? existing.target : t.nick });
+      }
+      return out;
+    },
     // The contact (if any) watching (networkId, nick) — drives the nick menu's
     // Add/Edit Friend label.
     contactForTarget:
@@ -128,16 +158,17 @@ export const useFriendsStore = defineStore('friends', {
   },
   actions: {
     // ---- snapshot + live sync ----
-    // Presence for the FRIENDS sidebar rows is derived live from peerPresence
-    // via the isOnline getter, so contact changes just replace the list.
+    // Kept sorted alphabetically by display name (case-insensitive) on every
+    // change, so adding/editing a friend doesn't drop them at the end. Presence
+    // for the rows is derived live from peerPresence, so the list just holds
+    // identity + targets.
     applySnapshot(contacts: Contact[]) {
-      this.contacts = (contacts || []).map(normalizeContact);
+      this.contacts = (contacts || []).map(normalizeContact).toSorted(byDisplayName);
     },
     applyContactUpdated(contact: Contact) {
       const c = normalizeContact(contact);
-      const idx = this.contacts.findIndex((x) => x.id === c.id);
-      if (idx >= 0) this.contacts[idx] = c;
-      else this.contacts.push(c);
+      const others = this.contacts.filter((x) => x.id !== c.id);
+      this.contacts = [...others, c].toSorted(byDisplayName);
     },
     applyContactDeleted(contactId: number) {
       this.contacts = this.contacts.filter((c) => c.id !== contactId);
@@ -182,6 +213,13 @@ export const useFriendsStore = defineStore('friends', {
     },
 
     // ---- feed (cross-network friend messages) ----
+    // Open the FRIENDS feed buffer: select it, ensure it exists, and lazily
+    // fetch the first page. Shared by the sidebar header click and keyboard nav.
+    activateFeed() {
+      useNetworksStore().activateVirtual(FRIENDS_KEY);
+      useBuffersStore().ensureFriendsBuffer();
+      if (!this.loaded) this.loadFeed();
+    },
     // Initial load: newest page from REST (descending), reversed to ascending,
     // prefixed, and seeded into the :friends: buffer.
     async loadFeed() {

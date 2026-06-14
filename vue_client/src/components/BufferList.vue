@@ -479,10 +479,7 @@ function isActive(networkId: number, target: string): boolean {
 
 const isFriendsActive = computed(() => networks.activeKey === FRIENDS_KEY);
 function selectFriends(): void {
-  networks.activateVirtual(FRIENDS_KEY);
-  buffers.ensureFriendsBuffer();
-  // Lazy first load — the feed isn't fetched until the buffer is opened.
-  if (!friends.loaded) friends.loadFeed();
+  friends.activateFeed();
 }
 // Clicking a friend opens their DM on the primary network — the FRIENDS group
 // is a cross-network launcher/pin list for DMs. A target-less contact (none
