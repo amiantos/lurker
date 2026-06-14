@@ -49,7 +49,7 @@ ADMIN_EMAIL=""
 # The script publishes :113 and opens it in the firewall. Leave blank for a
 # single-user instance that doesn't need it.
 #
-# Requires a Lurker image that includes identd (ghcr.io/nylanalyn/lurker:latest
+# Requires a Lurker image that includes identd (ghcr.io/amiantos/lurker:latest
 # once that lands). Docker note: the IRC server's :113 callback has to map back
 # to the exact source port of the outbound IRC connection; Docker's bridge NAT
 # preserves source ports at normal scale, so this works as-is — if you ever see
@@ -75,8 +75,8 @@ BOUNCER_PORT="6667"
 
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/nylanalyn/lurker/main"
-LURKER_IMAGE="ghcr.io/nylanalyn/lurker:latest"
+REPO_RAW="https://raw.githubusercontent.com/amiantos/lurker/main"
+LURKER_IMAGE="ghcr.io/amiantos/lurker:latest"
 INSTALL_DIR="/opt/lurker"
 DEPLOY_LOG="/var/log/lurker-deploy.log"
 
