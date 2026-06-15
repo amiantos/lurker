@@ -513,7 +513,7 @@ onBeforeUnmount(() => {
   animation: lightbox-fade-in 100ms ease-out;
 }
 .lightbox--zoomed {
-  gap: 0;
+  gap: var(--space-2);
   padding-right: 0;
   padding-bottom: 0;
   padding-left: 0;
@@ -548,6 +548,7 @@ onBeforeUnmount(() => {
   /* Icon-only button — size the glyph, not text weight (fa-solid is already
      weight 900). */
   font-size: var(--icon-lg);
+  line-height: 1;
   padding: var(--space-2) var(--space-4);
 }
 .control:hover {
