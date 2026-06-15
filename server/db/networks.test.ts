@@ -16,6 +16,7 @@ let db: typeof import('./index.js').default;
 let createUser: typeof import('./users.js').createUser;
 let createNetwork: typeof import('./networks.js').createNetwork;
 let getNetwork: typeof import('./networks.js').getNetwork;
+let updateNetwork: typeof import('./networks.js').updateNetwork;
 let ownsNetwork: typeof import('./networks.js').ownsNetwork;
 let listNetworksForUser: typeof import('./networks.js').listNetworksForUser;
 let reorderNetworks: typeof import('./networks.js').reorderNetworks;
@@ -23,7 +24,7 @@ let reorderNetworks: typeof import('./networks.js').reorderNetworks;
 beforeAll(async () => {
   db = (await import('./index.js')).default;
   ({ createUser } = await import('./users.js'));
-  ({ createNetwork, getNetwork, ownsNetwork, listNetworksForUser, reorderNetworks } =
+  ({ createNetwork, getNetwork, updateNetwork, ownsNetwork, listNetworksForUser, reorderNetworks } =
     await import('./networks.js'));
 });
 
@@ -175,5 +176,47 @@ describe('network secrets without an encryption key (self-host)', () => {
     expect(raw.sasl_password).toBe('plain-sasl');
     expect(raw.connect_commands).toBe('PRIVMSG NickServ :identify plain');
     expect(getNetwork(net.id, iris.id)!.server_password).toBe('plain-srv');
+  });
+
+  describe('trusted_certificates', () => {
+    it('defaults to enabled when omitted', () => {
+      const user = createUser('trusted-default');
+      const net = createNetwork(user.id, {
+        name: 'libera',
+        host: 'irc.libera.chat',
+        port: 6697,
+        tls: true,
+        nick: 'default',
+      });
+      expect(net!.trusted_certificates).toBe(1);
+    });
+
+    it('can be disabled and updated', () => {
+      const user = createUser('trusted-off');
+      const net = createNetwork(user.id, {
+        name: 'libera',
+        host: 'irc.libera.chat',
+        port: 6697,
+        tls: true,
+        trusted_certificates: false,
+        nick: 'off',
+      })!;
+      expect(net.trusted_certificates).toBe(0);
+      const updated = updateNetwork(net.id, user.id, { trusted_certificates: true });
+      expect(updated!.trusted_certificates).toBe(1);
+    });
+
+    it('treats numeric 0 as disabled when creating', () => {
+      const user = createUser('trusted-num-zero');
+      const net = createNetwork(user.id, {
+        name: 'libera',
+        host: 'irc.libera.chat',
+        port: 6697,
+        tls: true,
+        trusted_certificates: 0,
+        nick: 'zero',
+      })!;
+      expect(net.trusted_certificates).toBe(0);
+    });
   });
 });

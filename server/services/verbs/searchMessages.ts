@@ -37,6 +37,12 @@ registerVerb({
         type: 'string',
         description: 'Optional. Restrict to messages from a specific nick.',
       },
+      nicks: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Optional. Restrict to messages from any of these nicks (OR). Takes precedence over `nick`.',
+      },
       limit: {
         type: 'integer',
         description: 'How many matches to return. Default 50, max 100.',
@@ -62,6 +68,9 @@ registerVerb({
       networkId: input.networkId ? Number(input.networkId) : undefined,
       target: typeof input.target === 'string' && input.target ? input.target : undefined,
       nick: typeof input.nick === 'string' && input.nick ? input.nick : undefined,
+      nicks: Array.isArray(input.nicks)
+        ? (input.nicks as unknown[]).filter((n): n is string => typeof n === 'string' && !!n)
+        : undefined,
       before: input.before ? Number(input.before) : undefined,
       limit: limit + 1,
     });

@@ -5,7 +5,7 @@
 
 <template>
   <div class="members">
-    <ul>
+    <ul ref="listEl">
       <li
         v-for="m in sorted"
         :key="nickOf(m)"
@@ -39,7 +39,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
@@ -53,6 +53,7 @@ const nicks = useNickColors();
 const memberActions = useMemberActions();
 const ignores = useIgnoresStore();
 const modalMember = ref<BufferMember | null>(null);
+const listEl = ref<HTMLElement | null>(null);
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
@@ -69,6 +70,14 @@ const selfModes = computed<string[]>(() => {
   const me = members.value.find((m) => nickOf(m).toLowerCase() === sn.toLowerCase());
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
+
+watch(
+  () => networks.activeKey,
+  () => {
+    if (listEl.value) listEl.value.scrollTop = 0;
+  },
+  { flush: 'post' },
+);
 
 function isSelf(m: BufferMember): boolean {
   const sn = selfNick.value;

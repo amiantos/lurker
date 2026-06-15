@@ -50,6 +50,13 @@ export const useSearchStore = defineStore('search', {
     setQuery(raw: string) {
       this.query = raw;
     },
+    // Set the query and run it immediately. Shared by the "view activity" entry
+    // points (Friends overview), which open the Search modal pre-filled and
+    // executed; the view still owns its own modal visibility/scope.
+    runQuery(raw: string) {
+      this.setQuery(raw);
+      this.runSearch();
+    },
     // Build the structured WS payload from the raw query. Returns null when
     // there's nothing to search on (no free text and no structured filter).
     buildPayload(before: number | null) {
@@ -60,7 +67,7 @@ export const useSearchStore = defineStore('search', {
         limit: PAGE_SIZE,
       };
       if (parsed.query) payload.query = parsed.query;
-      if (parsed.from) payload.nick = parsed.from;
+      if (parsed.from.length) payload.nicks = parsed.from;
       if (parsed.in) payload.target = parsed.in;
       if (parsed.on) {
         const networks = useNetworksStore();
@@ -69,7 +76,7 @@ export const useSearchStore = defineStore('search', {
         );
         if (match) payload.networkId = match.id;
       }
-      if (!payload.query && !payload.nick && !payload.target && payload.networkId == null) {
+      if (!payload.query && !payload.nicks && !payload.target && payload.networkId == null) {
         return null;
       }
       if (before) payload.before = before;

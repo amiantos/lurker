@@ -5,6 +5,7 @@ import type { ContextMenuItem } from './useContextMenu.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
@@ -28,6 +29,7 @@ export function useBufferActions(): BufferActionsAPI {
   const pins = usePinsStore();
   const channelNotify = useChannelNotifyStore();
   const nickNotes = useNickNotesStore();
+  const friends = useFriendsStore();
   const whois = useWhoisStore();
   const menu = useContextMenu();
 
@@ -90,6 +92,7 @@ export function useBufferActions(): BufferActionsAPI {
       // so these are DM-only; in-channel equivalents flow through the member
       // list menu.
       const hasNote = nickNotes.hasNote(buf.networkId, buf.target);
+      const isFriend = !!friends.contactForTarget(buf.networkId, buf.target);
       items.push({
         label: 'View Profile…',
         icon: 'fa-solid fa-id-card',
@@ -99,6 +102,11 @@ export function useBufferActions(): BufferActionsAPI {
         label: hasNote ? 'Edit Note…' : 'Add Note…',
         icon: 'fa-solid fa-note-sticky',
         onClick: () => nickNotes.openEditor(buf.networkId, buf.target),
+      });
+      items.push({
+        label: isFriend ? 'Edit Friend…' : 'Add Friend…',
+        icon: 'fa-solid fa-user-group',
+        onClick: () => friends.openEditorForNick(buf.networkId, buf.target),
       });
     }
     // Close drops the buffer entirely — for a channel that also PARTs it, for

@@ -256,6 +256,24 @@ describe('searchMessages', () => {
     expect(hits.map((m) => m.text).toSorted()).toEqual(['first', 'second']);
   });
 
+  it('OR-matches several nicks via `nicks`, case-insensitively', () => {
+    const user = createUser('search-nicks');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'search-nicks',
+    });
+    chat(net!.id, '#a', 'eren', 'one');
+    chat(net!.id, '#a', 'nostimo', 'two');
+    chat(net!.id, '#a', 'twomoon', 'three');
+    chat(net!.id, '#a', 'stranger', 'four');
+
+    const hits = searchMessages(user.id, { nicks: ['EREN', 'nostimo'] });
+    expect(hits.map((m) => m.text).toSorted()).toEqual(['one', 'two']);
+  });
+
   it('returns nothing when there is no free text and no filter', () => {
     const user = createUser('search-empty');
     const net = createNetwork(user.id, {

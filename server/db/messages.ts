@@ -411,6 +411,7 @@ export function searchMessages(
     networkId,
     target,
     nick,
+    nicks,
     matched,
     before,
     limit = 50,
@@ -419,15 +420,18 @@ export function searchMessages(
     networkId?: number;
     target?: string;
     nick?: string;
+    nicks?: string[];
     matched?: boolean;
     before?: number;
     limit?: number;
   } = {},
 ): MessageEventWithNetwork[] {
   const text = typeof query === 'string' ? query.trim() : '';
+  const nickList = (nicks ?? []).filter((n) => typeof n === 'string' && n);
   // Nothing to search on — no free text and no structured filter. With
-  // `matched` the empty case is meaningful ("all my highlights"), so skip it.
-  if (!text && !networkId && !target && !nick && !matched) return [];
+  // `matched` the empty case is meaningful ("all my highlights"), so skip the
+  // early-out for it.
+  if (!text && !networkId && !target && !nick && nickList.length === 0 && !matched) return [];
 
   let from = 'messages m JOIN networks n ON n.id = m.network_id';
   const where: string[] = [
@@ -460,7 +464,12 @@ export function searchMessages(
     where.push('m.target = ? COLLATE NOCASE');
     params.push(target);
   }
-  if (nick) {
+  // `nicks` OR-matches several senders (a friend's alts); `nick` is the single
+  // case. COLLATE NOCASE binds to the column so the IN comparison is case-fold.
+  if (nickList.length > 0) {
+    where.push(`m.nick COLLATE NOCASE IN (${nickList.map(() => '?').join(', ')})`);
+    params.push(...nickList);
+  } else if (nick) {
     where.push('m.nick = ? COLLATE NOCASE');
     params.push(nick);
   }

@@ -4,6 +4,7 @@
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
 import { useAuthStore } from './auth.js';
+import { isVirtualKey, SYSTEM_KEY } from '../lib/virtualBuffers.js';
 
 export interface Network {
   id: number;
@@ -59,11 +60,25 @@ export const useNetworksStore = defineStore('networks', {
   }),
   getters: {
     networkById: (state) => (id: number) => state.networks.find((n) => n.id === id) || null,
+    // Presence row for a (network, nick), disconnected-aware: a down network's
+    // cached rows are stale, so report a synthetic 'offline'. Connected with no
+    // row stays null (unknown = "potentially online", the no-MONITOR case).
+    // Single source of truth for the sidebar, status bar, profile, and Friends.
+    peerFor:
+      (state) =>
+      (networkId: number | string, nick: string): PeerPresenceEntry | null => {
+        const netState = state.states[networkId];
+        if (netState && netState.state !== 'connected')
+          return { nick, state: 'offline', stateAt: null, awayMessage: null };
+        return netState?.peerPresence?.[nick.toLowerCase()] ?? null;
+      },
     activeBuffer(state): ActiveBuffer | null {
       if (!state.activeKey) return null;
-      // The system-console sentinel is a flat key (no `::`). Treat it as
-      // "no IRC buffer active" — the SystemConsole view drives its own
-      // header and rendering off the system-log store directly.
+      // Virtual buffers (:system:, :friends:) use a flat sentinel key (no `::`).
+      // They have no IRC send target, so report "no IRC buffer active" — the
+      // views drive their own header/rendering. Friends still renders messages
+      // via buffers.byKey(activeKey) directly, not through this getter.
+      if (isVirtualKey(state.activeKey)) return null;
       if (!state.activeKey.includes('::')) return null;
       const [networkId, name] = state.activeKey.split('::');
       const id = Number(networkId);
@@ -132,12 +147,14 @@ export const useNetworksStore = defineStore('networks', {
     setActive(networkId: number | string, target: string) {
       this.activeKey = `${networkId}::${target}`;
     },
-    // System console is the only "buffer" that isn't tied to an IRC network —
-    // it's the per-user log of server lifecycle events surfaced via the
-    // "lurker" sidebar header. Uses a flat sentinel key (no `::`) so the
-    // existing `${networkId}::${target}` parsers ignore it.
+    // Virtual buffers (system console, friends) aren't tied to an IRC network.
+    // They use a flat sentinel key (no `::`) so the existing
+    // `${networkId}::${target}` parsers ignore them.
+    activateVirtual(key: string) {
+      this.activeKey = key;
+    },
     activateSystem() {
-      this.activeKey = ':system:';
+      this.activateVirtual(SYSTEM_KEY);
     },
     applySnapshot(networks: NetworkState[]) {
       const map: Record<number | string, NetworkState> = {};

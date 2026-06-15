@@ -53,6 +53,7 @@ let onEmojiSelect: EmojiSelectHandler = () => {};
 let onColorApply: ColorApplyHandler = () => {};
 let onColorReset: VoidHandler = () => {};
 let onColorClose: VoidHandler = () => {};
+let onPickFile: VoidHandler = () => {};
 // Address a nick from outside the composer (the message action bar's Reply).
 // Same signature as a nick pick, but it prepends `nick: ` to the whole draft
 // rather than splicing at a token span, so it gets its own handler.
@@ -64,6 +65,7 @@ export interface ComposerOverlayHandlers {
   onColorApply?: ColorApplyHandler;
   onColorReset?: VoidHandler;
   onColorClose?: VoidHandler;
+  onPickFile?: VoidHandler;
   onAddress?: NickSelectHandler;
 }
 
@@ -73,6 +75,7 @@ export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
   if (h.onColorApply) onColorApply = h.onColorApply;
   if (h.onColorReset) onColorReset = h.onColorReset;
   if (h.onColorClose) onColorClose = h.onColorClose;
+  if (h.onPickFile) onPickFile = h.onPickFile;
   if (h.onAddress) onAddress = h.onAddress;
 }
 
@@ -155,6 +158,9 @@ export function resetColor(): void {
 }
 export function closeColorPicker(): void {
   onColorClose();
+}
+export function pickComposerFile(): void {
+  onPickFile();
 }
 
 export function useComposerOverlay(): DeepReadonly<ComposerOverlayState> {

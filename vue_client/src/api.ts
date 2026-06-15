@@ -16,15 +16,31 @@ export interface ApiRequestOptions {
 // One-shot guard so an unrecoverable 401 can't loop the page reload.
 const AUTH_RECOVERY_FLAG = 'lurker:authRecoveryAttempted';
 
+// Public routes that render without a session (mirror router.ts). A background
+// 401 while sitting on one of these is the expected "not signed in yet" state,
+// NOT a stale session — bouncing would eject an invite/sign-in visitor to
+// `/login?next=/` before their page can even mount.
+function isPublicPath(pathname: string): boolean {
+  return pathname === '/login' || pathname.startsWith('/invite/');
+}
+
 // Pure decision (exported for tests): a 401 from a normal authed call means the
 // session is dead — on a hosted cell the cell has already cleared the stale
 // lurker_session + cp_session, so we send the user back to `/` to sign in again.
 // Skip the auth / control-plane endpoints (they 401 by design before sign-in),
-// and only bounce once per tab so a genuinely-unrecoverable 401 falls through to
-// the app's normal logged-out handling instead of reloading forever.
-export function shouldBounceToLogin(url: string, status: number, alreadyTried: boolean): boolean {
+// skip 401s on a public page (App.vue fires settings/config fetches on every
+// route, including /invite — those 401 by design when logged out), and only
+// bounce once per tab so a genuinely-unrecoverable 401 falls through to the
+// app's normal logged-out handling instead of reloading forever.
+export function shouldBounceToLogin(
+  url: string,
+  status: number,
+  alreadyTried: boolean,
+  pathname: string,
+): boolean {
   if (status !== 401 || alreadyTried) return false;
   if (url.startsWith('/api/auth/') || url.startsWith('/_cp/')) return false;
+  if (isPublicPath(pathname)) return false;
   return true;
 }
 
@@ -35,7 +51,7 @@ function bounceToLoginOnAuthFailure(url: string, status: number): void {
   } catch {
     return; // no sessionStorage (private-mode edge) → don't risk a reload loop
   }
-  if (!shouldBounceToLogin(url, status, alreadyTried)) return;
+  if (!shouldBounceToLogin(url, status, alreadyTried, window.location.pathname)) return;
   try {
     sessionStorage.setItem(AUTH_RECOVERY_FLAG, '1');
   } catch {

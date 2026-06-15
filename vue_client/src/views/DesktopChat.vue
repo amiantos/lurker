@@ -59,8 +59,27 @@
       </div>
     </aside>
 
-    <header v-if="isSystemConsole" class="topic">
-      <span class="buffer">System console</span>
+    <header v-if="isVirtual" class="topic">
+      <div class="topic-meta">
+        <span class="buffer">{{ bufferLabel }}</span>
+      </div>
+      <div v-if="isFriendsBuffer" class="topic-actions">
+        <button
+          type="button"
+          class="link"
+          title="Add friend"
+          aria-label="Add friend"
+          @click="friends.openEditorNew()"
+        >
+          <i class="fa-solid fa-person-circle-plus"></i>
+        </button>
+        <span
+          class="member-count"
+          :title="`${friendCount} ${friendCount === 1 ? 'friend' : 'friends'}`"
+        >
+          <i class="fa-solid fa-users"></i> {{ friendCount }}
+        </span>
+      </div>
     </header>
     <header v-else-if="active" class="topic">
       <div class="topic-meta">
@@ -149,13 +168,14 @@
         </template>
       </div>
     </header>
-    <div v-if="active || isSystemConsole" class="topic-divider"></div>
+    <div v-if="active || isVirtual" class="topic-divider"></div>
 
-    <SystemConsole v-if="isSystemConsole" />
+    <SystemConsole v-if="renderMode === 'console'" />
+    <FriendsOverview v-else-if="renderMode === 'overview'" @view-activity="onViewActivity" />
     <MessageList v-else ref="messageListRef" :pending-scroll-id="pendingScrollId" />
-    <MemberList v-if="showMembers && !isSystemConsole" />
+    <MemberList v-if="showMembers && hasNicklist" />
     <StatusBar />
-    <MessageInput v-if="!isSystemConsole" ref="messageInputRef" />
+    <MessageInput v-if="hasInput" ref="messageInputRef" />
 
     <NetworkForm
       v-if="networkEditor.isOpen"
@@ -201,6 +221,7 @@
       :nick="nickNotes.editor.nick"
       :network-id="nickNotes.editor.networkId"
     />
+    <ConfigureFriendModal v-if="friends.editor.open" />
   </div>
 </template>
 
@@ -216,6 +237,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import SystemConsole from '../components/SystemConsole.vue';
+import FriendsOverview from '../components/FriendsOverview.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import StatusBar from '../components/StatusBar.vue';
@@ -230,11 +252,14 @@ import QuickSwitcher from '../components/QuickSwitcher.vue';
 import SearchModal from '../components/SearchModal.vue';
 import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
+import ConfigureFriendModal from '../components/ConfigureFriendModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
 import ImageViewerModal from '../components/ImageViewerModal.vue';
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts.js';
 import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useFriendsStore } from '../stores/friends.js';
+import { useSearchStore } from '../stores/search.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
@@ -244,8 +269,20 @@ import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 
 const networks = useNetworksStore();
 const { connected } = useSocket();
-const { active, activeBuf, topic, isServerBuffer, isChannel, bufferLabel, isSystemConsole } =
-  useActiveBuffer();
+const {
+  active,
+  activeBuf,
+  topic,
+  isServerBuffer,
+  isChannel,
+  bufferLabel,
+  isSystemConsole,
+  isVirtual,
+  isFriendsBuffer,
+  renderMode,
+  hasInput,
+  hasNicklist,
+} = useActiveBuffer();
 
 function openSystemConsole() {
   networks.activateSystem();
@@ -253,6 +290,8 @@ function openSystemConsole() {
 const settings = useSettingsStore();
 const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
+const friends = useFriendsStore();
+const friendCount = computed(() => friends.contacts.length);
 const whois = useWhoisStore();
 const channelNotify = useChannelNotifyStore();
 
@@ -267,6 +306,13 @@ const showSwitcher = ref(false);
 const showSearch = ref(false);
 const showKbdHelp = ref(false);
 const pendingScrollId = ref<number | null>(null);
+
+// "View activity" from the Friends overview: open Search with the scoped query
+// (from:<nick> on:<network>) and run it immediately.
+function onViewActivity(query: string) {
+  useSearchStore().runQuery(query);
+  showSearch.value = true;
+}
 const messageInputRef = ref<{ focus: () => void } | null>(null);
 const messageListRef = ref<{ scrollByPage: (dir: number) => void } | null>(null);
 

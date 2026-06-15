@@ -9,7 +9,9 @@ import { useToastsStore } from '../stores/toasts.js';
 export interface JumpTarget {
   networkId: number;
   target: string;
-  messageId: number;
+  // Omitted for an "open this conversation" intent (e.g. a friend-online push)
+  // — there's no specific message to scroll to, just the buffer to open.
+  messageId?: number | null;
 }
 
 export interface JumpToMessageOptions {
@@ -43,6 +45,14 @@ export function useJumpToMessage({ pendingScrollId, afterActivate }: JumpToMessa
   return function jumpToMessage({ networkId, target, messageId }: JumpTarget): void {
     if (typeof target === 'string' && target.startsWith(':server:')) {
       toasts.push({ kind: 'info', title: 'Cannot jump in server buffer', ttlMs: 4000 } as any);
+      return;
+    }
+    // No specific message — an "open this conversation" intent (a friend-online
+    // push tap). Just activate the DM, creating its buffer if needed; skip the
+    // closed-buffer guard and the loadAround scroll path entirely.
+    if (messageId == null) {
+      buffers.activate(networkId, target);
+      if (typeof afterActivate === 'function') afterActivate();
       return;
     }
     // A notification can outlive its buffer — if the channel was closed

@@ -194,6 +194,9 @@ function insertTable(
     // Export carries network secrets as plaintext; re-encrypt them at rest when
     // importing onto a keyed (hosted) cell. No-op without a key.
     if (table === 'networks') {
+      // Pre-trust-toggle exports don't carry this NOT NULL column; default to
+      // secure behavior during import.
+      if (row.trusted_certificates === undefined) row.trusted_certificates = 1;
       for (const col of ENCRYPTED_NETWORK_COLUMNS) {
         if (typeof row[col] === 'string') row[col] = encryptSecret(row[col] as string);
       }
@@ -290,6 +293,12 @@ function resetImportedData(userId: number): void {
     db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM upload_history WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_away_state WHERE user_id = ?').run(userId);
+    // Contacts are a user-scoped import root: contact_targets cascade away with
+    // the networks above, but the contacts rows themselves only cascade on user
+    // delete, so wipe them here too. Otherwise a failed-then-retried import
+    // re-inserts every contact (accountIsEmpty only counts networks), leaving
+    // duplicated, target-less friends.
+    db.prepare('DELETE FROM contacts WHERE user_id = ?').run(userId);
   });
   wipe();
 }

@@ -6,50 +6,73 @@
 <template>
   <div v-if="active" class="status-bar">
     <div class="bar" :class="{ compact }">
-      <span v-if="!compact" class="seg clock">{{ clock }}</span>
-      <span class="seg buffer"
-        ><template v-if="targetLabel"
-          ><span v-if="networkLabel" class="net">{{ networkLabel }}/</span
-          ><span class="name">{{ targetLabel }}</span></template
-        ><span v-else class="name">{{ networkLabel }}</span
-        ><span v-if="modeSuffix" class="modes">{{ modeSuffix }}</span></span
-      >
-      <!-- Jump-to-unread. Scrolls (usually up) to the pinned unread divider
-         when it's off-screen and the user hasn't scrolled it into view yet
-         this visit. Renders in both modes — catching up matters as much on
-         mobile. -->
-      <button v-if="unreadAnchor" class="seg jump-unread" type="button" @click="onJumpToUnread">
-        Jump to unread {{ unreadArrow }}
-      </button>
-      <!-- Return-to-present: the single downward affordance. Shows whenever the
-         buffer is detached (viewing a historical slice) OR the user has
-         scrolled up off the live tail; the count badge reflects whichever
-         applies. Detached → reattach to live; scrolled-up → snap down. Renders
-         in both modes — merging the former desktop-only [N new ↓] button in
-         means mobile finally gets a way back to the present too. -->
-      <button
-        v-if="showPresent"
-        class="seg return-present"
-        type="button"
-        @click="onReturnToPresent"
-      >
-        Return to present<template v-if="presentCount > 0"> ({{ presentCount }} new)</template>
-        ↓
-      </button>
-      <span v-if="peerStatusLabel" class="seg peer-status" :class="peerStatusClass">{{
-        peerStatusLabel
-      }}</span>
-      <span v-if="lagLabel && !compact" class="seg lag" :class="lagClass">{{ lagLabel }}</span>
-      <span v-if="uploadLabel" class="seg upload" :class="{ failed: uploads.failedAt }">{{
-        uploadLabel
-      }}</span>
-      <span v-if="splitLabel" class="seg split" :class="splitClass">{{ splitLabel }}</span>
-      <span v-if="typingSegments.length" class="seg typing"
-        >Typing:
-        <template v-for="(seg, i) in typingSegments" :key="i"
-          ><span :style="seg.color ? { color: seg.color } : null">{{ seg.text }}</span></template
-        ></span
-      >
+      <div class="bar-main">
+        <span v-if="!compact" class="seg clock">{{ clock }}</span>
+        <span class="seg buffer"
+          ><template v-if="targetLabel"
+            ><span v-if="networkLabel" class="net">{{ networkLabel }}/</span
+            ><span class="name">{{ targetLabel }}</span></template
+          ><span v-else class="name">{{ networkLabel }}</span
+          ><span v-if="modeSuffix" class="modes">{{ modeSuffix }}</span></span
+        >
+        <!-- Jump-to-unread. Scrolls (usually up) to the pinned unread divider
+           when it's off-screen and the user hasn't scrolled it into view yet
+           this visit. Renders in both modes — catching up matters as much on
+           mobile. -->
+        <button v-if="unreadAnchor" class="seg jump-unread" type="button" @click="onJumpToUnread">
+          Jump to unread {{ unreadArrow }}
+        </button>
+        <!-- Return-to-present: the single downward affordance. Shows whenever the
+           buffer is detached (viewing a historical slice) OR the user has
+           scrolled up off the live tail; the count badge reflects whichever
+           applies. Detached → reattach to live; scrolled-up → snap down. Renders
+           in both modes — merging the former desktop-only [N new ↓] button in
+           means mobile finally gets a way back to the present too. -->
+        <button
+          v-if="showPresent"
+          class="seg return-present"
+          type="button"
+          @click="onReturnToPresent"
+        >
+          Return to present<template v-if="presentCount > 0"> ({{ presentCount }} new)</template>
+          ↓
+        </button>
+        <span v-if="peerStatusLabel" class="seg peer-status" :class="peerStatusClass">{{
+          peerStatusLabel
+        }}</span>
+        <span v-if="lagLabel && !compact" class="seg lag" :class="lagClass">{{ lagLabel }}</span>
+        <span v-if="uploadLabel" class="seg upload" :class="{ failed: uploads.failedAt }">{{
+          uploadLabel
+        }}</span>
+        <span v-if="splitLabel" class="seg split" :class="splitClass">{{ splitLabel }}</span>
+        <span v-if="typingSegments.length" class="seg typing"
+          >Typing:
+          <template v-for="(seg, i) in typingSegments" :key="i"
+            ><span :style="seg.color ? { color: seg.color } : null">{{ seg.text }}</span></template
+          ></span
+        >
+      </div>
+      <div class="bar-tools">
+        <button
+          type="button"
+          class="tool-btn"
+          :disabled="!sendable"
+          title="upload image"
+          @click="onPickFile"
+        >
+          <i class="fa-solid fa-paperclip"></i>
+        </button>
+        <button
+          v-if="showFormatButton"
+          type="button"
+          class="tool-btn"
+          :disabled="!sendable"
+          title="mIRC formatting (Cmd/Ctrl+B/I/U for bold/italic/underline)"
+          @click="onToggleColorPicker"
+        >
+          <i class="fa-solid fa-palette"></i>
+        </button>
+      </div>
     </div>
     <!-- Composer overlays — the nick/emoji suggestion strips replace the bar's
          content while active (same chrome, swapped contents); the mIRC colour
@@ -99,6 +122,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore } from '../stores/uploads.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useAuthStore } from '../stores/auth.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import {
   useScrollState,
@@ -119,6 +143,8 @@ import {
   applyColor,
   resetColor,
   closeColorPicker,
+  setColorPickerOpen,
+  pickComposerFile,
   type NickStripItem,
 } from '../composables/useComposerOverlay.js';
 import type { EmojiMatch } from '../utils/emojiData.js';
@@ -130,7 +156,7 @@ withDefaults(
     // The buffer name (network/channel + modes) renders in both modes; the
     // self identity (nick + channel-prefix + user modes + away) moves to the
     // input placeholder on mobile, freeing the input row to be just `>`,
-    // textarea, and the paperclip. (The scroll affordances — jump-to-unread
+    // textarea, and send. (The scroll affordances — jump-to-unread
     // and return-to-present — render in both modes.)
     compact?: boolean;
   }>(),
@@ -142,6 +168,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const uploads = useUploadsStore();
 const ignores = useIgnoresStore();
+const auth = useAuthStore();
 const nickColors = useNickColors();
 const composing = useComposing();
 
@@ -170,6 +197,9 @@ const { newBelow, stuckToBottom, unreadAnchor } = useScrollState();
 
 const active = computed(() => networks.activeBuffer);
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
+const isServerBuffer = computed(() => !!active.value?.target?.startsWith(':server:'));
+const sendable = computed(() => !!active.value && !isServerBuffer.value && !auth.isPaused);
+const showFormatButton = computed(() => settings.effective('input.show_format_button') === true);
 
 const overlay = useComposerOverlay();
 const emojiKeyFor = (m: EmojiMatch): string => m.name;
@@ -179,7 +209,6 @@ const nickKeyFor = (item: NickStripItem): string => item.nick.toLowerCase();
 // template — same shape as the emoji strip.
 const onNickStripSelect = (item: NickStripItem): void => selectNick(item.nick);
 
-const isServerBuffer = computed(() => !!active.value?.target?.startsWith(':server:'));
 const isChannel = computed(() => !!active.value?.target?.startsWith('#'));
 
 const networkLabel = computed(() => {
@@ -216,7 +245,7 @@ const peerForActive = computed(() => {
   if (!isDmBuffer.value) return null;
   const a = active.value;
   if (!a) return null;
-  return networks.states[a.networkId]?.peerPresence?.[a.target.toLowerCase()] || null;
+  return networks.peerFor(a.networkId, a.target);
 });
 const peerStatusLabel = computed(() => {
   const peer = peerForActive.value;
@@ -348,6 +377,16 @@ const unreadArrow = computed(() => (unreadAnchor.value === 'down' ? '↓' : '↑
 function onJumpToUnread() {
   requestScrollToUnread();
 }
+
+function onPickFile() {
+  if (!sendable.value) return;
+  pickComposerFile();
+}
+
+function onToggleColorPicker() {
+  if (!sendable.value) return;
+  setColorPickerOpen(!overlay.colorPickerOpen);
+}
 </script>
 
 <style scoped>
@@ -364,12 +403,10 @@ function onJumpToUnread() {
 .bar {
   display: flex;
   align-items: center;
-  gap: 1ch;
   padding: 1ch var(--space-6) 0;
   border-top: 1px solid var(--border);
   color: var(--fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
+  gap: 1ch;
   /* Match the input bar's line-height (1.4 — tighter than the body default
      of 1.55 used for message text). Status + input are sibling rows of
      bottom chrome and need to share a content height; without this they
@@ -377,6 +414,19 @@ function onJumpToUnread() {
      the input bar end up at different heights even with identical box
      padding. */
   line-height: 1.4;
+}
+.bar-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.bar-tools {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
 }
 .seg {
   flex: 0 0 auto;
@@ -392,7 +442,11 @@ function onJumpToUnread() {
   color: var(--fg-muted);
 }
 .seg.buffer {
+  flex: 1 1 auto;
   color: var(--fg-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .seg.buffer .name {
   color: var(--accent);
@@ -446,6 +500,22 @@ function onJumpToUnread() {
 .seg.jump-unread:hover,
 .seg.return-present:hover {
   color: var(--fg);
+}
+.tool-btn {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  font-size: inherit;
+  line-height: 1.4;
+}
+.tool-btn:hover:not(:disabled) {
+  color: var(--accent);
+}
+.tool-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 /* Emoji suggester chip body — the glyph leads, the `:shortcode:` trails
    muted so two near-identical emoji stay distinguishable. Styled here (not

@@ -52,14 +52,33 @@
              pre-filtered to this buffer (in:<target> on:<network>), members
              toggles the roster, the rest folds into the kebab. The *global*
              search / highlights / saved / uploads live on the list top bar. -->
-        <span v-if="isServerBuffer || isSystemConsole" class="title">{{
-          isSystemConsole ? 'System console' : bufferLabel
-        }}</span>
+        <span v-if="isServerBuffer || isVirtual" class="title">{{ bufferLabel }}</span>
         <span class="spacer"></span>
-        <button class="icon" title="Search this buffer" @click="openSearch(true)">
+        <template v-if="isFriendsBuffer">
+          <button
+            class="icon"
+            title="Add friend"
+            aria-label="Add friend"
+            @click="friends.openEditorNew()"
+          >
+            <i class="fa-solid fa-person-circle-plus"></i>
+          </button>
+          <span
+            class="friend-count"
+            :title="`${friendCount} ${friendCount === 1 ? 'friend' : 'friends'}`"
+          >
+            <i class="fa-solid fa-users"></i> {{ friendCount }}
+          </span>
+        </template>
+        <button v-if="!isVirtual" class="icon" title="Search this buffer" @click="openSearch(true)">
           <i class="fa-solid fa-magnifying-glass"></i>
         </button>
-        <button class="icon" title="Highlights in this buffer" @click="openHighlights(true)">
+        <button
+          v-if="!isVirtual"
+          class="icon"
+          title="Highlights in this buffer"
+          @click="openHighlights(true)"
+        >
           <i class="fa-regular fa-bell"></i>
         </button>
         <button
@@ -82,10 +101,11 @@
           <i class="fa-solid fa-ellipsis-vertical"></i>
         </button>
       </header>
-      <SystemConsole v-if="isSystemConsole" />
+      <SystemConsole v-if="renderMode === 'console'" />
+      <FriendsOverview v-else-if="renderMode === 'overview'" @view-activity="onViewActivity" />
       <MessageList v-else :pending-scroll-id="pendingScrollId" />
       <StatusBar compact />
-      <div v-if="!isSystemConsole" class="composer-host" :class="{ 'keyboard-open': keyboardOpen }">
+      <div v-if="hasInput" class="composer-host" :class="{ 'keyboard-open': keyboardOpen }">
         <MessageInput ref="messageInputRef" />
       </div>
     </section>
@@ -149,6 +169,7 @@
       :nick="nickNotes.editor.nick"
       :network-id="nickNotes.editor.networkId"
     />
+    <ConfigureFriendModal v-if="friends.editor.open" />
   </div>
 </template>
 
@@ -166,6 +187,7 @@ import type { ContextMenuItem } from '../composables/useContextMenu.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import SystemConsole from '../components/SystemConsole.vue';
+import FriendsOverview from '../components/FriendsOverview.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import StatusBar from '../components/StatusBar.vue';
@@ -177,9 +199,12 @@ import ChannelListModal from '../components/ChannelListModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
+import ConfigureFriendModal from '../components/ConfigureFriendModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
 import ImageViewerModal from '../components/ImageViewerModal.vue';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useFriendsStore } from '../stores/friends.js';
+import { useSearchStore } from '../stores/search.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useImageModal } from '../composables/useImageModal.js';
@@ -199,10 +224,16 @@ const {
   bufferLabel,
   topic,
   isSystemConsole,
+  isVirtual,
+  isFriendsBuffer,
+  renderMode,
+  hasInput,
 } = useActiveBuffer();
 const bufferActions = useBufferActions();
 const menu = useContextMenu();
 const nickNotes = useNickNotesStore();
+const friends = useFriendsStore();
+const friendCount = computed(() => friends.contacts.length);
 const whois = useWhoisStore();
 
 function openSystemConsole() {
@@ -252,6 +283,14 @@ const bufferScope = computed<string | null>(() => {
 // one modal instance — the scope ref is what differentiates the two entries.
 function openSearch(scoped: boolean) {
   searchScope.value = scoped ? bufferScope.value : null;
+  showSearch.value = true;
+}
+
+// "View activity" from the Friends overview: open Search with the scoped query
+// (from:<nick> on:<network>) and run it immediately.
+function onViewActivity(query: string) {
+  useSearchStore().runQuery(query);
+  searchScope.value = null;
   showSearch.value = true;
 }
 function openHighlights(scoped: boolean) {
@@ -450,6 +489,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+}
+.friend-count {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 var(--space-2);
+  white-space: nowrap;
 }
 .spacer {
   flex: 1;

@@ -28,6 +28,7 @@ export interface Network {
   host: string;
   port: number;
   tls: number;
+  trusted_certificates: number;
   nick: string;
   username: string | null;
   realname: string | null;
@@ -55,6 +56,7 @@ export interface NetworkFields {
   host?: string;
   port?: number;
   tls?: boolean | number;
+  trusted_certificates?: boolean | number;
   nick?: string;
   username?: string | null;
   realname?: string | null;
@@ -93,6 +95,7 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
     host,
     port,
     tls,
+    trusted_certificates,
     nick,
     username,
     realname,
@@ -108,8 +111,8 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
   const result = db
     .prepare(
       `
-    INSERT INTO networks (user_id, name, host, port, tls, nick, username, realname, server_password, autoconnect, sasl_account, sasl_password, connect_commands, position)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO networks (user_id, name, host, port, tls, trusted_certificates, nick, username, realname, server_password, autoconnect, sasl_account, sasl_password, connect_commands, position)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -118,6 +121,7 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
       host,
       port ?? 6697,
       tls ? 1 : 0,
+      trusted_certificates === undefined ? 1 : trusted_certificates ? 1 : 0,
       nick,
       username || null,
       realname || null,
@@ -141,6 +145,7 @@ export function updateNetwork(
     'host',
     'port',
     'tls',
+    'trusted_certificates',
     'nick',
     'username',
     'realname',
@@ -156,7 +161,8 @@ export function updateNetwork(
     if (key in fields) {
       setClauses.push(`${key} = ?`);
       let value: unknown = fields[key];
-      if (key === 'tls' || key === 'autoconnect') value = value ? 1 : 0;
+      if (key === 'tls' || key === 'autoconnect' || key === 'trusted_certificates')
+        value = value ? 1 : 0;
       else if ((ENCRYPTED_NETWORK_COLUMNS as readonly string[]).includes(key)) {
         value = encryptSecret(value as string | null);
       }

@@ -40,6 +40,16 @@
       @paste="onPaste"
       @blur="onBlur"
     ></textarea>
+    <button
+      type="button"
+      class="send-btn"
+      :disabled="!sendable"
+      title="send message"
+      @mousedown.prevent
+      @click="submit"
+    >
+      <i class="fa-solid fa-circle-arrow-up"></i>
+    </button>
     <input
       ref="fileInputEl"
       type="file"
@@ -47,32 +57,6 @@
       class="file-hidden"
       @change="onFileSelected"
     />
-    <button
-      type="button"
-      class="upload-btn"
-      :disabled="!sendable"
-      title="upload image"
-      @click="onPickFile"
-    >
-      <i class="fa-solid fa-paperclip"></i>
-    </button>
-    <!-- mIRC color picker trigger. Opt-in via `input.show_format_button`
-         (off by default) — the Cmd/Ctrl+B/I/U shortcuts remain active either
-         way, so hiding the icon only removes the mouse-driven path.
-         mousedown.prevent keeps focus on the textarea so opening the picker
-         (or tapping it on iOS) doesn't dismiss the soft keyboard or blur the
-         selection we're about to wrap. -->
-    <div
-      v-if="showFormatButton"
-      role="button"
-      class="format-btn"
-      :class="{ disabled: !sendable }"
-      title="mIRC formatting (Cmd/Ctrl+B/I/U for bold/italic/underline)"
-      @mousedown.prevent
-      @click="onToggleColorPicker"
-    >
-      <i class="fa-solid fa-palette"></i>
-    </div>
     <!-- The nick / emoji suggestion strips and the mIRC colour picker render
          inside StatusBar (they overlay it visually) — see useComposerOverlay
          for the cross-component state contract. Only the desktop @-popup
@@ -279,10 +263,6 @@ const placeholder = computed(() => {
   }
   return 'try /help';
 });
-// Opt-in palette icon. The keyboard shortcuts in onKeydown ignore this gate —
-// users can still wrap selections with Cmd/Ctrl+B/I/U even with the icon
-// hidden, and the colour picker is just the mouse path for the same codes.
-const showFormatButton = computed(() => settings.effective('input.show_format_button') === true);
 // HTML attribute values for the system text features. spellcheck is the only
 // one the browser parses as a boolean; the others take "on"/"off" or an enum.
 // autocapitalize rides on input.autocorrect because Safari silently re-applies
@@ -304,7 +284,7 @@ const systemFeatures = computed(() => {
 });
 // Prompt identity (nick + channel prefix + user modes) and away marker — see
 // useSelfLabel. On mobile we don't render the prompt label inline here (the
-// template gates it on !isMobile so the input row stays just `>` + textarea);
+// template gates it on !isMobile so the input row stays just `>` + composer);
 // instead it feeds the placeholder above, since the compact status bar now
 // shows network/channel rather than the self identity.
 const { promptLabel, awayLabel } = useSelfLabel();
@@ -614,11 +594,6 @@ function wrapOrInsertFormatting(opening: string, closing: string): void {
       e2.setSelectionRange(c, c);
     }
   });
-}
-
-function onToggleColorPicker() {
-  if (!sendable.value) return;
-  setColorPickerOpen(!overlay.colorPickerOpen);
 }
 
 function closeColorPicker() {
@@ -1369,6 +1344,7 @@ onMounted(() => {
     onColorApply: onApplyColor,
     onColorReset: onPickReset,
     onColorClose: closeColorPicker,
+    onPickFile,
     onAddress: addressInComposer,
   });
 });
@@ -2133,7 +2109,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
 <style scoped>
 .input {
   display: flex;
-  /* flex-start so the prompt label and upload button stay pinned to the
+  /* flex-start so the prompt label and send button stay pinned to the
      first line as the textarea grows downward across multiple lines. */
   align-items: flex-start;
   gap: 1ch;
@@ -2179,7 +2155,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
   left: -10px;
   right: -8px;
 }
-.upload-btn {
+.send-btn {
   background: none;
   border: none;
   color: var(--fg-muted);
@@ -2188,26 +2164,10 @@ function handleCommand(line: string, networkId: number, target: string): boolean
   font-size: inherit;
   line-height: 1.4;
 }
-.upload-btn:hover:not(:disabled) {
+.send-btn:hover:not(:disabled) {
   color: var(--accent);
 }
-.upload-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-.format-btn {
-  color: var(--fg-muted);
-  cursor: pointer;
-  padding: 0 var(--space-1);
-  line-height: 1.4;
-  user-select: none;
-  /* Avoids iOS double-tap-zoom delay so the picker opens promptly on touch. */
-  touch-action: manipulation;
-}
-.format-btn:hover:not(.disabled) {
-  color: var(--accent);
-}
-.format-btn.disabled {
+.send-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }

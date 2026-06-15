@@ -15,6 +15,7 @@ declare module 'irc-framework' {
     host: string;
     port: number;
     tls?: boolean;
+    rejectUnauthorized?: boolean;
     nick?: string;
     username?: string;
     gecos?: string;

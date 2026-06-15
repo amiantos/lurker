@@ -11,7 +11,8 @@ export interface JumpPayload {
   kind: string;
   networkId: number;
   target: string;
-  messageId: number;
+  // Absent for an "open this conversation" tap (e.g. a friend-online push).
+  messageId?: number | null;
 }
 
 export interface ChatBootstrapOptions {

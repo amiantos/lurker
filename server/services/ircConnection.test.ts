@@ -1,11 +1,15 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ircLineParser } from 'irc-framework';
+import type { ConnectOptions } from 'irc-framework';
 import {
+  IrcConnection,
   canonicalChannelTarget,
   computeFallbackNick,
+  formatWhoisRaw,
+  formatSocketCloseErrorMessage,
   formatServerNumeric,
   formatUnknownNumeric,
   joinRejectionMessage,
@@ -229,5 +233,148 @@ describe('canonicalChannelTarget (#268)', () => {
     expect(canonicalChannelTarget('SomeNick', channels)).toBe('SomeNick');
     expect(canonicalChannelTarget(':server:7', channels)).toBe(':server:7');
     expect(canonicalChannelTarget(undefined, channels)).toBeUndefined();
+  });
+});
+
+describe('tls certificate trust setting', () => {
+  function makeConn(trusted_certificates: number): IrcConnection {
+    return new IrcConnection({
+      network: {
+        id: 1,
+        user_id: 1,
+        name: 'n',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates,
+        nick: 'nick',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        created_at: new Date().toISOString(),
+      },
+      onEvent: () => {},
+    });
+  }
+
+  it('passes rejectUnauthorized based on trusted_certificates', () => {
+    const trusted = makeConn(1);
+    const untrusted = makeConn(0);
+    trusted.publish = vi.fn<(event: unknown) => void>();
+    untrusted.publish = vi.fn<(event: unknown) => void>();
+    const trustedConnect = vi.fn<(options: ConnectOptions) => void>();
+    const untrustedConnect = vi.fn<(options: ConnectOptions) => void>();
+    trusted.client.connect = trustedConnect;
+    untrusted.client.connect = untrustedConnect;
+
+    trusted.connect();
+    untrusted.connect();
+
+    expect(trustedConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ tls: true, rejectUnauthorized: true }),
+    );
+    expect(untrustedConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ tls: true, rejectUnauthorized: false }),
+    );
+  });
+});
+
+describe('formatWhoisRaw', () => {
+  it('formats the raw whois payload as a single server-buffer line', () => {
+    expect(
+      formatWhoisRaw({
+        nick: 'alice',
+        ident: 'a',
+        hostname: 'host.example',
+        channels: '#a #b',
+      }),
+    ).toBe(
+      'WHOIS alice: {"nick":"alice","ident":"a","hostname":"host.example","channels":"#a #b"}',
+    );
+  });
+
+  it('returns null for missing nick', () => {
+    expect(formatWhoisRaw({ ident: 'a' })).toBeNull();
+    expect(formatWhoisRaw(null)).toBeNull();
+  });
+});
+
+describe('formatSocketCloseErrorMessage', () => {
+  const where = 'irc.example.test:6697';
+
+  it('rewrites self-signed certificate failures with a user-friendly setting hint', () => {
+    expect(
+      formatSocketCloseErrorMessage(
+        {
+          code: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+          message:
+            'self-signed certificate; if the root CA is installed locally, try running Node.js with --use-system-ca',
+        },
+        where,
+        true,
+      ),
+    ).toBe(
+      `Connection failed (${where}): The server certificate could not be verified. To connect anyway, uncheck "Only allow trusted certificates" in this network's settings and reconnect.`,
+    );
+  });
+
+  it('rewrites expired certificate failures with the same user-friendly hint', () => {
+    expect(
+      formatSocketCloseErrorMessage(
+        {
+          code: 'CERT_HAS_EXPIRED',
+          message: 'certificate has expired',
+        },
+        where,
+        true,
+      ),
+    ).toBe(
+      `Connection failed (${where}): The server certificate could not be verified. To connect anyway, uncheck "Only allow trusted certificates" in this network's settings and reconnect.`,
+    );
+  });
+
+  it('rewrites untrusted chain certificate failures with the same user-friendly hint', () => {
+    expect(
+      formatSocketCloseErrorMessage(
+        {
+          code: 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+          message: 'unable to verify the first certificate',
+        },
+        where,
+        true,
+      ),
+    ).toBe(
+      `Connection failed (${where}): The server certificate could not be verified. To connect anyway, uncheck "Only allow trusted certificates" in this network's settings and reconnect.`,
+    );
+  });
+
+  it('rewrites hostname mismatch certificate failures with the same user-friendly hint', () => {
+    expect(
+      formatSocketCloseErrorMessage(
+        {
+          code: 'ERR_TLS_CERT_ALTNAME_INVALID',
+          message: "Hostname/IP does not match certificate's altnames",
+        },
+        where,
+        true,
+      ),
+    ).toBe(
+      `Connection failed (${where}): The server certificate could not be verified. To connect anyway, uncheck "Only allow trusted certificates" in this network's settings and reconnect.`,
+    );
+  });
+
+  it('keeps non-certificate errors unchanged', () => {
+    expect(
+      formatSocketCloseErrorMessage(
+        { code: 'ECONNREFUSED', message: 'connect ECONNREFUSED 127.0.0.1:6697' },
+        where,
+        true,
+      ),
+    ).toBe(`Connection failed (${where}): ECONNREFUSED: connect ECONNREFUSED 127.0.0.1:6697`);
   });
 });

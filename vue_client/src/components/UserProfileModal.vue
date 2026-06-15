@@ -152,6 +152,11 @@
       >
         <i class="fa-solid fa-ban"></i> Ignore…
       </button>
+      <!-- Friending works regardless of presence — you can watch an offline
+           peer — so this isn't gated on isOffline like Send DM / Ignore. -->
+      <button v-if="!isSelf" type="button" class="btn-secondary" @click="onAddFriend">
+        <i class="fa-solid fa-user-group"></i> {{ isFriend ? 'Edit Friend' : 'Add Friend' }}
+      </button>
       <span class="spacer"></span>
       <button type="button" class="btn-secondary" @click="onRefresh" title="Re-run whois">
         <i class="fa-solid fa-arrows-rotate"></i> Refresh
@@ -175,6 +180,7 @@ import AppModal from './AppModal.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import { useWhoisStore } from '../stores/whois.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useFriendsStore } from '../stores/friends.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { socketSend } from '../composables/useSocket.js';
@@ -188,9 +194,12 @@ const props = defineProps<{
 
 const whoisStore = useWhoisStore();
 const nickNotes = useNickNotesStore();
+const friends = useFriendsStore();
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const ignoreOpen = ref(false);
+
+const isFriend = computed(() => !!friends.contactForTarget(props.networkId, props.nick));
 
 const entry = computed(() => whoisStore.entryFor(props.networkId, props.nick));
 const whois = computed(() => entry.value?.data ?? null);
@@ -200,9 +209,7 @@ const isSelf = computed(
   () => !!selfNick.value && selfNick.value.toLowerCase() === props.nick.toLowerCase(),
 );
 
-const peer = computed(
-  () => networks.states[props.networkId]?.peerPresence?.[props.nick.toLowerCase()] ?? null,
-);
+const peer = computed(() => networks.peerFor(props.networkId, props.nick));
 const awayMessage = computed(() => {
   // Prefer the live away-notify payload (peer-presence), fall back to the
   // whois reply's away line — the latter is only populated when whois ran
@@ -349,6 +356,12 @@ function onIgnore() {
 
 function openNoteEditor() {
   nickNotes.openEditor(props.networkId, props.nick);
+}
+
+function onAddFriend() {
+  // Opens the Configure Friend modal on top of the profile (same as the note
+  // editor) — a sub-edit, so we don't close the viewer here.
+  friends.openEditorForNick(props.networkId, props.nick);
 }
 
 function onChannelClick(channel: string) {

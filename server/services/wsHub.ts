@@ -61,6 +61,7 @@ import {
   getChannelFlags,
 } from '../db/channelNotify.js';
 import { getUserAwayState } from '../db/userAwayState.js';
+import { findNotifyContactForTarget } from '../db/contacts.js';
 import { upsertChannel, ownsNetwork, listNetworksForUser } from '../db/networks.js';
 import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
@@ -690,6 +691,26 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     });
   }
 
+  // Push-suppression gates shared by message and presence pushes: a manual
+  // /away (when mute_when_away is on — auto-away is the case push matters most,
+  // so it's not gated) and the user's configured quiet-hours window.
+  function pushQuietOrAway(userId: number): boolean {
+    if (effectiveSetting(userId, 'notifications.push.mute_when_away')) {
+      const away = getUserAwayState(userId);
+      if (away?.away_datetime && !away?.back_datetime && !away?.auto_set) return true;
+    }
+    if (effectiveSetting(userId, 'notifications.push.quiet_hours.enabled')) {
+      const startMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.start'));
+      const endMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.end'));
+      if (startMin != null && endMin != null) {
+        const tz = effectiveSetting(userId, 'system.timezone');
+        const currentMin = currentMinutesInZone(new Date(), tz);
+        if (isInQuietWindow(currentMin, startMin, endMin)) return true;
+      }
+    }
+    return false;
+  }
+
   function maybePush(userId: number, decorated: DecoratedEvent): void {
     if (!decorated || !decorated.notify) return;
     if (decorated.self) return;
@@ -711,25 +732,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // delivers as one notification, gated by the DM master toggle.
     const kindKey = decorated.dm ? 'dm' : decorated.matched ? 'highlight' : 'always_notify';
     if (!effectiveSetting(userId, `notifications.${kindKey}.enabled`)) return;
-    // Suppress push while the user has a *manual* /away set. Auto-away is the
-    // case where push is needed most (all tabs closed), so it's deliberately
-    // not gated here.
-    if (effectiveSetting(userId, 'notifications.push.mute_when_away')) {
-      const away = getUserAwayState(userId);
-      if (away?.away_datetime && !away?.back_datetime && !away?.auto_set) return;
-    }
-    // Quiet hours: skip when inside the user's configured local-time window.
-    // Times compare in the user's system.timezone so DST transitions don't
-    // shift the window relative to wall-clock time.
-    if (effectiveSetting(userId, 'notifications.push.quiet_hours.enabled')) {
-      const startMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.start'));
-      const endMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.end'));
-      if (startMin != null && endMin != null) {
-        const tz = effectiveSetting(userId, 'system.timezone');
-        const currentMin = currentMinutesInZone(new Date(), tz);
-        if (isInQuietWindow(currentMin, startMin, endMin)) return;
-      }
-    }
+    if (pushQuietOrAway(userId)) return;
     const network = ircManager.getConnection(userId, decorated.networkId)?.network;
     pushService
       .deliver(userId, {
@@ -743,6 +746,34 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         messageId: decorated.id,
       })
       .catch((err) => console.warn('[push] deliver failed:', err?.message || err));
+  }
+
+  // Came-online push: fired from a peer-presence offline→online transition for
+  // a friend the user flagged "notify when online", when no client is visible
+  // (the in-app toast owns the visible case). The same enabled/quiet/away gates
+  // as message pushes apply, keyed off the friend_online settings namespace.
+  function maybePushFriendOnline(
+    userId: number,
+    networkId: number,
+    nick: string | null | undefined,
+  ): void {
+    if (!nick) return;
+    if (userHasVisibleClient(userId)) return;
+    if (!effectiveSetting(userId, 'notifications.friend_online.enabled')) return;
+    const contact = findNotifyContactForTarget(userId, networkId, nick);
+    if (!contact) return;
+    if (pushQuietOrAway(userId)) return;
+    const network = ircManager.getConnection(userId, networkId)?.network;
+    pushService
+      .deliver(userId, {
+        kind: 'friend_online',
+        networkId,
+        networkName: network?.name || `net:${networkId}`,
+        // target is the friend's nick so a notification tap opens their DM.
+        target: nick,
+        displayName: contact.displayName,
+      })
+      .catch((err) => console.warn('[push] friend-online deliver failed:', err?.message || err));
   }
 
   ircManager.on('event', (rawEvent) => {
@@ -785,6 +816,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     }
     fanOut(eventUserId, { ...decorated, kind: 'irc' });
     maybePush(eventUserId, decorated);
+    // A friend coming online is a presence transition, not a message, so it
+    // bypasses maybePush (no `notify`); push it on its own path.
+    if (event.type === 'peer-presence' && (event as { cameOnline?: boolean }).cameOnline) {
+      maybePushFriendOnline(eventUserId, event.networkId, event.nick);
+    }
 
     // Countable persisted events change the buffer's unread/highlight counts
     // for this user. Broadcast the recomputed read-state so every tab —
@@ -1004,6 +1040,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // client store dedupes by id, so a redundant re-snapshot on visibility-
     // return resync is harmless.
     send(ws, { kind: 'system-log-snapshot', lines: systemLog.getRecent(userId) });
+    // Friends/contacts seed: the user's full contact list (display name, notify
+    // flag, per-network watch targets). User-level, so one message rather than a
+    // per-network field. Drives the FRIENDS overview/sidebar + the came-online
+    // toast gate.
+    send(ws, { kind: 'contacts-snapshot', contacts: ircManager.listContacts(userId) });
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);
     const closed = closedKeySetForUser(userId);
@@ -1561,6 +1602,37 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         }
         break;
       }
+      case 'set-contact': {
+        // Verb owns validation, the per-(network,nick) uniqueness guard, the
+        // live MONITOR diff, and the fanOut. Thin delegator, same as nick-note.
+        try {
+          callVerb(
+            'set_contact',
+            { userId, scope: 'read-write', transport: 'ws' },
+            {
+              contactId: msg.contactId,
+              displayName: msg.displayName,
+              notifyOnline: msg.notifyOnline,
+              targets: msg.targets,
+            },
+          );
+        } catch (_) {
+          /* invalid input / not owned; ignore */
+        }
+        break;
+      }
+      case 'delete-contact': {
+        try {
+          callVerb(
+            'delete_contact',
+            { userId, scope: 'read-write', transport: 'ws' },
+            { contactId: msg.contactId },
+          );
+        } catch (_) {
+          /* not owned / gone; ignore */
+        }
+        break;
+      }
       case 'set-bookmark': {
         const messageId = Number(msg.messageId);
         if (!Number.isFinite(messageId) || messageId <= 0) break;
@@ -1742,6 +1814,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               networkId: msg.networkId || undefined,
               target: typeof msg.target === 'string' && msg.target ? msg.target : undefined,
               nick: typeof msg.nick === 'string' && msg.nick ? msg.nick : undefined,
+              nicks: Array.isArray(msg.nicks) ? msg.nicks : undefined,
               before: msg.before ? Number(msg.before) : undefined,
               limit: msg.limit,
             },

@@ -11,6 +11,55 @@
       :class="{ 'unread-bold': unreadBold }"
       @scroll="scheduleRecompute"
     >
+      <!-- FRIENDS pseudo-network: a cross-network gathering of DM shortcuts. The
+           header opens the compilation feed (:friends:); each row opens that
+           friend's DM on their primary network. The :system: console stays the
+           sidebar logo button. -->
+      <div v-if="friends.contacts.length || isFriendsActive" class="net friends-net">
+        <div
+          class="net-head"
+          :class="{ active: isFriendsActive }"
+          title="Open Friends feed"
+          @click="selectFriends"
+        >
+          <span
+            class="indicator"
+            :class="friendsConnected ? 'good' : 'bad'"
+            :title="friendsStatusTitle"
+          ></span>
+          <span class="name">FRIENDS</span>
+        </div>
+        <ul v-if="friends.contacts.length" class="channels">
+          <li
+            v-for="c in friends.contacts"
+            :key="c.id"
+            :class="friendRowClasses(c)"
+            :title="`Open DM with ${c.displayName}`"
+            @click="openFriendDm(c)"
+            @contextmenu.prevent="openFriendActions($event, c)"
+          >
+            <span class="label">{{ c.displayName }}</span>
+            <span
+              v-if="friendHighlights(c) > 0 && showHighlightBadge"
+              class="badge highlight"
+              title="unread highlight"
+              >●</span
+            >
+            <span v-if="friendUnread(c) > 0" class="badge">{{ unreadLabel(friendUnread(c)) }}</span>
+            <button
+              type="button"
+              class="row-actions"
+              title="Friend actions"
+              aria-label="Friend actions"
+              @click.stop="openFriendActions($event, c)"
+              @contextmenu.stop.prevent
+            >
+              <i class="fa-solid fa-ellipsis-vertical"></i>
+            </button>
+          </li>
+        </ul>
+      </div>
+
       <div v-for="net in networks.networks" :key="net.id" class="net">
         <div
           class="net-head"
@@ -85,7 +134,6 @@
               @contextmenu.prevent="onBufferContextMenu($event, buf)"
             >
               <span class="label">{{ labelFor(buf) }}</span>
-              <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
               <span
                 v-if="hasDraft(buf)"
                 class="badge draft"
@@ -133,7 +181,6 @@
             @contextmenu.prevent="onBufferContextMenu($event, buf)"
           >
             <span class="label">{{ labelFor(buf) }}</span>
-            <span v-if="isPeerOffline(buf)" class="peer-mark" aria-hidden="true">*</span>
             <span
               v-if="hasDraft(buf)"
               class="badge draft"
@@ -203,12 +250,16 @@ import {
 import draggable from 'vuedraggable';
 import { useNetworksStore, type Network, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
+import { useFriendsStore, primaryTargetOf, type Contact } from '../stores/friends.js';
+import { FRIENDS_KEY } from '../lib/virtualBuffers.js';
+import { connected as lurkerConnected } from '../composables/useSocket.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
 import { useNetworkActions } from '../composables/useNetworkActions.js';
+import { useContextMenu } from '../composables/useContextMenu.js';
 import {
   isPeerOffline as derivePeerOffline,
   isPeerAway as derivePeerAway,
@@ -216,12 +267,14 @@ import {
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const friends = useFriendsStore();
 const drafts = useDraftStore();
 const pins = usePinsStore();
 const channelNotify = useChannelNotifyStore();
 const settings = useSettingsStore();
 const bufferActions = useBufferActions();
 const networkActions = useNetworkActions();
+const friendMenu = useContextMenu();
 
 function isNetworkConnected(net: Network): boolean {
   return networks.states[net.id]?.state === 'connected';
@@ -328,7 +381,10 @@ function unpinnedBufs(networkId: number): Buffer[] {
   const pinnedSet = new Set(pins.forNetwork(networkId));
   return buffers
     .forNetwork(networkId)
-    .filter((b) => !isServerBuffer(b) && !pinnedSet.has(b.target))
+    .filter(
+      (b) =>
+        !isServerBuffer(b) && !pinnedSet.has(b.target) && !isFriendPrimaryDm(b.networkId, b.target),
+    )
     .toSorted((a, b) => {
       const oa = bufferOrder(a);
       const ob = bufferOrder(b);
@@ -346,7 +402,9 @@ function syncPinned(): void {
     const targets = pins.forNetwork(net.id);
     const bufByTarget = new Map<string, Buffer>();
     for (const b of buffers.forNetwork(net.id)) bufByTarget.set(b.target, b);
-    const list = targets.map((t) => bufByTarget.get(t)).filter((b): b is Buffer => !!b);
+    const list = targets
+      .map((t) => bufByTarget.get(t))
+      .filter((b): b is Buffer => !!b && !isFriendPrimaryDm(b.networkId, b.target));
     if (!pinnedBufsByNet[net.id]) {
       pinnedBufsByNet[net.id] = list;
     } else {
@@ -362,11 +420,18 @@ function syncPinned(): void {
 }
 
 // Only re-sync when something structurally relevant changes — pin order, the
-// set of networks, or the set of buffer keys. Per-buffer state churn (unread
-// counts, member list, messages) doesn't affect which buffers belong in the
-// pinned list and shouldn't re-walk this whole map on every keystroke.
+// set of networks, the set of buffer keys, or the friend primary DMs the mirror
+// filters out (so flipping a friend/primary doesn't leave a stale duplicate row
+// in the pinned section). Per-buffer state churn (unread counts, member list,
+// messages) doesn't affect which buffers belong in the pinned list and shouldn't
+// re-walk this whole map on every keystroke.
 watch(
-  () => [pins.byNetwork, networks.networks.map((n) => n.id), Object.keys(buffers.buffers)],
+  () => [
+    pins.byNetwork,
+    networks.networks.map((n) => n.id),
+    Object.keys(buffers.buffers),
+    [...friends.primaryDmKeys],
+  ],
   syncPinned,
   { deep: true, immediate: true },
 );
@@ -411,6 +476,93 @@ function isActive(networkId: number, target: string): boolean {
   return networks.activeKey === `${networkId}::${target}`;
 }
 
+const isFriendsActive = computed(() => networks.activeKey === FRIENDS_KEY);
+// The FRIENDS dot is green only when friends are actually reachable: the lurker
+// service is up AND at least one IRC network is connected. If every network is
+// down, it's red even though the lurker session itself is fine.
+const anyNetworkConnected = computed(() =>
+  networks.networks.some((n) => networks.states[n.id]?.state === 'connected'),
+);
+const friendsConnected = computed(() => lurkerConnected.value && anyNetworkConnected.value);
+const friendsStatusTitle = computed(() =>
+  !lurkerConnected.value
+    ? 'Disconnected from lurker'
+    : !anyNetworkConnected.value
+      ? 'Not connected to any network'
+      : 'Connected',
+);
+function selectFriends(): void {
+  friends.open();
+}
+// Clicking a friend opens their DM on the primary network — the FRIENDS group
+// is a cross-network launcher/pin list for DMs. A target-less contact (none
+// watched) falls back to opening its editor.
+//
+// Resolve to an EXISTING DM buffer case-insensitively so we never fork a second
+// buffer that differs from the open one only by nick case. Computed once per
+// render as a contactId → buffer map so the per-row getters below (presence,
+// unread, highlight, active) don't each re-scan the network's buffers.
+const dmBufByContact = computed<Map<number, Buffer | null>>(() => {
+  const map = new Map<number, Buffer | null>();
+  for (const c of friends.contacts) {
+    const t = primaryTargetOf(c);
+    map.set(c.id, t ? buffers.findDm(t.networkId, t.nick) : null);
+  }
+  return map;
+});
+function friendDmBuffer(c: Contact): Buffer | null {
+  return dmBufByContact.value.get(c.id) ?? null;
+}
+function openFriendDm(c: Contact): void {
+  friends.openDm(c);
+}
+function isFriendDmActive(c: Contact): boolean {
+  const t = primaryTargetOf(c);
+  if (!t) return false;
+  const existing = friendDmBuffer(c);
+  return networks.activeKey === `${t.networkId}::${existing ? existing.target : t.nick}`;
+}
+function friendRowClasses(c: Contact): Record<string, boolean> {
+  // Reflect the PRIMARY DM's presence — that's the buffer this row opens, so an
+  // alt being online elsewhere must not make the row look reachable.
+  const state = friends.primaryPresence(c.id);
+  return {
+    active: isFriendDmActive(c),
+    'peer-offline': state === 'offline',
+    'peer-away': state === 'away',
+  };
+}
+function friendUnread(c: Contact): number {
+  const buf = friendDmBuffer(c);
+  return buf ? countFor(buf.unread, buf.highlighted) : 0;
+}
+function friendHighlights(c: Contact): number {
+  return friendDmBuffer(c)?.highlighted ?? 0;
+}
+// Kebab / right-click menu on a friend row. Edit only — removal lives behind
+// the modal's Remove button so a destructive action isn't one stray click away.
+function openFriendActions(e: MouseEvent, c: Contact): void {
+  const el = e.currentTarget as Element;
+  const rect = el.getBoundingClientRect();
+  friendMenu.open(
+    [
+      {
+        label: 'Edit Friend…',
+        icon: 'fa-solid fa-user-pen',
+        onClick: () => friends.openEditorForContact(c),
+      },
+    ],
+    rect.right,
+    rect.bottom,
+    el,
+  );
+}
+// A friend's primary DM is shown under FRIENDS, so hide it from its real
+// network's buffer list (dedupe).
+function isFriendPrimaryDm(networkId: number, target: string): boolean {
+  return friends.primaryDmKeys.has(`${networkId}::${target.toLowerCase()}`);
+}
+
 function stateClass(networkId: number): string {
   const s = networks.states[networkId]?.state;
   if (s === 'connected') return 'good';
@@ -429,7 +581,7 @@ function isUnjoined(buf: Buffer, networkId: number): boolean {
 }
 
 function peerOf(buf: Buffer): PeerPresenceEntry | null {
-  return networks.states[buf.networkId]?.peerPresence?.[buf.target.toLowerCase()] ?? null;
+  return networks.peerFor(buf.networkId, buf.target);
 }
 function isPeerOffline(buf: Buffer): boolean {
   return isDmBuffer(buf) && derivePeerOffline(peerOf(buf));
@@ -850,17 +1002,15 @@ onBeforeUnmount(() => {
 .channels li.not-joined {
   opacity: 0.5;
 }
-/* DM peer state. Away nicks render in the muted gray used by away members in
-   the channel nicklist; offline nicks also pick up the asterisk marker
-   (`.peer-mark`). */
+/* DM/friend peer state. Both away and offline render in muted gray (matching
+   away members in the channel nicklist); offline is additionally italicized,
+   which is the offline tell. */
 .channels li.peer-away .label,
 .channels li.peer-offline .label {
   color: var(--fg-muted);
 }
-.peer-mark {
-  color: var(--fg-muted);
-  font-weight: 600;
-  margin-left: var(--space-1);
+.channels li.peer-offline .label {
+  font-style: italic;
 }
 .label {
   flex: 1;

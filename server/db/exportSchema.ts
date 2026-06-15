@@ -96,6 +96,7 @@ export const EXPORT_TABLES = Object.freeze({
       'host',
       'port',
       'tls',
+      'trusted_certificates',
       'nick',
       'username',
       'realname',
@@ -119,13 +120,36 @@ export const EXPORT_TABLES = Object.freeze({
     columns: ['id', 'network_id', 'name', 'joined', 'created_at'],
   },
 
+  // Friends/contacts. contacts is a rekey root (its id is referenced by
+  // contact_targets), so it imports before contact_targets.
+  contacts: {
+    mode: 'export',
+    scope: 'user_id',
+    section: 'data',
+    pk: 'id',
+    rekeyOnImport: true,
+    fkRekey: { user_id: 'users' },
+    columns: ['id', 'user_id', 'display_name', 'notify_online', 'created_at'],
+  },
+
+  contact_targets: {
+    mode: 'export',
+    scope: 'via_network',
+    section: 'data',
+    fkRekey: { contact_id: 'contacts', network_id: 'networks' },
+    columns: ['contact_id', 'network_id', 'nick', 'is_primary'],
+  },
+
   messages: {
     mode: 'export',
     scope: 'via_network',
     section: 'messages',
     pk: 'id',
     rekeyOnImport: true,
-    fkRekey: { network_id: 'networks', matched_rule_id: 'highlight_rules' },
+    fkRekey: {
+      network_id: 'networks',
+      matched_rule_id: 'highlight_rules',
+    },
     columns: [
       'id',
       'network_id',
@@ -413,6 +437,9 @@ export const IMPORT_ORDER = Object.freeze([
   'user_away_state',
   'input_history',
   'upload_history',
+  // contacts is referenced by contact_targets.
+  'contacts',
+  'contact_targets',
   // Messages depend on networks and highlight_rules.
   'messages',
   // Bookmarks and buffer_reads depend on messages.

@@ -115,6 +115,65 @@ export interface Buffer {
   modes?: string;
 }
 
+function makeBuffer(networkId: number | string, target: string): Buffer {
+  return {
+    networkId: Number(networkId),
+    target,
+    messages: [],
+    members: [],
+    topic: null,
+    // Channels flip to false on PART/KICK and back to true on JOIN. DMs and
+    // server pseudo-buffers have no join concept; default true so they
+    // never render dimmed.
+    joined: true,
+    unread: 0,
+    highlighted: 0,
+    highlightsCapped: false,
+    // Server-owned "have I seen this" pointer. Drives unread counts and
+    // survives across devices/sessions.
+    lastReadId: 0,
+    // Local snapshot of lastReadId taken when the user activates this
+    // buffer. The unread divider in MessageList renders after the message
+    // with this id; it stays pinned until switch-away (matching WeeChat),
+    // not advanced live as new messages arrive in the focused buffer.
+    dividerAfterId: null,
+    // /clear marker — server-owned, mirrored here for render-time filtering.
+    // 0 / null mean no clear active.
+    clearedBeforeId: 0,
+    clearedAt: null,
+    typing: {},
+    oldestId: null,
+    // Symmetric to oldestId. Only authoritative while detached or mid-page-
+    // down — otherwise messages[length-1].id is the implicit "newest" and
+    // this is left null. Set on around/after/latest responses.
+    newestId: null,
+    // Split of the old `hasMore` flag. hasMoreOlder drives the existing
+    // upward pager; hasMoreNewer is only meaningful while detached or while
+    // the user has paged past the live tail (not currently possible
+    // outside detach mode, but the field is here for future symmetry).
+    hasMoreOlder: true,
+    hasMoreNewer: false,
+    loadingHistory: false,
+    speakers: {},
+    // Detached mode: buffer is viewing a bounded historical slice around
+    // some anchor message id rather than the live tail. While detached,
+    // pushMessage drops fanOut (and counts via liveDuringDetach), activate
+    // skips its mark-read advance, and replaceBacklog (snapshot resume)
+    // is a no-op. The user exits via the StatusBar "Return to present"
+    // button (reattachToLive), via switching to another buffer, or via WS
+    // reconnect — all three reset the flag.
+    detached: false,
+    liveDuringDetach: 0,
+    pendingHistoryToken: null,
+    // Set when the buffer's slice was wiped on switch-away from detach.
+    // activate() consumes it on re-entry to fire a fresh latest fetch, so
+    // the user doesn't sit on a permanently empty buffer (the server only
+    // ships backlog unsolicited via sendSnapshot, so there's no other
+    // automatic source of history once the slice has been wiped).
+    pendingRefetch: false,
+  };
+}
+
 function ensureBuffer(
   state: { buffers: Record<string, Buffer> },
   networkId: number | string,
@@ -122,62 +181,7 @@ function ensureBuffer(
 ): Buffer {
   const k = key(networkId, target);
   if (!state.buffers[k]) {
-    state.buffers[k] = {
-      networkId: Number(networkId),
-      target,
-      messages: [],
-      members: [],
-      topic: null,
-      // Channels flip to false on PART/KICK and back to true on JOIN. DMs and
-      // server pseudo-buffers have no join concept; default true so they
-      // never render dimmed.
-      joined: true,
-      unread: 0,
-      highlighted: 0,
-      highlightsCapped: false,
-      // Server-owned "have I seen this" pointer. Drives unread counts and
-      // survives across devices/sessions.
-      lastReadId: 0,
-      // Local snapshot of lastReadId taken when the user activates this
-      // buffer. The unread divider in MessageList renders after the message
-      // with this id; it stays pinned until switch-away (matching WeeChat),
-      // not advanced live as new messages arrive in the focused buffer.
-      dividerAfterId: null,
-      // /clear marker — server-owned, mirrored here for render-time filtering.
-      // 0 / null mean no clear active.
-      clearedBeforeId: 0,
-      clearedAt: null,
-      typing: {},
-      oldestId: null,
-      // Symmetric to oldestId. Only authoritative while detached or mid-page-
-      // down — otherwise messages[length-1].id is the implicit "newest" and
-      // this is left null. Set on around/after/latest responses.
-      newestId: null,
-      // Split of the old `hasMore` flag. hasMoreOlder drives the existing
-      // upward pager; hasMoreNewer is only meaningful while detached or while
-      // the user has paged past the live tail (not currently possible
-      // outside detach mode, but the field is here for future symmetry).
-      hasMoreOlder: true,
-      hasMoreNewer: false,
-      loadingHistory: false,
-      speakers: {},
-      // Detached mode: buffer is viewing a bounded historical slice around
-      // some anchor message id rather than the live tail. While detached,
-      // pushMessage drops fanOut (and counts via liveDuringDetach), activate
-      // skips its mark-read advance, and replaceBacklog (snapshot resume)
-      // is a no-op. The user exits via the StatusBar "Return to present"
-      // button (reattachToLive), via switching to another buffer, or via WS
-      // reconnect — all three reset the flag.
-      detached: false,
-      liveDuringDetach: 0,
-      pendingHistoryToken: null,
-      // Set when the buffer's slice was wiped on switch-away from detach.
-      // activate() consumes it on re-entry to fire a fresh latest fetch, so
-      // the user doesn't sit on a permanently empty buffer (the server only
-      // ships backlog unsolicited via sendSnapshot, so there's no other
-      // automatic source of history once the slice has been wiped).
-      pendingRefetch: false,
-    };
+    state.buffers[k] = makeBuffer(networkId, target);
   }
   return state.buffers[k];
 }
@@ -197,6 +201,25 @@ export const useBuffersStore = defineStore('buffers', {
       !!state.buffers[`${networkId}::${target}`],
     forNetwork: (state) => (networkId: number | string) =>
       Object.values(state.buffers).filter((b) => b.networkId === networkId),
+    // The open DM buffer for a (network, nick), matched case-insensitively so we
+    // resolve to whatever case is already open rather than forking a second
+    // buffer that differs only by nick case. Channels and the flat virtual
+    // sentinels (`:server:`, `:friends:`…) are excluded. One home for the
+    // resolution the Friends sidebar, overview, and keyboard nav all need.
+    findDm:
+      (state) =>
+      (networkId: number | string, nick: string): Buffer | null => {
+        const lower = nick.toLowerCase();
+        return (
+          Object.values(state.buffers).find(
+            (b) =>
+              b.networkId === Number(networkId) &&
+              b.target.toLowerCase() === lower &&
+              !b.target.startsWith('#') &&
+              !b.target.startsWith(':'),
+          ) ?? null
+        );
+      },
   },
   actions: {
     ensure(networkId: number | string, target: string) {
@@ -534,6 +557,7 @@ export const useBuffersStore = defineStore('buffers', {
       const buf = ensureBuffer(this, networkId, target);
       buf.members = members;
     },
+
     setTopic(networkId: number | string, target: string, topic: string | null) {
       const buf = ensureBuffer(this, networkId, target);
       buf.topic = topic;

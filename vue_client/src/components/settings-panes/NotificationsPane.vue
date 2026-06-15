@@ -297,6 +297,11 @@ const NOTIFICATION_SIGNALS = [
     title: 'Always-notify channels',
     help: 'For every message in channels you have flagged via the channel context menu.',
   },
+  {
+    key: 'friend_online',
+    title: 'Friend online',
+    help: 'When a friend you have flagged "notify when online" comes online. The per-friend toggle in the Configure Friend dialog is the opt-in.',
+  },
 ];
 
 const notificationSignals = computed(() =>

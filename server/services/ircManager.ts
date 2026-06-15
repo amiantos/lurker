@@ -30,6 +30,16 @@ import {
   getNote as getNickNoteRow,
 } from '../db/nickNotes.js';
 import type { NoteResult } from '../db/nickNotes.js';
+import {
+  createContact,
+  updateContactMeta,
+  setContactTargets,
+  deleteContact as deleteContactRow,
+  getContact,
+  listContactsForUser,
+  findContactIdByTarget,
+} from '../db/contacts.js';
+import type { ContactRecord } from '../db/contacts.js';
 import { splitSay, splitAction } from './messageSplit.js';
 import db from '../db/index.js';
 
@@ -531,6 +541,98 @@ class IrcManager extends EventEmitter {
 
   getNickNote(userId: number, networkId: number, nick: string): NoteResult | null {
     return getNickNoteRow({ userId, networkId, nick });
+  }
+
+  listContacts(userId: number): ContactRecord[] {
+    return listContactsForUser(userId);
+  }
+
+  // Create or update a contact and its per-network watch targets, then apply the
+  // target diff to live connections so MONITOR starts/stops without a reconnect.
+  // Targets are filtered to the caller's own networks, and a given (network,
+  // nick) maps to at most one contact (others keep it). Returns the saved record,
+  // or null if editing a contact the caller doesn't own.
+  setContact(
+    userId: number,
+    input: {
+      contactId?: number | null;
+      displayName: string;
+      notifyOnline: boolean;
+      targets: Array<{ networkId: number; nick: string; isPrimary?: boolean }>;
+    },
+  ): ContactRecord | null {
+    const displayName = (input.displayName || '').trim();
+    if (!displayName) {
+      throw Object.assign(new Error('displayName is empty'), { code: 'invalid_input' });
+    }
+    const ownedNetworkIds = new Set(listNetworksForUser(userId).map((n) => n.id));
+    const cleaned: Array<{ networkId: number; nick: string; isPrimary: boolean }> = [];
+    for (const t of input.targets || []) {
+      const networkId = Number(t.networkId);
+      const nick = typeof t.nick === 'string' ? t.nick.trim() : '';
+      if (!nick || !ownedNetworkIds.has(networkId)) continue;
+      const lower = nick.toLowerCase();
+      // (network, nick) maps to at most one contact, and no exact dupes within
+      // this contact's own list — but multiple nicks on one network are allowed.
+      const owner = findContactIdByTarget(userId, networkId, nick);
+      if (owner != null && owner !== input.contactId) continue;
+      if (cleaned.some((c) => c.networkId === networkId && c.nick.toLowerCase() === lower))
+        continue;
+      cleaned.push({ networkId, nick, isPrimary: !!t.isPrimary });
+    }
+    // Exactly one primary — the DM that opens when the friend is clicked. Honor
+    // the flagged target if one survived filtering; otherwise the first.
+    if (cleaned.length) {
+      const wanted = cleaned.find((t) => t.isPrimary);
+      cleaned.forEach((t) => (t.isPrimary = false));
+      (wanted ?? cleaned[0]).isPrimary = true;
+    }
+
+    let contactId = input.contactId ?? null;
+    let prevTargets: Array<{ networkId: number; nick: string; isPrimary: boolean }> = [];
+    if (contactId != null) {
+      const existing = getContact(contactId, userId);
+      if (!existing) return null;
+      prevTargets = existing.targets;
+      updateContactMeta({ contactId, userId, displayName, notifyOnline: !!input.notifyOnline });
+    } else {
+      contactId = createContact({ userId, displayName, notifyOnline: !!input.notifyOnline });
+    }
+    setContactTargets(contactId, cleaned);
+    this.applyContactTargetDiff(userId, contactId, prevTargets, cleaned);
+    return getContact(contactId, userId);
+  }
+
+  deleteContact(userId: number, contactId: number): boolean {
+    const existing = getContact(contactId, userId);
+    if (!existing) return false;
+    for (const t of existing.targets) {
+      this.getConnection(userId, t.networkId)?.untrackFriend(t.nick);
+    }
+    return deleteContactRow(contactId, userId);
+  }
+
+  // Track newly-added targets and untrack removed ones on the matching live
+  // connection (keyed by network+lowernick). Targets present in both are left
+  // alone — their friend watch is unchanged.
+  private applyContactTargetDiff(
+    userId: number,
+    contactId: number,
+    prev: Array<{ networkId: number; nick: string }>,
+    next: Array<{ networkId: number; nick: string }>,
+  ): void {
+    const keyOf = (t: { networkId: number; nick: string }) =>
+      `${t.networkId}::${t.nick.toLowerCase()}`;
+    const prevKeys = new Set(prev.map(keyOf));
+    const nextKeys = new Set(next.map(keyOf));
+    for (const t of prev) {
+      if (nextKeys.has(keyOf(t))) continue;
+      this.getConnection(userId, t.networkId)?.untrackFriend(t.nick);
+    }
+    for (const t of next) {
+      if (prevKeys.has(keyOf(t))) continue;
+      this.getConnection(userId, t.networkId)?.trackFriend(t.nick, contactId);
+    }
   }
 }
 

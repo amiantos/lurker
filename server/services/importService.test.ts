@@ -253,6 +253,61 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(tz).toBeUndefined();
   });
 
+  it('imports pre-toggle archives that omit networks.trusted_certificates', async () => {
+    const { alice } = seedAlice();
+    const buf = await exportToBuffer(alice.id, { includeMessages: false });
+    const yauzl = await import('yauzl');
+    const { ZipArchive } = await import('archiver');
+
+    const entries = await new Promise<Map<string, Buffer>>((resolve, reject) => {
+      yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zip) => {
+        if (err) return reject(err);
+        const out = new Map<string, Buffer>();
+        zip.readEntry();
+        zip.on('entry', (entry) => {
+          if (entry.fileName.endsWith('/')) {
+            zip.readEntry();
+            return;
+          }
+          zip.openReadStream(entry, (e2, stream) => {
+            if (e2) return reject(e2);
+            const chunks: Buffer[] = [];
+            stream.on('data', (c: Buffer) => chunks.push(c));
+            stream.on('end', () => {
+              out.set(entry.fileName, Buffer.concat(chunks));
+              zip.readEntry();
+            });
+            stream.on('error', reject);
+          });
+        });
+        zip.on('end', () => resolve(out));
+        zip.on('error', reject);
+      });
+    });
+
+    const data = JSON.parse(entries.get('data.json')!.toString('utf8')) as Record<
+      string,
+      Array<Record<string, unknown>>
+    >;
+    for (const row of data.networks || []) delete row.trusted_certificates;
+    entries.set('data.json', Buffer.from(JSON.stringify(data)));
+
+    const archive = new ZipArchive();
+    const rebuiltChunks: Buffer[] = [];
+    archive.on('data', (c: Buffer) => rebuiltChunks.push(c));
+    for (const [name, content] of entries) archive.append(content, { name });
+    await archive.finalize();
+    const rebuilt = Buffer.concat(rebuiltChunks);
+
+    const target = createUser(`legacy_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    const result = await importFromZipBuffer(target.id, rebuilt);
+    expect(result.counts.networks).toBe(1);
+    const imported = db
+      .prepare('SELECT trusted_certificates FROM networks WHERE user_id = ?')
+      .get(target.id) as { trusted_certificates: number };
+    expect(imported.trusted_certificates).toBe(1);
+  });
+
   it('imports successfully without messages section', async () => {
     const { alice } = seedAlice();
     const dave = createUser(`dave_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);

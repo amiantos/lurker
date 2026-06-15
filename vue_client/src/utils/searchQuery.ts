@@ -10,13 +10,14 @@
 
 export interface SearchQuery {
   query: string;
-  from: string;
+  // `from:` may repeat — messages from ANY listed nick (OR), e.g. a friend's alts.
+  from: string[];
   in: string;
   on: string;
 }
 
 export function parseSearchQuery(raw: unknown): SearchQuery {
-  const filters: SearchQuery = { query: '', from: '', in: '', on: '' };
+  const filters: SearchQuery = { query: '', from: [], in: '', on: '' };
   const free: string[] = [];
   for (const token of String(raw || '')
     .trim()
@@ -24,7 +25,9 @@ export function parseSearchQuery(raw: unknown): SearchQuery {
     if (!token) continue;
     const m = /^(from|in|on):(.+)$/i.exec(token);
     if (m) {
-      filters[m[1].toLowerCase() as 'from' | 'in' | 'on'] = m[2];
+      const key = m[1].toLowerCase();
+      if (key === 'from') filters.from.push(m[2]);
+      else filters[key as 'in' | 'on'] = m[2];
     } else {
       free.push(token);
     }

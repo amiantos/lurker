@@ -13,6 +13,20 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// "Amiantos came online (as nostimo · Libera)". The nick (data.target) is
+// shown only when it differs from the display name — for a friend watched under
+// several nicks it says which identity signed on; the network disambiguates a
+// friend watched across networks.
+function friendOnlineTitle(data) {
+  const name = data.displayName || 'A friend';
+  const parts = [];
+  if (data.target && String(data.target).toLowerCase() !== name.toLowerCase()) {
+    parts.push(`as ${data.target}`);
+  }
+  if (data.networkName) parts.push(data.networkName);
+  return `${name} came online${parts.length ? ` (${parts.join(' · ')})` : ''}`;
+}
+
 self.addEventListener('push', (event) => {
   if (!event.data) return;
   let data;
@@ -24,7 +38,9 @@ self.addEventListener('push', (event) => {
   const title =
     data.kind === 'dm'
       ? `${data.nick || 'someone'}${data.networkName ? ' (' + data.networkName + ')' : ''}`
-      : `${data.nick || 'someone'} in ${data.target || ''}`;
+      : data.kind === 'friend_online'
+        ? friendOnlineTitle(data)
+        : `${data.nick || 'someone'} in ${data.target || ''}`;
   event.waitUntil(
     self.registration.showNotification(title, {
       body: data.text || '',

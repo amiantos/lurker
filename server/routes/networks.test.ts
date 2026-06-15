@@ -35,6 +35,12 @@ const fakeManager = {
   disposeNetwork(userId: number, networkId: number, reason: string) {
     this.calls.push(['disposeNetwork', userId, networkId, reason]);
   },
+  // DELETE re-publishes the contact list after the cascade; the route reads it
+  // back from here to fan out a fresh contacts-snapshot.
+  listContacts(userId: number) {
+    this.calls.push(['listContacts', userId]);
+    return [];
+  },
   joinChannel(userId: number, networkId: number, channel: string) {
     this.calls.push(['joinChannel', userId, networkId, channel]);
     return this.joinReturn !== undefined ? this.joinReturn : true;
@@ -146,6 +152,12 @@ describe('POST /api/networks', () => {
       created.body.network.channels.find((c: { name: string }) => c.name === '#dev'),
     ).toBeTruthy();
   });
+
+  it('allows disabling trusted-cert verification on create', async () => {
+    const res = await makeNet(aliceAgent, { name: 'self-signed-ok', trusted_certificates: false });
+    expect(res.status).toBe(201);
+    expect(res.body.network.trusted_certificates).toBe(false);
+  });
 });
 
 describe('paused accounts are read-only', () => {
@@ -194,9 +206,10 @@ describe('PATCH /api/networks/:id', () => {
     const net = await makeNet(aliceAgent, { name: 'patchable' });
     const res = await aliceAgent
       .patch(`/api/networks/${net.body.network.id}`)
-      .send({ nick: 'newnick' });
+      .send({ nick: 'newnick', trusted_certificates: false });
     expect(res.status).toBe(200);
     expect(res.body.network.nick).toBe('newnick');
+    expect(res.body.network.trusted_certificates).toBe(false);
   });
 });
 
@@ -206,6 +219,9 @@ describe('DELETE /api/networks/:id', () => {
     const res = await aliceAgent.delete(`/api/networks/${net.body.network.id}`);
     expect(res.status).toBe(200);
     expect(fakeManager.calls.some(([m]) => m === 'disposeNetwork')).toBe(true);
+    // Cascaded contact_targets are re-published so the Friends UI doesn't keep
+    // stale targets pointing at the deleted network.
+    expect(fakeManager.calls.some(([m]) => m === 'listContacts')).toBe(true);
     const list = await aliceAgent.get('/api/networks');
     expect(
       list.body.networks.find((n: { id: number }) => n.id === net.body.network.id),

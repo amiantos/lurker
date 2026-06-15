@@ -164,3 +164,118 @@ describe('ircManager deferrable connect (issue #236 throttle seam)', () => {
     expect(lines.some((l) => /Starting connection/.test(l.text))).toBe(false);
   });
 });
+
+// Contact CRUD goes through ircManager so it can diff watch-targets onto the
+// live MONITOR set. With no live connection the diff is a no-op, so these
+// assertions exercise the db orchestration, ownership scoping, and the
+// per-(network,nick) uniqueness filter without opening a socket.
+describe('ircManager contacts', () => {
+  it('creates, edits, and lists contacts; enforces ownership + uniqueness', () => {
+    const user = createUser('irc-contacts');
+    const other = createUser('irc-contacts-other');
+    const net = createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+
+    const a = ircManager.setContact(user.id, {
+      displayName: 'Darc',
+      notifyOnline: true,
+      targets: [{ networkId: net.id, nick: 'darc' }],
+    });
+    expect(a).toMatchObject({ displayName: 'Darc', notifyOnline: true });
+    // A lone target is the primary by default.
+    expect(a!.targets).toEqual([{ networkId: net.id, nick: 'darc', isPrimary: true }]);
+
+    // A target on a network the caller doesn't own is filtered out.
+    const otherNet = createNetwork(other.id, {
+      name: 'x',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const b = ircManager.setContact(user.id, {
+      displayName: 'Sneaky',
+      notifyOnline: false,
+      targets: [
+        { networkId: net.id, nick: 'sneaky' },
+        { networkId: otherNet.id, nick: 'pwn' },
+      ],
+    });
+    expect(b!.targets).toEqual([{ networkId: net.id, nick: 'sneaky', isPrimary: true }]);
+
+    // (network, nick) already owned by contact `a` can't be claimed by another.
+    const c = ircManager.setContact(user.id, {
+      displayName: 'Thief',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'DARC' }],
+    });
+    expect(c!.targets).toEqual([]);
+
+    expect(
+      ircManager
+        .listContacts(user.id)
+        .map((x) => x.displayName)
+        .toSorted(),
+    ).toEqual(['Darc', 'Sneaky', 'Thief']);
+    expect(ircManager.listContacts(other.id)).toEqual([]);
+  });
+
+  it('honors the flagged primary target, falling back to the first', () => {
+    const user = createUser('irc-contacts-primary');
+    const n1 = createNetwork(user.id, { name: 'n1', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+    const n2 = createNetwork(user.id, { name: 'n2', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+
+    const chosen = ircManager.setContact(user.id, {
+      displayName: 'Multi',
+      notifyOnline: false,
+      targets: [
+        { networkId: n1.id, nick: 'm1' },
+        { networkId: n2.id, nick: 'm2', isPrimary: true },
+      ],
+    })!;
+    expect(chosen.targets.find((t) => t.nick === 'm2')!.isPrimary).toBe(true);
+    expect(chosen.targets.find((t) => t.nick === 'm1')!.isPrimary).toBe(false);
+
+    // No target flagged → first becomes primary.
+    const fallback = ircManager.setContact(user.id, {
+      contactId: chosen.id,
+      displayName: 'Multi',
+      notifyOnline: false,
+      targets: [
+        { networkId: n1.id, nick: 'm1' },
+        { networkId: n2.id, nick: 'm2' },
+      ],
+    })!;
+    expect(fallback.targets.find((t) => t.nick === 'm1')!.isPrimary).toBe(true);
+  });
+
+  it('allows multiple nicks on the same network', () => {
+    const user = createUser('irc-contacts-alts');
+    const net = createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+    const saved = ircManager.setContact(user.id, {
+      displayName: 'Alts',
+      notifyOnline: false,
+      targets: [
+        { networkId: net.id, nick: 'eren' },
+        { networkId: net.id, nick: 'nostimo' },
+        { networkId: net.id, nick: 'twomoon', isPrimary: true },
+        { networkId: net.id, nick: 'eren' }, // exact dupe dropped
+      ],
+    })!;
+    expect(saved.targets.map((t) => t.nick).toSorted()).toEqual(['eren', 'nostimo', 'twomoon']);
+    expect(saved.targets.filter((t) => t.isPrimary).map((t) => t.nick)).toEqual(['twomoon']);
+  });
+
+  it('deletes a contact only for its owner', () => {
+    const user = createUser('irc-contacts-del');
+    const other = createUser('irc-contacts-del-other');
+    const net = createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'a' })!;
+    const made = ircManager.setContact(user.id, {
+      displayName: 'Gone',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'gone' }],
+    })!;
+    expect(ircManager.deleteContact(other.id, made.id)).toBe(false);
+    expect(ircManager.deleteContact(user.id, made.id)).toBe(true);
+    expect(ircManager.listContacts(user.id)).toEqual([]);
+  });
+});

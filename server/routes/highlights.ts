@@ -16,6 +16,14 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
 }
 
+// `nick` may arrive once (?nick=a) or repeated (?nick=a&nick=b → string[]).
+// Normalize to a non-empty list so the feed can OR-match a friend's alts.
+function strArray(v: unknown): string[] | undefined {
+  const arr = Array.isArray(v) ? v : v != null ? [v] : [];
+  const out = arr.filter((x): x is string => typeof x === 'string' && !!x);
+  return out.length ? out : undefined;
+}
+
 router.get('/', (req: Request, res: Response) => {
   const rawLimit = Number(req.query.limit);
   const limit =
@@ -31,7 +39,7 @@ router.get('/', (req: Request, res: Response) => {
   const items = searchMessages(req.user!.id, {
     matched: true,
     query: str(req.query.q),
-    nick: str(req.query.nick),
+    nicks: strArray(req.query.nick),
     target: str(req.query.target),
     networkId,
     before,

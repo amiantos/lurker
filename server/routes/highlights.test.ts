@@ -128,6 +128,19 @@ describe('GET /api/highlights', () => {
     expect(res.body.items.map((r: { nick: string }) => r.nick)).toEqual(['zara']);
   });
 
+  it('OR-matches several nicks (repeated from:), case-insensitively', async () => {
+    chat('#multinick', 'eren', 'alice ping', 50);
+    chat('#multinick', 'nostimo', 'alice ping', 50);
+    chat('#multinick', 'stranger', 'alice ping', 50);
+    const res = await agent.get('/api/highlights?nick=EREN&nick=nostimo');
+    expect(res.status).toBe(200);
+    const hits = res.body.items
+      .map((r: { nick: string }) => r.nick)
+      .filter((n: string) => n === 'eren' || n === 'nostimo' || n === 'stranger')
+      .toSorted();
+    expect(hits).toEqual(['eren', 'nostimo']);
+  });
+
   it('filters by target (in:)', async () => {
     chat('#in-a', 'mara', 'alice ping', 51);
     chat('#in-b', 'mara', 'alice ping', 51);

@@ -8,6 +8,7 @@ import path from 'path';
 import type { User } from '../../db/users.js';
 import type { Network } from '../../db/networks.js';
 import type { VerbContext } from '../verbRegistry.js';
+import type { ContactRecord } from '../../db/contacts.js';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-test-verbs-'));
 process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
@@ -465,5 +466,186 @@ describe('send_message / send_action', () => {
         text: '',
       }),
     ).toEqual({ ok: false, error: 'empty-target-or-text' });
+  });
+});
+
+describe('set_contact', () => {
+  it('creates a contact, trimming the name and flagging exactly one primary', () => {
+    const saved = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: '  Alice  ',
+      notifyOnline: true,
+      targets: [{ networkId: net.id, nick: 'alice_irc' }],
+    }) as ContactRecord;
+    expect(saved.id).toEqual(expect.any(Number));
+    expect(saved.displayName).toBe('Alice');
+    expect(saved.notifyOnline).toBe(true);
+    expect(saved.targets).toEqual([{ networkId: net.id, nick: 'alice_irc', isPrimary: true }]);
+  });
+
+  it('allows multiple nicks on one network, dedupes exact repeats, honors the flagged primary', () => {
+    const saved = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Multi',
+      notifyOnline: false,
+      targets: [
+        { networkId: net.id, nick: 'm_one' },
+        { networkId: net.id, nick: 'm_one' }, // exact dupe → dropped
+        { networkId: net.id, nick: 'm_two', isPrimary: true },
+      ],
+    }) as ContactRecord;
+    expect(saved.targets.map((t) => t.nick).toSorted()).toEqual(['m_one', 'm_two']);
+    const primary = saved.targets.filter((t) => t.isPrimary);
+    expect(primary).toEqual([{ networkId: net.id, nick: 'm_two', isPrimary: true }]);
+  });
+
+  it("filters out targets on networks the caller doesn't own", () => {
+    const saved = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Filtered',
+      notifyOnline: false,
+      targets: [
+        { networkId: net.id, nick: 'keep_me' },
+        { networkId: otherNet.id, nick: 'drop_me' }, // intruder's network
+      ],
+    }) as ContactRecord;
+    expect(saved.targets).toEqual([{ networkId: net.id, nick: 'keep_me', isPrimary: true }]);
+  });
+
+  it('keeps a (network, nick) mapped to at most one contact', () => {
+    callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'First Owner',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'shared_x' }],
+    });
+    const second = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Second Owner',
+      notifyOnline: false,
+      targets: [
+        { networkId: net.id, nick: 'shared_x' }, // already owned → dropped
+        { networkId: net.id, nick: 'c2_only' },
+      ],
+    }) as ContactRecord;
+    expect(second.targets).toEqual([{ networkId: net.id, nick: 'c2_only', isPrimary: true }]);
+  });
+
+  it('edits an existing contact: new name, notify flag, and replaced targets', () => {
+    const created = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Before',
+      notifyOnline: true,
+      targets: [{ networkId: net.id, nick: 'e_first' }],
+    }) as ContactRecord;
+    const edited = callVerb('set_contact', rwCtx(owner.id), {
+      contactId: created.id,
+      displayName: 'After',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'e_second' }],
+    }) as ContactRecord;
+    expect(edited.id).toBe(created.id);
+    expect(edited.displayName).toBe('After');
+    expect(edited.notifyOnline).toBe(false);
+    expect(edited.targets).toEqual([{ networkId: net.id, nick: 'e_second', isPrimary: true }]);
+  });
+
+  it("throws not_found when editing a contact the caller doesn't own", () => {
+    const created = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Owned',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'owned_nick' }],
+    }) as ContactRecord;
+    let caughtErr: unknown;
+    try {
+      callVerb('set_contact', rwCtx(intruder.id), {
+        contactId: created.id,
+        displayName: 'Hijacked',
+        notifyOnline: false,
+        targets: [{ networkId: otherNet.id, nick: 'x' }],
+      });
+    } catch (err) {
+      caughtErr = err;
+    }
+    expect((caughtErr as { code?: string }).code).toBe('not_found');
+  });
+
+  it('throws invalid_input on empty/whitespace displayName', () => {
+    let caughtErr: unknown;
+    try {
+      callVerb('set_contact', rwCtx(owner.id), {
+        displayName: '   ',
+        notifyOnline: false,
+        targets: [{ networkId: net.id, nick: 'whatever' }],
+      });
+    } catch (err) {
+      caughtErr = err;
+    }
+    expect((caughtErr as { code?: string }).code).toBe('invalid_input');
+    expect((caughtErr as Error).message).toMatch(/displayName/);
+  });
+
+  it('is rejected for read-only scope', () => {
+    expect(() =>
+      callVerb('set_contact', rCtx(owner.id), {
+        displayName: 'Nope',
+        notifyOnline: false,
+        targets: [{ networkId: net.id, nick: 'nope' }],
+      }),
+    ).toThrow(/scope insufficient/);
+  });
+});
+
+describe('delete_contact', () => {
+  it('deletes an owned contact and is idempotent-by-not_found afterwards', () => {
+    const created = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Doomed',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'del_target' }],
+    }) as ContactRecord;
+    expect(callVerb('delete_contact', rwCtx(owner.id), { contactId: created.id })).toEqual({
+      contactId: created.id,
+      deleted: true,
+    });
+    // A second delete now misses — the row (and its targets) is gone.
+    let caughtErr: unknown;
+    try {
+      callVerb('delete_contact', rwCtx(owner.id), { contactId: created.id });
+    } catch (err) {
+      caughtErr = err;
+    }
+    expect((caughtErr as { code?: string }).code).toBe('not_found');
+  });
+
+  it('throws not_found for an unknown contactId', () => {
+    expect(() => callVerb('delete_contact', rwCtx(owner.id), { contactId: 999999 })).toThrow(
+      /contact not found/,
+    );
+  });
+
+  it("throws not_found when deleting another user's contact", () => {
+    const created = callVerb('set_contact', rwCtx(owner.id), {
+      displayName: 'Owner Only',
+      notifyOnline: false,
+      targets: [{ networkId: net.id, nick: 'owner_only' }],
+    }) as ContactRecord;
+    let caughtErr: unknown;
+    try {
+      callVerb('delete_contact', rwCtx(intruder.id), { contactId: created.id });
+    } catch (err) {
+      caughtErr = err;
+    }
+    expect((caughtErr as { code?: string }).code).toBe('not_found');
+  });
+
+  it('is rejected for read-only scope', () => {
+    expect(() => callVerb('delete_contact', rCtx(owner.id), { contactId: 1 })).toThrow(
+      /scope insufficient/,
+    );
+  });
+
+  it('throws invalid_input when contactId is omitted', () => {
+    let caughtErr: unknown;
+    try {
+      callVerb('delete_contact', rwCtx(owner.id), {});
+    } catch (err) {
+      caughtErr = err;
+    }
+    expect((caughtErr as { code?: string }).code).toBe('invalid_input');
+    expect((caughtErr as Error).message).toMatch(/contactId/);
   });
 });

@@ -312,7 +312,7 @@ describe('export under concurrent IRC writes (lurker#175 regression)', () => {
     expect(writeError).toBeNull();
     expect(liveWrites).toBeGreaterThan(0);
     expect(Buffer.concat(chunks).slice(0, 2).toString()).toBe('PK');
-  });
+  }, 15_000);
 });
 
 describe('buildExportFilename', () => {

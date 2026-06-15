@@ -4,6 +4,7 @@
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
@@ -95,6 +96,7 @@ function kickLine(channel: string, nick: string, reason: string): string {
 export function useMemberActions(): MemberActionsAPI {
   const buffers = useBuffersStore();
   const nickNotes = useNickNotesStore();
+  const friends = useFriendsStore();
   const whois = useWhoisStore();
   const menu = useContextMenu();
 
@@ -129,6 +131,12 @@ export function useMemberActions(): MemberActionsAPI {
       onClick: () => nickNotes.openEditor(ctx.networkId, nick),
     });
     if (!isSelf) {
+      const isFriend = !!friends.contactForTarget(ctx.networkId, nick);
+      items.push({
+        label: isFriend ? 'Edit Friend…' : 'Add Friend…',
+        icon: 'fa-solid fa-user-group',
+        onClick: () => friends.openEditorForNick(ctx.networkId, nick),
+      });
       items.push({
         label: 'Ignore…',
         icon: 'fa-solid fa-ban',
