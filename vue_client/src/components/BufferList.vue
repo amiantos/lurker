@@ -420,11 +420,18 @@ function syncPinned(): void {
 }
 
 // Only re-sync when something structurally relevant changes — pin order, the
-// set of networks, or the set of buffer keys. Per-buffer state churn (unread
-// counts, member list, messages) doesn't affect which buffers belong in the
-// pinned list and shouldn't re-walk this whole map on every keystroke.
+// set of networks, the set of buffer keys, or the friend primary DMs the mirror
+// filters out (so flipping a friend/primary doesn't leave a stale duplicate row
+// in the pinned section). Per-buffer state churn (unread counts, member list,
+// messages) doesn't affect which buffers belong in the pinned list and shouldn't
+// re-walk this whole map on every keystroke.
 watch(
-  () => [pins.byNetwork, networks.networks.map((n) => n.id), Object.keys(buffers.buffers)],
+  () => [
+    pins.byNetwork,
+    networks.networks.map((n) => n.id),
+    Object.keys(buffers.buffers),
+    [...friends.primaryDmKeys],
+  ],
   syncPinned,
   { deep: true, immediate: true },
 );
