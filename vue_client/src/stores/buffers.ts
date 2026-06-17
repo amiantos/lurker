@@ -863,18 +863,29 @@ export const useBuffersStore = defineStore('buffers', {
       userhost: string | null = null,
     ) {
       if (!nick) return;
+      // Resolve to an *existing* buffer only — a typing tag (TAGMSG +typing)
+      // must never materialize a phantom DM buffer for a peer who never
+      // actually messages us; the incoming PRIVMSG is what opens a DM (#292).
+      // DMs resolve case-insensitively via findDm so a typing tag whose nick
+      // case differs from the already-open DM (e.g. /query'd as `bob`, server
+      // reports typing as `Bob`) still lands on it rather than being dropped —
+      // matching how the rest of the store treats DM buffers. Channels and the
+      // flat ':'-sentinels resolve by exact key (findDm deliberately skips
+      // them); an unknown nick has its typing notice dropped until they say
+      // something real.
+      const buf =
+        target.startsWith('#') || target.startsWith(':')
+          ? this.buffers[key(networkId, target)]
+          : this.findDm(networkId, target);
+      // Key all timer bookkeeping off the resolved buffer's actual target, not
+      // the event's nick case, so the clear/set/expiry callbacks all line up on
+      // the same buffer. Falls back to the raw target when there's no buffer.
+      const tkTarget = buf ? buf.target : target;
       // Cancel any pending expiry timer first, unconditionally: the buffer may
       // have been closed while a timer was still pending, and the early-return
       // below would otherwise strand that timer until it expires on its own.
       // clearTypingTimer is a no-op when there's no timer for this nick.
-      clearTypingTimer(networkId, target, nick);
-      // Only reflect typing inside a buffer that already exists. A typing tag
-      // (TAGMSG +typing) must never materialize a phantom DM buffer for a peer
-      // who never actually messages us — the incoming PRIVMSG is what opens the
-      // DM (#292). Channels are unaffected: their buffer already exists once
-      // joined, and an unknown nick simply has its typing notice dropped until
-      // they say something real.
-      const buf = this.buffers[key(networkId, target)];
+      clearTypingTimer(networkId, tkTarget, nick);
       if (!buf) return;
 
       if (state === 'done') {
@@ -887,13 +898,13 @@ export const useBuffersStore = defineStore('buffers', {
       buf.typing[nick] = { state, expiresAt: Date.now() + duration, userhost };
 
       const timer = setTimeout(() => {
-        const b = this.buffers[key(networkId, target)];
+        const b = this.buffers[key(networkId, tkTarget)];
         if (b && b.typing[nick]) {
           delete b.typing[nick];
         }
-        typingTimers.delete(typingKey(networkId, target, nick));
+        typingTimers.delete(typingKey(networkId, tkTarget, nick));
       }, duration);
-      typingTimers.set(typingKey(networkId, target, nick), timer);
+      typingTimers.set(typingKey(networkId, tkTarget, nick), timer);
     },
   },
 });
