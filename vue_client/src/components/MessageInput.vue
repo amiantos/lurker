@@ -1587,7 +1587,7 @@ function localInfo(networkId: number, target: string, lineText: string): void {
   });
 }
 
-const HELP_LINES = [
+const COMMANDS_LINES = [
   'commands:',
   '  /me <text>             — emote in the current buffer',
   '  /slap <nick>           — slap someone around a bit with a large trout',
@@ -2103,7 +2103,7 @@ function handleCommand(line: string, networkId: number, target: string): boolean
       );
     }
     case 'commands':
-      for (const helpLine of HELP_LINES) localInfo(networkId, target, helpLine);
+      for (const commandLine of COMMANDS_LINES) localInfo(networkId, target, commandLine);
       return true;
     default:
       return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
