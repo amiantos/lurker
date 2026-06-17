@@ -799,17 +799,18 @@ function prefixText(m: ChatMessage | undefined): string {
 }
 
 // When the "Show user@host on joins" setting is on, return the joining user's
-// user@host — the `ident@host` portion of the stored `nick!ident@host` — for
-// display next to their nick on a JOIN line (#322). Returns null when the
-// setting is off, the userhost is missing (pre-upgrade backlog rows, or a
-// JOIN with no prefix), or it can't be parsed.
+// `user@host` for display next to their nick on a JOIN line (#322). Returns
+// null when the setting is off, the userhost is missing (pre-upgrade backlog
+// rows, or a JOIN with no prefix), or either half is absent — the server stores
+// an empty ident/host when it lacks one (`nick!@host` / `nick!ident@`), and a
+// half-mask like `(@host)` reads worse than nothing, so we only render when
+// both pieces are present. Reuses parseUserHost so parsing matches the ignore
+// flow exactly.
 function joinHost(m: ChatMessage | undefined): string | null {
   if (!showJoinHost.value) return null;
-  const uh = m?.userhost;
-  if (!uh) return null;
-  const bang = uh.indexOf('!');
-  if (bang === -1) return null;
-  return uh.slice(bang + 1) || null;
+  const { user, host } = parseUserHost(m?.userhost);
+  if (!user || !host) return null;
+  return `${user}@${host}`;
 }
 
 function prefixClass(m: ChatMessage | undefined) {
