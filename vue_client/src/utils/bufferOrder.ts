@@ -41,8 +41,8 @@ interface BufferOrderArgs {
   friends?: FriendsOrder;
 }
 
-// Sentinel nav-group id for the FRIENDS group — its members carry their real
-// networkId for activation but nav-group together, apart from that network. A
+// Sentinel group id for the FRIENDS group — its members carry their real
+// networkId for activation but group together, apart from that network. A
 // non-numeric string so it can never alias a real network id (which are
 // positive integers), even though groupId shares the `string | number` space.
 export const FRIENDS_GROUP_ID = 'group:friends';
@@ -54,9 +54,10 @@ interface BufferOrderEntry {
   // a flat sentinel (e.g. ':friends:') for virtual ones. Callers match the
   // active buffer and re-activate against this rather than recomputing.
   key: string;
-  // Navigation group for per-network (Alt+Up/Down) scoping. Equals networkId
-  // for real buffers; FRIENDS_GROUP_ID for the feed + friend DMs, so cycling a
-  // network never wanders into the FRIENDS group and vice-versa.
+  // Logical group this entry belongs to: networkId for real buffers,
+  // FRIENDS_GROUP_ID for the feed + friend DMs (so they group apart from their
+  // underlying network). Kept distinct from networkId so consumers can tell a
+  // friend's DM from a plain network buffer.
   groupId: string | number;
 }
 
