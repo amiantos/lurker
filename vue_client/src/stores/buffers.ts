@@ -747,7 +747,14 @@ export const useBuffersStore = defineStore('buffers', {
     // — the server fires one after each countable message and after every
     // mark-read, so badges stay in sync without client-side increments.
     applyReadState(networkId: number | string, target: string, payload: any) {
-      const buf = ensureBuffer(this, networkId, target);
+      // Update an existing buffer only — never materialize one. A closed buffer
+      // is absent from the store (see isOpen), and a stray read-state broadcast
+      // for it (e.g. mark-all-read fans out over every target with history, open
+      // or not) would otherwise re-create the entry and pop it back into the
+      // sidebar (#319). A buffer that isn't open has no badge to update anyway.
+      // Snapshot callers (replaceBacklog) ensureBuffer before delegating here.
+      const buf = this.buffers[key(networkId, target)];
+      if (!buf) return;
       const lastReadId = Number(payload?.lastReadId) || 0;
       const networks = useNetworksStore();
       const isActive = networks.activeKey === `${networkId}::${target}`;

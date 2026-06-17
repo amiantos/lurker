@@ -1443,12 +1443,21 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // Clamp every buffer's read pointer to its tail across all of this
         // user's networks. Skip buffers already at-or-past the tail so we
         // don't broadcast a no-op read-state to every tab.
+        //
+        // maxIdByBuffer returns every target with history, including closed
+        // buffers. Skip those (mirroring the snapshot filter): broadcasting a
+        // read-state for a closed buffer would otherwise resurrect it in the
+        // sidebar (#319). A currently-joined channel beats a stale closed flag,
+        // same carve-out as the snapshot.
+        const closed = closedKeySetForUser(userId);
         for (const conn of ircManager.listConnections(userId)) {
           const networkId = conn.network.id;
           for (const row of maxIdByBuffer(networkId)) {
             const target = row.target;
             const maxId = Number(row.maxId);
             if (!target || !Number.isFinite(maxId) || maxId <= 0) continue;
+            if (closed.has(`${networkId}::${target}`) && !conn.channels.has(target.toLowerCase()))
+              continue;
             const before = getReadState(userId, networkId, target);
             if (before >= maxId) continue;
             const after = setReadState(userId, networkId, target, maxId);
