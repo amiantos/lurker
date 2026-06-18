@@ -194,9 +194,10 @@ export class IrcConnection {
   nickAttempt: number;
   regainNick: string | null;
   pendingRegainSetup: boolean;
-  // Local source port of the live socket, while identd is enabled — so we can
-  // unregister this connection's ident from the identd map when it closes.
-  identdLocalPort: number | null;
+  // Handle for this connection's entry in the identd map, while identd is
+  // enabled — so we can unregister exactly this connection's ident (not whatever
+  // else might share its local port) when it closes.
+  identdId: number | null;
   // Targets (channels or nicks) the server has refused our outgoing messages
   // to — a +R/+M channel that needs a registered nick to speak, a +R user, etc.
   // Learned from the first send rejection and used to stop firing typing
@@ -261,7 +262,7 @@ export class IrcConnection {
     // tells us the server supports it (005 arrives after 001/'registered').
     this.regainNick = null;
     this.pendingRegainSetup = false;
-    this.identdLocalPort = null;
+    this.identdId = null;
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.bind();
@@ -618,8 +619,8 @@ export class IrcConnection {
     c.on('close', () => {
       // Final safety net (clean disconnect/dispose may not always emit
       // 'socket close'); unregisterIdent is idempotent.
-      unregisterIdent(this.identdLocalPort);
-      this.identdLocalPort = null;
+      unregisterIdent(this.identdId);
+      this.identdId = null;
       this.userModes.clear();
       this.stopLagPinger();
       this.cancelPendingConnectCommands();
@@ -793,10 +794,10 @@ export class IrcConnection {
     // log line.
     c.on('socket close', (err: Record<string, unknown>) => {
       this.setState('disconnected');
-      // Release this socket's identd mapping (a reconnect gets a new local port
-      // via the 'socket connected' handler above).
-      unregisterIdent(this.identdLocalPort);
-      this.identdLocalPort = null;
+      // Release this socket's identd mapping (a reconnect re-registers via the
+      // 'raw socket connected' handler above and gets a fresh handle).
+      unregisterIdent(this.identdId);
+      this.identdId = null;
       if (err && (err.message || err.code)) {
         const where = `${this.network.host}:${this.network.port}`;
         const text = formatSocketCloseErrorMessage(
@@ -839,26 +840,46 @@ export class IrcConnection {
     // port → this user's ident so the identd server (services/identd.ts) can
     // answer the IRC server's :113 callback. Without it a multi-user gateway's
     // users are indistinguishable (and unverified) behind one shared IP.
-    c.on('socket connected', () => {
-      if (!isIdentdEnabled()) return;
-      const socket = (
-        this.client as unknown as {
-          connection?: { transport?: { socket?: { localPort?: number } } };
-        }
-      ).connection?.transport?.socket;
-      const localPort = socket?.localPort;
-      if (!localPort) return;
-      this.identdLocalPort = localPort;
-      registerIdent(
-        localPort,
-        deriveIdent({
-          nodeMode: isNodeMode(),
-          accountUsername: findUserById(this.network.user_id)?.username || '',
-          networkUsername: this.network.username,
-          nick: this.network.nick,
-        }),
-      );
-    });
+    //
+    // This MUST run on 'raw socket connected' (the bare TCP connect, before any
+    // TLS handshake) and not 'socket connected' (which irc-framework emits from
+    // the transport's 'open'/'secureConnect' — i.e. AFTER the handshake). The
+    // IRC server fires its ident query the instant it accepts our TCP
+    // connection, concurrently with the TLS handshake, so a post-handshake
+    // registration races the callback: on TLS networks the query frequently
+    // arrives first and identd answers NO-USER. irc-framework hands us the
+    // underlying socket here for exactly this purpose (its own comment:
+    // "ideal to read socket pairs for identd"); localPort is already populated
+    // at TCP-connect time on both plaintext and TLS sockets.
+    c.on(
+      'raw socket connected',
+      (socket?: {
+        localAddress?: string;
+        localPort?: number;
+        remoteAddress?: string;
+        remotePort?: number;
+      }) => {
+        if (!isIdentdEnabled()) return;
+        // The full 4-tuple identifies the connection to the identd server; the
+        // ports alone are ambiguous (see identd.ts). Both addresses and ports
+        // are already populated at TCP connect.
+        const localPort = socket?.localPort;
+        const remotePort = socket?.remotePort;
+        if (!localPort || !remotePort) return;
+        this.identdId = registerIdent({
+          localAddress: socket.localAddress || '',
+          localPort,
+          remoteAddress: socket.remoteAddress || '',
+          remotePort,
+          ident: deriveIdent({
+            nodeMode: isNodeMode(),
+            accountUsername: findUserById(this.network.user_id)?.username || '',
+            networkUsername: this.network.username,
+            nick: this.network.nick,
+          }),
+        });
+      },
+    );
 
     // RPL_UMODEIS arrives when the server sends our current umode (e.g. on
     // login or in response to /MODE <self>). irc-framework normalises it to
