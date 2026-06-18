@@ -57,11 +57,26 @@ ADMIN_EMAIL=""
 # `network_mode: host` instead.
 ENABLE_IDENTD=""
 
+# ─── Optional: built-in IRC bouncer listener ────────────────────────────────
+#
+# Set to "true" to expose Lurker's built-in IRC bouncer on BOUNCER_PORT.
+# WeeChat/Irssi connect to this droplet as an IRC server and authenticate with:
+#
+#   PASS <read-write-api-token>:<network-id>
+#
+# The bouncer is plain TCP; use it directly only if that is acceptable for your
+# threat model, or put it behind your own TLS-capable TCP proxy/tunnel. The
+# script publishes the chosen port, sets LURKER_BOUNCER_HOST=0.0.0.0 inside the
+# container (required for Docker port publishing), and opens the port in UFW.
+ENABLE_BOUNCER=""
+BOUNCER_PORT="6667"
+
 # ─── No edits needed below this line ────────────────────────────────────────
 
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/amiantos/lurker/main"
+LURKER_IMAGE="ghcr.io/amiantos/lurker:latest"
 INSTALL_DIR="/opt/lurker"
 DEPLOY_LOG="/var/log/lurker-deploy.log"
 
@@ -84,6 +99,14 @@ require_config() {
   fi
   if [ -z "$ADMIN_EMAIL" ]; then
     log "ERROR: ADMIN_EMAIL is empty — set it near the top of this script."
+    missing=1
+  fi
+  if [ "$ENABLE_BOUNCER" = "true" ] && ! [[ "$BOUNCER_PORT" =~ ^[0-9]+$ ]]; then
+    log "ERROR: BOUNCER_PORT must be a TCP port number when ENABLE_BOUNCER=true."
+    missing=1
+  elif [ "$ENABLE_BOUNCER" = "true" ] &&
+    { [ "$BOUNCER_PORT" -lt 1 ] || [ "$BOUNCER_PORT" -gt 65535 ]; }; then
+    log "ERROR: BOUNCER_PORT must be between 1 and 65535."
     missing=1
   fi
   if [ "$missing" -ne 0 ]; then
@@ -192,6 +215,9 @@ configure_firewall() {
     # IRC servers connect back to :113 to verify each user's ident.
     ufw allow 113/tcp
   fi
+  if [ "$ENABLE_BOUNCER" = "true" ]; then
+    ufw allow "${BOUNCER_PORT}/tcp"
+  fi
   ufw --force enable
   ufw status verbose || true
 }
@@ -207,7 +233,13 @@ deploy() {
   curl -fsSL -o docker-compose.caddy.yml "$REPO_RAW/docker-compose.caddy.yml"
   curl -fsSL -o Caddyfile "$REPO_RAW/deploy/Caddyfile"
 
-  local compose_files="docker-compose.yml:docker-compose.caddy.yml"
+  cat > docker-compose.image.yml <<YAML
+services:
+  lurker:
+    image: ${LURKER_IMAGE}
+YAML
+
+  local compose_files="docker-compose.yml:docker-compose.image.yml:docker-compose.caddy.yml"
 
   # identd overlay, layered AFTER Caddy (which resets the lurker ports), so it
   # re-publishes :113 and turns on the built-in identd while the web port stays
@@ -224,6 +256,23 @@ services:
       - LURKER_IDENTD_PORT=113
 YAML
     compose_files="${compose_files}:docker-compose.identd.yml"
+  fi
+
+  # Optional IRC-server-compatible bouncer listener for desktop IRC clients.
+  # Generated locally so updates keep the setting, and layered after Caddy so
+  # only the bouncer port is published; the web port stays private to Caddy.
+  if [ "$ENABLE_BOUNCER" = "true" ]; then
+    log "IRC bouncer enabled — publishing :${BOUNCER_PORT} and binding listener in-container."
+    cat > docker-compose.bouncer.yml <<YAML
+services:
+  lurker:
+    ports:
+      - '${BOUNCER_PORT}:${BOUNCER_PORT}'
+    environment:
+      - LURKER_BOUNCER_HOST=0.0.0.0
+      - LURKER_BOUNCER_PORT=${BOUNCER_PORT}
+YAML
+    compose_files="${compose_files}:docker-compose.bouncer.yml"
   fi
 
   # Compose interpolates LURKER_DOMAIN/ADMIN_EMAIL into docker-compose.caddy.yml
@@ -262,6 +311,10 @@ log "${PUBLIC_IP} if you haven't already — Caddy retries Let's Encrypt"
 log "until it resolves, then https://${LURKER_DOMAIN} serves over HTTPS."
 log "Passkeys and web push are pre-configured; once you've created your"
 log "admin account, opt in per device from Lurker's settings."
+if [ "$ENABLE_BOUNCER" = "true" ]; then
+  log "IRC bouncer is listening on ${PUBLIC_IP}:${BOUNCER_PORT}."
+  log "Use PASS <read-write-api-token>:<network-id> from WeeChat/Irssi."
+fi
 if [ "$ENABLE_IDENTD" = "true" ]; then
   log "Built-in identd is running on :113 — connect to a network and check that"
   log "your ident shows up verified (no leading ~) via /whois on yourself."

@@ -59,6 +59,7 @@ import IgnoresPane from '../components/settings-panes/IgnoresPane.vue';
 import UsersPane from '../components/settings-panes/UsersPane.vue';
 import NetworksPane from '../components/settings-panes/NetworksPane.vue';
 import AccountPane from '../components/settings-panes/AccountPane.vue';
+import BouncerPane from '../components/settings-panes/BouncerPane.vue';
 import ApiTokensPane from '../components/settings-panes/ApiTokensPane.vue';
 import DataPane from '../components/settings-panes/DataPane.vue';
 import AboutPane from '../components/settings-panes/AboutPane.vue';
@@ -83,6 +84,7 @@ const BESPOKE_PANES: Record<string, Component> = {
   users: UsersPane,
   networks: NetworksPane,
   account: AccountPane,
+  bouncer: BouncerPane,
   'api-tokens': ApiTokensPane,
   data: DataPane,
   about: AboutPane,

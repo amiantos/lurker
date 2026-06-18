@@ -15,6 +15,20 @@ You don't need the droplet's IP before creating it: the droplet boots and starts
 
 Passkeys and web push notifications are configured automatically — the deploy derives the WebAuthn and push settings from your domain and email — so you can enable them per device from Lurker's in-app settings without touching the server.
 
+This deploy script is pinned to `https://github.com/amiantos/lurker` and runs `ghcr.io/amiantos/lurker:latest`.
+
+## Optional IRC bouncer
+
+To let WeeChat/Irssi connect directly to Lurker as an IRC bouncer, set `ENABLE_BOUNCER="true"` near the top of the deploy script. The default public TCP port is `6667`; change `BOUNCER_PORT` if you need a different one.
+
+The bouncer is plain TCP. Clients authenticate with:
+
+```irc
+PASS <read-write-api-token>:<network-id>
+```
+
+Create the API token in Lurker after your admin account exists. Use a separate WeeChat/Irssi server entry per Lurker network.
+
 Deploy progress is logged to `/var/log/lurker-deploy.log` on the droplet.
 
 ## Updating

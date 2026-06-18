@@ -93,6 +93,21 @@ interface LurkerWebSocket extends WebSocket {
 // Generic payload for outgoing WS messages.
 type WsPayload = Record<string, unknown>;
 
+const externalVisibleClientsByUser = new Map<number, number>();
+let evaluatePresenceForExternalClient: ((userId: number) => void) | null = null;
+
+export function addExternalVisibleClient(userId: number): void {
+  externalVisibleClientsByUser.set(userId, (externalVisibleClientsByUser.get(userId) || 0) + 1);
+  evaluatePresenceForExternalClient?.(userId);
+}
+
+export function removeExternalVisibleClient(userId: number): void {
+  const next = (externalVisibleClientsByUser.get(userId) || 0) - 1;
+  if (next > 0) externalVisibleClientsByUser.set(userId, next);
+  else externalVisibleClientsByUser.delete(userId);
+  evaluatePresenceForExternalClient?.(userId);
+}
+
 // Inbound message types that mutate IRC state or produce outbound IRC traffic.
 // A paused account is read-only, so these are rejected while reads (snapshot,
 // history, search, chanlist-search) and local view state (read markers, pins,
@@ -650,6 +665,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   }
 
   function userHasVisibleClient(userId: number): boolean {
+    if ((externalVisibleClientsByUser.get(userId) || 0) > 0) return true;
     const set = socketsByUser.get(userId);
     if (!set) return false;
     for (const ws of set) {
@@ -669,6 +685,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       scheduleAutoAway(userId);
     }
   }
+
+  evaluatePresenceForExternalClient = evaluatePresence;
 
   // Single path for "tell every tab of this user what the buffer's unread
   // counts are now." Used by mark-read echo and by the live IRC-event fan-out

@@ -1331,6 +1331,7 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'users', label: 'Users', kind: 'bespoke', adminOnly: true },
   { id: 'networks', label: 'Networks', kind: 'bespoke' },
   { id: 'account', label: 'Account', kind: 'bespoke' },
+  { id: 'bouncer', label: 'Bouncer', kind: 'bespoke', selfHostedOnly: true },
   // Disabled in node edition: bearer clients can't be routed through the
   // per-cell proxy, so the server doesn't mount /api/api-tokens or /mcp there
   // (A7). Hide the whole category in the hosted edition.

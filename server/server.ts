@@ -18,6 +18,7 @@ import { getEdition, isNodeMode } from './utils/edition.js';
 import { startOrchestratorClient, stopOrchestratorClient } from './services/orchestratorClient.js';
 import { startModerationReporter, stopModerationReporter } from './services/moderationReport.js';
 import { startIdentd, stopIdentd, isIdentdEnabled, identdPort } from './services/identd.js';
+import { startBouncerServer, stopBouncerServer } from './services/bouncerServer.js';
 import {
   recoverInterruptedExports,
   startExportSweeper,
@@ -25,6 +26,10 @@ import {
 } from './services/exportJobs.js';
 
 const PORT = Number(process.env.PORT || 8010);
+const BOUNCER_PORT = process.env.LURKER_BOUNCER_PORT
+  ? Number(process.env.LURKER_BOUNCER_PORT)
+  : null;
+const BOUNCER_HOST = process.env.LURKER_BOUNCER_HOST || '127.0.0.1';
 const EDITION = getEdition();
 const { secret: SESSION_SECRET, source: sessionSecretSource } = resolveSessionSecret();
 if (sessionSecretSource === 'generated') {
@@ -74,6 +79,12 @@ if (wrapped.encrypted > 0) {
 
 ircManager.initAll();
 
+if (BOUNCER_PORT && Number.isInteger(BOUNCER_PORT) && BOUNCER_PORT > 0) {
+  startBouncerServer({ host: BOUNCER_HOST, port: BOUNCER_PORT });
+} else if (process.env.LURKER_BOUNCER_PORT) {
+  console.warn('[lurker] LURKER_BOUNCER_PORT is set but is not a valid TCP port; bouncer disabled');
+}
+
 // Fail any export job a prior crash/restart left mid-flight, drop partial
 // artifacts + expired ones, then sweep finished exports on an interval.
 recoverInterruptedExports();
@@ -98,9 +109,11 @@ function shutdown(signal: string): void {
   stopOrchestratorClient();
   stopModerationReporter();
   stopIdentd();
-  shutdownExportJobs();
-  ircManager.shutdown();
-  server.close(() => process.exit(0));
+  void stopBouncerServer().finally(() => {
+    shutdownExportJobs();
+    ircManager.shutdown();
+    server.close(() => process.exit(0));
+  });
   setTimeout(() => process.exit(1), 5000).unref();
 }
 process.on('SIGINT', () => shutdown('SIGINT'));

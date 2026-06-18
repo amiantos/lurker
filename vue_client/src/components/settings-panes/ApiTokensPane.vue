@@ -11,9 +11,10 @@
   <section id="api-tokens" class="settings-pane">
     <h2>api tokens</h2>
     <p class="section-desc">
-      Bearer tokens grant scripts and AI agents access to your Lurker data through the MCP endpoint
-      at <code>/mcp</code>. Each token belongs to your account only and can be revoked at any time.
-      The token itself is shown <strong>once</strong> on creation — copy it before closing the row.
+      Bearer tokens grant scripts, AI agents, and bouncer clients access to your Lurker account. MCP
+      clients use <code>/mcp</code>; WeeChat and Irssi use read-write tokens from the Bouncer pane.
+      Each token belongs to your account only and can be revoked at any time. The token itself is
+      shown <strong>once</strong> on creation — copy it before closing the row.
     </p>
     <p v-if="error" class="error inline">{{ error }}</p>
 
