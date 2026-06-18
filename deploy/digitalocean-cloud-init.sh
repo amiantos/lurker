@@ -50,11 +50,17 @@ ADMIN_EMAIL=""
 # single-user instance that doesn't need it.
 #
 # Requires a Lurker image that includes identd (ghcr.io/amiantos/lurker:latest
-# once that lands). Docker note: the IRC server's :113 callback has to map back
-# to the exact source port of the outbound IRC connection; Docker's bridge NAT
-# preserves source ports at normal scale, so this works as-is — if you ever see
-# unverified idents under heavy concurrency, run the lurker service with
-# `network_mode: host` instead.
+# once that lands). Docker note: the :113 callback is matched against the full
+# connection 4-tuple (both addresses + both ports), so the container has to see
+# the IRC server's real source IP and the outbound connection's source port.
+# Docker's default bridge (iptables DNAT) preserves both for external callbacks,
+# so this works as-is. If you ever see unverified idents — under heavy
+# concurrency (source-port reuse), or if your host routes :113 through the
+# userland proxy so callbacks appear to come from the docker gateway — run the
+# lurker service with `network_mode: host` instead, so the container shares the
+# host's addresses directly. The cell logs `[identd] <ports> matched a live
+# connection but query address <ip> did not` on every such mismatch, which is the
+# signal to switch.
 ENABLE_IDENTD=""
 
 # ─── No edits needed below this line ────────────────────────────────────────

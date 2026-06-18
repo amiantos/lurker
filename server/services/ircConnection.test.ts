@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, vi } from 'vitest';
+import net from 'net';
 import { ircLineParser } from 'irc-framework';
 import type { ConnectOptions } from 'irc-framework';
 import {
@@ -17,6 +18,7 @@ import {
   sendRejectionTargetKind,
   sendRejectionText,
 } from './ircConnection.js';
+import { createIdentdServer, unregisterIdent } from './identd.js';
 
 describe('computeFallbackNick', () => {
   it('appends 1..9 in order', () => {
@@ -730,5 +732,111 @@ describe('refused-message handler routing (#283)', () => {
         text: 'This channel requires a registered nickname.',
       }),
     );
+  });
+});
+
+// identd must be wired to the *pre-TLS* connect event. The IRC server fires its
+// :113 ident callback the instant it accepts our TCP connection — concurrently
+// with the TLS handshake — so registering on the post-handshake 'socket
+// connected' event races (and frequently loses to) that callback on TLS
+// networks, leaving users unidentified behind the shared cell IP. irc-framework
+// emits 'raw socket connected' (with the underlying socket) at bare TCP connect
+// for exactly this purpose; these tests pin us to it.
+describe('built-in identd registration', () => {
+  function makeConn(): IrcConnection {
+    return new IrcConnection({
+      network: {
+        id: 1,
+        user_id: 1,
+        name: 'n',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates: 1,
+        nick: 'nick',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        created_at: new Date().toISOString(),
+      },
+      onEvent: () => {},
+    });
+  }
+
+  // Stand up the real identd server and ask it the same RFC 1413 question the IRC
+  // server would, so we assert the registration is observable end-to-end — not
+  // just that an internal field got set.
+  async function withIdentd(fn: (query: (line: string) => Promise<string>) => Promise<void>) {
+    const server = createIdentdServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    const query = (line: string) =>
+      new Promise<string>((resolve, reject) => {
+        const c = net.connect(port, '127.0.0.1', () => c.write(line));
+        let out = '';
+        c.on('data', (d) => (out += d.toString()));
+        c.on('end', () => resolve(out));
+        c.on('error', reject);
+      });
+    try {
+      await fn(query);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it('registers the full 4-tuple on pre-TLS "raw socket connected" so the :113 callback resolves', async () => {
+    const prev = process.env.LURKER_IDENTD_ENABLED;
+    process.env.LURKER_IDENTD_ENABLED = '1';
+    let identId: number | null = null;
+    try {
+      await withIdentd(async (query) => {
+        const conn = makeConn();
+        // irc-framework hands us the raw socket at bare TCP connect (before the
+        // TLS handshake completes) with all four tuple fields populated.
+        // Simulate that with the loopback tuple the temp identd server will see
+        // from the query below.
+        conn.client.emit('raw socket connected', {
+          localAddress: '127.0.0.1',
+          localPort: 40010,
+          remoteAddress: '127.0.0.1',
+          remotePort: 6697,
+        });
+        identId = conn.identdId;
+        expect(identId).toBeGreaterThan(0);
+
+        const reply = await query('40010, 6697\r\n');
+        // A successful USERID reply with a non-empty ident — registration landed
+        // before any query could arrive. (The exact ident string is covered by
+        // ident.test.ts; here we only care that the tuple resolved.)
+        expect(reply.trim()).toMatch(/^40010, 6697 : USERID : UNIX : \S+$/);
+      });
+    } finally {
+      unregisterIdent(identId);
+      if (prev === undefined) delete process.env.LURKER_IDENTD_ENABLED;
+      else process.env.LURKER_IDENTD_ENABLED = prev;
+    }
+  });
+
+  it('stays opt-in: no registration when LURKER_IDENTD_ENABLED is unset', () => {
+    const prev = process.env.LURKER_IDENTD_ENABLED;
+    delete process.env.LURKER_IDENTD_ENABLED;
+    try {
+      const conn = makeConn();
+      conn.client.emit('raw socket connected', {
+        localAddress: '127.0.0.1',
+        localPort: 40011,
+        remoteAddress: '127.0.0.1',
+        remotePort: 6697,
+      });
+      expect(conn.identdId).toBeNull();
+    } finally {
+      if (prev !== undefined) process.env.LURKER_IDENTD_ENABLED = prev;
+    }
   });
 });
