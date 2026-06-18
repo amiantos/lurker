@@ -672,6 +672,25 @@ describe('refused-message handler routing (#283)', () => {
     expect(tagmsg).toHaveBeenCalledTimes(1);
   });
 
+  it('prunes stale send-attribution entries so the map stays bounded', () => {
+    vi.useFakeTimers();
+    try {
+      const conn = makeConn();
+      conn.noteUserSend('#a');
+      conn.noteUserSend('bob');
+      expect(conn.lastUserSendAt.size).toBe(2);
+
+      // Past the attribution window, the next send prunes the now-stale entries.
+      vi.advanceTimersByTime(16_000);
+      conn.noteUserSend('#c');
+      expect(conn.lastUserSendAt.size).toBe(1);
+      expect(conn.recentUserSend('#a')).toBe(false);
+      expect(conn.recentUserSend('#c')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps 477 as a "Couldn’t join" toast when we are not in the channel', () => {
     const conn = makeConn();
     const publish = vi.fn<(event: unknown) => void>();

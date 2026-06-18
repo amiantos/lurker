@@ -2017,7 +2017,16 @@ export class IrcConnection {
   // reads this to tell an actual failed message from an automated TAGMSG/typing
   // bounce — the rejection numeric alone doesn't say which command it refused.
   noteUserSend(target: string): void {
-    this.lastUserSendAt.set(target.toLowerCase(), Date.now());
+    const now = Date.now();
+    // Prune entries past the attribution window before adding. They can never
+    // satisfy recentUserSend again, so keeping them would let the map grow
+    // unbounded as the user messages more one-off DM targets over a long-lived
+    // connection. The live set is tiny — only targets messaged in the last few
+    // seconds — so this stays cheap.
+    for (const [key, at] of this.lastUserSendAt) {
+      if (now - at > SEND_REJECTION_ATTRIBUTION_MS) this.lastUserSendAt.delete(key);
+    }
+    this.lastUserSendAt.set(target.toLowerCase(), now);
   }
 
   recentUserSend(target: string): boolean {
