@@ -89,6 +89,7 @@
          (issue #204). Anchored to the form like the pickers above; `toggle-el`
          is the prompt button so its own taps don't double-dismiss. -->
     <HistoryPicker
+      ref="historyPickerEl"
       :open="historyPickerOpen"
       :entries="historyEntries"
       :anchor="formEl"
@@ -191,6 +192,7 @@ let channelPickerTokenEnd = -1;
 // lists the whole buffer history. `promptBtnEl` is that toggle, kept here so
 // HistoryPicker can exclude it from its outside-tap dismissal.
 const historyPickerOpen = ref(false);
+const historyPickerEl = ref<InstanceType<typeof HistoryPicker> | null>(null);
 const promptBtnEl = ref<HTMLElement | null>(null);
 // Suggestion-strip and colour-picker visibility / contents live in
 // useComposerOverlay so StatusBar can render them as overlays without prop
@@ -679,7 +681,7 @@ function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        nickPickerEl.value.moveActive(e.key === 'ArrowUp' ? 1 : -1);
+        nickPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
         return;
       }
     } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
@@ -699,7 +701,7 @@ function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        channelPickerEl.value.moveActive(e.key === 'ArrowUp' ? 1 : -1);
+        channelPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
         return;
       }
     } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
@@ -780,6 +782,26 @@ function onKeydown(e: KeyboardEvent): void {
     } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
       e.preventDefault();
       confirmEmojiActive();
+      return;
+    }
+  }
+  // The previous-input recall menu (the `>` prompt's popover) owns the nav keys
+  // while it's open with entries: arrows move the highlighted line, Tab or Enter
+  // recall it into the composer, Escape is left to the popover's own document
+  // listener. This runs ahead of the inline Up/Down history walk and Enter-
+  // submit below, so an open menu takes precedence over walking history in
+  // place. Gated on hasCandidates() like the nick/channel pickers; skipped
+  // mid-IME. Shift+Enter still newlines.
+  if (historyPickerOpen.value && !e.isComposing && historyPickerEl.value?.hasCandidates()) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (!e.altKey && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        historyPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        return;
+      }
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      e.preventDefault();
+      historyPickerEl.value.confirmActive();
       return;
     }
   }
