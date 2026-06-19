@@ -201,6 +201,9 @@ const GRANULAR_LEVELS = CANONICAL_ORDER.filter(
   (l) => l !== 'ALL' && l !== 'CTCPS' && l !== 'NOHIGHLIGHT',
 );
 
+// Mirrors MAX_PATTERN_LENGTH in server/services/ignoreRulesService.ts.
+const MAX_PATTERN_LENGTH = 512;
+
 const networksStore = useNetworksStore();
 const ignores = useIgnoresStore();
 
@@ -330,6 +333,13 @@ function buildRule(): IgnoreRule | null {
   const channels = parseChannels(form.channels);
   const pattern = form.pattern.trim() || null;
   const patternKind = form.patternKind;
+  // Mirror the server's cap so the add can't be rejected after the edit's remove
+  // has already fired (which would lose the original rule). buildRule runs before
+  // the remove in submit(), so every check here is a safe pre-flight.
+  if (pattern && pattern.length > MAX_PATTERN_LENGTH) {
+    formError.value = `message text is too long (max ${MAX_PATTERN_LENGTH} characters).`;
+    return null;
+  }
   if (pattern && patternKind === 'regex') {
     try {
       void new RegExp(pattern);
@@ -339,10 +349,16 @@ function buildRule(): IgnoreRule | null {
     }
   }
   const levels = buildLevels();
-  // Guard the one footgun a GUI shouldn't make easy: a rule with no who/where/
-  // what AND ALL levels hides the entire feed. Broad-but-targeted rules (all
-  // notices, all joins on #chan) are fine.
-  if (!mask && !channels && !pattern && !form.isExcept && levels.includes('ALL')) {
+  // Guard the footgun rules a GUI shouldn't make easy. A rule with no who/where/
+  // what matches the whole feed: as a hide rule with ALL it hides everything; as
+  // an exception it whitelists everyone, neutralizing real ignores. Broad-but-
+  // targeted rules (all notices, all joins on #chan) stay fine.
+  const unscoped = !mask && !channels && !pattern;
+  if (unscoped && form.isExcept) {
+    formError.value = 'an exception needs a mask, channel, or text pattern to whitelist.';
+    return null;
+  }
+  if (unscoped && levels.includes('ALL')) {
     formError.value = 'that would hide everything — add a mask, channel, or text pattern.';
     return null;
   }
