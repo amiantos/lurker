@@ -92,3 +92,48 @@ describe('ignores store — global vs network scope (#350)', () => {
     );
   });
 });
+
+describe('ignores store — matcher getters union global + network', () => {
+  it('evaluate hides senders matched by either a global or a network rule', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot(
+      [{ networkId: 1, ignoredMasks: [entry({ id: 2, mask: 'neto', levels: ['PUBLIC'] })] }],
+      [entry({ id: 1, mask: 'globo' })],
+    );
+    expect(s.evaluate(1, ctx('globo')).hide).toBe(true);
+    expect(s.evaluate(1, ctx('neto')).hide).toBe(true);
+    expect(s.evaluate(1, ctx('nobody')).hide).toBe(false);
+  });
+
+  it('isMessageHidden honors a global rule for message-shaped result rows', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot([{ networkId: 1, ignoredMasks: [] }], [entry({ id: 1, mask: 'spam' })]);
+    expect(s.isMessageHidden(1, { nick: 'spam', target: '#x', body: 'hi' })).toBe(true);
+    expect(s.isMessageHidden(1, { nick: 'ok', target: '#x', body: 'hi' })).toBe(false);
+    expect(s.isMessageHidden(1, { nick: null, target: '#x' })).toBe(false);
+  });
+
+  it('isIgnored and isMemberHidden see a whole-identity global rule', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot([{ networkId: 1, ignoredMasks: [] }], [entry({ id: 1, mask: 'troll' })]);
+    expect(s.isIgnored(1, 'troll', '')).toBe(true);
+    expect(s.isMemberHidden(1, 'troll', null, '#x')).toBe(true);
+    expect(s.isMemberHidden(1, 'friend', null, '#x')).toBe(false);
+  });
+
+  it('removeRule / removeMask / addMask route to the socket with the right scope', () => {
+    const s = useIgnoresStore();
+    s.removeRule(null, { id: 9 });
+    expect(h.socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'remove-ignore', networkId: null, id: 9 }),
+    );
+    s.removeMask(3, 'bob');
+    expect(h.socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'remove-ignore', networkId: 3, mask: 'bob' }),
+    );
+    s.addMask(null, 'eve');
+    expect(h.socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'add-ignore', networkId: null, mask: 'eve' }),
+    );
+  });
+});

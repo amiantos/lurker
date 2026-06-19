@@ -106,6 +106,43 @@ describe('ircManager.snapshotForUser offline networks', () => {
   });
 });
 
+describe('ircManager ignore scoping (#350)', () => {
+  const igRule = (mask: string) => ({
+    mask,
+    channels: null,
+    pattern: null,
+    patternKind: 'substr' as const,
+    levels: ['ALL'],
+    isExcept: false,
+    expiresAt: null,
+  });
+
+  it('keeps global rules out of per-network snapshot blobs and in listGlobalIgnoresFor', () => {
+    const user = createUser('irc-ignore-scope');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'z',
+      autoconnect: false,
+    });
+    if (!net) throw new Error('createNetwork returned undefined');
+
+    ircManager.addIgnore(user.id, null, igRule('globalguy'));
+    ircManager.addIgnore(user.id, net.id, igRule('netguy'));
+
+    expect(ircManager.listGlobalIgnoresFor(user.id).map((r) => r.mask)).toEqual(['globalguy']);
+    expect(ircManager.listIgnoredFor(user.id, net.id).map((r) => r.mask)).toEqual(['netguy']);
+
+    const snap = ircManager.snapshotForUser(user.id) as Array<Record<string, unknown>>;
+    const blob = snap.find((b) => b.networkId === net.id)!;
+    const masks = (blob.ignoredMasks as Array<{ mask: string }>).map((m) => m.mask);
+    expect(masks).toContain('netguy');
+    expect(masks).not.toContain('globalguy');
+  });
+});
+
 describe('ircManager deferrable connect (issue #236 throttle seam)', () => {
   function makeAutoconnectNetwork(handle: string) {
     const user = createUser(handle);

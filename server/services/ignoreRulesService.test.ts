@@ -98,4 +98,22 @@ describe('ignoreRulesService scoping + cache (#350)', () => {
     expect(evaluateIgnores(svc.getCompiled(u.id, n1.id), ctx).hide).toBe(true);
     expect(evaluateIgnores(svc.getCompiled(u.id, n2.id), ctx).hide).toBe(false);
   });
+
+  it('listGlobal returns only the global rules', () => {
+    const u = createUser('igsvc-listglobal');
+    const n = createNetwork(u.id, { name: 'a', host: 'h', port: 6697, tls: true, nick: 'g' })!;
+    svc.add(u.id, null, base({ mask: 'g1' }));
+    svc.add(u.id, n.id, base({ mask: 'netonly' }));
+    expect(svc.listGlobal(u.id).map((r) => r.mask)).toEqual(['g1']);
+  });
+
+  it('removeByMask at a network scope clears the global and that network’s match', () => {
+    const u = createUser('igsvc-rmmask');
+    const n = createNetwork(u.id, { name: 'a', host: 'h', port: 6697, tls: true, nick: 'g' })!;
+    svc.add(u.id, null, base({ mask: 'dup' }));
+    svc.add(u.id, n.id, base({ mask: 'dup' }));
+    expect(svc.removeByMask(u.id, n.id, 'dup')).toBe(2);
+    expect(svc.listGlobal(u.id)).toHaveLength(0);
+    expect(svc.list(u.id, n.id)).toHaveLength(0);
+  });
 });

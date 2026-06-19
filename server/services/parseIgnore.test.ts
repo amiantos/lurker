@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { parseIgnoreArgs } from '../../shared/parseIgnore.js';
+import { parseIgnoreArgs, durationToExpiry } from '../../shared/parseIgnore.js';
 
 const NOW = Date.parse('2026-06-18T00:00:00.000Z');
 const p = (s: string) => parseIgnoreArgs(s, NOW);
@@ -121,5 +121,17 @@ describe('parseIgnoreArgs — scope (#350)', () => {
       levels: ['JOINS'],
       scopeNetwork: true,
     });
+  });
+});
+
+describe('durationToExpiry (#350) — shared by the settings pane', () => {
+  it('computes an ISO expiry from a duration string', () => {
+    expect(durationToExpiry('7 days', NOW)).toBe('2026-06-25T00:00:00.000Z');
+    expect(durationToExpiry('300', NOW)).toBe('2026-06-18T00:05:00.000Z');
+  });
+
+  it('returns null for an unparseable or empty duration', () => {
+    expect(durationToExpiry('soon', NOW)).toBeNull();
+    expect(durationToExpiry('', NOW)).toBeNull();
   });
 });
