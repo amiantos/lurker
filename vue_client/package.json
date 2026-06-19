@@ -14,16 +14,16 @@
     "@fortawesome/fontawesome-free": "^7.2.0",
     "@simplewebauthn/browser": "^13.3.0",
     "pinia": "^3.0.4",
-    "vue": "^3.5.35",
+    "vue": "^3.5.38",
     "vue-router": "^5.1.0",
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
-    "@types/node": "^25.9.2",
+    "@types/node": "^25.9.3",
     "@vitejs/plugin-vue": "^6.0.7",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
     "vite-plugin-mkcert": "^2.1.0",
-    "vue-tsc": "^3.3.4"
+    "vue-tsc": "^3.3.5"
   }
 }
