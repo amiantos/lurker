@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { ref } from 'vue';
-import { emojiGlyph, loadEmoji } from '../utils/emojiShortcodes.js';
+import { emojiGlyph, loadEmoji, onEmojiLoaded } from '../utils/emojiShortcodes.js';
 
 // Render-time `:shortcode:` → emoji glyph for the message list. The ~1,900-entry
 // table lives in a lazily-loaded chunk (emojiData.ts); `preloadEmoji` kicks the
@@ -16,13 +16,18 @@ import { emojiGlyph, loadEmoji } from '../utils/emojiShortcodes.js';
 // verbatim.
 const emojiReady = ref(false);
 
-export async function preloadEmoji(): Promise<void> {
-  try {
-    await loadEmoji();
-    emojiReady.value = true;
-  } catch {
-    // loadEmoji clears its own cache on failure; a later preload retries.
-  }
+// Flip the gate on load completion from *any* caller (not just our preload), so
+// render-time parsing recovers even if the initial preload failed offline and
+// the table is later loaded by the composer. onEmojiLoaded fires once.
+onEmojiLoaded(() => {
+  emojiReady.value = true;
+});
+
+export function preloadEmoji(): void {
+  // Fire-and-forget; the ready flip is handled by onEmojiLoaded above. A failed
+  // load clears loadEmoji's cache, so any later load (here or elsewhere) retries
+  // and still notifies.
+  void loadEmoji().catch(() => {});
 }
 
 // The synchronous shortcode resolver once the table has loaded, else null.

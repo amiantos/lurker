@@ -7,6 +7,7 @@ import {
   findActiveShortcode,
   findCompletedShortcode,
   loadEmoji,
+  onEmojiLoaded,
   rankShortcodes,
   shortcodeScanRegex,
 } from './emojiShortcodes.js';
@@ -170,5 +171,25 @@ describe('emojiGlyph', () => {
   it('returns null for an unknown shortcode', async () => {
     await loadEmoji();
     expect(emojiGlyph('definitely_not_an_emoji')).toBeNull();
+  });
+});
+
+describe('onEmojiLoaded', () => {
+  it('notifies a listener once the table is available', async () => {
+    let notified = false;
+    onEmojiLoaded(() => {
+      notified = true;
+    });
+    await loadEmoji();
+    expect(notified).toBe(true);
+  });
+
+  it('fires immediately when the table is already loaded', async () => {
+    await loadEmoji();
+    let notified = false;
+    onEmojiLoaded(() => {
+      notified = true;
+    });
+    expect(notified).toBe(true);
   });
 });

@@ -93,12 +93,25 @@ let emojiModule: Promise<typeof import('./emojiData.js')> | null = null;
 // Stays null until the chunk lands; the render pass treats that as "no emoji
 // yet" and shows the literal `:name:` until a reload re-runs the split.
 let loadedTable: Record<string, string> | null = null;
+// One-shot listeners fired when the table first becomes available, whichever
+// caller triggered the load. Lets the render layer (useEmoji) recover even if
+// its own preload failed: a later successful load from anywhere — the
+// composer's suggester or auto-convert — still flips the render gate, no
+// reload needed. Cleared on success; a failed load keeps them registered so
+// the next attempt still notifies.
+const loadedListeners = new Set<() => void>();
+function notifyEmojiLoaded(): void {
+  const cbs = [...loadedListeners];
+  loadedListeners.clear();
+  for (const cb of cbs) cb();
+}
 export function loadEmoji(): Promise<typeof import('./emojiData.js')> {
   if (!emojiModule) {
     emojiModule = import('./emojiData.js');
     emojiModule
       .then((mod) => {
         loadedTable = mod.EMOJI;
+        notifyEmojiLoaded();
         return mod;
       })
       .catch(() => {
@@ -106,6 +119,16 @@ export function loadEmoji(): Promise<typeof import('./emojiData.js')> {
       });
   }
   return emojiModule;
+}
+
+// Register a callback for when the emoji table is available. Fires immediately
+// if it's already loaded, otherwise once the (current or a later) load resolves.
+export function onEmojiLoaded(cb: () => void): void {
+  if (loadedTable) {
+    cb();
+    return;
+  }
+  loadedListeners.add(cb);
 }
 
 // Synchronous `:shortcode:` → glyph resolver for the render-time pass. Returns
