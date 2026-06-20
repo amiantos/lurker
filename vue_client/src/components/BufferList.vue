@@ -846,7 +846,9 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: var(--space-2) 0;
+  /* No top padding: the LURKER row is always first and sits flush at the top so
+     it lines up with the topic bar across the sidebar boundary (#355). */
+  padding: 0 0 var(--space-2);
 }
 /* IRCCloud-style affordance: a thin accent bar pinned to the top or bottom
    edge of the list when unread buffers are scrolled out of view that way.
@@ -911,6 +913,23 @@ onBeforeUnmount(() => {
 .net + .net {
   border-top: 1px solid var(--border);
   margin-top: var(--space-2);
+}
+/* The LURKER row is the sidebar's header — size it to the topic bar beside it:
+   strip the group padding so it sits flush, give its head the topic bar's 8px
+   block padding, and cap it with a 1px rule that lines up with the topic
+   divider. (#355) */
+.system-net {
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+}
+.system-net .net-head {
+  padding-block: var(--space-4);
+}
+/* The next group draws its own top separator via `.net + .net`; drop it here so
+   it doesn't double up with the LURKER row's bottom rule. */
+.system-net + .net {
+  border-top: none;
+  margin-top: 0;
 }
 .net-head {
   display: flex;
