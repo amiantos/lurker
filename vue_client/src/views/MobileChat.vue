@@ -213,8 +213,11 @@ import { useImageModal } from '../composables/useImageModal.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useVisualViewport } from '../composables/useVisualViewport.js';
+import { useBuffersStore } from '../stores/buffers.js';
+import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 
 const networks = useNetworksStore();
+const buffers = useBuffersStore();
 const { connected } = useSocket();
 const { keyboardOpen } = useVisualViewport();
 const {
@@ -239,7 +242,9 @@ const friendCount = computed(() => friends.contacts.length);
 const whois = useWhoisStore();
 
 function openSystemConsole() {
-  networks.activateSystem();
+  // Route through activate() (not networks.activateSystem) so the system buffer
+  // gets the full read-state lifecycle: divider snapshot + mark-read on entry.
+  buffers.activate(null, SYSTEM_KEY);
   // The activeKey watcher only fires on value change. If the user is
   // already on `:system:` (e.g. they hit Back to the list, then re-tap
   // the logo), the watcher won't advance them — drive the screen

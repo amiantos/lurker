@@ -92,12 +92,20 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_messages_buffer ON messages(network_id, target, id DESC);
 
+    -- network_id is nullable: NULL keys the app-scoped system buffer (#355),
+    -- which has no network. The composite PK stays (network buffers dedupe on it,
+    -- and migrations like foldBufferCase use it as an ON CONFLICT target), but a
+    -- composite PK treats a NULL network_id as distinct — so the system buffer's
+    -- row is instead deduped by the coalesced index idx_buffer_reads_key (created
+    -- near the end of this file), which the runtime upserts target.
     CREATE TABLE IF NOT EXISTS buffer_reads (
       user_id INTEGER NOT NULL,
-      network_id INTEGER NOT NULL,
+      network_id INTEGER,
       target TEXT NOT NULL,
       last_read_message_id INTEGER NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      cleared_before_message_id INTEGER,
+      cleared_at TEXT,
       PRIMARY KEY (user_id, network_id, target),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
@@ -685,7 +693,7 @@ ensureColumn('upload_history', 'removed', 'INTEGER NOT NULL DEFAULT 0');
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -1104,6 +1112,57 @@ if (schemaVersion < 11) {
   }
 }
 
+if (schemaVersion < 12) {
+  // Issue #355: buffer_reads.network_id was NOT NULL with a composite
+  // PRIMARY KEY (user_id, network_id, target). The app-scoped system buffer has
+  // no network, and a composite PK treats a NULL network_id as distinct (so the
+  // upsert wouldn't dedupe its row). Make network_id nullable and move
+  // uniqueness to the coalesced index idx_buffer_reads_key (created below).
+  // SQLite can't drop NOT NULL or a PK in place, so rebuild; rows copy verbatim
+  // (all existing rows have a real network_id, so they stay unique under the
+  // coalesced key). Detect the old shape via table_info so fresh installs — which
+  // already have the new shape from migrate() — copy zero work.
+  const nrCol = (db.prepare(`PRAGMA table_info(buffer_reads)`).all() as TableInfoRow[]).find(
+    (c) => c.name === 'network_id',
+  );
+  if (nrCol && nrCol.notnull === 1) {
+    const rebuild = db.transaction(() => {
+      db.exec(`DROP INDEX IF EXISTS idx_buffer_reads_user`);
+      db.exec(`
+        CREATE TABLE buffer_reads_new (
+          user_id INTEGER NOT NULL,
+          network_id INTEGER,
+          target TEXT NOT NULL,
+          last_read_message_id INTEGER NOT NULL,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          cleared_before_message_id INTEGER,
+          cleared_at TEXT,
+          PRIMARY KEY (user_id, network_id, target),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+        )
+      `);
+      db.exec(`
+        INSERT INTO buffer_reads_new
+          (user_id, network_id, target, last_read_message_id, updated_at,
+           cleared_before_message_id, cleared_at)
+        SELECT user_id, network_id, target, last_read_message_id, updated_at,
+           cleared_before_message_id, cleared_at
+        FROM buffer_reads
+      `);
+      db.exec(`DROP TABLE buffer_reads`);
+      db.exec(`ALTER TABLE buffer_reads_new RENAME TO buffer_reads`);
+    });
+    const prevFk = db.pragma('foreign_keys', { simple: true });
+    db.pragma('foreign_keys = OFF');
+    try {
+      rebuild();
+    } finally {
+      db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
+    }
+  }
+}
+
 if (schemaVersion < SCHEMA_VERSION) {
   db.prepare(
     `INSERT INTO app_meta (key, value) VALUES ('schema_version', ?)
@@ -1121,5 +1180,14 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_auto_rule_unique
 // rebuilt paths (migrate() ran before the rebuild, so its CREATE is stale here).
 db.exec(`CREATE INDEX IF NOT EXISTS idx_ignored_masks_user_net
          ON ignored_masks(user_id, network_id)`);
+
+// #355 buffer_reads uniqueness: coalesced so a NULL network_id (the app-scoped
+// system buffer) dedupes on upsert; a plain composite index would treat NULL as
+// distinct. Created here (not in migrate()) so it survives the schemaVersion < 12
+// rebuild and applies to fresh installs alike. idx_buffer_reads_user is also
+// recreated since the rebuild drops it.
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_buffer_reads_key
+         ON buffer_reads(user_id, IFNULL(network_id, 0), target)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_buffer_reads_user ON buffer_reads(user_id)`);
 
 export default db;

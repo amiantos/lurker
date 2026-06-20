@@ -4,7 +4,7 @@
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
 import { useAuthStore } from './auth.js';
-import { isVirtualKey, SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import { isVirtualKey } from '../lib/virtualBuffers.js';
 
 export interface Network {
   id: number;
@@ -144,17 +144,16 @@ export const useNetworksStore = defineStore('networks', {
       if (useAuthStore().isPaused) return;
       await api(`/api/networks/${id}/reconnect`, { method: 'POST' });
     },
-    setActive(networkId: number | string, target: string) {
-      this.activeKey = `${networkId}::${target}`;
+    setActive(networkId: number | string | null, target: string) {
+      // The app-scoped system buffer (#355) has no network — it keys on the bare
+      // sentinel target, matching the buffers store's key() helper.
+      this.activeKey = networkId == null ? target : `${networkId}::${target}`;
     },
     // Virtual buffers (system console, friends) aren't tied to an IRC network.
     // They use a flat sentinel key (no `::`) so the existing
     // `${networkId}::${target}` parsers ignore them.
     activateVirtual(key: string) {
       this.activeKey = key;
-    },
-    activateSystem() {
-      this.activateVirtual(SYSTEM_KEY);
     },
     applySnapshot(networks: NetworkState[]) {
       const map: Record<number | string, NetworkState> = {};

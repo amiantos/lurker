@@ -3,10 +3,11 @@
 
 import db from './index.js';
 
-/** A row from `buffer_reads`. */
+/** A row from `buffer_reads`. network_id is null for the app-scoped system
+ * buffer (#355). */
 export interface BufferRead {
   user_id: number;
-  network_id: number;
+  network_id: number | null;
   target: string;
   last_read_message_id: number;
   updated_at: string;
@@ -19,18 +20,23 @@ export interface ClearedState {
   clearedAt: string | null;
 }
 
+// ON CONFLICT targets the coalesced unique index (user_id, IFNULL(network_id,0),
+// target) so the app-scoped system buffer (NULL network_id) dedupes — a plain
+// (user_id, network_id, target) conflict target treats NULL as distinct.
 const upsertStmt = db.prepare(`
   INSERT INTO buffer_reads (user_id, network_id, target, last_read_message_id, updated_at)
   VALUES (?, ?, ?, ?, datetime('now'))
-  ON CONFLICT(user_id, network_id, target) DO UPDATE SET
+  ON CONFLICT(user_id, IFNULL(network_id, 0), target) DO UPDATE SET
     last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id),
     updated_at = excluded.updated_at
 `);
 
+// IFNULL on both sides so a NULL network_id (system buffer) matches its own row;
+// for real network ids it's an identity, so network-buffer lookups are unchanged.
 const getOneStmt = db.prepare(`
   SELECT last_read_message_id AS lastReadId
   FROM buffer_reads
-  WHERE user_id = ? AND network_id = ? AND target = ?
+  WHERE user_id = ? AND IFNULL(network_id, 0) = IFNULL(?, 0) AND target = ?
 `);
 
 const listForUserStmt = db.prepare(`
@@ -52,7 +58,7 @@ export function listReadStateForUser(userId: number): Record<string, number> {
   return out;
 }
 
-export function getReadState(userId: number, networkId: number, target: string): number {
+export function getReadState(userId: number, networkId: number | null, target: string): number {
   const row = getOneStmt.get(userId, networkId, target) as { lastReadId: number } | undefined;
   return row ? row.lastReadId : 0;
 }
@@ -62,7 +68,7 @@ export function getReadState(userId: number, networkId: number, target: string):
 // with rather than echoing what the client sent.
 export function setReadState(
   userId: number,
-  networkId: number,
+  networkId: number | null,
   target: string,
   messageId: number,
 ): number {
@@ -84,7 +90,7 @@ const upsertClearedStmt = db.prepare(`
     (user_id, network_id, target, last_read_message_id,
      cleared_before_message_id, cleared_at, updated_at)
   VALUES (?, ?, ?, 0, ?, ?, datetime('now'))
-  ON CONFLICT(user_id, network_id, target) DO UPDATE SET
+  ON CONFLICT(user_id, IFNULL(network_id, 0), target) DO UPDATE SET
     cleared_before_message_id = excluded.cleared_before_message_id,
     cleared_at = excluded.cleared_at,
     updated_at = excluded.updated_at
@@ -95,7 +101,7 @@ const getClearedStmt = db.prepare(`
     cleared_before_message_id AS clearedBeforeId,
     cleared_at AS clearedAt
   FROM buffer_reads
-  WHERE user_id = ? AND network_id = ? AND target = ?
+  WHERE user_id = ? AND IFNULL(network_id, 0) = IFNULL(?, 0) AND target = ?
 `);
 
 const listClearedStmt = db.prepare(`

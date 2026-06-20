@@ -297,7 +297,7 @@ export const useBuffersStore = defineStore('buffers', {
     // flat ':'-sentinels (`:server:`, `:friends:`…) are fixed keys — exact only.
     findByTarget:
       (state) =>
-      (networkId: number | string, target: string): Buffer | null => {
+      (networkId: number | string | null, target: string): Buffer | null => {
         const k = resolveExistingKey(state.buffers, networkId, target);
         return k ? state.buffers[k] : null;
       },
@@ -340,7 +340,7 @@ export const useBuffersStore = defineStore('buffers', {
         // `bob` while the user sits in the `Bob` buffer reads as inactive and
         // the divider/read-sync below silently skips (#327). Mirrors the same
         // resolve-then-compare applyReadState does.
-        const isActive = networks.activeKey === `${buf.networkId}::${buf.target}`;
+        const isActive = networks.activeKey === key(buf.networkId, buf.target);
         if (isActive) {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
@@ -396,6 +396,18 @@ export const useBuffersStore = defineStore('buffers', {
       buf.messages.push(...fresh);
       if (buf.messages.length > MAX_PER_BUFFER)
         buf.messages.splice(0, buf.messages.length - MAX_PER_BUFFER);
+      // If the user is sitting in the system buffer, keep it marked read live
+      // (mirrors pushMessage for network buffers) so the server's read pointer —
+      // and thus the LURKER badge on other tabs/devices — advances past lines
+      // they've now seen. applyReadState suppresses the badge here meanwhile.
+      const networks = useNetworksStore();
+      if (networks.activeKey === SYSTEM_KEY) {
+        const lastId = fresh[fresh.length - 1].id as number;
+        if (lastId > buf.lastReadId) {
+          buf.lastReadId = lastId;
+          socketSend({ type: 'mark-read', networkId: null, target: SYSTEM_KEY, messageId: lastId });
+        }
+      }
     },
     replaceBacklog(
       networkId: number | string,
@@ -868,8 +880,9 @@ export const useBuffersStore = defineStore('buffers', {
       const networks = useNetworksStore();
       // Compare against the resolved buffer's canonical key, not the (possibly
       // differently-cased) broadcast target, so badge suppression tracks the
-      // buffer the user is actually sitting in.
-      const isActive = networks.activeKey === `${buf.networkId}::${buf.target}`;
+      // buffer the user is actually sitting in. key() also yields the bare
+      // sentinel for the app-scoped system buffer (networkId null).
+      const isActive = networks.activeKey === key(buf.networkId, buf.target);
       // Suppress the unread badge for the buffer the user is sitting in.
       // A read-state broadcast can briefly carry a non-zero unread for the
       // active buffer when an IRC event lands before the mark-read echo;
@@ -919,7 +932,7 @@ export const useBuffersStore = defineStore('buffers', {
     // phantom divider on the next session. The previous buffer's pointer
     // is already current because pushMessage keeps it synced live while
     // focused (see pushMessage), so leaving it just drops local state.
-    activate(networkId: number | string, target: string) {
+    activate(networkId: number | string | null, target: string) {
       const networks = useNetworksStore();
       // Resolve to the canonical open buffer first (case-insensitive): a DM
       // activated from a member-list nick, /query, the profile modal, or a
@@ -931,7 +944,9 @@ export const useBuffersStore = defineStore('buffers', {
       // target when none is open yet (first writer's case becomes canonical).
       const existing = this.findByTarget(networkId, target);
       const canonTarget = existing ? existing.target : target;
-      const newKey = `${networkId}::${canonTarget}`;
+      // key() yields the bare sentinel for the app-scoped system buffer
+      // (networkId null) and the usual `${networkId}::${target}` otherwise.
+      const newKey = key(networkId, canonTarget);
       const prevKey = networks.activeKey;
       if (prevKey && prevKey !== newKey) {
         const prev = this.buffers[prevKey];
@@ -985,10 +1000,13 @@ export const useBuffersStore = defineStore('buffers', {
       // Fire a fresh latest fetch so the user lands on live tail content
       // instead of an empty buffer. The applyLatestReplace response will
       // do its own mark-read against the new tail.
-      if (buf.pendingRefetch) {
+      // History fetches are network-only — the app-scoped system buffer has no
+      // server history endpoint (its content is the system-log snapshot).
+      if (networkId != null && buf.pendingRefetch) {
         buf.pendingRefetch = false;
         this.reattachToLive(networkId, canonTarget);
       } else if (
+        networkId != null &&
         buf.messages.length === 0 &&
         buf.hasMoreOlder &&
         !buf.detached &&
@@ -1017,7 +1035,9 @@ export const useBuffersStore = defineStore('buffers', {
       // dim reflect current state rather than a possibly-stale cached value.
       // The probe is silent (no /whois reply in the server buffer); only the
       // resulting peer-presence event flows back to update local state.
-      if (canonTarget && !canonTarget.startsWith('#') && !canonTarget.startsWith(':server:')) {
+      // DMs only — channels (#…) and the flat sentinels (:server:, :system:) have
+      // no peer to probe.
+      if (canonTarget && !canonTarget.startsWith('#') && !canonTarget.startsWith(':')) {
         socketSend({ type: 'probe-presence', networkId, nick: canonTarget });
       }
     },

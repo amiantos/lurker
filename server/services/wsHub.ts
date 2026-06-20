@@ -42,6 +42,7 @@ import {
   getClearedState,
   setClearedState,
 } from '../db/bufferReads.js';
+import { countNotableNewer } from '../db/systemMessages.js';
 import {
   addEntry as addInputHistory,
   listRecent as listRecentInputHistory,
@@ -268,9 +269,39 @@ export function decorateMessage(userId: number, event: MessageEvent): DecoratedE
   } as DecoratedEvent;
 }
 
-function computeUnreadFor(_userId: number, networkId: number, target: string, lastReadId: number) {
-  const unread = countNewer(networkId, target, lastReadId);
-  const highlights = unread === 0 ? 0 : countHighlightsNewer(networkId, target, lastReadId);
+// The app-scoped system buffer's target sentinel (mirrors the client's
+// SYSTEM_KEY). Its buffer_reads row carries a NULL network_id.
+const SYSTEM_TARGET = ':system:';
+
+// Which system-log lines mark the system buffer unread (#355). Mirrors
+// countNotableNewer's WHERE clause — keep the two in sync. Gates the live
+// read-state refresh so routine lifecycle lines don't fan out a no-op
+// read-state to every tab.
+function systemLineNotifies(line: LogLine): boolean {
+  return (
+    line.source === 'admin' ||
+    line.source === 'control-plane' ||
+    line.level === 'warn' ||
+    line.level === 'error'
+  );
+}
+
+function computeUnreadFor(
+  userId: number,
+  networkId: number | null,
+  target: string,
+  lastReadId: number,
+) {
+  // System buffer: no network, and its content lives in system_messages (not
+  // messages), so unread is the count of notable lines the user hasn't seen.
+  // Notable lines double as highlights so the LURKER row lights up for them.
+  if (networkId == null && target === SYSTEM_TARGET) {
+    const unread = countNotableNewer(userId, lastReadId);
+    return { lastReadId: lastReadId || 0, unread, highlights: unread, highlightsCapped: false };
+  }
+  const nid = networkId as number;
+  const unread = countNewer(nid, target, lastReadId);
+  const highlights = unread === 0 ? 0 : countHighlightsNewer(nid, target, lastReadId);
   return {
     lastReadId: lastReadId || 0,
     unread,
@@ -691,7 +722,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // only source of badge state.
   function broadcastReadState(
     userId: number,
-    networkId: number,
+    networkId: number | null,
     target: string,
     lastReadId: number,
   ): void {
@@ -909,13 +940,18 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // describe shared infrastructure, not per-user state.
   systemLog.on('line', (rawLine) => {
     const line = rawLine as LogLine;
-    if (line.userId == null) {
-      for (const userId of socketsByUser.keys()) {
-        fanOut(userId, { kind: 'system-log', line });
+    // Global lines reach every connected user; per-user lines just that user.
+    const recipients = line.userId == null ? [...socketsByUser.keys()] : [line.userId];
+    const notable = systemLineNotifies(line);
+    for (const userId of recipients) {
+      fanOut(userId, { kind: 'system-log', line });
+      // Notable lines (admin/error) bump the system buffer's unread, so refresh
+      // its badge live. Routine lifecycle lines skip this — they don't count
+      // toward unread, so re-broadcasting would just be a no-op frame.
+      if (notable) {
+        broadcastReadState(userId, null, SYSTEM_TARGET, getReadState(userId, null, SYSTEM_TARGET));
       }
-      return;
     }
-    fanOut(line.userId, { kind: 'system-log', line });
   });
 
   // Drafts fan out to every tab of the same user. `originWs` is the socket
@@ -1066,6 +1102,22 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // client store dedupes by id, so a redundant re-snapshot on visibility-
     // return resync is harmless.
     send(ws, { kind: 'system-log-snapshot', lines: systemLog.getRecent(userId) });
+    // Seed the system buffer's unread badge so the LURKER row is correct on load
+    // (#355). Same read-state frame normal buffers use; the client resolves it to
+    // the :system: buffer.
+    {
+      const sysReadId = getReadState(userId, null, SYSTEM_TARGET);
+      const counts = computeUnreadFor(userId, null, SYSTEM_TARGET, sysReadId);
+      send(ws, {
+        kind: 'read-state',
+        networkId: null,
+        target: SYSTEM_TARGET,
+        lastReadId: counts.lastReadId,
+        unread: counts.unread,
+        highlights: counts.highlights,
+        highlightsCapped: counts.highlightsCapped,
+      });
+    }
     // Friends/contacts seed: the user's full contact list (display name, notify
     // flag, per-network watch targets). User-level, so one message rather than a
     // per-network field. Drives the FRIENDS overview/sidebar + the came-online
@@ -1435,10 +1487,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         );
         break;
       case 'mark-read': {
-        const networkId = Number(msg.networkId);
         const target = msg.target as string;
         const requested = Number(msg.messageId);
-        if (!networkId || !target || !Number.isFinite(requested) || requested <= 0) break;
+        if (!target || !Number.isFinite(requested) || requested <= 0) break;
+        // The app-scoped system buffer (#355) has no network — its read pointer
+        // keys on a NULL network_id. Everything else needs a real network id.
+        const networkId = target === SYSTEM_TARGET ? null : Number(msg.networkId);
+        if (networkId !== null && !networkId) break;
         const lastReadId = setReadState(userId, networkId, target, requested);
         broadcastReadState(userId, networkId, target, lastReadId);
         break;

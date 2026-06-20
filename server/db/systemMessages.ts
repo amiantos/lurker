@@ -73,6 +73,19 @@ const recentStmt = db.prepare(`
   ) ORDER BY id ASC
 `);
 
+// Count of "notable" system-buffer lines newer than afterId that are visible to
+// this user (global + their own). Notable = admin/control-plane broadcasts or
+// warnings/errors; routine lifecycle log lines (info/server) deliberately don't
+// count, so ambient noise never marks the system buffer unread (#355). This is
+// the classification rule behind the unread badge — keep it in sync with
+// systemLineNotifies() in wsHub, which gates the live read-state refresh.
+const countNotableNewerStmt = db.prepare(`
+  SELECT COUNT(*) AS n FROM system_messages
+   WHERE id > ?
+     AND (user_id IS NULL OR user_id = ?)
+     AND (source IN ('admin', 'control-plane') OR level IN ('warn', 'error'))
+`);
+
 const dropUserStmt = db.prepare(`DELETE FROM system_messages WHERE user_id = ?`);
 
 interface RawRow {
@@ -138,6 +151,13 @@ export function recent(userId: number): SystemMessageRow[] {
   return rows.map(hydrate);
 }
 
+// Notable (unread-worthy) lines newer than afterId for this user. Drives the
+// system buffer's unread badge.
+export function countNotableNewer(userId: number, afterId: number): number {
+  const row = countNotableNewerStmt.get(Number(afterId) || 0, Number(userId)) as { n: number };
+  return row.n;
+}
+
 // Forget a user's personal lines. The users FK cascades on actual account
 // deletion; this is the explicit path the service calls so a re-signup under a
 // recycled id never inherits stale history.
@@ -145,4 +165,4 @@ export function dropUser(userId: number): void {
   dropUserStmt.run(Number(userId));
 }
 
-export default { insert, recent, dropUser };
+export default { insert, recent, countNotableNewer, dropUser };

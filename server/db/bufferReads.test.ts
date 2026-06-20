@@ -51,6 +51,39 @@ describe('setReadState / getReadState', () => {
   });
 });
 
+describe('system buffer read pointer (null network_id, #355)', () => {
+  it('round-trips and clamps with a NULL network_id', () => {
+    expect(bufferReads.getReadState(user.id, null, ':system:')).toBe(0);
+    expect(bufferReads.setReadState(user.id, null, ':system:', 30)).toBe(30);
+    expect(bufferReads.getReadState(user.id, null, ':system:')).toBe(30);
+    // Clamp: an older read can't move the pointer back.
+    expect(bufferReads.setReadState(user.id, null, ':system:', 10)).toBe(30);
+  });
+
+  it('upserts a single row rather than duplicating (coalesced unique index)', async () => {
+    const u = createUser('br-sys-dedupe');
+    bufferReads.setReadState(u.id, null, ':system:', 5);
+    bufferReads.setReadState(u.id, null, ':system:', 9);
+    const db = (await import('./index.js')).default;
+    const row = db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM buffer_reads WHERE user_id = ? AND network_id IS NULL AND target = ':system:'",
+      )
+      .get(u.id) as { n: number };
+    expect(row.n).toBe(1);
+    expect(bufferReads.getReadState(u.id, null, ':system:')).toBe(9);
+  });
+
+  it('is independent of a network buffer with the same target name', () => {
+    const u = createUser('br-sys-iso');
+    const n = createNetwork(u.id, { name: 'lib', host: 'h', port: 6697, tls: true, nick: 'a' });
+    bufferReads.setReadState(u.id, null, ':system:', 100);
+    bufferReads.setReadState(u.id, n!.id, ':system:', 7);
+    expect(bufferReads.getReadState(u.id, null, ':system:')).toBe(100);
+    expect(bufferReads.getReadState(u.id, n!.id, ':system:')).toBe(7);
+  });
+});
+
 describe('listReadStateForUser', () => {
   it('returns a map keyed by network::target', () => {
     bufferReads.setReadState(user.id, net!.id, '#a', 7);

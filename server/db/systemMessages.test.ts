@@ -99,3 +99,29 @@ describe('systemMessages', () => {
     expect(systemMessages.recent(u.id).some((r) => r.text === 'cascade-me')).toBe(false);
   });
 });
+
+describe('countNotableNewer (unread classification, #355)', () => {
+  it('counts admin/control-plane + warn/error, not routine info, newer than the pointer', () => {
+    const u = createUser('sys-unread');
+    const base = line({ userId: u.id, text: 'baseline' }).id; // pointer starts here
+    line({ userId: u.id, text: 'routine join', level: 'info', source: 'server' }); // not notable
+    line({ userId: u.id, text: 'a warning', level: 'warn', source: 'server' }); // notable
+    line({ text: 'admin notice', level: 'info', source: 'admin' }); // notable, global
+    line({ userId: u.id, text: 'an error', level: 'error', source: 'server' }); // notable
+
+    expect(systemMessages.countNotableNewer(u.id, base)).toBe(3);
+    // After reading everything, zero.
+    const top = systemMessages.recent(u.id).at(-1)!.id;
+    expect(systemMessages.countNotableNewer(u.id, top)).toBe(0);
+  });
+
+  it("doesn't count another user's per-user notable lines, but does count globals", () => {
+    const u = createUser('sys-unread-a');
+    const other = createUser('sys-unread-b');
+    const before = systemMessages.countNotableNewer(u.id, 0);
+    line({ userId: other.id, text: 'their error', level: 'error' }); // per-user to `other`
+    expect(systemMessages.countNotableNewer(u.id, 0)).toBe(before); // doesn't leak
+    line({ text: 'global error', level: 'error' }); // global (userId null)
+    expect(systemMessages.countNotableNewer(u.id, 0)).toBe(before + 1);
+  });
+});

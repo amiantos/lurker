@@ -227,7 +227,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import type { Network } from '../stores/networks.js';
-import type { Buffer } from '../stores/buffers.js';
+import { useBuffersStore, type Buffer } from '../stores/buffers.js';
+import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useSocket } from '../composables/useSocket.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
@@ -266,6 +267,7 @@ import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 
 const networks = useNetworksStore();
+const buffers = useBuffersStore();
 const { connected } = useSocket();
 const {
   active,
@@ -283,7 +285,9 @@ const {
 } = useActiveBuffer();
 
 function openSystemConsole() {
-  networks.activateSystem();
+  // Route through activate() (not networks.activateSystem) so the system buffer
+  // gets the full read-state lifecycle: divider snapshot + mark-read on entry.
+  buffers.activate(null, SYSTEM_KEY);
 }
 const settings = useSettingsStore();
 const nicklistCollapse = useNicklistCollapseStore();
