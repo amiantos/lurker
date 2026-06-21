@@ -2158,25 +2158,31 @@ async function runNetwork(
   }
 }
 
-// Edition-aware registry lookup: return the option only if it's visible in this
-// build (selfHostedOnly knobs are hidden in the hosted edition), so /set, /get,
-// and the listing expose exactly the same surface as the Settings panes (#357).
-function lookupSetting(key: string): SettingOption | null {
-  const opt = getOption(key);
-  if (!opt) return null;
-  return optionVisible(opt, { isNode: config.isNode }) ? opt : null;
+// Whether a registry option is exposed to /set, /get, and the listing — the
+// same surface the Settings UI shows. An option qualifies only if it lives under
+// a real sidebar category (this excludes internal keys whose category is
+// intentionally absent from CATEGORIES, e.g. system.timezone, which the client
+// auto-syncs) AND is visible in this edition (selfHostedOnly knobs are hidden in
+// the hosted build). Category *kind* is irrelevant: bespoke panes like
+// Notifications still own registry-backed keys, which belong in the surface.
+function settingExposed(opt: SettingOption): boolean {
+  return (
+    CATEGORIES.some((c) => c.id === opt.category) && optionVisible(opt, { isNode: config.isNode })
+  );
 }
 
-// /set with no value lists every visible registry key + current value, grouped
+function lookupSetting(key: string): SettingOption | null {
+  const opt = getOption(key);
+  return opt && settingExposed(opt) ? opt : null;
+}
+
+// /set with no value lists every exposed registry key + current value, grouped
 // by Settings category. Passkeys, push subscriptions, and drag-to-reorder stay
 // GUI-only by design (#357) — they aren't registry-driven, so they don't appear.
 function listSettings(networkId: number | null, target: string): void {
   localInfo(networkId, target, 'settings — /set <key> <value> to change, /get <key> to read:');
   for (const cat of CATEGORIES) {
-    if (cat.kind !== 'registry') continue;
-    const opts = REGISTRY.filter(
-      (o) => o.category === cat.id && optionVisible(o, { isNode: config.isNode }),
-    );
+    const opts = REGISTRY.filter((o) => o.category === cat.id && settingExposed(o));
     if (!opts.length) continue;
     localInfo(networkId, target, `${cat.label.toLowerCase()}:`);
     const rows = opts.map((o) => [`  ${o.key}`, formatSettingValue(o, settings.effective(o.key))]);
