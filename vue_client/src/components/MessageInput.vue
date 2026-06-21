@@ -124,8 +124,10 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
-import { useNetworksStore } from '../stores/networks.js';
+import { useNetworksStore, type Network } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import { parseNetworkCommand } from '../lib/commands/network.js';
+import { formatColumns } from '../lib/commands/output.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
@@ -1888,6 +1890,12 @@ const COMMANDS_LINES = [
   '      LEVELS: ALL PUBLIC MSGS NOTICES ACTIONS JOINS PARTS QUITS NICKS KICKS MODES TOPICS NOHIGHLIGHT',
   '      e.g. /ignore bob NOHIGHLIGHT   ·   /ignore -network -regexp -pattern (foo|bar) #chan',
   '  /unignore <index|mask> — remove an ignore (index from /ignore list)',
+  '  /network [list]        — manage networks (alias: /net); runs from the system buffer',
+  '      add [-host <addr>] [-port <n>] [-tls|-notls] [-nick <n>] [-user <u>] [-realname <name>]',
+  '          [-sasl_username <u>] [-sasl_password <p>] [-password <serverpass>]',
+  "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] <name>",
+  '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
+  '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
   '  /raw <line>            — send a raw IRC line (alias: /quote)',
   '  /commands              — this list',
   '  //text                 — send literal "/text" as a message (escape)',
@@ -2039,6 +2047,105 @@ function runUnignore(argLine: string, networkId: number | null, target: string):
   return true;
 }
 
+// Resolve a /network ref to a configured network. Prefer a case-insensitive
+// name match (folds inconsistent server casing like the rest of the app), then
+// fall back to a numeric id so `/network connect 3` works too.
+function resolveNetwork(nameOrId: string): Network | null {
+  const lower = nameOrId.toLowerCase();
+  const byName = networks.networks.find((n) => n.name.toLowerCase() === lower);
+  if (byName) return byName;
+  const id = Number(nameOrId);
+  return Number.isInteger(id) ? networks.networkById(id) : null;
+}
+
+// Render the configured networks as an aligned table into the system buffer.
+function listNetworks(networkId: number | null, target: string): void {
+  const list = networks.networks;
+  if (!list.length) {
+    localInfo(
+      networkId,
+      target,
+      'no networks configured — /network add -host <address> -nick <nick> <name>',
+    );
+    return;
+  }
+  const rows = [
+    ['#', 'NAME', 'ADDRESS', 'NICK', 'STATE'],
+    ...list.map((n, i) => [
+      String(i + 1),
+      n.name,
+      `${n.host}:${n.port}${n.tls ? ' (tls)' : ''}`,
+      n.nick,
+      networks.states[n.id]?.state ?? 'off',
+    ]),
+  ];
+  for (const line of formatColumns(rows)) localInfo(networkId, target, line);
+}
+
+// Move a network to a 1-based position by rebuilding the full id order and
+// handing it to reorder() — the same store action the drag-to-reorder UI uses.
+async function moveNetwork(net: Network, position: number): Promise<void> {
+  const ids = networks.networks.map((n) => n.id).filter((id) => id !== net.id);
+  ids.splice(Math.min(position - 1, ids.length), 0, net.id);
+  await networks.reorder(ids);
+}
+
+// /network — manage IRC networks from the input bar, driving the same store as
+// the Settings → Networks pane (#356, slash-command-first per #353). It's
+// network-agnostic (runs from the system buffer); output lands in the buffer the
+// command came from. Store writes are async, so — like ackedSend — we kick them
+// off and report success/failure via localInfo when they settle.
+async function runNetwork(
+  argLine: string,
+  networkId: number | null,
+  target: string,
+): Promise<void> {
+  const cmd = parseNetworkCommand(argLine);
+  const reply = (msg: string) => localInfo(networkId, target, msg);
+
+  if (cmd.kind === 'error') return reply(`/network: ${cmd.message}`);
+  if (cmd.kind === 'list') return listNetworks(networkId, target);
+
+  if (cmd.kind === 'add') {
+    try {
+      const net = await networks.create({ ...cmd.input, name: cmd.name } as Partial<Network>);
+      const tls = cmd.input.tls ? ' (tls)' : '';
+      // create() is an explicit "save & connect" server-side, so it dials now.
+      reply(`added ${net.name} — ${cmd.input.host}:${cmd.input.port}${tls}, connecting…`);
+    } catch (err) {
+      reply(`/network add failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+    }
+    return;
+  }
+
+  // Everything else acts on an existing network — resolve it up front so a typo
+  // gives a clean "no network matching" instead of a raw 404.
+  const net = resolveNetwork(cmd.ref);
+  if (!net) return reply(`/network: no network matching "${cmd.ref}"`);
+
+  try {
+    switch (cmd.kind) {
+      case 'modify':
+        await networks.update(net.id, cmd.input as Partial<Network>);
+        return reply(`updated ${net.name}`);
+      case 'remove':
+        await networks.remove(net.id);
+        return reply(`removed ${net.name}`);
+      case 'connect':
+        await networks.connect(net.id);
+        return reply(`connecting to ${net.name}…`);
+      case 'disconnect':
+        await networks.disconnect(net.id);
+        return reply(`disconnecting from ${net.name}…`);
+      case 'move':
+        await moveNetwork(net, cmd.position);
+        return reply(`moved ${net.name} to position ${cmd.position}`);
+    }
+  } catch (err) {
+    reply(`/network ${cmd.kind} failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+  }
+}
+
 function handleCommand(line: string, networkId: number | null, target: string): boolean {
   const [cmd, ...rest] = line.slice(1).split(/\s+/);
   const argLine = line.slice(1 + cmd.length).trim();
@@ -2063,6 +2170,13 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return runIgnore(argLine, networkId, target);
     case 'unignore':
       return runUnignore(argLine, networkId, target);
+    case 'network':
+    case 'net':
+      // Network CRUD + connection control. REST-backed and async, so fire it
+      // off and let it report into the buffer when it settles; the command is
+      // "handled" the moment we recognize it. runNetwork catches its own errors.
+      void runNetwork(argLine, networkId, target);
+      return true;
   }
 
   // Everything else acts on a specific network/buffer.
