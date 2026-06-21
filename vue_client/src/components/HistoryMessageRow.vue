@@ -158,7 +158,7 @@ const nickStyle = computed((): CSSProperties | null => {
   border: none;
   padding: 0;
   font: inherit;
-  color: var(--fg-muted);
+  color: var(--accent);
   cursor: pointer;
 }
 .remove:hover {

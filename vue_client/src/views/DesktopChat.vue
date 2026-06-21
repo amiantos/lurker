@@ -29,10 +29,10 @@
           <i class="fa-solid fa-magnifying-glass"></i>
         </button>
         <button class="link" @click="showHighlights = true" title="Highlights">
-          <i class="fa-regular fa-bell"></i>
+          <i class="fa-solid fa-bell"></i>
         </button>
         <button class="link" @click="showBookmarks = true" title="Saved messages">
-          <i class="fa-regular fa-bookmark"></i>
+          <i class="fa-solid fa-bookmark"></i>
         </button>
         <button class="link" @click="showUploads = true" title="Recent uploads">
           <i class="fa-solid fa-paperclip"></i>
@@ -675,7 +675,10 @@ useChatBootstrap({ onJump: onJumpToMessage });
   align-self: stretch;
   text-align: center;
   padding: var(--space-4) 0;
-  border-bottom: 1px solid var(--border);
+  /* Draw the bottom rule with an inset shadow, not a border: the global
+     `button:hover` repaints border-color to --accent, which would recolor a
+     real border-bottom on hover. A shadow is immune and looks identical. */
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 .topic {

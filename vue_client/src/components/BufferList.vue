@@ -61,11 +61,7 @@
           title="Open Friends feed"
           @click="selectFriends"
         >
-          <span
-            class="indicator"
-            :class="friendsConnected ? 'good' : 'bad'"
-            :title="friendsStatusTitle"
-          ></span>
+          <span class="indicator" :class="friendsPresence" :title="friendsStatusTitle"></span>
           <span class="name">FRIENDS</span>
         </div>
         <ul v-if="friends.contacts.length" class="channels">
@@ -547,13 +543,30 @@ const anyNetworkConnected = computed(() =>
   networks.networks.some((n) => networks.states[n.id]?.state === 'connected'),
 );
 const friendsConnected = computed(() => lurkerConnected.value && anyNetworkConnected.value);
-const friendsStatusTitle = computed(() =>
-  !lurkerConnected.value
-    ? 'Disconnected from lurker'
-    : !anyNetworkConnected.value
-      ? 'Not connected to any network'
-      : 'Connected',
-);
+// FRIENDS dot reflects friend presence, not just connectivity (#367-adjacent
+// polish): green if any friend is actively online, yellow (warn) if friends are
+// present but all away, red otherwise (none online, or we're disconnected so
+// every peer reads offline).
+const friendsPresence = computed<'good' | 'warn' | 'bad'>(() => {
+  if (!friendsConnected.value) return 'bad';
+  let online = 0;
+  let away = 0;
+  for (const c of friends.contacts) {
+    const state = friends.primaryPresence(c.id);
+    if (state === 'online') online += 1;
+    else if (state === 'away') away += 1;
+  }
+  return online > 0 ? 'good' : away > 0 ? 'warn' : 'bad';
+});
+const friendsStatusTitle = computed(() => {
+  if (!lurkerConnected.value) return 'Disconnected from lurker';
+  if (!anyNetworkConnected.value) return 'Not connected to any network';
+  return friendsPresence.value === 'good'
+    ? 'Friends online'
+    : friendsPresence.value === 'warn'
+      ? 'Online friends are away'
+      : 'No friends online';
+});
 function selectFriends(): void {
   friends.open();
 }
@@ -910,6 +923,18 @@ onBeforeUnmount(() => {
 .system-net + .net {
   border-top: none;
   margin-top: 0;
+}
+/* Desktop only: pin the LURKER row as a fixed header so the networks/buffers
+   scroll under it. (Mobile keeps it inline — it has its own top bar.) Needs an
+   opaque background matching the sidebar (which inherits --bg) so scrolling rows
+   don't show through, and a z-index above them. */
+@media (min-width: 769px) {
+  .system-net {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-base);
+    background: var(--bg);
+  }
 }
 .net-head {
   display: flex;

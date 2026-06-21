@@ -141,13 +141,13 @@ function metaLine(u: UploadRow): string {
 .link {
   background: none;
   border: none;
-  color: var(--fg-muted);
+  color: var(--accent);
   cursor: pointer;
   font: inherit;
   padding: 0 var(--space-2);
 }
 .link:hover {
-  color: var(--accent);
+  color: var(--fg);
 }
 
 .error {
