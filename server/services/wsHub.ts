@@ -234,15 +234,19 @@ function isInQuietWindow(currentMin: number, startMin: number, endMin: number): 
 
 const DM_ELIGIBLE_TYPES = new Set(['message', 'action', 'notice']);
 
-// Structural DM detection: ircConnection routes any direct message into a
-// buffer keyed by the *other* person's nick, so by the time we see an event
-// here the target is no longer your own nick. Anything that's not a channel
-// (`#…`) and not a server pseudo-buffer (`:server:…`) is a direct conversation
-// — that bucket includes both incoming DMs and your own outgoing DMs.
+// Structural DM detection from a target string: ircConnection routes any direct
+// message into a buffer keyed by the *other* person's nick, so a target that's
+// not a channel (`#…`) and not a server pseudo-buffer (`:server:…`) is a direct
+// conversation — that bucket includes both incoming DMs and your own outgoing
+// DMs. Shared by isDirect (event path) and computeUnreadFor (read-state counts)
+// so the two never drift on what counts as a DM.
+function isDmTarget(target: string): boolean {
+  return !!target && !target.startsWith('#') && !target.startsWith(':server:');
+}
+
 function isDirect(event: MessageEvent): boolean {
   if (!DM_ELIGIBLE_TYPES.has(event.type)) return false;
-  const target = event.target || '';
-  return !!target && !target.startsWith('#') && !target.startsWith(':server:');
+  return isDmTarget(event.target || '');
 }
 
 // Match state is persisted on each message at insert time (see
@@ -303,12 +307,20 @@ function computeUnreadFor(
   }
   const nid = networkId as number;
   const unread = countNewer(nid, target, lastReadId);
-  const highlights = unread === 0 ? 0 : countHighlightsNewer(nid, target, lastReadId);
+  // A DM is inherently a mention of you, so — like the system buffer — every
+  // unread line counts as a highlight. This lights the buffer-list row up in
+  // the highlight color and shows the ● badge, surfacing unread DMs above
+  // ordinary channel traffic. Display-only: notification/push decisions are
+  // made per-message in highlightEngine and are unaffected. Channels keep their
+  // real mention-only highlight count (an indexed query, no scan cap).
+  let highlights = 0;
+  if (unread > 0) {
+    highlights = isDmTarget(target) ? unread : countHighlightsNewer(nid, target, lastReadId);
+  }
   return {
     lastReadId: lastReadId || 0,
     unread,
     highlights,
-    // Both counts are now indexed queries — no scan cap, no undercount.
     highlightsCapped: false,
   };
 }

@@ -101,6 +101,16 @@ describe('buildBufferBacklog', () => {
     expect(buildBufferBacklog(userId, networkId, 'carol').joined).toBe(true);
   });
 
+  it('counts every unread DM line as a highlight (yellow row treatment, like the system buffer)', () => {
+    seed('erin', 'one');
+    seed('erin', 'two');
+    const frame = buildBufferBacklog(userId, networkId, 'erin');
+    // No highlight rule matched these lines, yet a DM still reports highlights
+    // == unread so the buffer-list row lights up yellow with the ● badge.
+    expect(frame.unread).toBe(2);
+    expect(frame.highlights).toBe(2);
+  });
+
   it('omits clear-state by default (no marker)', () => {
     seed('#noclear', 'just a message');
     const frame = buildBufferBacklog(userId, networkId, '#noclear');
