@@ -156,12 +156,14 @@
     <ul v-else class="device-list">
       <li v-for="entry in alwaysNotifyChannelList" :key="entry.key" class="device">
         <span class="ua">{{ entry.networkName }} · {{ entry.target }}</span>
-        <IconButton
-          icon="fa-trash"
-          label="stop"
-          danger
-          @click="removeAlwaysNotify(entry.networkId, entry.target)"
-        />
+        <div class="row-actions">
+          <IconButton
+            icon="fa-trash"
+            label="stop"
+            danger
+            @click="removeAlwaysNotify(entry.networkId, entry.target)"
+          />
+        </div>
       </li>
     </ul>
 

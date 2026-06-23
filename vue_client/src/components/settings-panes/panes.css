@@ -96,12 +96,16 @@
 .settings-pane .device .last-seen {
   color: var(--fg-muted);
 }
-/* Per-row action cluster (edit/remove icon buttons, optional toggle) kept in one
-   grid cell so they stay on a single line within the .device grid. */
+/* Per-row action cluster (edit/remove icon buttons, optional toggle). It's the
+   only thing after .ua, so span the .device grid's last two columns and right-
+   align — otherwise it lands in column 2 and the empty column 3 leaves a trailing
+   gap and the cluster floats off the right edge. */
 .settings-pane .row-actions {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  grid-column: 2 / -1;
+  justify-self: end;
 }
 
 .settings-pane .hl-sep {

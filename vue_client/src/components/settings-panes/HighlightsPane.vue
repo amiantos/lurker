@@ -44,7 +44,7 @@
                     ? 'enabled — click to disable'
                     : 'disabled — click to enable'
               "
-              :aria-label="entry.enabled ? 'enabled' : 'disabled'"
+              aria-label="toggle highlight rule"
               @click="toggleEnabled(entry, !entry.enabled)"
             >
               <i
