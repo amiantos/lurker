@@ -27,9 +27,6 @@
       <ul class="device-list">
         <li v-for="entry in group.entries" :key="entry.id" class="device">
           <span class="ua">
-            <span v-if="entry.auto_managed" class="lock" title="auto-managed (network nick)"
-              >🔒</span
-            >
             {{ entry.mask ?? entry.pattern ?? '*' }}
             <span class="muted small hl-detail">{{ describe(entry) }}</span>
           </span>
@@ -446,9 +443,6 @@ async function onRemove(entry: HighlightRule) {
 .device .ua {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.lock {
-  margin-right: var(--space-1);
 }
 /* Enabled toggle: muted when off, accent when on; the glyph (toggle-on/off)
    plus aria-pressed carry the state. */
