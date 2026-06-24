@@ -8,6 +8,7 @@ import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
+import { addressNick } from './useComposerOverlay.js';
 
 export interface MemberLike {
   nick: string;
@@ -109,15 +110,33 @@ export function useMemberActions(): MemberActionsAPI {
     const isSelf = ctx.isSelf(member);
     const hasNote = nickNotes.hasNote(ctx.networkId, nick);
     // Self gets a trimmed menu: you can view your own profile and note yourself,
-    // but Send DM, Ignore, and the moderation actions are all meaningless or
-    // nonsensical aimed at yourself, so they're left off below.
-    const items: ContextMenuItem[] = [
-      {
-        label: 'View Profile…',
-        icon: 'fa-solid fa-id-card',
-        onClick: () => whois.openViewer(ctx.networkId, nick),
+    // but Reply, Send DM, Ignore, and the moderation actions are all meaningless
+    // or nonsensical aimed at yourself, so they're left off below.
+    const items: ContextMenuItem[] = [];
+    // Reply addresses the speaker in the active composer — the same composer
+    // hand-off as the message action bar's Reply.
+    if (!isSelf) {
+      items.push({
+        label: `Reply to ${nick}`,
+        icon: 'fa-solid fa-reply',
+        onClick: () => addressNick(nick),
+      });
+    }
+    items.push({
+      label: 'Copy Nickname',
+      icon: 'fa-regular fa-copy',
+      // Best-effort: writeText rejects without clipboard permission or in an
+      // insecure context, and the API can be absent on older browsers.
+      onClick: () => {
+        navigator.clipboard?.writeText(nick).catch(() => {});
       },
-    ];
+    });
+    items.push({ divider: true });
+    items.push({
+      label: 'View Profile…',
+      icon: 'fa-solid fa-id-card',
+      onClick: () => whois.openViewer(ctx.networkId, nick),
+    });
     if (!isSelf) {
       items.push({
         label: 'Send DM',

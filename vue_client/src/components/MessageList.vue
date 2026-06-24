@@ -62,19 +62,19 @@
                 ><NickRef
                   :nick="asRename(item).from"
                   interactive
-                  @click.stop.prevent="onNickClick(asRename(item).from)"
+                  @click.stop.prevent="onNickMenu($event, asRename(item).from)"
                   @contextmenu.stop.prevent="onNickMenu($event, asRename(item).from)" />
                 →
                 <NickRef
                   :nick="asRename(item).to"
                   interactive
-                  @click.stop.prevent="onNickClick(asRename(item).to)"
+                  @click.stop.prevent="onNickMenu($event, asRename(item).to)"
                   @contextmenu.stop.prevent="onNickMenu($event, asRename(item).to)" /></template
               ><template v-else
                 ><NickRef
                   :nick="asNick(item).nick"
                   interactive
-                  @click.stop.prevent="onNickClick(asNick(item).nick)"
+                  @click.stop.prevent="onNickMenu($event, asNick(item).nick)"
                   @contextmenu.stop.prevent="
                     onNickMenu($event, asNick(item).nick)
                   " /></template></template
@@ -101,7 +101,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
           </div>
@@ -126,7 +126,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
@@ -141,7 +141,7 @@
               ><NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} joined</template
             >
@@ -149,7 +149,7 @@
               ><NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} left<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
@@ -159,7 +159,7 @@
               ><NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} quit<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
@@ -169,14 +169,14 @@
               ><NickRef
                 :nick="row.m.kicked ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.kicked)"
+                @click.stop.prevent="onNickMenu($event, row.m?.kicked)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.kicked)"
               />
               kicked by
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               /><template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
@@ -186,14 +186,14 @@
               ><NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />
               is now
               <NickRef
                 :nick="row.m.newNick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.newNick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
               />{{ eventHostSuffix(row.m) }}</template
             >
@@ -202,7 +202,7 @@
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
                 v-if="row.m.text"
                 >: <LinkedText :text="row.m.text" /></template
@@ -212,7 +212,7 @@
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickClick(row.m?.nick)"
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
                 @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
                 v-if="row.m.text"
                 >: <LinkedText :text="row.m.text" /></template
@@ -598,11 +598,10 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
 }
 
 // ─── Nick interactivity (#238) + mode-prefix glyph (#376) ──────────────────
-// Message-list nicks reuse the member-list action menu and the same composer
-// hand-off, so a speaker's nick behaves like its nicklist entry: tap inserts
-// "nick: " into the composer; long-press / right-click opens the action menu
-// (whois, DM, note, friend, ignore, and op-gated kick/ban/op/voice). The menu
-// and ignore modal are owned here, mirroring MemberList's pattern.
+// Message-list nicks behave exactly like their nicklist entry: a tap (or
+// right-click / long-press) opens the shared member-action menu — Reply, Copy
+// Nickname, whois, DM, note, friend, ignore, and op-gated kick/ban/op/voice.
+// The menu and ignore modal are owned here, mirroring MemberList's pattern.
 const memberActions = useMemberActions();
 
 const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_prefix'));
@@ -657,10 +656,6 @@ function nickMenuContext(): MemberContext {
     channel: buffer.value?.target ?? null,
     selfModes: selfModes.value,
   };
-}
-
-function onNickClick(nick: string | undefined): void {
-  if (nick) addressNick(nick);
 }
 
 // `m` is the source message, used only to recover a userhost for a speaker who
