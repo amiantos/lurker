@@ -110,6 +110,8 @@
               :segments="textSegments(row.m)"
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
+              interactive-nicks
+              @nick-click="onMentionMenu"
             />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
@@ -136,6 +138,8 @@
               :segments="textSegments(row.m)"
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
+              interactive-nicks
+              @nick-click="onMentionMenu"
             />
             <template v-else-if="row.m?.type === 'join'"
               ><NickRef
@@ -669,6 +673,14 @@ function onNickMenu(e: MouseEvent, nick: string | undefined, m?: ChatMessage): v
   // actionable.
   const member: MemberLike = nickMember(nick) ?? { nick, ...parseUserHost(m?.userhost) };
   memberActions.openMenuFor(member, nickMenuContext(), e.clientX, e.clientY);
+}
+
+// A coloured nick mention inside message text (emitted by RenderSegments). The
+// mentioned user isn't the message author, so there's no userhost to recover
+// from the row — pass the nick alone and let onNickMenu resolve a live member
+// (or fall back to a bare-nick menu).
+function onMentionMenu(nick: string, e: MouseEvent): void {
+  onNickMenu(e, nick);
 }
 
 const smartFilterEnabled = computed(() => !!settings.effective('chat.smart_filter'));

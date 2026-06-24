@@ -35,6 +35,20 @@
       @keydown.space.prevent="openChannel(seg.channel)"
       >{{ seg.text }}</span
     >
+    <!-- A coloured nick mention (seg.color / seg.self are exclusive to the nick
+         pass). Interactive only when the caller opts in (the message list),
+         where a click opens the same member menu as the nicklist — Reply,
+         whois, DM, etc. Elsewhere nick segments fall through to the styled-span
+         branch below and render exactly as before. Kept selectable so message
+         text stays copyable. -->
+    <span
+      v-else-if="interactiveNicks && (seg.color != null || seg.self)"
+      class="msg-nick"
+      :style="styleFor(seg)"
+      @click.stop="$emit('nickClick', seg.text, $event)"
+      @contextmenu.stop.prevent="$emit('nickClick', seg.text, $event)"
+      >{{ seg.text }}</span
+    >
     <span v-else-if="hasStyle(seg)" :style="styleFor(seg)">{{ seg.text }}</span>
     <template v-else>{{ seg.text }}</template>
   </template>
@@ -70,9 +84,17 @@ const props = withDefaults(
     segments: RenderSegment[];
     selfColor?: string | null;
     networkId?: number | null;
+    // Opt-in: render coloured nick mentions as clickable (emits `nickClick`).
+    // Off everywhere except the message list, so other callers (topic bar,
+    // motd, history rows) keep nick segments inert.
+    interactiveNicks?: boolean;
   }>(),
-  { selfColor: null, networkId: null },
+  { selfColor: null, networkId: null, interactiveNicks: false },
 );
+
+defineEmits<{
+  nickClick: [nick: string, ev: MouseEvent];
+}>();
 
 const buffers = useBuffersStore();
 const settings = useSettingsStore();
