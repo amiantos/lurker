@@ -62,6 +62,11 @@ const style = computed(() => {
 }
 .nick-ref.interactive {
   cursor: pointer;
+  /* Right-clicking to open the menu otherwise selects the word under the
+     cursor (the selection happens on pointer-down, before @contextmenu.prevent
+     can fire), which reads as a glitch. Matches the member list, where rows are
+     likewise unselectable. */
+  user-select: none;
 }
 /* The mode glyph reuses the nicklist's per-mode colors so it reads as a status
    marker rather than part of the (separately-colored) nick. */
