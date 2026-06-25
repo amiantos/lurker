@@ -6,13 +6,21 @@
 <template>
   <AppModal
     word="flood"
-    :title="`message will flood ${chunks} lines`"
+    :title="
+      multiline ? `message will send as ${chunks} messages` : `message will flood ${chunks} lines`
+    "
     size="md"
     @close="$emit('cancel')"
   >
     <p class="desc">
-      IRC will split this into {{ chunks }} separate lines. Upload it as a <code>.txt</code> file
-      instead?
+      <template v-if="multiline">
+        This will send as {{ chunks }} separate messages. Upload it as a <code>.txt</code> file
+        instead?
+      </template>
+      <template v-else>
+        IRC will split this into {{ chunks }} separate lines. Upload it as a <code>.txt</code> file
+        instead?
+      </template>
     </p>
     <pre class="preview">{{ content }}</pre>
     <footer class="modal-footer">
@@ -38,9 +46,11 @@ withDefaults(
   defineProps<{
     content: string;
     chunks: number;
+    multiline?: boolean;
     uploading?: boolean;
   }>(),
   {
+    multiline: false,
     uploading: false,
   },
 );

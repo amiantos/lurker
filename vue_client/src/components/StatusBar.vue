@@ -191,13 +191,23 @@ const composing = useComposing();
 
 // SPLIT (warn) at 2 chunks, FLOOD (bad) at 3+. Lives just before the typing
 // indicator so heavy composers can see it without taking their eyes off the
-// input. Empty / single-chunk drafts render nothing.
+// input. Empty / single-chunk drafts render nothing. On a multiline network
+// `composing.chunks` is the batch (message) count: 1 → a neutral MULTILINE
+// chip (lands as one logical message), 2 → MULTILINE ×2 (warn), 3+ →
+// MULTILINE ×N (bad, where the upload-as-.txt gate kicks in). (#381)
 const splitLabel = computed(() => {
+  if (composing.multiline) {
+    return composing.chunks <= 1 ? 'MULTILINE' : `MULTILINE ×${composing.chunks}`;
+  }
   if (composing.chunks <= 1) return '';
   if (composing.isAction) return 'ACTION TOO LONG';
   return composing.chunks >= 3 ? `FLOOD (${composing.chunks})` : 'SPLIT';
 });
 const splitClass = computed(() => {
+  if (composing.multiline) {
+    if (composing.chunks >= 3) return 'bad';
+    return composing.chunks === 2 ? 'warn' : '';
+  }
   if (composing.chunks <= 1) return '';
   if (composing.isAction || composing.chunks >= 3) return 'bad';
   return 'warn';

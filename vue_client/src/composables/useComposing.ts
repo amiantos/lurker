@@ -11,22 +11,31 @@
 // produce on the wire. 0 = empty, 1 = single line, ≥2 = the SPLIT/FLOOD
 // indicator should appear. `isAction` flips when the user has typed /me so
 // downstream code can pick the tighter ACTION byte budget if it wants.
+// `multiline` is true when the draft will be sent as draft/multiline batches
+// (the network negotiated the cap and the body has an interior newline). In
+// that mode `chunks` is the batch (message) count, not the wire-PRIVMSG count:
+// StatusBar shows 1 → a neutral MULTILINE chip and 2+ → MULTILINE ×N escalating
+// to warn/bad. The legacy SPLIT/FLOOD wording is used only when `multiline` is
+// false. (#381)
 
 import { reactive, readonly } from 'vue';
 
 export interface ComposingState {
   chunks: number;
   isAction: boolean;
+  multiline?: boolean;
 }
 
-const state = reactive<ComposingState>({
+const state = reactive<Required<ComposingState>>({
   chunks: 0,
   isAction: false,
+  multiline: false,
 });
 
-export function setComposingState({ chunks, isAction }: ComposingState): void {
+export function setComposingState({ chunks, isAction, multiline = false }: ComposingState): void {
   state.chunks = chunks;
   state.isAction = isAction;
+  state.multiline = multiline;
 }
 
 export function useComposing(): Readonly<ComposingState> {

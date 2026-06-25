@@ -114,6 +114,7 @@
         v-if="longMessageModalOpen"
         :content="longMessageContent"
         :chunks="longMessageChunks"
+        :multiline="longMessageMultiline"
         :uploading="longMessageUploading"
         @confirm="onLongMessageConfirm"
         @cancel="onLongMessageCancel"
@@ -150,7 +151,12 @@ import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
 import { requestScrollToBottom } from '../composables/useScrollState.js';
 import { setComposingState } from '../composables/useComposing.js';
-import { chunkCountForSay, chunkCountForAction } from '../utils/messageSplit.js';
+import {
+  chunkCountForSay,
+  chunkCountForAction,
+  multilineMessageCount,
+  type MultilineLimits,
+} from '../utils/messageSplit.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
@@ -433,6 +439,9 @@ let pendingSplitConfirm = false;
 const longMessageModalOpen = ref(false);
 const longMessageContent = ref('');
 const longMessageChunks = ref(0);
+// Whether the flooding draft will go as draft/multiline batches (messages) vs
+// raw wire lines — flips the modal's wording. (#381)
+const longMessageMultiline = ref(false);
 const longMessageUploading = ref(false);
 
 // Strip a leading slash command (/me, /msg <who>) so chunk counting reflects
@@ -466,6 +475,41 @@ function computeChunks(raw: string): { chunks: number; isAction: boolean } {
   const { body, isAction } = bodyForSplit(raw);
   const chunks = isAction ? chunkCountForAction(body) : chunkCountForSay(body);
   return { chunks, isAction };
+}
+
+// Whether the active network advertised draft/multiline limits. Drives the
+// multiline-aware split gating below. (#381)
+function currentMultilineLimits(): MultilineLimits | null {
+  const nid = active.value?.networkId;
+  if (nid == null) return null;
+  return networks.states[nid]?.multilineLimits ?? null;
+}
+
+// How many draft/multiline messages `raw` will become on this network: 0 when
+// it won't be a multiline send (a slash command, /me, no newline, or the
+// network lacks the cap), 1 for a single batch, ≥2 for that many logical
+// messages. Mirrors the server partition in ircManager.send so the indicator
+// and the upload-as-.txt gate count messages-the-channel-sees, not raw wire
+// lines. (#381)
+function multilineCountFor(raw: string): number {
+  const isPlainSend = !raw.startsWith('/') || raw.startsWith('//');
+  if (!isPlainSend) return 0;
+  const wireBody = applySpoilerMarkup(raw.startsWith('//') ? raw.slice(1) : raw);
+  return multilineMessageCount(wireBody, currentMultilineLimits());
+}
+
+// Recompute and broadcast the composing state (drives StatusBar). Single source
+// for the live keystroke path and the bare buffer-switch so both stay in sync.
+// On a multiline network `chunks` carries the batch (message) count and
+// `multiline` is set; otherwise it's the legacy wire-PRIVMSG estimate.
+function publishComposing(raw: string): void {
+  const batches = multilineCountFor(raw);
+  if (batches > 0) {
+    setComposingState({ chunks: batches, isAction: false, multiline: true });
+    return;
+  }
+  const { chunks, isAction } = computeChunks(raw);
+  setComposingState({ chunks, isAction, multiline: false });
 }
 
 function sendTyping(networkId: number, target: string, state: string): void {
@@ -1458,8 +1502,7 @@ function onInput() {
   // Republish composing state on every keystroke so StatusBar's SPLIT/FLOOD
   // indicator stays live. We do this even on :server: buffers and slash
   // commands (computeChunks handles both — most return 0 chunks).
-  const { chunks, isAction } = computeChunks(text.value);
-  setComposingState({ chunks, isAction });
+  publishComposing(text.value);
   if (!sendable.value || !active.value) return;
   if (completion) resetCompletion();
   // Inline-convert a just-completed `:shortcode:`, then refresh the suggester
@@ -1530,8 +1573,7 @@ watch(active, (newActive, oldActive) => {
   // switch doesn't run the setter, so StatusBar's SPLIT/FLOOD indicator
   // would otherwise carry over stale state from the previous buffer.
   if (newActive) {
-    const { chunks, isAction } = computeChunks(text.value);
-    setComposingState({ chunks, isAction });
+    publishComposing(text.value);
   } else {
     setComposingState({ chunks: 0, isAction: false });
   }
@@ -1734,17 +1776,22 @@ async function submit() {
   if (!active.value) return;
   const { networkId, target } = active.value;
 
-  // Outgoing-split gate. irc-framework will break anything past ~350 bytes
-  // into multiple PRIVMSGs on the wire, which on a busy channel reads as a
-  // flood. Three tiers:
-  //   - /me with 2+ chunks: hard block (CTCP ACTION can't reasonably split)
-  //   - 3+ chunks: always require a second Send press (flood)
-  //   - 2 chunks: gated by chat.allow_split_messages (off → require second
-  //     press; on → send silently)
-  // computeChunks() returns 0 for slash commands we don't route through
-  // PRIVMSG, so /join, /raw, etc. fall right through.
-  const { chunks, isAction } = computeChunks(raw);
-  if (isAction && chunks > 1) {
+  // Outgoing-flood gate, measured in messages-the-channel-sees: on a multiline
+  // network that's the draft/multiline batch count (a big paste is N logical
+  // messages, not N raw lines); elsewhere it's the wire-PRIVMSG split estimate.
+  // Three tiers:
+  //   - /me over one line: hard block (CTCP ACTION can't reasonably split)
+  //   - 3+ messages: offer the upload-as-.txt modal (flood)
+  //   - 2 messages: gated by chat.allow_split_messages (off → require a second
+  //     Send press; on → send silently)
+  // computeChunks()/multilineCountFor() return 0 for slash commands we don't
+  // route through PRIVMSG, so /join, /raw, etc. fall right through. A draft that
+  // fits one multiline batch is exactly one message and skips the gate. (#381)
+  const { chunks: wireChunks, isAction } = computeChunks(raw);
+  const batches = multilineCountFor(raw);
+  const multiline = batches > 0;
+  const count = multiline ? batches : wireChunks;
+  if (isAction && wireChunks > 1) {
     toasts.push({
       title: 'Action message too long',
       body: "Actions can't be split across IRC lines — shorten it and try again.",
@@ -1753,25 +1800,28 @@ async function submit() {
     });
     return;
   }
-  if (chunks > 1) {
-    const flood = chunks >= 3;
+  if (count > 1) {
+    const flood = count >= 3;
     const allowSplit = !!settings.effective('chat.allow_split_messages');
     const blocked = flood || !allowSplit;
     if (blocked && !pendingSplitConfirm) {
       pendingSplitConfirm = true;
       if (flood) {
-        // 3+ chunks: offer the upload-as-.txt modal. If they cancel, the
+        // 3+ messages: offer the upload-as-.txt modal. If they cancel, the
         // already-set pendingSplitConfirm makes the next Send press the
         // override (matching the prior send-again-to-confirm behavior).
         longMessageContent.value = raw;
-        longMessageChunks.value = chunks;
+        longMessageChunks.value = count;
+        longMessageMultiline.value = multiline;
         longMessageModalOpen.value = true;
       } else {
-        // 2 chunks with chat.allow_split_messages=off: keep the existing
-        // toast confirmation — uploading would be overkill for a one-line
-        // overflow.
+        // 2 messages with chat.allow_split_messages=off: keep the existing
+        // toast confirmation — uploading would be overkill for a two-message
+        // send.
         toasts.push({
-          title: `Will split into ${chunks} lines — Send again to confirm`,
+          title: multiline
+            ? `Will send as ${count} messages — Send again to confirm`
+            : `Will split into ${count} lines — Send again to confirm`,
           body: 'Enable "Allow auto-split messages" in Settings to send splits without confirming.',
           kind: 'warn',
           ttlMs: 7000,

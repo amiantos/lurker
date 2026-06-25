@@ -26,6 +26,9 @@ import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../utils/ident.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled } from './identd.js';
+import { MESSAGE_MAX_BYTES, partitionMultiline, reassembleMultiline } from './messageSplit.js';
+import type { MultilineLimits } from './messageSplit.js';
+import { randomBytes } from 'node:crypto';
 
 // Optional source address for outbound IRC connections (LURKER_OUTGOING_ADDR),
 // passed to irc-framework as `outgoing_addr` → the socket's localAddress. Lets a
@@ -230,6 +233,11 @@ export class IrcConnection {
   // the 'wholist' handler consumes these silently. Any wholist NOT in this set
   // is a user-typed /who and gets rendered to the server buffer (#342).
   autoWhoTargets: Set<string>;
+  // In-flight inbound `draft/multiline` batches, keyed by batch reference. Each
+  // entry holds the first fragment's event envelope plus the text accumulated
+  // so far; flushed as one reassembled message on 'batch end draft/multiline'
+  // and cleared on socket close so a never-closed batch can't leak. (#381)
+  multilineBatches: Map<string, { event: Record<string, unknown>; text: string }>;
 
   constructor({ network, onEvent }: { network: Network; onEvent: (event: EnrichedEvent) => void }) {
     this.network = network;
@@ -249,6 +257,13 @@ export class IrcConnection {
     // the cap — irc-framework only emits a CAP REQ for caps the server lists in
     // CAP LS. (#310)
     this.client.requestCap('extended-monitor');
+    // batch + draft/multiline (IRCv3): lets a multi-line compose travel as one
+    // logical message instead of N fragmented PRIVMSGs, and lets us reassemble
+    // the same from peers (e.g. Ergo). requestCap is a no-op where the server
+    // doesn't advertise them; draft/multiline also rides message-tags (above)
+    // and batch, so all three are requested. (#381)
+    this.client.requestCap('batch');
+    this.client.requestCap('draft/multiline');
     this.state = 'disconnected';
     this.channels = new Map();
     this.userModes = new Set();
@@ -296,6 +311,7 @@ export class IrcConnection {
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.autoWhoTargets = new Set();
+    this.multilineBatches = new Map();
     this.bind();
   }
 
@@ -662,6 +678,7 @@ export class IrcConnection {
       this.identdId = null;
       this.userModes.clear();
       this.autoWhoTargets.clear();
+      this.multilineBatches.clear();
       this.stopLagPinger();
       this.cancelPendingConnectCommands();
       this.lagMs = null;
@@ -965,6 +982,13 @@ export class IrcConnection {
       ) {
         return;
       }
+      // A `draft/multiline` batch is one logical message fragmented across N
+      // PRIVMSGs (#381). Buffer the fragments and flush a single reassembled
+      // message on 'batch end draft/multiline' instead of rendering N lines.
+      if (batchType === 'draft/multiline') {
+        this.accumulateMultiline(event);
+        return;
+      }
       const me = c.user?.nick;
       const eventNick = event.nick as string | undefined;
       const eventTarget = event.target as string | undefined;
@@ -1029,6 +1053,14 @@ export class IrcConnection {
         this.trackDmPeer(eventNick);
       }
       if (eventNick) this.markPeerEvent(eventNick, 'online');
+    });
+
+    c.on('batch end draft/multiline', (info: Record<string, unknown>) => {
+      // irc-framework buffers a batch's PRIVMSGs and replays them (each firing
+      // the 'message' handler above with event.batch set) before emitting this
+      // close event — so accumulateMultiline already holds every fragment. (#381)
+      const id = info?.id as string | undefined;
+      if (id) this.flushMultiline(id);
     });
 
     c.on('join', (event: Record<string, unknown>) => {
@@ -2097,6 +2129,112 @@ export class IrcConnection {
     this.client.notice(target, text);
   }
 
+  // --- IRCv3 draft/multiline (#381) ------------------------------------------
+  // Send a multi-line compose as one logical message on servers that support
+  // the cap pair (e.g. Ergo), and reassemble the same from peers, with a clean
+  // fallback to per-line splitting everywhere else.
+
+  // The server's advertised limits for a multiline batch, or null when multiline
+  // isn't usable here: the cap trio (batch + draft/multiline + message-tags —
+  // the batch reference rides a message tag, so framing is impossible without
+  // it) wasn't negotiated, or the advertised max-bytes is below one full wire
+  // line (MESSAGE_MAX_BYTES) and so can't carry a single PRIVMSG inside a batch.
+  // In either case the send path falls back to the legacy splitter rather than
+  // framing batches the server would FAIL+drop. An omitted dimension defaults
+  // conservatively; once non-null, the body always rides batches (spanning as
+  // many as the limits require), never the legacy path.
+  multilineLimits(): MultilineLimits | null {
+    const cap = this.client.network?.cap as
+      | { enabled?: string[]; available?: Map<string, string> }
+      | undefined;
+    const enabled = cap?.enabled ?? [];
+    if (
+      !enabled.includes('batch') ||
+      !enabled.includes('draft/multiline') ||
+      !enabled.includes('message-tags')
+    ) {
+      return null;
+    }
+    let maxBytes = 4096;
+    let maxLines = 24;
+    const advertised = cap?.available?.get('draft/multiline') ?? '';
+    for (const part of advertised.split(',')) {
+      const [key, val] = part.split('=');
+      const n = Number(val);
+      if (!Number.isFinite(n) || n <= 0) continue;
+      if (key === 'max-bytes') maxBytes = n;
+      else if (key === 'max-lines') maxLines = n;
+    }
+    if (maxBytes < MESSAGE_MAX_BYTES) return null;
+    return { maxBytes, maxLines };
+  }
+
+  // Whether this connection negotiated the draft/multiline cap pair. The caller
+  // gates multi-line plain sends on this; over-budget bodies don't fall back to
+  // raw splitting, they just span multiple batches (see sendMultiline).
+  supportsMultiline(): boolean {
+    return this.multilineLimits() != null;
+  }
+
+  // Send `text` as one-or-more draft/multiline batches: each is BATCH +ref …
+  // one tagged PRIVMSG per line … BATCH -ref. The body is partitioned to the
+  // server's max-lines / max-bytes, so a big paste lands as N logical messages
+  // rather than N raw lines. Blank lines are preserved (an empty trailing param
+  // round-trips as a blank line); an over-long single line is byte-split with
+  // draft/multiline-concat on the continuations so the receiver rejoins it with
+  // no spurious newline. Returns the per-batch display text so the caller can
+  // echo one self bubble per batch, matching what the channel sees. All lines
+  // go through raw() so embedded CR/LF/NUL is stripped. (#381)
+  sendMultiline(target: string, text: string): string[] {
+    if (isDmTargetName(target)) this.trackDmPeer(target);
+    this.noteUserSend(target);
+    const limits = this.multilineLimits();
+    if (!limits) return [];
+    const echoes: string[] = [];
+    for (const batch of partitionMultiline(text, limits)) {
+      const ref = randomBytes(8).toString('hex');
+      this.raw(`BATCH +${ref} draft/multiline ${target}`);
+      for (const line of batch) {
+        const tag = line.concat ? `batch=${ref};draft/multiline-concat` : `batch=${ref}`;
+        this.raw(`@${tag} PRIVMSG ${target} :${line.content}`);
+      }
+      this.raw(`BATCH -${ref}`);
+      echoes.push(reassembleMultiline(batch));
+    }
+    return echoes;
+  }
+
+  // Buffer one PRIVMSG of an inbound draft/multiline batch, keyed by its batch
+  // reference. Lines join with '\n' except where draft/multiline-concat says to
+  // glue with none. flushMultiline emits the reassembled message on batch end.
+  accumulateMultiline(event: Record<string, unknown>): void {
+    const id = (event.batch as { id?: string } | undefined)?.id;
+    // irc-framework always sets batch.id alongside batch.type, so a multiline
+    // event without an id can't occur; guard rather than re-dispatch (which
+    // would be 'message' re-entrancy) and move on.
+    if (!id) return;
+    const line = (event.message as string | undefined) ?? '';
+    const existing = this.multilineBatches.get(id);
+    if (!existing) {
+      this.multilineBatches.set(id, { event, text: line });
+      return;
+    }
+    const tags = event.tags as Record<string, string> | undefined;
+    const concat = !!tags && 'draft/multiline-concat' in tags;
+    existing.text += concat ? line : `\n${line}`;
+  }
+
+  // Emit the reassembled multiline message through the normal 'message' path
+  // with the batch stripped, so it flows through self-echo, routing and
+  // presence exactly like a standalone PRIVMSG. (WeeChat takes the same
+  // reconstruct-then-redispatch approach.) (#381)
+  flushMultiline(id: string): void {
+    const buf = this.multilineBatches.get(id);
+    if (!buf) return;
+    this.multilineBatches.delete(id);
+    this.client.emit('message', { ...buf.event, message: buf.text, batch: undefined });
+  }
+
   // Record that the user just sent a real message to `target`. handleSendRejection
   // reads this to tell an actual failed message from an automated TAGMSG/typing
   // bounce — the rejection numeric alone doesn't say which command it refused.
@@ -2289,6 +2427,11 @@ export class IrcConnection {
       nick: this.currentNick || this.network.nick,
       userModes: [...this.userModes].join(''),
       lagMs: this.lagMs,
+      // Negotiated draft/multiline limits (or null) so the composer can gate its
+      // split/flood hint and upload-as-.txt prompt on what will actually go on
+      // the wire. Computed post-registration, which is when this snapshot is
+      // pushed (setState('connected') fires after CAP). (#381)
+      multilineLimits: this.multilineLimits(),
       away: a.since
         ? {
             active: a.active,

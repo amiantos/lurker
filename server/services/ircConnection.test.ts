@@ -1122,3 +1122,261 @@ describe('away/back presence logging (#310)', () => {
     expect(texts).not.toContain('Presence: stranger away (nope)');
   });
 });
+
+describe('IRCv3 draft/multiline (#381)', () => {
+  function makeConn(): IrcConnection {
+    return new IrcConnection({
+      network: {
+        id: 1,
+        user_id: 1,
+        name: 'n',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates: 1,
+        nick: 'me',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        created_at: new Date().toISOString(),
+      },
+      onEvent: () => {},
+    });
+  }
+
+  // Enable the cap pair (and optionally advertise limits) the way the registered
+  // server would, so multilineLimits()/supportsMultiline()/the send path light up.
+  function enableMultiline(conn: IrcConnection, advertised = 'max-bytes=4096,max-lines=24'): void {
+    (
+      conn.client as unknown as {
+        network: { cap: { enabled: string[]; available: Map<string, string> } };
+      }
+    ).network = {
+      cap: {
+        enabled: ['message-tags', 'batch', 'draft/multiline'],
+        available: new Map([['draft/multiline', advertised]]),
+      },
+    };
+  }
+
+  it('requests batch and draft/multiline (alongside message-tags)', () => {
+    const conn = makeConn();
+    const caps = (conn as unknown as { client: { request_extra_caps: string[] } }).client
+      .request_extra_caps;
+    expect(caps).toContain('batch');
+    expect(caps).toContain('draft/multiline');
+    expect(caps).toContain('message-tags');
+  });
+
+  describe('receive (reassembly)', () => {
+    function makeReceiver(): { conn: IrcConnection; publish: ReturnType<typeof vi.fn> } {
+      const conn = makeConn();
+      const publish = vi.fn<(event: unknown) => void>();
+      conn.publish = publish;
+      // Channel chatter calls markPeerEvent; stub it so the bare (un-inserted)
+      // network row doesn't trip the peer_presence_state FK.
+      conn.markPeerEvent = vi.fn<typeof conn.markPeerEvent>();
+      conn.trackDmPeer = vi.fn<typeof conn.trackDmPeer>();
+      conn.client.user.nick = 'me';
+      return { conn, publish };
+    }
+
+    function fragment(id: string, message: string, extra: Record<string, unknown> = {}) {
+      return {
+        nick: 'alice',
+        target: '#chan',
+        type: 'privmsg',
+        message,
+        batch: { id, type: 'draft/multiline' },
+        ...extra,
+      };
+    }
+
+    it('buffers fragments and flushes ONE message joined with newlines on batch end', () => {
+      const { conn, publish } = makeReceiver();
+      conn.client.emit('message', fragment('b1', 'line one'));
+      conn.client.emit('message', fragment('b1', 'line two'));
+      // Nothing surfaces until the batch closes.
+      expect(publish).not.toHaveBeenCalled();
+      conn.client.emit('batch end draft/multiline', { id: 'b1' });
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish.mock.calls[0][0]).toMatchObject({
+        type: 'message',
+        target: '#chan',
+        nick: 'alice',
+        text: 'line one\nline two',
+        self: false,
+      });
+    });
+
+    it('honors draft/multiline-concat — continuations rejoin with NO newline', () => {
+      const { conn, publish } = makeReceiver();
+      conn.client.emit('message', fragment('b2', 'hello '));
+      conn.client.emit(
+        'message',
+        fragment('b2', 'world', { tags: { 'draft/multiline-concat': '' } }),
+      );
+      conn.client.emit('batch end draft/multiline', { id: 'b2' });
+      expect(publish.mock.calls[0][0]).toMatchObject({ text: 'hello world' });
+    });
+
+    it('still skips a self-authored multiline batch (no duplicate of our own echo)', () => {
+      const { conn, publish } = makeReceiver();
+      conn.client.emit('message', fragment('b3', 'a', { nick: 'me' }));
+      conn.client.emit('message', fragment('b3', 'b', { nick: 'me' }));
+      conn.client.emit('batch end draft/multiline', { id: 'b3' });
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it('a batch end with no buffered fragments is a no-op', () => {
+      const { conn, publish } = makeReceiver();
+      conn.client.emit('batch end draft/multiline', { id: 'nope' });
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it('does not interleave two concurrent batches', () => {
+      const { conn, publish } = makeReceiver();
+      conn.client.emit('message', fragment('A', 'a1'));
+      conn.client.emit('message', fragment('B', 'b1'));
+      conn.client.emit('message', fragment('A', 'a2'));
+      conn.client.emit('batch end draft/multiline', { id: 'B' });
+      conn.client.emit('batch end draft/multiline', { id: 'A' });
+      expect(publish.mock.calls.map((c) => (c[0] as { text: string }).text)).toEqual([
+        'b1',
+        'a1\na2',
+      ]);
+    });
+  });
+
+  describe('send (framing)', () => {
+    it('frames a multi-line body as BATCH + … tagged PRIVMSGs … BATCH - and echoes it', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      const echoes = conn.sendMultiline('#chan', 'line one\nline two');
+      const lines = raw.mock.calls.map((c) => c[0]);
+      expect(lines[0]).toMatch(/^BATCH \+[0-9a-f]{16} draft\/multiline #chan$/);
+      const ref = lines[0].match(/^BATCH \+(\S+)/)![1];
+      expect(lines[1]).toBe(`@batch=${ref} PRIVMSG #chan :line one`);
+      expect(lines[2]).toBe(`@batch=${ref} PRIVMSG #chan :line two`);
+      expect(lines[3]).toBe(`BATCH -${ref}`);
+      expect(lines).toHaveLength(4);
+      // One batch → one self-echo carrying the reassembled text.
+      expect(echoes).toEqual(['line one\nline two']);
+    });
+
+    it('preserves a blank line as an empty PRIVMSG with a trailing colon', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      conn.sendMultiline('#chan', 'a\n\nb');
+      const lines = raw.mock.calls.map((c) => c[0]);
+      const ref = lines[0].match(/^BATCH \+(\S+)/)![1];
+      expect(lines[1]).toBe(`@batch=${ref} PRIVMSG #chan :a`);
+      expect(lines[2]).toBe(`@batch=${ref} PRIVMSG #chan :`);
+      expect(lines[3]).toBe(`@batch=${ref} PRIVMSG #chan :b`);
+    });
+
+    it('marks the continuation of an over-long line with draft/multiline-concat', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      conn.sendMultiline('#chan', `short\n${'a'.repeat(400)}`);
+      const lines = raw.mock.calls.map((c) => c[0]);
+      const ref = lines[0].match(/^BATCH \+(\S+)/)![1];
+      expect(lines[2]).toBe(`@batch=${ref} PRIVMSG #chan :${'a'.repeat(350)}`);
+      expect(lines[3]).toBe(
+        `@batch=${ref};draft/multiline-concat PRIVMSG #chan :${'a'.repeat(50)}`,
+      );
+    });
+
+    it('splits an over-limit body into multiple batches, each with its own ref', () => {
+      const conn = makeConn();
+      enableMultiline(conn, 'max-bytes=4096,max-lines=2');
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      // 3 lines, max-lines 2 → batch [a,b], then batch [c].
+      const echoes = conn.sendMultiline('#chan', 'a\nb\nc');
+      const lines = raw.mock.calls.map((c) => c[0]);
+      const ref1 = lines[0].match(/^BATCH \+(\S+)/)![1];
+      expect(lines.slice(0, 4)).toEqual([
+        `BATCH +${ref1} draft/multiline #chan`,
+        `@batch=${ref1} PRIVMSG #chan :a`,
+        `@batch=${ref1} PRIVMSG #chan :b`,
+        `BATCH -${ref1}`,
+      ]);
+      const ref2 = lines[4].match(/^BATCH \+(\S+)/)![1];
+      expect(ref2).not.toBe(ref1);
+      expect(lines.slice(4)).toEqual([
+        `BATCH +${ref2} draft/multiline #chan`,
+        `@batch=${ref2} PRIVMSG #chan :c`,
+        `BATCH -${ref2}`,
+      ]);
+      // One self-echo per batch — the channel sees two messages, not three lines.
+      expect(echoes).toEqual(['a\nb', 'c']);
+    });
+
+    it('sends nothing when the cap is not negotiated', () => {
+      const conn = makeConn();
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      expect(conn.sendMultiline('#chan', 'a\nb')).toEqual([]);
+      expect(raw).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('limits + support gate', () => {
+    it('multilineLimits is null / supportsMultiline false until both caps are negotiated', () => {
+      const conn = makeConn();
+      expect(conn.multilineLimits()).toBeNull();
+      expect(conn.supportsMultiline()).toBe(false);
+    });
+
+    it('parses advertised max-bytes / max-lines and reports support', () => {
+      const conn = makeConn();
+      enableMultiline(conn, 'max-bytes=512,max-lines=3');
+      expect(conn.multilineLimits()).toEqual({ maxBytes: 512, maxLines: 3 });
+      expect(conn.supportsMultiline()).toBe(true);
+    });
+
+    it('falls back to conservative defaults when a dimension is omitted', () => {
+      const conn = makeConn();
+      enableMultiline(conn, '');
+      expect(conn.multilineLimits()).toEqual({ maxBytes: 4096, maxLines: 24 });
+    });
+
+    it('reports no support when advertised max-bytes is below one wire line', () => {
+      // A server that can't hold a single 350B PRIVMSG in a batch isn't usefully
+      // multiline — null limits send the body via the legacy splitter instead of
+      // framing batches the server would FAIL+drop.
+      const conn = makeConn();
+      enableMultiline(conn, 'max-bytes=100,max-lines=24');
+      expect(conn.multilineLimits()).toBeNull();
+      expect(conn.supportsMultiline()).toBe(false);
+    });
+
+    it('reports no support without message-tags (the batch reference rides a tag)', () => {
+      const conn = makeConn();
+      (
+        conn.client as unknown as {
+          network: { cap: { enabled: string[]; available: Map<string, string> } };
+        }
+      ).network = {
+        cap: {
+          enabled: ['batch', 'draft/multiline'], // no message-tags
+          available: new Map([['draft/multiline', 'max-bytes=4096,max-lines=24']]),
+        },
+      };
+      expect(conn.multilineLimits()).toBeNull();
+      expect(conn.supportsMultiline()).toBe(false);
+    });
+  });
+});
