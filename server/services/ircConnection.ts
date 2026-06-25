@@ -1730,6 +1730,16 @@ export class IrcConnection {
     const stateAt = new Date().toISOString();
     const message = state === 'away' ? awayMessage || null : null;
     const next = writePeerState(this.network.id, canonical, state, stateAt, message);
+    // away/back arrive via away-notify (+extended-monitor), not the MONITOR
+    // numerics, so the 'users online/offline' handlers never log them. Mirror
+    // their 'Presence:' line here — already gated to tracked peers (eligiblePeer)
+    // and to real transitions (the allowed check above), so a busy channel's
+    // /away traffic stays out of the system log. (#310)
+    if (state === 'away') {
+      this.logNet(`Presence: ${canonical} away${message ? ` (${message})` : ''}`);
+    } else if (state === 'back') {
+      this.logNet(`Presence: ${canonical} back`);
+    }
     // A genuine offline→online transition (not first-sight null→online, which
     // covers a freshly-added watch / the MONITOR seed) is the only one that
     // drives the "friend came online" notification. Flag it so wsHub can fire a
