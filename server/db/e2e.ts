@@ -318,6 +318,14 @@ const deleteIncomingStmt = db.prepare(
 const deleteIncomingForHandleStmt = db.prepare(
   `DELETE FROM e2e_incoming_sessions WHERE user_id = ? AND network_id = ? AND handle = ?`,
 );
+const revokeIncomingForHandleStmt = db.prepare(
+  `UPDATE e2e_incoming_sessions SET status = 'revoked'
+   WHERE user_id = ? AND network_id = ? AND handle = ?`,
+);
+const incomingChannelsForHandleStmt = db.prepare(
+  `SELECT DISTINCT channel FROM e2e_incoming_sessions
+   WHERE user_id = ? AND network_id = ? AND handle = ?`,
+);
 const listTrustedForChannelStmt = db.prepare(
   `SELECT * FROM e2e_incoming_sessions
    WHERE user_id = ? AND network_id = ? AND channel = ? AND status = 'trusted'`,
@@ -427,6 +435,28 @@ export function deleteIncomingSessionsForHandle(
   handle: string,
 ): number {
   return deleteIncomingForHandleStmt.run(userId, networkId, handle).changes;
+}
+
+/** Mark every incoming session for a handle revoked, without unsealing any key.
+ *  Returns the number of rows changed. */
+export function revokeIncomingSessionsForHandle(
+  userId: number,
+  networkId: number,
+  handle: string,
+): number {
+  return revokeIncomingForHandleStmt.run(userId, networkId, handle).changes;
+}
+
+/** The distinct channels a handle has incoming sessions on (no unsealing) —
+ *  used to target outgoing-key rotation on revoke. */
+export function listIncomingChannelsForHandle(
+  userId: number,
+  networkId: number,
+  handle: string,
+): string[] {
+  return (
+    incomingChannelsForHandleStmt.all(userId, networkId, handle) as Array<{ channel: string }>
+  ).map((r) => r.channel);
 }
 
 /** Trusted incoming sessions for a channel (the decrypt hot path). A single
