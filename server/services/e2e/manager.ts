@@ -622,8 +622,10 @@ export class E2eManager {
     // A REKEY from a peer we've never handshaked with is illegitimate.
     if (change === 'new') return { replies: [] };
     if (isTofuBlock(change)) {
-      // Remember the change (as the KEYREQ/KEYRSP handlers do) so a later
-      // `/e2e reverify` can re-pin in place instead of falling back to a forget.
+      // Remember a fingerprint/handle change (as the KEYREQ/KEYRSP handlers do)
+      // so a later `/e2e reverify` can re-pin in place instead of falling back to
+      // a forget. A 'revoked' block is intentionally a no-op here (stashKeyChange
+      // only stashes fingerprint/handle changes).
       this.stashKeyChange(userId, networkId, senderHandle, change, rekey.pubkey, rekey.channel);
       return {
         replies: [],
