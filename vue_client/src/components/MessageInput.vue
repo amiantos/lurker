@@ -14,7 +14,8 @@
   >
     <span class="prompt"
       ><template v-if="!isMobile"
-        >{{ promptLabel }}<span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span
+        >{{ promptLabelNoModes }}<span v-if="promptModes" class="modes">{{ promptModes }}</span
+        ><span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span
         >&nbsp;</template
       ><span
         v-if="hasHistory"
@@ -420,12 +421,14 @@ const systemFeatures = computed(() => {
     autocapitalize: autocorrectOn ? 'sentences' : 'off',
   };
 });
-// Prompt identity (nick + channel prefix + user modes) and away marker — see
-// useSelfLabel. On mobile we don't render the prompt label inline here (the
-// template gates it on !isMobile so the input row stays just `>` + composer);
-// instead the modeless variant feeds the placeholder above, since the compact
-// status bar now shows network/channel rather than the self identity.
-const { promptLabel, promptLabelNoModes, awayLabel } = useSelfLabel();
+// Prompt identity (nick + channel prefix, then user modes) and away marker —
+// see useSelfLabel. The nick and the user-mode parens come back separately so
+// the prompt can accent-colour the nick but mute the modes (issue #415). On
+// mobile we don't render the prompt label inline here (the template gates it on
+// !isMobile so the input row stays just `>` + composer); instead the modeless
+// variant feeds the placeholder above, since the compact status bar now shows
+// network/channel rather than the self identity.
+const { promptLabelNoModes, promptModes, awayLabel } = useSelfLabel();
 const { isMobile } = useViewport();
 
 let typingState: string | null = null;
@@ -2955,6 +2958,11 @@ function handleCommand(line: string, networkId: number | null, target: string): 
   /* Matches the textarea's intrinsic single-row height so the prompt and
      the first text line baseline-align before any growth. */
   line-height: 1.4;
+}
+/* User modes ride the accent-coloured nick but stay muted, matching the status
+   bar's channel name (accent) vs mode suffix (muted) treatment (issue #415). */
+.prompt .modes {
+  color: var(--fg-muted);
 }
 .prompt .away {
   color: var(--warn);

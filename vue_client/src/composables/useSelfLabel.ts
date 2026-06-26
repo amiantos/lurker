@@ -8,14 +8,18 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { prefixOf } from '../utils/memberPrefix.js';
 
 export interface SelfLabelState {
-  promptLabel: ComputedRef<string>;
   promptLabelNoModes: ComputedRef<string>;
+  promptModes: ComputedRef<string>;
   awayLabel: ComputedRef<string>;
 }
 
-// Self-identity label used in the input prompt and (compact) status bar:
+// Self-identity label used in the input prompt:
 //   [channel-prefix][nick](userModes)   e.g.  @bradleyroot(i)
-// Plus a separate away label string like "(brb)" when /away is set.
+// The nick part (promptLabelNoModes) and the user-mode parens (promptModes) are
+// exposed separately so the prompt can accent-colour the nick while muting the
+// modes — mirroring the status bar, which colours the channel name but not its
+// mode suffix (issue #415). Plus a separate away label like "(brb)" when /away
+// is set.
 //
 // The channel-prefix is the user's own op/voice marker derived from the
 // active channel's member list. For DMs / server buffers it's empty.
@@ -38,7 +42,7 @@ export function useSelfLabel(): SelfLabelState {
 
   // Identity without the trailing user-mode parens. Feeds the mobile input
   // placeholder, which mirrors the compact status bar's choice to drop modes
-  // on narrow screens; the desktop prompt (promptLabel) keeps them.
+  // on narrow screens; the desktop prompt renders this plus promptModes.
   const promptLabelNoModes = computed(() => {
     const a = active.value;
     if (!a) return '—';
@@ -47,12 +51,13 @@ export function useSelfLabel(): SelfLabelState {
     return `${channelPrefix.value}${nick}`;
   });
 
-  const promptLabel = computed(() => {
-    const base = promptLabelNoModes.value;
+  // The trailing user-mode parens, kept apart from the nick so the prompt can
+  // render them in a muted colour (issue #415). Empty when no modes are set.
+  const promptModes = computed(() => {
     const a = active.value;
-    if (!a || base === '—') return base;
+    if (!a || promptLabelNoModes.value === '—') return '';
     const modes = networks.states[a.networkId]?.userModes || '';
-    return modes ? `${base}(${modes})` : base;
+    return modes ? `(${modes})` : '';
   });
 
   const awayLabel = computed(() => {
@@ -64,5 +69,5 @@ export function useSelfLabel(): SelfLabelState {
     return away?.active && away.message ? `(${away.message})` : '';
   });
 
-  return { promptLabel, promptLabelNoModes, awayLabel };
+  return { promptLabelNoModes, promptModes, awayLabel };
 }
