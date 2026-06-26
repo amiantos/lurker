@@ -1318,13 +1318,18 @@ watch(
     // capped buffer isn't misread as a re-snapshot (and force-scrolled to the
     // bottom) on every single message.
     // ID-less (ephemeral) rows — /e2e and other server command echoes surfaced
-    // via publishEphemeral — keep the tail id `undefined`, so the id test can't
-    // see two of them in a row appended (oldLastId === newLastId === undefined).
-    // A length growth that isn't a prepend and ends in an id-less row IS an
-    // append; fall back to that so a multi-line /e2e help still sticks to bottom.
+    // via publishEphemeral — carry `id === undefined`, so the id-presence test
+    // can't anchor on them. Fall back to structural signals around them:
+    //   • growth that isn't a prepend is an append — covers a new ephemeral tail
+    //     AND a real message arriving right after an ephemeral one (the latter
+    //     would otherwise match neither branch and fail to stick to bottom); and
+    //   • a same-length cap-evict whose OLD tail was id-less is still an append,
+    //     not a wholesale replace, so a reader scrolled up isn't yanked down.
+    const oldTailPresent = oldLastId != null && messages.value.some((m) => m.id === oldLastId);
     const appended =
-      (lastChanged && oldLastId != null && messages.value.some((m) => m.id === oldLastId)) ||
-      (grew && !firstChanged && messages.value[newLen - 1]?.id == null);
+      (lastChanged && oldTailPresent) ||
+      (grew && !firstChanged) ||
+      (lastChanged && oldLastId == null && newLen >= prevLen);
     // Pure prepend: anchor by element ID so re-flow from changing column
     // widths or differing message heights doesn't drift the math. With the
     // loading notice gone from the template, the OLD DOM and NEW DOM share
@@ -1407,7 +1412,9 @@ watch(
             type: tail.type,
             isDm: !tail.target.startsWith('#') && !tail.target.startsWith(':server:'),
           });
-        if (!tailIgnored) bumpNewBelow();
+        // Don't let an id-less ephemeral status echo (a /e2e line, the user's
+        // own command output) inflate the "N new ↓" unread count.
+        if (!tailIgnored && tail?.id != null) bumpNewBelow();
       }
     }
     ensureViewportFilled();

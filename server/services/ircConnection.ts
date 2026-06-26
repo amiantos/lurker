@@ -2435,7 +2435,18 @@ export class IrcConnection {
       case 'enable': {
         const chan = needChannel();
         if (!chan) return;
-        const mode = parseE2eMode(nonChannel[0]);
+        const modeToken = nonChannel[0];
+        // A present-but-unknown mode token is a typo (e.g. `quite`) — reject it
+        // instead of silently falling back to `normal` and reporting success
+        // (parity with the validated `/e2e mode`). Absent token → default normal.
+        if (
+          modeToken !== undefined &&
+          !['auto', 'auto-accept', 'normal', 'quiet'].includes(modeToken.toLowerCase())
+        ) {
+          info(`/e2e on: unknown mode '${modeToken}' — use auto | normal | quiet`, 'warn');
+          return;
+        }
+        const mode = parseE2eMode(modeToken);
         if (e2eManager.setChannelConfig(uid, nid, chan, true, mode)) {
           info(
             `encryption enabled on ${chan} (mode: ${mode}). Start a session: /e2e handshake <nick>`,
@@ -2508,7 +2519,10 @@ export class IrcConnection {
         info(`verify ${r.nick} — compare BOTH out-of-band (call/Signal), then trust:`);
         if (me) info(`   you:  ${me.fingerprintHex.slice(0, 16)}…  ${me.sas}`);
         info(`   ${r.nick}:  ${v.fingerprintHex.slice(0, 16)}…  ${v.sas}  (${v.status})`);
-        info(`   if they DON'T match, a MitM may be in progress — /e2e revoke ${r.nick}`, 'warn');
+        info(
+          `   if they DON'T match, a MitM may be in progress — /e2e forget -all ${r.nick}`,
+          'warn',
+        );
         return;
       }
       case 'revoke': {
@@ -2646,6 +2660,17 @@ export class IrcConnection {
           const pattern = tokens[2];
           if (!scope || !pattern) {
             info('/e2e autotrust add <scope> <pattern>  (scope = global or #chan)', 'warn');
+            return;
+          }
+          // The matcher only honors scope='global' or scope=<#channel>
+          // (db/e2e.ts matchAutotrustStmt), so reject anything else up front
+          // rather than storing a rule that can never match (a dead rule the
+          // user is told was "added").
+          if (scope.toLowerCase() !== 'global' && !(scope.startsWith('#') && scope.length > 1)) {
+            info(
+              `/e2e autotrust add: scope must be 'global' or a #channel (got '${scope}')`,
+              'warn',
+            );
             return;
           }
           info(

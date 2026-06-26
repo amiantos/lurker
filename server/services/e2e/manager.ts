@@ -183,11 +183,16 @@ export class E2eManager {
     return Math.floor(this.now() / 1000);
   }
 
-  // IRC identifiers are case-insensitive (the DB layer is COLLATE NOCASE), so
-  // fold the handle here too — otherwise a case-varied handle gets its own
-  // rate-limit bucket and the throttle is bypassed for the same peer.
-  private rlKey(userId: number, networkId: number, handle: string): string {
+  // Per-peer scope key shared by the rate-limiter, the key-change stash, and the
+  // pending-inbound map. IRC identifiers are case-insensitive (the DB layer is
+  // COLLATE NOCASE), so fold the handle here too — otherwise a case-varied handle
+  // gets its own bucket and the throttle/stash is bypassed for the same peer.
+  private peerKey(userId: number, networkId: number, handle: string): string {
     return `${userId}:${networkId}:${handle.toLowerCase()}`;
+  }
+
+  private rlKey(userId: number, networkId: number, handle: string): string {
+    return this.peerKey(userId, networkId, handle);
   }
 
   // ─── identity ──────────────────────────────────────────────────────────────
@@ -423,7 +428,11 @@ export class E2eManager {
     const change = this.classifyPeerChange(userId, networkId, fp, senderHandle);
     if (isTofuBlock(change)) {
       this.stashKeyChange(userId, networkId, senderHandle, change, req.pubkey, req.channel);
-      return { replies: [], notice: this.tofuWarning(senderHandle, change), channel: req.channel };
+      return {
+        replies: [],
+        notice: this.tofuWarning(senderHandle, change, fp),
+        channel: req.channel,
+      };
     }
     this.upsertSeenPeer(userId, networkId, fp, req.pubkey, senderHandle, senderNick);
 
@@ -474,7 +483,11 @@ export class E2eManager {
     const change = this.classifyPeerChange(userId, networkId, fp, senderHandle);
     if (isTofuBlock(change)) {
       this.stashKeyChange(userId, networkId, senderHandle, change, rsp.pubkey, rsp.channel);
-      return { replies: [], notice: this.tofuWarning(senderHandle, change), channel: rsp.channel };
+      return {
+        replies: [],
+        notice: this.tofuWarning(senderHandle, change, fp),
+        channel: rsp.channel,
+      };
     }
 
     // We initiated, so receiving the response is our consent → trust the peer.
@@ -493,7 +506,7 @@ export class E2eManager {
     if (!this.installIncoming(userId, networkId, senderHandle, rsp.channel, fp, sk, now)) {
       return {
         replies: [],
-        notice: this.tofuWarning(senderHandle, 'fingerprint-changed'),
+        notice: this.tofuWarning(senderHandle, 'fingerprint-changed', fp),
         channel: rsp.channel,
       };
     }
@@ -539,7 +552,7 @@ export class E2eManager {
     if (isTofuBlock(change))
       return {
         replies: [],
-        notice: this.tofuWarning(senderHandle, change),
+        notice: this.tofuWarning(senderHandle, change, fp),
         channel: rekey.channel,
       };
 
@@ -561,7 +574,7 @@ export class E2eManager {
     ) {
       return {
         replies: [],
-        notice: this.tofuWarning(senderHandle, 'fingerprint-changed'),
+        notice: this.tofuWarning(senderHandle, 'fingerprint-changed', fp),
         channel: rekey.channel,
       };
     }
@@ -848,6 +861,9 @@ export class E2eManager {
         keyring.markOutgoingPendingRotation(userId, networkId, channel);
         keyring.removeOutgoingRecipient(userId, networkId, channel, handle);
       }
+      // Drop any stashed key-change so a later `/e2e reverify` can't resurrect the
+      // key we just cut off (it would otherwise re-pin it as trusted within TTL).
+      this.clearKeyChange(userId, networkId, handle);
       return peer !== null || revoked > 0;
     } catch (err) {
       console.warn(`e2e revoke ${handle}: ${(err as Error).message}`);
@@ -883,11 +899,17 @@ export class E2eManager {
    *  repartee's `/e2e forget` without `-all`. */
   forgetPeerOnChannel(userId: number, networkId: number, handle: string, channel: string): boolean {
     try {
-      const had = keyring.getIncomingSession(userId, networkId, handle, channel) !== null;
+      // "Did we clear anything?" = an installed session OR a cached prompt for
+      // this channel (the user-visible state) — computed BEFORE deleting, and
+      // including the pending prompt so a forget that drops only a prompt isn't
+      // reported as "nothing remembered".
+      const hadSession = keyring.getIncomingSession(userId, networkId, handle, channel) !== null;
+      const hadPending = this.pendingInbound.delete(
+        this.inboundKey(userId, networkId, handle, channel),
+      );
       keyring.deleteIncomingSession(userId, networkId, handle, channel);
       keyring.removeOutgoingRecipient(userId, networkId, channel, handle);
-      this.pendingInbound.delete(this.inboundKey(userId, networkId, handle, channel));
-      return had;
+      return hadSession || hadPending;
     } catch (err) {
       console.warn(`e2e forget ${handle} on ${channel}: ${(err as Error).message}`);
       return false;
@@ -934,6 +956,11 @@ export class E2eManager {
         globalStatus: 'pending', // setPeerStatus is the authority
       });
       keyring.setPeerStatus(userId, networkId, newFp, 'trusted');
+      // Match forgetPeer + repartee's reverify-apply: drop stale outgoing
+      // recipients (keyed to the evicted fingerprint) and any pending
+      // handshakes/prompts so the next handshake re-establishes cleanly.
+      keyring.deleteOutgoingRecipientsForHandle(userId, networkId, handle);
+      this.clearPendingForHandle(userId, networkId, handle);
       this.clearKeyChange(userId, networkId, handle);
     };
 
@@ -961,6 +988,8 @@ export class E2eManager {
     const oldHandle = peer?.lastHandle ?? null;
     if (oldHandle && !eqLower(oldHandle, handle)) {
       keyring.deleteIncomingSessionsForHandle(userId, networkId, oldHandle);
+      keyring.deleteOutgoingRecipientsForHandle(userId, networkId, oldHandle);
+      this.clearPendingForHandle(userId, networkId, oldHandle);
     }
     pinNew();
     const fpHex = fingerprintHex(newFp);
@@ -968,7 +997,7 @@ export class E2eManager {
   }
 
   private keyChangeKey(userId: number, networkId: number, handle: string): string {
-    return `${userId}:${networkId}:${handle.toLowerCase()}`;
+    return this.peerKey(userId, networkId, handle);
   }
 
   private stashKeyChange(
@@ -994,11 +1023,7 @@ export class E2eManager {
   }
 
   private sweepKeyChanges(): void {
-    const now = this.now();
-    for (const [k, c] of this.pendingKeyChange) {
-      if (now - c.createdAt > KEYCHANGE_TTL_MS) this.pendingKeyChange.delete(k);
-    }
-    this.cap(this.pendingKeyChange, KEYCHANGE_MAX);
+    this.sweepMap(this.pendingKeyChange, KEYCHANGE_TTL_MS, KEYCHANGE_MAX);
   }
 
   // ─── listing + management (the /e2e list/mode/decline/unrevoke surface) ──────
@@ -1076,8 +1101,8 @@ export class E2eManager {
     return this.setChannelConfig(userId, networkId, channel, existing?.enabled ?? true, mode);
   }
 
-  /** Decline a pending inbound handshake: drop the cached prompt and revoke the
-   *  peer so a re-KEYREQ won't re-prompt (mirrors repartee's `/e2e decline`).
+  /** Decline a pending inbound handshake: drop the cached prompt and revoke this
+   *  CHANNEL's session (mirrors repartee's channel-scoped `/e2e decline`).
    *  Returns false if there was nothing to decline. */
   declinePeer(userId: number, networkId: number, handle: string, channel: string): boolean {
     try {
@@ -1088,10 +1113,14 @@ export class E2eManager {
         this.inboundKey(userId, networkId, handle, channel),
       );
       if (!hadPending) return false;
-      // Reject it: revoke the peer so a re-sent KEYREQ won't re-prompt.
-      const peer = keyring.getPeerByHandle(userId, networkId, handle);
-      if (peer) keyring.setPeerStatus(userId, networkId, peer.fingerprint, 'revoked');
+      // Channel-scoped, like repartee: revoke only THIS channel's session (a
+      // no-op when none is installed yet) and drop any stashed key-change. We
+      // deliberately do NOT touch the peer's GLOBAL trust status — declining one
+      // channel's prompt must not cut the peer off on every other channel, nor
+      // leave a global 'revoked' that a later `/e2e unrevoke` would launder into
+      // 'trusted'.
       keyring.updateIncomingStatus(userId, networkId, handle, channel, 'revoked');
+      this.clearKeyChange(userId, networkId, handle);
       return true;
     } catch (err) {
       console.warn(`e2e decline ${handle}: ${(err as Error).message}`);
@@ -1141,9 +1170,14 @@ export class E2eManager {
    *  repartee's `/e2e autotrust remove <pattern>`. Returns how many were removed. */
   removeAutotrust(userId: number, networkId: number, pattern: string): number {
     try {
+      // Match case-insensitively: rules apply via globMatchCi (case-insensitive)
+      // and handle_pattern is NOT COLLATE NOCASE, so a case-differing `remove`
+      // must still find the rule (else it stays active but looks removed). The
+      // DELETE uses each rule's stored casing, so it lands.
+      const want = pattern.toLowerCase();
       const rules = keyring
         .listAutotrust(userId, networkId)
-        .filter((r) => r.handlePattern === pattern);
+        .filter((r) => r.handlePattern.toLowerCase() === want);
       for (const r of rules) keyring.removeAutotrust(userId, networkId, r.scope, r.handlePattern);
       return rules.length;
     } catch (err) {
@@ -1272,19 +1306,26 @@ export class E2eManager {
   }
 
   private sweepPending(): void {
-    const now = this.now();
-    for (const [k, ph] of this.pending) {
-      if (now - ph.createdAt > PENDING_TTL_MS) this.pending.delete(k);
-    }
-    this.cap(this.pending, PENDING_MAX);
+    this.sweepMap(this.pending, PENDING_TTL_MS, PENDING_MAX);
   }
 
   private sweepPendingInbound(): void {
+    this.sweepMap(this.pendingInbound, PENDING_INBOUND_TTL_MS, PENDING_INBOUND_MAX);
+  }
+
+  // Expire entries past `ttlMs` (by createdAt), then bound the map to `max`
+  // (oldest-first eviction). One implementation for every TTL+capped map on this
+  // long-lived singleton, so none can silently lose its size bound.
+  private sweepMap<T extends { createdAt: number }>(
+    map: Map<string, T>,
+    ttlMs: number,
+    max: number,
+  ): void {
     const now = this.now();
-    for (const [k, pi] of this.pendingInbound) {
-      if (now - pi.createdAt > PENDING_INBOUND_TTL_MS) this.pendingInbound.delete(k);
+    for (const [k, v] of map) {
+      if (now - v.createdAt > ttlMs) map.delete(k);
     }
-    this.cap(this.pendingInbound, PENDING_INBOUND_MAX);
+    this.cap(map, max);
   }
 
   private cap(map: Map<string, unknown>, max: number): void {
@@ -1298,22 +1339,29 @@ export class E2eManager {
   // Fold case so `/e2e accept` finds the cached KEYREQ even if the handle/
   // channel casing differs between the inbound message and the accept command.
   private inboundKey(userId: number, networkId: number, handle: string, channel: string): string {
-    return `${userId}:${networkId}:${handle.toLowerCase()}:${channel.toLowerCase()}`;
+    return `${this.peerKey(userId, networkId, handle)}:${channel.toLowerCase()}`;
   }
 
-  private tofuWarning(handle: string, change: ClassifyResult): UserNotice {
+  private tofuWarning(handle: string, change: ClassifyResult, newFp?: Uint8Array): UserNotice {
     if (change === 'revoked') {
       return { level: 'warn', text: `Ignoring encrypted handshake from revoked peer ${handle}` };
     }
+    // Surface the key's short fingerprint + SAS so the user has something to
+    // compare out-of-band BEFORE running /e2e reverify — the keyring still pins
+    // the OLD key, so `/e2e verify` can't show this one. (reverify applies the
+    // most recently stashed key, which is exactly the one shown here.)
+    const keyInfo = newFp
+      ? ` — key ${fingerprintHex(newFp).slice(0, 16)}… (${fingerprintWords(newFp)})`
+      : '';
     if (change === 'handle-changed') {
       return {
         level: 'warn',
-        text: `⚠ a known encryption key appeared under a new handle (${handle}) — verify out-of-band, then /e2e reverify ${handle} to accept it`,
+        text: `⚠ a known encryption key appeared under a new handle (${handle})${keyInfo} — verify out-of-band, then /e2e reverify ${handle} to accept it`,
       };
     }
     return {
       level: 'warn',
-      text: `⚠ encryption key changed for ${handle} — verify out-of-band, then /e2e reverify ${handle} to accept it`,
+      text: `⚠ encryption key changed for ${handle}${keyInfo} — verify out-of-band, then /e2e reverify ${handle} to accept it`,
     };
   }
 }

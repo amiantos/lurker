@@ -440,6 +440,15 @@ describe('/e2e command surface — 1d', () => {
     expect(pe).toHaveBeenCalledWith(expect.objectContaining({ type: 'e2e', level: 'warn' }));
   });
 
+  it('on rejects an unknown mode token instead of silently falling back to normal', () => {
+    const conn = makeConn();
+    const pe = vi.fn<(event: unknown) => void>();
+    conn.publishEphemeral = pe;
+    conn.runE2eCommand('#onbad', 'on #onbad quite'); // typo for "quiet"
+    expect(pe).toHaveBeenCalledWith(expect.objectContaining({ type: 'e2e', level: 'warn' }));
+    expect(keyring.getChannelConfig(1, 1, '#onbad')).toBeNull(); // not enabled
+  });
+
   it('list reports no trusted peers on a fresh channel', () => {
     const conn = makeConn();
     const pe = vi.fn<(event: unknown) => void>();
@@ -459,6 +468,26 @@ describe('/e2e command surface — 1d', () => {
     expect(
       e2eManager.listAutotrust(1, 1).some((r) => r.handlePattern === '*@trusted.example'),
     ).toBe(false);
+  });
+
+  it('autotrust remove matches case-insensitively (rules apply case-insensitively)', () => {
+    const conn = makeConn();
+    conn.publishEphemeral = vi.fn<(event: unknown) => void>();
+    conn.runE2eCommand(':server:1', 'autotrust add global *@CaseHost.Example');
+    // Remove with different casing — must still find + delete the rule.
+    conn.runE2eCommand(':server:1', 'autotrust remove *@casehost.example');
+    expect(
+      e2eManager.listAutotrust(1, 1).some((r) => r.handlePattern === '*@CaseHost.Example'),
+    ).toBe(false);
+  });
+
+  it('autotrust add rejects a scope that is neither global nor a #channel', () => {
+    const conn = makeConn();
+    const pe = vi.fn<(event: unknown) => void>();
+    conn.publishEphemeral = pe;
+    conn.runE2eCommand(':server:1', 'autotrust add globl *@x'); // typo for "global"
+    expect(pe).toHaveBeenCalledWith(expect.objectContaining({ type: 'e2e', level: 'warn' }));
+    expect(e2eManager.listAutotrust(1, 1).some((r) => r.scope === 'globl')).toBe(false);
   });
 
   it('help lists the command surface', () => {
@@ -484,7 +513,7 @@ describe('/e2e command surface — 1d', () => {
 });
 
 describe('E2eManager 1d management methods', () => {
-  it('decline rejects a PENDING inbound handshake (not an established peer); unrevoke restores', () => {
+  it('decline drops a PENDING inbound prompt channel-scoped, without globally revoking the peer', () => {
     // A fresh identity (zed = user 3) so its fingerprint isn't already pinned by
     // another test under a different handle (which would TOFU-block the KEYREQ).
     const zed = createUser('e2e-zed').id;
@@ -493,15 +522,33 @@ describe('E2eManager 1d management methods', () => {
     const out = e2eManager.handleHandshakeBody(1, 1, '~zed@h', 'zed', req)!;
     expect(out.notice?.text).toMatch(/accept/); // the normal-mode prompt was cached
 
-    // Decline the pending handshake → peer revoked so a re-KEYREQ won't re-prompt.
+    // Decline drops the cached prompt — but must NOT globally revoke the peer
+    // (that would cut them off on every other channel, and a later /e2e unrevoke
+    // could then launder this never-verified peer into 'trusted').
     expect(e2eManager.declinePeer(1, 1, '~zed@h', '#dz')).toBe(true);
-    expect(keyring.getPeerByHandle(1, 1, '~zed@h')?.globalStatus).toBe('revoked');
-    // Declining again with nothing pending is a no-op (NOT a second revoke).
+    expect(keyring.getPeerByHandle(1, 1, '~zed@h')?.globalStatus).not.toBe('revoked');
+    // Declining again with nothing pending is a no-op.
     expect(e2eManager.declinePeer(1, 1, '~zed@h', '#dz')).toBe(false);
+    // unrevoke can't promote a peer that was never revoked.
+    expect(e2eManager.unrevokePeer(1, 1, '~zed@h')).toBe(false);
+  });
 
-    expect(e2eManager.unrevokePeer(1, 1, '~zed@h')).toBe(true);
-    expect(keyring.getPeerByHandle(1, 1, '~zed@h')?.globalStatus).toBe('trusted');
-    expect(e2eManager.unrevokePeer(1, 1, '~zed@h')).toBe(false); // already trusted
+  it('unrevoke restores a peer that was revoked via /e2e revoke', () => {
+    const fp = new Uint8Array(16).fill(31);
+    keyring.upsertPeer(1, 1, {
+      fingerprint: fp,
+      pubkey: new Uint8Array(32).fill(32),
+      lastHandle: '~rv@h',
+      lastNick: 'rv',
+      firstSeen: 1,
+      lastSeen: 1,
+      globalStatus: 'trusted',
+    });
+    expect(e2eManager.revokePeer(1, 1, '~rv@h')).toBe(true);
+    expect(keyring.getPeerByHandle(1, 1, '~rv@h')?.globalStatus).toBe('revoked');
+    expect(e2eManager.unrevokePeer(1, 1, '~rv@h')).toBe(true);
+    expect(keyring.getPeerByHandle(1, 1, '~rv@h')?.globalStatus).toBe('trusted');
+    expect(e2eManager.unrevokePeer(1, 1, '~rv@h')).toBe(false); // already trusted
   });
 
   it('decline with nothing pending does NOT revoke an established peer (review #408)', () => {
@@ -558,6 +605,19 @@ describe('E2eManager 1d management methods', () => {
     });
     expect(e2eManager.forgetPeer(1, 1, '~gone@oldhost')).toBeGreaterThan(0);
     expect(keyring.getPeerByHandle(1, 1, '~gone@oldhost')).toBeNull();
+  });
+
+  it('forgetPeerOnChannel reports cleared when it only drops a pending prompt (no session yet)', () => {
+    // A fresh identity so its fp isn't pinned elsewhere (would TOFU-block the KEYREQ).
+    const pim = createUser('e2e-pim').id;
+    e2eManager.setChannelConfig(1, 1, '#fp', true, 'normal'); // normal mode → caches a prompt
+    const req = e2eManager.buildKeyReq(pim, pim, '#fp')!;
+    const out = e2eManager.handleHandshakeBody(1, 1, '~pim@h', 'pim', req)!;
+    expect(out.notice?.text).toMatch(/accept/); // a prompt was cached, no session installed
+    // Forgetting the channel must report it cleared the prompt, not "nothing remembered".
+    expect(e2eManager.forgetPeerOnChannel(1, 1, '~pim@h', '#fp')).toBe(true);
+    // …and a second forget now has nothing to clear.
+    expect(e2eManager.forgetPeerOnChannel(1, 1, '~pim@h', '#fp')).toBe(false);
   });
 });
 
