@@ -771,18 +771,68 @@ function scrollToUnread(dir: 'up' | 'down'): void {
   target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
-// Keep the selected row visible when the active buffer changes from outside
-// the list — Alt+arrow, quick switcher, jump-to-message, etc. On a small
-// display the new selection can otherwise sit off-screen. `block: 'nearest'`
-// no-ops when the row is already visible, so a same-row reactivation or a
-// click on an already-visible row doesn't pointlessly scroll.
-async function ensureActiveVisible(): Promise<void> {
-  await nextTick();
+// Keep a "scrolloff" zone of context around the active buffer when it changes
+// from outside the list — Alt+arrow, quick switcher, jump-to-message, etc. Like
+// vim's `scrolloff` or weechat's buffer list, we keep SCROLLOFF_ROWS buffers of
+// context visible both above and below the active row — a symmetric margin, no
+// notion of travel direction — so single-step nav always previews what's coming
+// instead of jamming the selection flush against an edge.
+//
+// We compute the target scrollTop explicitly rather than leaning on
+// scrollIntoView({ block: 'nearest' }) + a CSS scroll-margin (the old #182
+// approach). `nearest` only ever buys the minimum scroll on the leading edge,
+// and with smooth behavior a burst of Alt+arrow presses keeps cancelling the
+// in-flight animation and recomputing from a position where the row is still at
+// the edge — so the look-ahead collapsed to ~1 row (#388). A one-shot scrollTo
+// to a measured target is immune to that, and reading the live row height keeps
+// the zone honest across the 14px desktop / 16px mobile (≤768px) font sizes.
+const SCROLLOFF_ROWS = 3;
+
+function scrollActiveIntoZone(behavior: ScrollBehavior): void {
   const sc = scroller.value;
   if (!sc) return;
   const el = sc.querySelector<HTMLElement>('.net-head.active, .channels li.active');
   if (!el) return;
-  el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  const scRect = sc.getBoundingClientRect();
+  const elRect = el.getBoundingClientRect();
+  const rowH = elRect.height;
+  if (rowH <= 0) return;
+  // The LURKER row (.system-net) is sticky-pinned to the top on desktop, so
+  // buffers scroll *under* it — the usable top of the viewport is below it, not
+  // at scRect.top. Without this inset, upward nav parks the active row 3 rows
+  // below scRect.top but the sticky header hides the topmost ~row, so the top
+  // stays cramped while the (unobstructed) bottom looks fine (#388). The formula
+  // also covers mobile, where .system-net is inline: it insets only by however
+  // much the row actually overlaps the top, and clamps to 0 once it scrolls off.
+  const sticky = sc.querySelector<HTMLElement>('.system-net');
+  const topInset = sticky ? Math.max(0, sticky.getBoundingClientRect().bottom - scRect.top) : 0;
+  // When the active row IS the sticky LURKER row and it's pinned at the top
+  // (topInset > 0), it's already fully visible, so selecting the system buffer
+  // must not move the list. Without this the math below treats the pinned header
+  // as sitting above the zone and yanks the list back to the top. On mobile the
+  // row is inline and can scroll off (topInset === 0), so we fall through and
+  // reveal it normally.
+  if (sticky && topInset > 0 && sticky.contains(el)) return;
+  const topEdge = scRect.top + topInset;
+  const bottomEdge = scRect.bottom;
+  // Never demand more room than centering would, so a viewport too short for the
+  // full zone degrades to "centered" instead of fighting between the two edges.
+  const margin = Math.min(SCROLLOFF_ROWS * rowH, Math.max(0, (bottomEdge - topEdge - rowH) / 2));
+  let delta = 0;
+  if (elRect.top < topEdge + margin) {
+    delta = elRect.top - (topEdge + margin); // negative → scroll up
+  } else if (elRect.bottom > bottomEdge - margin) {
+    delta = elRect.bottom - (bottomEdge - margin); // positive → scroll down
+  }
+  // Already comfortably inside the zone — don't jitter the list on a click or a
+  // same-row reactivation. The browser clamps the target to the scroll range.
+  if (Math.abs(delta) < 1) return;
+  sc.scrollTo({ top: sc.scrollTop + delta, behavior });
+}
+
+async function ensureActiveVisible(): Promise<void> {
+  await nextTick();
+  scrollActiveIntoZone('smooth');
 }
 watch(
   () => networks.activeKey,
@@ -797,13 +847,11 @@ watch(
 let resizeObserver: ResizeObserver | null = null;
 onMounted(() => {
   // Cold-mount path: when the sidebar re-expands or the page first loads,
-  // bring the previously-selected buffer into view without animation.
+  // bring the previously-selected buffer into its scrolloff zone without
+  // animation.
   void (async () => {
     await nextTick();
-    const sc = scroller.value;
-    if (!sc) return;
-    const el = sc.querySelector<HTMLElement>('.net-head.active, .channels li.active');
-    el?.scrollIntoView({ block: 'nearest' });
+    scrollActiveIntoZone('auto');
   })();
   // Guard like MessageList does: ResizeObserver is missing in some SSR/test
   // contexts. The onUpdated remeasure still covers content changes there.
@@ -960,18 +1008,6 @@ onBeforeUnmount(() => {
 .net-head.active {
   background: var(--bg-soft);
   border-left-color: var(--accent);
-}
-
-/* Auto-scroll look-ahead (#182): ensureActiveVisible() uses
-   scrollIntoView({ block: 'nearest' }), which by default slams the selected
-   row flush against the viewport edge — so Alt+arrow nav into an off-screen
-   buffer reveals nothing about what's coming. scroll-margin expands each row's
-   box, so 'nearest' leaves this much breathing room on the leading edge while
-   still no-op'ing for rows already comfortably in view. Rows are
-   intrinsic-height (no fixed row token); 72px ≈ 3 rows of look-ahead. */
-.net-head,
-.channels li {
-  scroll-margin-block: 72px;
 }
 
 /* Hover action buttons on network rows — mirrors .channels .row-actions pattern. */
