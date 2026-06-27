@@ -62,20 +62,17 @@
                 ><NickRef
                   :nick="asRename(item).from"
                   interactive
-                  @click.stop.prevent="onNickMenu($event, asRename(item).from)"
-                  @contextmenu.stop.prevent="onNickMenu($event, asRename(item).from)" />
+                  @click.stop.prevent="onNickMenu($event, asRename(item).from)" />
                 →
                 <NickRef
                   :nick="asRename(item).to"
                   interactive
-                  @click.stop.prevent="onNickMenu($event, asRename(item).to)"
-                  @contextmenu.stop.prevent="onNickMenu($event, asRename(item).to)" /></template
+                  @click.stop.prevent="onNickMenu($event, asRename(item).to)" /></template
               ><template v-else
                 ><NickRef
                   :nick="asNick(item).nick"
                   interactive
-                  @click.stop.prevent="onNickMenu($event, asNick(item).nick)"
-                  @contextmenu.stop.prevent="
+                  @click.stop.prevent="
                     onNickMenu($event, asNick(item).nick)
                   " /></template></template
             ><template v-if="g.hidden > 0"
@@ -102,7 +99,6 @@
                 :show-prefix="showModePrefix"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
@@ -128,8 +124,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
           <span class="body" :class="bodyClass(row.m)">
@@ -146,7 +141,6 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} joined</template
             >
             <template v-else-if="row.m?.type === 'part'"
@@ -154,7 +148,6 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} left<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
@@ -164,7 +157,6 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} quit<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
@@ -174,14 +166,12 @@
                 :nick="row.m.kicked ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.kicked)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.kicked)"
               />
               kicked by
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               /><template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
@@ -191,14 +181,12 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />
               is now
               <NickRef
                 :nick="row.m.newNick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
               />{{ eventHostSuffix(row.m) }}</template
             >
             <template v-else-if="row.m?.type === 'mode'"
@@ -206,8 +194,7 @@
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
                 v-if="row.m.text"
                 >: <LinkedText :text="row.m.text" /></template
             ></template>
@@ -216,8 +203,7 @@
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
                 v-if="row.m.text"
                 >: <LinkedText :text="row.m.text" /></template
             ></template>

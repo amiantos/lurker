@@ -23,9 +23,11 @@ const props = defineProps<{
   // render; callers that aren't a channel speaker just omit them.
   modes?: string[];
   showPrefix?: boolean;
-  // Pointer affordance for clickable nicks (#238). The click/contextmenu
-  // handlers are attached by the consumer and reach the root span via Vue's
-  // attribute fallthrough — this prop only drives the cursor styling.
+  // Pointer affordance for clickable nicks (#238). The click handler is
+  // attached by the consumer and reaches the root span via Vue's attribute
+  // fallthrough — this prop only drives the cursor styling. Nicks open their
+  // menu on left-click/tap only; right-click is left to the browser so the
+  // text stays selectable for copy/paste (#426).
   interactive?: boolean;
 }>();
 
@@ -62,11 +64,6 @@ const style = computed(() => {
 }
 .nick-ref.interactive {
   cursor: pointer;
-  /* Right-clicking to open the menu otherwise selects the word under the
-     cursor (the selection happens on pointer-down, before @contextmenu.prevent
-     can fire), which reads as a glitch. Matches the member list, where rows are
-     likewise unselectable. */
-  user-select: none;
 }
 /* The mode glyph reuses the nicklist's per-mode colors so it reads as a status
    marker rather than part of the (separately-colored) nick. */

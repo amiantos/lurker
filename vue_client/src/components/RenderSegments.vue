@@ -46,7 +46,6 @@
       class="msg-nick"
       :style="styleFor(seg)"
       @click.stop="$emit('nickClick', seg.text, $event)"
-      @contextmenu.stop.prevent="$emit('nickClick', seg.text, $event)"
       >{{ seg.text }}</span
     >
     <span v-else-if="hasStyle(seg)" :style="styleFor(seg)">{{ seg.text }}</span>
