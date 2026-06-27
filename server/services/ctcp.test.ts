@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildCtcpReply,
+  CTCP_DEFAULT_CONFIG,
   CTCP_SOURCE,
   CTCP_SUPPORTED,
+  type CtcpReplyConfig,
   formatCtcpReplyLine,
   formatCtcpRequestLine,
   formatLatency,
@@ -14,6 +16,11 @@ import {
   pingReplyLatencyMs,
 } from './ctcp.js';
 import { IRC_VERSION } from '../utils/userAgent.js';
+
+const cfg = (over: Partial<CtcpReplyConfig> = {}): CtcpReplyConfig => ({
+  ...CTCP_DEFAULT_CONFIG,
+  ...over,
+});
 
 describe('parseCtcp', () => {
   it('splits type and args, uppercasing the type', () => {
@@ -75,6 +82,40 @@ describe('buildCtcpReply', () => {
       if (t === 'ACTION') continue;
       expect(buildCtcpReply(t, '', now), `expected a reply for ${t}`).not.toBeNull();
     }
+  });
+});
+
+describe('buildCtcpReply — config gating', () => {
+  const now = new Date('2026-06-27T14:03:11Z');
+
+  it('master replies:false silences everything, including PING', () => {
+    const off = cfg({ replies: false });
+    expect(buildCtcpReply('VERSION', '', now, off)).toBeNull();
+    expect(buildCtcpReply('TIME', '', now, off)).toBeNull();
+    expect(buildCtcpReply('SOURCE', '', now, off)).toBeNull();
+    expect(buildCtcpReply('CLIENTINFO', '', now, off)).toBeNull();
+    expect(buildCtcpReply('PING', '123', now, off)).toBeNull();
+  });
+
+  it('a disabled per-type reply returns null while others still answer', () => {
+    const noVersion = cfg({ version: false });
+    expect(buildCtcpReply('VERSION', '', now, noVersion)).toBeNull();
+    expect(buildCtcpReply('TIME', '', now, noVersion)).toBe(now.toUTCString());
+    expect(buildCtcpReply('PING', '123', now, noVersion)).toBe('123'); // PING has no toggle
+  });
+
+  it('CLIENTINFO advertises only the enabled types (+ ACTION/PING)', () => {
+    expect(buildCtcpReply('CLIENTINFO', '', now, cfg({ time: false, source: false }))).toBe(
+      'ACTION CLIENTINFO PING VERSION',
+    );
+    expect(
+      buildCtcpReply('CLIENTINFO', '', now, cfg({ version: false, time: false, source: false })),
+    ).toBe('ACTION CLIENTINFO PING');
+  });
+
+  it('defaults to all-on (current behavior) when no config is passed', () => {
+    expect(buildCtcpReply('VERSION', '', now)).toBe(IRC_VERSION);
+    expect(buildCtcpReply('CLIENTINFO', '', now)).toBe(CTCP_SUPPORTED.join(' '));
   });
 });
 

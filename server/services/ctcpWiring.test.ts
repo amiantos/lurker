@@ -11,11 +11,12 @@
 // MUST be first — redirect DATABASE_PATH before the static imports below open
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { IRC_VERSION } from '../utils/userAgent.js';
+import settingsService from './settingsService.js';
 
 beforeAll(() => {
   createUser('ctcp-alice'); // id 1
@@ -294,5 +295,63 @@ describe('inbound CTCP reply (route + latency)', () => {
     expect(conn.ctcpOutstanding.size).toBe(1);
     conn.client.emit('close');
     expect(conn.ctcpOutstanding.size).toBe(0);
+  });
+});
+
+describe('inbound CTCP request — settings gating', () => {
+  // Settings persist in the shared isolated DB, so reset every ctcp.* key after
+  // each test or the override leaks into the default-on tests above.
+  afterEach(() => {
+    for (const k of ['replies', 'version', 'time', 'source', 'clientinfo']) {
+      settingsService.reset(1, `ctcp.${k}`);
+    }
+  });
+
+  it('a disabled type (ctcp.version off) suppresses the reply but still shows the probe', () => {
+    settingsService.update(1, { 'ctcp.version': false });
+    const { conn, ctcpResponse, ctcpLines } = harness();
+    conn.client.emit('ctcp request', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      type: 'VERSION',
+      message: 'VERSION',
+    });
+    expect(ctcpResponse).not.toHaveBeenCalled();
+    expect(ctcpLines()[0].text).toBe('bob requested CTCP VERSION (no reply)');
+  });
+
+  it('a still-enabled type keeps answering when a sibling is disabled', () => {
+    settingsService.update(1, { 'ctcp.version': false });
+    const { conn, ctcpResponse } = harness();
+    conn.client.emit('ctcp request', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      type: 'TIME',
+      message: 'TIME',
+    });
+    expect(ctcpResponse).toHaveBeenCalledTimes(1);
+    expect(ctcpResponse.mock.calls[0][1]).toBe('TIME');
+  });
+
+  it('the master switch (ctcp.replies off) silences all auto-replies', () => {
+    settingsService.update(1, { 'ctcp.replies': false });
+    const { conn, ctcpResponse } = harness();
+    conn.client.emit('ctcp request', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      type: 'TIME',
+      message: 'TIME',
+    });
+    conn.client.emit('ctcp request', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      type: 'PING',
+      message: 'PING 1',
+    });
+    expect(ctcpResponse).not.toHaveBeenCalled();
   });
 });

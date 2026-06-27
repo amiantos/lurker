@@ -18,9 +18,10 @@ import { IRC_VERSION } from '../utils/userAgent.js';
 /** Where Lurker's source lives — the CTCP SOURCE reply. */
 export const CTCP_SOURCE = 'https://github.com/amiantos/lurker';
 
-// The CTCP request types we auto-answer. CLIENTINFO advertises exactly this set
-// (ACTION included — we send/receive it as messages even though it isn't a
-// query). Keep in sync with buildCtcpReply's switch.
+// The CTCP request types we can auto-answer when everything is enabled.
+// CLIENTINFO advertises the currently-ENABLED subset of this (see
+// supportedCtcp); ACTION + PING are always handled (ACTION as a message, PING
+// as a harmless echo) so they're always advertised.
 export const CTCP_SUPPORTED = [
   'ACTION',
   'CLIENTINFO',
@@ -29,6 +30,37 @@ export const CTCP_SUPPORTED = [
   'TIME',
   'VERSION',
 ] as const;
+
+/** Which CTCP auto-replies are enabled (per-user, read from the settings
+ *  registry cell-side). `replies` is the master switch — when false we answer
+ *  nothing at all, including PING. */
+export interface CtcpReplyConfig {
+  replies: boolean;
+  version: boolean;
+  time: boolean;
+  source: boolean;
+  clientinfo: boolean;
+}
+
+/** All-on — current behavior, and the default when no config is supplied. */
+export const CTCP_DEFAULT_CONFIG: CtcpReplyConfig = {
+  replies: true,
+  version: true,
+  time: true,
+  source: true,
+  clientinfo: true,
+};
+
+/** The CTCP types CLIENTINFO advertises given the active config: ACTION + PING
+ *  always, plus each enabled answerable type. Sorted for a stable wire string. */
+function supportedCtcp(config: CtcpReplyConfig): string {
+  const types = ['ACTION', 'PING'];
+  if (config.version) types.push('VERSION');
+  if (config.time) types.push('TIME');
+  if (config.source) types.push('SOURCE');
+  if (config.clientinfo) types.push('CLIENTINFO');
+  return types.sort().join(' ');
+}
 
 // irssi parity (ctcp.c): refuse to echo back an oversized PING payload so a peer
 // can't turn our auto-reply into a reflection/flood amplifier.
@@ -50,19 +82,28 @@ export function parseCtcp(message: string): { type: string; args: string } {
 
 /**
  * Build the auto-reply argument string for an inbound CTCP request, or null when
- * we don't answer this type. The returned value is the params AFTER the type;
- * the caller frames it as `ctcpResponse(nick, type, reply)`.
+ * we don't answer this type (unsupported, or disabled by `config`). The returned
+ * value is the params AFTER the type; the caller frames it as
+ * `ctcpResponse(nick, type, reply)`. `config` gates each disclosure per the
+ * user's privacy settings; omit it for the all-on default.
  */
-export function buildCtcpReply(type: string, args: string, now: Date): string | null {
+export function buildCtcpReply(
+  type: string,
+  args: string,
+  now: Date,
+  config: CtcpReplyConfig = CTCP_DEFAULT_CONFIG,
+): string | null {
+  // Master switch off → publish nothing, not even a PING echo.
+  if (!config.replies) return null;
   switch (type.toUpperCase()) {
     case 'VERSION':
-      return IRC_VERSION;
+      return config.version ? IRC_VERSION : null;
     case 'SOURCE':
-      return CTCP_SOURCE;
+      return config.source ? CTCP_SOURCE : null;
     case 'CLIENTINFO':
-      return CTCP_SUPPORTED.join(' ');
+      return config.clientinfo ? supportedCtcp(config) : null;
     case 'TIME':
-      return formatCtcpTime(now);
+      return config.time ? formatCtcpTime(now) : null;
     case 'PING':
       // Echo the payload verbatim (that's what makes round-trip timing work for
       // the requester), but drop an abusive one.

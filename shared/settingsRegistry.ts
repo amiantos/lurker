@@ -846,6 +846,68 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       '(the version and project URL).',
   },
 
+  // ─── CTCP auto-replies (what we disclose to the network on a CTCP query) ──
+  // Lurker answers a few standard CTCP queries cell-side (so they work even
+  // with no tab open). These let a privacy-conscious user trim or fully silence
+  // what gets published. Defaults preserve current behavior (all on). PING has
+  // no toggle — it only echoes back what the asker sent (no info disclosed) —
+  // but the master switch silences it too.
+  {
+    key: 'ctcp.replies',
+    label: 'Answer CTCP queries',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'bool',
+    default: true,
+    description:
+      'Master switch for replying to CTCP queries from other users (VERSION, ' +
+      'TIME, SOURCE, CLIENTINFO, PING). Turn off to publish nothing — Lurker ' +
+      'stays completely silent to CTCP, like a client with CTCP disabled. The ' +
+      'per-type toggles below apply only while this is on.',
+  },
+  {
+    key: 'ctcp.version',
+    label: 'Reply to CTCP VERSION',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'bool',
+    default: true,
+    description:
+      'Answer CTCP VERSION with the Lurker name and version. Disclosing your ' +
+      'exact client/version aids fingerprinting; turn off to stay quiet.',
+  },
+  {
+    key: 'ctcp.time',
+    label: 'Reply to CTCP TIME',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'bool',
+    default: true,
+    description:
+      'Answer CTCP TIME with the current server time. This reveals your ' +
+      'timezone and that you are connected; turn off to withhold it.',
+  },
+  {
+    key: 'ctcp.source',
+    label: 'Reply to CTCP SOURCE',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'bool',
+    default: true,
+    description: 'Answer CTCP SOURCE with the Lurker project URL.',
+  },
+  {
+    key: 'ctcp.clientinfo',
+    label: 'Reply to CTCP CLIENTINFO',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'bool',
+    default: true,
+    description:
+      'Answer CTCP CLIENTINFO with the list of CTCP types Lurker responds to. ' +
+      'The list reflects whichever of the toggles above are enabled.',
+  },
+
   // ─── Auto-away (sets you AWAY when no client is connected) ────────────
   {
     key: 'away.auto.enabled',
@@ -1395,6 +1457,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   composing: 'Composing',
   'smart-filter': 'Smart filter',
   connection: 'Connection',
+  ctcp: 'CTCP replies',
   'auto-away': 'Auto-away',
   provider: 'Provider',
   pipeline: 'Image pipeline',

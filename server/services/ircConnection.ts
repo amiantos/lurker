@@ -34,7 +34,13 @@ import { contextKey, isChannelContext } from './e2e/context.js';
 import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
 import { e2eDbg } from './e2e/debug.js';
 import { RateLimiter } from './e2e/rateLimiter.js';
-import { buildCtcpReply, formatCtcpReplyLine, formatCtcpRequestLine, parseCtcp } from './ctcp.js';
+import {
+  buildCtcpReply,
+  formatCtcpReplyLine,
+  formatCtcpRequestLine,
+  parseCtcp,
+  type CtcpReplyConfig,
+} from './ctcp.js';
 import { getChannelConfig as getE2eChannelConfig } from '../db/e2e.js';
 import type { ChannelMode } from '../db/e2e.js';
 import { randomBytes } from 'node:crypto';
@@ -2361,6 +2367,21 @@ export class IrcConnection {
     return (ident && host ? `${ident}@${host}` : nick).toLowerCase();
   }
 
+  // The user's CTCP auto-reply preferences (settings registry, per-user). Read
+  // fresh per inbound request — they're rare + rate-limited, so a /set takes
+  // effect immediately with no cache to invalidate. A missing key resolves to
+  // the registry default (all on), so out of the box behavior is unchanged.
+  private ctcpReplyConfig(): CtcpReplyConfig {
+    const uid = this.network.user_id;
+    return {
+      replies: effectiveSetting(uid, 'ctcp.replies') !== false,
+      version: effectiveSetting(uid, 'ctcp.version') !== false,
+      time: effectiveSetting(uid, 'ctcp.time') !== false,
+      source: effectiveSetting(uid, 'ctcp.source') !== false,
+      clientinfo: effectiveSetting(uid, 'ctcp.clientinfo') !== false,
+    };
+  }
+
   private pruneCtcpOutstanding(now: number): void {
     for (const [k, queue] of this.ctcpOutstanding) {
       const live = queue.filter((e) => now - e.sentAt <= CTCP_OUTSTANDING_TTL_MS);
@@ -2396,7 +2417,7 @@ export class IrcConnection {
     // can't burn a peer's budget and suppress its legitimate probes.
     if (!type) return;
     if (!this.ctcpLimiter.allowIncoming(this.ctcpPeerKey(event))) return;
-    const reply = buildCtcpReply(type, args, new Date());
+    const reply = buildCtcpReply(type, args, new Date(), this.ctcpReplyConfig());
     if (reply !== null) this.client.ctcpResponse(nick, type, reply);
     this.surfaceCtcp(this.serverTarget(), formatCtcpRequestLine(nick, type, reply !== null));
   }
