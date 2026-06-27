@@ -305,7 +305,7 @@ export class IrcConnection {
   ctcpReplyTokens: number;
   ctcpReplyRefillAt: number;
   // Outstanding outbound CTCP requests we sent, so a reply routes back to the
-  // buffer the /ctcp was issued from. Key = `${nick-lc} ${TYPE}` → the
+  // buffer the /ctcp was issued from. Key = `${nick-lc} ${TYPE}` → the
   // issuing buffer + send time. Bounded + TTL-pruned on access.
   ctcpOutstanding: Map<string, { issuingTarget: string; sentAt: number }>;
 

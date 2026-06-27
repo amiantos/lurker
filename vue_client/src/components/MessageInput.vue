@@ -2584,7 +2584,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       const who =
         rest[0] || (target && !target.startsWith('#') && !target.startsWith(':') ? target : '');
       if (!who) {
-        localInfo(networkId, target, 'usage: /ping <nick>');
+        localInfo(networkId, target, 'usage: /ping <nick> (a nick is only optional inside a DM)');
         return true;
       }
       return sendOrToast(
