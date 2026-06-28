@@ -1967,6 +1967,26 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         }
         break;
       }
+      case 'set-relay-bot': {
+        // Relay-bot mark (#277). Same thin-delegator shape as set-nick-note:
+        // the verb owns validation, the mark/unmark + custom-pattern logic, and
+        // the relay-bot-updated fanOut to every open tab.
+        try {
+          callVerb(
+            'set_relay_bot',
+            { userId, scope: 'read-write', transport: 'ws' },
+            {
+              networkId: msg.networkId,
+              nick: msg.nick,
+              marked: msg.marked,
+              pattern: msg.pattern,
+            },
+          );
+        } catch (_) {
+          /* boundary already filtered bad networkId; ignore */
+        }
+        break;
+      }
       case 'set-contact': {
         // Verb owns validation, the per-(network,nick) uniqueness guard, the
         // live MONITOR diff, and the fanOut. Thin delegator, same as nick-note.

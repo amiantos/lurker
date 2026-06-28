@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { buildTextTest, stripFormatting, cleanForMatch } from './textMatch.js';
+import {
+  buildTextTest,
+  stripFormatting,
+  cleanForMatch,
+  rawIndexForVisibleOffset,
+} from './textMatch.js';
 
 describe('buildTextTest — substr', () => {
   it('matches case-insensitive substring by default', () => {
@@ -97,5 +102,27 @@ describe('stripFormatting / cleanForMatch', () => {
 
   it('cleanForMatch also strips URLs', () => {
     expect(cleanForMatch('see https://example.com/amiantos here')).not.toContain('amiantos');
+  });
+});
+
+describe('rawIndexForVisibleOffset', () => {
+  it('maps offsets straight through when there is no formatting', () => {
+    expect(rawIndexForVisibleOffset('hello world', 6)).toBe(6);
+    expect('hello world'.slice(rawIndexForVisibleOffset('hello world', 6))).toBe('world');
+  });
+
+  it('returns 0 for a non-positive offset', () => {
+    expect(rawIndexForVisibleOffset('\x02abc', 0)).toBe(0);
+  });
+
+  it('skips colour codes so the raw index lands past them', () => {
+    // 7 visible chars are "<FAST> " — the raw index should point at the message.
+    const raw = '<\x0313FAST\x03> hi';
+    expect(raw.slice(rawIndexForVisibleOffset(raw, 7))).toBe('hi');
+  });
+
+  it('clamps to the raw length when the offset exceeds the visible text', () => {
+    const raw = '\x02ab\x02';
+    expect(rawIndexForVisibleOffset(raw, 99)).toBe(raw.length);
   });
 });

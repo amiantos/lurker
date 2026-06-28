@@ -10,6 +10,7 @@ import './recentMessages.js';
 import './searchMessages.js';
 import './getNickNote.js';
 import './setNickNote.js';
+import './setRelayBot.js';
 import './setContact.js';
 import './deleteContact.js';
 import './sendMessage.js';

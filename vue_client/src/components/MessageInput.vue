@@ -137,6 +137,7 @@ import { useNetworksStore, type Network } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
+import { parseRelayCommand } from '../lib/commands/relay.js';
 import { formatColumns } from '../lib/commands/output.js';
 import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/settingsRegistry.js';
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
@@ -149,6 +150,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
@@ -208,6 +210,7 @@ const config = useConfigStore();
 const uploads = useUploadsStore();
 const toasts = useToastsStore();
 const ignores = useIgnoresStore();
+const relayBots = useRelayBotsStore();
 const highlightRules = useHighlightRulesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
@@ -2036,6 +2039,10 @@ const COMMANDS_LINES = [
   '      opts: -network -mask -full -regexp -matchcase -channels <#a,#b>',
   '      e.g. /highlight QUACK!   ·   /highlight -mask bob!*@*   ·   /highlight -network -regexp qu+ack',
   '  /unhighlight <index|text> — remove a highlight (index from /highlight list; alias: /dehilight)',
+  '  /relay [list]          — list, mark, or unmark relay/bridge bots on this network',
+  '      e.g. /relay add relaybot   ·   /relay add bridge <{nick}> {message}   ·   /relay remove relaybot',
+  '      custom template mirrors the bot order with {source}/{nick}/{message} placeholders',
+  '      e.g. reversed: /relay add eyebot <{nick}> [{source}] {message}',
   '  /network [list]        — manage networks (alias: /net); runs from the system buffer',
   '      add [-host <addr>] [-port <n>] [-tls|-notls] [-nick <n>] [-user <u>] [-realname <name>]',
   '          [-sasl_username <u>] [-sasl_password <p>] [-password <serverpass>]',
@@ -2129,6 +2136,41 @@ function ackedSend(payload: Record<string, unknown>, body: string): boolean {
 // /ignore and /unignore operate on the per-user ignore list (global by default;
 // `-network` scopes to the active network), so they're network-agnostic and run
 // from the system buffer too — networkId is null there.
+// /relay (#277) — mark, unmark, or list relay/bridge bots on this network. The
+// store writes go over WS and echo back through `relay-bot-updated`, so the
+// confirmation here is optimistic-but-authoritative just like /ignore.
+function runRelay(argLine: string, networkId: number, target: string): boolean {
+  const cmd = parseRelayCommand(argLine);
+  if (cmd.kind === 'error') {
+    localInfo(networkId, target, `/relay: ${cmd.message}`);
+    return true;
+  }
+  if (cmd.kind === 'list') {
+    const list = relayBots.listForNetwork(networkId);
+    if (!list.length) {
+      localInfo(networkId, target, 'no relay bots marked on this network. /relay add <nick>');
+      return true;
+    }
+    localInfo(networkId, target, `relay bots (${list.length}):`);
+    for (const { nick, pattern } of list) {
+      localInfo(networkId, target, `  ${nick}${pattern ? `  — ${pattern}` : ''}`);
+    }
+    return true;
+  }
+  if (cmd.kind === 'add') {
+    relayBots.setRelay(networkId, cmd.nick, true, cmd.pattern);
+    localInfo(
+      networkId,
+      target,
+      `marked ${cmd.nick} as a relay bot${cmd.pattern ? ` (pattern: ${cmd.pattern})` : ''}.`,
+    );
+    return true;
+  }
+  relayBots.setRelay(networkId, cmd.nick, false);
+  localInfo(networkId, target, `unmarked ${cmd.nick} as a relay bot.`);
+  return true;
+}
+
 function runIgnore(argLine: string, networkId: number | null, target: string): boolean {
   const args = argLine.trim();
   if (!args) {
@@ -2554,6 +2596,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       }
       return sendOrToast({ type: 'e2e', networkId, target, args: argLine }, line);
     }
+    case 'relay':
+      // Mark/unmark/list relay bots on this network (#277). Network-scoped: a
+      // relay mark is per-(network, nick), so it needs an active network.
+      return runRelay(argLine, networkId, target);
     case 'me':
       return ackedSend({ type: 'action', networkId, target, text: argLine }, argLine);
     case 'ctcp': {

@@ -105,6 +105,36 @@ export function stripFormatting(text: string): string {
   return text.replace(FORMAT_RE, '');
 }
 
+// Sticky variant of FORMAT_RE for position-anchored scanning. Shares the source
+// so the two never drift.
+/* eslint-disable no-control-regex */
+const FORMAT_RE_STICKY = new RegExp(FORMAT_RE.source, 'y');
+/* eslint-enable no-control-regex */
+
+// Map a "visible" (formatting-stripped) character offset back to its index in
+// the raw, still-formatted string. When you match against stripFormatting(text)
+// but then need to slice the ORIGINAL text at the same logical point — e.g. to
+// keep a message's bold/colour after locating where it begins — this converts
+// the stripped offset to the raw one. Walks raw once, skipping whole format
+// codes (which contribute no visible characters).
+export function rawIndexForVisibleOffset(raw: string, visibleOffset: number): number {
+  if (visibleOffset <= 0) return 0;
+  let visible = 0;
+  let i = 0;
+  while (i < raw.length) {
+    if (visible >= visibleOffset) return i;
+    FORMAT_RE_STICKY.lastIndex = i;
+    const m = FORMAT_RE_STICKY.exec(raw);
+    if (m && m[0].length > 0) {
+      i += m[0].length;
+    } else {
+      visible++;
+      i++;
+    }
+  }
+  return raw.length;
+}
+
 // Normalize a message body for highlight/ignore-pattern matching: drop IRC
 // formatting codes, then blank out URLs. Both the highlight engine and the
 // ignore content matcher run this so they agree on what the "text" is.

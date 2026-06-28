@@ -28,6 +28,12 @@ import {
 } from '../db/nickNotes.js';
 import type { NoteResult } from '../db/nickNotes.js';
 import {
+  listForUserGrouped as listRelayBotsGrouped,
+  setRelayBot as setRelayBotRow,
+  removeRelayBot as removeRelayBotRow,
+} from '../db/relayBots.js';
+import type { RelayBotResult } from '../db/relayBots.js';
+import {
   createContact,
   updateContactMeta,
   setContactTargets,
@@ -619,6 +625,7 @@ class IrcManager extends EventEmitter {
     const notifyByNetwork = listChannelNotifyForUser(userId);
     const ignoresByNetwork = ignoresGrouped(userId);
     const notesByNetwork = listNickNotesGrouped(userId);
+    const relayBotsByNetwork = listRelayBotsGrouped(userId);
     // Attach the per-network user-preference blobs to a base snapshot. Shared by
     // the live-connection and offline branches so both shapes stay identical.
     const withExtras = <T extends { networkId: number }>(snap: T) => {
@@ -630,6 +637,7 @@ class IrcManager extends EventEmitter {
         channelNotify: notifyByNetwork.get(networkId) || {},
         ignoredMasks: ignoresByNetwork.get(networkId) || [],
         nickNotes: notesByNetwork.get(networkId) || [],
+        relayBots: relayBotsByNetwork.get(networkId) || [],
       };
     };
     const live = this.listConnections(userId);
@@ -696,6 +704,22 @@ class IrcManager extends EventEmitter {
 
   getNickNote(userId: number, networkId: number, nick: string): NoteResult | null {
     return getNickNoteRow({ userId, networkId, nick });
+  }
+
+  // Mark/unmark a relay bot (#277). Returns the stored row when marked, or null
+  // after clearing the mark — the verb maps that to `marked`.
+  setRelayBot(
+    userId: number,
+    networkId: number,
+    nick: string,
+    marked: boolean,
+    pattern: string,
+  ): RelayBotResult | null {
+    if (!marked) {
+      removeRelayBotRow({ userId, networkId, nick });
+      return null;
+    }
+    return setRelayBotRow({ userId, networkId, nick, pattern });
   }
 
   listContacts(userId: number): ContactRecord[] {

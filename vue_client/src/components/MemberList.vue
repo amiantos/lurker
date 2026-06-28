@@ -129,10 +129,12 @@ function menuContext() {
 }
 function onRowClick(e: MouseEvent, m: BufferMember): void {
   if (!buffer.value) return;
-  memberActions.openMenuFor(m, menuContext(), e.clientX, e.clientY);
+  // Left-click: pass the row as the trigger so re-clicking it toggles closed.
+  memberActions.openMenuFor(m, menuContext(), e.clientX, e.clientY, e.currentTarget as Element);
 }
 function onRowContextMenu(e: MouseEvent, m: BufferMember): void {
   if (!buffer.value) return;
+  // Right-click: no trigger — a second right-click repositions, as is conventional.
   memberActions.openMenuFor(m, menuContext(), e.clientX, e.clientY);
 }
 function onActionsClick(e: MouseEvent, m: BufferMember): void {

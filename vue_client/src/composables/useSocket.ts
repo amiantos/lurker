@@ -17,6 +17,7 @@ import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -328,12 +329,14 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   const channelNotify = useChannelNotifyStore();
   const ignores = useIgnoresStore();
   const nickNotes = useNickNotesStore();
+  const relayBots = useRelayBotsStore();
   networks.applySnapshot(snapshot);
   pins.applySnapshot(snapshot);
   nicklistCollapse.applySnapshot(snapshot);
   channelNotify.applySnapshot(snapshot);
   ignores.applySnapshot(snapshot, globalIgnores);
   nickNotes.applySnapshot(snapshot);
+  relayBots.applySnapshot(snapshot);
   // Highlight rules aren't in the snapshot; load them now so client-side
   // render-time highlight evaluation (#349) works app-wide, not just after the
   // settings pane has been opened.
@@ -600,6 +603,11 @@ function handleMessage(raw: string): void {
   if (payload.kind === 'nick-note-updated') {
     const nickNotes = useNickNotesStore();
     nickNotes.applyUpdate(payload.networkId, payload.nick, payload.note || '', payload.updatedAt);
+    return;
+  }
+  if (payload.kind === 'relay-bot-updated') {
+    const relayBots = useRelayBotsStore();
+    relayBots.applyUpdate(payload.networkId, payload.nick, !!payload.marked, payload.pattern || '');
     return;
   }
   if (payload.kind === 'contacts-snapshot') {

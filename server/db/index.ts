@@ -433,6 +433,24 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_nick_notes_user_net
       ON user_nick_notes(user_id, network_id);
 
+    -- Per-(user, network, nick) relay-bot marks (#277). A marked nick is a
+    -- relay / bridge bot; the client re-attributes its messages to the speaker
+    -- embedded in the envelope, e.g. [Discord] <alice> hi. Row presence is the
+    -- mark; the pattern column is an optional custom template (empty = built-in
+    -- defaults). Same NOCASE / per-network keying as notes.
+    CREATE TABLE IF NOT EXISTS user_relay_bots (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      nick TEXT NOT NULL COLLATE NOCASE,
+      pattern TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, network_id, nick),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_relay_bots_user_net
+      ON user_relay_bots(user_id, network_id);
+
     -- Friends / watch-list. A "contact" is a person, network-agnostic: it carries
     -- the display name and the per-contact "toast me when they come online" flag.
     -- contact_targets is the watch list — which (network, nick) to follow for

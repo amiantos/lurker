@@ -124,6 +124,7 @@ describe('MCP server', () => {
       'send_notice',
       'set_contact',
       'set_nick_note',
+      'set_relay_bot',
     ]);
     // Each entry carries an inputSchema usable by an MCP client.
     for (const tool of res.body.result.tools as Array<{ inputSchema: { type: string } }>) {

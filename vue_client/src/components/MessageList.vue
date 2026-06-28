@@ -102,7 +102,12 @@
             /></span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
-            <RenderSegments
+            <span
+              v-if="row.m?.relaySource && !row.continuationAuthor"
+              class="relay-via"
+              :title="'Relayed via ' + row.m.relayBot"
+              >[{{ relayLabel(row.m) }}]</span
+            ><RenderSegments
               :segments="textSegments(row.m)"
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
@@ -128,7 +133,12 @@
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
           <span class="body" :class="bodyClass(row.m)">
-            <RenderSegments
+            <span
+              v-if="row.m?.relaySource && !row.continuationAuthor"
+              class="relay-via"
+              :title="'Relayed via ' + row.m.relayBot"
+              >[{{ relayLabel(row.m) }}]</span
+            ><RenderSegments
               v-if="hasInlineText(row.m)"
               :segments="textSegments(row.m)"
               :self-color="selfColor"
@@ -262,6 +272,7 @@ import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { socketSend } from '../composables/useSocket.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useViewport } from '../composables/useViewport.js';
@@ -283,6 +294,7 @@ import {
 import { consolidateRows } from '../utils/consolidate.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
 import { collapseDisplay } from '../utils/collapseDisplay.js';
+import { parseRelayMessage } from '../../../shared/parseRelay.js';
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
@@ -295,6 +307,8 @@ import type {
 } from '../composables/useMessageActions.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import type { MemberContext, MemberLike } from '../composables/useMemberActions.js';
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
+import { useWhoisStore } from '../stores/whois.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 
@@ -322,6 +336,13 @@ interface ChatMessage {
   e2e?: boolean;
   // Severity for `type: 'e2e'` status lines — drives the tag color.
   level?: 'info' | 'warn';
+  // Relay-bot re-attribution (#277). When set, this row was authored by a nick
+  // the user marked as a relay bot: `nick`/`text` have been swapped to the
+  // embedded speaker, `relayBot` holds the bot's real nick (the actual IRC
+  // entity), and `relaySource` is the `[source]` tag when the envelope had one.
+  // These exist only on the per-render display clone, never on the stored row.
+  relayBot?: string;
+  relaySource?: string | null;
   [key: string]: unknown;
 }
 
@@ -375,6 +396,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const ignores = useIgnoresStore();
 const highlights = useHighlightRulesStore();
+const relayBots = useRelayBotsStore();
 const nicks = useNickColors();
 const { isMobile } = useViewport();
 
@@ -604,6 +626,8 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
 // Nickname, whois, DM, note, friend, ignore, and op-gated kick/ban/op/voice.
 // The menu and ignore modal are owned here, mirroring MemberList's pattern.
 const memberActions = useMemberActions();
+const contextMenu = useContextMenu();
+const whois = useWhoisStore();
 
 const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_prefix'));
 
@@ -666,12 +690,64 @@ function nickMenuContext(): MemberContext {
 // Omit it for nicks where the message's userhost belongs to someone else (e.g.
 // the kicked user in a kick line).
 function onNickMenu(e: MouseEvent, nick: string | undefined, m?: ChatMessage): void {
-  if (!nick || !buffer.value) return;
+  if (!buffer.value) return;
+  // Nicks open on left-click, so pass the clicked element as the trigger:
+  // re-clicking the same name toggles its menu closed, like the kebab menus.
+  const trigger = (e.currentTarget as Element | null) ?? null;
+  // Relay virtual speaker (#277): the displayed author is the embedded speaker,
+  // not a real IRC user, so the full member menu (DM, ignore, kick, ban) is
+  // meaningless. Give it a trimmed menu aimed at the relayed nick instead.
+  if (m?.relayBot && nick && buffer.value.networkId != null) {
+    openRelayNickMenu(nick, m.relayBot, buffer.value.networkId, e.clientX, e.clientY, trigger);
+    return;
+  }
+  if (!nick) return;
   // Prefer the live member (modes for op-gating, host for a clean ban mask);
   // fall back to the message's own userhost so a departed speaker stays
   // actionable.
   const member: MemberLike = nickMember(nick) ?? { nick, ...parseUserHost(m?.userhost) };
-  memberActions.openMenuFor(member, nickMenuContext(), e.clientX, e.clientY);
+  memberActions.openMenuFor(member, nickMenuContext(), e.clientX, e.clientY, trigger);
+}
+
+// Context menu for a relayed virtual speaker (#277). Only the actions that make
+// sense for a name with no IRC presence: address them in a reply (the bridge
+// carries it back the other way) and copy the name — both targeting the relayed
+// nick. View Profile, by contrast, opens the relay *bot's* profile: it's the
+// only real IRC entity here, so its whois actually resolves.
+function openRelayNickMenu(
+  nick: string,
+  bot: string,
+  networkId: number,
+  x: number,
+  y: number,
+  triggerEl: Element | null = null,
+): void {
+  const items: ContextMenuItem[] = [
+    { label: `Reply to ${nick}`, icon: 'fa-solid fa-reply', onClick: () => addressNick(nick) },
+    {
+      label: 'Copy Nickname',
+      icon: 'fa-regular fa-copy',
+      onClick: () => {
+        navigator.clipboard?.writeText(nick).catch(() => {});
+      },
+    },
+    { divider: true },
+    {
+      label: 'View Profile…',
+      icon: 'fa-solid fa-id-card',
+      onClick: () => whois.openViewer(networkId, bot),
+    },
+  ];
+  contextMenu.open(items, x, y, triggerEl);
+}
+
+// The "via" affordance shown next to a re-attributed relay line (#277): the
+// `[source]` platform tag. Only rendered when the envelope actually carried a
+// source (the template gates on relaySource), so a bare `<nick> message` relay
+// shows no tag and the re-attributed nick just reads as the speaker. The title
+// (set in the template) still names the bot, so provenance is one hover away.
+function relayLabel(m: ChatMessage | undefined): string {
+  return m?.relaySource || '';
 }
 
 // A coloured nick mention inside message text (emitted by RenderSegments). The
@@ -932,8 +1008,38 @@ const renderRows = computed((): RenderRow[] => {
       out.push({ divider: 'unread', key: 'unread-divider' });
       dividerInserted = true;
     }
+    // Relay-bot re-attribution (#277). If this line's author is a nick the user
+    // marked as a relay/bridge bot, parse its `[source] <nick> message` envelope
+    // and display the embedded speaker as the author instead. Display-only: we
+    // push a shallow clone so the stored row keeps the bot's nick/text (unmark
+    // restores the raw view instantly). Coloring, author-continuation collapse,
+    // and the body all key off the clone, so a relayed user gets their own
+    // colour and consecutive lines from the same person collapse naturally.
+    // Highlights/ignores ran above on the raw line — the bot's full text is a
+    // superset of the embedded text, so a ping inside it still fires. Restricted
+    // to plain messages: relays bridge speech as PRIVMSG, and action/notice
+    // re-attribution would tangle with their special body rendering.
+    let mDisplay = m;
+    if (
+      m.type === 'message' &&
+      m.nick &&
+      !m.self &&
+      networkId &&
+      relayBots.isRelay(networkId, m.nick)
+    ) {
+      const parsed = parseRelayMessage(m.text ?? '', relayBots.patternFor(networkId, m.nick));
+      if (parsed) {
+        mDisplay = {
+          ...m,
+          nick: parsed.nick,
+          text: parsed.text,
+          relayBot: m.nick,
+          relaySource: parsed.source,
+        };
+      }
+    }
     out.push({
-      m,
+      m: mDisplay,
       alt: STRIPED_TYPES.has(m.type) && !!m.alt,
       key,
       nohilight: rowNohilight,
@@ -1828,6 +1934,15 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
   padding-left: 1ch;
+}
+/* Relay-bot origin tag (#277): the bracketed [source] before the re-attributed
+   text — mirrors how the bot framed the line, so it reads as provenance rather
+   than part of the message. Muted, no glyph; font size stays uniform per house
+   style. */
+.relay-via {
+  color: var(--fg-muted);
+  margin-right: 1ch;
+  white-space: nowrap;
 }
 /* Vertical separator between the nick and body columns. Drawn from .body
    so it stretches the full height of the body cell — including wrapped
