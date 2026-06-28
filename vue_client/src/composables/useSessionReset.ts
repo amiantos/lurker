@@ -7,6 +7,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useHighlightsStore } from '../stores/highlights.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
+import { useNavHistoryStore } from '../stores/navHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
@@ -29,6 +30,7 @@ export function resetSession(): void {
   useHighlightsStore().$reset();
   useHighlightRulesStore().$reset();
   useInputHistoryStore().$reset();
+  useNavHistoryStore().$reset();
   const drafts = useDraftStore();
   drafts.resetTimers();
   drafts.$reset();

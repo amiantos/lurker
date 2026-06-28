@@ -46,6 +46,8 @@ const shortcuts = computed<ShortcutRow[]>(() => [
   { keys: [ALT, '↓'], label: 'Next channel' },
   { keys: [ALT, 'Shift', '↑'], label: 'Previous unread channel' },
   { keys: [ALT, 'Shift', '↓'], label: 'Next unread channel' },
+  { keys: [MOD, '['], label: 'Back (previously viewed channel)' },
+  { keys: [MOD, ']'], label: 'Forward' },
   { keys: ['Shift', 'Esc'], label: 'Mark all channels read' },
   { keys: ['PgUp'], label: 'Scroll messages up one page' },
   { keys: ['PgDn'], label: 'Scroll messages down one page' },

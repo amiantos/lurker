@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { onBeforeUnmount, onMounted } from 'vue';
+import { onBeforeUnmount, onMounted, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFriendsStore } from '../stores/friends.js';
+import { useNavHistoryStore } from '../stores/navHistory.js';
 import { socketSend } from './useSocket.js';
 import { flattenBufferOrder, flattenUnreadOrder } from '../utils/bufferOrder.js';
 import { FRIENDS_KEY } from '../lib/virtualBuffers.js';
@@ -52,6 +53,23 @@ export function useKeyboardShortcuts({
   const buffers = useBuffersStore();
   const pins = usePinsStore();
   const friends = useFriendsStore();
+  const navHistory = useNavHistoryStore();
+
+  // Feed the back/forward history (#309). networks.activeKey is the one place
+  // every navigation path converges (sidebar click, quick switcher, slash
+  // commands, deep links, the Friends pane), so recording there captures them
+  // all with one seam. `flush: 'sync'` keeps the store's re-entrancy guard exact
+  // — the echo from our own back()/forward() fires the instant activeKey mutates,
+  // before the guard clears. Seed the current buffer so the first Cmd+[ has
+  // somewhere to return from.
+  watch(
+    () => networks.activeKey,
+    (key) => {
+      if (key != null) navHistory.record(key);
+    },
+    { flush: 'sync' },
+  );
+  if (networks.activeKey != null) navHistory.record(networks.activeKey);
 
   // The FRIENDS group as the sidebar shows it: a feed header (only when there
   // are contacts) + each friend's primary DM, with those DMs excluded from
@@ -165,6 +183,17 @@ export function useKeyboardShortcuts({
       // these buffer-nav combos don't double-trigger.
       e.preventDefault();
       step(delta, scope);
+      return;
+    }
+    // Cmd/Ctrl + [ / ] — back/forward through recently-visited buffers (#309).
+    // Slack's history shortcut. Chosen over Cmd/Alt+Arrow because both of those
+    // collide with text-cursor movement (line ends / word jumps) when focus is
+    // in the message input. preventDefault also suppresses the browser's own
+    // Cmd+[ / Cmd+] history navigation, which would otherwise leave the app.
+    if (isCmd(e) && !e.altKey && !e.shiftKey && (e.key === '[' || e.key === ']')) {
+      e.preventDefault();
+      if (e.key === '[') navHistory.back();
+      else navHistory.forward();
       return;
     }
     // Type-ahead: a bare printable character pressed while focus is on some
