@@ -4,6 +4,9 @@
   "private": true,
   "description": "Lurker documentation site (VitePress) — deployed to docs.lurker.chat",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vitepress dev",
     "build": "vitepress build",
