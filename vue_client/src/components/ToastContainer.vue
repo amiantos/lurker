@@ -20,6 +20,9 @@
           </button>
         </div>
         <div v-if="t.body" class="body">{{ t.body }}</div>
+        <div v-if="t.action" class="actions">
+          <button class="action" @click.stop="onAction(t)">{{ t.action.label }}</button>
+        </div>
       </div>
     </div>
   </Teleport>
@@ -44,6 +47,11 @@ function onClick(t: Toast) {
     return;
   }
   buffers.activate(t.networkId, t.target);
+  toasts.dismiss(t.id);
+}
+
+function onAction(t: Toast) {
+  toasts.runAction(t.id);
   toasts.dismiss(t.id);
 }
 </script>
@@ -135,6 +143,24 @@ function onClick(t: Toast) {
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+.action {
+  background: var(--toast-accent, var(--accent));
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--bg);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: var(--space-2) var(--space-5);
+}
+.action:hover {
+  filter: brightness(1.08);
 }
 @keyframes toast-in {
   from {

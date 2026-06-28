@@ -1380,3 +1380,96 @@ describe('IRCv3 draft/multiline (#381)', () => {
     });
   });
 });
+
+// Inbound channel INVITE (#261): surface "you've been invited" as an actionable
+// ephemeral + a durable system-buffer line; ignore invite-notify echoes for
+// other people. publishEphemeral/logNet are stubbed to assert routing without a
+// DB or live socket.
+describe('inbound INVITE handler (#261)', () => {
+  function makeConn(): IrcConnection {
+    return new IrcConnection({
+      network: {
+        id: 1,
+        user_id: 1,
+        name: 'n',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates: 1,
+        nick: 'me',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        created_at: new Date().toISOString(),
+      },
+      onEvent: () => {},
+    });
+  }
+
+  it('publishes an actionable invite event + system line when WE are invited', () => {
+    const conn = makeConn();
+    conn.client.user.nick = 'me';
+    const publishEphemeral = vi.fn<(event: unknown) => void>();
+    const logNet = vi.fn<(text: string, level?: string) => void>();
+    conn.publishEphemeral = publishEphemeral;
+    conn.logNet = logNet;
+
+    conn.client.emit('invite', { nick: 'alice', invited: 'me', channel: '#secret' });
+
+    expect(publishEphemeral).toHaveBeenCalledTimes(1);
+    expect(publishEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'invite',
+        // Routed via the server pseudo-buffer so the wsHub closed-buffer guard
+        // can't drop an invite to a channel we'd previously closed.
+        target: ':server:1',
+        channel: '#secret',
+        from: 'alice',
+      }),
+    );
+    expect(logNet).toHaveBeenCalledWith('alice invited you to #secret');
+  });
+
+  it('ignores invite-notify echoes for someone else (not us)', () => {
+    const conn = makeConn();
+    conn.client.user.nick = 'me';
+    const publishEphemeral = vi.fn<(event: unknown) => void>();
+    const logNet = vi.fn<(text: string, level?: string) => void>();
+    conn.publishEphemeral = publishEphemeral;
+    conn.logNet = logNet;
+
+    conn.client.emit('invite', { nick: 'alice', invited: 'bob', channel: '#secret' });
+
+    expect(publishEphemeral).not.toHaveBeenCalled();
+    expect(logNet).not.toHaveBeenCalled();
+  });
+
+  it('matches the invited nick case-insensitively', () => {
+    const conn = makeConn();
+    conn.client.user.nick = 'Me';
+    const publishEphemeral = vi.fn<(event: unknown) => void>();
+    conn.publishEphemeral = publishEphemeral;
+    conn.logNet = vi.fn<(text: string, level?: string) => void>();
+
+    conn.client.emit('invite', { nick: 'alice', invited: 'mE', channel: '#secret' });
+
+    expect(publishEphemeral).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a malformed invite missing the channel', () => {
+    const conn = makeConn();
+    conn.client.user.nick = 'me';
+    const publishEphemeral = vi.fn<(event: unknown) => void>();
+    conn.publishEphemeral = publishEphemeral;
+    conn.logNet = vi.fn<(text: string, level?: string) => void>();
+
+    conn.client.emit('invite', { nick: 'alice', invited: 'me' });
+
+    expect(publishEphemeral).not.toHaveBeenCalled();
+  });
+});

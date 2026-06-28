@@ -1378,6 +1378,37 @@ export class IrcConnection {
       }
     });
 
+    c.on('invite', (event: Record<string, unknown>) => {
+      // irc-framework parses an inbound INVITE as { nick: inviter, invited:
+      // target nick, channel }. With invite-notify we also see invites sent to
+      // *other* people in channels we're in — only the "you've been invited"
+      // case is actionable, so ignore any invite whose target isn't us. (A
+      // future enhancement could surface op-visibility invites as a quiet
+      // channel line; #261.)
+      const inviter = event.nick as string | undefined;
+      const invited = event.invited as string | undefined;
+      const channel = event.channel as string | undefined;
+      if (!inviter || !channel || !invited) return;
+      const me = c.user?.nick;
+      if (!me || invited.toLowerCase() !== me.toLowerCase()) return;
+      // Route through the server pseudo-buffer, not the channel: we're not in
+      // the channel (that's the whole point of an invite), and if we'd
+      // previously closed its buffer the wsHub closed-buffer guard would drop
+      // an ephemeral targeted at it. The channel rides in its own field; the
+      // client toast reads `channel`/`from`, never `target`.
+      this.publishEphemeral({
+        type: 'invite',
+        target: this.serverTarget(),
+        channel,
+        from: inviter,
+        userhost: buildUserhost(event),
+      });
+      // Durable fallback: the toast is transient, so log the invite to the
+      // system buffer too — a missed or expired toast still leaves a record the
+      // user can act on later (#261, #355).
+      this.logNet(`${inviter} invited you to ${channel}`);
+    });
+
     c.on('quit', (event: Record<string, unknown>) => {
       const eventNick = event.nick as string;
       const lower = eventNick.toLowerCase();

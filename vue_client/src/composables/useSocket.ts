@@ -192,6 +192,22 @@ function applyEvent(event: any): void {
         ttlMs: 6000,
       });
       break;
+    case 'invite': {
+      // Someone invited us to a channel we're not in. Surface it as an
+      // actionable toast with a one-click Join — the durable record lives in the
+      // system buffer (logged server-side), so a longer TTL here is just a
+      // convenience window, not the only chance to act (#261).
+      const channel = event.channel as string;
+      const from = event.from as string;
+      useToastsStore().push({
+        kind: 'notify',
+        title: `Invitation to ${channel}`,
+        body: `${from} invited you`,
+        ttlMs: 15000,
+        action: { label: 'Join', onClick: () => buffers.joinOrActivate(event.networkId, channel) },
+      });
+      break;
+    }
     case 'channel-parted':
       // Keep the buffer around so the user can still scroll history; just
       // mark it un-joined so it renders dimmed in the buffer list. /close
