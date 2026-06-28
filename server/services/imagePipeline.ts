@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 
 const THUMB_SIZE = 128;
 
@@ -51,7 +51,7 @@ export async function optimize(
     rasterOnly = false,
   }: { maxDim: number; quality: number; rasterOnly?: boolean },
 ): Promise<OptimizeResult> {
-  let meta: sharp.Metadata;
+  let meta: Metadata;
   try {
     meta = await sharp(buffer).metadata();
   } catch (cause) {
