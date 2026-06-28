@@ -14,10 +14,10 @@ describe('toasts store', () => {
     vi.useRealTimers();
   });
 
-  it('threads an action callback through push so the toast can offer a CTA', () => {
+  it('stores only the serializable label in state and runs the handler via runAction', () => {
     const toasts = useToastsStore();
     const onClick = vi.fn<() => void>();
-    toasts.push({
+    const id = toasts.push({
       title: 'Invitation to #secret',
       body: 'alice invited you',
       kind: 'notify',
@@ -25,9 +25,19 @@ describe('toasts store', () => {
       ttlMs: 0,
     });
     const t = toasts.items[0];
-    expect(t.action?.label).toBe('Join');
-    t.action?.onClick();
+    // Pinia state holds only { label } — no function leaks into the store.
+    expect(t.action).toEqual({ label: 'Join' });
+    toasts.runAction(id);
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops the action handler on dismiss so it cannot run afterward', () => {
+    const toasts = useToastsStore();
+    const onClick = vi.fn<() => void>();
+    const id = toasts.push({ title: 'x', body: '', action: { label: 'Go', onClick }, ttlMs: 0 });
+    toasts.dismiss(id);
+    toasts.runAction(id); // no-op — handler was cleaned up
+    expect(onClick).not.toHaveBeenCalled();
   });
 
   it('omits action when none is given (plain toast)', () => {

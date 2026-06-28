@@ -51,7 +51,7 @@ function onClick(t: Toast) {
 }
 
 function onAction(t: Toast) {
-  t.action?.onClick();
+  toasts.runAction(t.id);
   toasts.dismiss(t.id);
 }
 </script>
