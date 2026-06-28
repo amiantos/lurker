@@ -76,6 +76,8 @@ cp .env.example .env   # defaults assume the local hostname documented in the fi
 npm run dev
 ```
 
+> **Note on install scripts.** A few dependencies build native code or fetch a platform binary at install time — `better-sqlite3` (root), `esbuild` (root and `docs/`), and `sharp`/`workerd` (`docs/`). Each is pre-approved in that workspace's `allowScripts` allowlist, so npm runs them without prompting; `core-js` is intentionally denied — its only install script prints a funding message. The `vue_client` workspace has no install-script dependencies, so it has no allowlist. The `allowScripts` field is ignored by npm older than 11.16.
+
 # Documentation
 
 - **[Self-hosting guide](docs/SELF_HOSTING.md)** — reverse proxy + HTTPS, passkeys, web push, updating, backups, and troubleshooting.

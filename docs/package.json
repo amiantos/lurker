@@ -16,5 +16,10 @@
   "devDependencies": {
     "vitepress": "^2.0.0-alpha.17",
     "wrangler": "^4.20.0"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "sharp": true,
+    "workerd": true
   }
 }
