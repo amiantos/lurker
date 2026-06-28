@@ -24,10 +24,10 @@
       <ul v-if="rows.length" ref="listEl" class="list">
         <li
           v-for="(row, i) in rows"
-          :key="`${row.networkId}::${row.target}`"
+          :key="row.key"
           :class="{ row: true, active: i === selected }"
           @click="pick(row)"
-          @mouseenter="selected = i"
+          @mousemove="onPointerMove($event, i)"
         >
           <span class="net">{{ row.networkName }}</span>
           <span class="sep">/</span>
@@ -46,8 +46,10 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFriendsStore } from '../stores/friends.js';
+import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
-import { flattenBufferOrder } from '../utils/bufferOrder.js';
+import { flattenBufferOrder, bufferSortKey } from '../utils/bufferOrder.js';
+import { smartSortRows } from '../utils/switcherSort.js';
 
 interface Row {
   networkId: string | number;
@@ -56,6 +58,12 @@ interface Row {
   label: string;
   unread: number;
   style: { color: string } | null;
+  // Smart-sort inputs (#393): identity/recency key, pin state, and the
+  // alphabetical tie-break key. Carried on the row so the template's :key and
+  // the sort share one source.
+  key: string;
+  pinned: boolean;
+  sortKey: string;
 }
 
 const emit = defineEmits<{
@@ -66,6 +74,7 @@ const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const pins = usePinsStore();
 const friends = useFriendsStore();
+const recent = useRecentBuffersStore();
 const nicks = useNickColors();
 
 const query = ref('');
@@ -118,18 +127,35 @@ const allRows = computed<Row[]>(() => {
       label: isServer ? '[server]' : entry.target,
       unread: buf?.unread || 0,
       style: dmStyle(entry.networkId, entry.target),
+      key: entry.key,
+      pinned: pins.isPinned(entry.networkId, entry.target),
+      sortKey: bufferSortKey(entry.target as string),
     };
   });
 });
 
 const rows = computed<Row[]>(() => {
   const q = query.value.trim().toLowerCase();
-  if (!q) return allRows.value;
+  // No query: this is the alt-tab view, so drop the buffer you're already in —
+  // switching to where you already are is a no-op, and dropping it puts your
+  // *previous* buffer at row 0 (and pre-selected), making Cmd+K→Enter a clean
+  // back toggle. With a query it's a search: keep everything matchable, since
+  // you may well be looking for the current buffer by name.
   // Match only on the channel/DM label, not the network name — a bare network
   // keyword ("libera") surfacing every buffer in that network is noise, and
   // there's no multi-keyword "libera amiantos" syntax to make it useful (#153).
-  return allRows.value.filter((r) => {
-    return r.label.toLowerCase().includes(q);
+  const filtered = q
+    ? allRows.value.filter((r) => r.label.toLowerCase().includes(q))
+    : allRows.value.filter((r) => r.key !== networks.activeKey);
+  // Tiered smart sort applied AFTER filtering (#393): recent → pinned → unread →
+  // alphabetical, so recency/favourites survive a search instead of collapsing
+  // to plain alphabetical. Reads recent.keys so this recomputes as the MRU moves.
+  const ranks = recent.keys;
+  return smartSortRows(filtered, {
+    recencyRank: (key) => {
+      const i = ranks.indexOf(key);
+      return i === -1 ? Infinity : i;
+    },
   });
 });
 
@@ -140,6 +166,26 @@ watch(rows, () => {
 function pick(row: Row) {
   buffers.activate(row.networkId, row.target);
   emit('close');
+}
+
+// Hover-to-select, but only on a *real* pointer move. `mouseenter`/hover also
+// fires when the list paints under a stationary cursor (on open) or scrolls
+// under it (arrow-key nav scrollIntoView), which would otherwise clobber the
+// keyboard selection — the classic sticky-hover trap. Gating on an actual
+// change in pointer coordinates ignores both: those synthetic events carry the
+// same clientX/clientY, since the mouse didn't move.
+const lastPointer = ref<{ x: number; y: number } | null>(null);
+function onPointerMove(e: MouseEvent, i: number) {
+  // Coordinate gate first (and update lastPointer regardless of the row) so a
+  // later synthetic event at the cursor's true position is still recognised as
+  // "no movement" — even when the pointer just slid within the current row.
+  if (lastPointer.value && lastPointer.value.x === e.clientX && lastPointer.value.y === e.clientY)
+    return;
+  lastPointer.value = { x: e.clientX, y: e.clientY };
+  // Only a change of hovered row is worth acting on; skip moves within the
+  // already-selected row.
+  if (selected.value === i) return;
+  selected.value = i;
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -173,12 +219,10 @@ function scrollSelectedIntoView() {
 }
 
 onMounted(() => {
-  // Pre-select the first row that isn't the currently active buffer so Enter
-  // is a useful default — switching to wherever you were last vs. staying put.
-  const activeKey = networks.activeKey;
-  const list = rows.value;
-  const idx = list.findIndex((r) => `${r.networkId}::${r.target}` !== activeKey);
-  selected.value = idx >= 0 ? idx : 0;
+  // Row 0 is the right default: the default (no-query) view excludes the active
+  // buffer, so the most-recent remaining entry — your previous buffer — sits at
+  // the top, making Cmd+K→Enter a back toggle. selected starts at 0 and the
+  // rows watcher keeps it there as the query changes; just take focus here.
   setTimeout(() => inputEl.value?.focus(), 0);
 });
 </script>

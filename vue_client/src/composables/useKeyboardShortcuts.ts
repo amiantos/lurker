@@ -7,6 +7,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFriendsStore } from '../stores/friends.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
+import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { socketSend } from './useSocket.js';
 import { flattenBufferOrder, flattenUnreadOrder } from '../utils/bufferOrder.js';
 import { FRIENDS_KEY } from '../lib/virtualBuffers.js';
@@ -54,22 +55,32 @@ export function useKeyboardShortcuts({
   const pins = usePinsStore();
   const friends = useFriendsStore();
   const navHistory = useNavHistoryStore();
+  const recentBuffers = useRecentBuffersStore();
 
-  // Feed the back/forward history (#309). networks.activeKey is the one place
-  // every navigation path converges (sidebar click, quick switcher, slash
-  // commands, deep links, the Friends pane), so recording there captures them
-  // all with one seam. `flush: 'sync'` keeps the store's re-entrancy guard exact
-  // — the echo from our own back()/forward() fires the instant activeKey mutates,
-  // before the guard clears. Seed the current buffer so the first Cmd+[ has
-  // somewhere to return from.
+  // Feed the back/forward history (#309) and the quick switcher's MRU recency
+  // list (#393) from one seam. networks.activeKey is the single place every
+  // navigation path converges (sidebar click, quick switcher, slash commands,
+  // deep links, the Friends pane), so recording there captures them all.
+  // `flush: 'sync'` keeps navHistory's re-entrancy guard exact — the echo from
+  // its own back()/forward() fires the instant activeKey mutates, before the
+  // guard clears (recentBuffers has no such guard: a back/forward hop is a
+  // genuine recent visit and should move to the front). Seed the current buffer
+  // so the first Cmd+[ has somewhere to return from and the switcher opens with
+  // recency already meaningful.
   watch(
     () => networks.activeKey,
     (key) => {
-      if (key != null) navHistory.record(key);
+      if (key != null) {
+        navHistory.record(key);
+        recentBuffers.record(key);
+      }
     },
     { flush: 'sync' },
   );
-  if (networks.activeKey != null) navHistory.record(networks.activeKey);
+  if (networks.activeKey != null) {
+    navHistory.record(networks.activeKey);
+    recentBuffers.record(networks.activeKey);
+  }
 
   // The FRIENDS group as the sidebar shows it: a feed header (only when there
   // are contacts) + each friend's primary DM, with those DMs excluded from

@@ -69,7 +69,10 @@ function isChannelTarget(target: string): boolean {
   return typeof target === 'string' && target.startsWith('#');
 }
 
-function sortKey(target: string): string {
+// Alphabetical sort key for a buffer: leading channel sigils stripped, ASCII-
+// lowercased (matching the house case-folding style). Exported so the quick
+// switcher's smart sort (#393) alphabetises identically to the sidebar.
+export function bufferSortKey(target: string): string {
   return target.replace(/^#+/, '').toLowerCase();
 }
 
@@ -137,7 +140,7 @@ export function flattenBufferOrder({
         const oa = bufferOrder(a.target);
         const ob = bufferOrder(b.target);
         if (oa !== ob) return oa - ob;
-        return sortKey(a.target).localeCompare(sortKey(b.target));
+        return bufferSortKey(a.target).localeCompare(bufferSortKey(b.target));
       });
     for (const b of unpinned)
       out.push({
