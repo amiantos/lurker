@@ -81,15 +81,11 @@ function activate(item: ContextMenuItem): void {
 function onWindowPointerDown(e: PointerEvent): void {
   if (!state.open) return;
   if (menuEl.value && menuEl.value.contains(e.target as Node)) return;
-  // Re-clicking the same trigger should close (toggle behavior). Without
-  // swallowing the event, the trigger's own @click handler runs next and
-  // immediately reopens the menu on the same gesture.
-  if (state.triggerEl && state.triggerEl.contains(e.target as Node)) {
-    e.preventDefault();
-    e.stopPropagation();
-    menu.close();
-    return;
-  }
+  // Leave a pointerdown on the opening trigger alone: its own click handler
+  // fires next and re-calls open() with the same triggerEl, which toggles the
+  // menu closed (see useContextMenu). Closing here would race that click and
+  // reopen the menu — pointerdown can't cancel the click that follows.
+  if (state.triggerEl && state.triggerEl.contains(e.target as Node)) return;
   menu.close();
 }
 function onWindowKey(e: KeyboardEvent): void {

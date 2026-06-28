@@ -26,7 +26,10 @@ declare module 'irc-framework' {
     enable_chghost?: boolean;
     enable_setname?: boolean;
     enable_echomessage?: boolean;
-    version?: string;
+    /** CTCP VERSION auto-reply string, or `false` to disable the built-in reply
+     *  so the host can answer CTCP itself. This is the interface that actually
+     *  governs runtime VERSION behavior (connect() overwrites client.options). */
+    version?: string | false;
     /**
      * Local source address to bind the outgoing socket to. irc-framework's net
      * transport forwards this as the socket's `localAddress` (and derives the
@@ -114,6 +117,12 @@ declare module 'irc-framework' {
 
     /** Send a CTCP ACTION (/me). */
     action(target: string, message: string): void;
+
+    /** Send a CTCP request (PRIVMSG `\x01TYPE params\x01`); type is uppercased. */
+    ctcpRequest(target: string, type: string, ...params: string[]): void;
+
+    /** Send a CTCP reply (NOTICE `\x01TYPE params\x01`); type is uppercased. */
+    ctcpResponse(target: string, type: string, ...params: string[]): void;
 
     /** Send a NOTICE. */
     notice(target: string, message: string, tags?: Record<string, string>): void;

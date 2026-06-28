@@ -556,6 +556,22 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
 
   // ─── Misc look ────────────────────────────────────────────────────────
   {
+    key: 'look.modal.overlay',
+    label: 'Modal backdrop (desktop)',
+    category: 'appearance',
+    group: 'misc',
+    type: 'enum',
+    choices: ['wordmark', 'dimmed', 'clear'],
+    default: 'wordmark',
+    description:
+      'Backdrop shown behind centered modals on desktop. "wordmark" (default) ' +
+      'is the opaque tiled-word wallpaper. "dimmed" replaces it with a ' +
+      'translucent scrim so the chat stays visible (just darkened) behind the ' +
+      'modal. "clear" shows the app behind with no tint at all — the card ' +
+      'floats on its border and shadow. Has no effect on mobile, where every ' +
+      'modal is a full-frame opaque sheet regardless of this setting.',
+  },
+  {
     key: 'look.action.italic',
     label: 'Italicize /me actions',
     category: 'appearance',
@@ -828,6 +844,93 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'The QUIT reason others see when you disconnect from a network and no ' +
       'explicit /quit message is given. Leave blank to use the Lurker default ' +
       '(the version and project URL).',
+  },
+
+  // ─── CTCP auto-replies (what we disclose to the network on a CTCP query) ──
+  // Lurker answers a few standard CTCP queries cell-side (so they work even with
+  // no tab open). The per-type values are WeeChat-style reply TEMPLATES: the
+  // text sent back, with ${...} placeholders expanded. An EMPTY template
+  // disables that reply. Placeholders: ${name} (Lurker), ${version}, ${source}
+  // (project URL), ${time} (server time), ${clientinfo} (the types still
+  // answered), ${nick} (your nick). Defaults reproduce the standard replies.
+  // PING isn't templated — it only echoes the asker's token — but the master
+  // switch silences it too.
+  {
+    key: 'ctcp.replies',
+    label: 'Answer CTCP queries',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'bool',
+    default: true,
+    description:
+      'Master switch for replying to CTCP queries from other users (VERSION, ' +
+      'TIME, SOURCE, CLIENTINFO, PING). Turn off to publish nothing — Lurker ' +
+      'stays completely silent to CTCP, like a client with CTCP disabled. The ' +
+      'per-type reply templates below apply only while this is on.',
+  },
+  {
+    key: 'ctcp.msgbuffer',
+    label: 'Where CTCP notices appear',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'enum',
+    choices: ['server', 'system', 'private'],
+    default: 'server',
+    description:
+      'Which buffer shows incoming CTCP notices — a "X requested CTCP …" probe, ' +
+      'or an unsolicited CTCP reply. Modeled on WeeChat irc.msgbuffer.ctcp. ' +
+      '"server" (default) = the network\'s server buffer; "system" = the ' +
+      'app-wide system buffer (these lines persist there, like other log ' +
+      'lines); "private" = a DM with the sender (or the channel, for a ' +
+      'channel-targeted CTCP). A reply to a /ctcp YOU sent always returns to ' +
+      'the buffer you ran it from, regardless of this.',
+  },
+  {
+    key: 'ctcp.version',
+    label: 'CTCP VERSION reply',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'string',
+    default: '${name} ${version}',
+    description:
+      'Reply sent for a CTCP VERSION query. Placeholders: ${name}, ${version}, ' +
+      '${source}, ${time}, ${clientinfo}, ${nick}. Leave EMPTY to not answer ' +
+      'VERSION at all — disclosing your exact client/version aids fingerprinting.',
+  },
+  {
+    key: 'ctcp.time',
+    label: 'CTCP TIME reply',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'string',
+    default: '${time}',
+    description:
+      'Reply sent for a CTCP TIME query (default is the current server time, ' +
+      'sent as UTC). Same placeholders as the VERSION reply. Leave EMPTY to ' +
+      'withhold it — answering tells the asker you are connected.',
+  },
+  {
+    key: 'ctcp.source',
+    label: 'CTCP SOURCE reply',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'string',
+    default: '${source}',
+    description:
+      'Reply sent for a CTCP SOURCE query (default is the Lurker project URL). ' +
+      'Same placeholders as the VERSION reply. Leave EMPTY to not answer.',
+  },
+  {
+    key: 'ctcp.clientinfo',
+    label: 'CTCP CLIENTINFO reply',
+    category: 'chat',
+    group: 'ctcp',
+    type: 'string',
+    default: '${clientinfo}',
+    description:
+      'Reply sent for a CTCP CLIENTINFO query. The default ${clientinfo} ' +
+      'expands to the list of CTCP types you currently answer. Same ' +
+      'placeholders as the VERSION reply. Leave EMPTY to not answer.',
   },
 
   // ─── Auto-away (sets you AWAY when no client is connected) ────────────
@@ -1379,6 +1482,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   composing: 'Composing',
   'smart-filter': 'Smart filter',
   connection: 'Connection',
+  ctcp: 'CTCP replies',
   'auto-away': 'Auto-away',
   provider: 'Provider',
   pipeline: 'Image pipeline',

@@ -49,10 +49,26 @@ const state = reactive<ContextMenuState>({
   triggerEl: null,
 });
 
+function closeMenu(): void {
+  state.open = false;
+  state.items = [];
+  state.triggerEl = null;
+}
+
 export function useContextMenu(): ContextMenuAPI {
   return {
     state,
     open(items: ContextMenuItem[], x: number, y: number, triggerEl: Element | null = null): void {
+      // Toggle: re-invoking open() from the same trigger while its menu is up
+      // closes it. The toggle MUST live here, not in the close-on-outside
+      // listener (ContextMenu.vue) — a pointerdown there can't cancel the click
+      // that follows, so closing on the trigger's pointerdown just races the
+      // trigger's own click and reopens the menu on a single gesture. So the
+      // listener ignores the trigger and defers to this reopen path instead.
+      if (state.open && triggerEl && state.triggerEl === triggerEl) {
+        closeMenu();
+        return;
+      }
       if (!Array.isArray(items) || items.length === 0) return;
       state.items = items;
       state.x = x;
@@ -61,9 +77,7 @@ export function useContextMenu(): ContextMenuAPI {
       state.open = true;
     },
     close(): void {
-      state.open = false;
-      state.items = [];
-      state.triggerEl = null;
+      closeMenu();
     },
   };
 }

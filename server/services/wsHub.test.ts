@@ -22,6 +22,8 @@ let sweepWsHeartbeat: typeof import('./wsHub.js').sweepWsHeartbeat;
 let buildSystemBacklog: typeof import('./wsHub.js').buildSystemBacklog;
 let systemLineToEvent: typeof import('./wsHub.js').systemLineToEvent;
 let buildSystemHistoryReply: typeof import('./wsHub.js').buildSystemHistoryReply;
+let startChanlistRefresh: typeof import('./wsHub.js').startChanlistRefresh;
+let chanlist: typeof import('../db/chanlist.js');
 let systemMessages: typeof import('../db/systemMessages.js').default;
 
 let userId: number;
@@ -42,7 +44,9 @@ beforeAll(async () => {
     buildSystemBacklog,
     systemLineToEvent,
     buildSystemHistoryReply,
+    startChanlistRefresh,
   } = await import('./wsHub.js'));
+  chanlist = await import('../db/chanlist.js');
   systemMessages = (await import('../db/systemMessages.js')).default;
 
   userId = createUser('alice').id;
@@ -424,5 +428,48 @@ describe('system buffer delivery (#355)', () => {
     expect(buildSystemHistoryReply(u, { mode: 'after', afterId: -1 })).toMatchObject({
       kind: 'error',
     });
+  });
+});
+
+describe('startChanlistRefresh (issue #396)', () => {
+  it('wipes the prior cache so a refresh drops departed channels', () => {
+    const net = createNetwork(userId, {
+      name: 'chanlist-refresh',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'alice',
+    });
+    const nid = net!.id;
+
+    // First /LIST: three channels land in the cache.
+    chanlist.upsertChannels(nid, [
+      { channel: '#a', topic: 'a', num_users: 5 },
+      { channel: '#b', topic: 'b', num_users: 4 },
+      { channel: '#gone', topic: 'gone', num_users: 1 },
+    ]);
+    expect(chanlist.countChannels(nid)).toBe(3);
+
+    // Refresh: this is the send-time reset that no longer relies on the server
+    // echoing RPL_LISTSTART (321). The cache is emptied and marked in-progress.
+    startChanlistRefresh(nid);
+    expect(chanlist.countChannels(nid)).toBe(0);
+    expect(chanlist.getMeta(nid)).toMatchObject({
+      inProgress: true,
+      totalCount: 0,
+      fetchedAt: null,
+    });
+
+    // The second /LIST returns a smaller set — #gone has been removed server-side.
+    // Without the reset above it would survive via the additive upsert (#396).
+    chanlist.upsertChannels(nid, [
+      { channel: '#a', topic: 'a', num_users: 6 },
+      { channel: '#b', topic: 'b', num_users: 4 },
+    ]);
+    const names = chanlist
+      .searchChannels(nid, { sortBy: 'name', sortDir: 'asc' })
+      .rows.map((r) => r.channel);
+    expect(names).toEqual(['#a', '#b']);
+    expect(names).not.toContain('#gone');
   });
 });

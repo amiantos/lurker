@@ -1,0 +1,17 @@
+{
+  "name": "lurker-docs",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Lurker documentation site (VitePress) — deployed to docs.lurker.chat",
+  "type": "module",
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.3",
+    "wrangler": "^4.20.0"
+  }
+}

@@ -123,10 +123,11 @@
     </div>
 
     <footer class="modal-footer">
-      <!-- Send DM and Ignore are meaningless on yourself and while the peer is
-           offline — DMs would bounce and there's no hostmask to build an ignore
-           rule from. Hide entirely rather than disable (matching Add Friend) so
-           the modal doesn't read as "you could do this if only…". -->
+      <!-- Primary actions only. Send DM is meaningless on yourself and while the
+           peer is offline (a DM would bounce), so it's hidden then. Add Friend
+           works regardless of presence — you can watch an offline peer — so it
+           isn't gated on isOffline. Everything else (Ignore, relay-bot toggle,
+           Refresh) lives in the More menu so the footer never crowds or wraps. -->
       <button
         v-if="!isOffline && !isSelf"
         type="button"
@@ -136,17 +137,6 @@
       >
         <i class="fa-solid fa-envelope"></i> <span class="label">Send DM</span>
       </button>
-      <button
-        v-if="!isOffline && !isSelf"
-        type="button"
-        class="btn-secondary"
-        title="Ignore…"
-        @click="onIgnore"
-      >
-        <i class="fa-solid fa-ban"></i> <span class="label">Ignore…</span>
-      </button>
-      <!-- Friending works regardless of presence — you can watch an offline
-           peer — so this isn't gated on isOffline like Send DM / Ignore. -->
       <button
         v-if="!isSelf"
         type="button"
@@ -158,8 +148,8 @@
         <span class="label">{{ isFriend ? 'Edit Friend' : 'Add Friend' }}</span>
       </button>
       <span class="spacer"></span>
-      <button type="button" class="btn-secondary" @click="onRefresh" title="Re-run whois">
-        <i class="fa-solid fa-arrows-rotate"></i> <span class="label">Refresh</span>
+      <button type="button" class="btn-secondary" title="More actions" @click="openMoreMenu">
+        <i class="fa-solid fa-ellipsis"></i> <span class="label">More</span>
       </button>
     </footer>
 
@@ -180,7 +170,9 @@ import AppModal from './AppModal.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import { useWhoisStore } from '../stores/whois.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useFriendsStore } from '../stores/friends.js';
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { socketSend } from '../composables/useSocket.js';
@@ -194,12 +186,15 @@ const props = defineProps<{
 
 const whoisStore = useWhoisStore();
 const nickNotes = useNickNotesStore();
+const relayBots = useRelayBotsStore();
 const friends = useFriendsStore();
+const contextMenu = useContextMenu();
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const ignoreOpen = ref(false);
 
 const isFriend = computed(() => !!friends.contactForTarget(props.networkId, props.nick));
+const isRelay = computed(() => relayBots.isRelay(props.networkId, props.nick));
 
 const entry = computed(() => whoisStore.entryFor(props.networkId, props.nick));
 const whois = computed(() => entry.value?.data ?? null);
@@ -267,16 +262,21 @@ interface Chip {
   icon?: string;
 }
 const chips = computed<Chip[]>(() => {
-  const w = whois.value;
-  if (!w) return [];
   const out: Chip[] = [];
-  if (w.secure) out.push({ label: 'TLS', tone: 'good', icon: 'fa-solid fa-lock' });
-  if (w.bot) out.push({ label: 'Bot', tone: 'neutral', icon: 'fa-solid fa-robot' });
-  if (w.operator)
-    out.push({ label: 'IRC operator', tone: 'warn', icon: 'fa-solid fa-shield-halved' });
-  if (w.helpop) out.push({ label: 'Help', tone: 'neutral', icon: 'fa-solid fa-circle-info' });
-  if (w.registered_nick)
-    out.push({ label: 'Registered', tone: 'good', icon: 'fa-solid fa-id-badge' });
+  const w = whois.value;
+  if (w) {
+    if (w.secure) out.push({ label: 'TLS', tone: 'good', icon: 'fa-solid fa-lock' });
+    if (w.bot) out.push({ label: 'Bot', tone: 'neutral', icon: 'fa-solid fa-robot' });
+    if (w.operator)
+      out.push({ label: 'IRC operator', tone: 'warn', icon: 'fa-solid fa-shield-halved' });
+    if (w.helpop) out.push({ label: 'Help', tone: 'neutral', icon: 'fa-solid fa-circle-info' });
+    if (w.registered_nick)
+      out.push({ label: 'Registered', tone: 'good', icon: 'fa-solid fa-id-badge' });
+  }
+  // Relay-bot mark is local user state, not a whois fact, so it shows even when
+  // no whois reply is in (e.g. opening the profile of an offline bot).
+  if (isRelay.value)
+    out.push({ label: 'Relay bot', tone: 'neutral', icon: 'fa-solid fa-satellite-dish' });
   return out;
 });
 
@@ -369,6 +369,42 @@ function onAddFriend() {
   // Opens the Configure Friend modal on top of the profile (same as the note
   // editor) — a sub-edit, so we don't close the viewer here.
   friends.openEditorForNick(props.networkId, props.nick);
+}
+
+function onToggleRelay() {
+  // Mark/unmark this nick as a relay bot (#277). Marking from here uses the
+  // built-in envelope formats; a custom pattern is a power-user concern handled
+  // by `/relay add <nick> <pattern>`. The store echoes back over WS so the chip
+  // and the re-attributed messages update across every open tab.
+  if (isSelf.value) return;
+  relayBots.setRelay(props.networkId, props.nick, !isRelay.value);
+}
+
+// Secondary/contextual actions collapse into a "More" overflow menu so the
+// footer stays a clean primary-action row no matter how many actions exist.
+// Reuses the shared context-menu primitive (z-menu sits above z-modal, so it
+// floats over the modal correctly). Built fresh on open so toggle labels and
+// presence-gated entries reflect current state.
+function openMoreMenu(e: MouseEvent) {
+  const items: ContextMenuItem[] = [];
+  if (!isOffline.value && !isSelf.value) {
+    items.push({ label: 'Ignore…', icon: 'fa-solid fa-ban', onClick: onIgnore });
+  }
+  if (!isSelf.value) {
+    items.push({
+      label: isRelay.value ? 'Unmark relay bot' : 'Mark relay bot',
+      icon: 'fa-solid fa-satellite-dish',
+      onClick: onToggleRelay,
+    });
+  }
+  items.push({ label: 'Refresh', icon: 'fa-solid fa-arrows-rotate', onClick: onRefresh });
+  const btn = e.currentTarget as Element | null;
+  if (btn) {
+    const rect = btn.getBoundingClientRect();
+    contextMenu.open(items, rect.left, rect.bottom + 2, btn);
+  } else {
+    contextMenu.open(items, e.clientX, e.clientY);
+  }
 }
 
 function onChannelClick(channel: string) {

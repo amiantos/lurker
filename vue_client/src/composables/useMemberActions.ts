@@ -40,6 +40,7 @@ export interface MemberActionsAPI {
     ctx: MemberContext | null | undefined,
     x: number,
     y: number,
+    triggerEl?: Element | null,
   ): void;
   openMenuFromButton(
     member: MemberLike | string | null | undefined,
@@ -226,15 +227,19 @@ export function useMemberActions(): MemberActionsAPI {
     return items;
   }
 
+  // Cursor-positioned menu (left-click a name, or right-click). Pass triggerEl
+  // for a left-click so re-clicking the same element toggles the menu closed,
+  // matching the kebab buttons; omit it for right-click, which repositions.
   function openMenuFor(
     member: MemberLike | string | null | undefined,
     ctx: MemberContext | null | undefined,
     x: number,
     y: number,
+    triggerEl: Element | null = null,
   ): void {
     const items = buildItems(member, ctx);
     if (items.length === 0) return;
-    menu.open(items, x, y);
+    menu.open(items, x, y, triggerEl);
   }
 
   // Hand buttonEl to useContextMenu so re-clicking the same trigger toggles

@@ -17,11 +17,13 @@ import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useToastsStore } from '../stores/toasts.js';
+import { downloadTextFile } from '../utils/download.js';
 import { notifyForEvent, playSound } from './useHighlightNotifier.js';
 
 export interface AckResult {
@@ -190,6 +192,29 @@ function applyEvent(event: any): void {
         ttlMs: 6000,
       });
       break;
+    case 'invite': {
+      // Two shapes share this type (#261). A persisted channel line ("X invited
+      // Y", target = the channel) renders inline like a join/kick. The inbound
+      // "you've been invited" event is ephemeral, targets the server
+      // pseudo-buffer, and carries channel/from — surface it as an actionable
+      // toast with a one-click Join. The durable record for the latter lives in
+      // the system buffer (logged server-side), so the long TTL is just a
+      // convenience window, not the only chance to act.
+      if (typeof event.target === 'string' && event.target.startsWith('#')) {
+        buffers.pushMessage(event);
+        break;
+      }
+      const channel = event.channel as string;
+      const from = event.from as string;
+      useToastsStore().push({
+        kind: 'notify',
+        title: `Invitation to ${channel}`,
+        body: `${from} invited you`,
+        ttlMs: 15000,
+        action: { label: 'Join', onClick: () => buffers.joinOrActivate(event.networkId, channel) },
+      });
+      break;
+    }
     case 'channel-parted':
       // Keep the buffer around so the user can still scroll history; just
       // mark it un-joined so it renders dimmed in the buffer list. /close
@@ -269,6 +294,8 @@ function applyEvent(event: any): void {
       buffers.pushMessage(event);
       break;
     }
+    case 'e2e': // RPE2E status line (#382) — same routing as a server notice.
+    case 'ctcp': // CTCP request/reply/echo status line (#263) — same routing.
     case 'motd':
     case 'error': {
       const decorated = { ...event, target: event.target || `:server:${event.networkId}` };
@@ -325,12 +352,14 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   const channelNotify = useChannelNotifyStore();
   const ignores = useIgnoresStore();
   const nickNotes = useNickNotesStore();
+  const relayBots = useRelayBotsStore();
   networks.applySnapshot(snapshot);
   pins.applySnapshot(snapshot);
   nicklistCollapse.applySnapshot(snapshot);
   channelNotify.applySnapshot(snapshot);
   ignores.applySnapshot(snapshot, globalIgnores);
   nickNotes.applySnapshot(snapshot);
+  relayBots.applySnapshot(snapshot);
   // Highlight rules aren't in the snapshot; load them now so client-side
   // render-time highlight evaluation (#349) works app-wide, not just after the
   // settings pane has been opened.
@@ -530,6 +559,47 @@ function handleMessage(raw: string): void {
     search.applyResult(payload);
     return;
   }
+  if (payload.kind === 'e2eExport') {
+    // Response to `/e2e export` — download the JSON as a file rather than render
+    // it (it carries the private key). Reaches only the requesting tab.
+    if (payload.ok) {
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadTextFile(`lurker-e2e-keyring-${stamp}.json`, payload.json as string);
+      const c = (payload.counts as Record<string, number>) || {};
+      useToastsStore().push({
+        kind: 'info',
+        title: 'E2E keyring exported',
+        body: `Saved ${c.peers ?? 0} peer(s), ${c.incoming ?? 0} session(s). Keep this file private — it contains your private key.`,
+      });
+    } else {
+      useToastsStore().push({
+        kind: 'error',
+        title: 'E2E export failed',
+        body: String(payload.reason ?? 'unknown error'),
+      });
+    }
+    return;
+  }
+  if (payload.kind === 'e2eImport') {
+    if (payload.ok) {
+      const c = (payload.counts as Record<string, number>) || {};
+      const idNote = payload.identityChanged
+        ? ' Your account identity changed — peers will need to reverify you.'
+        : '';
+      useToastsStore().push({
+        kind: payload.identityChanged ? 'warn' : 'info',
+        title: 'E2E keyring imported',
+        body: `Replaced with ${c.peers ?? 0} peer(s), ${c.incoming ?? 0} session(s).${idNote}`,
+      });
+    } else {
+      useToastsStore().push({
+        kind: 'error',
+        title: 'E2E import failed',
+        body: String(payload.reason ?? 'unknown error'),
+      });
+    }
+    return;
+  }
   if (payload.kind === 'pins-changed') {
     const pins = usePinsStore();
     pins.setNetwork(payload.networkId, payload.pinned || []);
@@ -556,6 +626,11 @@ function handleMessage(raw: string): void {
   if (payload.kind === 'nick-note-updated') {
     const nickNotes = useNickNotesStore();
     nickNotes.applyUpdate(payload.networkId, payload.nick, payload.note || '', payload.updatedAt);
+    return;
+  }
+  if (payload.kind === 'relay-bot-updated') {
+    const relayBots = useRelayBotsStore();
+    relayBots.applyUpdate(payload.networkId, payload.nick, !!payload.marked, payload.pattern || '');
     return;
   }
   if (payload.kind === 'contacts-snapshot') {

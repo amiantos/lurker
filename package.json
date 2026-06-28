@@ -1,6 +1,6 @@
 {
   "name": "lurker",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Self-hosted IRC client with persistent server-side connection and a Vue web UI",
   "main": "server/server.ts",
   "type": "module",
@@ -11,7 +11,9 @@
     "client:dev": "npm run dev --prefix vue_client",
     "client:build": "npm run build --prefix vue_client",
     "client:preview": "npm run preview --prefix vue_client",
-    "install:all": "npm install && npm install --prefix vue_client",
+    "docs:dev": "npm run dev --prefix docs",
+    "docs:build": "npm run build --prefix docs",
+    "install:all": "npm install && npm install --prefix vue_client && npm install --prefix docs",
     "start": "tsx server/server.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

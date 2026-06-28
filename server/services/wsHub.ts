@@ -11,6 +11,8 @@ import { WebSocketServer } from 'ws';
 import cookie from 'cookie';
 import cookieParser from 'cookie-parser';
 import ircManager from './ircManager.js';
+import { e2eManager } from './e2e/manager.js';
+import { MAX_IMPORT_BYTES } from './e2e/portable.js';
 import settingsService from './settingsService.js';
 import highlightRulesService from './highlightRulesService.js';
 import draftsService from './draftsService.js';
@@ -57,6 +59,7 @@ import { closeBuffer, reopenBuffer, isClosed, closedKeySetForUser } from '../db/
 import {
   pinBuffer,
   unpinBuffer,
+  unpinBufferCaseInsensitive,
   reorderPins,
   listPinnedForUserNetwork,
 } from '../db/pinnedBuffers.js';
@@ -123,6 +126,8 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'away',
   'back',
   'typing',
+  'e2e',
+  'ctcp',
 ]);
 
 // Options bag for fanOut.
@@ -265,9 +270,16 @@ export function decorateMessage(userId: number, event: MessageEvent): DecoratedE
   const dm = isDirect(event) && !event.self;
   const target = event.target || '';
   const isChannel = target.startsWith('#');
+  // CTCP request/reply/echo lines are status, not conversation — never notify,
+  // even when routed to a notify-always channel (otherwise running /ctcp from
+  // such a channel would self-notify on your own echo). (#263)
+  const isStatus = event.type === 'ctcp';
   const notifyAlways =
-    isChannel && !event.self && getChannelNotifyAlways(userId, event.networkId, target);
-  const notify = matched || dm || notifyAlways;
+    !isStatus &&
+    isChannel &&
+    !event.self &&
+    getChannelNotifyAlways(userId, event.networkId, target);
+  const notify = !isStatus && (matched || dm || notifyAlways);
   return {
     ...event,
     matched,
@@ -770,6 +782,18 @@ function parseSinceParam(rawUrl: string): number {
   } catch (_) {
     return 0;
   }
+}
+
+// Reset the channel-list cache the moment we send `/LIST`, rather than waiting
+// for the server's RPL_LISTSTART (321). Many ircds omit 321 entirely, and
+// irc-framework only emits 'channel list start' (the sole other caller of
+// clearChannels) when it arrives. Without an unconditional reset here, a refresh
+// upserts the fresh rows on top of the stale cache and never drops channels that
+// have since disappeared — they reappear forever (issue #396). Mirrors The
+// Lounge's inputs/list.ts, which empties chanCache when the user sends /list.
+export function startChanlistRefresh(networkId: number): void {
+  chanlistDb.clearChannels(networkId);
+  chanlistDb.setMeta(networkId, { inProgress: true, totalCount: 0, fetchedAt: null });
 }
 
 export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
@@ -1466,6 +1490,113 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         }
         break;
       }
+      case 'e2e': {
+        // RPE2E `/e2e …` command (#382). The connection runs the subcommand and
+        // publishes its own ephemeral status to the issuing buffer; we only need
+        // to tell the user when the network isn't connected (no connection = no
+        // place for that status to come from).
+        const target = typeof msg.target === 'string' ? msg.target : '';
+        const args = typeof msg.args === 'string' ? msg.args : '';
+        // The system buffer carries networkId null; Number(null) → 0 would miss
+        // every connection and fan a frame out with networkId 0 that the client
+        // can't route (the client already gates /e2e on an active network, so
+        // this is defensive). Require a real network id (#382, review #7).
+        const networkId = msg.networkId == null ? NaN : Number(msg.networkId);
+        if (!Number.isFinite(networkId) || networkId <= 0) break;
+        const ok = ircManager.e2eCommand(userId, networkId, target, args);
+        if (!ok) {
+          const evt = {
+            type: 'e2e',
+            level: 'warn',
+            networkId,
+            target,
+            text: '/e2e: this network isn’t connected',
+            time: new Date().toISOString(),
+            self: false,
+          } as unknown as MessageEvent;
+          fanOut(userId, { ...decorateMessage(userId, evt), kind: 'irc' });
+        }
+        break;
+      }
+      case 'ctcp': {
+        // Outbound CTCP request (/ctcp <nick> <type> [args], /ping <nick>, #263).
+        // The cell frames + sends it, echoes locally, and routes the reply back
+        // to `issuingTarget`. Like /e2e it needs a live connection, so on a
+        // disconnected network we surface that to the issuing buffer.
+        const networkId = msg.networkId == null ? NaN : Number(msg.networkId);
+        const ctcpTarget = typeof msg.target === 'string' ? msg.target.trim() : '';
+        const ctcpType = typeof msg.ctcpType === 'string' ? msg.ctcpType.trim() : '';
+        const ctcpArgs = typeof msg.args === 'string' ? msg.args : '';
+        const issuingTarget = typeof msg.issuingTarget === 'string' ? msg.issuingTarget : '';
+        if (!Number.isFinite(networkId) || networkId <= 0 || !ctcpTarget || !ctcpType) break;
+        const ok = ircManager.ctcpRequest(
+          userId,
+          networkId,
+          issuingTarget,
+          ctcpTarget,
+          ctcpType,
+          ctcpArgs,
+        );
+        if (!ok) {
+          // Name the command the user actually typed (/ping rides this same path).
+          const cmdName = ctcpType.toUpperCase() === 'PING' ? '/ping' : '/ctcp';
+          const evt = {
+            type: 'ctcp',
+            level: 'warn',
+            networkId,
+            target: issuingTarget,
+            text: `${cmdName}: this network isn’t connected`,
+            time: new Date().toISOString(),
+            self: false,
+          } as unknown as MessageEvent;
+          fanOut(userId, { ...decorateMessage(userId, evt), kind: 'irc' });
+        }
+        break;
+      }
+      case 'e2e-export': {
+        // Keyring portability (#382 follow-up). DB-backed via e2eManager — no live
+        // connection needed (unlike `case 'e2e'`). Reply to THIS socket only: the
+        // requesting tab turns the JSON into a file download, so a broadcast would
+        // make every open tab download. networkId ownership is enforced at the
+        // boundary above; reject the system-buffer (null/0) case here.
+        const networkId = msg.networkId == null ? NaN : Number(msg.networkId);
+        if (!Number.isFinite(networkId) || networkId <= 0) {
+          send(ws, {
+            kind: 'e2eExport',
+            ok: false,
+            reason: 'run /e2e export from a network buffer',
+          });
+          break;
+        }
+        send(ws, { kind: 'e2eExport', networkId, ...e2eManager.exportKeyring(userId, networkId) });
+        break;
+      }
+      case 'e2e-import': {
+        // Replace this network's keyring from an uploaded export. Validated +
+        // applied atomically by importKeyring; reply to the requesting socket.
+        const networkId = msg.networkId == null ? NaN : Number(msg.networkId);
+        const json = typeof msg.json === 'string' ? msg.json : '';
+        if (!Number.isFinite(networkId) || networkId <= 0) {
+          send(ws, {
+            kind: 'e2eImport',
+            ok: false,
+            reason: 'run /e2e import from a network buffer',
+          });
+          break;
+        }
+        // Reject an oversized payload at the boundary, before the parse/replace
+        // work (defence-in-depth; parseAndValidate guards the same limit too).
+        if (json.length > MAX_IMPORT_BYTES) {
+          send(ws, { kind: 'e2eImport', ok: false, reason: 'import file too large' });
+          break;
+        }
+        send(ws, {
+          kind: 'e2eImport',
+          networkId,
+          ...e2eManager.importKeyring(userId, networkId, json),
+        });
+        break;
+      }
       case 'join':
         ircManager.joinChannel(userId, msg.networkId as number, msg.channel as string);
         break;
@@ -1494,10 +1625,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         closeBuffer(userId, networkId, target);
         // The client renders the pinned section by intersecting pins with open
         // buffers, so a pin on a now-closed buffer is invisible — and leaving
-        // the row would diverge the client's pin set from ours, snapping the
-        // next reorder back as a mismatch (issue #112). Close implies unpin.
-        if (listPinnedForUserNetwork(userId, networkId).includes(target)) {
-          const pinned = unpinBuffer(userId, networkId, target);
+        // the row would diverge the client's pin set from ours (issue #112).
+        // Close implies unpin. Match case-insensitively: the snapshot hides
+        // closed buffers case-folded (closedKeySetForUser lowercases), so a
+        // differently-cased close would otherwise hide the buffer while leaving
+        // the exact-cased pin row stranded — an invisible orphan (issue #405).
+        const pinned = unpinBufferCaseInsensitive(userId, networkId, target);
+        if (pinned) {
           fanOut(userId, { kind: 'pins-changed', networkId, pinned });
         }
         if (target.startsWith('#')) {
@@ -1568,6 +1702,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         }
         chanlistInFlight.add(networkId);
         try {
+          startChanlistRefresh(networkId);
           conn.raw('LIST');
         } catch (_) {
           chanlistInFlight.delete(networkId);
@@ -1825,6 +1960,26 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               networkId: msg.networkId,
               nick: msg.nick,
               note: msg.note,
+            },
+          );
+        } catch (_) {
+          /* boundary already filtered bad networkId; ignore */
+        }
+        break;
+      }
+      case 'set-relay-bot': {
+        // Relay-bot mark (#277). Same thin-delegator shape as set-nick-note:
+        // the verb owns validation, the mark/unmark + custom-pattern logic, and
+        // the relay-bot-updated fanOut to every open tab.
+        try {
+          callVerb(
+            'set_relay_bot',
+            { userId, scope: 'read-write', transport: 'ws' },
+            {
+              networkId: msg.networkId,
+              nick: msg.nick,
+              marked: msg.marked,
+              pattern: msg.pattern,
             },
           );
         } catch (_) {

@@ -34,8 +34,10 @@ export function tryDecodeUrlBase64(s: string): Uint8Array | null {
 /**
  * Parse a canonical unsigned decimal integer. Returns `null` for non-canonical
  * forms that `Number()` would otherwise accept (hex `0xa`, exponent `1e0`,
- * decimal `1.0`, leading sign) or values beyond the safe-integer range. This
- * matches Rust's typed integer parse, which rejects all of the above.
+ * decimal `1.0`, any leading sign) or values beyond the safe-integer range.
+ * This is slightly STRICTER than repartee's `str::parse::<u8>()`, which accepts
+ * a leading `+` (e.g. "+5") — harmless, since neither side ever serializes a
+ * sign, so the difference is only reachable on hand-crafted/malformed input.
  */
 export function parseUintStrict(s: string): number | null {
   if (!/^\d+$/.test(s)) return null;

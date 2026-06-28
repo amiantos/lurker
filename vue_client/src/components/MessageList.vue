@@ -62,20 +62,17 @@
                 ><NickRef
                   :nick="asRename(item).from"
                   interactive
-                  @click.stop.prevent="onNickMenu($event, asRename(item).from)"
-                  @contextmenu.stop.prevent="onNickMenu($event, asRename(item).from)" />
+                  @click.stop.prevent="onNickMenu($event, asRename(item).from)" />
                 →
                 <NickRef
                   :nick="asRename(item).to"
                   interactive
-                  @click.stop.prevent="onNickMenu($event, asRename(item).to)"
-                  @contextmenu.stop.prevent="onNickMenu($event, asRename(item).to)" /></template
+                  @click.stop.prevent="onNickMenu($event, asRename(item).to)" /></template
               ><template v-else
                 ><NickRef
                   :nick="asNick(item).nick"
                   interactive
-                  @click.stop.prevent="onNickMenu($event, asNick(item).nick)"
-                  @contextmenu.stop.prevent="
+                  @click.stop.prevent="
                     onNickMenu($event, asNick(item).nick)
                   " /></template></template
             ><template v-if="g.hidden > 0"
@@ -102,11 +99,15 @@
                 :show-prefix="showModePrefix"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
-            <RenderSegments
+            <span
+              v-if="row.m?.relaySource && !row.continuationAuthor"
+              class="relay-via"
+              :title="'Relayed via ' + row.m.relayBot"
+              >[{{ relayLabel(row.m) }}]</span
+            ><RenderSegments
               :segments="textSegments(row.m)"
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
@@ -128,12 +129,16 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
           <span class="body" :class="bodyClass(row.m)">
-            <RenderSegments
+            <span
+              v-if="row.m?.relaySource && !row.continuationAuthor"
+              class="relay-via"
+              :title="'Relayed via ' + row.m.relayBot"
+              >[{{ relayLabel(row.m) }}]</span
+            ><RenderSegments
               v-if="hasInlineText(row.m)"
               :segments="textSegments(row.m)"
               :self-color="selfColor"
@@ -146,7 +151,6 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} joined</template
             >
             <template v-else-if="row.m?.type === 'part'"
@@ -154,7 +158,6 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} left<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
@@ -164,7 +167,6 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />{{ eventHostSuffix(row.m) }} quit<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
@@ -174,31 +176,38 @@
                 :nick="row.m.kicked ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.kicked)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.kicked)"
               />
               kicked by
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               /><template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
             >
+            <template v-else-if="row.m?.type === 'invite'"
+              ><NickRef
+                :nick="row.m.nick ?? ''"
+                interactive
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" />
+              invited
+              <NickRef
+                :nick="row.m.invited ?? ''"
+                interactive
+                @click.stop.prevent="onNickMenu($event, row.m?.invited)"
+            /></template>
             <template v-else-if="row.m?.type === 'nick'"
               ><NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
               />
               is now
               <NickRef
                 :nick="row.m.newNick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
               />{{ eventHostSuffix(row.m) }}</template
             >
             <template v-else-if="row.m?.type === 'mode'"
@@ -206,8 +215,7 @@
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
                 v-if="row.m.text"
                 >: <LinkedText :text="row.m.text" /></template
             ></template>
@@ -216,12 +224,17 @@
               <NickRef
                 :nick="row.m.nick ?? ''"
                 interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-                @contextmenu.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
                 v-if="row.m.text"
                 >: <LinkedText :text="row.m.text" /></template
             ></template>
-            <template v-else-if="row.m?.type === 'motd' || row.m?.type === 'system'"
+            <template
+              v-else-if="
+                row.m?.type === 'motd' ||
+                row.m?.type === 'system' ||
+                row.m?.type === 'e2e' ||
+                row.m?.type === 'ctcp'
+              "
               ><LinkedText :text="row.m.text ?? ''"
             /></template>
             <template v-else-if="row.m?.type === 'error'"
@@ -270,6 +283,7 @@ import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { socketSend } from '../composables/useSocket.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useViewport } from '../composables/useViewport.js';
@@ -291,6 +305,7 @@ import {
 import { consolidateRows } from '../utils/consolidate.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
 import { collapseDisplay } from '../utils/collapseDisplay.js';
+import { parseRelayMessage } from '../../../shared/parseRelay.js';
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
@@ -303,6 +318,8 @@ import type {
 } from '../composables/useMessageActions.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import type { MemberContext, MemberLike } from '../composables/useMemberActions.js';
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
+import { useWhoisStore } from '../stores/whois.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 
@@ -321,10 +338,23 @@ interface ChatMessage {
   matched?: unknown;
   newNick?: string;
   kicked?: string;
+  invited?: string;
   userhost?: string;
   // System-buffer lines (#355): the network this line is about, when any. The
   // prefix column resolves the network's current name from it.
   originNetworkId?: number | null;
+  // RPE2E (#382): this line rode the wire encrypted. Carried through from the
+  // server (extra JSON) for a future indicator — not rendered right now.
+  e2e?: boolean;
+  // Severity for `type: 'e2e'` status lines — drives the tag color.
+  level?: 'info' | 'warn';
+  // Relay-bot re-attribution (#277). When set, this row was authored by a nick
+  // the user marked as a relay bot: `nick`/`text` have been swapped to the
+  // embedded speaker, `relayBot` holds the bot's real nick (the actual IRC
+  // entity), and `relaySource` is the `[source]` tag when the envelope had one.
+  // These exist only on the per-render display clone, never on the stored row.
+  relayBot?: string;
+  relaySource?: string | null;
   [key: string]: unknown;
 }
 
@@ -378,6 +408,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const ignores = useIgnoresStore();
 const highlights = useHighlightRulesStore();
+const relayBots = useRelayBotsStore();
 const nicks = useNickColors();
 const { isMobile } = useViewport();
 
@@ -607,6 +638,8 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
 // Nickname, whois, DM, note, friend, ignore, and op-gated kick/ban/op/voice.
 // The menu and ignore modal are owned here, mirroring MemberList's pattern.
 const memberActions = useMemberActions();
+const contextMenu = useContextMenu();
+const whois = useWhoisStore();
 
 const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_prefix'));
 
@@ -669,12 +702,64 @@ function nickMenuContext(): MemberContext {
 // Omit it for nicks where the message's userhost belongs to someone else (e.g.
 // the kicked user in a kick line).
 function onNickMenu(e: MouseEvent, nick: string | undefined, m?: ChatMessage): void {
-  if (!nick || !buffer.value) return;
+  if (!buffer.value) return;
+  // Nicks open on left-click, so pass the clicked element as the trigger:
+  // re-clicking the same name toggles its menu closed, like the kebab menus.
+  const trigger = (e.currentTarget as Element | null) ?? null;
+  // Relay virtual speaker (#277): the displayed author is the embedded speaker,
+  // not a real IRC user, so the full member menu (DM, ignore, kick, ban) is
+  // meaningless. Give it a trimmed menu aimed at the relayed nick instead.
+  if (m?.relayBot && nick && buffer.value.networkId != null) {
+    openRelayNickMenu(nick, m.relayBot, buffer.value.networkId, e.clientX, e.clientY, trigger);
+    return;
+  }
+  if (!nick) return;
   // Prefer the live member (modes for op-gating, host for a clean ban mask);
   // fall back to the message's own userhost so a departed speaker stays
   // actionable.
   const member: MemberLike = nickMember(nick) ?? { nick, ...parseUserHost(m?.userhost) };
-  memberActions.openMenuFor(member, nickMenuContext(), e.clientX, e.clientY);
+  memberActions.openMenuFor(member, nickMenuContext(), e.clientX, e.clientY, trigger);
+}
+
+// Context menu for a relayed virtual speaker (#277). Only the actions that make
+// sense for a name with no IRC presence: address them in a reply (the bridge
+// carries it back the other way) and copy the name — both targeting the relayed
+// nick. View Profile, by contrast, opens the relay *bot's* profile: it's the
+// only real IRC entity here, so its whois actually resolves.
+function openRelayNickMenu(
+  nick: string,
+  bot: string,
+  networkId: number,
+  x: number,
+  y: number,
+  triggerEl: Element | null = null,
+): void {
+  const items: ContextMenuItem[] = [
+    { label: `Reply to ${nick}`, icon: 'fa-solid fa-reply', onClick: () => addressNick(nick) },
+    {
+      label: 'Copy Nickname',
+      icon: 'fa-regular fa-copy',
+      onClick: () => {
+        navigator.clipboard?.writeText(nick).catch(() => {});
+      },
+    },
+    { divider: true },
+    {
+      label: 'View Profile…',
+      icon: 'fa-solid fa-id-card',
+      onClick: () => whois.openViewer(networkId, bot),
+    },
+  ];
+  contextMenu.open(items, x, y, triggerEl);
+}
+
+// The "via" affordance shown next to a re-attributed relay line (#277): the
+// `[source]` platform tag. Only rendered when the envelope actually carried a
+// source (the template gates on relaySource), so a bare `<nick> message` relay
+// shows no tag and the re-attributed nick just reads as the speaker. The title
+// (set in the template) still names the bot, so provenance is one hover away.
+function relayLabel(m: ChatMessage | undefined): string {
+  return m?.relaySource || '';
 }
 
 // A coloured nick mention inside message text (emitted by RenderSegments). The
@@ -935,8 +1020,38 @@ const renderRows = computed((): RenderRow[] => {
       out.push({ divider: 'unread', key: 'unread-divider' });
       dividerInserted = true;
     }
+    // Relay-bot re-attribution (#277). If this line's author is a nick the user
+    // marked as a relay/bridge bot, parse its `[source] <nick> message` envelope
+    // and display the embedded speaker as the author instead. Display-only: we
+    // push a shallow clone so the stored row keeps the bot's nick/text (unmark
+    // restores the raw view instantly). Coloring, author-continuation collapse,
+    // and the body all key off the clone, so a relayed user gets their own
+    // colour and consecutive lines from the same person collapse naturally.
+    // Highlights/ignores ran above on the raw line — the bot's full text is a
+    // superset of the embedded text, so a ping inside it still fires. Restricted
+    // to plain messages: relays bridge speech as PRIVMSG, and action/notice
+    // re-attribution would tangle with their special body rendering.
+    let mDisplay = m;
+    if (
+      m.type === 'message' &&
+      m.nick &&
+      !m.self &&
+      networkId &&
+      relayBots.isRelay(networkId, m.nick)
+    ) {
+      const parsed = parseRelayMessage(m.text ?? '', relayBots.patternFor(networkId, m.nick));
+      if (parsed) {
+        mDisplay = {
+          ...m,
+          nick: parsed.nick,
+          text: parsed.text,
+          relayBot: m.nick,
+          relaySource: parsed.source,
+        };
+      }
+    }
     out.push({
-      m,
+      m: mDisplay,
       alt: STRIPED_TYPES.has(m.type) && !!m.alt,
       key,
       nohilight: rowNohilight,
@@ -1029,12 +1144,20 @@ function prefixText(m: ChatMessage | undefined): string {
     case 'mode':
     case 'topic':
     case 'motd':
+    case 'invite':
       return '--';
     case 'system':
       // System-buffer log lines (#355). Tied to a network → that network's
       // current name; other app-level lines (away/back, server lifecycle,
       // node, …) → "System".
       return systemNetworkName(m) ?? 'System';
+    case 'e2e':
+      // RPE2E status echoes get their own tag (not the generic "System") so the
+      // user can tell encryption lines apart at a glance (#382).
+      return 'E2E';
+    case 'ctcp':
+      // CTCP request/reply/echo status lines get their own tag (#263).
+      return 'CTCP';
     case 'error':
       return '!!';
     default:
@@ -1067,6 +1190,12 @@ function prefixClass(m: ChatMessage | undefined) {
     'action-marker': m?.type === 'action',
     italic: m?.type === 'action' && actionItalic.value,
     self: m?.self,
+    // A warn-level E2E line (TOFU warning, refused send) colors its tag like an
+    // error; info-level stays the calm E2E color.
+    'e2e-warn': m?.type === 'e2e' && m?.level === 'warn',
+    // A warn-level CTCP line (e.g. "/ctcp: this network isn't connected") reads
+    // as an error too; info-level stays muted (#263).
+    'ctcp-warn': m?.type === 'ctcp' && m?.level === 'warn',
     [`p-${m?.type}`]: true,
   };
 }
@@ -1302,8 +1431,19 @@ watch(
     // yet replaces that tail. Use the surviving tail to tell them apart, so a
     // capped buffer isn't misread as a re-snapshot (and force-scrolled to the
     // bottom) on every single message.
+    // ID-less (ephemeral) rows — /e2e and other server command echoes surfaced
+    // via publishEphemeral — carry `id === undefined`, so the id-presence test
+    // can't anchor on them. Fall back to structural signals around them:
+    //   • growth that isn't a prepend is an append — covers a new ephemeral tail
+    //     AND a real message arriving right after an ephemeral one (the latter
+    //     would otherwise match neither branch and fail to stick to bottom); and
+    //   • a same-length cap-evict whose OLD tail was id-less is still an append,
+    //     not a wholesale replace, so a reader scrolled up isn't yanked down.
+    const oldTailPresent = oldLastId != null && messages.value.some((m) => m.id === oldLastId);
     const appended =
-      lastChanged && oldLastId != null && messages.value.some((m) => m.id === oldLastId);
+      (lastChanged && oldTailPresent) ||
+      (grew && !firstChanged) ||
+      (lastChanged && oldLastId == null && newLen >= prevLen);
     // Pure prepend: anchor by element ID so re-flow from changing column
     // widths or differing message heights doesn't drift the math. With the
     // loading notice gone from the template, the OLD DOM and NEW DOM share
@@ -1386,7 +1526,9 @@ watch(
             type: tail.type,
             isDm: !tail.target.startsWith('#') && !tail.target.startsWith(':server:'),
           });
-        if (!tailIgnored) bumpNewBelow();
+        // Don't let an id-less ephemeral status echo (a /e2e line, the user's
+        // own command output) inflate the "N new ↓" unread count.
+        if (!tailIgnored && tail?.id != null) bumpNewBelow();
       }
     }
     ensureViewportFilled();
@@ -1769,14 +1911,28 @@ watch(
 .prefix.p-error {
   color: var(--bad);
 }
+/* RPE2E status tag (#382): the calm "E2E" lock-green for info, error-red when a
+   line is a warning (TOFU change, refused send). */
+.prefix.p-e2e {
+  color: var(--good);
+}
+.prefix.p-e2e.e2e-warn {
+  color: var(--bad);
+}
 .prefix.p-nick,
 .prefix.p-mode,
 .prefix.p-topic,
 .prefix.p-motd,
 .prefix.p-away,
 .prefix.p-back,
+/* CTCP request/reply/echo status (#263): informational, so muted like motd. */
+.prefix.p-ctcp,
 .prefix.p-cons {
   color: var(--fg-muted);
+}
+/* …except a warn-level CTCP line (failed send) colors its tag like an error. */
+.prefix.p-ctcp.ctcp-warn {
+  color: var(--bad);
 }
 /* "System" lines (#355) read as the full-strength foreground, not muted — the
    app speaking in its own voice. A network-tied system line overrides this with
@@ -1791,6 +1947,15 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
   padding-left: 1ch;
+}
+/* Relay-bot origin tag (#277): the bracketed [source] before the re-attributed
+   text — mirrors how the bot framed the line, so it reads as provenance rather
+   than part of the message. Muted, no glyph; font size stays uniform per house
+   style. */
+.relay-via {
+  color: var(--fg-muted);
+  margin-right: 1ch;
+  white-space: nowrap;
 }
 /* Vertical separator between the nick and body columns. Drawn from .body
    so it stretches the full height of the body cell — including wrapped

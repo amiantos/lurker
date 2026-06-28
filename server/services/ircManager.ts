@@ -28,6 +28,12 @@ import {
 } from '../db/nickNotes.js';
 import type { NoteResult } from '../db/nickNotes.js';
 import {
+  listForUserGrouped as listRelayBotsGrouped,
+  setRelayBot as setRelayBotRow,
+  removeRelayBot as removeRelayBotRow,
+} from '../db/relayBots.js';
+import type { RelayBotResult } from '../db/relayBots.js';
+import {
   createContact,
   updateContactMeta,
   setContactTargets,
@@ -38,7 +44,14 @@ import {
 } from '../db/contacts.js';
 import type { ContactRecord } from '../db/contacts.js';
 import { splitSay, splitAction, hasInteriorNewline } from './messageSplit.js';
+import { e2eManager } from './e2e/manager.js';
+import { contextKey, isChannelContext } from './e2e/context.js';
+import { e2eDbg } from './e2e/debug.js';
 import db from '../db/index.js';
+
+// RPE2E is wired for real IRC channels only in this phase (#382). DM
+// pseudochannels (`@ident@host`) need the peer's server-stamped handle resolved
+// at send time, which the outbound path doesn't have yet — they're a fast-follow.
 
 // User away state row shape from userAwayState.ts (that file isn't typed yet).
 interface AwayStateRow {
@@ -273,6 +286,53 @@ class IrcManager extends EventEmitter {
   send(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
+
+    // RPE2E: on an encryption-enabled channel, transmit ciphertext chunks on the
+    // wire but show the SENDER the readable plaintext locally (one bubble, lock
+    // flag). encryptOutgoing handles its own chunking, so this path bypasses the
+    // multiline/splitSay plumbing entirely. 'disabled' falls through to plaintext;
+    // 'error' must NOT fall through (that would leak cleartext on an E2E channel).
+    if (isChannelContext(target)) {
+      const outcome = e2eManager.encryptOutgoing(userId, networkId, contextKey(target, ''), text);
+      e2eDbg(
+        () =>
+          `outbound ${target}: ${outcome.kind}` +
+          (outcome.kind === 'encrypted' ? ` (${outcome.lines.length} line(s))` : ''),
+      );
+      // A lazy rotation (from /e2e revoke or /e2e rotate) regenerates the key
+      // inside encryptOutgoing and queues a REKEY for each remaining trusted
+      // peer; ship them now, while this channel's membership is current. Safe on
+      // every outcome kind — the queue is empty unless a rotation actually fired.
+      conn.flushE2eRekeys();
+      if (outcome.kind === 'error') {
+        conn.publishEphemeral({
+          type: 'e2e',
+          level: 'warn',
+          target,
+          text: `not sent — encryption failed: ${outcome.reason}`,
+        });
+        // Return false so the composer surfaces a send-failure toast and KEEPS
+        // the text (vs clearing it), instead of relying only on the easily-missed
+        // ephemeral line. This is leak-safe: the early return — not the boolean —
+        // is what prevents a cleartext fallthrough, and the client never retries
+        // a failed send as plaintext.
+        return false;
+      }
+      if (outcome.kind === 'encrypted') {
+        for (const line of outcome.lines) conn.say(target, line);
+        conn.publish({
+          type: 'message',
+          target,
+          nick: conn.client.user?.nick,
+          text,
+          kind: 'privmsg',
+          self: true,
+          e2e: true,
+        });
+        return true;
+      }
+      // kind === 'disabled' → fall through to the normal plaintext send below.
+    }
     // A multi-line compose rides draft/multiline batches where the server
     // supports the cap: it lands as one logical message per batch (the body is
     // partitioned to the server's limits, so a big paste is N messages, not N
@@ -304,9 +364,33 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
+  // On an E2E-enabled channel, /me actions and notices have no interoperable
+  // encrypted form: the RPE2E wire format carries only encrypted PRIVMSG bodies,
+  // and repartee likewise can't decrypt an encrypted ACTION/NOTICE. Rather than
+  // silently leak cleartext on a channel the user believes is encrypted, refuse
+  // the send and say so inline. Encrypted actions are a future protocol feature.
+  private refuseCleartextOnE2eChannel(
+    conn: IrcConnection,
+    userId: number,
+    networkId: number,
+    target: string,
+    kind: 'action' | 'notice',
+  ): boolean {
+    if (!isChannelContext(target)) return false;
+    if (!e2eManager.isChannelEnabled(userId, networkId, contextKey(target, ''))) return false;
+    conn.publishEphemeral({
+      type: 'e2e',
+      level: 'warn',
+      target,
+      text: `${kind === 'action' ? '/me actions' : 'notices'} aren't encrypted yet — not sent on this E2E channel`,
+    });
+    return true;
+  }
+
   action(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
+    if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'action')) return true;
     const chunks = splitAction(text);
     for (const chunk of chunks) {
       conn.action(target, chunk);
@@ -328,6 +412,7 @@ class IrcManager extends EventEmitter {
   notice(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
+    if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'notice')) return true;
     const chunks = splitSay(text);
     for (const chunk of chunks) {
       conn.notice(target, chunk);
@@ -352,10 +437,38 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
+  // RPE2E command surface (#382). Dispatches a `/e2e …` subcommand on a live
+  // connection (handshakes/config/trust); the connection publishes its own
+  // ephemeral status output to the issuing buffer. Returns false only when the
+  // network isn't connected, so the WS layer can tell the user.
+  e2eCommand(userId: number, networkId: number, target: string, argLine: string): boolean {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return false;
+    conn.runE2eCommand(target, argLine);
+    return true;
+  }
+
   probePresence(userId: number, networkId: number, nick: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
     conn.probePresence(nick);
+    return true;
+  }
+
+  // Send an outbound CTCP request (/ctcp, /ping). `issuingTarget` is the buffer
+  // the command came from so the reply routes back there. Returns false when the
+  // network isn't connected (no wire to send on).
+  ctcpRequest(
+    userId: number,
+    networkId: number,
+    issuingTarget: string,
+    target: string,
+    type: string,
+    args: string,
+  ): boolean {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return false;
+    conn.sendCtcpRequest(issuingTarget, target, type, args);
     return true;
   }
 
@@ -512,6 +625,7 @@ class IrcManager extends EventEmitter {
     const notifyByNetwork = listChannelNotifyForUser(userId);
     const ignoresByNetwork = ignoresGrouped(userId);
     const notesByNetwork = listNickNotesGrouped(userId);
+    const relayBotsByNetwork = listRelayBotsGrouped(userId);
     // Attach the per-network user-preference blobs to a base snapshot. Shared by
     // the live-connection and offline branches so both shapes stay identical.
     const withExtras = <T extends { networkId: number }>(snap: T) => {
@@ -523,6 +637,7 @@ class IrcManager extends EventEmitter {
         channelNotify: notifyByNetwork.get(networkId) || {},
         ignoredMasks: ignoresByNetwork.get(networkId) || [],
         nickNotes: notesByNetwork.get(networkId) || [],
+        relayBots: relayBotsByNetwork.get(networkId) || [],
       };
     };
     const live = this.listConnections(userId);
@@ -589,6 +704,22 @@ class IrcManager extends EventEmitter {
 
   getNickNote(userId: number, networkId: number, nick: string): NoteResult | null {
     return getNickNoteRow({ userId, networkId, nick });
+  }
+
+  // Mark/unmark a relay bot (#277). Returns the stored row when marked, or null
+  // after clearing the mark — the verb maps that to `marked`.
+  setRelayBot(
+    userId: number,
+    networkId: number,
+    nick: string,
+    marked: boolean,
+    pattern: string,
+  ): RelayBotResult | null {
+    if (!marked) {
+      removeRelayBotRow({ userId, networkId, nick });
+      return null;
+    }
+    return setRelayBotRow({ userId, networkId, nick, pattern });
   }
 
   listContacts(userId: number): ContactRecord[] {

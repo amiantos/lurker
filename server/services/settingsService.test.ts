@@ -12,6 +12,7 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 
 let settingsService: typeof SettingsServiceModule.default;
 let effectiveSetting: typeof SettingsServiceModule.effectiveSetting;
+let effectiveSettings: typeof SettingsServiceModule.effectiveSettings;
 let createUser: typeof import('../db/users.js').createUser;
 let user: ReturnType<typeof createUser>;
 
@@ -20,6 +21,7 @@ beforeAll(async () => {
   const mod = await import('./settingsService.js');
   settingsService = mod.default;
   effectiveSetting = mod.effectiveSetting;
+  effectiveSettings = mod.effectiveSettings;
   user = createUser('ss-alice');
 });
 
@@ -85,5 +87,22 @@ describe('effectiveSetting', () => {
   it('returns undefined for an unknown key', () => {
     const u = createUser('ss-effective-2');
     expect(effectiveSetting(u.id, 'no.such.key')).toBeUndefined();
+  });
+});
+
+describe('effectiveSettings (bulk)', () => {
+  it('resolves several keys at once: defaults when unset, overrides when set', () => {
+    const u = createUser('ss-bulk');
+    settingsService.update(u.id, { 'ctcp.version': '', 'ctcp.replies': false });
+    const s = effectiveSettings(u.id, [
+      'ctcp.replies', // overridden → false
+      'ctcp.version', // overridden → ''
+      'ctcp.time', // unset → registry default
+      'no.such.key', // unknown → undefined
+    ]);
+    expect(s['ctcp.replies']).toBe(false);
+    expect(s['ctcp.version']).toBe('');
+    expect(s['ctcp.time']).toBe('${time}');
+    expect(s['no.such.key']).toBeUndefined();
   });
 });

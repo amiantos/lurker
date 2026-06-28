@@ -4,9 +4,11 @@
 -->
 
 <!--
-  Standard modal shell for Lurker. Renders the tiled-word backdrop
-  (a quirk borrowed from Postalgic) and a centered card. Callers pass
-  a `word` for the backdrop and provide content via slots:
+  Standard modal shell for Lurker. Renders a centered card over a
+  configurable backdrop (look.modal.overlay, desktop only): the tiled-word
+  wallpaper (a quirk borrowed from Postalgic, the default), a dimmed scrim,
+  or nothing at all. Callers pass a `word` for the wallpaper and provide
+  content via slots:
     - default slot: body
     - `title` slot or `title` prop: header label
     - `subtitle` slot: smaller text under the title
@@ -18,12 +20,12 @@
 <template>
   <div
     class="modal"
+    :class="`overlay-${overlayStyle}`"
     tabindex="-1"
     ref="modalEl"
-    @click.self="onBackdropClick"
     @keydown.esc="$emit('close')"
   >
-    <WordBackdrop :word="backdropWord" />
+    <WordBackdrop v-if="overlayStyle === 'wordmark'" :word="backdropWord" />
 
     <div
       class="card"
@@ -60,13 +62,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import WordBackdrop from './WordBackdrop.vue';
+import { useSettingsStore } from '../stores/settings.js';
+import { useViewport } from '../composables/useViewport.js';
 
 const props = withDefaults(
   defineProps<{
     word?: string;
     title?: string;
     size?: string;
-    closeOnBackdrop?: boolean;
     closeTitle?: string;
     // Pin the card to full height on desktop (mobile is already a full sheet),
     // so content changes — e.g. a filtering list — don't resize the modal.
@@ -76,24 +79,38 @@ const props = withDefaults(
     word: '',
     title: '',
     size: 'lg',
-    closeOnBackdrop: true,
     closeTitle: 'close',
     fillHeight: false,
   },
 );
 
-const emit = defineEmits<{ close: [] }>();
+defineEmits<{ close: [] }>();
 
 const modalEl = ref<HTMLElement | null>(null);
 const cardEl = ref<HTMLElement | null>(null);
 
+const settings = useSettingsStore();
+const { isMobile } = useViewport();
+
+// Known backdrop styles, coupled to the .overlay-* CSS rules below and to
+// look.modal.overlay's choices. Writes are validated against the registry, but
+// a stale value (a future-removed choice, a manual DB edit) would otherwise
+// render an overlay-* class with no matching CSS — so clamp reads to this set.
+const OVERLAY_STYLES = ['wordmark', 'dimmed', 'clear'] as const;
+type OverlayStyle = (typeof OVERLAY_STYLES)[number];
+
+// Backdrop style (look.modal.overlay): wordmark | dimmed | clear. Desktop-only —
+// on mobile every modal is a full-frame opaque sheet, so we always render the
+// wordmark wallpaper there regardless of the stored setting.
+const overlayStyle = computed<OverlayStyle>(() => {
+  if (isMobile.value) return 'wordmark';
+  const raw = String(settings.effective('look.modal.overlay') || '');
+  return (OVERLAY_STYLES as readonly string[]).includes(raw) ? (raw as OverlayStyle) : 'wordmark';
+});
+
 // Fall back to the title when the caller didn't supply an explicit word,
 // so the wallpaper always says *something* even for one-off modals.
 const backdropWord = computed(() => (props.word || props.title || '').trim());
-
-function onBackdropClick() {
-  if (props.closeOnBackdrop) emit('close');
-}
 
 onMounted(() => {
   // Focus the modal root so esc keydown gets caught even when the body
@@ -111,7 +128,6 @@ onMounted(() => {
   position: fixed;
   inset: 0;
   height: 100dvh;
-  background: var(--bg);
   display: flex;
   justify-content: center;
   /* Every modal centers vertically — one positioning rule, no center/top split.
@@ -123,6 +139,23 @@ onMounted(() => {
   z-index: var(--z-modal);
   overflow: hidden;
   outline: none;
+}
+
+/* Backdrop variants (look.modal.overlay). Desktop-only — the script forces
+   `wordmark` on mobile, so on phone-sized viewports the modal is always the
+   opaque full-frame sheet below. */
+.modal.overlay-wordmark {
+  /* Opaque page-colored wallpaper behind the tiled WordBackdrop. */
+  background: var(--bg);
+}
+.modal.overlay-dimmed {
+  /* Translucent scrim over the live app — same backdrop as the quick switcher,
+     so the chat stays visible (just darkened) behind the card. */
+  background: var(--scrim);
+}
+.modal.overlay-clear {
+  /* App fully visible behind; the card stands on its border + shadow alone. */
+  background: transparent;
 }
 
 .card {

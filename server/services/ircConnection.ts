@@ -20,14 +20,32 @@ import highlightRulesService from './highlightRulesService.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import { decideStamp } from './insertDecisions.js';
 import * as systemLog from './systemLog.js';
-import { effectiveSetting } from './settingsService.js';
-import { IRC_VERSION, APP_VERSION } from '../utils/userAgent.js';
+import { effectiveSetting, effectiveSettings } from './settingsService.js';
+import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
 import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../utils/ident.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled } from './identd.js';
 import { MESSAGE_MAX_BYTES, partitionMultiline, reassembleMultiline } from './messageSplit.js';
 import type { MultilineLimits } from './messageSplit.js';
+import { e2eManager } from './e2e/manager.js';
+import type { UserNotice } from './e2e/manager.js';
+import { contextKey, isChannelContext } from './e2e/context.js';
+import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
+import { e2eDbg } from './e2e/debug.js';
+import { RateLimiter } from './e2e/rateLimiter.js';
+import {
+  buildCtcpReply,
+  CTCP_SOURCE,
+  enabledCtcpTypes,
+  formatCtcpReplyLine,
+  formatCtcpRequestLine,
+  formatCtcpTime,
+  parseCtcp,
+  type CtcpReplyConfig,
+} from './ctcp.js';
+import { getChannelConfig as getE2eChannelConfig } from '../db/e2e.js';
+import type { ChannelMode } from '../db/e2e.js';
 import { randomBytes } from 'node:crypto';
 
 // Optional source address for outbound IRC connections (LURKER_OUTGOING_ADDR),
@@ -57,7 +75,19 @@ const NON_PERSISTED_TYPES = new Set([
   'channel-modes',
   'lag',
   'peer-presence',
+  // RPE2E status lines are transient echoes (like /help output), surfaced via
+  // publishEphemeral — never write them to history (#382).
+  'e2e',
+  // CTCP request/reply notices are transient status, surfaced via
+  // publishEphemeral — never persisted (#263).
+  'ctcp',
 ]);
+
+// Forget an outbound CTCP request we never got a reply to after a minute, so the
+// routing map can't grow unbounded.
+const CTCP_OUTSTANDING_TTL_MS = 60_000;
+// Cap distinct outstanding (nick,type) keys; evict the oldest when exceeded.
+const CTCP_OUTSTANDING_MAX_KEYS = 200;
 
 // How recently the user must have sent a real message to a target for a send
 // rejection (404/477/531) to be attributed to that message and surfaced inline.
@@ -127,15 +157,53 @@ function isDmTargetName(target: string | undefined | null): boolean {
 }
 
 function extractExtras(event: IrcEvent): Record<string, unknown> | null {
+  let extras: Record<string, unknown> | null = null;
   switch (event.type) {
     case 'kick':
-      return { kicked: event.kicked };
+      extras = { kicked: event.kicked };
+      break;
+    case 'invite':
+      // The invited nick — `nick` (the standard actor column) holds the
+      // inviter. Persisted so the "X invited Y" channel line round-trips (#261).
+      extras = { invited: event.invited };
+      break;
     case 'nick':
-      return { newNick: event.newNick };
+      extras = { newNick: event.newNick };
+      break;
     case 'mode':
-      return { modes: event.modes };
+      extras = { modes: event.modes };
+      break;
+  }
+  // RPE2E: persist the lock flag for message/action/notice so the indicator
+  // survives a reload and reaches late-attaching clients (round-trips through the
+  // `extra` JSON column → rowToEvent's Object.assign).
+  if (event.e2e) extras = { ...extras, e2e: true };
+  return extras;
+}
+
+// The peer's server-stamped `ident@host` — the stable identity RPE2E keys
+// sessions/peers by (never the nick, which a peer can change at will). Returns
+// null when the event lacks an ident/host (server messages), in which case the
+// peer can't be matched to a keyring session.
+function buildE2eHandle(event: Record<string, unknown>): string | null {
+  const ident = ((event.ident as string) || '').trim();
+  const host = ((event.hostname as string) || '').trim();
+  if (!ident || !host) return null;
+  return `${ident}@${host}`;
+}
+
+// Map a `/e2e on` mode token to a keyring ChannelMode. `auto` auto-accepts
+// inbound handshakes; `quiet` ignores unsolicited ones; the safe default is
+// `normal` (prompt the user to /e2e accept). Unknown tokens fall back to normal.
+function parseE2eMode(token: string | undefined): ChannelMode {
+  switch ((token || '').toLowerCase()) {
+    case 'auto':
+    case 'auto-accept':
+      return 'auto-accept';
+    case 'quiet':
+      return 'quiet';
     default:
-      return null;
+      return 'normal';
   }
 }
 
@@ -189,6 +257,9 @@ export class IrcConnection {
   // survives losing either role. Hydrated on 'registered' and kept live via
   // trackDmPeer/trackFriend + untrackDmPeer/untrackFriend.
   trackedPeers: Map<string, PeerWatch>;
+  // Last time we surfaced an undecryptable-E2E hint per (channel,peer,kind), to
+  // collapse a multi-chunk message's per-chunk hints into one (#382). epoch ms.
+  private readonly e2eHintAt = new Map<string, number>();
   useMonitor: boolean;
   monitorLimit: number;
   pendingMonitorSeed: boolean;
@@ -238,15 +309,29 @@ export class IrcConnection {
   // so far; flushed as one reassembled message on 'batch end draft/multiline'
   // and cleared on socket close so a never-closed batch can't leak. (#381)
   multilineBatches: Map<string, { event: Record<string, unknown>; text: string }>;
+  // Per-peer rate limiter for inbound CTCP (requests AND replies). Being
+  // per-peer, one flooding peer can't make the cell spew NOTICEs, spam the
+  // buffer, OR suppress CTCP from everyone else — it only exhausts its own
+  // bucket. Reuses the same limiter the E2E handshake path uses for the
+  // identical inbound-flood threat.
+  ctcpLimiter: RateLimiter;
+  // Outstanding outbound CTCP requests we sent, so a reply routes back to the
+  // buffer the /ctcp was issued from. Key = `${nick-lc} ${TYPE}` → a FIFO queue
+  // of issuing buffers, so two concurrent same-type queries to one nick route
+  // their replies back in order. Bounded + TTL-pruned on access.
+  ctcpOutstanding: Map<string, Array<{ issuingTarget: string; sentAt: number }>>;
 
   constructor({ network, onEvent }: { network: Network; onEvent: (event: EnrichedEvent) => void }) {
     this.network = network;
     this.onEvent = onEvent;
-    // `version` is the string irc-framework returns in response to CTCP
-    // VERSION queries — without this, peers see the library's default
-    // "node.js irc-framework". Identifying as Lurker lets server operators
-    // tell our traffic apart from generic library bots.
-    this.client = new IRC.Client({ version: IRC_VERSION });
+    // ALL CTCP handling lives in our 'ctcp request' handler (VERSION/PING/TIME/
+    // SOURCE/CLIENTINFO, rate-limited + surfaced), so irc-framework's built-in
+    // VERSION auto-reply is disabled with `version: false`. That MUST go in the
+    // connect() dict, NOT here: connect() overwrites client.options with its dict
+    // (client.js:202), so a constructor `version` doesn't survive — exactly the
+    // pitfall the enable_chghost note on the connect() call documents. Mirrors
+    // The Lounge, which uses the same library the same way. See services/ctcp.ts.
+    this.client = new IRC.Client();
     this.client.requestCap('message-tags');
     // extended-monitor (IRCv3): asks the server to relay away-notify (and the
     // other notify caps irc-framework already negotiates) for nicks on our
@@ -312,6 +397,8 @@ export class IrcConnection {
     this.lastUserSendAt = new Map();
     this.autoWhoTargets = new Set();
     this.multilineBatches = new Map();
+    this.ctcpLimiter = new RateLimiter();
+    this.ctcpOutstanding = new Map();
     this.bind();
   }
 
@@ -679,6 +766,11 @@ export class IrcConnection {
       this.userModes.clear();
       this.autoWhoTargets.clear();
       this.multilineBatches.clear();
+      // CTCP routing/limit state is per-socket: a stale outstanding entry would
+      // mis-route a same-type reply on the new socket, and a drained limiter
+      // would drop the new socket's first probes. Reset both (#263).
+      this.ctcpOutstanding.clear();
+      this.ctcpLimiter = new RateLimiter();
       this.stopLagPinger();
       this.cancelPendingConnectCommands();
       this.lagMs = null;
@@ -1035,14 +1127,79 @@ export class IrcConnection {
         eventType === 'action' ? 'action' : eventType === 'notice' ? 'notice' : 'message';
       const nick = eventNick || eventHostname || 'server';
 
+      // RPE2E: a `+RPE2E01` chunk on an encryption channel is decrypted to its
+      // plaintext (rendered with the flag) before persistence. A
+      // missing-key/rejected/replay outcome means we can't read it — never
+      // persist the raw ciphertext as a message; surface a transient hint
+      // instead, then fall through to presence tracking only.
+      let bodyText = eventMessage;
+      let e2eFlag = false;
+      // Only attempt decryption on a `+RPE2E01` line for a channel we've actually
+      // enabled E2E on. Without the `isChannelEnabled` gate, ANY peer (or griefer)
+      // sending `+RPE2E01 …` on any channel would make us drop the message and
+      // render a "could not decrypt" hint — and legit cleartext that happens to
+      // start with the magic prefix would be lost (#1). Off-channel + non-enabled
+      // lines fall through and publish as ordinary cleartext.
+      if (
+        typeof eventMessage === 'string' &&
+        eventMessage.startsWith(WIRE_PREFIX) &&
+        isChannelContext(eventTarget ?? '') &&
+        e2eManager.isChannelEnabled(
+          this.network.user_id,
+          this.network.id,
+          contextKey(eventTarget as string, ''),
+        )
+      ) {
+        const handle = buildE2eHandle(event);
+        const outcome = handle
+          ? e2eManager.decryptIncoming(
+              this.network.user_id,
+              this.network.id,
+              handle,
+              contextKey(eventTarget as string, handle),
+              eventMessage,
+            )
+          : ({ kind: 'missing-key' } as const);
+        e2eDbg(
+          () => `inbound +RPE2E01 on ${eventTarget} from ${eventNick} (${handle}): ${outcome.kind}`,
+        );
+        if (outcome.kind === 'plaintext') {
+          bodyText = outcome.text;
+          e2eFlag = true;
+        } else {
+          // A peer is talking to us encrypted on a channel we've enabled but have
+          // no session for yet — auto-initiate the handshake (rate-limited),
+          // matching repartee, so an encrypted channel "just works" once both
+          // sides turn it on, with no manual /e2e handshake. The KEYREQ goes back
+          // to the sender's nick as a CTCP NOTICE.
+          let handshaking = false;
+          if (outcome.kind === 'missing-key' && handle && eventNick) {
+            const body = e2eManager.autoHandshakeBody(
+              this.network.user_id,
+              this.network.id,
+              contextKey(eventTarget as string, handle),
+              handle,
+            );
+            if (body) {
+              this.sendHandshakeReply(eventNick, body);
+              handshaking = true;
+            }
+          }
+          this.surfaceE2eDecryptIssue(eventTarget as string, eventNick, outcome.kind, handshaking);
+          if (eventNick) this.markPeerEvent(eventNick, 'online');
+          return;
+        }
+      }
+
       this.publish({
         type,
         target,
         nick,
-        text: eventMessage,
+        text: bodyText,
         kind: eventType,
         self: false,
         userhost: buildUserhost(event),
+        ...(e2eFlag ? { e2e: true } : {}),
       });
       // An incoming PRIVMSG (not NOTICE) is the moment this nick becomes a
       // tracked DM peer — add them via trackDmPeer so MONITOR + fires too.
@@ -1061,6 +1218,67 @@ export class IrcConnection {
       // close event — so accumulateMultiline already holds every fragment. (#381)
       const id = info?.id as string | undefined;
       if (id) this.flushMultiline(id);
+    });
+
+    // RPE2E handshake transport (#382). irc-framework routes a NOTICE whose body
+    // is CTCP-framed (`\x01…\x01`) to 'ctcp response' with the inner body in
+    // `.message` (framing stripped) and the first word in `.type`. We claim only
+    // RPEE2E and hand the body to the manager, which returns the bodies to NOTICE
+    // straight back to the sender's nick (re-framed) plus an optional user notice.
+    c.on('ctcp response', (event: Record<string, unknown>) => {
+      e2eDbg(
+        () =>
+          `ctcp-response from ${event.nick}!${event.ident}@${event.hostname} type=${event.type} body=${String(event.message).slice(0, 140)}`,
+      );
+      // Response `event.type` is raw-case (the library uppercases request types
+      // but not response types), so compare case-insensitively — otherwise a
+      // lowercase `rpee2e` NOTICE would slip past and surface as a bogus CTCP
+      // reply line instead of routing to the E2E path.
+      if (String(event.type).toUpperCase() !== CTCP_TAG) {
+        // A standard CTCP reply (VERSION/PING/TIME/…) — someone answered a query
+        // we sent. Surface it; RPE2E claims only the RPEE2E tag.
+        this.handleInboundCtcpReply(event);
+        return;
+      }
+      const senderNick = (event.nick as string) || null;
+      const senderHandle = buildE2eHandle(event);
+      const body = event.message as string | undefined;
+      // A stable ident@host is the keyring identity, and we reply to the nick;
+      // without either we can't complete a handshake, so drop quietly.
+      if (!senderHandle || !senderNick || typeof body !== 'string') {
+        e2eDbg(() => `  dropped pre-dispatch: handle=${senderHandle} nick=${senderNick}`);
+        return;
+      }
+      const outcome = e2eManager.handleHandshakeBody(
+        this.network.user_id,
+        this.network.id,
+        senderHandle,
+        senderNick,
+        body,
+      );
+      e2eDbg(() =>
+        outcome
+          ? `  outcome: replies=${outcome.replies.length} notice=${outcome.notice?.text ?? '-'} channel=${outcome.channel ?? '-'}`
+          : `  outcome: null (parseHandshake returned not-RPEE2E)`,
+      );
+      if (!outcome) return; // not an RPEE2E message after all
+      for (const reply of outcome.replies) this.sendHandshakeReply(senderNick, reply);
+      if (outcome.notice) this.surfaceE2eNotice(outcome.notice, outcome.channel);
+    });
+
+    // Inbound CTCP request (a peer probed us over PRIVMSG, e.g. VERSION/PING).
+    // ACTION never reaches here — irc-framework emits it as an 'action' message.
+    c.on('ctcp request', (event: Record<string, unknown>) => {
+      if (event.type === CTCP_TAG) {
+        // RPE2E rides NOTICE; an RPEE2E PRIVMSG is a misconfigured peer, not a
+        // real CTCP query. Log it for interop debugging and don't auto-answer.
+        e2eDbg(
+          () =>
+            `ctcp-REQUEST (PRIVMSG, not NOTICE!) from ${event.nick}!${event.ident}@${event.hostname} body=${String(event.message).slice(0, 140)}`,
+        );
+        return;
+      }
+      this.handleInboundCtcpRequest(event);
     });
 
     c.on('join', (event: Record<string, unknown>) => {
@@ -1163,6 +1381,58 @@ export class IrcConnection {
         }
         this.publish({ type: 'channel-parted', target: channel });
       }
+    });
+
+    c.on('invite', (event: Record<string, unknown>) => {
+      // irc-framework parses an inbound INVITE as { nick: inviter, invited:
+      // target nick, channel }. Three cases land here (#261):
+      const inviter = event.nick as string | undefined;
+      const invited = event.invited as string | undefined;
+      const rawChannel = event.channel as string | undefined;
+      if (!inviter || !rawChannel || !invited) return;
+      const me = c.user?.nick;
+      const meLower = me?.toLowerCase();
+      const channel = canonicalChannelTarget(rawChannel, this.channels) ?? rawChannel;
+
+      // (1) Someone invited US → actionable toast + durable system line. Routed
+      // through the server pseudo-buffer, not the channel: we're not in the
+      // channel (that's the point of an invite), and if we'd previously closed
+      // its buffer the wsHub closed-buffer guard would drop an ephemeral
+      // targeted at it. The client toast reads `channel`/`from`, never `target`.
+      if (meLower && invited.toLowerCase() === meLower) {
+        this.publishEphemeral({
+          type: 'invite',
+          target: this.serverTarget(),
+          channel,
+          from: inviter,
+          userhost: buildUserhost(event),
+        });
+        this.logNet(`${inviter} invited you to ${channel}`);
+        return;
+      }
+
+      // (2) Our OWN invite, echoed back to us via the invite-notify cap. The
+      // RPL_INVITING (341) 'invited' handler already renders the channel line,
+      // so drop the echo to avoid a duplicate.
+      if (meLower && inviter.toLowerCase() === meLower) return;
+
+      // (3) invite-notify op-visibility: a third party invited someone to a
+      // channel we're in → persisted channel line "inviter invited invited".
+      this.publish({ type: 'invite', target: channel, nick: inviter, invited });
+    });
+
+    c.on('invited', (event: Record<string, unknown>) => {
+      // RPL_INVITING (341): the server confirms OUR /invite was relayed.
+      // irc-framework gives { nick: the invited nick, channel }. Render the same
+      // persisted channel line as the op-visibility path, attributed to us — so
+      // the confirmation shows up in the channel rather than the server buffer,
+      // and the invite-notify self-echo above is deduped against it (#261).
+      const invited = event.nick as string | undefined;
+      const rawChannel = event.channel as string | undefined;
+      const me = c.user?.nick;
+      if (!invited || !rawChannel || !me) return;
+      const channel = canonicalChannelTarget(rawChannel, this.channels) ?? rawChannel;
+      this.publish({ type: 'invite', target: channel, nick: me, invited });
     });
 
     c.on('quit', (event: Record<string, unknown>) => {
@@ -2093,6 +2363,12 @@ export class IrcConnection {
       account,
       auto_reconnect: true,
       auto_reconnect_max_retries: 0,
+      // Disable irc-framework's built-in CTCP VERSION auto-reply so our own
+      // handler owns VERSION (#263). Like enable_chghost below, this MUST ride
+      // the connect() dict — connect() overwrites client.options, so a
+      // constructor value is lost and `version` falls back to the truthy default
+      // 'node.js irc-framework'. See client.js:202 + _applyDefaultOptions.
+      version: false,
       // Request the `chghost` cap so SASL-cloaked vhost changes (Libera et al.)
       // arrive as CHGHOST events instead of silently. Must go through connect()
       // — irc-framework overwrites client.options with this dict, so passing
@@ -2127,6 +2403,674 @@ export class IrcConnection {
     // service or bot doesn't spin up presence tracking for it.
     this.noteUserSend(target);
     this.client.notice(target, text);
+  }
+
+  // --- CTCP (#263) -----------------------------------------------------------
+
+  // Map key for an outstanding outbound CTCP request, so its reply routes back
+  // to the buffer it was issued from.
+  private ctcpKey(nick: string, type: string): string {
+    return `${nick.toLowerCase()} ${type.toUpperCase()}`;
+  }
+
+  private isSelfNick(nick: string | undefined): boolean {
+    return !!nick && !!this.currentNick && nick.toLowerCase() === this.currentNick.toLowerCase();
+  }
+
+  // A stable per-peer key for rate limiting inbound CTCP: the sender's
+  // ident@host when known, else the nick (lowercased). Mirrors how the E2E path
+  // keys peers, so a nick-churning flooder still maps to bounded state.
+  private ctcpPeerKey(event: Record<string, unknown>): string {
+    const ident = (event.ident as string) || '';
+    const host = (event.hostname as string) || '';
+    const nick = (event.nick as string) || '';
+    return (ident && host ? `${ident}@${host}` : nick).toLowerCase();
+  }
+
+  // The user's CTCP auto-reply preferences (settings registry, per-user). Read
+  // fresh per inbound request — they're rare + rate-limited, so a /set takes
+  // effect immediately with no cache to invalidate. A missing key resolves to
+  // the registry default (all on), so out of the box behavior is unchanged.
+  private ctcpReplyConfig(): CtcpReplyConfig {
+    // One settings read for the whole cluster (not one per key) — this runs on
+    // every inbound probe.
+    const s = effectiveSettings(this.network.user_id, [
+      'ctcp.replies',
+      'ctcp.version',
+      'ctcp.time',
+      'ctcp.source',
+      'ctcp.clientinfo',
+    ]);
+    const tmpl = (key: string): string => (typeof s[key] === 'string' ? (s[key] as string) : '');
+    return {
+      enabled: s['ctcp.replies'] !== false,
+      version: tmpl('ctcp.version'),
+      time: tmpl('ctcp.time'),
+      source: tmpl('ctcp.source'),
+      clientinfo: tmpl('ctcp.clientinfo'),
+    };
+  }
+
+  // Live values for the `${...}` placeholders a CTCP reply template can use.
+  private ctcpTemplateVars(config: CtcpReplyConfig): Record<string, string> {
+    return {
+      name: APP_NAME,
+      version: APP_VERSION,
+      source: CTCP_SOURCE,
+      clientinfo: enabledCtcpTypes(config).join(' '),
+      time: formatCtcpTime(new Date()),
+      nick: this.currentNick,
+    };
+  }
+
+  private pruneCtcpOutstanding(now: number): void {
+    for (const [k, queue] of this.ctcpOutstanding) {
+      const live = queue.filter((e) => now - e.sentAt <= CTCP_OUTSTANDING_TTL_MS);
+      if (live.length === 0) this.ctcpOutstanding.delete(k);
+      else if (live.length !== queue.length) this.ctcpOutstanding.set(k, live);
+    }
+    // Backstop: evict the OLDEST keys (Map preserves insertion order) rather than
+    // flushing everything, so a burst past the cap doesn't lose ALL routing.
+    while (this.ctcpOutstanding.size > CTCP_OUTSTANDING_MAX_KEYS) {
+      const oldest = this.ctcpOutstanding.keys().next().value;
+      if (oldest === undefined) break;
+      this.ctcpOutstanding.delete(oldest);
+    }
+  }
+
+  // A CTCP status line (request probe, reply, or outbound echo). Transient
+  // status like /help output — never persisted (NON_PERSISTED_TYPES).
+  surfaceCtcp(target: string, text: string): void {
+    this.publishEphemeral({ type: 'ctcp', level: 'info', target, text });
+  }
+
+  // Route an INCOMING CTCP status line (a probe, or an unsolicited reply) per
+  // the user's ctcp.msgbuffer setting — WeeChat's irc.msgbuffer.ctcp:
+  //   server  → this network's server buffer (default)
+  //   system  → the durable app-wide system buffer (persists, like other logs)
+  //   private → the DM with the sender, or the channel for a channel CTCP
+  // (A reply to a /ctcp the USER sent is routed to its issuing buffer by the
+  // caller, not here — this governs unsolicited CTCP only.)
+  private routeCtcpStatus(event: Record<string, unknown>, text: string): void {
+    const mode = effectiveSetting(this.network.user_id, 'ctcp.msgbuffer');
+    if (mode === 'system') {
+      this.logNet(text);
+      return;
+    }
+    if (mode === 'private') {
+      const evTarget = (event.target as string) || '';
+      if (isChannelContext(evTarget)) {
+        this.surfaceCtcp(evTarget, text);
+        return;
+      }
+      const nick = (event.nick as string) || '';
+      this.surfaceCtcp(nick || this.serverTarget(), text);
+      return;
+    }
+    this.surfaceCtcp(this.serverTarget(), text); // 'server' (default)
+  }
+
+  // Auto-answer an inbound CTCP request (VERSION/PING/TIME/CLIENTINFO/SOURCE)
+  // and show the user they were probed. Self-echoes ignored; rate-limited
+  // per-peer so a flood from one nick can't spew NOTICEs, spam the buffer, or
+  // starve replies to other peers.
+  handleInboundCtcpRequest(event: Record<string, unknown>): void {
+    if (this.disposed) return;
+    const nick = event.nick as string | undefined;
+    // Our own outbound CTCP echoed back by an echo-message server — not a probe.
+    if (!nick || this.isSelfNick(nick)) return;
+    const { type, args } = parseCtcp(String(event.message ?? ''));
+    // Parse + validate BEFORE the rate-limit check so a malformed/empty CTCP
+    // can't burn a peer's budget and suppress its legitimate probes.
+    if (!type) return;
+    if (!this.ctcpLimiter.allowIncoming(this.ctcpPeerKey(event))) return;
+    const config = this.ctcpReplyConfig();
+    const reply = buildCtcpReply(type, args, config, this.ctcpTemplateVars(config));
+    if (reply !== null) this.client.ctcpResponse(nick, type, reply);
+    this.routeCtcpStatus(event, formatCtcpRequestLine(nick, type, reply));
+  }
+
+  // Surface an inbound CTCP reply (a peer answered a query we sent), routed back
+  // to the buffer the /ctcp was issued from. A SOLICITED reply (matches an
+  // outstanding request) always shows; an UNSOLICITED one is rate-limited
+  // per-peer so a NOTICE flood can't spam the buffer.
+  handleInboundCtcpReply(event: Record<string, unknown>): void {
+    if (this.disposed) return;
+    const nick = event.nick as string | undefined;
+    if (!nick || this.isSelfNick(nick)) return;
+    const { type, args } = parseCtcp(String(event.message ?? ''));
+    if (!type) return;
+    const now = Date.now();
+    this.pruneCtcpOutstanding(now);
+    const key = this.ctcpKey(nick, type);
+    const queue = this.ctcpOutstanding.get(key);
+    const pending = queue?.shift(); // FIFO: the oldest matching query
+    if (queue && queue.length === 0) this.ctcpOutstanding.delete(key);
+    const line = formatCtcpReplyLine(nick, type, args, now);
+    if (pending) {
+      // Solicited: route back to the buffer the /ctcp was issued from (server
+      // buffer if it has since been closed — a wsHub guard would otherwise drop
+      // an ephemeral event to a closed buffer). ctcp.msgbuffer governs only
+      // UNSOLICITED CTCP, never a reply the user explicitly asked for.
+      const target = isBufferClosed(this.network.user_id, this.network.id, pending.issuingTarget)
+        ? this.serverTarget()
+        : pending.issuingTarget;
+      this.surfaceCtcp(target, line);
+      return;
+    }
+    // Unsolicited reply: rate-limit per-peer, then route per ctcp.msgbuffer.
+    if (!this.ctcpLimiter.allowIncoming(this.ctcpPeerKey(event))) return;
+    this.routeCtcpStatus(event, line);
+  }
+
+  // Send an outbound CTCP request (/ctcp, /ping). `issuingTarget` is the buffer
+  // the command was typed in: the local echo lands there and the reply routes
+  // back to it. A bare PING gets an epoch-ms payload so the reply yields a
+  // round-trip latency.
+  sendCtcpRequest(issuingTarget: string, target: string, type: string, args: string): void {
+    if (this.disposed) return;
+    const issuing = issuingTarget || this.serverTarget();
+    const t = type.toUpperCase();
+    const now = Date.now();
+    let payload = args.trim();
+    if (t === 'PING' && !payload) payload = String(now);
+    this.noteUserSend(target);
+    if (payload) this.client.ctcpRequest(target, t, payload);
+    else this.client.ctcpRequest(target, t);
+    this.pruneCtcpOutstanding(now);
+    const key = this.ctcpKey(target, t);
+    const queue = this.ctcpOutstanding.get(key) ?? [];
+    queue.push({ issuingTarget: issuing, sentAt: now });
+    this.ctcpOutstanding.set(key, queue);
+    this.surfaceCtcp(issuing, `→ CTCP ${t} to ${target}`);
+  }
+
+  // --- RPE2E (#382) ----------------------------------------------------------
+
+  // A handshake reply (KEYRSP/reciprocal KEYREQ) goes back to the initiator as a
+  // CTCP-framed NOTICE. It's protocol noise, so unlike notice() it never echoes
+  // into a buffer or touches presence/idle tracking.
+  sendHandshakeReply(nick: string, body: string): void {
+    if (this.disposed) return;
+    e2eDbg(() => `→ NOTICE ${nick}: ${body.slice(0, 140)}`);
+    this.client.notice(nick, `\x01${body}\x01`);
+  }
+
+  // Surface a manager-emitted handshake notice (session established, TOFU
+  // warning, accept/enable prompt). Routed to the channel buffer it's about (so
+  // the prompt appears where the user is actually typing) when we're in that
+  // channel, else the server buffer. Ephemeral: status, not history.
+  surfaceE2eNotice(notice: UserNotice, channel?: string): void {
+    const inChannel = !!channel && this.channels.has(channel.toLowerCase());
+    this.publishEphemeral({
+      type: 'e2e',
+      level: notice.level,
+      target: inChannel ? (channel as string) : this.serverTarget(),
+      text: notice.text,
+    });
+  }
+
+  // An inbound `+RPE2E01` chunk we couldn't read. We never persist ciphertext as
+  // a message; instead drop a transient hint on the channel (silent for replays,
+  // which are just duplicates). A logical message over ~180 bytes arrives as N
+  // chunks, each its own undecryptable event — collapse the burst to ONE hint
+  // per (channel,peer,kind) within a short window so a long message can't spam N
+  // identical lines (#382, review #3).
+  surfaceE2eDecryptIssue(
+    channel: string,
+    nick: string | undefined,
+    kind: 'missing-key' | 'rejected' | 'replay' | 'cleartext',
+    handshaking = false,
+  ): void {
+    if (kind === 'replay' || kind === 'cleartext') return;
+    const who = nick || 'peer';
+    const key = `${channel.toLowerCase()}:${who.toLowerCase()}:${kind}`;
+    const now = Date.now();
+    if (now - (this.e2eHintAt.get(key) ?? 0) < 5000) return;
+    // Bound the map (a churn of distinct peers shouldn't grow it forever).
+    if (this.e2eHintAt.size > 500) this.e2eHintAt.clear();
+    this.e2eHintAt.set(key, now);
+    const text =
+      kind === 'missing-key'
+        ? handshaking
+          ? `establishing an encrypted session with ${who}…`
+          : `encrypted message from ${who} — no session key yet (try /e2e handshake ${who})`
+        : `could not decrypt a message from ${who}`;
+    this.publishEphemeral({
+      type: 'e2e',
+      level: kind === 'missing-key' ? 'info' : 'warn',
+      target: channel,
+      text,
+    });
+  }
+
+  // The peer's `ident@host` from current channel membership (the JOIN/NAMES
+  // record), or null if they aren't a visible member or their host isn't known.
+  // This is how a user-typed nick maps to the stable keyring identity for
+  // /e2e accept|verify|revoke|reverify.
+  resolvePeerHandle(channel: string, nick: string): string | null {
+    const ch = this.channels.get(channel.toLowerCase());
+    const m = ch?.members.get(nick.toLowerCase());
+    if (!m || !m.user || !m.host) return null;
+    return `${m.user}@${m.host}`;
+  }
+
+  // The reverse of resolvePeerHandle: a peer's keyring handle (ident@host) → their
+  // CURRENT nick on `channel`, via channel membership. Needed because a REKEY is
+  // addressed to a handle but a NOTICE is sent to a nick. Null if they aren't a
+  // visible member (e.g. they left between handshake and rotation).
+  nickForHandle(channel: string, handle: string): string | null {
+    const ch = this.channels.get(channel.toLowerCase());
+    if (!ch) return null;
+    const want = handle.toLowerCase();
+    for (const m of ch.members.values()) {
+      if (m.user && m.host && `${m.user}@${m.host}`.toLowerCase() === want) return m.nick;
+    }
+    return null;
+  }
+
+  // Ship any REKEY CTCPs a lazy rotation queued during the just-completed send
+  // (see E2eManager.getOrGenerateOutgoingKey). Each goes out as a framed NOTICE to
+  // the recipient's current nick on the rotated channel; a recipient who has left
+  // is dropped (they re-handshake on next ciphertext if they return).
+  flushE2eRekeys(): void {
+    if (this.disposed) return;
+    const sends = e2eManager.takePendingRekeySends(this.network.user_id, this.network.id);
+    for (const s of sends) {
+      const nick = this.nickForHandle(s.channel, s.targetHandle);
+      if (!nick) {
+        e2eDbg(() => `rekey drop: no nick for ${s.targetHandle} on ${s.channel}`);
+        continue;
+      }
+      this.sendHandshakeReply(nick, s.body);
+    }
+  }
+
+  // Dispatch a `/e2e …` subcommand. All output is ephemeral status routed to the
+  // issuing buffer; handshake/accept put real CTCP NOTICEs on the wire. Channels
+  // only this phase (#382) — DM contexts are rejected with a hint.
+  runE2eCommand(issuingTarget: string, argLine: string): void {
+    const uid = this.network.user_id;
+    const nid = this.network.id;
+    const info = (text: string, level: 'info' | 'warn' = 'info') =>
+      this.publishEphemeral({ type: 'e2e', level, target: issuingTarget, text });
+
+    const tokens = argLine
+      .trim()
+      .split(/\s+/)
+      .filter((t) => t.length > 0);
+    const sub = (tokens.shift() || 'help').toLowerCase();
+    // `#`-prefixed channels only — INCLUDING double-hash names like `##anime`
+    // (the `length > 1` guard rejects only a bare lone `#`, which would otherwise
+    // persist a junk config row; #382 review #6). This is intentionally narrower
+    // than isChannelContext's `# & ! +`: Lurker's message routing treats `&`/`!`/
+    // `+` targets as DMs (see `targetIsChannel` in the message handler), so they
+    // can never be E2E channels here — accepting them would only enable a config
+    // whose inbound ciphertext would mis-route to a DM buffer (review #1 on #407).
+    const channelToken = tokens.find((t) => t.startsWith('#') && t.length > 1);
+    const nonChannel = tokens.filter((t) => !t.startsWith('#'));
+    // The channel an op targets: an explicit #arg wins, else the issuing buffer
+    // if it's a channel. null when neither is a channel.
+    const channel = channelToken ?? (issuingTarget.startsWith('#') ? issuingTarget : null);
+    const needChannel = (): string | null => {
+      if (!channel) {
+        info('/e2e: run this from a channel, or name one (e.g. /e2e on #chan)', 'warn');
+        return null;
+      }
+      return channel;
+    };
+    const peer = nonChannel[0];
+    const needPeer = (): string | null => {
+      if (!peer) {
+        info(`/e2e ${sub}: needs a nick (e.g. /e2e ${sub} alice)`, 'warn');
+        return null;
+      }
+      return peer;
+    };
+    const resolveOrWarn = (chan: string, nickOrHandle: string): string | null => {
+      // A literal ident@host (from a TOFU warning or /e2e list) is the keyring
+      // identity itself — use it as-is so you can act on a peer who has LEFT the
+      // channel (and so nick→handle resolution isn't required). A bare nick is
+      // still resolved against current channel membership.
+      if (nickOrHandle.includes('@')) return nickOrHandle;
+      const handle = this.resolvePeerHandle(chan, nickOrHandle);
+      if (!handle) {
+        info(
+          `couldn't resolve ${nickOrHandle} on ${chan} — pass their ident@host instead (see /e2e list -all)`,
+          'warn',
+        );
+      }
+      return handle;
+    };
+    // The accept/verify/revoke/reverify subcommands all need the same triple:
+    // a channel, a peer nick, and that nick resolved to its keyring handle. One
+    // helper collapses the repeated needChannel→needPeer→resolveOrWarn ladder
+    // (#382, review #12) — each warns + returns null on the first missing piece.
+    const chanNickHandle = (): { chan: string; nick: string; handle: string } | null => {
+      const chan = needChannel();
+      if (!chan) return null;
+      const nick = needPeer();
+      if (!nick) return null;
+      const handle = resolveOrWarn(chan, nick);
+      if (!handle) return null;
+      return { chan, nick, handle };
+    };
+
+    switch (sub) {
+      case 'on':
+      case 'enable': {
+        const chan = needChannel();
+        if (!chan) return;
+        const modeToken = nonChannel[0];
+        // A present-but-unknown mode token is a typo (e.g. `quite`) — reject it
+        // instead of silently falling back to `normal` and reporting success
+        // (parity with the validated `/e2e mode`). Absent token → default normal.
+        if (
+          modeToken !== undefined &&
+          !['auto', 'auto-accept', 'normal', 'quiet'].includes(modeToken.toLowerCase())
+        ) {
+          info(`/e2e on: unknown mode '${modeToken}' — use auto | normal | quiet`, 'warn');
+          return;
+        }
+        const mode = parseE2eMode(modeToken);
+        if (e2eManager.setChannelConfig(uid, nid, chan, true, mode)) {
+          info(
+            `encryption enabled on ${chan} (mode: ${mode}). Start a session: /e2e handshake <nick>`,
+          );
+        } else {
+          info(`failed to enable encryption on ${chan}`, 'warn');
+        }
+        return;
+      }
+      case 'off':
+      case 'disable': {
+        const chan = needChannel();
+        if (!chan) return;
+        const existing = getE2eChannelConfig(uid, nid, chan);
+        const mode: ChannelMode = existing?.mode ?? 'normal';
+        if (e2eManager.setChannelConfig(uid, nid, chan, false, mode)) {
+          info(`encryption disabled on ${chan}`);
+        } else {
+          info(`failed to disable encryption on ${chan}`, 'warn');
+        }
+        return;
+      }
+      case 'handshake':
+      case 'hs': {
+        const chan = needChannel();
+        if (!chan) return;
+        const nick = needPeer();
+        if (!nick) return;
+        const peerHandle = this.resolvePeerHandle(chan, nick) ?? undefined;
+        const body = e2eManager.buildKeyReq(uid, nid, chan, peerHandle);
+        if (!body) {
+          info(`couldn't build a handshake (is your identity available?)`, 'warn');
+          return;
+        }
+        this.sendHandshakeReply(nick, body);
+        info(`handshake sent to ${nick} on ${chan} — waiting for their key…`);
+        return;
+      }
+      case 'accept': {
+        const r = chanNickHandle();
+        if (!r) return;
+        const outcome = e2eManager.acceptPending(uid, nid, r.handle, r.chan);
+        for (const reply of outcome.replies) this.sendHandshakeReply(r.nick, reply);
+        if (outcome.notice) info(outcome.notice.text, outcome.notice.level);
+        else info(`accepted ${r.nick} — encrypted session set up on ${r.chan}`);
+        return;
+      }
+      case 'fingerprint':
+      case 'fp': {
+        const id = e2eManager.getIdentity(uid);
+        if (!id) {
+          info('your encryption identity is unavailable', 'warn');
+          return;
+        }
+        info(`your fingerprint: ${id.fingerprintHex}`);
+        info(`   verify words: ${id.sas}`);
+        return;
+      }
+      case 'verify': {
+        const r = chanNickHandle();
+        if (!r) return;
+        const me = e2eManager.getIdentity(uid);
+        const v = e2eManager.verifyInfo(uid, nid, r.handle);
+        if (!v) {
+          info(`no known encryption key for ${r.nick}`, 'warn');
+          return;
+        }
+        // Side-by-side so the user can read both out-of-band and compare, with the
+        // MitM remediation spelled out (mirrors repartee's verify block).
+        info(`verify ${r.nick} — compare BOTH out-of-band (call/Signal), then trust:`);
+        if (me) info(`   you:  ${me.fingerprintHex.slice(0, 16)}…  ${me.sas}`);
+        info(`   ${r.nick}:  ${v.fingerprintHex.slice(0, 16)}…  ${v.sas}  (${v.status})`);
+        info(
+          `   if they DON'T match, a MitM may be in progress — /e2e forget -all ${r.nick}`,
+          'warn',
+        );
+        return;
+      }
+      case 'revoke': {
+        const r = chanNickHandle();
+        if (!r) return;
+        const ok = e2eManager.revokePeer(uid, nid, r.handle);
+        info(
+          ok
+            ? `revoked ${r.nick} — they can't read your future messages`
+            : `nothing to revoke for ${r.nick}`,
+        );
+        return;
+      }
+      case 'unrevoke': {
+        const r = chanNickHandle();
+        if (!r) return;
+        const ok = e2eManager.unrevokePeer(uid, nid, r.handle);
+        info(ok ? `unrevoked ${r.nick} — trust restored` : `${r.nick} isn't revoked`);
+        return;
+      }
+      case 'rotate': {
+        const chan = needChannel();
+        if (!chan) return;
+        const ok = e2eManager.rotateChannel(uid, nid, chan);
+        info(
+          ok
+            ? `rotating ${chan}'s key — your trusted peers get the fresh key on your next message`
+            : `nothing to rotate on ${chan} (no encrypted session yet)`,
+        );
+        return;
+      }
+      case 'decline': {
+        const r = chanNickHandle();
+        if (!r) return;
+        const ok = e2eManager.declinePeer(uid, nid, r.handle, r.chan);
+        info(ok ? `declined ${r.nick} on ${r.chan}` : `nothing pending from ${r.nick}`);
+        return;
+      }
+      case 'reverify': {
+        const r = chanNickHandle();
+        if (!r) return;
+        const outcome = e2eManager.reverifyPeer(uid, nid, r.handle);
+        if (outcome.kind === 'applied') {
+          info(
+            outcome.change === 'fingerprint-changed'
+              ? `reverified ${r.nick}: key changed ${outcome.oldFpHex.slice(0, 16)}… → ${outcome.newFpHex.slice(0, 16)}…, now trusted`
+              : `reverified ${r.nick}: re-pinned their key under the new handle, now trusted`,
+          );
+        } else if (outcome.kind === 'cleared') {
+          info(`forgot ${outcome.cleared} record(s) for ${r.nick} — re-handshake to re-pin`);
+        } else {
+          info(`nothing to reverify for ${r.nick}`);
+        }
+        return;
+      }
+      case 'forget': {
+        // Accepts a nick OR a literal ident@host, so you can clear a peer who has
+        // LEFT the channel (the case nick→handle resolution can't reach). `-all`
+        // forgets them everywhere (drops the identity pin); without it, just this
+        // channel's session. Mirrors repartee's /e2e forget [-all].
+        const all = nonChannel.some((t) => t.toLowerCase() === '-all');
+        const target = nonChannel.find((t) => t.toLowerCase() !== '-all');
+        if (!target) {
+          info(
+            '/e2e forget [-all] <nick|handle> — pass the ident@host for a peer who left; -all clears every channel',
+            'warn',
+          );
+          return;
+        }
+        const handle = resolveOrWarn(channel ?? '', target);
+        if (!handle) return;
+        if (all) {
+          const cleared = e2eManager.forgetPeer(uid, nid, handle);
+          info(
+            cleared > 0
+              ? `forgot ${handle} everywhere — cleared ${cleared} record(s); re-handshake to start fresh`
+              : `nothing remembered for ${handle}`,
+          );
+        } else {
+          const chan = needChannel();
+          if (!chan) return;
+          const had = e2eManager.forgetPeerOnChannel(uid, nid, handle, chan);
+          info(
+            had
+              ? `forgot ${handle} on ${chan} — re-handshake to start fresh`
+              : `nothing remembered for ${handle} on ${chan} (try -all for the identity pin)`,
+          );
+        }
+        return;
+      }
+      case 'mode': {
+        const chan = needChannel();
+        if (!chan) return;
+        const token = (nonChannel[0] || '').toLowerCase();
+        if (!['auto', 'auto-accept', 'normal', 'quiet'].includes(token)) {
+          info(`/e2e mode <auto|normal|quiet>`, 'warn');
+          return;
+        }
+        const mode = parseE2eMode(token);
+        if (e2eManager.setChannelMode(uid, nid, chan, mode)) {
+          info(`${chan} mode set to ${mode}`);
+        } else {
+          info(`failed to set mode on ${chan}`, 'warn');
+        }
+        return;
+      }
+      case 'list': {
+        if (nonChannel.some((t) => t.toLowerCase() === '-all')) {
+          const { peers, sessions } = e2eManager.listKeyring(uid, nid);
+          info(`E2E keyring — ${peers.length} peer(s), ${sessions.length} session(s)`);
+          if (!peers.length) info('   (no remembered peers)');
+          for (const p of peers) {
+            info(`   ${p.handle}  [${p.status}]  ${p.fingerprintHex.slice(0, 16)}…`);
+          }
+          for (const s of sessions) info(`   ${s.channel}  ${s.handle}  [${s.status}]`);
+          return;
+        }
+        const chan = needChannel();
+        if (!chan) return;
+        const peers = e2eManager.listChannelPeers(uid, nid, chan);
+        if (!peers.length) {
+          info(`${chan}: no trusted peers yet — /e2e accept <nick> after a handshake`);
+          return;
+        }
+        info(`${chan}: ${peers.length} trusted peer(s)`);
+        for (const p of peers) {
+          info(`   ${p.handle}  [${p.status}]  ${p.fingerprintHex.slice(0, 16)}…`);
+        }
+        return;
+      }
+      case 'autotrust': {
+        const op = (tokens[0] || '').toLowerCase();
+        if (op === 'list') {
+          const rules = e2eManager.listAutotrust(uid, nid);
+          if (!rules.length) {
+            info('no autotrust rules');
+            return;
+          }
+          info(`autotrust rules (${rules.length}):`);
+          for (const ru of rules) info(`   ${ru.scope}  ${ru.handlePattern}`);
+          return;
+        }
+        if (op === 'add') {
+          const scope = tokens[1];
+          const pattern = tokens[2];
+          if (!scope || !pattern) {
+            info('/e2e autotrust add <scope> <pattern>  (scope = global or #chan)', 'warn');
+            return;
+          }
+          // The matcher only honors scope='global' or scope=<#channel>
+          // (db/e2e.ts matchAutotrustStmt), so reject anything else up front
+          // rather than storing a rule that can never match (a dead rule the
+          // user is told was "added").
+          if (scope.toLowerCase() !== 'global' && !(scope.startsWith('#') && scope.length > 1)) {
+            info(
+              `/e2e autotrust add: scope must be 'global' or a #channel (got '${scope}')`,
+              'warn',
+            );
+            return;
+          }
+          info(
+            e2eManager.addAutotrust(uid, nid, scope, pattern)
+              ? `autotrust added: ${scope} ${pattern}`
+              : 'failed to add autotrust rule',
+            'info',
+          );
+          return;
+        }
+        if (op === 'remove') {
+          const pattern = tokens[1];
+          if (!pattern) {
+            info('/e2e autotrust remove <pattern>', 'warn');
+            return;
+          }
+          const removed = e2eManager.removeAutotrust(uid, nid, pattern);
+          info(
+            removed > 0
+              ? `removed ${removed} autotrust rule(s) matching ${pattern}`
+              : `no autotrust rule matching ${pattern}`,
+          );
+          return;
+        }
+        info('/e2e autotrust <list|add|remove>', 'warn');
+        return;
+      }
+      case 'status': {
+        const id = e2eManager.getIdentity(uid);
+        if (id) {
+          info(`your fingerprint: ${id.fingerprintHex}`);
+          info(`   verify words: ${id.sas}`);
+        } else {
+          info('encryption identity unavailable', 'warn');
+        }
+        if (channel) {
+          const st = e2eManager.channelStatus(uid, nid, channel);
+          info(
+            st?.enabled
+              ? `${channel}: encryption ON (mode: ${st.mode}, peers: ${st.peers})`
+              : `${channel}: encryption off`,
+          );
+        }
+        return;
+      }
+      case 'help':
+      case '?': {
+        for (const line of [
+          '/e2e commands:',
+          '   on [#chan] [auto|normal|quiet] · off [#chan] · mode <auto|normal|quiet>',
+          '   handshake <nick> · accept <nick> · decline <nick>',
+          '   revoke <nick> · unrevoke <nick> · reverify <nick> · rotate [#chan]',
+          '   forget [-all] <nick|handle> · verify <nick> · fingerprint',
+          '   status · list [-all]',
+          '   autotrust <list | add <scope> <pattern> | remove <pattern>>',
+          '   export (download keyring) · import (upload + replace keyring)',
+        ]) {
+          info(line);
+        }
+        return;
+      }
+      default:
+        info(`/e2e: unknown subcommand '${sub}' — try /e2e help`, 'warn');
+    }
   }
 
   // --- IRCv3 draft/multiline (#381) ------------------------------------------

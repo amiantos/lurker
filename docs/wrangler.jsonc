@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lurker-docs",
+  "compatibility_date": "2026-06-03",
+  "observability": {
+    "enabled": true,
+  },
+  // VitePress build output. `npm run build` writes here before deploy.
+  "assets": {
+    "directory": ".vitepress/dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+  },
+  "compatibility_flags": ["nodejs_compat"],
+}

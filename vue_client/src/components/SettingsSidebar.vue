@@ -50,30 +50,31 @@
           >{{ cat.label }}</RouterLink
         >
         <Transition name="sidebar-subnav">
-          <nav
+          <div
             v-if="
               cat.id === 'appearance' &&
               activeCategoryId === 'appearance' &&
               appearanceSubsections.length > 1
             "
-            class="sidebar-subnav"
-            aria-label="appearance subsections"
+            class="sidebar-subnav-wrap"
           >
-            <RouterLink
-              v-for="subsection in appearanceSubsections"
-              :key="subsection.id"
-              class="sidebar-sublink"
-              :class="{ active: subsection.id === activeAppearanceSubsectionId }"
-              :to="{
-                name: 'settings',
-                params: { category: 'appearance' },
-                hash: `#${subsection.id}`,
-              }"
-              @click="$emit('selectAppearanceSubsection', subsection.id)"
-            >
-              {{ subsection.label }}
-            </RouterLink>
-          </nav>
+            <nav class="sidebar-subnav" aria-label="appearance subsections">
+              <RouterLink
+                v-for="subsection in appearanceSubsections"
+                :key="subsection.id"
+                class="sidebar-sublink"
+                :class="{ active: subsection.id === activeAppearanceSubsectionId }"
+                :to="{
+                  name: 'settings',
+                  params: { category: 'appearance' },
+                  hash: `#${subsection.id}`,
+                }"
+                @click="$emit('selectAppearanceSubsection', subsection.id)"
+              >
+                {{ subsection.label }}
+              </RouterLink>
+            </nav>
+          </div>
         </Transition>
       </template>
     </template>
@@ -242,24 +243,38 @@ watch(searchEl, (el) => {
   border-left-color: var(--accent);
 }
 
-.sidebar-subnav {
-  display: flex;
+/* The wrapper is a single-row grid; we animate the row track between 1fr
+   (open) and 0fr (collapsed). A 1fr track resolves to the content's real
+   height at any font size, so there's no fixed ceiling to outgrow — the menu
+   grows to fit and pushes the items below it down instead of clipping. */
+.sidebar-subnav-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  /* Don't let the sidebar's column flex squeeze the menu; the sidebar scrolls
+     instead (overflow-y:auto) when there genuinely isn't room. */
   flex: 0 0 auto;
-  flex-direction: column;
-  margin-bottom: var(--space-2);
-  max-height: 240px;
-  overflow: hidden;
 }
 .sidebar-subnav-enter-active,
 .sidebar-subnav-leave-active {
   transition:
-    max-height 220ms ease-out,
+    grid-template-rows 220ms ease-out,
     opacity 220ms ease;
 }
 .sidebar-subnav-enter-from,
 .sidebar-subnav-leave-to {
-  max-height: 0;
+  grid-template-rows: 0fr;
   opacity: 0;
+}
+.sidebar-subnav {
+  display: flex;
+  flex-direction: column;
+  /* Bottom spacing lives inside the clipped box (padding, not margin) so it
+     collapses with the menu and doesn't leak out of the 0fr grid track. */
+  padding-bottom: var(--space-2);
+  /* min-height:0 lets the grid track shrink below the links' intrinsic size;
+     overflow:hidden clips them cleanly mid-slide. */
+  min-height: 0;
+  overflow: hidden;
 }
 .sidebar-sublink {
   color: var(--fg-muted);
@@ -371,7 +386,7 @@ watch(searchEl, (el) => {
   .sidebar-link {
     display: none;
   }
-  .sidebar-subnav {
+  .sidebar-subnav-wrap {
     display: none;
   }
 }

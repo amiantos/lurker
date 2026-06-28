@@ -102,23 +102,75 @@ export function unpinBuffer(userId: number, networkId: number, target: string): 
   return listPinnedForUserNetwork(userId, networkId);
 }
 
-// Rewrite the order for a (user, network). The caller must supply exactly the
-// set of currently-pinned targets (no adds, no drops); the function validates
-// and returns null on mismatch so the caller can surface a no-op. On success
-// returns the new ordered target list.
+// Unpin every buffer matching `target` case-insensitively. IRC targets are
+// case-insensitive but a pin row stores one canonical casing, so a caller that
+// only has the server's current casing (e.g. close-buffer, where the buffer may
+// have been re-cased by the server) can still find and remove the stranded pin.
+// The schema's PRIMARY KEY is on the raw target (no NOCASE), so two case
+// variants of the same channel can coexist as separate rows — remove ALL of
+// them in one transaction and renumber once, or closing one would leave the
+// other as an invisible orphan. Returns the new ordered list when at least one
+// row was removed, or null when nothing matched — callers use null to skip the
+// pins-changed broadcast. Matches the case-folding the snapshot already applies
+// to closed buffers (issue #405).
+export function unpinBufferCaseInsensitive(
+  userId: number,
+  networkId: number,
+  target: string,
+): string[] | null {
+  const lower = target.toLowerCase();
+  const matches = listPinnedForUserNetwork(userId, networkId).filter(
+    (t) => t.toLowerCase() === lower,
+  );
+  if (matches.length === 0) return null;
+  const tx = db.transaction(() => {
+    for (const m of matches) deleteStmt.run(userId, networkId, m);
+    const remaining = allForUserNetworkStmt.all(userId, networkId) as Array<{
+      target: string;
+      position: number;
+    }>;
+    let i = 0;
+    for (const row of remaining) {
+      if (row.position !== i) {
+        setPositionStmt.run(i, userId, networkId, row.target);
+      }
+      i += 1;
+    }
+  });
+  tx();
+  return listPinnedForUserNetwork(userId, networkId);
+}
+
+// Rewrite the order for a (user, network). Every supplied target must currently
+// be pinned (and appear at most once); an unknown or duplicated target means the
+// client is working from a stale set (e.g. a concurrent pin/unpin from another
+// tab), so we return null and let the caller echo the authoritative order.
+//
+// The supplied list may be a strict SUBSET of the pinned set. The client only
+// renders pins that resolve to a visible buffer — it drops any pin whose buffer
+// is closed/parted/case-mismatched, or that is a friend's primary DM (shown
+// under FRIENDS) — so a drag legitimately reorders only the rows the user can
+// see. We honor that order for the supplied targets and keep the unmentioned
+// ("hidden") pins after them in their existing relative order. Requiring an
+// exact set match instead made a single invisible orphan pin wedge every
+// reorder for that network (issue #405). On success returns the new full
+// ordered target list.
 export function reorderPins(userId: number, networkId: number, targets: string[]): string[] | null {
-  const current = new Set(listPinnedForUserNetwork(userId, networkId));
-  if (targets.length !== current.size) return null;
+  const currentOrdered = listPinnedForUserNetwork(userId, networkId);
+  const current = new Set(currentOrdered);
+  const seen = new Set<string>();
   for (const t of targets) {
-    if (!current.has(t)) return null;
+    if (!current.has(t) || seen.has(t)) return null;
+    seen.add(t);
   }
+  const next = [...targets, ...currentOrdered.filter((t) => !seen.has(t))];
   const tx = db.transaction(() => {
     let i = 0;
-    for (const t of targets) {
+    for (const t of next) {
       setPositionStmt.run(i, userId, networkId, t);
       i += 1;
     }
   });
   tx();
-  return [...targets];
+  return next;
 }

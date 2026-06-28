@@ -14,7 +14,8 @@
   >
     <span class="prompt"
       ><template v-if="!isMobile"
-        >{{ promptLabel }}<span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span
+        >{{ promptLabelNoModes }}<span v-if="promptModes" class="modes">{{ promptModes }}</span
+        ><span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span
         >&nbsp;</template
       ><span
         v-if="hasHistory"
@@ -56,6 +57,13 @@
       accept="image/*"
       class="file-hidden"
       @change="onFileSelected"
+    />
+    <input
+      ref="e2eImportInputEl"
+      type="file"
+      accept=".json,application/json"
+      class="file-hidden"
+      @change="onE2eImportFile"
     />
     <!-- The nick / emoji suggestion strips and the mIRC colour picker render
          inside StatusBar (they overlay it visually) — see useComposerOverlay
@@ -129,6 +137,7 @@ import { useNetworksStore, type Network } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
+import { parseRelayCommand } from '../lib/commands/relay.js';
 import { formatColumns } from '../lib/commands/output.js';
 import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/settingsRegistry.js';
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
@@ -141,6 +150,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
@@ -200,6 +210,7 @@ const config = useConfigStore();
 const uploads = useUploadsStore();
 const toasts = useToastsStore();
 const ignores = useIgnoresStore();
+const relayBots = useRelayBotsStore();
 const highlightRules = useHighlightRulesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
@@ -239,6 +250,8 @@ function combinedHighlights(
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const formEl = ref<HTMLElement | null>(null);
 const fileInputEl = ref<HTMLInputElement | null>(null);
+const e2eImportInputEl = ref<HTMLInputElement | null>(null);
+const e2eImportNetworkId = ref<number | null>(null);
 const dragOver = ref(false);
 const pickerOpen = ref(false);
 const pickerQuery = ref('');
@@ -411,12 +424,14 @@ const systemFeatures = computed(() => {
     autocapitalize: autocorrectOn ? 'sentences' : 'off',
   };
 });
-// Prompt identity (nick + channel prefix + user modes) and away marker — see
-// useSelfLabel. On mobile we don't render the prompt label inline here (the
-// template gates it on !isMobile so the input row stays just `>` + composer);
-// instead the modeless variant feeds the placeholder above, since the compact
-// status bar now shows network/channel rather than the self identity.
-const { promptLabel, promptLabelNoModes, awayLabel } = useSelfLabel();
+// Prompt identity (nick + channel prefix, then user modes) and away marker —
+// see useSelfLabel. The nick and the user-mode parens come back separately so
+// the prompt can accent-colour the nick but mute the modes (issue #415). On
+// mobile we don't render the prompt label inline here (the template gates it on
+// !isMobile so the input row stays just `>` + composer); instead the modeless
+// variant feeds the placeholder above, since the compact status bar now shows
+// network/channel rather than the self identity.
+const { promptLabelNoModes, promptModes, awayLabel } = useSelfLabel();
 const { isMobile } = useViewport();
 
 let typingState: string | null = null;
@@ -1180,9 +1195,7 @@ function onEmojiSelect(item: EmojiMatch): void {
   // re-sync the span via refreshPicker, but the async strip refresh leaves a
   // brief window). Mirrors the re-check maybeConvertShortcode already does;
   // on a mismatch, no-op rather than splice blind into the wrong span.
-  // allowEmpty: a desktop pick from the bare-`:` frequently-used set has an
-  // empty query, so the captured span is just the `:` — still valid.
-  const sc = emojiTokenStart >= 0 ? findActiveShortcode(value, emojiTokenEnd, true) : null;
+  const sc = emojiTokenStart >= 0 ? findActiveShortcode(value, emojiTokenEnd) : null;
   if (!sc || sc.start !== emojiTokenStart) {
     closeEmojiStrip();
     closeEmojiPicker();
@@ -1251,13 +1264,13 @@ function refreshPicker() {
 
   // An in-progress `:shortcode:` owns the suggester slot — it isn't a nick
   // token, and both emoji UIs and the nick picker/strip share one slot over the
-  // StatusBar. Desktop opens the vertical EmojiPicker (issue #348) the moment
-  // `:` is typed (empty query → a frequently-used set); mobile keeps the
-  // horizontal strip, gated at 2+ chars so a lone `:` — or an emoticon like
-  // `:)` — doesn't flash it.
+  // StatusBar. Both the desktop EmojiPicker (issue #348) and the mobile strip
+  // wait for a 2+ character query before opening, so a lone `:` or a one-char
+  // emoticon like `:D` / `:P` never pops the suggester — and Enter never
+  // silently swaps it for an emoji (issue #402).
   const emojiOnStrip = isMobile.value;
-  const shortcode = findActiveShortcode(value, cursor, !emojiOnStrip);
-  if (shortcode && (!emojiOnStrip || shortcode.name.length >= 2)) {
+  const shortcode = findActiveShortcode(value, cursor);
+  if (shortcode && shortcode.name.length >= 2) {
     closePicker();
     closeStrip();
     closeChannelPicker();
@@ -1681,6 +1694,43 @@ function onFileSelected(e: Event): void {
   uploads.upload(file, file.name).catch(() => {});
 }
 
+// `/e2e import` flow: read the chosen export file, confirm (it's destructive and
+// can change the account identity), then ship the JSON for the cell to validate
+// and replace the keyring. The networkId is carried from the command invocation.
+function onE2eImportFile(e: Event): void {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  const networkId = e2eImportNetworkId.value;
+  e2eImportNetworkId.value = null;
+  if (!file || networkId == null) return;
+  // Reject an oversized file before reading it (the server enforces the same cap;
+  // this just fails fast without freezing the tab on a huge/wrong file).
+  if (file.size > 4 * 1024 * 1024) {
+    toasts.push({
+      kind: 'error',
+      title: 'E2E import failed',
+      body: 'that file is too large to be a keyring export',
+    });
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const json = String(reader.result ?? '');
+    const ok = window.confirm(
+      'Import E2E keyring?\n\n' +
+        'This REPLACES this network’s encryption keyring (peers, sessions, settings) ' +
+        'and resets your account identity on ALL networks. It cannot be undone.',
+    );
+    if (!ok) return;
+    sendOrToast({ type: 'e2e-import', networkId, json }, 'e2e import');
+  };
+  reader.onerror = () => {
+    toasts.push({ kind: 'error', title: 'E2E import failed', body: 'could not read the file' });
+  };
+  reader.readAsText(file);
+}
+
 function onDragOver(e: DragEvent): void {
   if (!sendable.value) return;
   if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
@@ -1964,6 +2014,8 @@ const COMMANDS_LINES = [
   '  /away [message]        — set away across every network (no arg clears)',
   '  /back                  — clear away',
   '  /whois <nick>          — query user info (renders in server buffer)',
+  '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
+  '  /ping [nick]           — CTCP ping a user for round-trip latency',
   '  /kick <nick> [reason]  — kick from current channel',
   '  /kickban <nick> [msg]  — kick and ban in one step',
   '  /op <nick…>            — give op (also /deop /voice /devoice /halfop /dehalfop)',
@@ -1987,6 +2039,10 @@ const COMMANDS_LINES = [
   '      opts: -network -mask -full -regexp -matchcase -channels <#a,#b>',
   '      e.g. /highlight QUACK!   ·   /highlight -mask bob!*@*   ·   /highlight -network -regexp qu+ack',
   '  /unhighlight <index|text> — remove a highlight (index from /highlight list; alias: /dehilight)',
+  '  /relay [list]          — list, mark, or unmark relay/bridge bots on this network',
+  '      e.g. /relay add relaybot   ·   /relay add bridge <{nick}> {message}   ·   /relay remove relaybot',
+  '      custom template mirrors the bot order with {source}/{nick}/{message} placeholders',
+  '      e.g. reversed: /relay add eyebot <{nick}> [{source}] {message}',
   '  /network [list]        — manage networks (alias: /net); runs from the system buffer',
   '      add [-host <addr>] [-port <n>] [-tls|-notls] [-nick <n>] [-user <u>] [-realname <name>]',
   '          [-sasl_username <u>] [-sasl_password <p>] [-password <serverpass>]',
@@ -1996,6 +2052,12 @@ const COMMANDS_LINES = [
   '  /set <key> <value…>    — change a setting; /set (or /set ?) lists all keys',
   '  /get <key>             — read a setting back (output in the system buffer)',
   '  /raw <line>            — send a raw IRC line (alias: /quote)',
+  '  /e2e <sub>             — end-to-end encryption for a channel (experimental; /e2e help)',
+  '      on [#chan] [auto|normal|quiet]   ·   off [#chan]   ·   mode <auto|normal|quiet>',
+  '      handshake <nick>   ·   accept <nick>   ·   decline <nick>',
+  '      revoke <nick>   ·   unrevoke <nick>   ·   reverify <nick>   ·   verify <nick>',
+  '      rotate [#chan]   ·   forget [-all] <nick|handle>   ·   fingerprint   ·   status   ·   list [-all]',
+  '      autotrust <list | add <scope> <pattern> | remove <pattern>>   ·   export   ·   import',
   '  /commands              — this list',
   '  //text                 — send literal "/text" as a message (escape)',
 ];
@@ -2074,6 +2136,41 @@ function ackedSend(payload: Record<string, unknown>, body: string): boolean {
 // /ignore and /unignore operate on the per-user ignore list (global by default;
 // `-network` scopes to the active network), so they're network-agnostic and run
 // from the system buffer too — networkId is null there.
+// /relay (#277) — mark, unmark, or list relay/bridge bots on this network. The
+// store writes go over WS and echo back through `relay-bot-updated`, so the
+// confirmation here is optimistic-but-authoritative just like /ignore.
+function runRelay(argLine: string, networkId: number, target: string): boolean {
+  const cmd = parseRelayCommand(argLine);
+  if (cmd.kind === 'error') {
+    localInfo(networkId, target, `/relay: ${cmd.message}`);
+    return true;
+  }
+  if (cmd.kind === 'list') {
+    const list = relayBots.listForNetwork(networkId);
+    if (!list.length) {
+      localInfo(networkId, target, 'no relay bots marked on this network. /relay add <nick>');
+      return true;
+    }
+    localInfo(networkId, target, `relay bots (${list.length}):`);
+    for (const { nick, pattern } of list) {
+      localInfo(networkId, target, `  ${nick}${pattern ? `  — ${pattern}` : ''}`);
+    }
+    return true;
+  }
+  if (cmd.kind === 'add') {
+    relayBots.setRelay(networkId, cmd.nick, true, cmd.pattern);
+    localInfo(
+      networkId,
+      target,
+      `marked ${cmd.nick} as a relay bot${cmd.pattern ? ` (pattern: ${cmd.pattern})` : ''}.`,
+    );
+    return true;
+  }
+  relayBots.setRelay(networkId, cmd.nick, false);
+  localInfo(networkId, target, `unmarked ${cmd.nick} as a relay bot.`);
+  return true;
+}
+
 function runIgnore(argLine: string, networkId: number | null, target: string): boolean {
   const args = argLine.trim();
   if (!args) {
@@ -2481,8 +2578,68 @@ function handleCommand(line: string, networkId: number | null, target: string): 
   }
 
   switch (verb) {
+    case 'e2e': {
+      // RPE2E (#382). `export`/`import` move keyring material across the
+      // client↔cell boundary, so they're handled here rather than via the
+      // server's buffer-oriented runE2eCommand: export downloads a file (never
+      // rendered — it holds the private key), import opens a file picker. Every
+      // other subcommand is a thin pass-through; the server parses it and
+      // publishes status back into this buffer (defaulting the channel).
+      const sub = (rest[0] || '').toLowerCase();
+      if (sub === 'export') {
+        return sendOrToast({ type: 'e2e-export', networkId }, line);
+      }
+      if (sub === 'import') {
+        e2eImportNetworkId.value = networkId;
+        e2eImportInputEl.value?.click();
+        return true;
+      }
+      return sendOrToast({ type: 'e2e', networkId, target, args: argLine }, line);
+    }
+    case 'relay':
+      // Mark/unmark/list relay bots on this network (#277). Network-scoped: a
+      // relay mark is per-(network, nick), so it needs an active network.
+      return runRelay(argLine, networkId, target);
     case 'me':
       return ackedSend({ type: 'action', networkId, target, text: argLine }, argLine);
+    case 'ctcp': {
+      // /ctcp <nick> <type> [args] — send a CTCP query (#263). The cell frames
+      // and sends it, echoes locally, and routes the reply back to this buffer.
+      const who = rest[0];
+      const type = rest[1];
+      if (!who || !type) {
+        localInfo(networkId, target, 'usage: /ctcp <nick> <type> [args] — e.g. /ctcp bob VERSION');
+        return true;
+      }
+      const ctcpArgs = rest.slice(2).join(' ');
+      return sendOrToast(
+        {
+          type: 'ctcp',
+          networkId,
+          target: who,
+          issuingTarget: target,
+          ctcpType: type,
+          args: ctcpArgs,
+        },
+        line,
+      );
+    }
+    case 'ping': {
+      // /ping [nick] — CTCP PING for round-trip latency (#263). Defaults to the
+      // current DM peer when no nick is given — i.e. the active buffer is not a
+      // channel (any prefix #&!+, matching the server's isChannelContext) and not
+      // a pseudo-buffer (`:server:`/system), so /ping in an `&local` channel
+      // doesn't ping the whole channel.
+      const who = rest[0] || (target && !/^[#&!+:]/.test(target) ? target : '');
+      if (!who) {
+        localInfo(networkId, target, 'usage: /ping <nick> (a nick is only optional inside a DM)');
+        return true;
+      }
+      return sendOrToast(
+        { type: 'ctcp', networkId, target: who, issuingTarget: target, ctcpType: 'PING', args: '' },
+        line,
+      );
+    }
     case 'msg':
     case 'query': {
       const [who, ...msgParts] = rest;
@@ -2584,6 +2741,32 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         { type: 'raw', networkId, line: `KICK ${channel} ${nick}${trailer}` },
         line,
       );
+    }
+    case 'invite': {
+      // /invite <nick>             (in a channel buffer → invite to it)
+      // /invite <nick> <#chan>     (anywhere)
+      // /invite <#chan> <nick>     (channel-first, mirroring /kick)
+      let channel;
+      let nick;
+      if (rest[0] && rest[0].startsWith('#')) {
+        channel = rest[0];
+        nick = rest[1];
+      } else {
+        nick = rest[0];
+        channel =
+          rest[1] && rest[1].startsWith('#') ? rest[1] : isChannelTarget(target) ? target : null;
+      }
+      if (!nick) {
+        localInfo(networkId, target, 'usage: /invite <nick> [#channel]');
+        return true;
+      }
+      if (!channel) {
+        localInfo(networkId, target, 'usage: /invite <nick> [#channel] — no channel context');
+        return true;
+      }
+      // Wire order is INVITE <nick> <channel> (note: irc-framework's own
+      // .invite() flips the args — we build the raw line directly so it can't).
+      return sendOrToast({ type: 'raw', networkId, line: `INVITE ${nick} ${channel}` }, line);
     }
     case 'topic': {
       // /topic                        — request current topic (server buffer)
@@ -2887,6 +3070,11 @@ function handleCommand(line: string, networkId: number | null, target: string): 
   /* Matches the textarea's intrinsic single-row height so the prompt and
      the first text line baseline-align before any growth. */
   line-height: 1.4;
+}
+/* User modes ride the accent-coloured nick but stay muted, matching the status
+   bar's channel name (accent) vs mode suffix (muted) treatment (issue #415). */
+.prompt .modes {
+  color: var(--fg-muted);
 }
 .prompt .away {
   color: var(--warn);

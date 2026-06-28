@@ -433,6 +433,24 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_nick_notes_user_net
       ON user_nick_notes(user_id, network_id);
 
+    -- Per-(user, network, nick) relay-bot marks (#277). A marked nick is a
+    -- relay / bridge bot; the client re-attributes its messages to the speaker
+    -- embedded in the envelope, e.g. [Discord] <alice> hi. Row presence is the
+    -- mark; the pattern column is an optional custom template (empty = built-in
+    -- defaults). Same NOCASE / per-network keying as notes.
+    CREATE TABLE IF NOT EXISTS user_relay_bots (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      nick TEXT NOT NULL COLLATE NOCASE,
+      pattern TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, network_id, nick),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_relay_bots_user_net
+      ON user_relay_bots(user_id, network_id);
+
     -- Friends / watch-list. A "contact" is a person, network-agnostic: it carries
     -- the display name and the per-contact "toast me when they come online" flag.
     -- contact_targets is the watch list — which (network, nick) to follow for
@@ -555,6 +573,106 @@ function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_system_messages_recent ON system_messages(user_id, id);
+
+    -- RPE2E end-to-end-encryption keyring (issue #382). Secrets — the identity
+    -- private key and the session keys — are stored as secretCrypto envelopes
+    -- (TEXT, the same lk1.* at-rest scheme as network credentials); public
+    -- material (pubkeys, fingerprints) is BLOB with a length CHECK so a
+    -- truncated/corrupt restore fails loud here, not deep in crypto. The
+    -- identity is per-ACCOUNT (one keypair shared across a user's networks, so a
+    -- peer verifies the fingerprint once); everything else is scoped per (user,
+    -- network) since IRC handles and channels are network-specific. IRC-target
+    -- columns (handle / channel / scope / last_handle / last_nick) are
+    -- COLLATE NOCASE per house style — servers send inconsistent casing, so the
+    -- composite PKs dedupe and lookups fold case (the E2eManager still owns the
+    -- exact on-the-wire casing that goes into the AAD). See server/db/e2e.ts.
+    CREATE TABLE IF NOT EXISTS e2e_identity (
+      user_id INTEGER PRIMARY KEY,
+      pubkey BLOB NOT NULL CHECK (length(pubkey) = 32),
+      privkey TEXT NOT NULL,
+      fingerprint BLOB NOT NULL CHECK (length(fingerprint) = 16),
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS e2e_peers (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      fingerprint BLOB NOT NULL CHECK (length(fingerprint) = 16),
+      pubkey BLOB NOT NULL CHECK (length(pubkey) = 32),
+      last_handle TEXT COLLATE NOCASE,
+      last_nick TEXT COLLATE NOCASE,
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL,
+      global_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (global_status IN ('pending', 'trusted', 'revoked')),
+      PRIMARY KEY (user_id, network_id, fingerprint),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_e2e_peers_handle
+      ON e2e_peers(user_id, network_id, last_handle);
+    CREATE TABLE IF NOT EXISTS e2e_incoming_sessions (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      handle TEXT NOT NULL COLLATE NOCASE,
+      channel TEXT NOT NULL COLLATE NOCASE,
+      fingerprint BLOB NOT NULL CHECK (length(fingerprint) = 16),
+      sk TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'trusted', 'revoked')),
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, network_id, handle, channel),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_e2e_incoming_channel
+      ON e2e_incoming_sessions(user_id, network_id, channel);
+    CREATE TABLE IF NOT EXISTS e2e_outgoing_sessions (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      channel TEXT NOT NULL COLLATE NOCASE,
+      sk TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      pending_rotation INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, network_id, channel),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS e2e_channel_config (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      channel TEXT NOT NULL COLLATE NOCASE,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      mode TEXT NOT NULL DEFAULT 'normal'
+        CHECK (mode IN ('auto-accept', 'normal', 'quiet')),
+      PRIMARY KEY (user_id, network_id, channel),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS e2e_autotrust (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      scope TEXT NOT NULL COLLATE NOCASE,
+      handle_pattern TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE (user_id, network_id, scope, handle_pattern),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE TABLE IF NOT EXISTS e2e_outgoing_recipients (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      channel TEXT NOT NULL COLLATE NOCASE,
+      handle TEXT NOT NULL COLLATE NOCASE,
+      fingerprint BLOB NOT NULL CHECK (length(fingerprint) = 16),
+      first_sent_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, network_id, channel, handle),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_e2e_recipients_handle
+      ON e2e_outgoing_recipients(user_id, network_id, handle);
   `);
 }
 

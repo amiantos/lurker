@@ -19,6 +19,29 @@ export function effectiveSetting(userId: number, key: string): SettingValue | un
   return opt.default;
 }
 
+// Resolve several settings in ONE getUserSettings() read, for hot paths that
+// need a cluster of related settings (e.g. the CTCP auto-reply config) without
+// firing a full-table load per key. Same stored-override-or-registry-default
+// rule as effectiveSetting; unknown keys map to undefined.
+export function effectiveSettings(
+  userId: number,
+  keys: string[],
+): Record<string, SettingValue | undefined> {
+  const stored = getUserSettings(userId);
+  const out: Record<string, SettingValue | undefined> = {};
+  for (const key of keys) {
+    const opt = getOption(key);
+    if (!opt) {
+      out[key] = undefined;
+    } else if (Object.prototype.hasOwnProperty.call(stored, key)) {
+      out[key] = stored[key] as SettingValue;
+    } else {
+      out[key] = opt.default;
+    }
+  }
+  return out;
+}
+
 function valuesEqual(a: SettingValue, b: SettingValue): boolean {
   if (a === b) return true;
   if (Array.isArray(a) && Array.isArray(b)) {

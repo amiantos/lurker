@@ -16,6 +16,10 @@ data/
 vue_client/dist/
 coverage/
 
+# Docs site (VitePress) build artifacts
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
 # Editor
 .DS_Store
 .vscode/

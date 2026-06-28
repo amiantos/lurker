@@ -13,6 +13,7 @@ import { nodeUploadConfigured } from './services/uploadProviders/nodeUpload.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
 import { backfillEncryptNetworkSecrets } from './db/networks.js';
+import { backfillEncryptE2eSecrets } from './db/e2e.js';
 import { resolveSessionSecret } from './utils/sessionSecret.js';
 import { getEdition, isNodeMode } from './utils/edition.js';
 import { startOrchestratorClient, stopOrchestratorClient } from './services/orchestratorClient.js';
@@ -81,6 +82,15 @@ const wrapped = backfillEncryptNetworkSecrets();
 if (wrapped.encrypted > 0) {
   console.log(`[lurker] encrypted ${wrapped.encrypted} network-secret row(s) at rest`);
   systemLog.log({ scope: 'server', text: `Encrypted ${wrapped.encrypted} network-secret row(s)` });
+}
+
+// Same re-seal for the RPE2E keyring's secret columns (identity privkey +
+// session keys), so a keyless-written cell that later gains a key never leaves
+// the identity private key as cleartext in the R2 backup (#382).
+const wrappedE2e = backfillEncryptE2eSecrets();
+if (wrappedE2e.encrypted > 0) {
+  console.log(`[lurker] encrypted ${wrappedE2e.encrypted} e2e key row(s) at rest`);
+  systemLog.log({ scope: 'server', text: `Encrypted ${wrappedE2e.encrypted} e2e key row(s)` });
 }
 
 ircManager.initAll();

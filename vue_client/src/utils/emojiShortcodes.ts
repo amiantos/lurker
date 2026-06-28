@@ -26,10 +26,6 @@ const NAME = `${NAME_CHARS}+`;
 // `(?<!${NAME_CHARS})` keeps the opening colon off the back of a word or number.
 const OPEN_RE = new RegExp(`(?<!${NAME_CHARS}):(${NAME})$`, 'i');
 const CLOSE_RE = new RegExp(`(?<!${NAME_CHARS}):(${NAME}):$`, 'i');
-// Like OPEN_RE but the body may be empty — matches a bare `:` just opened (the
-// desktop emoji picker uses this to pop a frequently-used set before any query
-// is typed). Same opening-boundary rule, so `word:` / `12:` still don't match.
-const OPEN_EMPTY_RE = new RegExp(`(?<!${NAME_CHARS}):(${NAME_CHARS}*)$`, 'i');
 
 // A *global* matcher for every completed `:name:` in a string, used by the
 // render-time emoji pass (`splitTextByEmoji` in nickColor). It shares NAME and
@@ -52,14 +48,12 @@ export interface ShortcodeToken {
 }
 
 // An *in-progress* shortcode ending at the caret: `:bo|` → { name: 'bo' }.
-// Returns null when the caret isn't sitting in a shortcode body. Drives the
-// suggester strip; the caller decides the minimum query length to act on.
-export function findActiveShortcode(
-  text: string,
-  caret: number,
-  allowEmpty = false,
-): ShortcodeToken | null {
-  const m = (allowEmpty ? OPEN_EMPTY_RE : OPEN_RE).exec(text.slice(0, caret));
+// Returns null when the caret isn't sitting in a non-empty shortcode body — a
+// lone `:` never matches. Drives the suggester; the caller decides the minimum
+// query length to act on (the composer gates at 2+ chars so a one-char emoticon
+// like `:D` doesn't open the picker — issue #402).
+export function findActiveShortcode(text: string, caret: number): ShortcodeToken | null {
+  const m = OPEN_RE.exec(text.slice(0, caret));
   if (!m) return null;
   return { name: m[1].toLowerCase(), start: caret - m[1].length - 1, end: caret };
 }
@@ -167,42 +161,6 @@ export function searchEmojiSync(query: string, limit = 30): EmojiMatch[] {
   if (!loadedTable) return [];
   const table = loadedTable;
   return rankShortcodes(loadedNames, query)
-    .slice(0, limit)
-    .map((name) => ({ name, emoji: table[name] }));
-}
-
-// A small static "frequently used" set shown when the picker opens on a bare
-// `:` (no query yet). Deliberately not usage-tracked — a fixed common set keeps
-// it simple; frecency can come later. Only entries present in the loaded table
-// are returned, so a future gemoji revision can't surface a dangling shortcode.
-const FREQUENT_SHORTCODES = [
-  'joy',
-  'sob',
-  'heart',
-  'smile',
-  '+1',
-  'pray',
-  'fire',
-  'tada',
-  'rofl',
-  'sweat_smile',
-  'heart_eyes',
-  'thinking',
-  'eyes',
-  'pleading_face',
-  'ok_hand',
-  'raised_hands',
-  'sparkles',
-  'wave',
-  '100',
-  'clap',
-  'rocket',
-  'thumbsdown',
-];
-export function frequentEmoji(limit = 30): EmojiMatch[] {
-  if (!loadedTable) return [];
-  const table = loadedTable;
-  return FREQUENT_SHORTCODES.filter((name) => table[name] != null)
     .slice(0, limit)
     .map((name) => ({ name, emoji: table[name] }));
 }

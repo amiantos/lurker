@@ -1,0 +1,9 @@
+# Cloudflare — baseline security headers for the docs site.
+# VitePress ships client JS (theme + local search) from same-origin, so a
+# strict Content-Security-Policy needs testing before it's added — tracked as a
+# follow-up. These headers are safe and don't affect the bundle.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=()

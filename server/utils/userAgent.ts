@@ -32,8 +32,6 @@ export const USER_AGENT: string = contact
   ? `${APP_NAME}/${APP_VERSION} (+${contact})`
   : `${APP_NAME}/${APP_VERSION}`;
 
-// Used as the CTCP VERSION reply on IRC. Same idea, but IRC clients typically
-// don't show the contact, so keep it terse.
-export const IRC_VERSION: string = contact
-  ? `${APP_NAME} ${APP_VERSION} - ${contact}`
-  : `${APP_NAME} ${APP_VERSION}`;
+// (The CTCP VERSION reply is no longer built here — it's a user-configurable
+// template, `ctcp.version` in the settings registry, defaulting to
+// `${name} ${version}`. See server/services/ctcp.ts.)

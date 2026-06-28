@@ -23,9 +23,15 @@ export default defineConfig(({ mode }) => {
   // doesn't need to trust a local CA. Password login still works; WebAuthn
   // and Service Worker / push features do not (they require a secure context).
   const lanHost = env.VITE_LAN_HOST;
+  // mkcert is dev-server-only HTTPS tooling — it has no business loading under
+  // vitest, and historically its native cert generation could crash the test
+  // process when the config was resolved from inside vue_client/. Vitest sets
+  // VITEST=true before resolving the config, so skip the plugin then; tests
+  // never need a cert.
+  const underTest = !!process.env.VITEST;
 
   return {
-    plugins: lanHost ? [vue()] : [vue(), mkcert()],
+    plugins: lanHost || underTest ? [vue()] : [vue(), mkcert()],
     // Build-time constant so the About panel can show the app version without
     // an API round-trip.
     define: {

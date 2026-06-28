@@ -649,3 +649,93 @@ describe('delete_contact', () => {
     expect((caughtErr as Error).message).toMatch(/contactId/);
   });
 });
+
+describe('set_relay_bot', () => {
+  it('marks a nick (persisting it NOCASE) and then clears it', async () => {
+    const { getRelayBot } = await import('../../db/relayBots.js');
+    const marked = callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'RelayBot',
+      marked: true,
+      pattern: '',
+    });
+    expect(marked).toMatchObject({
+      networkId: net.id,
+      nick: 'RelayBot',
+      marked: true,
+      pattern: '',
+    });
+    // Stored, and resolvable regardless of case.
+    expect(getRelayBot({ userId: owner.id, networkId: net.id, nick: 'relaybot' })).toMatchObject({
+      nick: 'RelayBot',
+      pattern: '',
+    });
+
+    const cleared = callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'relaybot',
+      marked: false,
+      pattern: '',
+    });
+    expect(cleared).toMatchObject({ marked: false, pattern: '' });
+    expect(getRelayBot({ userId: owner.id, networkId: net.id, nick: 'RelayBot' })).toBeNull();
+  });
+
+  it('stores and round-trips a custom envelope template', async () => {
+    const { getRelayBot } = await import('../../db/relayBots.js');
+    const saved = callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'bridge',
+      marked: true,
+      pattern: '<{nick}> {message}',
+    });
+    expect(saved).toMatchObject({ marked: true, pattern: '<{nick}> {message}' });
+    expect(getRelayBot({ userId: owner.id, networkId: net.id, nick: 'bridge' })?.pattern).toBe(
+      '<{nick}> {message}',
+    );
+  });
+
+  it('echoes the canonical stored casing when re-marking under a different case', () => {
+    callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'CamelBot',
+      marked: true,
+      pattern: '',
+    });
+    // NOCASE primary key keeps the first-inserted 'CamelBot'; the response echoes
+    // that, not the 'camelbot' just passed in, so the UI shows consistent casing.
+    const out = callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'camelbot',
+      marked: true,
+      pattern: 'x',
+    });
+    expect(out).toMatchObject({ nick: 'CamelBot', marked: true, pattern: 'x' });
+  });
+
+  it('throws unknown_network for a network the caller does not own', () => {
+    let code: string | undefined;
+    try {
+      callVerb('set_relay_bot', rwCtx(owner.id), {
+        networkId: otherNet.id,
+        nick: 'x',
+        marked: true,
+        pattern: '',
+      });
+    } catch (err) {
+      code = (err as { code?: string }).code;
+    }
+    expect(code).toBe('unknown_network');
+  });
+
+  it('is rejected for read-only scope', () => {
+    expect(() =>
+      callVerb('set_relay_bot', rCtx(owner.id), {
+        networkId: net.id,
+        nick: 'x',
+        marked: true,
+        pattern: '',
+      }),
+    ).toThrow(/scope insufficient/);
+  });
+});

@@ -6,7 +6,6 @@ import {
   emojiGlyph,
   findActiveShortcode,
   findCompletedShortcode,
-  frequentEmoji,
   loadEmoji,
   onEmojiLoaded,
   rankShortcodes,
@@ -29,24 +28,22 @@ describe('findActiveShortcode', () => {
     expect(findActiveShortcode(':BoNe', 5)?.name).toBe('bone');
   });
 
-  it('returns null when the caret is not in a shortcode', () => {
+  it('returns null when the caret is not in a shortcode, including a lone `:`', () => {
     expect(findActiveShortcode('hello world', 11)).toBeNull();
     expect(findActiveShortcode('', 0)).toBeNull();
+    // A bare `:` no longer opens anything (issue #402) — the suggester only ever
+    // sees a non-empty body, and the composer further gates it at 2+ chars.
     expect(findActiveShortcode(':', 1)).toBeNull();
+    expect(findActiveShortcode('hi :', 4)).toBeNull();
   });
 
-  it('matches a bare `:` with an empty name when allowEmpty (issue #348)', () => {
-    expect(findActiveShortcode(':', 1, true)).toEqual({ name: '', start: 0, end: 1 });
-    expect(findActiveShortcode('hi :', 4, true)).toEqual({ name: '', start: 3, end: 4 });
-  });
-
-  it('still captures a partial query under allowEmpty', () => {
-    expect(findActiveShortcode(':sm', 3, true)).toEqual({ name: 'sm', start: 0, end: 3 });
-  });
-
-  it('does not match a `:` glued to a word or number even under allowEmpty', () => {
-    expect(findActiveShortcode('word:', 5, true)).toBeNull();
-    expect(findActiveShortcode('12:', 3, true)).toBeNull();
+  it('reports a single-char body for one-letter emoticons the composer gates out (issue #402)', () => {
+    // `:D` / `:P` capture a length-1 name; MessageInput requires name.length >= 2
+    // before opening the suggester, so these emoticons never trigger it (and Enter
+    // never silently swaps `:D` for an emoji). A 2-letter query is what opens it.
+    expect(findActiveShortcode(':D', 2)).toEqual({ name: 'd', start: 0, end: 2 });
+    expect(findActiveShortcode(':P', 2)?.name.length).toBe(1);
+    expect(findActiveShortcode(':bo', 3)?.name.length).toBe(2);
   });
 
   it('does not trigger mid-word or after a digit', () => {
@@ -204,21 +201,6 @@ describe('searchEmojiSync', () => {
   it('returns nothing for a non-matching query', async () => {
     await loadEmoji();
     expect(searchEmojiSync('definitely_not_an_emoji')).toEqual([]);
-  });
-});
-
-describe('frequentEmoji', () => {
-  it('returns a non-empty static set, every entry resolving to a real glyph', async () => {
-    await loadEmoji();
-    const f = frequentEmoji();
-    expect(f.length).toBeGreaterThan(0);
-    expect(f.every((m) => typeof m.emoji === 'string' && m.emoji.length > 0)).toBe(true);
-    expect(f.some((m) => m.name === 'tada')).toBe(true);
-  });
-
-  it('respects the limit', async () => {
-    await loadEmoji();
-    expect(frequentEmoji(5).length).toBeLessThanOrEqual(5);
   });
 });
 
