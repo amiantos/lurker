@@ -695,6 +695,24 @@ describe('set_relay_bot', () => {
     );
   });
 
+  it('echoes the canonical stored casing when re-marking under a different case', () => {
+    callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'CamelBot',
+      marked: true,
+      pattern: '',
+    });
+    // NOCASE primary key keeps the first-inserted 'CamelBot'; the response echoes
+    // that, not the 'camelbot' just passed in, so the UI shows consistent casing.
+    const out = callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'camelbot',
+      marked: true,
+      pattern: 'x',
+    });
+    expect(out).toMatchObject({ nick: 'CamelBot', marked: true, pattern: 'x' });
+  });
+
   it('throws unknown_network for a network the caller does not own', () => {
     let code: string | undefined;
     try {

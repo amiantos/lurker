@@ -44,7 +44,12 @@ registerVerb({
     const saved = ircManager.setRelayBot(ctx.userId, networkId, nick, marked, pattern);
     const result = {
       networkId,
-      nick,
+      // Echo the canonical stored casing when marked: the row may predate this
+      // call under a different case (the NOCASE primary key keeps the
+      // first-inserted casing), so this keeps the WS echo and /relay list in
+      // agreement with snapshot seeding. Falls back to the input nick when
+      // clearing — there's no row to read, and casing is moot once removed.
+      nick: saved ? saved.nick : nick,
       marked: !!saved,
       pattern: saved ? saved.pattern : '',
     };

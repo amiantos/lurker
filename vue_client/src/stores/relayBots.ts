@@ -16,13 +16,16 @@ function key(networkId: number | string, nick: string) {
 }
 
 export interface RelayBotEntry {
+  /** Canonical nick casing (server-provided) — the key is lowercased for
+   *  case-insensitive lookup, so this preserves what to show in /relay list. */
+  nick: string;
   /** Custom envelope template; empty string means "use the built-in defaults". */
   pattern: string;
 }
 
 export const useRelayBotsStore = defineStore('relayBots', {
   state: () => ({
-    // { [networkId::nicklower]: { pattern: string } } — presence of a key IS the mark.
+    // { [networkId::nicklower]: { nick, pattern } } — presence of a key IS the mark.
     byKey: {} as Record<string, RelayBotEntry>,
   }),
   getters: {
@@ -30,13 +33,13 @@ export const useRelayBotsStore = defineStore('relayBots', {
       !!state.byKey[key(networkId, nick)],
     patternFor: (state) => (networkId: number | string, nick: string) =>
       state.byKey[key(networkId, nick)]?.pattern || '',
-    // [{ networkId, nick, pattern }] for a given network — drives `/relay list`.
+    // [{ nick, pattern }] for a given network — drives `/relay list`. Uses the
+    // stored canonical nick for display, not the lowercased key.
     listForNetwork: (state) => (networkId: number) => {
       const prefix = `${networkId}::`;
       const out: Array<{ nick: string; pattern: string }> = [];
       for (const [k, entry] of Object.entries(state.byKey)) {
-        if (k.startsWith(prefix))
-          out.push({ nick: k.slice(prefix.length), pattern: entry.pattern });
+        if (k.startsWith(prefix)) out.push({ nick: entry.nick, pattern: entry.pattern });
       }
       return out;
     },
@@ -48,7 +51,7 @@ export const useRelayBotsStore = defineStore('relayBots', {
         if (n?.networkId == null) continue;
         for (const entry of n.relayBots || []) {
           if (!entry?.nick) continue;
-          next[key(n.networkId, entry.nick)] = { pattern: entry.pattern || '' };
+          next[key(n.networkId, entry.nick)] = { nick: entry.nick, pattern: entry.pattern || '' };
         }
       }
       this.byKey = next;
@@ -57,7 +60,8 @@ export const useRelayBotsStore = defineStore('relayBots', {
       if (!networkId || !nick) return;
       const k = key(networkId, nick);
       if (marked) {
-        this.byKey[k] = { pattern: pattern || '' };
+        // `nick` here is the canonical casing echoed by the server.
+        this.byKey[k] = { nick, pattern: pattern || '' };
       } else {
         delete this.byKey[k];
       }
