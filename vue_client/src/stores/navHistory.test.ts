@@ -12,10 +12,10 @@ import { setActivePinia, createPinia } from 'pinia';
 const h = vi.hoisted(() => ({
   live: new Set<string>(),
   record: null as null | ((key: string) => void),
-  activate: vi.fn((networkId: number | null, target: string) => {
+  activate: vi.fn<(networkId: number | null, target: string) => void>((networkId, target) => {
     h.record?.(networkId == null ? target : `${networkId}::${target}`);
   }),
-  friendsOpen: vi.fn(() => h.record?.(':friends:')),
+  friendsOpen: vi.fn<() => void>(() => h.record?.(':friends:')),
 }));
 
 vi.mock('./buffers.js', () => ({
