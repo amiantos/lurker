@@ -103,7 +103,7 @@
           </div>
           <span class="body" :class="bodyClass(row.m)">
             <span
-              v-if="row.m?.relayBot && !row.continuationAuthor"
+              v-if="row.m?.relaySource && !row.continuationAuthor"
               class="relay-via"
               :title="'Relayed via ' + row.m.relayBot"
               >[{{ relayLabel(row.m) }}]</span
@@ -134,7 +134,7 @@
           >
           <span class="body" :class="bodyClass(row.m)">
             <span
-              v-if="row.m?.relayBot && !row.continuationAuthor"
+              v-if="row.m?.relaySource && !row.continuationAuthor"
               class="relay-via"
               :title="'Relayed via ' + row.m.relayBot"
               >[{{ relayLabel(row.m) }}]</span
@@ -742,11 +742,12 @@ function openRelayNickMenu(
 }
 
 // The "via" affordance shown next to a re-attributed relay line (#277): the
-// `[source]` platform tag when the envelope had one, else the bot's nick. The
-// full title always names the bot so the real origin is one hover away.
+// `[source]` platform tag. Only rendered when the envelope actually carried a
+// source (the template gates on relaySource), so a bare `<nick> message` relay
+// shows no tag and the re-attributed nick just reads as the speaker. The title
+// (set in the template) still names the bot, so provenance is one hover away.
 function relayLabel(m: ChatMessage | undefined): string {
-  if (!m?.relayBot) return '';
-  return m.relaySource || m.relayBot;
+  return m?.relaySource || '';
 }
 
 // A coloured nick mention inside message text (emitted by RenderSegments). The
