@@ -89,7 +89,6 @@
         class="line"
         :class="rowClass(row)"
         :data-msg-id="row.m?.id ?? null"
-        @contextmenu="onMessageMenu($event, row.m)"
         @click="onMessageRowClick($event, row.m)"
       >
         <template v-if="compactMode && row.m?.type === 'message'">
@@ -423,9 +422,10 @@ const actionItalic = computed(() => !!settings.effective('look.action.italic'));
 // Hover action bar toggle (#392). Off → the bar never renders (right-click / tap
 // menu still works). Always off on touch via the CSS reveal media query too.
 const hoverActions = computed(() => !!settings.effective('look.message.hover_actions'));
-// The message whose action menu is open — gives the row a `selected` background
-// so touch users (who get no hover) can see which message the menu targets, and
-// keeps it lit on desktop after the cursor leaves for the menu (#392).
+// The message whose tap-opened action menu is open (touch only — desktop uses
+// the hover bar + native right-click menu, never ours). Gives the row a
+// `selected` background so touch users, who get no hover, can see which message
+// the menu targets (#392). Cleared when the menu closes.
 const selectedMessageId = ref<number | null>(null);
 const selfColor = computed<string | null>(
   () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
@@ -647,24 +647,10 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
   messageActions.run(key, m as any, actionContext);
 }
 
-// Right-click → message action menu (#392). Desktop only: on touch we leave the
-// `contextmenu` long-press to the browser's native text-callout so message text
-// stays selectable, and reach the menu via tap instead (onMessageRowClick).
-function onMessageMenu(e: MouseEvent, m: ChatMessage | undefined | null): void {
-  if (!canHover.value) return;
-  if (!eligibleForActions(m)) return;
-  // Don't hijack right-click over a link — the native menu (open in new tab,
-  // copy link) is what's wanted there.
-  if ((e.target as Element | null)?.closest('a')) return;
-  e.preventDefault();
-  selectedMessageId.value = m?.id ?? null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  messageActions.openMenu(m as any, actionContext, e.clientX, e.clientY);
-}
-
 // Tap → message action menu on touch devices (#392), replacing the old
-// sticky-:hover two-tap. No-op on desktop, where a left-click shouldn't summon a
-// context menu (right-click does) — and where a tap is a real text click.
+// sticky-:hover two-tap. No-op on desktop, where the hover action bar is the
+// entry point and right-click is deliberately left to the browser's native menu
+// (desktop users expect that); a tap there is just a real text click.
 function onMessageRowClick(e: MouseEvent, m: ChatMessage | undefined | null): void {
   if (canHover.value) return;
   if (!eligibleForActions(m)) return;
@@ -1863,11 +1849,10 @@ watch(
 .line:hover {
   background: var(--bg-soft);
 }
-/* The row whose action menu is open. Same background as hover, but authored
-   without `:hover` so it survives the build's hover gating (#115) and shows on
-   touch — where there's no hover, this is the only cue for which message the
-   menu targets (#392). On desktop it also keeps the row lit once the cursor
-   moves off it onto the menu. */
+/* The row whose tap-opened action menu is open (touch). Same background as
+   hover, but authored without `:hover` so it survives the build's hover gating
+   (#115) and shows on touch — where there's no hover, this is the only cue for
+   which message the menu targets (#392). */
 .line.selected {
   background: var(--bg-soft);
 }
