@@ -138,6 +138,7 @@ import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
 import { parseRelayCommand } from '../lib/commands/relay.js';
+import { parseDccCommand } from '../lib/commands/dcc.js';
 import { formatColumns } from '../lib/commands/output.js';
 import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/settingsRegistry.js';
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
@@ -148,6 +149,7 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
+import { useDccStore, percentReceived, type DccTransfer } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -208,6 +210,7 @@ const drafts = useDraftStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const uploads = useUploadsStore();
+const dcc = useDccStore();
 const toasts = useToastsStore();
 const ignores = useIgnoresStore();
 const relayBots = useRelayBotsStore();
@@ -2049,6 +2052,8 @@ const COMMANDS_LINES = [
   "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] <name>",
   '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
   '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
+  '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel <id>',
+  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc reject 3   ·   /dcc cancel 3',
   '  /set <key> <value…>    — change a setting; /set (or /set ?) lists all keys',
   '  /get <key>             — read a setting back (output in the system buffer)',
   '  /raw <line>            — send a raw IRC line (alias: /quote)',
@@ -2169,6 +2174,57 @@ function runRelay(argLine: string, networkId: number, target: string): boolean {
   relayBots.setRelay(networkId, cmd.nick, false);
   localInfo(networkId, target, `unmarked ${cmd.nick} as a relay bot.`);
   return true;
+}
+
+// /dcc (#270) — the slash-command surface over the DCC download manager. `list`
+// opens the Transfers view and echoes the current transfers into the buffer
+// (slash-command-first: the GUI is a view over the same core); accept/reject/
+// cancel act on one transfer by id and report the resulting state. User-wide, so
+// networkId may be null (running from the system buffer). The store writes go
+// over REST and the authoritative row echoes back through both the response and
+// the live `dcc-transfer` frame, so the output here is settled, not optimistic.
+async function runDcc(argLine: string, networkId: number | null, target: string): Promise<void> {
+  const cmd = parseDccCommand(argLine);
+  if (cmd.kind === 'error') {
+    localInfo(networkId, target, `/dcc: ${cmd.message}`);
+    return;
+  }
+  if (cmd.kind === 'list') {
+    dcc.panelOpen = true;
+    try {
+      const rows = await dcc.load();
+      if (!rows.length) {
+        localInfo(networkId, target, 'no DCC transfers.');
+        return;
+      }
+      localInfo(networkId, target, `transfers (${rows.length}):`);
+      for (const line of formatColumns(rows.map(dccListRow))) {
+        localInfo(networkId, target, `  ${line}`);
+      }
+    } catch (e: any) {
+      localInfo(networkId, target, `/dcc: ${e?.message || 'failed to load'}`);
+    }
+    return;
+  }
+  // accept / reject / cancel — the parser guarantees a numeric id here. They all
+  // route through the store's shared act() path.
+  const verb = cmd.kind;
+  try {
+    const t = await dcc.act(cmd.id, verb);
+    localInfo(
+      networkId,
+      target,
+      t ? `/dcc ${verb}: #${t.id} ${t.filename} — ${t.state}` : `/dcc ${verb}: #${cmd.id} done`,
+    );
+  } catch (e: any) {
+    localInfo(networkId, target, `/dcc ${verb}: ${e?.message || 'failed'}`);
+  }
+}
+
+// One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".
+function dccListRow(t: DccTransfer): string[] {
+  const pct = t.advertised_size > 0 ? `${percentReceived(t)}%` : '';
+  return [`#${t.id}`, t.filename, t.state, t.peer_nick, pct];
 }
 
 function runIgnore(argLine: string, networkId: number | null, target: string): boolean {
@@ -2568,6 +2624,13 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return true;
     case 'get':
       runGet(argLine, networkId, target);
+      return true;
+    case 'dcc':
+      // DCC download manager (#270). User-wide (transfers aren't tied to the
+      // active buffer), so it runs from anywhere including the system buffer.
+      // REST-backed + async, so fire-and-forget like /network; it reports into
+      // the buffer when it settles.
+      void runDcc(argLine, networkId, target);
       return true;
   }
 

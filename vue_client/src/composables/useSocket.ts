@@ -22,6 +22,7 @@ import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useDataExportStore } from '../stores/dataExport.js';
+import { useDccStore } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { downloadTextFile } from '../utils/download.js';
 import { notifyForEvent, playSound } from './useHighlightNotifier.js';
@@ -631,6 +632,13 @@ function handleMessage(raw: string): void {
   if (payload.kind === 'relay-bot-updated') {
     const relayBots = useRelayBotsStore();
     relayBots.applyUpdate(payload.networkId, payload.nick, !!payload.marked, payload.pattern || '');
+    return;
+  }
+  if (payload.kind === 'dcc-transfer') {
+    // Live DCC transfer state change (#270 phase 2) — user-scoped, not a buffer
+    // message. Upsert the row into the Transfers store; this also self-reveals
+    // the Transfers affordance the first time an offer lands.
+    useDccStore().applyTransfer(payload.transfer);
     return;
   }
   if (payload.kind === 'contacts-snapshot') {

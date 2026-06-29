@@ -37,6 +37,19 @@
         <button class="link" @click="showUploads = true" title="Recent uploads">
           <i class="fa-solid fa-paperclip"></i>
         </button>
+        <!-- Self-revealing: DCC is off for almost everyone, so the Transfers
+             button only appears once a transfer exists (or the panel is open).
+             Color-as-signal (house style, no count badge): the glyph turns
+             warn-colored while an unsolicited offer awaits a decision. -->
+        <button
+          v-if="dcc.hasAny || dcc.panelOpen"
+          class="link dcc-btn"
+          :class="{ pending: dcc.pendingCount > 0 }"
+          @click="dcc.open()"
+          :title="dccTitle"
+        >
+          <i class="fa-solid fa-circle-down"></i>
+        </button>
         <button class="link" @click="openAddNetwork" title="Add network">
           <i class="fa-solid fa-plus"></i>
         </button>
@@ -183,6 +196,7 @@
       @close="channelListModal.close()"
     />
     <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
+    <TransfersModal v-if="dcc.panelOpen" @close="dcc.close()" />
     <QuickSwitcher v-if="showSwitcher" @close="showSwitcher = false" />
     <SearchModal v-if="showSearch" @close="showSearch = false" @jump="onJumpToMessage" />
     <KeyboardHelpModal v-if="showKbdHelp" @close="showKbdHelp = false" />
@@ -232,6 +246,7 @@ import LinkedText from '../components/LinkedText.vue';
 import TopicModal from '../components/TopicModal.vue';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
+import TransfersModal from '../components/TransfersModal.vue';
 import QuickSwitcher from '../components/QuickSwitcher.vue';
 import SearchModal from '../components/SearchModal.vue';
 import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
@@ -243,6 +258,7 @@ import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts.js';
 import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useFriendsStore } from '../stores/friends.js';
+import { useDccStore } from '../stores/dcc.js';
 import { useSearchStore } from '../stores/search.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
@@ -287,6 +303,10 @@ const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
 const friends = useFriendsStore();
 const friendCount = computed(() => friends.contacts.length);
+const dcc = useDccStore();
+const dccTitle = computed(() =>
+  dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',
+);
 const whois = useWhoisStore();
 const channelNotify = useChannelNotifyStore();
 
@@ -321,6 +341,7 @@ const anyModalOpen = computed(
     channelListModal.isOpen ||
     imageModal.isOpen ||
     showUploads.value ||
+    dcc.panelOpen ||
     showSwitcher.value ||
     showSearch.value ||
     showKbdHelp.value,
@@ -664,6 +685,11 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .link:hover {
   color: var(--fg);
+}
+/* Transfers button: while an unsolicited offer awaits a decision the glyph
+   turns warn-colored to draw the eye (color-as-signal, no count badge). */
+.dcc-btn.pending {
+  color: var(--warn);
 }
 /* Expand control at the top of the collapsed rail — the in-list collapse
    button is unmounted with the channel list, so this brings it back up top.

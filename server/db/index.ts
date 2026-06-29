@@ -339,6 +339,8 @@ function migrate() {
       state TEXT NOT NULL,
       passive INTEGER NOT NULL DEFAULT 0,
       token INTEGER,
+      peer_host TEXT,
+      peer_port INTEGER,
       trigger_text TEXT,
       crc_expected TEXT,
       crc_actual TEXT,
@@ -878,6 +880,12 @@ ensureColumn('upload_history', 'synced_to_cp', 'INTEGER NOT NULL DEFAULT 0');
 // (so the owner sees a "removed by moderation" tombstone instead of a dead
 // image), but the bytes are gone from storage. Standalone never sets it.
 ensureColumn('upload_history', 'removed', 'INTEGER NOT NULL DEFAULT 0');
+
+// The offer's address/port, persisted so an unsolicited DCC SEND recorded as
+// pending_approval can be accepted later (the user clicks Accept seconds/minutes
+// after the bot offered). #270 phase 2.
+ensureColumn('dcc_transfers', 'peer_host', 'TEXT');
+ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
 
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new

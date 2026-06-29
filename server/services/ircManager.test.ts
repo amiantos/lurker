@@ -16,6 +16,8 @@ let systemLog: typeof import('./systemLog.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let setUserPaused: typeof import('../db/users.js').setUserPaused;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
+let insertDccTransfer: typeof import('../db/dccTransfers.js').insertDccTransfer;
+let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
 
 beforeAll(async () => {
   ircManager = (await import('./ircManager.js')).default;
@@ -23,6 +25,7 @@ beforeAll(async () => {
   systemLog = (await import('./systemLog.js')).default;
   ({ createUser, setUserPaused } = await import('../db/users.js'));
   ({ createNetwork } = await import('../db/networks.js'));
+  ({ insertDccTransfer, updateDccTransferState } = await import('../db/dccTransfers.js'));
 });
 
 afterAll(() => ctx.cleanup());
@@ -60,6 +63,57 @@ describe('ircManager pause linchpin', () => {
 
     expect(ircManager.startNetwork(user.id, net.id)).toBeNull();
     expect(ircManager.getConnection(user.id, net.id)).toBeNull();
+  });
+});
+
+describe('ircManager.acceptDccTransfer result codes', () => {
+  let seq = 0;
+  function dccUserNet() {
+    const user = createUser(`dcc-accept-${(seq += 1)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'x',
+      autoconnect: false,
+    });
+    if (!net) throw new Error('createNetwork returned undefined');
+    return { userId: user.id, networkId: net.id };
+  }
+
+  it('returns not-found for an unknown transfer id', () => {
+    const { userId } = dccUserNet();
+    expect(ircManager.acceptDccTransfer(userId, 999999)).toBe('not-found');
+  });
+
+  it('returns not-pending for a row that already left pending_approval', () => {
+    // Copilot review: accepting a non-pending row used to no-op yet report 200.
+    const { userId, networkId } = dccUserNet();
+    const id = insertDccTransfer(userId, {
+      network_id: networkId,
+      peer_nick: 'bot',
+      filename: 'done.bin',
+      advertised_size: 100,
+      state: 'pending_approval',
+    });
+    updateDccTransferState(id, 'completed');
+    expect(ircManager.acceptDccTransfer(userId, id)).toBe('not-pending');
+  });
+
+  it('returns not-connected for a genuine pending offer on a stopped network', () => {
+    const { userId, networkId } = dccUserNet();
+    const id = insertDccTransfer(userId, {
+      network_id: networkId,
+      peer_nick: 'bot',
+      filename: 'f.bin',
+      advertised_size: 100,
+      state: 'pending_approval',
+      peer_host: '203.0.113.7',
+      peer_port: 5000,
+    });
+    // No live connection registered → can't dial.
+    expect(ircManager.acceptDccTransfer(userId, id)).toBe('not-connected');
   });
 });
 

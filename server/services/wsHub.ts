@@ -1019,6 +1019,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // EnrichedEvent (from ircConnection) is a strict superset of MessageEvent.
     const event = rawEvent as MessageEvent & { userId: number; state?: string };
     const eventUserId = event.userId;
+    // DCC transfer updates (#270 phase 2) are user-scoped, not buffer messages —
+    // fan them out as their own frame, skipping message decoration/buffer logic.
+    if ((event as { type?: string }).type === 'dcc-transfer') {
+      fanOut(eventUserId, {
+        kind: 'dcc-transfer',
+        transfer: (event as unknown as { transfer: unknown }).transfer,
+      });
+      return;
+    }
     const decorated = decorateMessage(eventUserId, event);
     const target = decorated.target;
     if (
