@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
+import { useContextMenu } from './useContextMenu.js';
 
 export interface MessageLike {
   id?: number | null;
@@ -34,6 +36,17 @@ export interface MessageAction {
 export interface MessageActionsAPI {
   buildActions(message: MessageLike | null | undefined): MessageAction[];
   run(key: MessageActionKey, message: MessageLike, ctx: MessageContext): void;
+  // The same actions rendered as ContextMenuItem[] for the right-click / tap
+  // menu (#392). Derived from buildActions so the bar and the menu can't drift.
+  buildItems(message: MessageLike | null | undefined, ctx: MessageContext): ContextMenuItem[];
+  // Open the shared context menu at a viewport point for this message.
+  openMenu(
+    message: MessageLike | null | undefined,
+    ctx: MessageContext,
+    x: number,
+    y: number,
+    triggerEl?: Element | null,
+  ): void;
 }
 
 // Single source of truth for the per-message actions rendered as the hover
@@ -50,6 +63,7 @@ export interface MessageActionsAPI {
 // `context` shape: { networkId, onReply(message), onIgnore(message) }
 export function useMessageActions(): MessageActionsAPI {
   const bookmarks = useBookmarksStore();
+  const menu = useContextMenu();
 
   function buildActions(message: MessageLike | null | undefined): MessageAction[] {
     if (!message) return [];
@@ -104,5 +118,33 @@ export function useMessageActions(): MessageActionsAPI {
     }
   }
 
-  return { buildActions, run };
+  // Map the descriptor list to context-menu items. Each item dispatches back
+  // through run() with the caller's context, so the menu shares the bar's exact
+  // side effects (reply hand-off, clipboard, bookmark toggle, ignore modal).
+  function buildItems(
+    message: MessageLike | null | undefined,
+    ctx: MessageContext,
+  ): ContextMenuItem[] {
+    if (!message) return [];
+    return buildActions(message).map((a) => ({
+      label: a.label,
+      icon: a.icon,
+      onClick: () => run(a.key, message, ctx),
+    }));
+  }
+
+  function openMenu(
+    message: MessageLike | null | undefined,
+    ctx: MessageContext,
+    x: number,
+    y: number,
+    triggerEl: Element | null = null,
+  ): void {
+    if (!message) return;
+    const items = buildItems(message, ctx);
+    if (items.length === 0) return;
+    menu.open(items, x, y, triggerEl);
+  }
+
+  return { buildActions, run, buildItems, openMenu };
 }

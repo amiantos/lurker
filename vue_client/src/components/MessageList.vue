@@ -84,7 +84,13 @@
           >
         </span>
       </div>
-      <div v-else class="line" :class="rowClass(row)" :data-msg-id="row.m?.id ?? null">
+      <div
+        v-else
+        class="line"
+        :class="rowClass(row)"
+        :data-msg-id="row.m?.id ?? null"
+        @click="onMessageRowClick($event, row.m)"
+      >
         <template v-if="compactMode && row.m?.type === 'message'">
           <!-- Compact-mode message rows (IRCCloud-style): nick on its own
              head line above the body; body row carries the body and a
@@ -243,7 +249,7 @@
           </span>
         </template>
         <div
-          v-if="eligibleForActions(row.m)"
+          v-if="hoverActions && eligibleForActions(row.m)"
           class="row-actions"
           role="group"
           aria-label="Message actions"
@@ -410,9 +416,18 @@ const ignores = useIgnoresStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
 const nicks = useNickColors();
-const { isMobile } = useViewport();
+const { isMobile, canHover } = useViewport();
 
 const actionItalic = computed(() => !!settings.effective('look.action.italic'));
+// Hover action bar toggle (#392). Off → the bar never renders and a left-click
+// on a message opens the action menu instead (onMessageRowClick). Always off on
+// touch via the CSS reveal media query, where tap opens the menu regardless.
+const hoverActions = computed(() => !!settings.effective('look.message.hover_actions'));
+// The message whose action menu is open — set when a tap (touch) or, with the
+// hover bar toggled off, a click (desktop) opens it (onMessageRowClick). Gives
+// the row a `selected` background so users with no hover can see which message
+// the menu targets (#392). Cleared when the menu closes.
+const selectedMessageId = ref<number | null>(null);
 const selfColor = computed<string | null>(
   () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
 );
@@ -570,6 +585,7 @@ function rowClass(row: RenderRow) {
     highlight: !!row.highlight && !row.nohilight,
     'cont-author': !!row.continuationAuthor,
     'cont-time': !!row.continuationTime,
+    selected: m?.id != null && m.id === selectedMessageId.value,
   };
 }
 
@@ -632,6 +648,35 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
   messageActions.run(key, m as any, actionContext);
 }
 
+// Click/tap → message action menu (#392). The entry point whenever the hover
+// action bar isn't doing the job: always on touch (no hover), and on desktop
+// when the bar is toggled off — otherwise there'd be no way to reach the actions
+// there. When the bar IS on (desktop default), a left-click stays a plain text
+// click and the bar is the affordance. Right-click is always left to the
+// browser's native menu (desktop users expect that).
+function onMessageRowClick(e: MouseEvent, m: ChatMessage | undefined | null): void {
+  if (canHover.value && hoverActions.value) return;
+  if (!eligibleForActions(m)) return;
+  // Clicks on a link follow the link; clicks on a nick are handled by NickRef
+  // (which stops propagation), so they never reach here.
+  if ((e.target as Element | null)?.closest('a')) return;
+  // Don't pop the menu out from under a text selection (drag-select on desktop,
+  // long-press select on touch) — let the user keep/copy their selection.
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return;
+  selectedMessageId.value = m?.id ?? null;
+  // Pass the row as the trigger so a second tap on the same message toggles its
+  // menu closed (matches the nick menu), instead of just reopening it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  messageActions.openMenu(
+    m as any,
+    actionContext,
+    e.clientX,
+    e.clientY,
+    e.currentTarget as Element,
+  );
+}
+
 // ─── Nick interactivity (#238) + mode-prefix glyph (#376) ──────────────────
 // Message-list nicks behave exactly like their nicklist entry: a tap (or
 // right-click / long-press) opens the shared member-action menu — Reply, Copy
@@ -640,6 +685,15 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
 const memberActions = useMemberActions();
 const contextMenu = useContextMenu();
 const whois = useWhoisStore();
+
+// Clear the selected-message highlight (declared up top) whenever the shared
+// context menu closes — tap an item, tap outside, or Escape (#392).
+watch(
+  () => contextMenu.state.open,
+  (open) => {
+    if (!open) selectedMessageId.value = null;
+  },
+);
 
 const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_prefix'));
 
@@ -1802,11 +1856,19 @@ watch(
 .line:hover {
   background: var(--bg-soft);
 }
-/* Override only the alt-row background on hover — not its text color. The
-   `.line.alt` selector outweighs `.line:hover`, so the hover background needs
-   restating here, but the alt foreground (--alt-fg) stays put: hover is a
-   background-only cue and shouldn't shift the text color under the cursor. */
-.message-list:not(.compact) .line.alt:hover {
+/* The row whose tap-opened action menu is open (touch). Same background as
+   hover, but authored without `:hover` so it survives the build's hover gating
+   (#115) and shows on touch — where there's no hover, this is the only cue for
+   which message the menu targets (#392). */
+.line.selected {
+  background: var(--bg-soft);
+}
+/* Override only the alt-row background on hover/selected — not its text color.
+   The `.line.alt` selector outweighs `.line:hover` / `.line.selected`, so the
+   background needs restating here, but the alt foreground (--alt-fg) stays put:
+   it's a background-only cue and shouldn't shift the text color. */
+.message-list:not(.compact) .line.alt:hover,
+.message-list:not(.compact) .line.alt.selected {
   background: var(--bg-soft);
 }
 
@@ -1814,10 +1876,12 @@ watch(
    toolbar — same card treatment as the toast stack (bg + border + drop
    shadow) — anchored to the top-right of the line, floating just above it so
    the bar barely overlaps the top edge instead of covering the message text.
-   Mobile reaches it via the same sticky-:hover path the old kebab used: iOS
-   Safari's sticky :hover makes the first tap on a row reveal the bar, and a
-   second tap hits an action. Long-press is left to the browser's native
-   text-callout so users can still select message text. */
+   Desktop only: the build wraps every `:hover` rule in `@media (hover: hover)`
+   (#115), so on touch this reveal simply doesn't exist — the bar never shows
+   and the old sticky-:hover two-tap never fires. When the bar is hidden (touch,
+   or toggled off on desktop), the same actions are reached by clicking/tapping a
+   message — see onMessageRowClick; right-click stays the native browser menu.
+   The bar can also be turned off via look.message.hover_actions. */
 .row-actions {
   position: absolute;
   /* Sit the bar fully above the row, then nudge down a few px so its bottom
@@ -1838,8 +1902,14 @@ watch(
   pointer-events: none;
   z-index: var(--z-base);
 }
-.line:hover .row-actions,
+/* Keyboard a11y reveal stays unconditional so focus-within works everywhere.
+   The hover reveal below is authored plain; the build gates it behind
+   `@media (hover: hover)` (#115) so it never fires on touch. */
 .row-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+.line:hover .row-actions {
   opacity: 1;
   pointer-events: auto;
 }
