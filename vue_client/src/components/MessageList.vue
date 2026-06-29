@@ -423,6 +423,10 @@ const actionItalic = computed(() => !!settings.effective('look.action.italic'));
 // Hover action bar toggle (#392). Off → the bar never renders (right-click / tap
 // menu still works). Always off on touch via the CSS reveal media query too.
 const hoverActions = computed(() => !!settings.effective('look.message.hover_actions'));
+// The message whose action menu is open — gives the row a `selected` background
+// so touch users (who get no hover) can see which message the menu targets, and
+// keeps it lit on desktop after the cursor leaves for the menu (#392).
+const selectedMessageId = ref<number | null>(null);
 const selfColor = computed<string | null>(
   () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
 );
@@ -580,6 +584,7 @@ function rowClass(row: RenderRow) {
     highlight: !!row.highlight && !row.nohilight,
     'cont-author': !!row.continuationAuthor,
     'cont-time': !!row.continuationTime,
+    selected: m?.id != null && m.id === selectedMessageId.value,
   };
 }
 
@@ -652,6 +657,7 @@ function onMessageMenu(e: MouseEvent, m: ChatMessage | undefined | null): void {
   // copy link) is what's wanted there.
   if ((e.target as Element | null)?.closest('a')) return;
   e.preventDefault();
+  selectedMessageId.value = m?.id ?? null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   messageActions.openMenu(m as any, actionContext, e.clientX, e.clientY);
 }
@@ -665,6 +671,7 @@ function onMessageRowClick(e: MouseEvent, m: ChatMessage | undefined | null): vo
   // Taps on a link follow the link; taps on a nick are handled by NickRef
   // (which stops propagation), so they never reach here.
   if ((e.target as Element | null)?.closest('a')) return;
+  selectedMessageId.value = m?.id ?? null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   messageActions.openMenu(m as any, actionContext, e.clientX, e.clientY);
 }
@@ -677,6 +684,15 @@ function onMessageRowClick(e: MouseEvent, m: ChatMessage | undefined | null): vo
 const memberActions = useMemberActions();
 const contextMenu = useContextMenu();
 const whois = useWhoisStore();
+
+// Clear the selected-message highlight (declared up top) whenever the shared
+// context menu closes — tap an item, tap outside, or Escape (#392).
+watch(
+  () => contextMenu.state.open,
+  (open) => {
+    if (!open) selectedMessageId.value = null;
+  },
+);
 
 const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_prefix'));
 
@@ -1839,11 +1855,20 @@ watch(
 .line:hover {
   background: var(--bg-soft);
 }
-/* Override only the alt-row background on hover — not its text color. The
-   `.line.alt` selector outweighs `.line:hover`, so the hover background needs
-   restating here, but the alt foreground (--alt-fg) stays put: hover is a
-   background-only cue and shouldn't shift the text color under the cursor. */
-.message-list:not(.compact) .line.alt:hover {
+/* The row whose action menu is open. Same background as hover, but authored
+   without `:hover` so it survives the build's hover gating (#115) and shows on
+   touch — where there's no hover, this is the only cue for which message the
+   menu targets (#392). On desktop it also keeps the row lit once the cursor
+   moves off it onto the menu. */
+.line.selected {
+  background: var(--bg-soft);
+}
+/* Override only the alt-row background on hover/selected — not its text color.
+   The `.line.alt` selector outweighs `.line:hover` / `.line.selected`, so the
+   background needs restating here, but the alt foreground (--alt-fg) stays put:
+   it's a background-only cue and shouldn't shift the text color. */
+.message-list:not(.compact) .line.alt:hover,
+.message-list:not(.compact) .line.alt.selected {
   background: var(--bg-soft);
 }
 
