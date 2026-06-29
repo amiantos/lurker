@@ -419,8 +419,9 @@ const nicks = useNickColors();
 const { isMobile, canHover } = useViewport();
 
 const actionItalic = computed(() => !!settings.effective('look.action.italic'));
-// Hover action bar toggle (#392). Off → the bar never renders (right-click / tap
-// menu still works). Always off on touch via the CSS reveal media query too.
+// Hover action bar toggle (#392). Off → the bar never renders and a left-click
+// on a message opens the action menu instead (onMessageRowClick). Always off on
+// touch via the CSS reveal media query, where tap opens the menu regardless.
 const hoverActions = computed(() => !!settings.effective('look.message.hover_actions'));
 // The message whose tap-opened action menu is open (touch only — desktop uses
 // the hover bar + native right-click menu, never ours). Gives the row a
@@ -647,16 +648,22 @@ function runAction(key: MessageActionKey, m: ChatMessage | undefined | null): vo
   messageActions.run(key, m as any, actionContext);
 }
 
-// Tap → message action menu on touch devices (#392), replacing the old
-// sticky-:hover two-tap. No-op on desktop, where the hover action bar is the
-// entry point and right-click is deliberately left to the browser's native menu
-// (desktop users expect that); a tap there is just a real text click.
+// Click/tap → message action menu (#392). The entry point whenever the hover
+// action bar isn't doing the job: always on touch (no hover), and on desktop
+// when the bar is toggled off — otherwise there'd be no way to reach the actions
+// there. When the bar IS on (desktop default), a left-click stays a plain text
+// click and the bar is the affordance. Right-click is always left to the
+// browser's native menu (desktop users expect that).
 function onMessageRowClick(e: MouseEvent, m: ChatMessage | undefined | null): void {
-  if (canHover.value) return;
+  if (canHover.value && hoverActions.value) return;
   if (!eligibleForActions(m)) return;
-  // Taps on a link follow the link; taps on a nick are handled by NickRef
+  // Clicks on a link follow the link; clicks on a nick are handled by NickRef
   // (which stops propagation), so they never reach here.
   if ((e.target as Element | null)?.closest('a')) return;
+  // Don't pop the menu out from under a text selection (drag-select on desktop,
+  // long-press select on touch) — let the user keep/copy their selection.
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return;
   selectedMessageId.value = m?.id ?? null;
   // Pass the row as the trigger so a second tap on the same message toggles its
   // menu closed (matches the nick menu), instead of just reopening it.

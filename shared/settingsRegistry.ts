@@ -589,9 +589,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: true,
     description:
       'Show the floating action toolbar (reply, copy, bookmark, ignore) when ' +
-      'hovering a message on desktop. The same actions are always available by ' +
-      'right-clicking (or tapping on touch devices) a message. No effect on ' +
-      'touch devices, where the bar is never shown.',
+      'hovering a message on desktop. When off, click a message to open the same ' +
+      'actions as a menu instead. No effect on touch devices, where the bar is ' +
+      'never shown and tapping a message always opens the menu.',
   },
   {
     key: 'look.buffer.time_format',
