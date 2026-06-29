@@ -33,8 +33,9 @@ export interface DccReceiveOptions {
   onProgress?: (received: number) => void;
   /** Transfer completed (received >= size, or a clean close when size unknown). */
   onDone?: (received: number) => void;
-  /** Transfer failed (connect/socket error, timeout, or early close). */
-  onError?: (err: Error) => void;
+  /** Transfer failed (connect/socket error, timeout, or early close). Carries the
+   *  byte count reached so the caller can persist it (resume/accuracy). */
+  onError?: (err: Error, received: number) => void;
 }
 
 export class DccReceiver {
@@ -52,14 +53,19 @@ export class DccReceiver {
   }
 
   start(): void {
-    const { host, port, destPath, startOffset = 0, idleTimeoutMs = 60_000 } = this.opts;
-    // Resume appends; a fresh transfer truncates any stale partial.
-    this.out = fs.createWriteStream(destPath, { flags: startOffset > 0 ? 'a' : 'w' });
-    this.out.on('error', (e) => this.settle(e));
-
+    const { host, port, idleTimeoutMs = 60_000 } = this.opts;
     const sock = net.connect({ host, port });
     this.socket = sock;
     sock.setTimeout(idleTimeoutMs);
+    sock.on('connect', () => {
+      // Open the file only once connected, so a failed connect (refused/timeout)
+      // never leaves an empty file behind. 'wx' for a fresh transfer fails safe
+      // if the path raced into existence since the caller resolved it (a
+      // concurrent-receiver guard); 'a' appends for resume.
+      const flags = (this.opts.startOffset ?? 0) > 0 ? 'a' : 'wx';
+      this.out = fs.createWriteStream(this.opts.destPath, { flags });
+      this.out.on('error', (e) => this.settle(e));
+    });
     // We never setEncoding, so chunk is always a Buffer at runtime; the event
     // type is widened to string|Buffer, so coerce defensively.
     sock.on('data', (chunk) => this.onData(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
@@ -101,12 +107,15 @@ export class DccReceiver {
     if (this.settled) return;
     this.settled = true;
     try {
-      this.socket?.destroy();
+      // Success: end() gracefully so the final queued ACK flushes to the sender
+      // (destroy() would discard it). Failure/cancel: destroy() to abort now.
+      if (err) this.socket?.destroy();
+      else this.socket?.end();
     } catch {
       // socket already gone
     }
     const finish = () => {
-      if (err) this.opts.onError?.(err);
+      if (err) this.opts.onError?.(err, this.received);
       else this.opts.onDone?.(this.received);
     };
     // Flush + close the file before declaring done, so the bytes are durable.

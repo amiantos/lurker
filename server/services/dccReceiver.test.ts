@@ -18,6 +18,18 @@ function makePayload(n: number): Buffer {
   return Buffer.from(Array.from({ length: n }, (_, i) => i % 256));
 }
 
+function waitFor(pred: () => boolean, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      if (pred()) return resolve();
+      if (Date.now() - start > timeoutMs) return reject(new Error('timeout waiting for condition'));
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
+
 // A fake DCC sender: on connect, writes `toSend` then half-closes; meanwhile it
 // records every byte the receiver sends back (the ACK stream).
 function startSender(toSend: Buffer): Promise<{
@@ -100,6 +112,9 @@ describe('DccReceiver', () => {
       }).start();
     });
 
+    // ACKs flush asynchronously over the socket; the receiver's onDone fires when
+    // the FILE is flushed, which can precede the sender collecting the final ACK.
+    await waitFor(() => s.acks().at(-1) === payload.length, 2000);
     const acks = s.acks();
     expect(acks.length).toBeGreaterThan(0);
     expect(acks).toEqual(acks.toSorted((a, b) => a - b)); // monotonically increasing

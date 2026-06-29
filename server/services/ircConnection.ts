@@ -53,6 +53,7 @@ import {
   findArmedRequest,
   insertDccTransfer,
   markDccCompleted,
+  markDccFailed,
   markDccReceiving,
   updateDccReceivedBytes,
   updateDccTransferState,
@@ -2671,9 +2672,9 @@ export class IrcConnection {
           `DCC: completed "${offer.filename}" (${formatBytes(received)}) → ${destPath}`,
         );
       },
-      onError: (err) => {
+      onError: (err, received) => {
         this.dccReceivers.delete(transferId);
-        updateDccTransferState(transferId, 'failed', err.message);
+        markDccFailed(transferId, received, err.message);
         this.surfaceCtcp(nick, `DCC: failed "${offer.filename}" — ${err.message}`);
       },
     });

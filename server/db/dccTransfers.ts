@@ -178,6 +178,16 @@ export function updateDccReceivedBytes(id: number, received: number): void {
   ).run(received, Number(id));
 }
 
+/** Mark a transfer failed, stamping the final byte count (so a throttled
+ *  progress write doesn't leave received_bytes stale) and the reason. */
+export function markDccFailed(id: number, received: number, error: string): void {
+  db.prepare(
+    `UPDATE dcc_transfers
+       SET state = 'failed', received_bytes = ?, error = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(received, error, Number(id));
+}
+
 /** Mark a transfer done, stamping the final byte count and completion time. */
 export function markDccCompleted(id: number, received: number): void {
   db.prepare(
