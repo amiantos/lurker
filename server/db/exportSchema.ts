@@ -444,6 +444,21 @@ export const EXPORT_TABLES = Object.freeze({
       'transient operational state rebuilt by the live instance, not portable user data',
   },
 
+  dcc_transfers: {
+    mode: 'skip',
+    reason:
+      'DCC download-manager state (transfer lifecycle + instance-local destination paths ' +
+      'and received-byte progress); operational, not portable — the received files live on ' +
+      "the cell's disk (not in the export) and an in-flight transfer can't resume elsewhere",
+  },
+
+  user_capabilities: {
+    mode: 'skip',
+    reason:
+      'admin-granted per-user capability grants (e.g. DCC); instance/operator-owned account ' +
+      "state reassigned by the target instance's admin, not portable user data",
+  },
+
   // RPE2E keyring (#382). Deliberately NOT in the bulk user data export. The
   // export DECRYPTS at-rest secrets to plaintext for cross-instance portability
   // (see exportService.ts) — so including these would drop the identity PRIVATE

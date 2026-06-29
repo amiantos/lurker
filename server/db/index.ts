@@ -303,6 +303,56 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_upload_history_user
       ON upload_history(user_id, id DESC);
 
+    -- Per-user feature capabilities, admin-granted. A generic (user_id,
+    -- capability) store rather than a one-off column so the forthcoming per-user
+    -- admin control panel can manage every gated feature uniformly; 'dcc' (the
+    -- DCC download manager, #270) is the first entry. Absence of a row means the
+    -- capability is OFF — capabilities are opt-in, granted by an operator.
+    CREATE TABLE IF NOT EXISTS user_capabilities (
+      user_id INTEGER NOT NULL,
+      capability TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, capability),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- Server-side DCC (Direct Client-to-Client) file transfers — the receive side
+    -- of the XDCC download manager (#270). One row per offered/accepted transfer.
+    -- The IRC connection lives on the cell, so the bytes land here on disk
+    -- (destination_path) and stream to the browser on demand; nothing about a
+    -- transfer touches the message tables. state drives the download-manager UI
+    -- (see DccTransferState in db/dccTransfers.ts). advertised_size/received_bytes
+    -- are 64-bit (SQLite INTEGER) so files over 4 GiB stay exact. peer_nick
+    -- collates NOCASE so an inbound offer matches the trigger we sent regardless
+    -- of how the bot cases its nick.
+    CREATE TABLE IF NOT EXISTS dcc_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      peer_nick TEXT NOT NULL COLLATE NOCASE,
+      direction TEXT NOT NULL DEFAULT 'recv',
+      filename TEXT NOT NULL,
+      advertised_size INTEGER NOT NULL,
+      received_bytes INTEGER NOT NULL DEFAULT 0,
+      destination_path TEXT,
+      state TEXT NOT NULL,
+      passive INTEGER NOT NULL DEFAULT 0,
+      token INTEGER,
+      trigger_text TEXT,
+      crc_expected TEXT,
+      crc_actual TEXT,
+      crc_status TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_dcc_transfers_user
+      ON dcc_transfers(user_id, id DESC);
+
     -- Per-(network, nick) presence state for DM peers. Single row per peer
     -- holding only the most recent transition event (state) and when it
     -- happened (state_at). state is one of: online, offline, away, back.

@@ -16,6 +16,9 @@ data/
 vue_client/dist/
 coverage/
 
+# Local DCC download dir used for QA (LURKER_DCC_DIR); never commit received files
+dcc-downloads/
+
 # Docs site (VitePress) build artifacts
 docs/.vitepress/dist/
 docs/.vitepress/cache/
