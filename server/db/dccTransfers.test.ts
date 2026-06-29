@@ -10,6 +10,7 @@ import db from './index.js';
 import { createNetwork } from './networks.js';
 import { createUser } from './users.js';
 import {
+  findArmedRequest,
   getDccTransfer,
   insertDccTransfer,
   listDccTransfers,
@@ -103,5 +104,23 @@ describe('dccTransfers', () => {
       state: 'pending_approval',
     });
     expect(getDccTransfer(other, id)).toBeUndefined();
+  });
+
+  it('findArmedRequest matches a recent request (NOCASE) but not an expired one', () => {
+    const id = insertDccTransfer(userId, {
+      network_id: networkId,
+      peer_nick: 'QueueBot',
+      filename: 'XDCC #1',
+      advertised_size: 0,
+      state: 'requested',
+    });
+    // Fresh + case-insensitive nick → matched.
+    expect(findArmedRequest(userId, networkId, 'queuebot')?.id).toBe(id);
+    // Aged past the arm TTL (120 min) → no longer matched, so a later unsolicited
+    // offer from that nick can't auto-accept.
+    db.prepare("UPDATE dcc_transfers SET created_at = datetime('now','-3 hours') WHERE id = ?").run(
+      id,
+    );
+    expect(findArmedRequest(userId, networkId, 'QueueBot')).toBeUndefined();
   });
 });

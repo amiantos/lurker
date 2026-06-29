@@ -84,3 +84,22 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   }
   return candidate;
 }
+
+/**
+ * Whether `dir`'s filesystem has room for `bytes` plus a safety margin. Used to
+ * refuse a transfer that would fill the cell disk (the offer's advertised size is
+ * attacker-controlled, but the receiver also caps writes at it). Fails OPEN — if
+ * statfs can't be read, we don't block the transfer.
+ */
+export function hasFreeSpaceFor(
+  dir: string,
+  bytes: number,
+  marginBytes = 64 * 1024 * 1024,
+): boolean {
+  try {
+    const st = fs.statfsSync(dir);
+    return st.bavail * st.bsize >= bytes + marginBytes;
+  } catch {
+    return true;
+  }
+}

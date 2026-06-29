@@ -125,10 +125,16 @@ export function updateDccTransferState(
   ).run(state, error, Number(id));
 }
 
-/** The most recent still-waiting `requested` row for a bot on a network — used to
- *  match an inbound DCC SEND offer to a trigger the user sent (arm-on-trigger
- *  auto-accept). peer_nick collates NOCASE, so the bot's nick casing in the offer
- *  needn't match what the user typed. */
+// An armed request only auto-accepts an offer that arrives within this window of
+// the trigger. Generous enough to survive a slow bot send-queue, but bounded so a
+// stale arm from hours/days ago can't silently auto-accept a later unsolicited
+// offer (which would defeat the pending_approval gate).
+export const DCC_ARM_TTL_MINUTES = 120;
+
+/** The most recent still-waiting, NOT-yet-expired `requested` row for a bot on a
+ *  network — used to match an inbound DCC SEND offer to a trigger the user sent
+ *  (arm-on-trigger auto-accept). peer_nick collates NOCASE, so the bot's nick
+ *  casing in the offer needn't match what the user typed. */
 export function findArmedRequest(
   userId: number,
   networkId: number,
@@ -138,6 +144,7 @@ export function findArmedRequest(
     .prepare(
       `SELECT * FROM dcc_transfers
        WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND state = 'requested'
+         AND created_at >= datetime('now', '-${DCC_ARM_TTL_MINUTES} minutes')
        ORDER BY id DESC LIMIT 1`,
     )
     .get(userId, networkId, peerNick) as DccTransferRow | undefined;

@@ -157,4 +157,49 @@ describe('DccReceiver', () => {
     });
     expect(err).toBeInstanceOf(Error);
   });
+
+  it('reports onError (does not hang) when the destination file open fails', async () => {
+    // Pre-create the path so the receiver's exclusive 'wx' open fails EEXIST,
+    // exercising the write-stream error path (which must still call onError).
+    const payload = makePayload(1000);
+    const s = await startSender(payload);
+    sender = s;
+    const dest = tmpFile('exists.bin');
+    fs.writeFileSync(dest, 'already here');
+
+    const err = await new Promise<Error>((resolve, reject) => {
+      new DccReceiver({
+        host: '127.0.0.1',
+        port: s.port,
+        size: payload.length,
+        destPath: dest,
+        onDone: () => reject(new Error('should not have completed')),
+        onError: resolve,
+      }).start();
+    });
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it('caps writes at the advertised size and ignores overshoot', async () => {
+    const advertised = 5000;
+    const payload = makePayload(8000); // sender ships MORE than advertised
+    const s = await startSender(payload);
+    sender = s;
+    const dest = tmpFile('capped.bin');
+
+    const received = await new Promise<number>((resolve, reject) => {
+      new DccReceiver({
+        host: '127.0.0.1',
+        port: s.port,
+        size: advertised,
+        destPath: dest,
+        onDone: resolve,
+        onError: reject,
+      }).start();
+    });
+
+    expect(received).toBe(advertised);
+    expect(fs.statSync(dest).size).toBe(advertised);
+    expect(fs.readFileSync(dest).equals(payload.subarray(0, advertised))).toBe(true);
+  });
 });

@@ -161,3 +161,47 @@ export function formatDccOfferLine(nick: string, offer: DccSend): string {
   const mode = offer.passive ? ' (passive)' : '';
   return `${nick} offered "${offer.filename}" (${formatBytes(offer.size)}) via DCC SEND${mode}`;
 }
+
+function isBlockedIpv4(ip: string): boolean {
+  const parts = ip.split('.').map((p) => Number(p));
+  if (parts.length !== 4 || parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) {
+    return true; // malformed → block, fail safe
+  }
+  const [a, b] = parts;
+  if (a === 0) return true; // 0.0.0.0/8 "this network"
+  if (a === 10) return true; // 10/8 private
+  if (a === 127) return true; // loopback
+  if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 cloud metadata
+  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16/12 private
+  if (a === 192 && b === 168) return true; // 192.168/16 private
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64/10 CGNAT
+  if (a >= 224) return true; // 224/4 multicast + 240/4 reserved + 255.255.255.255 broadcast
+  return false;
+}
+
+/**
+ * Whether the cell should REFUSE to dial this DCC host. The address comes from
+ * the (attacker-controlled) offer, and the cell dials it directly — so without
+ * this an offer could point the cell at its own loopback, a cloud metadata
+ * endpoint (169.254.169.254), or an internal VPC service (SSRF), and the
+ * response would be written to a file the user can download. Blocks loopback /
+ * link-local / private / CGNAT / multicast / reserved by default; the operator
+ * can opt back in for LAN bots via LURKER_DCC_ALLOW_PRIVATE_HOSTS (see dccConfig).
+ * `host` is the decoded form from decodeDccAddress (dotted-quad IPv4 or IPv6
+ * literal).
+ */
+export function isBlockedDccHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  if (h === '') return true;
+  if (h.includes(':')) {
+    // IPv4-mapped IPv6 (::ffff:1.2.3.4) — judge by the embedded IPv4.
+    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
+    if (mapped) return isBlockedIpv4(mapped[1]);
+    if (h === '::1' || h === '::') return true; // loopback / unspecified
+    if (/^fe[89ab]/.test(h)) return true; // fe80::/10 link-local
+    if (/^f[cd]/.test(h)) return true; // fc00::/7 unique-local
+    if (h.startsWith('ff')) return true; // ff00::/8 multicast
+    return false;
+  }
+  return isBlockedIpv4(h);
+}

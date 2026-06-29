@@ -85,12 +85,30 @@ export class DccReceiver {
 
   private onData(chunk: Buffer): void {
     if (this.settled || !this.out || !this.socket) return;
-    this.received += chunk.length;
 
-    // Backpressure: pause the socket whenever the disk falls behind.
-    if (!this.out.write(chunk)) {
+    // Never write past the advertised size: a malicious sender could otherwise
+    // overshoot the size we vetted (disk/cap checks) and append trailing garbage
+    // that breaks later CRC/size verification. Cap the chunk; reaching the size
+    // is completion.
+    let data = chunk;
+    if (this.opts.size > 0) {
+      const remaining = this.opts.size - this.received;
+      if (remaining <= 0) return; // already have the whole file; ignore trailers
+      if (data.length > remaining) data = data.subarray(0, remaining);
+    }
+    this.received += data.length;
+
+    // Backpressure: pause reads while the disk catches up, and disable the idle
+    // timeout meanwhile (a paused socket emits no 'data', so a slow disk would
+    // otherwise trip the timer on a perfectly healthy transfer).
+    if (!this.out.write(data)) {
+      this.socket.setTimeout(0);
       this.socket.pause();
-      this.out.once('drain', () => this.socket?.resume());
+      this.out.once('drain', () => {
+        if (this.settled || !this.socket) return;
+        this.socket.setTimeout(this.opts.idleTimeoutMs ?? 60_000);
+        this.socket.resume();
+      });
     }
 
     // DCC ACK: cumulative bytes received, 4-byte big-endian, wrapping past 4 GiB
@@ -118,8 +136,22 @@ export class DccReceiver {
       if (err) this.opts.onError?.(err, this.received);
       else this.opts.onDone?.(this.received);
     };
-    // Flush + close the file before declaring done, so the bytes are durable.
-    if (this.out) this.out.end(finish);
-    else finish();
+    if (err) {
+      // The write stream may already have errored (ENOSPC / 'wx' EEXIST); calling
+      // end(cb) on an errored stream never fires 'finish', which would strand the
+      // transfer (onError never runs, the receiver leaks). Destroy it and finish
+      // directly so onError always fires.
+      try {
+        this.out?.destroy();
+      } catch {
+        // already gone
+      }
+      finish();
+    } else if (this.out) {
+      // Flush + close the file before declaring done, so the bytes are durable.
+      this.out.end(finish);
+    } else {
+      finish();
+    }
   }
 }

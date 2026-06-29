@@ -44,10 +44,11 @@ import {
   parseCtcp,
   type CtcpReplyConfig,
 } from './ctcp.js';
-import { formatBytes, formatDccOfferLine, parseDcc } from './dcc.js';
+import path from 'path';
+import { formatBytes, formatDccOfferLine, isBlockedDccHost, parseDcc } from './dcc.js';
 import type { DccSend } from './dcc.js';
-import { dccEnabledForUser } from './dccConfig.js';
-import { resolveDccDestination } from './dccPaths.js';
+import { dccAllowPrivateHosts, dccEnabledForUser, dccMaxFileBytes } from './dccConfig.js';
+import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
 import { DccReceiver } from './dccReceiver.js';
 import {
   findArmedRequest,
@@ -2407,8 +2408,14 @@ export class IrcConnection {
   say(target: string, text: string): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    this.maybeArmDcc(target, text);
     this.client.say(target, text);
+    // Arm AFTER the send, and never let a DB hiccup in arming break delivery of
+    // the user's actual message.
+    try {
+      this.maybeArmDcc(target, text);
+    } catch {
+      /* arming is best-effort */
+    }
   }
   action(target: string, text: string): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
@@ -2547,7 +2554,13 @@ export class IrcConnection {
     // probe path; when disabled, fall through so it surfaces as an ordinary
     // unsupported CTCP ("requested CTCP DCC (no reply)"), unchanged from today.
     if (type === 'DCC' && dccEnabledForUser(this.network.user_id)) {
-      this.handleInboundDccRequest(nick, args, event);
+      // DCC handling (parse + DB writes + socket setup) must never throw out of
+      // the CTCP event path and disrupt the connection.
+      try {
+        this.handleInboundDccRequest(nick, args, event);
+      } catch {
+        /* malformed offer / transient DB error — drop it, keep the connection */
+      }
       return;
     }
     const config = this.ctcpReplyConfig();
@@ -2563,7 +2576,9 @@ export class IrcConnection {
   // bot directly). Gated like every DCC entry point.
   private maybeArmDcc(target: string, text: string): void {
     if (this.disposed || !isDmTargetName(target)) return;
-    const m = /\bxdcc\s+(?:send|get)\s+(#?\d+)/i.exec(text);
+    // Anchored at the start (after optional whitespace) so an `xdcc send #n`
+    // mentioned mid-sentence in ordinary conversation doesn't arm an auto-accept.
+    const m = /^\s*xdcc\s+(?:send|get)\s+(#?\d+)/i.exec(text);
     if (!m) return;
     if (!dccEnabledForUser(this.network.user_id)) return;
     const pack = m[1].startsWith('#') ? m[1] : `#${m[1]}`;
@@ -2621,6 +2636,33 @@ export class IrcConnection {
       this.surfaceCtcp(nick, `DCC: passive transfer from ${nick} not yet supported`);
       return;
     }
+    // SSRF guard: the host is attacker-controlled and the cell dials it directly,
+    // so refuse loopback/link-local/private/reserved addresses (a self-hoster can
+    // opt back in for a LAN bot via LURKER_DCC_ALLOW_PRIVATE_HOSTS).
+    if (!dccAllowPrivateHosts() && isBlockedDccHost(offer.host)) {
+      updateDccTransferState(transferId, 'failed', `blocked address ${offer.host}`);
+      this.surfaceCtcp(
+        nick,
+        `DCC: refusing "${offer.filename}" — sender address ${offer.host} is private/reserved`,
+      );
+      return;
+    }
+    // Require a real advertised size (so the receiver can bound the write) and
+    // honor an operator per-file cap.
+    if (offer.size <= 0) {
+      updateDccTransferState(transferId, 'failed', 'offer has no advertised size');
+      this.surfaceCtcp(nick, `DCC: refusing "${offer.filename}" — no advertised file size`);
+      return;
+    }
+    const cap = dccMaxFileBytes();
+    if (cap > 0 && offer.size > cap) {
+      updateDccTransferState(transferId, 'failed', `exceeds ${formatBytes(cap)} limit`);
+      this.surfaceCtcp(
+        nick,
+        `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over the ${formatBytes(cap)} limit`,
+      );
+      return;
+    }
     let destPath: string;
     try {
       const username = findUserById(this.network.user_id)?.username || 'user';
@@ -2629,6 +2671,16 @@ export class IrcConnection {
       const reason = e instanceof Error ? e.message : String(e);
       updateDccTransferState(transferId, 'failed', reason);
       this.surfaceCtcp(nick, `DCC: cannot start "${offer.filename}" — ${reason}`);
+      return;
+    }
+    // Refuse a transfer that would fill the disk (the receiver also caps writes at
+    // the advertised size, so this size is the real ceiling).
+    if (!hasFreeSpaceFor(path.dirname(destPath), offer.size)) {
+      updateDccTransferState(transferId, 'failed', 'insufficient disk space');
+      this.surfaceCtcp(
+        nick,
+        `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — not enough free disk space`,
+      );
       return;
     }
     markDccReceiving(transferId, {

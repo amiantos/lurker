@@ -8,6 +8,7 @@ import {
   type DccSend,
   formatBytes,
   formatDccOfferLine,
+  isBlockedDccHost,
   parseDcc,
 } from './dcc.js';
 
@@ -189,5 +190,50 @@ describe('formatDccOfferLine', () => {
     expect(formatDccOfferLine('bot', offer)).toBe(
       'bot offered "f.bin" (1.0 KB) via DCC SEND (passive)',
     );
+  });
+});
+
+describe('isBlockedDccHost', () => {
+  it('blocks loopback / private / link-local / CGNAT / reserved IPv4', () => {
+    for (const h of [
+      '127.0.0.1',
+      '127.1.2.3',
+      '10.0.0.5',
+      '172.16.0.1',
+      '172.31.255.255',
+      '192.168.1.10',
+      '169.254.169.254', // cloud metadata
+      '100.64.0.1', // CGNAT
+      '0.0.0.0',
+      '224.0.0.1', // multicast
+      '255.255.255.255',
+    ]) {
+      expect(isBlockedDccHost(h)).toBe(true);
+    }
+  });
+
+  it('allows ordinary public IPv4', () => {
+    for (const h of ['1.1.1.1', '8.8.8.8', '93.184.216.34', '172.15.0.1', '172.32.0.1']) {
+      expect(isBlockedDccHost(h)).toBe(false);
+    }
+  });
+
+  it('blocks loopback / link-local / ULA / multicast IPv6 and v4-mapped privates', () => {
+    for (const h of [
+      '::1',
+      '::',
+      'fe80::1',
+      'fc00::1',
+      'fd12:3456::1',
+      'ff02::1',
+      '::ffff:127.0.0.1',
+    ]) {
+      expect(isBlockedDccHost(h)).toBe(true);
+    }
+  });
+
+  it('allows a public IPv6 (and public v4-mapped)', () => {
+    expect(isBlockedDccHost('2606:4700:4700::1111')).toBe(false);
+    expect(isBlockedDccHost('::ffff:8.8.8.8')).toBe(false);
   });
 });

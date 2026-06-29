@@ -35,3 +35,17 @@ export function dccMasterEnabled(): boolean {
 export function dccEnabledForUser(userId: number): boolean {
   return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC);
 }
+
+/** Operator cap on a single accepted DCC file, in bytes, from
+ *  LURKER_DCC_MAX_FILE_MB. 0 (unset / non-positive / unparseable) means no cap. */
+export function dccMaxFileBytes(): number {
+  const mb = Number((process.env.LURKER_DCC_MAX_FILE_MB ?? '').trim());
+  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb) * 1024 * 1024 : 0;
+}
+
+/** Whether to allow dialing private/loopback/reserved DCC hosts
+ *  (LURKER_DCC_ALLOW_PRIVATE_HOSTS). OFF by default — the SSRF guard blocks them;
+ *  a self-hoster pulling from a bot on their own LAN can opt in. */
+export function dccAllowPrivateHosts(): boolean {
+  return parseDccEnabled(process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS);
+}

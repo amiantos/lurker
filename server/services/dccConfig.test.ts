@@ -8,7 +8,13 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { createUser } from '../db/users.js';
 import { CAPABILITY_DCC, setUserCapability } from '../db/userCapabilities.js';
-import { dccEnabledForUser, dccMasterEnabled, parseDccEnabled } from './dccConfig.js';
+import {
+  dccAllowPrivateHosts,
+  dccEnabledForUser,
+  dccMasterEnabled,
+  dccMaxFileBytes,
+  parseDccEnabled,
+} from './dccConfig.js';
 
 describe('parseDccEnabled', () => {
   it('treats the conventional truthy values as on (trimmed, case-insensitive)', () => {
@@ -31,6 +37,8 @@ describe('dcc gate', () => {
   });
   afterEach(() => {
     delete process.env.LURKER_DCC_ENABLED;
+    delete process.env.LURKER_DCC_MAX_FILE_MB;
+    delete process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS;
   });
 
   it('reads the master switch live from LURKER_DCC_ENABLED', () => {
@@ -53,5 +61,32 @@ describe('dcc gate', () => {
     // both
     setUserCapability(userId, CAPABILITY_DCC, true);
     expect(dccEnabledForUser(userId)).toBe(true);
+  });
+});
+
+describe('dccMaxFileBytes', () => {
+  afterEach(() => delete process.env.LURKER_DCC_MAX_FILE_MB);
+
+  it('is 0 (no cap) when unset / non-positive / unparseable', () => {
+    expect(dccMaxFileBytes()).toBe(0);
+    for (const v of ['0', '-5', 'abc', '']) {
+      process.env.LURKER_DCC_MAX_FILE_MB = v;
+      expect(dccMaxFileBytes()).toBe(0);
+    }
+  });
+
+  it('converts MB to bytes', () => {
+    process.env.LURKER_DCC_MAX_FILE_MB = '100';
+    expect(dccMaxFileBytes()).toBe(100 * 1024 * 1024);
+  });
+});
+
+describe('dccAllowPrivateHosts', () => {
+  afterEach(() => delete process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS);
+
+  it('defaults to off and honors the truthy set', () => {
+    expect(dccAllowPrivateHosts()).toBe(false);
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    expect(dccAllowPrivateHosts()).toBe(true);
   });
 });

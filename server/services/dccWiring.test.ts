@@ -35,6 +35,8 @@ afterEach(() => {
   // Isolate each test: the DB and env persist across a file's tests.
   delete process.env.LURKER_DCC_ENABLED;
   delete process.env.LURKER_DCC_DIR;
+  delete process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS;
+  delete process.env.LURKER_DCC_MAX_FILE_MB;
   setUserCapability(1, CAPABILITY_DCC, false);
   db.prepare('DELETE FROM dcc_transfers').run();
   activeSender?.close();
@@ -243,6 +245,7 @@ describe('arm-on-trigger + auto-accept', () => {
   it('auto-accepts a matching offer and streams the file to disk', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-e2e-'));
     process.env.LURKER_DCC_DIR = tmpDir;
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1'; // the fake sender is on 127.0.0.1
     enableDcc();
     const payload = makePayload(40_000);
     const sender = await startSender(payload);
@@ -282,5 +285,43 @@ describe('arm-on-trigger + auto-accept', () => {
     const row = listDccTransfers(1)[0];
     expect(row.state).toBe('failed');
     expect(row.error).toMatch(/passive/i);
+  });
+
+  it('refuses an armed offer pointing at a private/loopback address (SSRF guard)', () => {
+    enableDcc(); // note: LURKER_DCC_ALLOW_PRIVATE_HOSTS is NOT set
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('bot', 'xdcc send #3');
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: 'DCC SEND f.bin 2130706433 8080 1024', // 2130706433 = 127.0.0.1
+    });
+    const row = listDccTransfers(1)[0];
+    expect(row.state).toBe('failed');
+    expect(row.error).toMatch(/blocked address/i);
+  });
+
+  it('refuses an armed offer with no advertised size', () => {
+    enableDcc();
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('bot', 'xdcc send #4');
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: 'DCC SEND f.bin 16843009 8080 0', // 1.1.1.1 (public), size 0
+    });
+    const row = listDccTransfers(1)[0];
+    expect(row.state).toBe('failed');
+    expect(row.error).toMatch(/no advertised/i);
+  });
+
+  it('does not arm an xdcc trigger mentioned mid-sentence', () => {
+    enableDcc();
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('bot', 'hey did you ever get that xdcc send #5 file?');
+    expect(listDccTransfers(1)).toHaveLength(0);
   });
 });
