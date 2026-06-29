@@ -74,8 +74,16 @@ export class DccReceiver {
       // open is still pending) before a 'wx' open-failure surfaces, completing a
       // transfer that never actually wrote to disk.
       sock.pause();
-      const flags = (this.opts.startOffset ?? 0) > 0 ? 'a' : 'wx';
-      this.out = fs.createWriteStream(this.opts.destPath, { flags });
+      // Resume writes at an EXPLICIT position (startOffset) rather than appending
+      // at EOF, so the write offset can't drift from the byte counter (which is
+      // seeded from startOffset) if the file's length changed since the caller
+      // stat'd it — that drift would corrupt the file and defeat the size cap.
+      // Fresh transfers create exclusively ('wx', concurrent-receiver guard).
+      const startOffset = this.opts.startOffset ?? 0;
+      this.out =
+        startOffset > 0
+          ? fs.createWriteStream(this.opts.destPath, { flags: 'r+', start: startOffset })
+          : fs.createWriteStream(this.opts.destPath, { flags: 'wx' });
       this.out.on('error', (e) => this.settle(e));
       this.out.on('open', () => {
         if (!this.settled) sock.resume();

@@ -2791,6 +2791,10 @@ export class IrcConnection {
     const key = this.dccResumeKey(nick, accept.filename);
     const pending = this.dccPendingResume.get(key);
     if (!pending) return; // unsolicited / stale ACCEPT
+    // Confirm the ACCEPT is for our pending offer (the port it echoes must match)
+    // BEFORE consuming the pending entry — a stray/mismatched ACCEPT must not clear
+    // the timer or fail a still-valid pending resume.
+    if (accept.port !== pending.offer.port) return;
     clearTimeout(pending.timer);
     this.dccPendingResume.delete(key);
     // We asked to resume from exactly our partial's size; the sender must echo it.
