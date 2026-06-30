@@ -10,7 +10,7 @@
         v-for="t in toasts.items"
         :key="t.id"
         class="toast"
-        :class="[`kind-${t.kind}`, { clickable: !!t.networkId }]"
+        :class="[`kind-${t.kind}`, { clickable: !!t.networkId && !!t.target }]"
         @click="onClick(t)"
       >
         <div class="row">
@@ -32,21 +32,31 @@
 import { useToastsStore } from '../stores/toasts.js';
 import type { Toast } from '../stores/toasts.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { emitJumpIntent } from '../composables/useJumpIntent.js';
 
 const toasts = useToastsStore();
 const buffers = useBuffersStore();
 
 function onClick(t: Toast) {
   if (!t.networkId || !t.target) return;
-  // The buffer can be closed between the toast firing and the user clicking
-  // it; activating would recreate an empty shell. Replace the toast with a
-  // "closed" notice instead.
-  if (!buffers.isOpen(t.networkId, t.target)) {
-    toasts.dismiss(t.id);
+  if (t.messageId != null) {
+    // A specific message → scroll to it via the shared jump pipeline (#444). The
+    // active chat shell subscribes through useChatBootstrap and runs the jump.
+    emitJumpIntent({
+      kind: 'jump',
+      networkId: t.networkId,
+      target: t.target,
+      messageId: t.messageId,
+    });
+  } else if (!buffers.isOpen(t.networkId, t.target)) {
+    // A message-less toast (join failure, unknown command, info) whose buffer has
+    // since closed: activating would recreate an empty shell, so show a notice
+    // instead — the pre-#444 behavior. The jump pipeline's guards don't fit here;
+    // they'd reject a :server: target or recreate a parted channel.
     toasts.push({ kind: 'info', title: 'Buffer is closed', body: '', ttlMs: 4000 });
-    return;
+  } else {
+    buffers.activate(t.networkId, t.target);
   }
-  buffers.activate(t.networkId, t.target);
   toasts.dismiss(t.id);
 }
 

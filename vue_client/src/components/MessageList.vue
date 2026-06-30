@@ -1789,19 +1789,34 @@ function scrollByPage(direction: number) {
 
 defineExpose({ scrollByPage });
 
+// Budget (in animation frames, ~1s at 60fps) for the target row to mount before
+// we give up. On a cold-start deep link or a large around-slice the row often
+// isn't painted on the first tick; a single querySelector would silently abandon
+// the jump, which is the main reason a *delivered* jump fails to scroll on mobile.
+const SCROLL_RETRY_FRAMES = 60;
+
 watch(
   () => props.pendingScrollId,
   async (id) => {
     if (id == null) return;
     await nextTick();
-    const el = scroller.value;
-    if (!el) return;
-    const target = el.querySelector(`[data-msg-id="${id}"]`);
-    if (!target) return;
-    stickToBottom.value = false;
-    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    target.classList.add('scroll-target');
-    setTimeout(() => target.classList.remove('scroll-target'), 1500);
+    let attempts = 0;
+    const tryScroll = () => {
+      // A newer jump superseded this one — abandon the stale retry loop.
+      if (props.pendingScrollId !== id) return;
+      const el = scroller.value;
+      if (!el) return;
+      const target = el.querySelector(`[data-msg-id="${id}"]`);
+      if (!target) {
+        if (attempts++ < SCROLL_RETRY_FRAMES) requestAnimationFrame(tryScroll);
+        return;
+      }
+      stickToBottom.value = false;
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      target.classList.add('scroll-target');
+      setTimeout(() => target.classList.remove('scroll-target'), 1500);
+    };
+    tryScroll();
   },
 );
 </script>

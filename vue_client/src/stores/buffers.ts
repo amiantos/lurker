@@ -536,7 +536,15 @@ export const useBuffersStore = defineStore('buffers', {
     // by applyAroundSlice — a second loadAround (or a reattach) before the
     // first response lands mints a new token, so the stale response is
     // discarded on arrival.
-    loadAround(networkId: number | string, target: string, anchorId: number, halfLimit = 100) {
+    // Returns the request token so a caller (useJumpToMessage) can correlate the
+    // eventual applyAroundSlice, or null if the socket was closed and nothing was
+    // sent — in which case no response will ever arrive to scroll to.
+    loadAround(
+      networkId: number | string,
+      target: string,
+      anchorId: number,
+      halfLimit = 100,
+    ): number | null {
       const buf = ensureBuffer(this, networkId, target);
       const token = nextHistoryToken();
       const wasDetached = buf.detached;
@@ -560,7 +568,9 @@ export const useBuffersStore = defineStore('buffers', {
         buf.loadingHistory = false;
         buf.pendingHistoryToken = null;
         buf.detached = wasDetached;
+        return null;
       }
+      return token;
     },
     // Token-guarded replace for the 'around' response. A mismatched token
     // means a fresher request superseded this one — drop the stale slice

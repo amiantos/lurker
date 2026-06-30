@@ -2,9 +2,26 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { Ref } from 'vue';
-import { watch } from 'vue';
+import { watch, nextTick } from 'vue';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useToastsStore } from '../stores/toasts.js';
+
+// Drive MessageList's pendingScrollId watcher. Arming the same id twice in a row
+// would be a no-op (the value doesn't change), so a second tap on the same
+// notification — or a retry after a first attempt that landed before the row
+// mounted — would silently do nothing. Bounce through null on a repeat so the
+// watcher always re-fires.
+function armScroll(pendingScrollId: Ref<number | null> | undefined, messageId: number): void {
+  if (!pendingScrollId) return;
+  if (pendingScrollId.value === messageId) {
+    pendingScrollId.value = null;
+    nextTick(() => {
+      pendingScrollId.value = messageId;
+    });
+    return;
+  }
+  pendingScrollId.value = messageId;
+}
 
 export interface JumpTarget {
   networkId: number;
@@ -82,22 +99,28 @@ export function useJumpToMessage({ pendingScrollId, afterActivate }: JumpToMessa
       messageId <= buf.clearedBeforeId;
     if (hasMessage) {
       if (hiddenByClear) buffers.detachForJump(networkId, target);
-      if (pendingScrollId) pendingScrollId.value = messageId;
+      armScroll(pendingScrollId, messageId);
       return;
     }
-    // Detached fetch path. loadAround sets detached=true synchronously, so
-    // any live fanOut between here and the response is dropped. We arm
-    // pendingScrollId once the slice replaces buf.messages — the MessageList
-    // watcher then handles the scroll/pulse.
-    buffers.loadAround(networkId, target, messageId);
+    // Detached fetch path. loadAround sets detached=true synchronously (any live
+    // fanOut between here and the response is dropped) and returns OUR request
+    // token, or null if the socket was closed so no slice will ever arrive.
+    const token = buffers.loadAround(networkId, target, messageId);
+    if (token == null) return;
+    // Arm off the token, not loadingHistory: an in-flight older/newer pager
+    // (prependHistory/appendHistory) clears loadingHistory with no token guard,
+    // which would trip a loadingHistory watch, fail the membership check, and
+    // stop() us before our slice ever lands. Only the token-matched
+    // applyAroundSlice nulls pendingHistoryToken, so watching it ignores the
+    // pagers; a newer jump supersedes us by setting it to a different token.
     const stop = watch(
-      () => buf?.messages?.length,
-      (len) => {
-        if (!len) return;
-        // The around response replaces messages wholesale, so the first
-        // non-empty change after dispatch is the slice landing.
+      () => buf?.pendingHistoryToken,
+      (pending) => {
+        if (pending === token) return; // our request still in flight
         stop();
-        if (pendingScrollId) pendingScrollId.value = messageId;
+        if (pending == null && buf?.messages?.some((m: any) => m.id === messageId)) {
+          armScroll(pendingScrollId, messageId);
+        }
       },
     );
   };
