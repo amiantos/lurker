@@ -237,7 +237,14 @@ function isInQuietWindow(currentMin: number, startMin: number, endMin: number): 
   return currentMin >= startMin || currentMin < endMin;
 }
 
-const DM_ELIGIBLE_TYPES = new Set(['message', 'action', 'notice']);
+// Message types that mark a target as a real DM conversation — used both to
+// reopen a closed buffer on fresh activity (the fan-out guard) and to flag an
+// event as a personal DM for notifications (isDirect). NOTICE is deliberately
+// excluded (#439): a notice persists to the sender's buffer like a message, but
+// it must NOT reopen a buffer the user explicitly closed (closed stays closed —
+// the closed-buffer NOTICE is persisted as a durable copy in the server buffer
+// instead) and a service notice (NickServ/ChanServ) must not fire a DM notification.
+export const DM_ELIGIBLE_TYPES = new Set(['message', 'action']);
 
 // Structural DM detection from a target string: ircConnection routes any direct
 // message into a buffer keyed by the *other* person's nick, so a target that's

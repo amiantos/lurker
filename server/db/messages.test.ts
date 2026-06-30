@@ -19,6 +19,7 @@ let countNewer: typeof import('./messages.js').countNewer;
 let countHighlightsNewer: typeof import('./messages.js').countHighlightsNewer;
 let listUserHighlights: typeof import('./messages.js').listUserHighlights;
 let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
+let hasConversationForTarget: typeof import('./messages.js').hasConversationForTarget;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
@@ -32,6 +33,7 @@ beforeAll(async () => {
     countHighlightsNewer,
     listUserHighlights,
     maxIdForBuffer,
+    hasConversationForTarget,
   } = await import('./messages.js'));
 });
 
@@ -67,6 +69,30 @@ function event(networkId: number, target: string, type: string, nick: string | n
 function altsFor(networkId: number, target: string) {
   return listMessages(networkId, target, { limit: 1000 }).map((m) => m.alt);
 }
+
+describe('hasConversationForTarget (#439)', () => {
+  it('is true only when a non-notice message exists for the target', () => {
+    const user = createUser('conv-target');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'conv-target',
+    });
+    // Notice-only buffer (a service) → not a conversation.
+    chat(net!.id, 'NickServ', 'NickServ', 'you are now identified', 'notice');
+    expect(hasConversationForTarget(net!.id, 'NickServ')).toBe(false);
+    // A real PRIVMSG promotes it to a conversation; an ACTION counts too.
+    chat(net!.id, 'bob', 'bob', 'hey there');
+    expect(hasConversationForTarget(net!.id, 'bob')).toBe(true);
+    chat(net!.id, 'carol', 'carol', 'waves', 'action');
+    expect(hasConversationForTarget(net!.id, 'carol')).toBe(true);
+    // Case-insensitive match; unknown target is false.
+    expect(hasConversationForTarget(net!.id, 'BOB')).toBe(true);
+    expect(hasConversationForTarget(net!.id, 'nobody')).toBe(false);
+  });
+});
 
 describe('messages.alt parity', () => {
   it('alternates alt for chat-shaped types within a buffer', () => {
@@ -148,6 +174,41 @@ describe('messages.alt parity', () => {
 });
 
 describe('searchMessages', () => {
+  it('excludes mirrored server-buffer copies but keeps the real copy (#439)', () => {
+    const user = createUser('search-mirror');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'search-mirror',
+    });
+    // The real copy in the sender's (closed) buffer, plus the mirrored duplicate
+    // in the server buffer — same text. Search must return only the real one.
+    insertMessage({
+      networkId: net!.id,
+      target: 'NickServ',
+      time: new Date().toISOString(),
+      type: 'notice',
+      nick: 'NickServ',
+      text: 'your unique-cloak-token is set',
+      self: false,
+    });
+    insertMessage({
+      networkId: net!.id,
+      target: `:server:${net!.id}`,
+      time: new Date().toISOString(),
+      type: 'notice',
+      nick: 'NickServ',
+      text: 'your unique-cloak-token is set',
+      self: false,
+      mirrored: true,
+    });
+    const hits = searchMessages(user.id, { query: 'unique-cloak-token' });
+    expect(hits).toHaveLength(1);
+    expect(hits[0].target).toBe('NickServ');
+  });
+
   it('matches free text against message bodies', () => {
     const user = createUser('search-text');
     const net = createNetwork(user.id, {

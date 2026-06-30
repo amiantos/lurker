@@ -21,6 +21,7 @@ import {
   isServerBufferDeniedNumeric,
   joinRejectionMessage,
   joinRejectionMessageByTag,
+  resolveChannelContext,
   sendRejectionTargetKind,
   sendRejectionText,
   outgoingAddr,
@@ -296,6 +297,61 @@ describe('canonicalChannelTarget (#268)', () => {
     expect(canonicalChannelTarget('SomeNick', channels)).toBe('SomeNick');
     expect(canonicalChannelTarget(':server:7', channels)).toBe(':server:7');
     expect(canonicalChannelTarget(undefined, channels)).toBeUndefined();
+  });
+});
+
+describe('resolveChannelContext (#439)', () => {
+  // Joined set: keyed lowercase, .name holds the case we joined with.
+  const channels = new Map([['#christian', { name: '#Christian' }]]);
+
+  it('redirects via the +draft/channel-context tag to the joined channel (canonical case)', () => {
+    expect(
+      resolveChannelContext({ '+draft/channel-context': '#CHRISTIAN' }, 'hello', channels),
+    ).toBe('#Christian');
+  });
+
+  it('redirects via a leading [#chan] body prefix, tolerating (), <>, {}', () => {
+    expect(resolveChannelContext(undefined, '[#christian] welcome', channels)).toBe('#Christian');
+    expect(resolveChannelContext(undefined, '(#christian) hi', channels)).toBe('#Christian');
+    expect(resolveChannelContext(undefined, '<#christian> hi', channels)).toBe('#Christian');
+    expect(resolveChannelContext(undefined, '{#christian} hi', channels)).toBe('#Christian');
+  });
+
+  it('prefers the tag over a conflicting body prefix', () => {
+    // Body names a channel we are NOT in; the tag names one we are — tag wins.
+    expect(
+      resolveChannelContext({ '+draft/channel-context': '#christian' }, '[#elsewhere] x', channels),
+    ).toBe('#Christian');
+  });
+
+  it('returns null when the referenced channel is not joined (no buffer fabrication)', () => {
+    expect(resolveChannelContext({ '+draft/channel-context': '#elsewhere' }, 'x', channels)).toBe(
+      null,
+    );
+    expect(resolveChannelContext(undefined, '[#elsewhere] x', channels)).toBe(null);
+  });
+
+  it('returns null when there is no usable context', () => {
+    expect(resolveChannelContext(undefined, 'just a normal notice', channels)).toBe(null);
+    expect(resolveChannelContext(undefined, 'a [#christian] mid-line mention', channels)).toBe(
+      null,
+    );
+    expect(resolveChannelContext({}, undefined, channels)).toBe(null);
+    // A bracketed token without a channel sigil is not a context prefix.
+    expect(resolveChannelContext(undefined, '[info] something', channels)).toBe(null);
+  });
+
+  it('only resolves `#` channels, not `&`/`!`/`+` (matches Lurker routing)', () => {
+    // Even when "joined" to a non-# channel, channel-context must not redirect to
+    // it — Lurker routes `&`/`!`/`+` targets as non-channels.
+    const withLocal = new Map([
+      ['#christian', { name: '#Christian' }],
+      ['&local', { name: '&local' }],
+    ]);
+    expect(resolveChannelContext({ '+draft/channel-context': '&local' }, 'x', withLocal)).toBe(
+      null,
+    );
+    expect(resolveChannelContext(undefined, '[&local] hi', withLocal)).toBe(null);
   });
 });
 

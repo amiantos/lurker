@@ -853,6 +853,12 @@ ensureColumn('messages', 'alt', 'INTEGER NOT NULL DEFAULT 0');
 // they remain visible/countable, matching pre-fix behavior.
 ensureColumn('messages', 'from_ignored', 'INTEGER NOT NULL DEFAULT 0');
 
+// Marks a server-buffer copy of a closed-buffer NOTICE (#439). The real copy
+// lives in the sender's buffer; this duplicate is surfaced in the server buffer
+// so a notice to a closed buffer isn't invisible. Excluded from search so it
+// doesn't double up its real copy. Old rows default to 0 (not a mirror).
+ensureColumn('messages', 'mirrored', 'INTEGER NOT NULL DEFAULT 0');
+
 // Per-(user, buffer) /clear marker. cleared_before_message_id is the highest
 // message id hidden from the live view; messages with id > it remain visible.
 // cleared_at is the wall-clock time the user issued /clear (shown in the

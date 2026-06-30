@@ -282,6 +282,9 @@ async function streamMessagesInBatches(
       // from_ignored was added later; older archives omit it and the column is
       // NOT NULL, so a missing key would fail the insert.
       if (row.from_ignored === undefined) row.from_ignored = 0;
+      // mirrored (#439) was added later too — same NOT NULL fallback so a
+      // pre-#439 archive (no `mirrored` key) doesn't fail the insert.
+      if (row.mirrored === undefined) row.mirrored = 0;
       const result = insertOne(stmt, cols, row);
       messagesMap.set(original.id, result.lastInsertRowid);
       inserted += 1;

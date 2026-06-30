@@ -3,7 +3,12 @@
 
 import IRC, { ircLineParser } from 'irc-framework';
 import type { Client as IrcClient } from 'irc-framework';
-import { insertMessage, hasMessageForTarget, listBufferTargets } from '../db/messages.js';
+import {
+  insertMessage,
+  hasMessageForTarget,
+  hasConversationForTarget,
+  listBufferTargets,
+} from '../db/messages.js';
 import type { Network } from '../db/networks.js';
 import { upsertChannel } from '../db/networks.js';
 import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
@@ -172,6 +177,10 @@ interface EnrichedEvent extends IrcEvent {
   alt?: boolean;
   matched?: boolean;
   matchedRuleId?: number | null;
+  // Hide-level ignore verdict, stamped at persist time. Callers that surface a
+  // secondary copy of the event (e.g. the closed-buffer NOTICE mirror) read this
+  // so they don't leak an ignored sender's text past the ignore filter (#439).
+  fromIgnored?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +499,11 @@ export class IrcConnection {
     return { ...event, target };
   }
 
-  publish(event: IrcEvent): void {
+  // Returns the enriched, persisted event so callers can read server-stamped
+  // fields (e.g. the `fromIgnored` verdict the closed-buffer NOTICE mirror needs).
+  // Typed `| void` rather than `| undefined` so the many `() => void` test spies
+  // that stand in for publish stay assignable.
+  publish(event: IrcEvent): EnrichedEvent | void {
     if (this.disposed) return;
     event = this.normalizeChannelTarget(event);
     const time = (event.time as string | undefined) || new Date().toISOString();
@@ -543,14 +556,17 @@ export class IrcConnection {
         matchedRuleId,
         userhost: (event.userhost as string | null | undefined) ?? null,
         fromIgnored,
+        mirrored: event.mirrored as boolean | undefined,
       });
       enriched.id = id;
       enriched.alt = alt;
       enriched.matched = matchedRuleId != null;
       enriched.matchedRuleId = matchedRuleId;
+      enriched.fromIgnored = fromIgnored;
     }
 
     this.onEvent(enriched);
+    return enriched;
   }
 
   publishEphemeral(event: IrcEvent): void {
@@ -723,6 +739,10 @@ export class IrcConnection {
         for (const target of listBufferTargets(this.network.id)) {
           if (!isDmTargetName(target)) continue;
           if (isBufferClosed(this.network.user_id, this.network.id, target)) continue;
+          // A notice-only buffer (NickServ/ChanServ, #439) is not a real DM —
+          // don't seed it into MONITOR or it consumes presence slots and shows a
+          // bogus presence dot for a service. Track only actual conversations.
+          if (!hasConversationForTarget(this.network.id, target)) continue;
           this.addPeerReason(target.toLowerCase(), 'dm', null);
         }
       } catch (e) {
@@ -1145,25 +1165,41 @@ export class IrcConnection {
       if (isServer) target = `:server:${this.network.id}`;
       else if (targetIsChannel) target = eventTarget;
       else if (isNotice) {
-        // NOTICE routing: keep replies inside an active conversation if the
-        // user has one open (e.g. they /msg'd ChanServ and ChanServ is
-        // NOTICE'ing back — those belong in the ChanServ buffer), but route
-        // unsolicited NOTICEs (NickServ cloak alert on connect, server-wide
-        // wallops, oper notices) to the server buffer the way IRCCloud and
-        // most modern clients do. "Active" = there's history for that
-        // target on this network AND the user hasn't explicitly closed it.
-        // IRC nicks are case-insensitive at the protocol layer but the DB
-        // stores whatever case the buffer was created with, so match
-        // case-insensitively and use the persisted casing as the routing
-        // target so we don't accidentally split history across "ChanServ"
-        // and "chanserv".
-        const dmLower = (eventNick as string).toLowerCase();
-        const existingTarget = listBufferTargets(this.network.id).find(
-          (t) => t.toLowerCase() === dmLower,
+        // A NOTICE addressed to us persists to the sender's buffer (its natural
+        // home), like a PRIVMSG — so the buffer surfaces on first notice and the
+        // history lives in the right place. Open/closed is a client display
+        // concern: the wsHub fan-out drops live delivery to a buffer the user has
+        // closed (closed stays closed — a notice never reopens it, see
+        // DM_ELIGIBLE_TYPES), and the closed-buffer mirror below persists a
+        // durable copy in the server buffer so the notice isn't lost.
+        //   - EXCEPTION 1: a channel-context hint (the IRCv3 +draft/channel-context
+        //     tag, or a leading "[#chan]" body prefix) for a channel we're in
+        //     routes the notice to that channel.
+        //   - EXCEPTION 2: a notice NOT addressed to our nick (e.g. to an `&`/`!`/`+`
+        //     local channel, which Lurker routes as a non-channel, or a STATUSMSG
+        //     target) has no DM home — surface it in the server buffer rather than
+        //     fabricating a bogus DM with the sender.
+        const ctx = resolveChannelContext(
+          event.tags as Record<string, string> | undefined,
+          eventMessage,
+          this.channels,
         );
-        const hasOpenDm =
-          existingTarget && !isBufferClosed(this.network.user_id, this.network.id, existingTarget);
-        target = hasOpenDm ? existingTarget : `:server:${this.network.id}`;
+        if (ctx) {
+          target = ctx;
+        } else if (
+          eventTarget &&
+          this.currentNick &&
+          eventTarget.toLowerCase() === this.currentNick.toLowerCase()
+        ) {
+          // Fold to an existing buffer's casing so a reply sourced as "ChanServ"
+          // doesn't fork history from a "chanserv" buffer the user started (#289).
+          const nickLower = (eventNick as string).toLowerCase();
+          target =
+            listBufferTargets(this.network.id).find((t) => t.toLowerCase() === nickLower) ??
+            (eventNick as string);
+        } else {
+          target = `:server:${this.network.id}`;
+        }
       } else target = eventNick as string;
 
       const type =
@@ -1234,7 +1270,7 @@ export class IrcConnection {
         }
       }
 
-      this.publish({
+      const published = this.publish({
         type,
         target,
         nick,
@@ -1243,12 +1279,42 @@ export class IrcConnection {
         self: false,
         userhost: buildUserhost(event),
         ...(e2eFlag ? { e2e: true } : {}),
-      });
+      }) as EnrichedEvent | undefined;
+      // If a notice's home buffer is one the user has closed, the wsHub fan-out
+      // drops its live delivery — so without this the notice would be invisible
+      // until the buffer is reopened. Persist a SECOND copy in the server buffer
+      // (a durable mirror, not a transient emit) so it's visible there for every
+      // client, including one that was offline when it arrived — an ephemeral copy
+      // would never reach a reconnecting or mobile client. The real copy still
+      // lives in the closed home buffer for when it's reopened; `:server:` targets
+      // bypass the closed-buffer fan-out guard and are excluded from search, so the
+      // duplicate doesn't double up search results. Skip ignored senders
+      // (`fromIgnored`): the home copy is ignore-flagged and client-filtered, so
+      // mirroring the raw text would bypass the ignore list (a harassment vector).
+      if (
+        isNotice &&
+        !isServer &&
+        target !== this.serverTarget() &&
+        !published?.fromIgnored &&
+        isBufferClosed(this.network.user_id, this.network.id, target)
+      ) {
+        this.publish({
+          type: 'notice',
+          target: this.serverTarget(),
+          nick,
+          text: bodyText,
+          kind: eventType,
+          self: false,
+          mirrored: true,
+        });
+      }
       // An incoming PRIVMSG (not NOTICE) is the moment this nick becomes a
       // tracked DM peer — add them via trackDmPeer so MONITOR + fires too.
-      // NOTICEs go to the server buffer above, so there's no DM peer to
-      // track for them. Channel chatter still flips presence only for peers
-      // we already track.
+      // A NOTICE now opens a buffer under the sender's nick too, but we
+      // deliberately don't start presence-tracking for notice senders: they're
+      // overwhelmingly services/bots (NickServ, ChanServ, oper notices) that
+      // shouldn't consume MONITOR slots or show a presence dot. Channel chatter
+      // still flips presence only for peers we already track.
       if (eventNick && !isServer && !targetIsChannel && !isNotice) {
         this.trackDmPeer(eventNick);
       }
@@ -2297,6 +2363,10 @@ export class IrcConnection {
   // RPL_MONOFFLINE from the server — no separate WHOIS probe needed.
   probePresence(nick: string | undefined | null): void {
     if (!nick || !isDmTargetName(nick)) return;
+    // Opening a notice-only buffer (a service like NickServ, #439) must not start
+    // MONITOR tracking — only probe presence for targets we have a real
+    // conversation with. Friends are tracked separately at hydrate time.
+    if (!hasConversationForTarget(this.network.id, nick)) return;
     this.trackDmPeer(nick);
   }
 
@@ -4040,6 +4110,37 @@ export function canonicalChannelTarget(
   if (typeof target !== 'string' || !target.startsWith('#')) return target;
   const known = channels.get(target.toLowerCase());
   return known ? known.name : target;
+}
+
+// Matches a conventional "[#chan] …" channel-context body prefix, also tolerating
+// (#chan), <#chan>, {#chan}. Restricted to `#` to match Lurker's routing, which
+// treats only `#` as a channel (`&`/`!`/`+` are routed as non-channels); the
+// captured name is validated against the joined set before use, and brackets
+// aren't required to pair since the joined-channel check is the real gate.
+const CHANNEL_CONTEXT_PREFIX = /^\s*[[(<{]\s*(#[^\])>}\s]+)\s*[\])>}]/;
+
+// A nick-addressed NOTICE sometimes belongs in a channel rather than a DM with
+// the sender: services announce per-channel info to your nick (Atheme ENTRYMSG,
+// ChanServ welcome) either via the IRCv3 +draft/channel-context client tag or a
+// conventional "[#chan] …" body prefix. Mirrors weechat's notice_welcome_redirect
+// and irssi's notice_channel_context: redirect to the referenced channel, but ONLY
+// when it's a `#` channel we're currently joined to (so a stray tag/prefix can't
+// fabricate a buffer), returning its canonical (joined) casing. The tag wins over
+// the body prefix. Returns null when there's no usable, joined `#`-channel context.
+export function resolveChannelContext(
+  tags: Record<string, string> | undefined,
+  body: string | undefined,
+  channels: Map<string, { name: string }>,
+): string | null {
+  const joinedChannel = (name: string | undefined): string | null => {
+    if (!name || !name.startsWith('#')) return null;
+    const known = channels.get(name.toLowerCase());
+    return known ? known.name : null;
+  };
+  const tagged = joinedChannel(tags?.['+draft/channel-context']);
+  if (tagged) return tagged;
+  const match = typeof body === 'string' ? body.match(CHANNEL_CONTEXT_PREFIX) : null;
+  return match ? joinedChannel(match[1]) : null;
 }
 
 export function joinRejectionMessage(numeric: string): string | null {

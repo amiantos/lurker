@@ -19,6 +19,7 @@ interface MessageRow {
   alt: number;
   matched_rule_id: number | null;
   from_ignored: number;
+  mirrored: number;
 }
 
 /** A raw message row joined with network_name. */
@@ -42,6 +43,9 @@ export interface MessageEvent {
   matched: boolean;
   matchedRuleId: number | null;
   fromIgnored: boolean;
+  // A duplicate of a closed-buffer NOTICE surfaced in the server buffer (#439).
+  // Excluded from search/highlights so it doesn't double up its real copy.
+  mirrored: boolean;
   [key: string]: unknown;
 }
 
@@ -65,6 +69,7 @@ export interface MessageInput {
   matchedRuleId?: number | null;
   userhost?: string | null;
   fromIgnored?: boolean;
+  mirrored?: boolean;
 }
 
 /** Buffer summary row for MCP list_buffers. */
@@ -85,9 +90,9 @@ export interface MaxIdByBufferRow {
 // Non-striped types pass through with alt=0; the value is meaningless for them
 // and the client never reads it.
 const insertStmt = db.prepare(`
-  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, alt)
+  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, alt)
   VALUES (
-    @networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored,
+    @networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored,
     CASE WHEN @type IN ('message', 'action', 'notice')
          THEN 1 - COALESCE(
            (SELECT alt FROM messages
@@ -116,6 +121,7 @@ export function insertMessage(row: MessageInput): { id: number | bigint; alt: bo
     matchedRuleId: row.matchedRuleId ?? null,
     userhost: row.userhost ?? null,
     fromIgnored: row.fromIgnored ? 1 : 0,
+    mirrored: row.mirrored ? 1 : 0,
   });
   const id = result.lastInsertRowid;
   const altRow = altByIdStmt.get(id) as { alt: number } | undefined;
@@ -138,6 +144,7 @@ function rowToEvent(row: MessageRow): MessageEvent {
     matched: row.matched_rule_id != null,
     matchedRuleId: row.matched_rule_id,
     fromIgnored: row.from_ignored === 1,
+    mirrored: row.mirrored === 1,
   };
   if (row.extra) {
     try {
@@ -297,6 +304,20 @@ export function hasMessageForTarget(networkId: number, target: string): boolean 
   return !!row;
 }
 
+// Whether a target has a real (non-notice) conversation — at least one PRIVMSG or
+// ACTION. NOTICE-only buffers (services like NickServ/ChanServ, which now get a
+// buffer of their own, #439) are NOT conversations: presence-tracking keys off
+// this so services don't consume MONITOR slots or show a presence dot.
+export function hasConversationForTarget(networkId: number, target: string): boolean {
+  if (!networkId || !target) return false;
+  const row = db
+    .prepare(
+      "SELECT 1 FROM messages WHERE network_id = ? AND target = ? COLLATE NOCASE AND type IN ('message', 'action') LIMIT 1",
+    )
+    .get(networkId, target);
+  return !!row;
+}
+
 export function countOlder(networkId: number, target: string, beforeId: number): number {
   return (
     db
@@ -438,6 +459,11 @@ export function searchMessages(
     'n.user_id = ?',
     `m.type IN ${COUNTABLE_TYPES_SQL}`,
     'm.from_ignored = 0',
+    // Skip server-buffer mirror duplicates of closed-buffer NOTICEs (#439) so a
+    // mirrored notice doesn't surface twice — its real copy in the sender's
+    // buffer is the searchable one. Genuine server-buffer notices (mirrored = 0)
+    // stay searchable.
+    'm.mirrored = 0',
   ];
   const params: (string | number)[] = [userId];
 

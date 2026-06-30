@@ -165,6 +165,7 @@ export const EXPORT_TABLES = Object.freeze({
       'matched_rule_id',
       'alt',
       'from_ignored',
+      'mirrored',
     ],
   },
 

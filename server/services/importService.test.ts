@@ -576,6 +576,81 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(msg).toBeDefined();
   });
 
+  it('imports a pre-#439 archive whose messages omit the mirrored column', async () => {
+    // A backup taken before messages.mirrored existed has no `mirrored` key in
+    // messages.ndjson. mirrored is NOT NULL DEFAULT 0, but a column default does
+    // NOT apply when the importer binds an explicit NULL for a missing key — so
+    // without the import-side fallback the insert fails with a NOT NULL
+    // constraint and aborts the entire restore.
+    const { alice } = seedAlice();
+    const buf = await exportToBuffer(alice.id, { includeMessages: true });
+    const yauzl = await import('yauzl');
+    const { ZipArchive } = await import('archiver');
+
+    const entries = await new Promise<Map<string, Buffer>>((resolve, reject) => {
+      yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zip) => {
+        if (err) return reject(err);
+        const out = new Map<string, Buffer>();
+        zip.readEntry();
+        zip.on('entry', (entry) => {
+          if (entry.fileName.endsWith('/')) {
+            zip.readEntry();
+            return;
+          }
+          zip.openReadStream(entry, (e2, stream) => {
+            if (e2) return reject(e2);
+            const chunks: Buffer[] = [];
+            stream.on('data', (c: Buffer) => chunks.push(c));
+            stream.on('end', () => {
+              out.set(entry.fileName, Buffer.concat(chunks));
+              zip.readEntry();
+            });
+            stream.on('error', reject);
+          });
+        });
+        zip.on('end', () => resolve(out));
+        zip.on('error', reject);
+      });
+    });
+
+    // Strip `mirrored` from every messages row to mimic a pre-#439 archive.
+    const msgsKey = [...entries.keys()].find((k) => k.endsWith('messages.ndjson'));
+    expect(msgsKey).toBeDefined();
+    const stripped = entries
+      .get(msgsKey!)!
+      .toString('utf8')
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => {
+        const row = JSON.parse(l);
+        delete row.mirrored;
+        return JSON.stringify(row);
+      })
+      .join('\n');
+    entries.set(msgsKey!, Buffer.from(stripped + '\n'));
+
+    const archive = new ZipArchive();
+    const rebuiltChunks: Buffer[] = [];
+    archive.on('data', (c: Buffer) => rebuiltChunks.push(c));
+    for (const [name, content] of entries) archive.append(content, { name });
+    await archive.finalize();
+    const rebuilt = Buffer.concat(rebuiltChunks);
+
+    const olive = createUser(
+      `olive_mirror_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    );
+    await importFromZipBuffer(olive.id, rebuilt);
+
+    // Restore succeeds and the messages land with mirrored defaulted to 0.
+    const rows = db
+      .prepare(
+        'SELECT m.mirrored FROM messages m JOIN networks n ON n.id = m.network_id WHERE n.user_id = ?',
+      )
+      .all(olive.id) as Array<{ mirrored: number }>;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.mirrored === 0)).toBe(true);
+  });
+
   it('rejects an archive without a manifest', async () => {
     createUser(`eve_${Date.now()}`);
     // A zip with only an unrelated file.

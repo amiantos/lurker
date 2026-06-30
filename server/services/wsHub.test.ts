@@ -23,6 +23,7 @@ let buildSystemBacklog: typeof import('./wsHub.js').buildSystemBacklog;
 let systemLineToEvent: typeof import('./wsHub.js').systemLineToEvent;
 let buildSystemHistoryReply: typeof import('./wsHub.js').buildSystemHistoryReply;
 let startChanlistRefresh: typeof import('./wsHub.js').startChanlistRefresh;
+let DM_ELIGIBLE_TYPES: typeof import('./wsHub.js').DM_ELIGIBLE_TYPES;
 let chanlist: typeof import('../db/chanlist.js');
 let systemMessages: typeof import('../db/systemMessages.js').default;
 
@@ -45,6 +46,7 @@ beforeAll(async () => {
     systemLineToEvent,
     buildSystemHistoryReply,
     startChanlistRefresh,
+    DM_ELIGIBLE_TYPES,
   } = await import('./wsHub.js'));
   chanlist = await import('../db/chanlist.js');
   systemMessages = (await import('../db/systemMessages.js')).default;
@@ -248,6 +250,17 @@ describe('buildOfflineBacklogFrames', () => {
       .map((f) => f.target);
     expect(targets).not.toContain('#hidden');
     expect(targets).toContain(`:server:${offId}`);
+  });
+});
+
+describe('DM_ELIGIBLE_TYPES (#439)', () => {
+  it('excludes notice so a notice never reopens a closed buffer', () => {
+    // The fan-out guard reopens a closed buffer on a DM-eligible event. NOTICE
+    // must not be in this set: a notice to a buffer the user closed has to stay
+    // closed (it's surfaced transiently in the server buffer instead).
+    expect(DM_ELIGIBLE_TYPES.has('message')).toBe(true);
+    expect(DM_ELIGIBLE_TYPES.has('action')).toBe(true);
+    expect(DM_ELIGIBLE_TYPES.has('notice')).toBe(false);
   });
 });
 
