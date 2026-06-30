@@ -15,6 +15,7 @@ import { usePinsStore } from '../stores/pins.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
 import { resetScrollState } from './useScrollState.js';
+import { clearAppBadgeNow } from './useAppBadge.js';
 
 // Wipe every session-scoped piece of client state so the next user (after
 // logout or invite redemption) starts from a clean slate. The auth store is
@@ -40,4 +41,8 @@ export function resetSession(): void {
   usePinsStore().$reset();
   resetPresence();
   resetScrollState();
+  // Drop the PWA app-icon badge so a stale highlight count doesn't outlive the
+  // session. buffers.$reset() above already zeroes the total, but clear
+  // explicitly in case the Badging watcher isn't wired in this context.
+  clearAppBadgeNow();
 }

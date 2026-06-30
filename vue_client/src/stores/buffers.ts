@@ -259,6 +259,14 @@ export const useBuffersStore = defineStore('buffers', {
   getters: {
     list: (state) => Object.values(state.buffers),
     byKey: (state) => (k: string) => state.buffers[k] || null,
+    // App-wide highlight total — the sum of every buffer's server-owned
+    // `highlighted` count: channel mentions, every unread DM, and notable system
+    // lines (see the server's computeUnreadFor). The active buffer always reads
+    // 0 (applyReadState/activate force it), so the focused conversation never
+    // inflates the total. Drives the PWA app-icon badge (#451); reactive for
+    // free since the per-buffer counts are kept authoritative by the server.
+    totalHighlights: (state) =>
+      Object.values(state.buffers).reduce((sum, b) => sum + (b.highlighted || 0), 0),
     // True only while a buffer for (networkId, target) is live in the store,
     // resolved case-insensitively (#327) like its findByTarget/findDm siblings.
     // A closed buffer is dropped entirely (see drop()), so this is how callers

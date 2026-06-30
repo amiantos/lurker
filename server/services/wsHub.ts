@@ -38,6 +38,7 @@ import {
 } from '../db/messages.js';
 import {
   listReadStateForUser,
+  listReadStateRowsForUser,
   getReadState,
   setReadState,
   listClearedStateForUser,
@@ -342,6 +343,27 @@ function computeUnreadFor(
     highlights,
     highlightsCapped: false,
   };
+}
+
+// App-wide unread-highlight total for a user — the number the PWA app-icon
+// badge shows while no client is open (#451). Mirrors the client's
+// `totalHighlights` getter: sum each buffer's `highlighted` count (channel
+// mentions, every unread DM, notable system lines) via computeUnreadFor, and
+// exclude closed buffers — the client drops those from its store, so counting
+// them here would desync the two badge paths. Reuses the same indexed counts as
+// the snapshot; only called on push delivery (which fires solely when no client
+// is visible), so the handful of per-buffer queries is cheap.
+export function computeTotalHighlights(userId: number): number {
+  const closed = closedKeySetForUser(userId);
+  let total = 0;
+  for (const row of listReadStateRowsForUser(userId)) {
+    // closedKeySetForUser keys are `${networkId}::${lowercased target}`; the
+    // app-scoped system buffer (networkId null) is uncloseable and never in the
+    // set, so its highlights always count.
+    if (closed.has(`${row.networkId}::${row.target.toLowerCase()}`)) continue;
+    total += computeUnreadFor(userId, row.networkId, row.target, row.lastReadId).highlights;
+  }
+  return total;
 }
 
 // Builds a one-off `backlog` frame for a single buffer — used when a closed
@@ -990,6 +1012,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         text: decorated.text,
         time: decorated.time,
         messageId: decorated.id,
+        // Current unread-highlight total so the SW can set the app-icon badge
+        // (#451). The triggering message is already persisted at this point, so
+        // the count includes it.
+        badge: computeTotalHighlights(userId),
       })
       .catch((err) => console.warn('[push] deliver failed:', err?.message || err));
   }
@@ -1018,6 +1044,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // target is the friend's nick so a notification tap opens their DM.
         target: nick,
         displayName: contact.displayName,
+        // Keep the app-icon badge in sync on this push too (#451). A friend
+        // coming online isn't itself a highlight, so this is just the current
+        // total — harmless and avoids the badge drifting on a friend_online push.
+        badge: computeTotalHighlights(userId),
       })
       .catch((err) => console.warn('[push] friend-online deliver failed:', err?.message || err));
   }

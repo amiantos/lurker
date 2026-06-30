@@ -13,6 +13,24 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
+// Reflect the user's unread-highlight total on the PWA app icon (#451). The
+// server stamps `data.badge` on every push, so the badge stays current even
+// while the app is fully closed — the case the in-page watcher can't reach.
+// Feature-detected (Badging API is absent on many browsers) and best-effort:
+// returns a promise so the caller can fold it into the push event's waitUntil.
+function syncAppBadge(data) {
+  if (typeof data?.badge !== 'number' || !('setAppBadge' in self.navigator)) {
+    return Promise.resolve();
+  }
+  const p =
+    data.badge > 0
+      ? self.navigator.setAppBadge(data.badge)
+      : 'clearAppBadge' in self.navigator
+        ? self.navigator.clearAppBadge()
+        : Promise.resolve();
+  return Promise.resolve(p).catch(() => {});
+}
+
 // "Amiantos came online (as nostimo · Libera)". The nick (data.target) is
 // shown only when it differs from the display name — for a friend watched under
 // several nicks it says which identity signed on; the network disambiguates a
@@ -42,13 +60,16 @@ self.addEventListener('push', (event) => {
         ? friendOnlineTitle(data)
         : `${data.nick || 'someone'} in ${data.target || ''}`;
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body: data.text || '',
-      tag: `${data.networkId || 0}::${data.target || ''}`,
-      data,
-      icon: '/lurker-icon-192.png',
-      badge: '/lurker-icon-192.png',
-    }),
+    Promise.all([
+      self.registration.showNotification(title, {
+        body: data.text || '',
+        tag: `${data.networkId || 0}::${data.target || ''}`,
+        data,
+        icon: '/lurker-icon-192.png',
+        badge: '/lurker-icon-192.png',
+      }),
+      syncAppBadge(data),
+    ]),
   );
 });
 

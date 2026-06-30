@@ -6,6 +6,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { startPresenceReporter, reportNow } from './usePresence.js';
 import { registerSW, onSWPushMessage } from './usePush.js';
+import { startAppBadge } from './useAppBadge.js';
 
 export interface JumpPayload {
   kind: string;
@@ -32,6 +33,9 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
     await networks.fetchAll();
     startPresenceReporter();
     reportNow();
+    // Mirror the unread-highlight total onto the PWA app icon (#451). Idempotent
+    // and feature-detected — a no-op where the Badging API is unavailable.
+    startAppBadge();
     // Register unconditionally so a previously-subscribed device can still
     // receive push events without re-opening Settings. Per-client subscribe
     // is gated by an explicit Settings button (see usePush.enable()).

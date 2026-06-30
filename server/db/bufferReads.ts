@@ -58,6 +58,20 @@ export function listReadStateForUser(userId: number): Record<string, number> {
   return out;
 }
 
+export interface ReadStateRow {
+  networkId: number | null;
+  target: string;
+  lastReadId: number;
+}
+
+// Raw read-pointer rows for a user (network_id preserved as null for the
+// app-scoped system buffer). Unlike listReadStateForUser's stringly-keyed map,
+// this keeps networkId/target typed so callers don't have to parse keys back
+// apart — used to aggregate per-buffer unread/highlight counts (#451).
+export function listReadStateRowsForUser(userId: number): ReadStateRow[] {
+  return listForUserStmt.all(userId) as ReadStateRow[];
+}
+
 export function getReadState(userId: number, networkId: number | null, target: string): number {
   const row = getOneStmt.get(userId, networkId, target) as { lastReadId: number } | undefined;
   return row ? row.lastReadId : 0;

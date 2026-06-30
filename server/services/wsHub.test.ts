@@ -12,8 +12,11 @@ let createUser: typeof import('../db/users.js').createUser;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
 let insertMessage: typeof import('../db/messages.js').insertMessage;
 let closeBuffer: typeof import('../db/closedBuffers.js').closeBuffer;
+let reopenBuffer: typeof import('../db/closedBuffers.js').reopenBuffer;
 let isClosed: typeof import('../db/closedBuffers.js').isClosed;
 let setClearedState: typeof import('../db/bufferReads.js').setClearedState;
+let setReadState: typeof import('../db/bufferReads.js').setReadState;
+let computeTotalHighlights: typeof import('./wsHub.js').computeTotalHighlights;
 let buildBufferBacklog: typeof import('./wsHub.js').buildBufferBacklog;
 let buildResumeSlice: typeof import('./wsHub.js').buildResumeSlice;
 let buildOfflineBacklogFrames: typeof import('./wsHub.js').buildOfflineBacklogFrames;
@@ -34,9 +37,10 @@ beforeAll(async () => {
   ({ createUser } = await import('../db/users.js'));
   ({ createNetwork } = await import('../db/networks.js'));
   ({ insertMessage } = await import('../db/messages.js'));
-  ({ closeBuffer, isClosed } = await import('../db/closedBuffers.js'));
-  ({ setClearedState } = await import('../db/bufferReads.js'));
+  ({ closeBuffer, reopenBuffer, isClosed } = await import('../db/closedBuffers.js'));
+  ({ setClearedState, setReadState } = await import('../db/bufferReads.js'));
   ({
+    computeTotalHighlights,
     buildBufferBacklog,
     buildResumeSlice,
     buildOfflineBacklogFrames,
@@ -484,5 +488,62 @@ describe('startChanlistRefresh (issue #396)', () => {
       .rows.map((r) => r.channel);
     expect(names).toEqual(['#a', '#b']);
     expect(names).not.toContain('#gone');
+  });
+});
+
+// Drives the PWA app-icon badge (#451). Uses its own user/network so the shared
+// per-file DB seeded by the other suites doesn't perturb the totals.
+describe('computeTotalHighlights', () => {
+  it('sums per-buffer highlights, counts unread DM lines, ignores plain channel lines, excludes closed buffers', () => {
+    const u = createUser('badger').id;
+    const net = createNetwork(u, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'badger',
+    })!.id;
+    const ins = (target: string, text: string) =>
+      Number(
+        insertMessage({
+          networkId: net,
+          target,
+          time: new Date().toISOString(),
+          type: 'message',
+          nick: 'bob',
+          text,
+          self: false,
+        }).id,
+      );
+
+    // No read pointers yet → nothing to badge.
+    expect(computeTotalHighlights(u)).toBe(0);
+
+    // DM 'dave': read the first line, then two more arrive. Every unread DM line
+    // is a highlight, so this buffer contributes 2.
+    const d1 = ins('dave', 'one');
+    setReadState(u, net, 'dave', d1);
+    ins('dave', 'two');
+    ins('dave', 'three');
+
+    // Channel '#general': unread but no highlight-rule match → contributes 0.
+    const c1 = ins('#general', 'hello there');
+    setReadState(u, net, '#general', c1);
+    ins('#general', 'general chatter');
+
+    expect(computeTotalHighlights(u)).toBe(2);
+
+    // A closed DM's unread highlights are excluded — the client drops closed
+    // buffers from its store, so counting them here would desync the two paths.
+    const s1 = ins('spammer', 'buy now');
+    setReadState(u, net, 'spammer', s1);
+    ins('spammer', 'act fast');
+    expect(computeTotalHighlights(u)).toBe(3); // dave 2 + spammer 1
+
+    closeBuffer(u, net, 'spammer');
+    expect(computeTotalHighlights(u)).toBe(2);
+
+    reopenBuffer(u, net, 'spammer');
+    expect(computeTotalHighlights(u)).toBe(3);
   });
 });

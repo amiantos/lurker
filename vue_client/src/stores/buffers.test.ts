@@ -237,3 +237,36 @@ describe('case-insensitive buffer identity (#327)', () => {
     expect(netBuffers(store)).toHaveLength(1);
   });
 });
+
+// Feeds the PWA app-icon badge (#451). The sum must track each buffer's
+// server-owned `highlighted` count and inherit applyReadState's active-buffer
+// suppression, so the focused conversation never inflates the badge.
+describe('totalHighlights', () => {
+  it('is zero with only the seeded system buffer', () => {
+    const store = useBuffersStore();
+    expect(store.totalHighlights).toBe(0);
+  });
+
+  it('sums highlighted across open buffers', () => {
+    const store = useBuffersStore();
+    store.replaceBacklog(1, '#a', [], undefined, undefined, undefined);
+    store.replaceBacklog(1, '#b', [], undefined, undefined, undefined);
+    store.applyReadState(1, '#a', { lastReadId: 0, unread: 5, highlights: 2 });
+    store.applyReadState(1, '#b', { lastReadId: 0, unread: 9, highlights: 3 });
+
+    expect(store.totalHighlights).toBe(5);
+  });
+
+  it('excludes the active buffer, whose highlighted is forced to 0', () => {
+    const store = useBuffersStore();
+    store.replaceBacklog(1, '#a', [], undefined, undefined, undefined);
+    store.replaceBacklog(1, '#b', [], undefined, undefined, undefined);
+    // User is sitting in #a, so its read-state echo is suppressed to 0.
+    h.activeKey = '1::#a';
+    store.applyReadState(1, '#a', { lastReadId: 0, unread: 5, highlights: 2 });
+    store.applyReadState(1, '#b', { lastReadId: 0, unread: 9, highlights: 3 });
+
+    expect(store.byKey('1::#a')!.highlighted).toBe(0);
+    expect(store.totalHighlights).toBe(3);
+  });
+});
