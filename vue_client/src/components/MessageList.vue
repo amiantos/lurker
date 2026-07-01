@@ -1462,9 +1462,63 @@ watch([() => awayState.value?.since, () => awayState.value?.backAt], async (next
   scrollToBottom();
 });
 
+// Bump the "N new ↓" unread counter for a live append that landed below a
+// scrolled-up reader — unless the new tail is from an ignored sender (they
+// won't see it scroll into view, so "1 new ↓" pointing at nothing is
+// confusing) or is an id-less ephemeral status echo (a /e2e line, the user's
+// own command output), which shouldn't inflate the count.
+function maybeBumpNewBelow() {
+  const tail = messages.value[messages.value.length - 1] as ChatMessage | undefined;
+  const nid = buffer.value?.networkId;
+  const tailIgnored =
+    tail &&
+    !tail.self &&
+    tail.nick &&
+    nid &&
+    ignores.isHidden(nid, {
+      nick: tail.nick,
+      userhost: tail.userhost ?? null,
+      target: tail.target,
+      text: tail.text ?? '',
+      type: tail.type,
+      isDm: !tail.target.startsWith('#') && !tail.target.startsWith(':server:'),
+    });
+  if (!tailIgnored && tail?.id != null) bumpNewBelow();
+}
+
+// Re-pin the viewport so the row with `anchorId` keeps its on-screen position
+// across the reflow this watcher tick triggers: capture its offsetTop BEFORE
+// nextTick, restore scrollTop after. `useHeightFallback` decides what happens
+// when the anchor row can't be measured after the reflow. A pure PREPEND only
+// adds content above the viewport, so a scrollHeight-delta correction is a safe
+// best-effort there. A CAP-EVICT also adds a row BELOW the viewport, so that
+// same formula would over-scroll by the appended row's height — pass false and
+// leave scrollTop untouched (at most one row of drift for that event, never a
+// downward jump). Anchoring by element id keeps re-flow from changing column
+// widths or differing message heights from drifting the math.
+async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback: boolean) {
+  const anchor = el.querySelector(`[data-msg-id="${anchorId}"]`) as HTMLElement | null;
+  const anchorOldTop = anchor ? anchor.offsetTop : null;
+  const oldScrollTop = el.scrollTop;
+  const oldScrollHeight = el.scrollHeight;
+  await nextTick();
+  const anchorNew =
+    anchorOldTop != null
+      ? (el.querySelector(`[data-msg-id="${anchorId}"]`) as HTMLElement | null)
+      : null;
+  if (anchorNew) {
+    el.scrollTop = anchorNew.offsetTop - (anchorOldTop! - oldScrollTop);
+  } else if (useHeightFallback) {
+    el.scrollTop = el.scrollHeight - oldScrollHeight + oldScrollTop;
+  }
+}
+
 // Watch the messages array shape so we can react to:
 //   - prepend (older history): pin the OLD first row's viewport position.
 //   - replace (wholesale snapshot): snap to bottom.
+//   - cap-evict while scrolled up: a live append at MAX_PER_BUFFER also
+//     splices the oldest row off the FRONT, so pin the new first row's
+//     viewport position the same way a prepend does (#448).
 //   - live push: snap to bottom IF the user is already pinned there.
 watch(
   [
@@ -1504,20 +1558,7 @@ watch(
     // the same set of [data-msg-id] elements with stable identity above
     // and below the prepend boundary.
     if (firstChanged && !lastChanged && grew && oldFirstId != null) {
-      const anchor = el.querySelector(`[data-msg-id="${oldFirstId}"]`) as HTMLElement | null;
-      const anchorOldTop = anchor ? anchor.offsetTop : null;
-      const oldScrollTop = el.scrollTop;
-      const oldScrollHeight = el.scrollHeight;
-      await nextTick();
-      const anchorNew =
-        anchorOldTop != null
-          ? (el.querySelector(`[data-msg-id="${oldFirstId}"]`) as HTMLElement | null)
-          : null;
-      if (anchorNew) {
-        el.scrollTop = anchorNew.offsetTop - (anchorOldTop! - oldScrollTop);
-      } else {
-        el.scrollTop = el.scrollHeight - oldScrollHeight + oldScrollTop;
-      }
+      await pinAnchorRow(el, oldFirstId, true);
       ensureViewportFilled();
       return;
     }
@@ -1531,6 +1572,25 @@ watch(
     const filledFromEmpty = prevLen === 0 && newLen > 0;
     const replaced = (firstChanged && lastChanged && !appended) || filledFromEmpty;
     const isDetached = !!buffer.value?.detached;
+    // Cap-evict while scrolled up: the buffer was at MAX_PER_BUFFER, so this
+    // live append also spliced the oldest row(s) off the FRONT (above the
+    // viewport). That shrinks content above the read position; with
+    // overflow-anchor disabled the browser won't compensate, so without this
+    // the rows the user is reading drift upward one message-height per
+    // arrival (#448). Anchor on the surviving new-front row and re-pin
+    // scrollTop after the reflow. Only when NOT pinned to the bottom — a pinned
+    // reader is scrolling along with the live tail, and the append branch below
+    // already follows it down. useHeightFallback is false: unlike a prepend,
+    // this event also adds a row below the viewport, so if the new-front row
+    // isn't measurable (e.g. a history prepend landed in the same flush and put
+    // an unseen row at the front), leave scrollTop alone rather than let the
+    // prepend-style fallback over-scroll and jump the view.
+    if (appended && firstChanged && !stickToBottom.value && !isDetached && newFirstId != null) {
+      await pinAnchorRow(el, newFirstId, false);
+      maybeBumpNewBelow();
+      ensureViewportFilled();
+      return;
+    }
     await nextTick();
     if (replaced) {
       if (isDetached) {
@@ -1549,41 +1609,22 @@ watch(
       ensureViewportFilled();
       return;
     }
-    // Live append (new message arrived) — including the case where the
-    // buffer was at its cap and the oldest row was evicted. When the user is
-    // pinned, scroll along; otherwise track the unread-below count so the
-    // status bar can surface "[N new ↓]". Skip the bump entirely when the
-    // newly-arrived tail is from an ignored sender; the user wouldn't see
-    // it scrolling into view anyway, and "1 new ↓" pointing at nothing is
-    // confusing.
+    // Live append (new message arrived) that did NOT evict from the front —
+    // a cap-evict while scrolled up is handled by the anchored branch above
+    // and returned early, and a cap-evict while pinned scrolls along here.
+    // When the user is pinned, scroll along; otherwise content was added only
+    // below the viewport, so the current scrollTop still points at the row
+    // they were reading — just track the unread-below count so the status bar
+    // can surface "[N new ↓]" (maybeBumpNewBelow skips ignored/ephemeral
+    // tails so the badge never points at a row that won't scroll into view).
     //
     // Pager-driven appends (mode='after' response while detached) share this
     // shape — same `appended` test passes. We let them through without any
-    // scroll adjustment: content was added below the viewport, the user's
-    // current scrollTop still points at the row they were reading, and
-    // bumpNewBelow would be misleading since these aren't live events.
+    // scroll adjustment for the same reason, and isDetached gates out the
+    // bump since these aren't live events.
     if (appended && !isDetached) {
       if (stickToBottom.value) scrollToBottom();
-      else {
-        const tail = messages.value[messages.value.length - 1] as ChatMessage | undefined;
-        const nid = buffer.value?.networkId;
-        const tailIgnored =
-          tail &&
-          !tail.self &&
-          tail.nick &&
-          nid &&
-          ignores.isHidden(nid, {
-            nick: tail.nick,
-            userhost: tail.userhost ?? null,
-            target: tail.target,
-            text: tail.text ?? '',
-            type: tail.type,
-            isDm: !tail.target.startsWith('#') && !tail.target.startsWith(':server:'),
-          });
-        // Don't let an id-less ephemeral status echo (a /e2e line, the user's
-        // own command output) inflate the "N new ↓" unread count.
-        if (!tailIgnored && tail?.id != null) bumpNewBelow();
-      }
+      else maybeBumpNewBelow();
     }
     ensureViewportFilled();
   },
