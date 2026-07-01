@@ -109,10 +109,17 @@ describe('deliberate divergences (asserted, not silently dropped)', () => {
     expect(parseIgnoreArgs('-replies *!*@*.irssi.org ALL', NOW).error).toMatch(/replies/);
   });
 
-  it('NO_ACT / HIDDEN after a mask error out (not special levels)', () => {
-    expect(parseIgnoreArgs('mike NO_ACT -MSGS', NOW).error).toMatch(/unexpected/);
+  it('HIDDEN is not a supported level (irssi divergence)', () => {
     expect(parseIgnoreArgs('mike HIDDEN PUBLIC JOINS PARTS QUITS', NOW).error).toMatch(
       /unexpected/,
     );
+  });
+
+  it('NO_ACT is now supported as NOUNREAD (issue #359 — parity, no longer a divergence)', () => {
+    // irssi's NO_ACT ("don't trigger channel activity") maps to Lurker's
+    // NOUNREAD mute modifier; it used to error as an unknown token.
+    const parsed = parseIgnoreArgs('mike NO_ACT', NOW);
+    expect(parsed.error).toBeUndefined();
+    expect(parsed).toMatchObject({ mask: 'mike', levels: ['NOUNREAD'] });
   });
 });

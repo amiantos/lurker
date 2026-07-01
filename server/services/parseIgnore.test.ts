@@ -32,6 +32,35 @@ describe('parseIgnoreArgs — masks & levels', () => {
     expect(p('bob publics').levels).toEqual(['PUBLIC']);
     expect(p('bob join part').levels).toEqual(['JOINS', 'PARTS']);
   });
+
+  it('NOUNREAD / NONOTIFY mute modifiers (issue #359) + irssi NO_ACT alias', () => {
+    // Channel-scoped mute rules carry no mask — the whole channel is muted.
+    expect(p('#idlerpg NOUNREAD')).toMatchObject({
+      mask: null,
+      channels: ['#idlerpg'],
+      levels: ['NOUNREAD'],
+    });
+    expect(p('#idlerpg NONOTIFY NOUNREAD').levels).toEqual(['NOUNREAD', 'NONOTIFY']); // canonical order
+    expect(p('#idlerpg no_act').levels).toEqual(['NOUNREAD']);
+    expect(p('#idlerpg noact').levels).toEqual(['NOUNREAD']);
+  });
+
+  it('a bare token stays a sender mask, not a channel (that person everywhere)', () => {
+    expect(p('spambot NONOTIFY')).toMatchObject({
+      mask: 'spambot',
+      channels: null,
+      levels: ['NONOTIFY'],
+    });
+  });
+
+  it('ALL does not expand to include the modifier levels', () => {
+    // Modifiers are not in LEVEL_DEFS, so a bare "ALL" (or default) never pulls
+    // NOUNREAD/NONOTIFY/NOHIGHLIGHT into the concrete set.
+    const levels = p('bob ALL -PUBLIC').levels;
+    expect(levels).not.toContain('NOUNREAD');
+    expect(levels).not.toContain('NONOTIFY');
+    expect(levels).not.toContain('NOHIGHLIGHT');
+  });
 });
 
 describe('parseIgnoreArgs — content + channel (must-have #2)', () => {

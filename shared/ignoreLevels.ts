@@ -6,8 +6,9 @@
 // which level tokens exist, their aliases, or how they map to event types.
 
 // Each level token maps to the persisted event `type`s it covers. PUBLIC vs MSGS
-// split a 'message' by channel-vs-DM (`dm`). ALL and NOHIGHLIGHT are special
-// (handled by the matcher); CTCPS is accepted but maps to nothing — Lurker never
+// split a 'message' by channel-vs-DM (`dm`). ALL and the modifier levels
+// (NOHIGHLIGHT / NOUNREAD / NONOTIFY) are special (handled by the matcher, not
+// event-type tokens); CTCPS is accepted but maps to nothing — Lurker never
 // surfaces CTCP as a persisted type, a documented no-op.
 export const LEVEL_DEFS: Record<string, { types: string[]; dm?: boolean }> = {
   PUBLIC: { types: ['message'], dm: false },
@@ -74,6 +75,19 @@ export const LEVEL_ALIASES: Record<string, string> = {
   NOHIGHLIGHTS: 'NOHIGHLIGHT',
   NOHILIGHT: 'NOHIGHLIGHT',
   NOHILITE: 'NOHIGHLIGHT',
+  // Modifier levels for muting (issue #359). NOUNREAD suppresses the plain-unread
+  // signal (≙ irssi's NO_ACT, "don't trigger channel activity"); NONOTIFY
+  // suppresses toast/push/sound. Both keep the message visible + counted, like
+  // NOHIGHLIGHT. irssi's NO_ACT spellings are accepted as NOUNREAD aliases.
+  NOUNREAD: 'NOUNREAD',
+  NOUNREADS: 'NOUNREAD',
+  NO_ACT: 'NOUNREAD',
+  NOACT: 'NOUNREAD',
+  NOACTIVITY: 'NOUNREAD',
+  NONOTIFY: 'NONOTIFY',
+  NONOTIFYS: 'NONOTIFY',
+  NONOTIFICATION: 'NONOTIFY',
+  NONOTIFICATIONS: 'NONOTIFY',
 };
 
 // Deterministic order so the stored levels CSV is stable (the DB dedupe compares
@@ -93,6 +107,8 @@ export const CANONICAL_ORDER = [
   'TOPICS',
   'CTCPS',
   'NOHIGHLIGHT',
+  'NOUNREAD',
+  'NONOTIFY',
 ];
 
 export const KNOWN_LEVELS = new Set(Object.keys(LEVEL_ALIASES));

@@ -615,7 +615,6 @@ function handleMessage(raw: string): void {
     const channelNotify = useChannelNotifyStore();
     channelNotify.applyChange(payload.networkId, payload.target, {
       notifyAlways: !!payload.notifyAlways,
-      muted: !!payload.muted,
     });
     return;
   }

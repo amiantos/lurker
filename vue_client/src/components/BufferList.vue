@@ -290,7 +290,7 @@ import { FRIENDS_KEY, SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { connected as lurkerConnected } from '../composables/useSocket.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
-import { useChannelNotifyStore } from '../stores/channelNotify.js';
+import { useIgnoresStore } from '../stores/ignores.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
 import { useNetworkActions } from '../composables/useNetworkActions.js';
@@ -305,7 +305,7 @@ const buffers = useBuffersStore();
 const friends = useFriendsStore();
 const drafts = useDraftStore();
 const pins = usePinsStore();
-const channelNotify = useChannelNotifyStore();
+const ignores = useIgnoresStore();
 const settings = useSettingsStore();
 const bufferActions = useBufferActions();
 const networkActions = useNetworkActions();
@@ -349,19 +349,15 @@ function countFor(unread: number, highlights: number): number {
   return 0;
 }
 
-// A muted channel drops the plain-unread signal from the buffer list: a "full"
+// A muted buffer drops the plain-unread signal from the buffer list: a "full"
 // count downgrades to highlights-only so ordinary traffic stops incrementing
 // the badge, and the `unread` row class (color + bold + off-screen arrow) is
 // withheld below. Highlights pass through untouched — they still color the row
 // and show the ● per the global display mode, which is the whole point of
-// muting a busy-but-followed room. Mute is channel-only; DMs/server never muted.
+// muting a busy-but-followed room. Mute is now an ignore rule carrying NOUNREAD
+// (issue #359): channel, DM, or a network-wide rule that covers every child.
 function isChannelMuted(buf: Buffer | null): boolean {
-  return (
-    !!buf &&
-    buf.networkId != null &&
-    buf.target.startsWith('#') &&
-    channelNotify.muted(buf.networkId, buf.target)
-  );
+  return !!buf && buf.networkId != null && ignores.bufferMutesUnread(buf.networkId, buf.target);
 }
 function displayCount(buf: Buffer): number {
   const mode =

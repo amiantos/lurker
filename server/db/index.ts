@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import Database from 'better-sqlite3';
+import { foldMutedIntoIgnoreRules } from './migrateMutedFold.js';
 import path from 'path';
 import fs from 'fs';
 import { isNodeMode } from '../utils/edition.js';
@@ -792,11 +793,11 @@ if (columnExists('peer_presence_state', 'offline_datetime')) {
 // marker. Nullable; only meaningful when state='away'.
 ensureColumn('peer_presence_state', 'away_message', 'TEXT');
 
-// Per-channel "mute" for the buffer list: suppresses the plain-unread signal
-// (count + row color + off-screen unread arrow) for this channel without
-// touching highlights or notifications. Display-only — the server stores and
-// syncs it but never acts on it. Sits in channel_notify_settings alongside
-// notify_always; a row now persists if EITHER flag is set (see channelNotify.ts).
+// DEPRECATED (issue #359): the per-channel display-only `muted` flag was folded
+// into the ignore engine as a NOUNREAD+NONOTIFY rule (mute now silences
+// notifications too). The column is retained (always written 0) so older images
+// still satisfy the schema; the boot migration below converts any lingering
+// muted=1 rows into ignore rules. No new code reads or sets it.
 ensureColumn('channel_notify_settings', 'muted', 'INTEGER NOT NULL DEFAULT 0');
 
 ensureColumn('messages', 'extra', 'TEXT');
@@ -1313,6 +1314,18 @@ if (schemaVersion < 11) {
       db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
     }
   }
+}
+
+// Issue #359: fold the old display-only per-channel `muted` flag into the ignore
+// engine (see migrateMutedFold.ts). Runs after the ignored_masks rebuild above so
+// the table is in its final shape. Best-effort — a failure leaves muted=1 rows to
+// retry on the next boot.
+try {
+  foldMutedIntoIgnoreRules(db);
+} catch (err) {
+  // Log rather than swallow: the self-gating retry masks a deterministic bug as
+  // a transient failure, so surface it or a broken fold vanishes silently.
+  console.warn('[db] muted→ignore fold migration failed (will retry next boot):', err);
 }
 
 // Issue #355: buffer_reads.network_id must be nullable so the app-scoped system

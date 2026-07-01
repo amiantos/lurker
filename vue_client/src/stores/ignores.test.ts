@@ -137,3 +137,69 @@ describe('ignores store — matcher getters union global + network', () => {
     );
   });
 });
+
+describe('ignores store — mute-rule getters (#359)', () => {
+  const mute = (over: Partial<IgnoreEntry> = {}) =>
+    entry({ mask: null, levels: ['NOUNREAD', 'NONOTIFY'], ...over });
+
+  it('bufferMuteRule finds a network-scoped per-channel mute and reports its scope', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot([{ networkId: 1, ignoredMasks: [mute({ id: 5, channels: ['#chan'] })] }], []);
+    const rule = s.bufferMuteRule(1, '#Chan'); // case-insensitive
+    expect(rule).toMatchObject({ id: 5, networkId: 1 });
+  });
+
+  it('bufferMuteRule also finds a GLOBAL per-channel mute (default /ignore scope) with networkId null', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot([{ networkId: 1, ignoredMasks: [] }], [mute({ id: 7, channels: ['#chan'] })]);
+    expect(s.bufferMuteRule(1, '#chan')).toMatchObject({ id: 7, networkId: null });
+    // …and the badge path agrees the buffer is muted.
+    expect(s.bufferMutesUnread(1, '#chan')).toBe(true);
+  });
+
+  it('bufferMuteRule ignores masked / patterned / except / non-mute rules', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot(
+      [
+        {
+          networkId: 1,
+          ignoredMasks: [
+            mute({ id: 1, channels: ['#chan'], mask: 'bob' }), // masked → not a whole-buffer mute
+            mute({ id: 2, channels: ['#chan'], isExcept: true }), // except
+            entry({ id: 3, mask: null, channels: ['#chan'], levels: ['PUBLIC'] }), // hide, not mute
+          ],
+        },
+      ],
+      [],
+    );
+    expect(s.bufferMuteRule(1, '#chan')).toBeNull();
+  });
+
+  it('networkMuteRule finds a network-wide (channel-less) mute; a per-channel rule is not it', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot(
+      [
+        {
+          networkId: 1,
+          ignoredMasks: [mute({ id: 8, channels: null }), mute({ id: 9, channels: ['#chan'] })],
+        },
+      ],
+      [],
+    );
+    expect(s.networkMuteRule(1)).toMatchObject({ id: 8, networkId: 1 });
+  });
+
+  it('a network-wide mute downgrades unread for every buffer incl. DMs', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot([{ networkId: 1, ignoredMasks: [mute({ id: 8, channels: null })] }], []);
+    expect(s.bufferMutesUnread(1, '#anything')).toBe(true);
+    expect(s.bufferMutesUnread(1, 'somenick')).toBe(true); // DM buffer
+  });
+
+  it('a per-channel mute does not leak to sibling buffers', () => {
+    const s = useIgnoresStore();
+    s.applySnapshot([{ networkId: 2, ignoredMasks: [mute({ id: 9, channels: ['#only'] })] }], []);
+    expect(s.bufferMutesUnread(2, '#only')).toBe(true);
+    expect(s.bufferMutesUnread(2, '#other')).toBe(false);
+  });
+});

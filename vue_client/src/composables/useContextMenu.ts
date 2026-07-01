@@ -20,6 +20,9 @@ export interface ContextMenuItem {
   icon?: string;
   disabled?: boolean;
   divider?: boolean;
+  // A non-interactive small-caps group label (e.g. "Notifications" above a radio
+  // group). Rendered as a muted heading row; other fields ignored.
+  heading?: string;
 }
 
 export interface ContextMenuState {

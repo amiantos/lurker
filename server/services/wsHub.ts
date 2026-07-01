@@ -18,7 +18,7 @@ import highlightRulesService from './highlightRulesService.js';
 import draftsService from './draftsService.js';
 import * as systemLog from './systemLog.js';
 import * as pushService from './pushService.js';
-import { evaluateIgnores } from './ignoreMatch.js';
+import { evaluateIgnores, type IgnoreVerdict } from './ignoreMatch.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import { parseIgnoreInput, maskToRuleInput } from './ignoreRuleInput.js';
 import { findSession } from '../db/sessions.js';
@@ -68,7 +68,6 @@ import { addBookmark, removeBookmark, listBookmarkIdsForUser } from '../db/bookm
 import {
   getChannelNotifyAlways,
   setChannelNotifyAlways,
-  setChannelMuted,
   getChannelFlags,
 } from '../db/channelNotify.js';
 import { getUserAwayState } from '../db/userAwayState.js';
@@ -985,21 +984,32 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     return false;
   }
 
+  // The user's ignore verdict for an event, off the cached compiled rule set (no
+  // DB scan per event). senderHidden reads .hide for the render/reopen path;
+  // maybePush additionally honors .nonotify (issue #359 — a NONOTIFY mute rule
+  // freezes push without hiding the message).
+  function ignoreVerdictFor(userId: number, decorated: DecoratedEvent): IgnoreVerdict {
+    if (decorated.nick) {
+      const compiled = ignoreRulesService.getCompiled(userId, decorated.networkId);
+      if (compiled.length) {
+        return evaluateIgnores(compiled, {
+          nick: decorated.nick,
+          userhost: decorated.userhost ?? null,
+          target: decorated.target,
+          text: decorated.text ?? '',
+          type: decorated.type,
+          isDm: !!decorated.dm,
+        });
+      }
+    }
+    return { hide: false, nohilight: false, nonotify: false };
+  }
+
   // True when the user's ignore rules would hide this event (a hide-level match,
-  // not a NOHIGHLIGHT-only one). Shared by the push gate and the closed-DM reopen
-  // guard. Runs off the cached compiled rule set — no DB scan per event.
+  // not a modifier-only one). Shared by the push gate and the closed-DM reopen
+  // guard.
   function senderHidden(userId: number, decorated: DecoratedEvent): boolean {
-    if (!decorated.nick) return false;
-    const compiled = ignoreRulesService.getCompiled(userId, decorated.networkId);
-    if (!compiled.length) return false;
-    return evaluateIgnores(compiled, {
-      nick: decorated.nick,
-      userhost: decorated.userhost ?? null,
-      target: decorated.target,
-      text: decorated.text ?? '',
-      type: decorated.type,
-      isDm: !!decorated.dm,
-    }).hide;
+    return ignoreVerdictFor(userId, decorated).hide;
   }
 
   function maybePush(userId: number, decorated: DecoratedEvent): void {
@@ -1010,13 +1020,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // the badge total below (it's an O(buffers) scan). deliver() would no-op on
     // an empty subscription set anyway — bail before the work (#451 review).
     if (!pushService.hasSubscriptions(userId)) return;
-    // Suppress push for events the user's ignore rules would hide. This is the
-    // one piece of the ignore feature that has to live server-side: push fires
+    // Suppress push for events the user's ignore rules would hide OR mute
+    // (NONOTIFY, e.g. a muted channel/network — issue #359). This is the one
+    // piece of the ignore/mute feature that has to live server-side: push fires
     // while no client is open, so a client-side filter can't intercept. The
     // unread badge and render filter stay reactive client-side, so /unignore
     // still reveals; only push delivery is frozen here. A NOHIGHLIGHT rule does
     // NOT freeze push — the message is still visible, it just doesn't highlight.
-    if (senderHidden(userId, decorated)) return;
+    const pushVerdict = ignoreVerdictFor(userId, decorated);
+    if (pushVerdict.hide || pushVerdict.nonotify) return;
     // Signal kind in priority order: DM beats matched beats always_notify.
     // The `kind` doubles as the settings-key namespace, so picking a single
     // priority winner here means a DM that also matched a rule still
@@ -1992,23 +2004,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // by notifications.dm.enabled; server pseudo-buffers can't carry it.
         if (!networkId || !target.startsWith('#')) break;
         setChannelNotifyAlways(userId, networkId, target, !!msg.notifyAlways);
-        // Broadcast the full flag pair (notifyAlways + muted) so the muted flag
-        // isn't clobbered when only notify_always changed, and vice versa.
-        fanOut(userId, {
-          kind: 'channel-notify-changed',
-          networkId,
-          target,
-          ...getChannelFlags(userId, networkId, target),
-        });
-        break;
-      }
-      case 'set-channel-muted': {
-        const networkId = Number(msg.networkId);
-        const target = typeof msg.target === 'string' ? msg.target : '';
-        // Mute is a buffer-list display concern and channel-only — DMs always
-        // want their unread shown, server pseudo-buffers can't carry it.
-        if (!networkId || !target.startsWith('#')) break;
-        setChannelMuted(userId, networkId, target, !!msg.muted);
         fanOut(userId, {
           kind: 'channel-notify-changed',
           networkId,

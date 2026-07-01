@@ -5,6 +5,7 @@ import type { ContextMenuItem } from './useContextMenu.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useChannelListModal } from './useChannelListModal.js';
 import { useNetworkEditor } from './useNetworkEditor.js';
+import { useNotifyLadder } from './useNotifyLadder.js';
 import { useNetworksStore, type Network } from '../stores/networks.js';
 
 // Buffer-list action logic for network rows. Analogous to useBufferActions for
@@ -14,6 +15,7 @@ export function useNetworkActions() {
   const menu = useContextMenu();
   const channelListModal = useChannelListModal();
   const networkEditor = useNetworkEditor();
+  const notify = useNotifyLadder();
   const networks = useNetworksStore();
 
   function toggleConnection(networkId: number): void {
@@ -36,6 +38,11 @@ export function useNetworkActions() {
         icon: isConnected ? 'fa-solid fa-plug-circle-xmark' : 'fa-solid fa-plug',
         onClick: () => toggleConnection(net.id),
       },
+      // Network-wide notification ladder (issue #359): Highlights only (default)
+      // / Nothing / Muted — a -network-scoped NONOTIFY(+NOUNREAD) rule covering
+      // every buffer on the network.
+      { divider: true },
+      ...notify.networkItems(net.id),
     ];
   }
 

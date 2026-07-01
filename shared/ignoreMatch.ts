@@ -10,6 +10,12 @@
 import { buildTextTest, cleanForMatch, type TextKind } from './textMatch.js';
 import { LEVEL_DEFS, ALL_TYPES, HIGHLIGHTABLE } from './ignoreLevels.js';
 
+// The special "modifier" levels: they don't name an event-type to hide, they
+// change how a still-visible message is treated (never highlight / don't bump
+// unread / don't notify). Filtered out of the hide-level set so a modifier-only
+// rule keeps `hides` false. See issues #301 (NOHIGHLIGHT) and #359.
+const MODIFIER_LEVELS = new Set(['NOHIGHLIGHT', 'NOUNREAD', 'NONOTIFY']);
+
 // Re-export the level helpers the store / parser / service pull from here.
 export { KNOWN_LEVELS, canonicalLevel, canonicalizeLevels } from './ignoreLevels.js';
 
@@ -105,6 +111,12 @@ export interface IgnoreInput {
 export interface IgnoreVerdict {
   hide: boolean;
   nohilight: boolean;
+  // Modifier verdict (issue #359): the message stays visible + counted, but
+  // nonotify suppresses toast/push/sound (honors longest-mask-wins + -except).
+  // NOUNREAD is deliberately NOT a per-message verdict — muting the buffer-list
+  // unread badge is a whole-buffer concern computed by channelMutesUnread off the
+  // compiled `nounread` flag; per-sender unread accounting is deferred (#359).
+  nonotify: boolean;
 }
 
 export interface CompiledIgnoreRule {
@@ -113,8 +125,11 @@ export interface CompiledIgnoreRule {
   expiresAt: number | null;
   hides: boolean;
   nohilight: boolean;
+  nounread: boolean;
+  nonotify: boolean;
   pattern: boolean; // has a content pattern (used by member-list gating)
   channels: boolean; // is channel-scoped
+  anyNick: boolean; // mask matches everyone (null/*) — used by channelMutesUnread
   hasAll: boolean;
   matchesNick: (nick: string | null, userhost: string | null) => boolean;
   matchesChannel: (target: string) => boolean;
@@ -136,7 +151,9 @@ export function compileIgnoreRules(rules: IgnoreRule[]): CompiledIgnoreRule[] {
   const out: CompiledIgnoreRule[] = [];
   for (const rule of rules) {
     const hasNohilight = rule.levels.includes('NOHIGHLIGHT');
-    const hideLevels = rule.levels.filter((l) => l !== 'NOHIGHLIGHT');
+    const hasNounread = rule.levels.includes('NOUNREAD');
+    const hasNonotify = rule.levels.includes('NONOTIFY');
+    const hideLevels = rule.levels.filter((l) => !MODIFIER_LEVELS.has(l));
     const hasAll = hideLevels.includes('ALL');
     const hides = hideLevels.length > 0;
 
@@ -167,8 +184,11 @@ export function compileIgnoreRules(rules: IgnoreRule[]): CompiledIgnoreRule[] {
       expiresAt: rule.expiresAt ? Date.parse(rule.expiresAt) : null,
       hides,
       nohilight: hasNohilight,
+      nounread: hasNounread,
+      nonotify: hasNonotify,
       pattern: !!rule.pattern,
       channels: !!(rule.channels && rule.channels.length),
+      anyNick: !rule.mask || rule.mask === '*',
       hasAll,
       matchesNick,
       matchesChannel,
@@ -191,7 +211,7 @@ export function evaluateIgnores(
   input: IgnoreInput,
   now: number = Date.now(),
 ): IgnoreVerdict {
-  if (compiled.length === 0) return { hide: false, nohilight: false };
+  if (compiled.length === 0) return { hide: false, nohilight: false, nonotify: false };
   const { nick, userhost, target, type, isDm } = input;
   // Only pay for the URL/formatting strip when a rule actually matches text.
   const text = input.text && anyHasPattern(compiled) ? cleanForMatch(input.text) : '';
@@ -200,13 +220,23 @@ export function evaluateIgnores(
   let bestHideExcept = -1;
   let bestNo = -1;
   let bestNoExcept = -1;
+  let bestNotify = -1;
+  let bestNotifyExcept = -1;
 
   for (const r of compiled) {
     if (r.expiresAt !== null && r.expiresAt <= now) continue;
     const hideApplies = r.hides && r.hideLevel(type, isDm);
+    // nohilight only sensibly applies to highlightable (message/action) events;
+    // when the rule also carries hide levels it's bounded to those.
     const noApplies =
       r.nohilight && HIGHLIGHTABLE.has(type) && (r.hides ? r.hideLevel(type, isDm) : true);
-    if (!hideApplies && !noApplies) continue;
+    // nonotify gates notifications, which — via a channel's notify_always — can
+    // fire for ANY event type (notices, joins, …), so it is NOT bounded to
+    // highlightable types (issue #359 "quietest wins": a network/channel mute
+    // must veto those too). Bounded only by the rule's own hide levels if it has
+    // any; a modifier-only NONOTIFY rule applies to every type its target matches.
+    const notifyApplies = r.nonotify && (r.hides ? r.hideLevel(type, isDm) : true);
+    if (!hideApplies && !noApplies && !notifyApplies) continue;
     if (!r.matchesNick(nick, userhost)) continue;
     if (!r.matchesChannel(target)) continue;
     if (!r.matchesText(text)) continue;
@@ -225,11 +255,19 @@ export function evaluateIgnores(
         bestNo = r.maskLen;
       }
     }
+    if (notifyApplies) {
+      if (r.isExcept) {
+        if (r.maskLen > bestNotifyExcept) bestNotifyExcept = r.maskLen;
+      } else if (r.maskLen > bestNotify) {
+        bestNotify = r.maskLen;
+      }
+    }
   }
 
   return {
     hide: bestHide >= 0 && bestHideExcept < bestHide,
     nohilight: bestNo >= 0 && bestNoExcept < bestNo,
+    nonotify: bestNotify >= 0 && bestNotifyExcept < bestNotify,
   };
 }
 
@@ -250,6 +288,26 @@ export function isMemberHidden(
     if (r.expiresAt !== null && r.expiresAt <= now) continue;
     if (!r.matchesChannel(channel)) continue;
     if (r.matchesNick(nick, userhost)) return true;
+  }
+  return false;
+}
+
+// Whether a whole buffer's plain-unread signal is muted (issue #359) — used by
+// the buffer list to downgrade the unread badge, mirroring the old per-channel
+// `muted` flag. True when a non-except, no-pattern, everyone-mask (null/*) rule
+// carrying NOUNREAD covers this buffer. A network-wide rule (channels null)
+// matches every buffer, so muting a network downgrades all its children here.
+// Per-sender NOUNREAD (a masked rule) deliberately does NOT mute the whole
+// buffer's badge — that would need insert-time unread accounting (deferred).
+export function channelMutesUnread(
+  compiled: CompiledIgnoreRule[],
+  channel: string,
+  now: number = Date.now(),
+): boolean {
+  for (const r of compiled) {
+    if (r.isExcept || r.pattern || !r.nounread || !r.anyNick) continue;
+    if (r.expiresAt !== null && r.expiresAt <= now) continue;
+    if (r.matchesChannel(channel)) return true;
   }
   return false;
 }

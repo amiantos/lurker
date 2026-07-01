@@ -3,11 +3,11 @@
 
 import type { ContextMenuItem } from './useContextMenu.js';
 import { usePinsStore } from '../stores/pins.js';
-import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useContextMenu } from './useContextMenu.js';
+import { useNotifyLadder } from './useNotifyLadder.js';
 import { socketSend } from './useSocket.js';
 
 export interface BufferLike {
@@ -29,11 +29,11 @@ export interface BufferActionsAPI {
 // network, browse channels) and aren't handled here.
 export function useBufferActions(): BufferActionsAPI {
   const pins = usePinsStore();
-  const channelNotify = useChannelNotifyStore();
   const nickNotes = useNickNotesStore();
   const friends = useFriendsStore();
   const whois = useWhoisStore();
   const menu = useContextMenu();
+  const notify = useNotifyLadder();
 
   function buildItems(buf: BufferLike | null | undefined): ContextMenuItem[] {
     // Capture networkId as a const after the null guard so the narrowing to
@@ -58,68 +58,45 @@ export function useBufferActions(): BufferActionsAPI {
             onClick: () => pins.pin(networkId, buf.target),
           },
     ];
-    if (isChannel) {
-      const isAlwaysNotify = channelNotify.notifyAlways(networkId, buf.target);
-      items.push(
-        // Icon reflects current state (solid = always-notifying, regular = not)
-        // to match the topic-bar toggle; the label states the action.
-        isAlwaysNotify
-          ? {
-              label: 'Stop Always Notifying',
-              icon: 'fa-solid fa-bell',
-              onClick: () => channelNotify.setNotifyAlways(networkId, buf.target, false),
-            }
-          : {
-              label: 'Always Notify',
-              icon: 'fa-regular fa-bell',
-              onClick: () => channelNotify.setNotifyAlways(networkId, buf.target, true),
-            },
-      );
-      // Mute hides the unread count + row color for ordinary traffic, leaving
-      // highlights (and notifications) intact — for busy rooms you want to stay
-      // in but not have nagging at you. Icon mirrors the always-notify pattern:
-      // solid bell-slash = muted, regular bell-slash = not.
-      const isMuted = channelNotify.muted(networkId, buf.target);
-      items.push(
-        isMuted
-          ? {
-              label: 'Unmute Channel',
-              icon: 'fa-solid fa-bell-slash',
-              onClick: () => channelNotify.setMuted(networkId, buf.target, false),
-            }
-          : {
-              label: 'Mute Channel',
-              icon: 'fa-regular fa-bell-slash',
-              onClick: () => channelNotify.setMuted(networkId, buf.target, true),
-            },
-      );
-    } else {
+    // Notification "quietness" ladder (issue #359): channels get the full 4-rung
+    // ladder (All / Highlights / Nothing / Muted), DMs the 3-rung one (no
+    // "Highlights only" — every DM is already the signal).
+    items.push(
+      { divider: true },
+      ...(isChannel
+        ? notify.channelItems(networkId, buf.target)
+        : notify.dmItems(networkId, buf.target)),
+    );
+    if (!isChannel) {
       // DM target is the peer's nick — open the profile/note actions directly.
       // Channels can't carry a per-nick action from this menu (which nick?),
       // so these are DM-only; in-channel equivalents flow through the member
       // list menu.
       const hasNote = nickNotes.hasNote(networkId, buf.target);
       const isFriend = !!friends.contactForTarget(networkId, buf.target);
-      items.push({
-        label: 'View Profile…',
-        icon: 'fa-solid fa-id-card',
-        onClick: () => whois.openViewer(networkId, buf.target),
-      });
-      items.push({
-        label: hasNote ? 'Edit Note…' : 'Add Note…',
-        icon: 'fa-solid fa-note-sticky',
-        onClick: () => nickNotes.openEditor(networkId, buf.target),
-      });
-      items.push({
-        label: isFriend ? 'Edit Friend…' : 'Add Friend…',
-        icon: 'fa-solid fa-user-group',
-        onClick: () => friends.openEditorForNick(networkId, buf.target),
-      });
+      items.push(
+        { divider: true },
+        {
+          label: 'View Profile…',
+          icon: 'fa-solid fa-id-card',
+          onClick: () => whois.openViewer(networkId, buf.target),
+        },
+        {
+          label: hasNote ? 'Edit Note…' : 'Add Note…',
+          icon: 'fa-solid fa-note-sticky',
+          onClick: () => nickNotes.openEditor(networkId, buf.target),
+        },
+        {
+          label: isFriend ? 'Edit Friend…' : 'Add Friend…',
+          icon: 'fa-solid fa-user-group',
+          onClick: () => friends.openEditorForNick(networkId, buf.target),
+        },
+      );
     }
     // Close drops the buffer entirely — for a channel that also PARTs it, for
     // a DM it just stops tracking the peer. Both are reversible (rejoin /
     // reopen), so no confirmation; the divider sets it apart from the
-    // non-destructive pin/notify/note actions above.
+    // non-destructive actions above.
     items.push(
       { divider: true },
       {

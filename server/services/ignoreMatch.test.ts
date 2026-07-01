@@ -4,7 +4,12 @@
 import { describe, it, expect } from 'vitest';
 import type { IgnoreRuleRow } from '../db/ignoredMasks.js';
 import type { IgnoreInput } from './ignoreMatch.js';
-import { compileIgnoreRules, evaluateIgnores, canonicalizeLevels } from './ignoreMatch.js';
+import {
+  compileIgnoreRules,
+  evaluateIgnores,
+  canonicalizeLevels,
+  channelMutesUnread,
+} from './ignoreMatch.js';
 
 function r(overrides: Partial<IgnoreRuleRow> = {}): IgnoreRuleRow {
   return {
@@ -43,6 +48,7 @@ describe('must-have #1 — NOHIGHLIGHT', () => {
     expect(evalRules(rules, { nick: 'bob', type: 'message' })).toEqual({
       hide: false,
       nohilight: true,
+      nonotify: false,
     });
   });
 
@@ -51,6 +57,7 @@ describe('must-have #1 — NOHIGHLIGHT', () => {
     expect(evalRules(rules, { nick: 'alice', type: 'message' })).toEqual({
       hide: false,
       nohilight: false,
+      nonotify: false,
     });
   });
 
@@ -192,5 +199,113 @@ describe('canonicalizeLevels', () => {
     expect(canonicalizeLevels(['publics', 'join'])).toEqual(['PUBLIC', 'JOINS']);
     expect(canonicalizeLevels(['bogus', 'ALL'])).toEqual(['ALL']);
     expect(canonicalizeLevels(['nohilite'])).toEqual(['NOHIGHLIGHT']);
+  });
+
+  it('canonicalizes the mute modifier aliases (issue #359)', () => {
+    expect(canonicalizeLevels(['no_act'])).toEqual(['NOUNREAD']);
+    expect(canonicalizeLevels(['noact'])).toEqual(['NOUNREAD']);
+    expect(canonicalizeLevels(['nonotify'])).toEqual(['NONOTIFY']);
+    expect(canonicalizeLevels(['NONOTIFY', 'NOUNREAD'])).toEqual(['NOUNREAD', 'NONOTIFY']);
+  });
+});
+
+describe('NOUNREAD / NONOTIFY modifier levels (issue #359)', () => {
+  it('a NONOTIFY rule mutes notifications but keeps the message visible', () => {
+    const v = evalRules([r({ channels: ['#chan'], levels: ['NOUNREAD', 'NONOTIFY'] })], {
+      target: '#chan',
+    });
+    expect(v).toEqual({ hide: false, nohilight: false, nonotify: true });
+  });
+
+  it('NOUNREAD alone produces no per-message verdict (badge-only, via channelMutesUnread)', () => {
+    // NOUNREAD is not a per-message verdict field — its only effect is the
+    // whole-buffer badge downgrade tested in the channelMutesUnread block below.
+    expect(
+      evalRules([r({ channels: ['#chan'], levels: ['NOUNREAD'] })], { target: '#chan' }),
+    ).toEqual({ hide: false, nohilight: false, nonotify: false });
+  });
+
+  it('NONOTIFY vetoes NON-highlightable types too (notices/joins) — quietest wins', () => {
+    // A muted channel/network must silence a notify_always notice/join, not just
+    // messages — so nonotify is NOT bounded to highlightable types.
+    const rules = [r({ channels: ['#chan'], levels: ['NONOTIFY'] })];
+    expect(evalRules(rules, { target: '#chan', type: 'notice', text: 'hi' }).nonotify).toBe(true);
+    expect(evalRules(rules, { target: '#chan', type: 'join', text: '' }).nonotify).toBe(true);
+    expect(evalRules(rules, { target: '#chan', type: 'action', text: 'waves' }).nonotify).toBe(
+      true,
+    );
+  });
+
+  it('respects channel scope — a different channel is unaffected', () => {
+    const rules = [r({ channels: ['#chan'], levels: ['NONOTIFY'] })];
+    expect(evalRules(rules, { target: '#other' }).nonotify).toBe(false);
+  });
+
+  it('is sender-scopable via a mask (that person everywhere)', () => {
+    const rules = [r({ mask: 'bob', levels: ['NONOTIFY'] })];
+    expect(evalRules(rules, { nick: 'bob' }).nonotify).toBe(true);
+    expect(evalRules(rules, { nick: 'alice' }).nonotify).toBe(false);
+  });
+
+  it('honors -except (a longer except mask un-mutes)', () => {
+    const rules = [
+      r({ id: 1, mask: null, channels: ['#chan'], levels: ['NONOTIFY'] }),
+      r({ id: 2, mask: 'boss', channels: ['#chan'], levels: ['NONOTIFY'], isExcept: true }),
+    ];
+    expect(evalRules(rules, { nick: 'rando', target: '#chan' }).nonotify).toBe(true);
+    expect(evalRules(rules, { nick: 'boss', target: '#chan' }).nonotify).toBe(false);
+  });
+});
+
+describe('channelMutesUnread (issue #359)', () => {
+  it('is true for a whole-channel NOUNREAD rule', () => {
+    expect(
+      channelMutesUnread(
+        compileIgnoreRules([r({ channels: ['#chan'], levels: ['NOUNREAD'] })]),
+        '#chan',
+      ),
+    ).toBe(true);
+  });
+
+  it('is true for a network-wide rule (channels null) on any buffer', () => {
+    const compiled = compileIgnoreRules([r({ channels: null, mask: null, levels: ['NOUNREAD'] })]);
+    expect(channelMutesUnread(compiled, '#anything')).toBe(true);
+    expect(channelMutesUnread(compiled, 'somenick')).toBe(true); // DM buffer too
+  });
+
+  it('is false in an unrelated channel', () => {
+    expect(
+      channelMutesUnread(
+        compileIgnoreRules([r({ channels: ['#chan'], levels: ['NOUNREAD'] })]),
+        '#other',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not fire for a masked (per-sender) NOUNREAD rule', () => {
+    expect(
+      channelMutesUnread(
+        compileIgnoreRules([r({ mask: 'bob', channels: ['#chan'], levels: ['NOUNREAD'] })]),
+        '#chan',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not fire for a NONOTIFY-only rule', () => {
+    expect(
+      channelMutesUnread(
+        compileIgnoreRules([r({ channels: ['#chan'], levels: ['NONOTIFY'] })]),
+        '#chan',
+      ),
+    ).toBe(false);
+  });
+
+  it('ignores except rules', () => {
+    expect(
+      channelMutesUnread(
+        compileIgnoreRules([r({ channels: ['#chan'], levels: ['NOUNREAD'], isExcept: true })]),
+        '#chan',
+      ),
+    ).toBe(false);
   });
 });

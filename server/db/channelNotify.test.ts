@@ -12,21 +12,14 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 let createUser: typeof import('./users.js').createUser;
 let createNetwork: typeof import('./networks.js').createNetwork;
 let getChannelNotifyAlways: typeof import('./channelNotify.js').getChannelNotifyAlways;
-let getChannelMuted: typeof import('./channelNotify.js').getChannelMuted;
 let listChannelNotifyForUser: typeof import('./channelNotify.js').listChannelNotifyForUser;
 let setChannelNotifyAlways: typeof import('./channelNotify.js').setChannelNotifyAlways;
-let setChannelMuted: typeof import('./channelNotify.js').setChannelMuted;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
   ({ createNetwork } = await import('./networks.js'));
-  ({
-    getChannelNotifyAlways,
-    getChannelMuted,
-    listChannelNotifyForUser,
-    setChannelNotifyAlways,
-    setChannelMuted,
-  } = await import('./channelNotify.js'));
+  ({ getChannelNotifyAlways, listChannelNotifyForUser, setChannelNotifyAlways } =
+    await import('./channelNotify.js'));
 });
 
 afterAll(() => {
@@ -66,42 +59,14 @@ describe('channelNotify', () => {
     expect(listChannelNotifyForUser(u.id).size).toBe(0);
   });
 
-  it('groups settings by network for the whole user', () => {
+  it('groups notify_always settings by network for the whole user', () => {
     const u = createUser('cn-dave');
     const a = mkNetwork(u.id, 'liberaA');
     const b = mkNetwork(u.id, 'liberaB');
     setChannelNotifyAlways(u.id, a!.id, '#one', true);
     setChannelNotifyAlways(u.id, b!.id, '#two', true);
     const byNetwork = listChannelNotifyForUser(u.id);
-    expect(byNetwork.get(a!.id)).toEqual({ '#one': { notifyAlways: true, muted: false } });
-    expect(byNetwork.get(b!.id)).toEqual({ '#two': { notifyAlways: true, muted: false } });
-  });
-
-  it('records and reads back a per-channel muted flag', () => {
-    const u = createUser('cn-erin');
-    const net = mkNetwork(u.id, 'libera');
-    setChannelMuted(u.id, net!.id, '#radio', true);
-    expect(getChannelMuted(u.id, net!.id, '#radio')).toBe(true);
-    expect(getChannelNotifyAlways(u.id, net!.id, '#radio')).toBe(false);
-  });
-
-  it('keeps the row alive while either flag is set, deletes only when both clear', () => {
-    const u = createUser('cn-frank');
-    const net = mkNetwork(u.id, 'libera');
-    // Both flags on the same channel — orthogonal, so both must persist.
-    setChannelNotifyAlways(u.id, net!.id, '#mix', true);
-    setChannelMuted(u.id, net!.id, '#mix', true);
-    expect(listChannelNotifyForUser(u.id).get(net!.id)).toEqual({
-      '#mix': { notifyAlways: true, muted: true },
-    });
-    // Clearing one leaves the row (the other flag still holds it).
-    setChannelNotifyAlways(u.id, net!.id, '#mix', false);
-    expect(getChannelMuted(u.id, net!.id, '#mix')).toBe(true);
-    expect(listChannelNotifyForUser(u.id).get(net!.id)).toEqual({
-      '#mix': { notifyAlways: false, muted: true },
-    });
-    // Clearing the last flag drops the row entirely.
-    setChannelMuted(u.id, net!.id, '#mix', false);
-    expect(listChannelNotifyForUser(u.id).size).toBe(0);
+    expect(byNetwork.get(a!.id)).toEqual({ '#one': { notifyAlways: true } });
+    expect(byNetwork.get(b!.id)).toEqual({ '#two': { notifyAlways: true } });
   });
 });

@@ -7,10 +7,37 @@ import {
   compileIgnoreRules,
   evaluateIgnores,
   isMemberHidden,
+  channelMutesUnread,
   type IgnoreRule,
   type IgnoreInput,
   type IgnoreVerdict,
 } from '../utils/ignoreMatch.js';
+
+// The two "mute" modifier levels (issue #359). A per-buffer or per-network mute
+// rung is a canonical rule carrying only these (no hide levels, no mask/pattern/
+// except), so the notification menus can find, read, and toggle it.
+const MUTE_LEVELS = new Set(['NOUNREAD', 'NONOTIFY']);
+function isMuteOnlyLevels(levels: string[]): boolean {
+  return levels.length > 0 && levels.every((l) => MUTE_LEVELS.has(l));
+}
+
+// Find the canonical mute rule (unmasked, unpatterned, non-except, mute-only
+// levels) matching a scope predicate, searching the network bucket then globals.
+// Returns it annotated with its scope (networkId null = global) so the caller
+// removes it from the right bucket. Shared by bufferMuteRule/networkMuteRule.
+function findMuteRule(
+  netList: IgnoreEntry[],
+  globalList: IgnoreEntry[],
+  networkId: number,
+  scopeMatches: (e: IgnoreEntry) => boolean,
+): IgnoreEntryWithNetwork | null {
+  const ok = (e: IgnoreEntry) =>
+    !e.mask && !e.pattern && !e.isExcept && scopeMatches(e) && isMuteOnlyLevels(e.levels);
+  const net = netList.find(ok);
+  if (net) return { ...net, networkId };
+  const g = globalList.find(ok);
+  return g ? { ...g, networkId: null } : null;
+}
 
 // Ignore rules (issue #301; global-vs-network scoping #350). Server is the
 // source of truth — adds/removes ship over WS and the server fans an
@@ -88,8 +115,60 @@ export const useIgnoresStore = defineStore('ignores', {
         const nid = Number(networkId);
         const net = state.byNetwork[nid] || EMPTY;
         const g = state.global;
-        if (g.length === 0 && net.length === 0) return { hide: false, nohilight: false };
+        if (g.length === 0 && net.length === 0)
+          return { hide: false, nohilight: false, nonotify: false };
         return evaluateIgnores(mergedCompiled(g, net, nid), ctx);
+      },
+
+    // Buffer-list mute check (issue #359): does a whole-buffer NOUNREAD rule
+    // cover this target? Includes network-wide rules (channels null) and globals,
+    // so muting a network downgrades every child buffer's unread here. Serves
+    // channels (#chan) and DMs (peer nick) alike.
+    bufferMutesUnread:
+      (state) =>
+      (networkId: number | string, target: string): boolean => {
+        const nid = Number(networkId);
+        const net = state.byNetwork[nid] || EMPTY;
+        const g = state.global;
+        if (g.length === 0 && net.length === 0) return false;
+        return channelMutesUnread(mergedCompiled(g, net, nid), target);
+      },
+
+    // The canonical per-buffer notification rule for the given target — an
+    // unmasked, unpatterned, non-except rule carrying only mute levels, whose
+    // channel scope is exactly [target]. Searches the network bucket then globals
+    // (so a hand-typed global `/ignore #chan NOUNREAD NONOTIFY` — global is the
+    // default scope — is still recognized, matching bufferMutesUnread). The
+    // returned `networkId` (null = global) tells the menu which bucket to remove
+    // from. Serves channels (#chan) and DMs (peer nick) alike.
+    bufferMuteRule:
+      (state) =>
+      (networkId: number | string, target: string): IgnoreEntryWithNetwork | null => {
+        const nid = Number(networkId);
+        const t = target.toLowerCase();
+        return findMuteRule(
+          state.byNetwork[nid] || EMPTY,
+          state.global,
+          nid,
+          (e) => e.channels?.length === 1 && e.channels[0].toLowerCase() === t,
+        );
+      },
+
+    // The canonical network-wide notification rule — like bufferMuteRule but
+    // scoped to the whole network (no channel scope). Used by the network menu.
+    // A global no-channel mute rule is "mute everything, every network"; toggling
+    // it from a single network's menu removes it globally, which is the honest
+    // consequence of having created a global rule.
+    networkMuteRule:
+      (state) =>
+      (networkId: number | string): IgnoreEntryWithNetwork | null => {
+        const nid = Number(networkId);
+        return findMuteRule(
+          state.byNetwork[nid] || EMPTY,
+          state.global,
+          nid,
+          (e) => !e.channels || e.channels.length === 0,
+        );
       },
 
     isHidden:

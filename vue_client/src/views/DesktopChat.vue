@@ -139,16 +139,6 @@
         </template>
         <template v-else-if="isChannel">
           <button
-            type="button"
-            class="link notify"
-            :class="{ on: channelNotifyAlways }"
-            :title="channelNotifyLabel"
-            :aria-label="channelNotifyLabel"
-            @click="toggleChannelNotify"
-          >
-            <i :class="channelNotifyAlways ? 'fa-solid fa-bell' : 'fa-regular fa-bell'"></i>
-          </button>
-          <button
             class="link"
             :title="showMembers ? 'Hide members' : 'Show members'"
             :aria-label="showMembers ? 'Hide members' : 'Show members'"
@@ -261,7 +251,6 @@ import { useFriendsStore } from '../stores/friends.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useSearchStore } from '../stores/search.js';
 import { useWhoisStore } from '../stores/whois.js';
-import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useImageModal } from '../composables/useImageModal.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
@@ -308,7 +297,6 @@ const dccTitle = computed(() =>
   dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',
 );
 const whois = useWhoisStore();
-const channelNotify = useChannelNotifyStore();
 
 const channelListModal = reactive(useChannelListModal());
 const imageModal = reactive(useImageModal());
@@ -438,25 +426,9 @@ function openDmNote() {
   nickNotes.openEditor(active.value.networkId, active.value.target);
 }
 
-// Channel "always notify" toggle — the one non-pin, non-close action from the
-// buffer menu, promoted to an inline button (pin/close stay buffer-list
-// concerns, reachable by right-clicking the sidebar row). The bell fills and
-// goes accent when the override is on.
-const channelNotifyAlways = computed(() => {
-  if (!isChannel.value || !active.value) return false;
-  return channelNotify.notifyAlways(active.value.networkId, active.value.target);
-});
-const channelNotifyLabel = computed(() =>
-  channelNotifyAlways.value ? 'Stop always notifying' : 'Always notify',
-);
-function toggleChannelNotify() {
-  if (!isChannel.value || !active.value) return;
-  channelNotify.setNotifyAlways(
-    active.value.networkId,
-    active.value.target,
-    !channelNotifyAlways.value,
-  );
-}
+// Channel notification level (always/highlights/nothing/muted) now lives in the
+// buffer context-menu ladder (right-click the sidebar row, or the topic-bar cog),
+// so there is no dedicated topic-bar bell anymore (issue #359).
 
 // User count for the active channel buffer. Sits in the topic bar (next to
 // the members-toggle button) rather than the status bar — the count is a
@@ -789,15 +761,6 @@ useChatBootstrap({ onJump: onJumpToMessage });
   align-items: baseline;
   gap: var(--space-4);
   flex-shrink: 0;
-}
-/* The always-notify bell reads as off (muted) until the override is on, when
-   it fills and switches to accent — distinct from the always-accent toggle
-   buttons beside it. */
-.topic-actions .notify {
-  color: var(--fg-muted);
-}
-.topic-actions .notify.on {
-  color: var(--accent);
 }
 .topic .member-count {
   color: var(--fg-muted);
