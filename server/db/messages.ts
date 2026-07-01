@@ -530,12 +530,27 @@ export function searchMessages(
   }));
 }
 
+// Autocomplete speakers, derived from message history. Grouping over a buffer's
+// ENTIRE history is O(stored messages) per buffer — the dominant cost of a
+// resume/reconnect snapshot on a deep buffer (a fresh connect ships shells that
+// omit speakers, which is why reload stays cheap). So bound the scan to the most
+// recent SPEAKER_SCAN_WINDOW rows first, THEN group: the query already returns
+// only the 128 most-recent speakers by last-spoken time, and recent speakers are
+// exactly what autocomplete wants, so the output is (near-)equivalent at a fixed
+// cost independent of history depth. The recent window is contiguous at the tail
+// of idx_messages_buffer(network_id, target, id DESC), so it's an index-ordered
+// read of the newest rows, not a full-buffer scan.
+const SPEAKER_SCAN_WINDOW = 2000;
 const listSpeakersStmt = db.prepare(`
   SELECT nick, MAX(time) AS last_time
-  FROM messages
-  WHERE network_id = ?
-    AND target = ?
-    AND type IN ('message', 'action')
+  FROM (
+    SELECT nick, time, type, self
+    FROM messages
+    WHERE network_id = ? AND target = ?
+    ORDER BY id DESC
+    LIMIT ?
+  )
+  WHERE type IN ('message', 'action')
     AND self = 0
     AND nick IS NOT NULL
     AND nick <> ''
@@ -547,10 +562,17 @@ const listSpeakersStmt = db.prepare(`
 export function listSpeakers(
   networkId: number,
   target: string,
-  limit = 128,
+  // Recent distinct speakers for nick autocomplete. Currently-present users
+  // already come from the channel member list (NAMES); this only adds people who
+  // spoke recently and have since left, so a small count is plenty.
+  limit = 20,
+  scanWindow = SPEAKER_SCAN_WINDOW,
 ): Array<{ nick: string; lastTime: number }> {
   return (
-    listSpeakersStmt.all(networkId, target, limit) as Array<{ nick: string; last_time: string }>
+    listSpeakersStmt.all(networkId, target, scanWindow, limit) as Array<{
+      nick: string;
+      last_time: string;
+    }>
   )
     .map((r) => ({ nick: r.nick, lastTime: Date.parse(r.last_time) || 0 }))
     .filter((s) => s.lastTime > 0);
