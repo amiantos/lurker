@@ -531,6 +531,7 @@ function publishComposing(raw: string): void {
 }
 
 function sendTyping(networkId: number, target: string, state: string): void {
+  if (!settings.effective('chat.send_typing_notifications')) return;
   socketSend({ type: 'typing', networkId, target, state });
 }
 
