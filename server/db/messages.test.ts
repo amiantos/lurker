@@ -760,6 +760,10 @@ describe('from_ignored excludes ignored senders from unread/highlight counts', (
     // At/over the cap → returns the cap, not the true count (the client renders
     // both as ">999", so it's invisible; the point is the scan stops early).
     expect(countNewer(net.id, '#cap', 0, 3)).toBe(3);
+    // Guard: a non-positive cap must NOT become SQLite's `LIMIT -1` (unbounded) —
+    // it falls back to the default, so the count is still bounded (here, all 5).
+    expect(countNewer(net.id, '#cap', 0, -1)).toBe(5);
+    expect(countNewer(net.id, '#cap', 0, 0)).toBe(5);
   });
 
   it('countHighlightsNewer excludes from_ignored rows even when they matched a rule', () => {
