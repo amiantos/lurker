@@ -530,15 +530,38 @@ export function searchMessages(
   }));
 }
 
+// Autocomplete speakers, derived from message history. Grouping over a buffer's
+// ENTIRE history is O(stored messages) per buffer — the dominant cost of a
+// resume/reconnect snapshot on a deep buffer (a fresh connect ships shells that
+// omit speakers, which is why reload stays cheap). So bound the work to the most
+// recent SPEAKER_SCAN_WINDOW *chat* rows, THEN group. The filters live INSIDE the
+// windowed subquery (not outside it) on purpose: SQLite walks the tail of
+// idx_messages_buffer(network_id, target, id DESC) applying them, so a burst of
+// non-chat rows (a netsplit's join/quit flood) is skipped rather than eating the
+// window and starving the speaker set. Steady-state cost is fixed regardless of
+// history depth; only a channel that is currently almost all events walks
+// further, and that's still far cheaper than the old whole-history group. Output
+// is (near-)equivalent to the old query for autocomplete's purposes — it already
+// returned only the most-recent speakers by last-spoken time, which is what nick
+// completion wants. (Backfilled CHATHISTORY isn't a concern: those batches are
+// dropped, not inserted, so id order tracks time order — see ircConnection.ts.)
+const SPEAKER_SCAN_WINDOW = 2000;
 const listSpeakersStmt = db.prepare(`
+  -- Exactly one MAX() aggregate, so SQLite takes the bare (non-grouped) \`nick\`
+  -- from the same row that supplied MAX(time) — i.e. the most-recent casing,
+  -- consistent with last_time. (SQLite's documented min/max bare-column rule.)
   SELECT nick, MAX(time) AS last_time
-  FROM messages
-  WHERE network_id = ?
-    AND target = ?
-    AND type IN ('message', 'action')
-    AND self = 0
-    AND nick IS NOT NULL
-    AND nick <> ''
+  FROM (
+    SELECT nick, time
+    FROM messages
+    WHERE network_id = ? AND target = ?
+      AND type IN ('message', 'action')
+      AND self = 0
+      AND nick IS NOT NULL
+      AND nick <> ''
+    ORDER BY id DESC
+    LIMIT ?
+  )
   GROUP BY LOWER(nick)
   ORDER BY last_time DESC
   LIMIT ?
@@ -547,10 +570,17 @@ const listSpeakersStmt = db.prepare(`
 export function listSpeakers(
   networkId: number,
   target: string,
-  limit = 128,
+  // Recent distinct speakers for nick autocomplete. Currently-present users
+  // already come from the channel member list (NAMES); this only adds people who
+  // spoke recently and have since left, so a small count is plenty.
+  limit = 20,
+  scanWindow = SPEAKER_SCAN_WINDOW,
 ): Array<{ nick: string; lastTime: number }> {
   return (
-    listSpeakersStmt.all(networkId, target, limit) as Array<{ nick: string; last_time: string }>
+    listSpeakersStmt.all(networkId, target, scanWindow, limit) as Array<{
+      nick: string;
+      last_time: string;
+    }>
   )
     .map((r) => ({ nick: r.nick, lastTime: Date.parse(r.last_time) || 0 }))
     .filter((s) => s.lastTime > 0);

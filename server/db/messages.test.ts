@@ -20,6 +20,7 @@ let countHighlightsNewer: typeof import('./messages.js').countHighlightsNewer;
 let listUserHighlights: typeof import('./messages.js').listUserHighlights;
 let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
 let hasConversationForTarget: typeof import('./messages.js').hasConversationForTarget;
+let listSpeakers: typeof import('./messages.js').listSpeakers;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
@@ -34,6 +35,7 @@ beforeAll(async () => {
     listUserHighlights,
     maxIdForBuffer,
     hasConversationForTarget,
+    listSpeakers,
   } = await import('./messages.js'));
 });
 
@@ -91,6 +93,60 @@ describe('hasConversationForTarget (#439)', () => {
     // Case-insensitive match; unknown target is false.
     expect(hasConversationForTarget(net!.id, 'BOB')).toBe(true);
     expect(hasConversationForTarget(net!.id, 'nobody')).toBe(false);
+  });
+});
+
+describe('listSpeakers', () => {
+  // Deterministic unique user per network — no Math.random (reproducible, no
+  // rare collision flake).
+  let seq = 0;
+  function net() {
+    const user = createUser(`spk-${++seq}`);
+    return createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'me' })!.id;
+  }
+
+  it('returns recent distinct speakers, case-folded, excluding self and non-chat', () => {
+    const n = net();
+    chat(n, '#c', 'Alice', 'hi');
+    chat(n, '#c', 'alice', 'again'); // same speaker, divergent case → one entry
+    chat(n, '#c', 'Bob', 'yo');
+    event(n, '#c', 'join', 'Carol'); // non-chat → not a speaker
+    insertMessage({
+      networkId: n,
+      target: '#c',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'me',
+      text: 'self line',
+      self: true, // our own line → excluded
+    });
+    const nicks = listSpeakers(n, '#c').map((s) => s.nick.toLowerCase());
+    expect(new Set(nicks)).toEqual(new Set(['alice', 'bob']));
+  });
+
+  it('bounds the scan to the recent window — older speakers outside it drop off', () => {
+    const n = net();
+    chat(n, '#c', 'oldtimer', 'first'); // oldest chat line
+    for (let i = 0; i < 5; i++) chat(n, '#c', `recent${i}`, 'x');
+    // With a scan window of 3, only the 3 newest rows are considered, so
+    // 'oldtimer' (6 rows back) is excluded even though it's real chat history.
+    const nicks = listSpeakers(n, '#c', 20, 3).map((s) => s.nick);
+    expect(nicks).not.toContain('oldtimer');
+    // Unbounded (default window) still finds it.
+    expect(listSpeakers(n, '#c').map((s) => s.nick)).toContain('oldtimer');
+  });
+
+  it('window counts CHAT rows only — an event flood does not starve speakers', () => {
+    const n = net();
+    chat(n, '#c', 'speaker', 'hi'); // one chat line...
+    for (let i = 0; i < 8; i++) event(n, '#c', 'join', `joiner${i}`); // ...then a join flood
+    // Window of 2. The filters run INSIDE the window, so the 8 joins are skipped
+    // rather than filling it; the one chat row still lands in-window. If the
+    // filters ran AFTER the id-DESC LIMIT (the netsplit-starvation bug), a window
+    // of 2 would be [join7, join6] → filtered to empty → no speaker.
+    const nicks = listSpeakers(n, '#c', 20, 2).map((s) => s.nick);
+    expect(nicks).toContain('speaker');
+    expect(nicks.some((x) => x.startsWith('joiner'))).toBe(false);
   });
 });
 
