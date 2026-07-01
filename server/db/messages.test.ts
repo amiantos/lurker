@@ -132,6 +132,19 @@ describe('listSpeakers', () => {
     // Unbounded (default window) still finds it.
     expect(listSpeakers(n, '#c').map((s) => s.nick)).toContain('oldtimer');
   });
+
+  it('window counts CHAT rows only — an event flood does not starve speakers', () => {
+    const n = net();
+    chat(n, '#c', 'speaker', 'hi'); // one chat line...
+    for (let i = 0; i < 8; i++) event(n, '#c', 'join', `joiner${i}`); // ...then a join flood
+    // Window of 2. The filters run INSIDE the window, so the 8 joins are skipped
+    // rather than filling it; the one chat row still lands in-window. If the
+    // filters ran AFTER the id-DESC LIMIT (the netsplit-starvation bug), a window
+    // of 2 would be [join7, join6] → filtered to empty → no speaker.
+    const nicks = listSpeakers(n, '#c', 20, 2).map((s) => s.nick);
+    expect(nicks).toContain('speaker');
+    expect(nicks.some((x) => x.startsWith('joiner'))).toBe(false);
+  });
 });
 
 describe('messages.alt parity', () => {

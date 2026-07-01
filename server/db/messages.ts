@@ -533,27 +533,32 @@ export function searchMessages(
 // Autocomplete speakers, derived from message history. Grouping over a buffer's
 // ENTIRE history is O(stored messages) per buffer — the dominant cost of a
 // resume/reconnect snapshot on a deep buffer (a fresh connect ships shells that
-// omit speakers, which is why reload stays cheap). So bound the scan to the most
-// recent SPEAKER_SCAN_WINDOW rows first, THEN group: the query already returns
-// only the 128 most-recent speakers by last-spoken time, and recent speakers are
-// exactly what autocomplete wants, so the output is (near-)equivalent at a fixed
-// cost independent of history depth. The recent window is contiguous at the tail
-// of idx_messages_buffer(network_id, target, id DESC), so it's an index-ordered
-// read of the newest rows, not a full-buffer scan.
+// omit speakers, which is why reload stays cheap). So bound the work to the most
+// recent SPEAKER_SCAN_WINDOW *chat* rows, THEN group. The filters live INSIDE the
+// windowed subquery (not outside it) on purpose: SQLite walks the tail of
+// idx_messages_buffer(network_id, target, id DESC) applying them, so a burst of
+// non-chat rows (a netsplit's join/quit flood) is skipped rather than eating the
+// window and starving the speaker set. Steady-state cost is fixed regardless of
+// history depth; only a channel that is currently almost all events walks
+// further, and that's still far cheaper than the old whole-history group. Output
+// is (near-)equivalent to the old query for autocomplete's purposes — it already
+// returned only the most-recent speakers by last-spoken time, which is what nick
+// completion wants. (Backfilled CHATHISTORY isn't a concern: those batches are
+// dropped, not inserted, so id order tracks time order — see ircConnection.ts.)
 const SPEAKER_SCAN_WINDOW = 2000;
 const listSpeakersStmt = db.prepare(`
   SELECT nick, MAX(time) AS last_time
   FROM (
-    SELECT nick, time, type, self
+    SELECT nick, time
     FROM messages
     WHERE network_id = ? AND target = ?
+      AND type IN ('message', 'action')
+      AND self = 0
+      AND nick IS NOT NULL
+      AND nick <> ''
     ORDER BY id DESC
     LIMIT ?
   )
-  WHERE type IN ('message', 'action')
-    AND self = 0
-    AND nick IS NOT NULL
-    AND nick <> ''
   GROUP BY LOWER(nick)
   ORDER BY last_time DESC
   LIMIT ?
