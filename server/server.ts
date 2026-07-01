@@ -31,6 +31,7 @@ import {
   shutdownExportJobs,
 } from './services/exportJobs.js';
 import { startIgnoreSweeper, stopIgnoreSweeper } from './services/ignoreSweeper.js';
+import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
 
 const PORT = Number(process.env.PORT || 8010);
 // Optional bind address for the web/API server (HOST). Unset keeps upstream
@@ -67,6 +68,11 @@ purgeExpiredSessions();
 setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
 
 systemLog.log({ scope: 'server', text: `Lurker server starting up (edition: ${EDITION})` });
+
+// Watch for synchronous event-loop stalls (a heavy client-connect snapshot on
+// slow storage can starve IRC socket I/O and trip ping timeouts, dropping every
+// network at once). Console-only; read via `docker logs`. See eventLoopMonitor.
+startEventLoopMonitor();
 
 // Built-in identd (opt-in via LURKER_IDENTD_ENABLED). A multi-user gateway
 // needs it so IRC networks can attribute each user behind the shared IP; bind
@@ -124,6 +130,7 @@ function shutdown(signal: string): void {
   stopIdentd();
   shutdownExportJobs();
   stopIgnoreSweeper();
+  stopEventLoopMonitor();
   ircManager.shutdown();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 5000).unref();

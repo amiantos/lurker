@@ -270,3 +270,44 @@ describe('totalHighlights', () => {
     expect(store.totalHighlights).toBe(3);
   });
 });
+
+// Offline buffers now arrive as SHELLS (events:[], hasMoreOlder:true) that the
+// client hydrates on open. The empty-seed branch of replaceBacklog must honor
+// the server's explicit hasMoreOlder instead of the `length >= 50` heuristic,
+// or a zero-message shell would report hasMoreOlder:false and never lazy-load.
+describe('replaceBacklog empty-seed honors server hasMoreOlder', () => {
+  const ev = (id: number) => ({
+    networkId: 1,
+    target: '#full',
+    id,
+    type: 'message',
+    nick: 'bob',
+    body: 'x',
+  });
+
+  it('keeps a zero-message shell fetchable when the server sets hasMoreOlder', () => {
+    const store = useBuffersStore();
+    store.replaceBacklog(1, '#shell', [], undefined, undefined, false, { hasMoreOlder: true });
+    const buf = store.byKey('1::#shell')!;
+    expect(buf.messages).toHaveLength(0);
+    // Without honoring the flag this would be false (0 >= 50), stranding the shell.
+    expect(buf.hasMoreOlder).toBe(true);
+  });
+
+  it('falls back to the length heuristic when the server omits the flag', () => {
+    const store = useBuffersStore();
+    store.replaceBacklog(1, '#empty', [], undefined, undefined, undefined);
+    expect(store.byKey('1::#empty')!.hasMoreOlder).toBe(false);
+  });
+
+  it('honors an explicit hasMoreOlder:false even when the slice is long', () => {
+    const store = useBuffersStore();
+    const slice = Array.from({ length: 60 }, (_, i) => ev(i + 1));
+    // Server says there is nothing older; the old `length >= 50` heuristic would
+    // wrongly report true and offer a page-up that returns nothing.
+    store.replaceBacklog(1, '#full', slice, undefined, undefined, true, { hasMoreOlder: false });
+    const buf = store.byKey('1::#full')!;
+    expect(buf.messages.length).toBeGreaterThan(0);
+    expect(buf.hasMoreOlder).toBe(false);
+  });
+});

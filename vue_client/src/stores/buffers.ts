@@ -419,9 +419,14 @@ export const useBuffersStore = defineStore('buffers', {
       const existingMaxId = buf.messages[buf.messages.length - 1]?.id ?? 0;
       if (existingMaxId === 0) {
         // Initial seed (first connect, or a brand-new buffer we hadn't seen
-        // pre-flap). Take the backlog wholesale.
+        // pre-flap). Take the backlog wholesale. Prefer the server's explicit
+        // hasMoreOlder (computed from a real "is there older history?" check)
+        // and fall back to the length heuristic only when it's absent. This is
+        // also what keeps an offline SHELL frame (events:[], hasMoreOlder:true)
+        // fetchable: without it, `[].length >= 50` would be false and activate()
+        // would never lazy-load the buffer on open.
         buf.messages = filtered.slice(-MAX_PER_BUFFER);
-        buf.hasMoreOlder = filtered.length >= 50;
+        buf.hasMoreOlder = opts.hasMoreOlder ?? filtered.length >= 50;
       } else if (opts.reset) {
         // The resume gap exceeded the server's cap, so it sent a fresh latest
         // slice instead of the missed-since-cursor rows. Appending would splice

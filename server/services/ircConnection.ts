@@ -1029,6 +1029,21 @@ export class IrcConnection {
     });
     c.on('connecting', () => this.setState('connecting'));
 
+    // Diagnostic: irc-framework fires 'ping timeout' when it hasn't seen data
+    // from the server for `ping_timeout` seconds (120s default) — then it QUITs
+    // and auto-reconnects with NO socket error, so the disconnect otherwise
+    // surfaces as a bare "Disconnected" with no cause. A ping timeout on a
+    // healthy network usually means WE stopped reading the socket, i.e. the
+    // event loop was starved by synchronous work (see eventLoopMonitor); when
+    // every network times out together on a client connect, that's the tell.
+    // Surface it on the server buffer + console so the cause isn't invisible.
+    c.on('ping timeout', () => {
+      const text = `Ping timeout — no data from ${this.network.host} for the timeout window; reconnecting. If every network did this at once, the server event loop stalled (check logs for [event-loop]).`;
+      this.publish({ type: 'notice', target: this.serverTarget(), nick: 'lurker', text });
+      this.logNet(text, 'warn');
+      console.warn(`[irc] ping timeout on network ${this.network.id} (${this.network.host})`);
+    });
+
     // Built-in identd: the moment the raw socket connects, register this
     // connection's full 4-tuple (both addresses + both ports) → this user's ident
     // so the identd server (services/identd.ts) can answer the IRC server's :113

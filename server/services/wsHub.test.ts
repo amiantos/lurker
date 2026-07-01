@@ -188,7 +188,7 @@ describe('buildOfflineBacklogFrames', () => {
   // Tests run with no live IRC connection, so every network is "offline" — the
   // exact case a paused/disconnected user hits. Each test uses a fresh network
   // so it doesn't depend on history seeded by sibling tests.
-  it('ships persisted buffers for a network with no live connection', () => {
+  it('ships offline channel/DM buffers as lazy-load shells; the server buffer stays real', () => {
     const net = createNetwork(userId, {
       name: 'offnet',
       host: 'h',
@@ -211,6 +211,7 @@ describe('buildOfflineBacklogFrames', () => {
     seedOff('#offline', 'a');
     seedOff('#offline', 'b');
     seedOff('dave', 'dm');
+    seedOff(`:server:${offId}`, 'server notice');
 
     const byTarget = new Map(
       buildOfflineBacklogFrames(userId)
@@ -218,15 +219,28 @@ describe('buildOfflineBacklogFrames', () => {
         .map((f) => [f.target as string, f]),
     );
 
-    // Channel history is shipped, marked parted (no live connection tracks it).
+    // Channel ships as a SHELL: no message rows, no input history, but marked
+    // hasMoreOlder so the client hydrates it on open — and the unread badge is
+    // still correct (both seeded lines are unread) without touching the body.
     const chan = byTarget.get('#offline')!;
     expect(chan.kind).toBe('backlog');
-    expect((chan.events as unknown[]).length).toBe(2);
+    expect((chan.events as unknown[]).length).toBe(0);
+    expect(chan.hasMoreOlder).toBe(true);
+    expect(chan.unread).toBe(2);
+    expect((chan.inputHistory as unknown[]).length).toBe(0);
+    // Channels are parted (no live connection tracks them).
     expect(chan.joined).toBe(false);
-    // DM buffers have no join concept → reported joined so they never dim.
-    expect(byTarget.get('dave')!.joined).toBe(true);
-    // The uncloseable server pseudo-buffer is always present.
-    expect(byTarget.has(`:server:${offId}`)).toBe(true);
+
+    // DM buffers are shells too, but have no join concept → reported joined.
+    const dm = byTarget.get('dave')!;
+    expect((dm.events as unknown[]).length).toBe(0);
+    expect(dm.hasMoreOlder).toBe(true);
+    expect(dm.joined).toBe(true);
+
+    // The server pseudo-buffer is NOT shelled: it ships its real recent slice so
+    // the disconnect reason is visible without opening it.
+    const server = byTarget.get(`:server:${offId}`)!;
+    expect((server.events as unknown[]).length).toBe(1);
   });
 
   it('skips a closed buffer but never the server pseudo-buffer', () => {

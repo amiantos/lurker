@@ -412,7 +412,46 @@ export function buildBufferBacklog(userId: number, networkId: number, target: st
     highlightsCapped: counts.highlightsCapped,
     clearedBeforeId: cleared.clearedBeforeId,
     clearedAt: cleared.clearedAt,
-    inputHistory: listRecentInputHistory(userId, networkId, target, 200),
+    inputHistory: listRecentInputHistory(userId, networkId, target, INPUT_HISTORY_SLICE),
+  };
+}
+
+// Lightweight `backlog` frame for an OFFLINE buffer: the buffer row + its
+// read/unread/cleared state, but NO message rows (`events: []`) and no input
+// history. Deliberately skips the per-buffer listMessages/listSpeakers/
+// inputHistory reads — those are the bulk of the synchronous snapshot cost, and
+// an offline buffer the user isn't looking at doesn't need them up front.
+// `hasMoreOlder: true` makes the client treat it as an unhydrated shell: the
+// first time the user opens it, activate() fires reattachToLive → a 'history'
+// mode:'latest' fetch that fills it from the DB on demand (the same lazy path a
+// brand-new buffer uses). Unread counts come from indexed queries, so the
+// sidebar badge stays correct without touching the message body.
+export function buildOfflineBufferShell(
+  userId: number,
+  networkId: number,
+  target: string,
+): WsPayload {
+  const lastReadId = getReadState(userId, networkId, target);
+  const counts = computeUnreadFor(userId, networkId, target, lastReadId);
+  const cleared = getClearedState(userId, networkId, target);
+  return {
+    kind: 'backlog',
+    networkId,
+    target,
+    events: [],
+    speakers: [],
+    // Offline: nothing is joined. Channels render parted/dimmed.
+    joined: target.startsWith('#') ? false : true,
+    // Shell marker: no messages loaded yet, but there IS history to fetch on
+    // open. The client's empty-seed branch honors this flag (see replaceBacklog).
+    hasMoreOlder: true,
+    lastReadId: counts.lastReadId,
+    unread: counts.unread,
+    highlights: counts.highlights,
+    highlightsCapped: counts.highlightsCapped,
+    clearedBeforeId: cleared.clearedBeforeId,
+    clearedAt: cleared.clearedAt,
+    inputHistory: [],
   };
 }
 
@@ -423,6 +462,17 @@ const RESUME_GAP_CAP = 500;
 // When the gap exceeds the cap we fall back to a fresh latest slice; size it
 // to match the first-connect default.
 const RESUME_LATEST_LIMIT = 200;
+
+// Per-buffer input-history slice shipped in the connect snapshot for up-arrow
+// recall. Kept modest: this is N rows PER buffer, so on a large account it's a
+// meaningful slice of the (synchronous) snapshot read cost. Older entries stay
+// in the DB; the client asks for more only if this ever proves too small.
+const INPUT_HISTORY_SLICE = 50;
+
+// A synchronous snapshot slower than this is logged (console only) — it's a
+// direct measure of how long the event loop was blocked serving one connect,
+// the thing that starves IRC socket I/O when it gets large.
+const SNAPSHOT_SLOW_MS = 250;
 
 // Decide the slice a resume snapshot ships for ONE buffer.
 //
@@ -641,7 +691,15 @@ export function buildOfflineBacklogFrames(
       // closed set is case-folded, so fold the target on lookup too.
       if (!target.startsWith(':server:') && closed.has(`${net.id}::${target.toLowerCase()}`))
         continue;
-      frames.push(buildBufferBacklog(userId, net.id, target));
+      // The server pseudo-buffer ships its real recent slice (one cheap read per
+      // network, and it's where the disconnect reason the user wants lives).
+      // Channel/DM buffers ship as lazy-load shells — that's where the read cost
+      // and buffer count actually pile up on a long-lived account.
+      frames.push(
+        target.startsWith(':server:')
+          ? buildBufferBacklog(userId, net.id, target)
+          : buildOfflineBufferShell(userId, net.id, target),
+      );
     }
   }
   return frames;
@@ -1336,11 +1394,37 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     ws.on('error', () => removeSocket(user.id, ws));
   }
 
+  // Wrapper around the (synchronous) snapshot builder. Two jobs: (1) time it,
+  // so a stall serving one connect is visible; (2) contain any throw so a bad
+  // snapshot for ONE client can't take down the process and drop every user's
+  // IRC. There is no global unhandledRejection guard, so this is the backstop.
   function sendSnapshot(
     ws: LurkerWebSocket,
     userId: number,
     freshNetworkId: number | null = null,
   ): void {
+    const startedAt = Date.now();
+    let bufferCount = 0;
+    try {
+      bufferCount = sendSnapshotInner(ws, userId, freshNetworkId);
+    } catch (err) {
+      console.error(`[wsHub] snapshot for user ${userId} failed (IRC left intact):`, err);
+    }
+    const ms = Date.now() - startedAt;
+    if (ms >= SNAPSHOT_SLOW_MS) {
+      console.warn(
+        `[wsHub] snapshot for user ${userId} took ${ms}ms across ${bufferCount} buffers — ` +
+          `it runs synchronously on the event loop; on slow storage or a large account this ` +
+          `can starve IRC socket I/O and trip ping timeouts (see [event-loop] logs)`,
+      );
+    }
+  }
+
+  function sendSnapshotInner(
+    ws: LurkerWebSocket,
+    userId: number,
+    freshNetworkId: number | null = null,
+  ): number {
     const networks = ircManager.snapshotForUser(userId);
     // Global ignore rules (network_id NULL) aren't tied to any one network blob,
     // so they ride alongside the per-network snapshot as their own field (#350).
@@ -1374,6 +1458,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const clearedState = listClearedStateForUser(userId);
     const closed = closedKeySetForUser(userId);
     let maxSentId = ws.sinceId || 0;
+    let bufferCount = 0;
     for (const conn of ircManager.listConnections(userId)) {
       const targets = new Set(listBufferTargets(conn.network.id));
       targets.add(`:server:${conn.network.id}`);
@@ -1419,7 +1504,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // Per-buffer input history is unbounded on disk; ship a recent slice
         // for up-arrow recall. Older entries stay in the DB and could be
         // paginated in later if the slice ever proves too small.
-        const inputHistory = listRecentInputHistory(userId, conn.network.id, target, 200);
+        const inputHistory = listRecentInputHistory(
+          userId,
+          conn.network.id,
+          target,
+          INPUT_HISTORY_SLICE,
+        );
         send(ws, {
           kind: 'backlog',
           networkId: conn.network.id,
@@ -1443,21 +1533,28 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           clearedAt: cleared.clearedAt,
           inputHistory,
         });
+        bufferCount += 1;
       }
     }
-    // Offline networks (no live connection) still ship their persisted buffers
-    // so a paused/disconnected user can read history. Frames carry joined:false
-    // and the client dims them via the network's disconnected snapshot state.
+    // Offline networks (no live connection) ship their buffers as lightweight
+    // SHELLS (buffer row + unread/read state, no message rows) rather than the
+    // full recent slice. The client hydrates a shell's history on first open via
+    // reattachToLive (buffers.ts activate() → 'history' mode:'latest'), the same
+    // lazy path brand-new buffers already use. This keeps the connect snapshot
+    // from reading recent backlog for every historical/offline buffer — the bulk
+    // of the synchronous read burst on a long-lived account.
     for (const frame of buildOfflineBacklogFrames(userId, closed)) {
       for (const e of frame.events as Array<{ id?: number | null }>) {
         if (e.id != null && e.id > maxSentId) maxSentId = e.id;
       }
       send(ws, frame);
+      bufferCount += 1;
     }
     // Advance the resume cursor past everything we just shipped, so the next
     // sendSnapshot (in-band 'snapshot' request, or another IRC-state trigger)
     // resumes from where this snapshot left off.
     ws.sinceId = maxSentId;
+    return bufferCount;
   }
 
   function handleClientMessage(ws: LurkerWebSocket, user: User, msg: WsPayload): void {
@@ -2153,9 +2250,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           break;
         }
 
-        const conn = ircManager.getConnection(userId, histNetworkId);
-        if (!conn) {
-          send(ws, { kind: 'error', text: 'network not connected' });
+        // History is DB-backed and connection-independent (every mode below reads
+        // by (networkId, target) only). Ownership was already enforced at the
+        // handleClientMessage boundary, so we no longer require a LIVE connection
+        // here — a disconnected/offline network can still serve its history. This
+        // is what lets offline buffers ship as shells and hydrate on open
+        // (reattachToLive), and it fixes offline scroll-back, which previously
+        // errored "network not connected".
+        if (!ownsNetwork(userId, histNetworkId)) {
+          send(ws, { kind: 'error', text: 'unknown network' });
           break;
         }
         const limit = Math.min(Math.max(Number(msg.limit) || 100, 1), 500);
