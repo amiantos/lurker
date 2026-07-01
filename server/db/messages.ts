@@ -547,6 +547,9 @@ export function searchMessages(
 // dropped, not inserted, so id order tracks time order — see ircConnection.ts.)
 const SPEAKER_SCAN_WINDOW = 2000;
 const listSpeakersStmt = db.prepare(`
+  -- Exactly one MAX() aggregate, so SQLite takes the bare (non-grouped) \`nick\`
+  -- from the same row that supplied MAX(time) — i.e. the most-recent casing,
+  -- consistent with last_time. (SQLite's documented min/max bare-column rule.)
   SELECT nick, MAX(time) AS last_time
   FROM (
     SELECT nick, time

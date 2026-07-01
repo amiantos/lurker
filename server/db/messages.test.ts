@@ -97,8 +97,11 @@ describe('hasConversationForTarget (#439)', () => {
 });
 
 describe('listSpeakers', () => {
+  // Deterministic unique user per network — no Math.random (reproducible, no
+  // rare collision flake).
+  let seq = 0;
   function net() {
-    const user = createUser(`spk-${Math.random().toString(36).slice(2)}`);
+    const user = createUser(`spk-${++seq}`);
     return createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'me' })!.id;
   }
 
