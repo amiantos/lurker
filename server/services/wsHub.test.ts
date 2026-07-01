@@ -18,8 +18,10 @@ let setClearedState: typeof import('../db/bufferReads.js').setClearedState;
 let setReadState: typeof import('../db/bufferReads.js').setReadState;
 let computeTotalHighlights: typeof import('./wsHub.js').computeTotalHighlights;
 let buildBufferBacklog: typeof import('./wsHub.js').buildBufferBacklog;
+let buildBufferShell: typeof import('./wsHub.js').buildBufferShell;
 let buildResumeSlice: typeof import('./wsHub.js').buildResumeSlice;
 let buildOfflineBacklogFrames: typeof import('./wsHub.js').buildOfflineBacklogFrames;
+let maxMessageId: typeof import('../db/messages.js').maxMessageId;
 let handleOpenBuffer: typeof import('./wsHub.js').handleOpenBuffer;
 let sweepWsHeartbeat: typeof import('./wsHub.js').sweepWsHeartbeat;
 let buildSystemBacklog: typeof import('./wsHub.js').buildSystemBacklog;
@@ -36,12 +38,13 @@ let networkId: number;
 beforeAll(async () => {
   ({ createUser } = await import('../db/users.js'));
   ({ createNetwork } = await import('../db/networks.js'));
-  ({ insertMessage } = await import('../db/messages.js'));
+  ({ insertMessage, maxMessageId } = await import('../db/messages.js'));
   ({ closeBuffer, reopenBuffer, isClosed } = await import('../db/closedBuffers.js'));
   ({ setClearedState, setReadState } = await import('../db/bufferReads.js'));
   ({
     computeTotalHighlights,
     buildBufferBacklog,
+    buildBufferShell,
     buildResumeSlice,
     buildOfflineBacklogFrames,
     handleOpenBuffer,
@@ -157,8 +160,27 @@ describe('buildResumeSlice', () => {
     // The gap, oldest-first — exactly the rows after the cursor.
     expect((slice.events[0] as { id: number }).id).toBe(ids[0]);
     expect((slice.events.at(-1) as { id: number }).id).toBe(ids.at(-1));
-    // A non-reset frame doesn't drive hasMoreOlder (the client keeps its own).
-    expect(slice.hasMoreOlder).toBe(false);
+    // hasMoreOlder reflects whether older-than-the-gap rows exist. Here m0 sits
+    // below the gap, so it's true. A LOADED buffer ignores this (it appends),
+    // but a buffer held only as an empty shell empty-seeds from this frame and
+    // would be stranded unopenable if we reported false.
+    expect(slice.hasMoreOlder).toBe(true);
+  });
+
+  it('reports hasMoreOlder for an empty gap so a shell is not stranded', () => {
+    // A buffer with history but no rows past the cursor (nothing new since the
+    // client last saw it). The resume frame carries events:[], but the buffer
+    // still has older history — a shell client empty-seeds from this frame and
+    // must be told so, or activate()'s lazy-fetch (gated on hasMoreOlder) never
+    // fires and the buffer shows empty forever.
+    seed('#resumeEmptyGap', 'a');
+    seed('#resumeEmptyGap', 'b');
+    const tail = seed('#resumeEmptyGap', 'c');
+    // Cursor at the tail → the gap (id > tail) is empty.
+    const slice = buildResumeSlice(userId, networkId, '#resumeEmptyGap', tail);
+    expect(slice.events.length).toBe(0);
+    expect(slice.reset).toBe(false);
+    expect(slice.hasMoreOlder).toBe(true);
   });
 
   it('resets to the latest slice when the gap overflows the cap (issue #205)', () => {
@@ -181,6 +203,35 @@ describe('buildResumeSlice', () => {
     const slice = buildResumeSlice(userId, networkId, '#resumeFresh', 0);
     expect(slice.reset).toBe(false);
     expect(slice.events.length).toBe(2);
+  });
+});
+
+describe('buildBufferShell', () => {
+  it('ships a message-free, lazy-loadable shell with a correct unread badge', () => {
+    seed('#shellchan', 'a');
+    seed('#shellchan', 'b');
+    // Unread reflects the two seeded lines (no read pointer set), so the sidebar
+    // badge is right even though we ship zero message rows.
+    const shell = buildBufferShell(userId, networkId, '#shellchan', true);
+    expect(shell.kind).toBe('backlog');
+    expect((shell.events as unknown[]).length).toBe(0);
+    expect((shell.inputHistory as unknown[]).length).toBe(0);
+    expect((shell.speakers as unknown[]).length).toBe(0);
+    // hasMoreOlder gates the client's open-time lazy fetch — must be true.
+    expect(shell.hasMoreOlder).toBe(true);
+    expect(shell.unread).toBe(2);
+    // joined is caller-supplied (online membership vs offline parted).
+    expect(shell.joined).toBe(true);
+    expect(buildBufferShell(userId, networkId, '#shellchan', false).joined).toBe(false);
+  });
+});
+
+describe('maxMessageId (fresh-connect cursor)', () => {
+  it('returns the global max message id, tracking new inserts', () => {
+    const before = maxMessageId();
+    const id = seed('#cursor', 'x');
+    expect(maxMessageId()).toBeGreaterThanOrEqual(id);
+    expect(maxMessageId()).toBeGreaterThan(before);
   });
 });
 

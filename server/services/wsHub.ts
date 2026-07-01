@@ -34,6 +34,7 @@ import {
   countHighlightsNewer,
   maxIdByBuffer,
   maxIdForBuffer,
+  maxMessageId,
   COUNTABLE_TYPES,
 } from '../db/messages.js';
 import {
@@ -416,20 +417,25 @@ export function buildBufferBacklog(userId: number, networkId: number, target: st
   };
 }
 
-// Lightweight `backlog` frame for an OFFLINE buffer: the buffer row + its
-// read/unread/cleared state, but NO message rows (`events: []`) and no input
-// history. Deliberately skips the per-buffer listMessages/listSpeakers/
-// inputHistory reads — those are the bulk of the synchronous snapshot cost, and
-// an offline buffer the user isn't looking at doesn't need them up front.
+// Lightweight `backlog` frame for a buffer we're NOT hydrating up front: the
+// buffer row + its read/unread/cleared state, but NO message rows (`events: []`)
+// and no input history. Deliberately skips the per-buffer listMessages/
+// listSpeakers/inputHistory reads — those are the bulk of the synchronous
+// snapshot cost. Used for offline-network buffers AND, on a FRESH connect (empty
+// client, no active buffer), for online channel/DM buffers too: Lurker never
+// auto-focuses a buffer on load, so shipping any message backlog is wasted work.
 // `hasMoreOlder: true` makes the client treat it as an unhydrated shell: the
 // first time the user opens it, activate() fires reattachToLive → a 'history'
 // mode:'latest' fetch that fills it from the DB on demand (the same lazy path a
 // brand-new buffer uses). Unread counts come from indexed queries, so the
-// sidebar badge stays correct without touching the message body.
-export function buildOfflineBufferShell(
+// sidebar badge stays correct without touching the message body. `joined` is
+// passed in because it differs by caller (offline = parted; online = the live
+// connection's current membership).
+export function buildBufferShell(
   userId: number,
   networkId: number,
   target: string,
+  joined: boolean,
 ): WsPayload {
   const lastReadId = getReadState(userId, networkId, target);
   const counts = computeUnreadFor(userId, networkId, target, lastReadId);
@@ -440,8 +446,7 @@ export function buildOfflineBufferShell(
     target,
     events: [],
     speakers: [],
-    // Offline: nothing is joined. Channels render parted/dimmed.
-    joined: target.startsWith('#') ? false : true,
+    joined,
     // Shell marker: no messages loaded yet, but there IS history to fetch on
     // open. The client's empty-seed branch honors this flag (see replaceBacklog).
     hasMoreOlder: true,
@@ -502,10 +507,18 @@ export function buildResumeSlice(
     const lastGapId = gap.length ? (gap[gap.length - 1].id ?? sinceId) : sinceId;
     const truncated = gap.length >= RESUME_GAP_CAP && hasNewerRow(networkId, target, lastGapId);
     if (!truncated) {
+      // hasMoreOlder must be accurate even though a LOADED buffer ignores it
+      // (gap-fill just appends): a client holding this buffer only as an empty
+      // SHELL (the fresh-connect optimization) empty-seeds from this frame, and a
+      // false here would leave it unopenable (activate()'s lazy-fetch is gated on
+      // hasMoreOlder). Anchor "is there older?" at the gap's oldest row, or just
+      // past the cursor when the gap is empty (then all the buffer's history is
+      // older than what we shipped).
+      const anchor = gap.length ? (gap[0].id ?? sinceId + 1) : sinceId + 1;
       return {
         events: gap.map((e) => decorateMessage(userId, e)),
         reset: false,
-        hasMoreOlder: false,
+        hasMoreOlder: hasOlderRow(networkId, target, anchor),
       };
     }
     // Truncated: fall through to the latest-slice replace below.
@@ -698,7 +711,9 @@ export function buildOfflineBacklogFrames(
       frames.push(
         target.startsWith(':server:')
           ? buildBufferBacklog(userId, net.id, target)
-          : buildOfflineBufferShell(userId, net.id, target),
+          : // Offline: channels are parted (no live connection), DMs have no join
+            // concept so they never dim.
+            buildBufferShell(userId, net.id, target, !target.startsWith('#')),
       );
     }
   }
@@ -1426,12 +1441,22 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     freshNetworkId: number | null = null,
   ): number {
     const networks = ircManager.snapshotForUser(userId);
+    // A fresh connect (no resume cursor yet) means an empty client with no
+    // active buffer — Lurker auto-focuses nothing on load. So we ship channel/DM
+    // buffers as lazy shells (no backlog) below. `cursor` hands the client the
+    // current global max id as its "caught up to now" mark, so its very next
+    // reconnect's ?since only pulls genuinely-new events instead of re-gap-
+    // filling everything it was never sent. Resume connects (sinceId>0) keep the
+    // full gap-fill path untouched.
+    const isFreshConnect = (ws.sinceId || 0) === 0;
+    const cursor = isFreshConnect ? maxMessageId() : 0;
     // Global ignore rules (network_id NULL) aren't tied to any one network blob,
     // so they ride alongside the per-network snapshot as their own field (#350).
     send(ws, {
       kind: 'snapshot',
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
+      ...(isFreshConnect ? { cursor } : {}),
     });
     // Drafts ship once per snapshot, separate from per-buffer backlog frames —
     // the keying is global to the user, not per-buffer, so a single message is
@@ -1478,18 +1503,32 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         } else if (isHiddenClosedBuffer(closed, conn.channels, conn.network.id, target)) {
           continue;
         }
+        // Fresh connect (empty client, nothing focused) or a just-connected
+        // network: ship a lazy SHELL for channel/DM buffers instead of reading
+        // their backlog. Lurker auto-focuses nothing on load, so no messages are
+        // needed up front — the client hydrates whatever the user actually opens
+        // (activate() → reattachToLive). The :server: pseudo-buffer stays real
+        // (one cheap read per network; it holds connection notices worth seeing
+        // without a click). isFreshNetwork routes here too: its buffers' history
+        // all predates the advanced cursor, so a gap read would be empty — a
+        // shell is both correct and cheaper than the old forced-latest slice.
+        if ((isFreshConnect || isFreshNetwork) && !target.startsWith(':server:')) {
+          send(
+            ws,
+            buildBufferShell(
+              userId,
+              conn.network.id,
+              target,
+              target.startsWith('#') ? conn.channels.has(target.toLowerCase()) : true,
+            ),
+          );
+          bufferCount += 1;
+          continue;
+        }
         // Resume cursor: ship the gap the client missed (id > sinceId), or a
         // fresh latest slice + reset flag when that gap exceeds the cap (see
-        // buildResumeSlice for the gap/reset rationale). isFreshNetwork forces
-        // the latest path: ws.sinceId was advanced by other networks' live
-        // events this session, so a cursor read here would wrongly return
-        // nothing and starve a just-connected network of its backlog.
-        const slice = buildResumeSlice(
-          userId,
-          conn.network.id,
-          target,
-          isFreshNetwork ? 0 : ws.sinceId || 0,
-        );
+        // buildResumeSlice for the gap/reset rationale).
+        const slice = buildResumeSlice(userId, conn.network.id, target, ws.sinceId || 0);
         const events = slice.events;
         for (const e of events) {
           if (e.id != null && e.id > maxSentId) maxSentId = e.id;
@@ -1552,8 +1591,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     }
     // Advance the resume cursor past everything we just shipped, so the next
     // sendSnapshot (in-band 'snapshot' request, or another IRC-state trigger)
-    // resumes from where this snapshot left off.
-    ws.sinceId = maxSentId;
+    // resumes from where this snapshot left off. On a fresh (shell) connect we
+    // shipped almost no message rows, so pin the cursor to the global max we
+    // handed the client — otherwise a later re-snapshot on this socket would
+    // re-gap-fill everything the shells deliberately skipped.
+    ws.sinceId = Math.max(maxSentId, cursor);
     return bufferCount;
   }
 

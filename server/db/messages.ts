@@ -283,6 +283,19 @@ export function maxIdByBuffer(networkId: number): MaxIdByBufferRow[] {
     .all(networkId) as MaxIdByBufferRow[];
 }
 
+// MAX(id) across the whole messages table, or 0 when empty. message ids are a
+// single global monotonic sequence, so this is a safe "caught up to now" cursor
+// value: a fresh (shell) connect ships no message rows, so we hand the client
+// this so its next reconnect's ?since only pulls genuinely-new events rather
+// than re-gap-filling everything. Not user-scoped by design — it's only a
+// threshold number (>= any of the caller's own ids), never row data.
+export function maxMessageId(): number {
+  const row = db.prepare('SELECT MAX(id) AS maxId FROM messages').get() as
+    | { maxId: number | null }
+    | undefined;
+  return row?.maxId || 0;
+}
+
 // MAX(id) for a single buffer, or 0 when the buffer has no rows. Used by
 // /clear to anchor the marker at the current tail.
 export function maxIdForBuffer(networkId: number, target: string): number {
