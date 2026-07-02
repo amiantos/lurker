@@ -21,6 +21,7 @@ let listUserHighlights: typeof import('./messages.js').listUserHighlights;
 let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
 let hasConversationForTarget: typeof import('./messages.js').hasConversationForTarget;
 let listSpeakers: typeof import('./messages.js').listSpeakers;
+let listBufferTargets: typeof import('./messages.js').listBufferTargets;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
@@ -36,6 +37,7 @@ beforeAll(async () => {
     maxIdForBuffer,
     hasConversationForTarget,
     listSpeakers,
+    listBufferTargets,
   } = await import('./messages.js'));
 });
 
@@ -93,6 +95,31 @@ describe('hasConversationForTarget (#439)', () => {
     // Case-insensitive match; unknown target is false.
     expect(hasConversationForTarget(net!.id, 'BOB')).toBe(true);
     expect(hasConversationForTarget(net!.id, 'nobody')).toBe(false);
+  });
+});
+
+describe('listBufferTargets (loose-index-scan)', () => {
+  let seq = 0;
+  function net() {
+    const user = createUser(`bt-${++seq}`);
+    return createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'me' })!.id;
+  }
+
+  it('returns the distinct targets, sorted, deduped across many rows', () => {
+    const n = net();
+    // Interleave several targets with duplicates; the scan must return each once.
+    for (let i = 0; i < 30; i++) {
+      chat(n, '#zeta', 'a', 'x');
+      chat(n, '#alpha', 'b', 'y');
+      chat(n, 'dave', 'dave', 'z');
+    }
+    chat(n, ':server:1', 'lurker', 'notice');
+    // Binary collation: '#'(0x23) < ':'(0x3A) < 'a' < 'd'.
+    expect(listBufferTargets(n)).toEqual(['#alpha', '#zeta', ':server:1', 'dave']);
+  });
+
+  it('returns [] for a network with no messages', () => {
+    expect(listBufferTargets(net())).toEqual([]);
   });
 });
 

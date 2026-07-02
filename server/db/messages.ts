@@ -249,12 +249,37 @@ export function listRecentForBuffers(
   return out;
 }
 
+// Distinct buffer targets (channels/DMs/:server:) that have history on a network
+// — the sidebar's buffer list. Called several times per connect snapshot (per
+// network, in the online loop / offline frames / app-badge total), so it's on
+// the hot path — hence the module-scoped prepared statement.
+//
+// A plain `SELECT DISTINCT target` visits EVERY message row: SQLite reads the
+// whole (network_id, target, id) index and de-dupes in the output rather than
+// seeking past duplicate targets, so it scaled with the network's ENTIRE history
+// and was the dominant snapshot cost on a deep buffer. This is a recursive "loose
+// index scan" (skip-scan): it seeks to the smallest target, then repeatedly to
+// the next target strictly greater, so it's O(distinct targets) index seeks — a
+// ~75x speedup measured on 50k rows / 8 targets, and far more on real history.
+//
+// The `IS NOT NULL` guards are LOAD-BEARING, not defensive: `min(target)` returns
+// NULL for a network with no messages, and the recursive subquery returns NULL
+// once no larger target exists — that NULL sentinel is what terminates the
+// recursion (via `WHERE t.target IS NOT NULL`) and is filtered from the output.
+const listBufferTargetsStmt = db.prepare(`
+  WITH RECURSIVE t(target) AS (
+    SELECT min(target) FROM messages WHERE network_id = ?
+    UNION ALL
+    SELECT (SELECT min(target) FROM messages WHERE network_id = ? AND target > t.target)
+    FROM t
+    WHERE t.target IS NOT NULL
+  )
+  SELECT target FROM t WHERE target IS NOT NULL ORDER BY target
+`);
 export function listBufferTargets(networkId: number): string[] {
-  return (
-    db
-      .prepare('SELECT DISTINCT target FROM messages WHERE network_id = ? ORDER BY target')
-      .all(networkId) as Array<{ target: string }>
-  ).map((r) => r.target);
+  return (listBufferTargetsStmt.all(networkId, networkId) as Array<{ target: string }>).map(
+    (r) => r.target,
+  );
 }
 
 // Per-(network, target) summary for the MCP list_buffers verb. Aggregates

@@ -7,7 +7,12 @@ npm-debug.log*
 
 # SQLite database files
 data/
+data2/
 *.db
+
+# Generated session-signing secret — never commit it, whatever data dir it lands
+# in (server regenerates one if absent).
+session-secret.key
 *.db-journal
 *.db-shm
 *.db-wal
