@@ -530,8 +530,12 @@ interface SnapshotBreakdown {
   seedsMs: number; // drafts/bookmarks/system/contacts + the bulk read/cleared/closed maps
   onlineMs: number; // the live per-buffer loop (shells: unread counts; resume: +reads/speakers)
   offlineMs: number; // buildOfflineBacklogFrames
-  // Online-loop op split (the rest of onlineMs is sends/input-history/overhead):
-  unreadMs: number; // computeUnreadFor (shell: buildBufferShell; resume: bufferStateFields)
+  // Online-loop op split (the rest of onlineMs is sends/input-history/overhead).
+  // These are ms-resolution and each rounds independently, so treat as
+  // approximate; `rest` is clamped at 0 in the log to avoid rounding negatives.
+  // ≈computeUnreadFor plus a little frame/state-field assembly — read/cleared
+  // lookups are NOT included (the loop passes precomputed values).
+  unreadMs: number; // shell: buildBufferShell; resume: bufferStateFields
   sliceMs: number; // buildResumeSlice — message reads + decorate (resume path only)
   speakersMs: number; // listSpeakers (resume path only)
 }
@@ -1509,10 +1513,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         `[wsHub] snapshot for user ${userId} took ${ms}ms across ${b.bufferCount} buffers ` +
           `(${b.fresh ? 'fresh/shells' : 'resume'}) — networks=${b.networksMs}ms seeds=${b.seedsMs}ms ` +
           `online=${b.onlineMs}ms offline=${b.offlineMs}ms [online split: unread=${b.unreadMs}ms ` +
-          `slice=${b.sliceMs}ms speakers=${b.speakersMs}ms rest=${b.onlineMs - b.unreadMs - b.sliceMs - b.speakersMs}ms]. ` +
+          `slice=${b.sliceMs}ms speakers=${b.speakersMs}ms ` +
+          `rest=${Math.max(0, b.onlineMs - b.unreadMs - b.sliceMs - b.speakersMs)}ms]. ` +
           `Runs synchronously on the event loop; on slow storage or a large account this can starve ` +
           `IRC socket I/O and trip ping timeouts (see [event-loop] logs). networks=member-list blob; ` +
-          `unread=computeUnreadFor, slice=buildResumeSlice reads, speakers=listSpeakers, rest=sends/input-history.`,
+          `unread≈computeUnreadFor(+frame assembly), slice=buildResumeSlice reads, speakers=listSpeakers, ` +
+          `rest=sends/input-history/overhead.`,
       );
     }
   }
