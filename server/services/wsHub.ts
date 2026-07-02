@@ -518,7 +518,13 @@ const INPUT_HISTORY_SLICE = 50;
 // A synchronous snapshot slower than this is logged (console only) — it's a
 // direct measure of how long the event loop was blocked serving one connect,
 // the thing that starves IRC socket I/O when it gets large.
-const SNAPSHOT_SLOW_MS = 250;
+// A snapshot slower than this logs a per-phase breakdown. Env-tunable so a fast
+// local/dev instance (which normally never crosses 250ms) can log every snapshot
+// for comparison — e.g. LURKER_SNAPSHOT_SLOW_MS=0 in .env.
+const SNAPSHOT_SLOW_MS = (() => {
+  const raw = Number(process.env.LURKER_SNAPSHOT_SLOW_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 250;
+})();
 
 // Per-phase timing of one snapshot, so a slow one says WHERE the time went
 // (member-list blob vs seeds vs the per-buffer loop vs offline frames) instead
