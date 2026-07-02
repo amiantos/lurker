@@ -99,8 +99,9 @@ describe('hasConversationForTarget (#439)', () => {
 });
 
 describe('listBufferTargets (loose-index-scan)', () => {
+  let seq = 0;
   function net() {
-    const user = createUser(`bt-${Math.random().toString(36).slice(2)}`);
+    const user = createUser(`bt-${++seq}`);
     return createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'me' })!.id;
   }
 
