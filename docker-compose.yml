@@ -57,6 +57,14 @@ services:
       # to supply your own (e.g. from a secrets manager).
       # - SESSION_SECRET=replace-me-with-a-long-random-string
       #
+      # ───── Optional: built-in IRC bouncer (ZNC-style) ────────────────────
+      # Attach ordinary IRC clients (WeeChat, irssi, Textual, ...) to your
+      # always-on Lurker connection. Also publish the port above, e.g.
+      #   - '6667:6667'
+      # and see docs/SELF_HOSTING.md for login format + TLS options.
+      # - LURKER_BOUNCER_ENABLED=true
+      # - LURKER_BOUNCER_PORT=6667
+      #
       # ───── Optional: Secure cookie flag ──────────────────────────────────
       # Off by default so cookies work over plain HTTP (localhost / LAN) and
       # behind TLS-terminating proxies (Cloudflare Tunnel, Caddy, etc.)

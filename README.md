@@ -21,6 +21,7 @@ Lurker runs as an always-on server that stays connected to IRC on your behalf, k
 - **Image uploads.** Paste, drag, or pick an image; Lurker optimizes it, uploads it to [x0.at](https://x0.at) or [catbox.moe](https://catbox.moe), inserts the link into your message, and keeps a history of all your uploads.
 - **Customizable UI.** The beautiful retro terminal-style interface has 40+ settings to customize it how you want, and you can freely pin and rearrange channels and DMs.
 - **Installable.** Lurker is a PWA — install it as a native-feeling app on your phone, Mac, or PC straight from the browser.
+- **Built-in bouncer.** Opt-in ZNC-style IRC listener: attach WeeChat, irssi, Textual, or any other IRC client to your always-on connection, with history playback on attach. See the [self-hosting guide](docs/SELF_HOSTING.md#irc-bouncer-attach-from-other-irc-clients).
 
 # Screenshot (as macOS PWA)
 

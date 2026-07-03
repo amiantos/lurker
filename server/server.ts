@@ -26,6 +26,13 @@ import {
   identdBindHost,
 } from './services/identd.js';
 import {
+  startBouncer,
+  stopBouncer,
+  isBouncerEnabled,
+  bouncerPort,
+  bouncerBindHost,
+} from './services/bouncer.js';
+import {
   recoverInterruptedExports,
   startExportSweeper,
   shutdownExportJobs,
@@ -101,6 +108,13 @@ if (wrappedE2e.encrypted > 0) {
 
 ircManager.initAll();
 
+// Built-in IRC bouncer (opt-in via LURKER_BOUNCER_ENABLED): lets ordinary IRC
+// clients attach to the always-on connections ircManager just established,
+// ZNC-style. Started after initAll so an attaching client finds its network.
+if (isBouncerEnabled()) {
+  startBouncer(bouncerPort(), bouncerBindHost());
+}
+
 // Fail any export job a prior crash/restart left mid-flight, drop partial
 // artifacts + expired ones, then sweep finished exports on an interval.
 recoverInterruptedExports();
@@ -128,6 +142,7 @@ function shutdown(signal: string): void {
   stopOrchestratorClient();
   stopModerationReporter();
   stopIdentd();
+  stopBouncer();
   shutdownExportJobs();
   stopIgnoreSweeper();
   stopEventLoopMonitor();

@@ -382,6 +382,11 @@ export class IrcConnection {
   // of issuing buffers, so two concurrent same-type queries to one nick route
   // their replies back in order. Bounded + TTL-pruned on access.
   ctcpOutstanding: Map<string, Array<{ issuingTarget: string; sentAt: number }>>;
+  // The raw 001–005 registration burst as the server sent it, captured by the
+  // 'raw' handler (reset on each 001). The bouncer replays these verbatim
+  // (nick-rewritten) to IRC clients that attach mid-session, so they see the
+  // network's real ISUPPORT tokens instead of a synthesized approximation.
+  registrationLines: string[];
 
   constructor({ network, onEvent }: { network: Network; onEvent: (event: EnrichedEvent) => void }) {
     this.network = network;
@@ -461,6 +466,7 @@ export class IrcConnection {
     this.multilineBatches = new Map();
     this.ctcpLimiter = new RateLimiter();
     this.ctcpOutstanding = new Map();
+    this.registrationLines = [];
     this.bind();
   }
 
@@ -661,7 +667,25 @@ export class IrcConnection {
       } catch (_) {
         return;
       }
-      if (isServerBufferDeniedNumeric((msg?.command || '').toString())) return;
+      const rawCommand = (msg?.command || '').toString();
+      // Capture the registration burst for bouncer attach-time replay. 001
+      // starts a fresh burst (each (re)registration replaces the last), and
+      // the follow-on 002–005 lines are only appended once a burst has begun
+      // so a stray mid-session numeric can't graft onto a stale burst. The
+      // raw line keeps its trailing CR; strip it so replay consumers get a
+      // clean single-line payload.
+      const burstLine = event.line.replace(/[\r\n]+$/, '');
+      if (rawCommand === '001') this.registrationLines = [burstLine];
+      else if (
+        this.registrationLines.length > 0 &&
+        (rawCommand === '002' ||
+          rawCommand === '003' ||
+          rawCommand === '004' ||
+          rawCommand === '005')
+      ) {
+        this.registrationLines.push(burstLine);
+      }
+      if (isServerBufferDeniedNumeric(rawCommand)) return;
       // formatUnknownNumeric only renders 3-digit numerics (it strips the
       // leading recipient-nick param), so PRIVMSG/JOIN/NOTICE/etc. naturally
       // fall through and never pollute the server buffer.
