@@ -314,11 +314,11 @@ function isChannelName(target: string): boolean {
   return target.startsWith('#') || target.startsWith('&');
 }
 
-// Network-services pseudo-users whose DM buffers must never replay on attach:
-// they're registration plumbing, not conversation, and the self side routinely
-// contains credentials (`msg NickServ IDENTIFY <password>` from a client's
-// perform/on-connect) that would otherwise land in every attached client's
-// logs on every reconnect.
+// Network-services pseudo-users (NickServ/ChanServ/…). Playback replays their
+// buffers like any DM, but never the user's OWN lines to them — the self side
+// routinely contains credentials (`msg NickServ IDENTIFY <password>` from a
+// client's perform/on-connect) that would otherwise land in every attached
+// client's logs on every reconnect.
 export function isServicesNick(nick: string): boolean {
   const lower = nick.toLowerCase();
   return /^[a-z]+serv$/.test(lower) || lower === 'global' || lower === 'services';
@@ -747,7 +747,6 @@ class BouncerSession {
     const joined = new Set(Array.from(conn.channels.keys()));
     const dms = listBuffersForNetwork(this.networkId)
       .filter((b) => !isChannelName(b.target) && !b.target.startsWith(':server:'))
-      .filter((b) => !isServicesNick(b.target))
       .filter((b) => !joined.has(b.target.toLowerCase()))
       .filter((b) => !isBufferClosed(this.userId, this.networkId, b.target))
       .toSorted((a, b) => (a.lastMessageAt < b.lastMessageAt ? 1 : -1))
@@ -772,6 +771,11 @@ class BouncerSession {
       // "from you", which confuses query windows and trips auto-responders.
       // ZNC gates on the same caps. Channel self-lines are safe for everyone.
       if (row.self && !isChannel && !this.wantsSelfMessages()) continue;
+      // Never replay your OWN lines to services (NickServ/ChanServ/…) even to
+      // capable clients: that's where credentials live (IDENTIFY from a
+      // client's perform), and each reconnect would replay them into that
+      // client's logs. The services' replies still play back normally.
+      if (row.self && !isChannel && isServicesNick(bufferTarget)) continue;
       const nick = row.nick || 'unknown';
       const prefix =
         row.userhost && row.userhost.includes('!')
