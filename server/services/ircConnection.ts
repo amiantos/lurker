@@ -1759,10 +1759,11 @@ export class IrcConnection {
             memberModesChanged = true;
             continue;
           }
-          // Channel-level flag mode (no param, or list-type mode like +b that
-          // we don't surface in the status bar). We only track flag modes
-          // (no param) so +b/+e/+I bans don't pollute the (+...) display.
-          if (!m.param) {
+          // Channel-level flag mode (or parameter mode like +k/+l). We track them
+          // to surface them in the status bar, but we exclude list-type modes like +b/+e/+I
+          // to prevent polluting the display.
+          const isListMode = ['b', 'e', 'I', 'q', 'a'].includes(letter);
+          if (!isListMode) {
             if (sign === '+' && !ch.modes.has(letter)) {
               ch.modes.add(letter);
               chanModesChanged = true;
@@ -1801,9 +1802,9 @@ export class IrcConnection {
       if (!ch) return;
       const next = new Set<string>();
       for (const m of eventModes) {
-        if (!m || !m.mode || m.param) continue;
+        if (!m || !m.mode) continue;
         const letter = m.mode.replace(/^[+-]/, '');
-        if (!letter) continue;
+        if (!letter || ['b', 'e', 'I', 'q', 'a'].includes(letter)) continue;
         next.add(letter);
       }
       const before = [...ch.modes].toSorted().join('');
