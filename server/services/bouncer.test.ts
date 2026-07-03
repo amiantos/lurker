@@ -15,6 +15,7 @@ let rewriteNumericTarget: typeof import('./bouncer.js').rewriteNumericTarget;
 let filterRelayLine: typeof import('./bouncer.js').filterRelayLine;
 let memberPrefixSymbol: typeof import('./bouncer.js').memberPrefixSymbol;
 let buildNamesLines: typeof import('./bouncer.js').buildNamesLines;
+let isServicesNick: typeof import('./bouncer.js').isServicesNick;
 
 beforeAll(async () => {
   const mod = await import('./bouncer.js');
@@ -25,6 +26,7 @@ beforeAll(async () => {
   filterRelayLine = mod.filterRelayLine;
   memberPrefixSymbol = mod.memberPrefixSymbol;
   buildNamesLines = mod.buildNamesLines;
+  isServicesNick = mod.isServicesNick;
 });
 
 afterAll(() => ctx.cleanup());
@@ -236,6 +238,28 @@ describe('filterRelayLine', () => {
     expect(filterRelayLine('@+typing=active :n!u@h TAGMSG #c', caps)).toBe(
       '@+typing=active :n!u@h TAGMSG #c',
     );
+  });
+});
+
+describe('isServicesNick', () => {
+  it('matches network-services pseudo-users regardless of case', () => {
+    for (const n of [
+      'NickServ',
+      'chanserv',
+      'MemoServ',
+      'HostServ',
+      'OperServ',
+      'SaslServ',
+      'Global',
+    ]) {
+      expect(isServicesNick(n)).toBe(true);
+    }
+  });
+
+  it('leaves ordinary nicks alone', () => {
+    for (const n of ['bob', 'serv', 'nickservv', 'server1', 'preserve1']) {
+      expect(isServicesNick(n)).toBe(false);
+    }
   });
 });
 

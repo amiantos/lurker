@@ -314,6 +314,16 @@ function isChannelName(target: string): boolean {
   return target.startsWith('#') || target.startsWith('&');
 }
 
+// Network-services pseudo-users whose DM buffers must never replay on attach:
+// they're registration plumbing, not conversation, and the self side routinely
+// contains credentials (`msg NickServ IDENTIFY <password>` from a client's
+// perform/on-connect) that would otherwise land in every attached client's
+// logs on every reconnect.
+export function isServicesNick(nick: string): boolean {
+  const lower = nick.toLowerCase();
+  return /^[a-z]+serv$/.test(lower) || lower === 'global' || lower === 'services';
+}
+
 // ---------------------------------------------------------------------------
 // Session registry
 // ---------------------------------------------------------------------------
@@ -737,6 +747,7 @@ class BouncerSession {
     const joined = new Set(Array.from(conn.channels.keys()));
     const dms = listBuffersForNetwork(this.networkId)
       .filter((b) => !isChannelName(b.target) && !b.target.startsWith(':server:'))
+      .filter((b) => !isServicesNick(b.target))
       .filter((b) => !joined.has(b.target.toLowerCase()))
       .filter((b) => !isBufferClosed(this.userId, this.networkId, b.target))
       .toSorted((a, b) => (a.lastMessageAt < b.lastMessageAt ? 1 : -1))
@@ -755,6 +766,12 @@ class BouncerSession {
     for (const row of rows) {
       if (row.type !== 'message' && row.type !== 'action' && row.type !== 'notice') continue;
       if (row.fromIgnored || row.mirrored || !row.text) continue;
+      // A self-message in a DM is `:you PRIVMSG peer` — a shape only clients
+      // that negotiated znc.in/self-message (or echo-message) can attribute
+      // correctly. Anything else (e.g. mIRC) misreads it as an INCOMING PM
+      // "from you", which confuses query windows and trips auto-responders.
+      // ZNC gates on the same caps. Channel self-lines are safe for everyone.
+      if (row.self && !isChannel && !this.wantsSelfMessages()) continue;
       const nick = row.nick || 'unknown';
       const prefix =
         row.userhost && row.userhost.includes('!')
@@ -925,6 +942,11 @@ class BouncerSession {
     }
   }
 
+  // Whether this client can render `:you PRIVMSG peer` self-messages in DMs.
+  private wantsSelfMessages(): boolean {
+    return this.caps.has('znc.in/self-message') || this.caps.has('echo-message');
+  }
+
   // --- events from ircManager -------------------------------------------------
 
   deliverSelfEcho(type: string, target: string, text: string, time: string | null): void {
@@ -938,6 +960,11 @@ class BouncerSession {
       // echo-message want it back.
       if (!this.caps.has('echo-message')) return;
     }
+    // Cross-client DM sync is only intelligible to clients that negotiated
+    // znc.in/self-message / echo-message — anyone else would render it as an
+    // incoming PM from yourself (and auto-responders reply to it). Channel
+    // self-lines render fine everywhere, so they always sync.
+    if (!isChannelName(target) && !this.wantsSelfMessages()) return;
     const cmd = type === 'notice' ? 'NOTICE' : 'PRIVMSG';
     // Web-composed multiline messages arrive as one event with embedded
     // newlines; a raw newline inside a wire line would split into a bogus
