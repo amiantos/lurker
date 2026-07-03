@@ -1938,7 +1938,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       }
       case 'join':
-        ircManager.joinChannel(userId, msg.networkId as number, msg.channel as string);
+        ircManager.joinChannel(
+          userId,
+          msg.networkId as number,
+          msg.channel as string,
+          msg.key as string | undefined,
+        );
         break;
       case 'open-buffer':
         // A clicked channel name — handleOpenBuffer resolves reopen-vs-join.

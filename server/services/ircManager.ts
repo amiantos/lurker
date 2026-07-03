@@ -250,7 +250,7 @@ class IrcManager extends EventEmitter {
     return this.startNetwork(userId, networkId);
   }
 
-  joinChannel(userId: number, networkId: number, name: string): boolean {
+  joinChannel(userId: number, networkId: number, name: string, key?: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
     upsertChannel(networkId, name, true);
@@ -258,7 +258,7 @@ class IrcManager extends EventEmitter {
     // closed flag from a prior close. The matching channel-joined event will
     // recreate the buffer in clients via the normal flow.
     reopenBuffer(userId, networkId, name);
-    conn.join(name);
+    conn.join(name, key);
     return true;
   }
 

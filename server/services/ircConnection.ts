@@ -2544,8 +2544,8 @@ export class IrcConnection {
     });
   }
 
-  join(channel: string): void {
-    this.client.join(channel);
+  join(channel: string, key?: string): void {
+    this.client.join(channel, key);
   }
   part(channel: string, reason?: string): void {
     this.client.part(channel, reason);

@@ -41,8 +41,8 @@ const fakeManager = {
     this.calls.push(['listContacts', userId]);
     return [];
   },
-  joinChannel(userId: number, networkId: number, channel: string) {
-    this.calls.push(['joinChannel', userId, networkId, channel]);
+  joinChannel(userId: number, networkId: number, channel: string, key?: string) {
+    this.calls.push(['joinChannel', userId, networkId, channel, key]);
     return this.joinReturn !== undefined ? this.joinReturn : true;
   },
   partChannel(userId: number, networkId: number, channel: string, reason: string) {
