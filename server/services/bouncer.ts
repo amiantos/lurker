@@ -216,15 +216,34 @@ export function resetAuthThrottle(): void {
 export interface ParsedClientLine {
   command: string;
   params: string[];
+  // Client-only message tags (the `+`-prefixed ones, e.g. `+typing`,
+  // `+draft/react`) exactly as the client sent them, joined by `;` with no
+  // leading `@`. Preserved so TAGMSG/PRIVMSG relayed upstream keep their
+  // typing/reaction payload; server-authoritative tags (time, account, msgid,
+  // label, batch) are dropped here — mirrors soju's copyClientTags.
+  clientTags?: string;
 }
 
-/** Parse one client→server IRC line: optional @tags and :prefix are ignored. */
+/**
+ * Parse one client→server IRC line. The `:prefix` is ignored; message tags are
+ * dropped EXCEPT client-only (`+`-prefixed) tags, which are retained on
+ * `clientTags` so they can be relayed upstream (typing, reactions, …).
+ */
 export function parseClientLine(raw: string): ParsedClientLine | null {
   // eslint-disable-next-line no-control-regex
   let line = raw.replace(/[\r\n\u0000]/g, '');
+  let clientTags: string | undefined;
   if (line.startsWith('@')) {
     const sp = line.indexOf(' ');
     if (sp === -1) return null;
+    // Keep only client-only tags (IRCv3 `+`-prefixed); server-authoritative
+    // tags a client must not set (time, account, msgid, label, batch, …) are
+    // discarded. Matches soju's copyClientTags.
+    const kept = line
+      .slice(1, sp)
+      .split(';')
+      .filter((t) => t.startsWith('+') && t.length > 1);
+    if (kept.length > 0) clientTags = kept.join(';');
     line = line.slice(sp + 1);
   }
   line = line.replace(/^ +/, '');
@@ -247,16 +266,21 @@ export function parseClientLine(raw: string): ParsedClientLine | null {
   const command = parts.shift()!.toUpperCase();
   const params = parts;
   if (trailing !== null) params.push(trailing);
-  return { command, params };
+  return { command, params, clientTags };
 }
 
-/** Rebuild a parsed client line for verbatim upstream forwarding. */
-export function rebuildLine({ command, params }: ParsedClientLine): string {
-  if (params.length === 0) return command;
+/**
+ * Rebuild a parsed client line for verbatim upstream forwarding, re-attaching
+ * any preserved client-only tags as an `@tag;tag ` prefix so typing/reaction
+ * payloads survive the round-trip to the network.
+ */
+export function rebuildLine({ command, params, clientTags }: ParsedClientLine): string {
+  const prefix = clientTags ? `@${clientTags} ` : '';
+  if (params.length === 0) return prefix + command;
   const head = params.slice(0, -1);
   const last = params[params.length - 1];
   const needsTrailing = last === '' || last.includes(' ') || last.startsWith(':');
-  return [command, ...head, needsTrailing ? `:${last}` : last].join(' ');
+  return prefix + [command, ...head, needsTrailing ? `:${last}` : last].join(' ');
 }
 
 export interface ParsedLogin {

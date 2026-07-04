@@ -81,11 +81,24 @@ describe('parseClientLine', () => {
     });
   });
 
-  it('strips client message tags', () => {
+  it('strips server-authoritative message tags but keeps client-only ones', () => {
     expect(parseClientLine('@label=x;time=y PRIVMSG #c :hi')).toEqual({
       command: 'PRIVMSG',
       params: ['#c', 'hi'],
     });
+    expect(parseClientLine('@+typing=active TAGMSG #c')).toEqual({
+      command: 'TAGMSG',
+      params: ['#c'],
+      clientTags: '+typing=active',
+    });
+    // Mixed: drop the server tags (msgid/time), keep the `+`-prefixed ones.
+    expect(parseClientLine('@time=y;+typing=paused;msgid=z TAGMSG #c')).toEqual({
+      command: 'TAGMSG',
+      params: ['#c'],
+      clientTags: '+typing=paused',
+    });
+    // A lone `+` with no key is not a valid client tag.
+    expect(parseClientLine('@+ TAGMSG #c')?.clientTags).toBeUndefined();
   });
 
   it('strips CR/LF/NUL and rejects empty lines', () => {
@@ -119,6 +132,15 @@ describe('rebuildLine', () => {
 
   it('handles a bare command', () => {
     expect(rebuildLine({ command: 'LUSERS', params: [] })).toBe('LUSERS');
+  });
+
+  it('re-attaches preserved client-only tags for upstream relay', () => {
+    // Round-trips typing so halloy → bouncer → network keeps its payload.
+    const parsed = parseClientLine('@+typing=active TAGMSG #chan')!;
+    expect(rebuildLine(parsed)).toBe('@+typing=active TAGMSG #chan');
+    expect(rebuildLine({ command: 'TAGMSG', params: ['#c'], clientTags: '+draft/react=👍' })).toBe(
+      '@+draft/react=👍 TAGMSG #c',
+    );
   });
 });
 
