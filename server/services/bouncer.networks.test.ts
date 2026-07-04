@@ -166,6 +166,34 @@ describe('bouncer-networks-notify', () => {
     expect(push).toContain(`BOUNCER NETWORK ${acct.network.id}`);
   });
 
+  it('pushes live state changes to a BOUND -notify client too', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'nfy3', networkName: 'delta' });
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl soju.im/bouncer-networks soju.im/bouncer-networks-notify');
+    c.send(`BOUNCER BIND ${acct.network.id}`);
+    c.send('CAP END');
+    await c.waitFor((l) => l.includes('BOUNCER_NETID'));
+    harnessMod.emitNetworkState(acct.user.id, acct.network.id, 'disconnected');
+    const push = await c.waitFor(
+      (l) => l.includes('BOUNCER NETWORK') && l.includes('state=disconnected'),
+    );
+    expect(push).not.toContain('@batch=');
+  });
+
+  it('reports a mid-connect network as state=connecting, not disconnected', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'nfy4', networkName: 'epsilon' });
+    acct.upstream.state = 'connecting';
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl soju.im/bouncer-networks');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    c.send('BOUNCER LISTNETWORKS');
+    const line = await c.waitFor(
+      (l) => l.includes('BOUNCER NETWORK') && l.includes('name=epsilon'),
+    );
+    expect(line).toContain('state=connecting');
+  });
+
   it('does not push state changes to a client without the notify cap', async () => {
     const acct = harnessMod.seedAccount({ nick: 'nfy2' });
     const c = await harness.connect();

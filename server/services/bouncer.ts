@@ -420,16 +420,27 @@ export function escapeTagValue(value: string): string {
     .replace(/\n/g, '\\n');
 }
 
+// Map an IrcConnection state to a bouncer-networks `state` attribute value.
+// soju itself only ever emits connected/disconnected, but the spec defines
+// `connecting` and requires clients to accept it, so we surface the extra
+// fidelity of the connecting/reconnecting phase (a deliberate divergence — a
+// mid-connect network must not be advertised as `disconnected`).
+export function bouncerNetworkState(connState: string | undefined): string {
+  if (connState === 'connected') return 'connected';
+  if (connState === 'connecting' || connState === 'reconnecting') return 'connecting';
+  return 'disconnected';
+}
+
 // Build the tag-encoded attribute list for one network's BOUNCER NETWORK line.
-// `state` is derived from whether the upstream is live; soju only ever emits
-// connected/disconnected (never `connecting`), so we match that.
+// (v1 omits soju's `error`/`username`/`realname` — LISTNETWORKS is read-only and
+// we don't yet plumb a per-network last-error string here.)
 export function buildNetworkAttrs(
   network: { name: string; host: string; port: number; tls: number | boolean; nick: string },
-  opts: { connected: boolean; nickname?: string },
+  opts: { state: string; nickname?: string },
 ): string {
   const attrs: Array<[string, string]> = [
     ['name', network.name],
-    ['state', opts.connected ? 'connected' : 'disconnected'],
+    ['state', opts.state],
     ['host', network.host],
     ['port', String(network.port)],
     ['tls', network.tls ? '1' : '0'],
@@ -444,11 +455,6 @@ export function buildNetworkAttrs(
 
 const sessions = new Set<BouncerSession>();
 const registry = new Map<string, Set<BouncerSession>>();
-// Control (unbound) sessions: a `soju.im/bouncer-networks` client that
-// registered without binding a network. Keyed by userId (not networkId — a
-// control connection spans all of the user's networks) so state-change
-// notifications can fan out to every control client the user has open.
-const controlSessions = new Map<number, Set<BouncerSession>>();
 
 function registryKey(userId: number, networkId: number): string {
   return `${userId}:${networkId}`;
@@ -470,22 +476,6 @@ function detachFromRegistry(session: BouncerSession): void {
   if (!set) return;
   set.delete(session);
   if (set.size === 0) registry.delete(key);
-}
-
-function attachToControlRegistry(session: BouncerSession): void {
-  let set = controlSessions.get(session.userId);
-  if (!set) {
-    set = new Set();
-    controlSessions.set(session.userId, set);
-  }
-  set.add(session);
-}
-
-function detachFromControlRegistry(session: BouncerSession): void {
-  const set = controlSessions.get(session.userId);
-  if (!set) return;
-  set.delete(session);
-  if (set.size === 0) controlSessions.delete(session.userId);
 }
 
 export function attachedSessionCount(userId?: number, networkId?: number): number {
@@ -978,12 +968,13 @@ class BouncerSession {
   }
 
   // Register a control (unbound) connection: authenticated, bound to no network.
+  // It lives only in the global `sessions` set (no per-network registry); state
+  // notifications reach it via the user-scoped fan-out in dispatchIrcEvent.
   private registerControl(user: User): void {
     this.userId = user.id;
     this.isControl = true;
     this.registered = true;
     this.clearRegTimer();
-    attachToControlRegistry(this);
     this.sendControlBurst();
     systemLog.log({
       userId: this.userId,
@@ -1025,14 +1016,7 @@ class BouncerSession {
         this.write(rewriteNumericTarget(line, requested));
       }
     } else {
-      this.write(
-        `:${SERVER_NAME} 001 ${requested} :Welcome to the ${APP_NAME} bouncer, ${requested}`,
-      );
-      this.write(
-        `:${SERVER_NAME} 002 ${requested} :Your host is ${SERVER_NAME}, running ${APP_NAME} ${APP_VERSION}`,
-      );
-      this.write(`:${SERVER_NAME} 003 ${requested} :This server was created for you`);
-      this.write(`:${SERVER_NAME} 004 ${requested} ${SERVER_NAME} ${APP_NAME}-${APP_VERSION} o o`);
+      this.writeWelcomeNumerics(requested);
     }
     if (requested !== liveNick) {
       this.write(
@@ -1079,17 +1063,23 @@ class BouncerSession {
 
   // --- control (unbound) connection ------------------------------------------
 
-  // Minimal welcome for a control connection: it binds no network, so no
-  // registrationLines / JOIN / playback / relay. The bouncer-scoped ISUPPORT
-  // omits BOUNCER_NETID (its absence is how a client detects control mode).
-  private sendControlBurst(): void {
-    const nick = this.clientNick || 'user';
+  // The 001–004 welcome numerics, shared by the control burst and the
+  // no-registrationLines fallback of the bound attach burst.
+  private writeWelcomeNumerics(nick: string): void {
     this.write(`:${SERVER_NAME} 001 ${nick} :Welcome to the ${APP_NAME} bouncer, ${nick}`);
     this.write(
       `:${SERVER_NAME} 002 ${nick} :Your host is ${SERVER_NAME}, running ${APP_NAME} ${APP_VERSION}`,
     );
     this.write(`:${SERVER_NAME} 003 ${nick} :This server was created for you`);
     this.write(`:${SERVER_NAME} 004 ${nick} ${SERVER_NAME} ${APP_NAME}-${APP_VERSION} o o`);
+  }
+
+  // Minimal welcome for a control connection: it binds no network, so no
+  // registrationLines / JOIN / playback / relay. The bouncer-scoped ISUPPORT
+  // omits BOUNCER_NETID (its absence is how a client detects control mode).
+  private sendControlBurst(): void {
+    const nick = this.clientNick || 'user';
+    this.writeWelcomeNumerics(nick);
     this.write(
       `:${SERVER_NAME} 005 ${nick} NETWORK=${APP_NAME} CASEMAPPING=ascii :are supported by this server`,
     );
@@ -1162,7 +1152,7 @@ class BouncerSession {
     for (const network of listNetworksForUser(this.userId)) {
       const conn = ircManager.getConnection(this.userId, network.id);
       const attrs = buildNetworkAttrs(network, {
-        connected: conn?.state === 'connected',
+        state: bouncerNetworkState(conn?.state),
         nickname: conn?.currentNick || network.nick,
       });
       this.write(`@batch=${ref} :${SERVER_NAME} BOUNCER NETWORK ${network.id} ${attrs}`);
@@ -1510,14 +1500,13 @@ class BouncerSession {
     }
   }
 
-  // A control connection's view of ANY of the user's networks changing state.
-  // Emits only the changed attributes, soju-style (connect also clears error).
-  onNetworkNotify(networkId: number, state: string): void {
-    if (this.closed || !this.isControl) return;
-    let attrs: string;
-    if (state === 'connected') attrs = 'state=connected;error=';
-    else if (state === 'reconnecting') attrs = 'state=connecting';
-    else attrs = 'state=disconnected';
+  // A -notify client's view of ANY of the user's networks changing state (both
+  // control and bound connections receive these). Emits only the changed
+  // attributes, soju-style (a connect also clears any prior error).
+  onNetworkNotify(networkId: number, connState: string): void {
+    if (this.closed) return;
+    const state = bouncerNetworkState(connState);
+    const attrs = state === 'connected' ? 'state=connected;error=' : `state=${state}`;
     this.notifyNetworkState(networkId, attrs);
   }
 
@@ -1559,7 +1548,6 @@ class BouncerSession {
     this.onRawUpstream = null;
     sessions.delete(this);
     if (this.registered && this.isControl) {
-      detachFromControlRegistry(this);
       systemLog.log({
         userId: this.userId,
         scope: 'bouncer',
@@ -1607,14 +1595,16 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   const networkId = Number(event.networkId);
   if (!userId || !networkId) return;
   const type = String(event.type || '');
-  // Control connections track state for ALL the user's networks — including
-  // ones no bound session is attached to — so fan state events to them before
-  // the bound-session early-return below.
+  // A -notify client (bound OR control) tracks state for ALL of the user's
+  // networks — including ones no bound session is attached to — so fan state
+  // events across every one of the user's sessions, before the per-network
+  // early-return below. State transitions are infrequent, so the scan is cheap.
   if (type === 'state') {
-    const controls = controlSessions.get(userId);
-    if (controls) {
-      const state = String(event.state || '');
-      for (const session of controls) session.onNetworkNotify(networkId, state);
+    const state = String(event.state || '');
+    for (const session of sessions) {
+      if (session.userId === userId && session.isRegistered()) {
+        session.onNetworkNotify(networkId, state);
+      }
     }
   }
   const set = registry.get(registryKey(userId, networkId));

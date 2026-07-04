@@ -19,6 +19,7 @@ let buildNamesLines: typeof import('./bouncer.js').buildNamesLines;
 let isServicesNick: typeof import('./bouncer.js').isServicesNick;
 let escapeTagValue: typeof import('./bouncer.js').escapeTagValue;
 let buildNetworkAttrs: typeof import('./bouncer.js').buildNetworkAttrs;
+let bouncerNetworkState: typeof import('./bouncer.js').bouncerNetworkState;
 let maxSessionsPerUser: typeof import('./bouncer.js').maxSessionsPerUser;
 let maxSessionsTotal: typeof import('./bouncer.js').maxSessionsTotal;
 let maxTotalPlaybackLines: typeof import('./bouncer.js').maxTotalPlaybackLines;
@@ -36,6 +37,7 @@ beforeAll(async () => {
   isServicesNick = mod.isServicesNick;
   escapeTagValue = mod.escapeTagValue;
   buildNetworkAttrs = mod.buildNetworkAttrs;
+  bouncerNetworkState = mod.bouncerNetworkState;
   maxSessionsPerUser = mod.maxSessionsPerUser;
   maxSessionsTotal = mod.maxSessionsTotal;
   maxTotalPlaybackLines = mod.maxTotalPlaybackLines;
@@ -333,15 +335,25 @@ describe('buildNetworkAttrs', () => {
   const network = { name: 'Libera Chat', host: 'irc.libera.chat', port: 6697, tls: 1, nick: 'me' };
 
   it('encodes the network as a tag-escaped attribute list', () => {
-    expect(buildNetworkAttrs(network, { connected: true })).toBe(
+    expect(buildNetworkAttrs(network, { state: 'connected' })).toBe(
       'name=Libera\\sChat;state=connected;host=irc.libera.chat;port=6697;tls=1;nickname=me',
     );
   });
 
-  it('reports disconnected state and honors a live nickname override', () => {
-    const attrs = buildNetworkAttrs(network, { connected: false, nickname: 'me_' });
+  it('reports the given state and honors a live nickname override', () => {
+    const attrs = buildNetworkAttrs(network, { state: 'disconnected', nickname: 'me_' });
     expect(attrs).toContain('state=disconnected');
     expect(attrs).toContain('nickname=me_');
+  });
+});
+
+describe('bouncerNetworkState', () => {
+  it('maps upstream states to spec values (connecting/reconnecting → connecting)', () => {
+    expect(bouncerNetworkState('connected')).toBe('connected');
+    expect(bouncerNetworkState('connecting')).toBe('connecting');
+    expect(bouncerNetworkState('reconnecting')).toBe('connecting');
+    expect(bouncerNetworkState('disconnected')).toBe('disconnected');
+    expect(bouncerNetworkState(undefined)).toBe('disconnected');
   });
 });
 
