@@ -1446,7 +1446,10 @@ export function startBouncer(
   port: number = bouncerPort(),
   host?: string,
 ): net.Server | tls.Server | null {
-  if (server) return server;
+  // Already running → signal a no-op with null rather than handing back a server
+  // that's already past its 'listening' event (a caller awaiting that event on
+  // the returned handle would otherwise wait forever).
+  if (server) return null;
   const tlsOpts = tlsOptions();
   const onConnection = (socket: net.Socket) => {
     // Global backstop: refuse new sockets once the process-wide ceiling is hit.

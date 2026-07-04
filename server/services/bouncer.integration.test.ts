@@ -160,6 +160,49 @@ describe('SASL PLAIN', () => {
     expect(harnessMod.attachedFor(acct)).toBe(0);
   });
 
+  it('offers the mechanism list (908) for an unknown SASL mechanism', async () => {
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    await c.waitFor((l) => l.includes('CAP') && l.includes('LS'));
+    c.send('CAP REQ :sasl');
+    await c.waitFor((l) => l.includes('ACK'));
+    c.send('AUTHENTICATE SCRAM-SHA-256');
+    const list = await c.waitForCommand('908');
+    expect(list).toContain('PLAIN');
+    await c.waitForCommand('904');
+    c.close();
+  });
+
+  it('handles a client-aborted exchange (906)', async () => {
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    await c.waitFor((l) => l.includes('CAP') && l.includes('LS'));
+    c.send('CAP REQ :sasl');
+    await c.waitFor((l) => l.includes('ACK'));
+    c.send('AUTHENTICATE PLAIN');
+    await c.waitFor((l) => l === 'AUTHENTICATE +');
+    c.send('AUTHENTICATE *');
+    const line = await c.waitForCommand('906');
+    expect(line).toContain('aborted');
+    c.close();
+  });
+
+  it('rejects an over-long multi-chunk SASL response (904)', async () => {
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    await c.waitFor((l) => l.includes('CAP') && l.includes('LS'));
+    c.send('CAP REQ :sasl');
+    await c.waitFor((l) => l.includes('ACK'));
+    c.send('AUTHENTICATE PLAIN');
+    await c.waitFor((l) => l === 'AUTHENTICATE +');
+    // 8 KiB cap ÷ 400 per chunk → ~21 full chunks trips it.
+    const chunk = 'A'.repeat(400);
+    for (let i = 0; i < 25; i++) c.send(`AUTHENTICATE ${chunk}`);
+    const line = await c.waitForCommand('904');
+    expect(line).toContain('too long');
+    c.close();
+  });
+
   it('rejects AUTHENTICATE before the sasl cap is requested', async () => {
     const c = await harness.connect();
     c.send('CAP LS 302');

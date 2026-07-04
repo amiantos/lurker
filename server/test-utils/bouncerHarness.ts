@@ -253,7 +253,9 @@ export interface Harness {
 export async function startHarness(): Promise<Harness> {
   const srv = startBouncer(0, '127.0.0.1');
   if (!srv) throw new Error('bouncer already started');
-  await once(srv, 'listening');
+  // Guard the await: if the server somehow already bound, its 'listening' event
+  // has fired and once() would hang.
+  if (!srv.listening) await once(srv, 'listening');
   const addr = srv.address();
   if (!addr || typeof addr === 'string') throw new Error('no bouncer address');
   const port = addr.port;
