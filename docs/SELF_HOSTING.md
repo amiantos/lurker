@@ -192,6 +192,55 @@ environment:
 
 Unset, it falls back to the upstream project link.
 
+### IRC bouncer (attach from other IRC clients)
+
+Lurker can act as a bouncer (ZNC- and soju-compatible): enable the built-in IRC listener and any ordinary IRC client (WeeChat, irssi, Textual, HexChat, …) can attach to the same always-on connection your web UI uses — same nick, same channels, recent history replayed on attach, and anything you send from the client lands in your Lurker history and web tabs too. Detaching never disconnects you from IRC.
+
+```yaml
+environment:
+  - LURKER_BOUNCER_ENABLED=true
+  - LURKER_BOUNCER_PORT=6667 # remember to publish this port in docker-compose
+```
+
+Point your IRC client at the host/port with a **server password** of:
+
+- `username:secret` — when you have one network configured
+- `username/networkname:secret` — to pick one of several (the network's name as shown in the web UI, or its numeric id)
+
+The secret can be your Lurker account password, but a **read-write API token** (web UI → **Settings → API tokens**) is the better choice — IRC clients store the server password in plaintext config files, and a token can be revoked without changing your password.
+
+Modern IRCv3 clients (Halloy, gamja, Goguma, …) get more than the server-password floor above:
+
+- **SASL** — log in with the same credential via SASL PLAIN instead of a server password.
+- **Network discovery** (`soju.im/bouncer-networks`) — the client lists and binds your networks itself, so you don't hardcode `username/networkname`; connect as just `username` and pick from the list.
+- **On-demand scrollback** (`draft/chathistory`) — page back through history on demand instead of relying only on the fixed replay-on-attach.
+
+These are negotiated automatically; plain clients that don't support them keep working over the server-password path.
+
+#### TLS
+
+Plain-text IRC would send that credential across the wire in the clear, so **the bouncer speaks TLS by default** — you don't have to do anything to get an encrypted connection. Connect in your IRC client's **TLS/SSL** mode. There are three ways the cert is sourced:
+
+- **Self-signed (default, zero setup).** With no cert configured, Lurker generates a self-signed cert on first boot and persists it next to the database (so it survives container rebuilds). It's the ZNC model: the wire is encrypted, and to also protect against man-in-the-middle you **pin the certificate's fingerprint** in your client. Lurker prints the SHA-256 fingerprint at startup — in the container logs and in the in-app **system buffer** — e.g. `TLS certificate fingerprint (SHA-256): AB:CD:…`. Most clients (WeeChat, irssi, Textual, …) let you pin that fingerprint; do it once and any impostor cert is rejected thereafter.
+
+- **Your own Let's Encrypt cert (browser-trusted, no pinning).** If you want a cert clients trust without pinning, get one for a hostname (e.g. `irc.example.com`) with certbot and point Lurker at the PEM files — bind-mount them into the container and set:
+
+  ```yaml
+  environment:
+    - LURKER_BOUNCER_TLS_CERT=/certs/fullchain.pem
+    - LURKER_BOUNCER_TLS_KEY=/certs/privkey.pem
+  ```
+
+  Note the bouncer is raw IRC over TCP, so your **HTTP reverse proxy (Caddy/Cloudflare) can't front it** — the bouncer terminates its own TLS. Lurker re-reads the cert files periodically and hot-swaps a renewed cert, so certbot renewals need no restart.
+
+- **Plain-text (opt-in, private networks only).** If — and only if — you keep the listener private (`LURKER_BOUNCER_BIND=127.0.0.1` behind an SSH tunnel, or a VPN/Tailscale interface), you can turn TLS off with `LURKER_BOUNCER_TLS=off`. On a non-loopback bind without TLS, Lurker logs a loud security warning. Don't do this on a public address.
+
+Repeated failed logins from an address are throttled automatically.
+
+Playback replays the last 50 lines per joined channel (plus your 20 most recently active DMs) on attach; tune with `LURKER_BOUNCER_PLAYBACK` (0 disables, max 1000). Clients that negotiate IRCv3 `server-time` get real timestamps on replayed lines.
+
+Known limitations (shared-connection bouncer semantics): replies to one attached client's WHOIS/LIST are visible to all attached clients on that network; Lurker-side ignore rules don't filter the live relay; and on end-to-end encrypted channels an attached client sees the wire ciphertext for incoming messages.
+
 ---
 
 ## Troubleshooting

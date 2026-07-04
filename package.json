@@ -46,6 +46,7 @@
     "express": "^5.2.1",
     "irc-framework": "^4.13.1",
     "multer": "^2.2.0",
+    "selfsigned": "^5.5.0",
     "sharp": "^0.35.2",
     "tsx": "^4.22.4",
     "uuid": "^14.0.1",
