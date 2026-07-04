@@ -11,6 +11,7 @@ const ctx = setupTestDb('services-bouncer');
 let parseClientLine: typeof import('./bouncer.js').parseClientLine;
 let rebuildLine: typeof import('./bouncer.js').rebuildLine;
 let parseBouncerCredentials: typeof import('./bouncer.js').parseBouncerCredentials;
+let unmarshalLogin: typeof import('./bouncer.js').unmarshalLogin;
 let rewriteNumericTarget: typeof import('./bouncer.js').rewriteNumericTarget;
 let filterRelayLine: typeof import('./bouncer.js').filterRelayLine;
 let memberPrefixSymbol: typeof import('./bouncer.js').memberPrefixSymbol;
@@ -25,6 +26,7 @@ beforeAll(async () => {
   parseClientLine = mod.parseClientLine;
   rebuildLine = mod.rebuildLine;
   parseBouncerCredentials = mod.parseBouncerCredentials;
+  unmarshalLogin = mod.unmarshalLogin;
   rewriteNumericTarget = mod.rewriteNumericTarget;
   filterRelayLine = mod.filterRelayLine;
   memberPrefixSymbol = mod.memberPrefixSymbol;
@@ -112,6 +114,30 @@ describe('rebuildLine', () => {
   });
 });
 
+describe('unmarshalLogin (soju unmarshalUsername parity)', () => {
+  // Cases mirror soju's downstream_test.go / unmarshalUsername semantics: `/`
+  // selects the network, `@` a per-device client id, and the FIRST separator
+  // bounds the username — `/` and `@` may appear in either order.
+  const cases: Array<
+    [string, { username: string; network: string | null; client: string | null }]
+  > = [
+    ['user', { username: 'user', network: null, client: null }],
+    ['user/network', { username: 'user', network: 'network', client: null }],
+    ['user@client', { username: 'user', network: null, client: 'client' }],
+    ['user/network@client', { username: 'user', network: 'network', client: 'client' }],
+    ['user@client/network', { username: 'user', network: 'network', client: 'client' }],
+    // Only the first separator bounds the username; trailing empties collapse.
+    ['user/', { username: 'user', network: null, client: null }],
+    ['user@', { username: 'user', network: null, client: null }],
+    ['', { username: '', network: null, client: null }],
+  ];
+  for (const [raw, expected] of cases) {
+    it(`parses ${JSON.stringify(raw)}`, () => {
+      expect(unmarshalLogin(raw)).toEqual(expected);
+    });
+  }
+});
+
 describe('parseBouncerCredentials', () => {
   it('parses user:secret', () => {
     expect(parseBouncerCredentials('alice:hunter2', null)).toEqual({
@@ -147,6 +173,16 @@ describe('parseBouncerCredentials', () => {
 
   it('discards a ZNC-style @clientid', () => {
     expect(parseBouncerCredentials('alice@phone/libera:hunter2', null)).toEqual({
+      username: 'alice',
+      secret: 'hunter2',
+      network: 'libera',
+    });
+  });
+
+  it('extracts the network when @clientid comes AFTER /network (soju order)', () => {
+    // The pre-Phase-2 parser split on `/` first and leaked `@phone` into the
+    // network; unmarshalLogin honors soju's first-separator rule instead.
+    expect(parseBouncerCredentials('alice/libera@phone:hunter2', null)).toEqual({
       username: 'alice',
       secret: 'hunter2',
       network: 'libera',

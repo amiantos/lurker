@@ -8,13 +8,19 @@
 // attach, and everything the client sends flows through the same ircManager
 // paths the web UI uses (so messages persist and fan out to web tabs too).
 //
-// Attach protocol (ZNC-compatible credential shapes):
-//   PASS <username>:<password-or-api-token>            single network
-//   PASS <username>/<network>:<password-or-api-token>  pick a network by name/id
-//   …or put `username/network` in the USER field and only the secret in PASS.
+// Attach protocol. Two interchangeable credential transports:
+//   1. PASS (ZNC-compatible floor — dumb clients like mIRC):
+//        PASS <username>:<secret>                     single network
+//        PASS <username>/<network>:<secret>           pick a network by name/id
+//        …or put `username/network` in the USER field and only the secret in PASS.
+//   2. SASL PLAIN (IRCv3, `sasl` cap): the authcid carries `username[/network]`
+//        and the password rides the PLAIN response. Advertised as `sasl=PLAIN`
+//        under CAP 302. Reuses the exact same credential backend as PASS.
 // The secret may be the account password or an active read-write API token
 // (Settings → API tokens) — tokens are recommended since client configs store
-// the value in plaintext.
+// the value in plaintext. A ZNC-style `@clientid` in the login is parsed and
+// (for now) ignored. Multi-upstream `*` is deliberately unsupported (soju
+// removed it too) — attach one network per connection.
 //
 // Design notes / v1 limitations, all deliberate:
 // - Upstream→client traffic is relayed as the RAW wire lines the network sent
@@ -67,7 +73,24 @@ function timingEqualizerHash(): string {
 // suppress the echo, since the client already rendered the message locally);
 // znc.in/self-message is a marker cap — clients that know it render
 // `:you PRIVMSG peer` playback/sync lines as *your* outgoing DMs.
-const SUPPORTED_CAPS = ['server-time', 'message-tags', 'echo-message', 'znc.in/self-message'];
+const SUPPORTED_CAPS = [
+  'sasl',
+  'server-time',
+  'message-tags',
+  'echo-message',
+  'znc.in/self-message',
+];
+
+// The SASL mechanisms we implement. Advertised as a `sasl=…` value only under
+// CAP 302 (bare `sasl` otherwise, since pre-302 CAP LS carries no cap values).
+const SASL_MECHANISMS = ['PLAIN'];
+
+/** Build the CAP LS token list, attaching cap values when the client sent 302. */
+function capLsList(version: number): string {
+  return SUPPORTED_CAPS.map((c) =>
+    c === 'sasl' && version >= 302 ? `sasl=${SASL_MECHANISMS.join(',')}` : c,
+  ).join(' ');
+}
 
 // Upstream wire commands never relayed to attached clients: connection
 // plumbing that belongs to Lurker's own registration/keepalive (we answer the
@@ -105,6 +128,10 @@ const HEARTBEAT_INTERVAL_MS = 45_000;
 const HEARTBEAT_PING_AFTER_MS = 90_000;
 const HEARTBEAT_REAP_AFTER_MS = 240_000;
 const MAX_INPUT_BUFFER = 64 * 1024;
+// Ceiling on an accumulated multi-chunk SASL response. A PLAIN payload is tiny
+// (username + network + token); this only exists to stop an endless stream of
+// 400-char AUTHENTICATE chunks from growing the heap without bound.
+const MAX_SASL_RESPONSE = 8 * 1024;
 // Cap DM buffers replayed on attach so a years-old account doesn't spew every
 // conversation it ever had; joined channels are always replayed.
 const PLAYBACK_MAX_DM_BUFFERS = 20;
@@ -197,15 +224,43 @@ export function rebuildLine({ command, params }: ParsedClientLine): string {
   return [command, ...head, needsTrailing ? `:${last}` : last].join(' ');
 }
 
+export interface ParsedLogin {
+  username: string;
+  network: string | null;
+  client: string | null;
+}
+
+// Parse a bouncer login part `username[/network][@client]`, matching soju's
+// unmarshalUsername: `/` (network) and `@` (per-device client id) may appear in
+// either order, and only the FIRST separator bounds the username. `@client` is
+// a backlog-cursor hint parsed for soju parity but not yet acted on. Applies to
+// the ZNC-combined PASS login, the USER field, and the SASL authcid alike.
+export function unmarshalLogin(raw: string): ParsedLogin {
+  let username = raw;
+  let network: string | null = null;
+  let client: string | null = null;
+  const i = raw.search(/[/@]/);
+  const j = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('@'));
+  if (i >= 0) username = raw.slice(0, i);
+  if (j >= 0) {
+    if (raw[j] === '@') client = raw.slice(j + 1) || null;
+    else network = raw.slice(j + 1) || null;
+  }
+  if (i >= 0 && j >= 0 && i < j) {
+    if (raw[i] === '@') client = raw.slice(i + 1, j) || null;
+    else network = raw.slice(i + 1, j) || null;
+  }
+  return { username, network, client };
+}
+
 export interface BouncerCredentials {
   username: string;
   secret: string;
   network: string | null;
 }
 
-// PASS carries `user[/network]:secret` (ZNC shape); when PASS is just the
-// secret, the login (and optional `/network`) rides the USER field instead. A
-// ZNC-style `@clientid` in the login part is accepted and discarded.
+// PASS carries `user[/network][@client]:secret` (ZNC shape); when PASS is just
+// the secret, the login (and optional `/network`) rides the USER field instead.
 export function parseBouncerCredentials(
   pass: string,
   userField: string | null,
@@ -218,22 +273,13 @@ export function parseBouncerCredentials(
     secret = pass.slice(colon + 1);
   }
   if (!loginPart) loginPart = userField || '';
-  let network: string | null = null;
-  const slash = loginPart.indexOf('/');
-  if (slash !== -1) {
-    network = loginPart.slice(slash + 1) || null;
-    loginPart = loginPart.slice(0, slash);
-  }
+  const parsed = unmarshalLogin(loginPart);
+  let network = parsed.network;
   // The network selector may also ride the USER field while the login came
   // from PASS (`PASS user:secret` + `USER user/libera …`).
-  if (!network && userField) {
-    const uSlash = userField.indexOf('/');
-    if (uSlash !== -1) network = userField.slice(uSlash + 1) || null;
-  }
-  const at = loginPart.indexOf('@');
-  if (at !== -1) loginPart = loginPart.slice(0, at);
-  if (!loginPart || !secret) return null;
-  return { username: loginPart, secret, network };
+  if (!network && userField) network = unmarshalLogin(userField).network;
+  if (!parsed.username || !secret) return null;
+  return { username: parsed.username, secret, network };
 }
 
 // Rewrite the target-nick param of a server numeric (`:prefix NNN nick …`).
@@ -412,6 +458,13 @@ class BouncerSession {
   // segments isn't corrupted (chunk.toString() per packet would mangle it).
   private readonly decoder = new StringDecoder('utf8');
   private capNegotiating = false;
+  // SASL PLAIN state: the requested mechanism (null until AUTHENTICATE <mech>),
+  // an accumulator for base64 payloads that arrive in 400-byte chunks, and the
+  // user/network resolved by a successful exchange (consumed at CAP END).
+  private saslMechanism: string | null = null;
+  private saslBuffer = '';
+  private saslUser: User | null = null;
+  private saslNetwork: string | null = null;
   private passRaw: string | null = null;
   private clientNick: string | null = null;
   private clientUser: string | null = null;
@@ -547,7 +600,7 @@ class BouncerSession {
         if (msg.params[0]) this.clientUser = msg.params[0];
         break;
       case 'AUTHENTICATE':
-        this.write(`:${SERVER_NAME} 904 * :SASL authentication failed (not supported — use PASS)`);
+        this.handleSasl(msg);
         break;
       case 'PING':
         // Answer keepalive PINGs during CAP/registration so strict clients
@@ -568,10 +621,14 @@ class BouncerSession {
     const sub = (msg.params[0] || '').toUpperCase();
     const nick = this.currentNick() || this.clientNick || '*';
     switch (sub) {
-      case 'LS':
+      case 'LS': {
         if (!this.registered) this.capNegotiating = true;
-        this.write(`:${SERVER_NAME} CAP ${nick} LS :${SUPPORTED_CAPS.join(' ')}`);
+        // 302 = versioned LS (advertise cap values); a bare/absent token is 301.
+        const version = Number(msg.params[1]);
+        const capVersion = Number.isFinite(version) && version >= 302 ? 302 : 301;
+        this.write(`:${SERVER_NAME} CAP ${nick} LS :${capLsList(capVersion)}`);
         break;
+      }
       case 'LIST':
         this.write(`:${SERVER_NAME} CAP ${nick} LIST :${[...this.caps].join(' ')}`);
         break;
@@ -602,6 +659,95 @@ class BouncerSession {
     }
   }
 
+  // SASL PLAIN (IRCv3). Reuses the same credential backend as PASS — the only
+  // difference is the transport. A success stashes the resolved user/network on
+  // the session; the attach itself still happens at CAP END via authenticate().
+  private handleSasl(msg: ParsedClientLine): void {
+    const nick = this.clientNick || '*';
+    const arg = msg.params[0] ?? '';
+    if (!this.caps.has('sasl')) {
+      this.write(`:${SERVER_NAME} 904 ${nick} :You must request the sasl capability first`);
+      return;
+    }
+    // Step 1: mechanism selection (`AUTHENTICATE PLAIN`).
+    if (this.saslMechanism === null) {
+      const mech = arg.toUpperCase();
+      if (!SASL_MECHANISMS.includes(mech)) {
+        this.write(
+          `:${SERVER_NAME} 908 ${nick} ${SASL_MECHANISMS.join(',')} :are available SASL mechanisms`,
+        );
+        this.write(`:${SERVER_NAME} 904 ${nick} :SASL authentication failed`);
+        return;
+      }
+      this.saslMechanism = mech;
+      this.saslBuffer = '';
+      this.write('AUTHENTICATE +');
+      return;
+    }
+    // Client aborted the in-progress exchange.
+    if (arg === '*') {
+      this.saslMechanism = null;
+      this.saslBuffer = '';
+      this.write(`:${SERVER_NAME} 906 ${nick} :SASL authentication aborted`);
+      return;
+    }
+    // Step 2: accumulate the base64 response, which the spec splits into 400-
+    // byte chunks (a chunk shorter than 400 — or a bare `+` for empty — ends it).
+    if (arg !== '+') {
+      this.saslBuffer += arg;
+      // Bound the accumulator: MAX_INPUT_BUFFER only caps a single line, but
+      // saslBuffer spans lines, so an endless stream of 400-char chunks would
+      // otherwise grow the heap without limit. A PLAIN response is tiny.
+      if (this.saslBuffer.length > MAX_SASL_RESPONSE) {
+        this.saslBuffer = '';
+        this.saslMechanism = null;
+        this.write(`:${SERVER_NAME} 904 ${nick} :SASL message too long`);
+        return;
+      }
+      if (arg.length === 400) return;
+    }
+    const payload = this.saslBuffer;
+    this.saslBuffer = '';
+    this.saslMechanism = null;
+    this.finishSaslPlain(payload, nick);
+  }
+
+  private finishSaslPlain(b64: string, nick: string): void {
+    const fail = () => this.write(`:${SERVER_NAME} 904 ${nick} :SASL authentication failed`);
+    if (authThrottled(this.remoteIp)) {
+      this.write(`:${SERVER_NAME} 904 ${nick} :Too many failed logins — try again later`);
+      return;
+    }
+    // PLAIN response is `authzid \0 authcid \0 passwd`; the login (and optional
+    // /network) rides authcid, falling back to authzid.
+    const parts = Buffer.from(b64, 'base64').toString('utf8').split('\u0000');
+    const [authzid, authcid, passwd] = parts.length === 3 ? parts : ['', '', ''];
+    const login = unmarshalLogin(authcid || authzid);
+    if (parts.length !== 3 || !login.username || !passwd) {
+      // Malformed responses count toward the throttle too, so a client can't
+      // probe unbounded without tripping the per-IP limit.
+      noteAuthFailure(this.remoteIp);
+      return fail();
+    }
+    const user = this.verifyUser(login.username, passwd);
+    if (!user) {
+      noteAuthFailure(this.remoteIp);
+      return fail();
+    }
+    // Reject a paused account here rather than after signaling 903, so the
+    // client isn't told auth succeeded and then killed at CAP END.
+    if (user.is_paused) {
+      this.write(`:${SERVER_NAME} 904 ${nick} :Account is paused`);
+      return;
+    }
+    this.saslUser = user;
+    this.saslNetwork = login.network;
+    this.write(
+      `:${SERVER_NAME} 900 ${nick} ${nick}!${user.username}@${SERVER_NAME} ${user.username} :You are now logged in as ${user.username}`,
+    );
+    this.write(`:${SERVER_NAME} 903 ${nick} :SASL authentication successful`);
+  }
+
   private maybeFinishRegistration(): void {
     if (this.registered || this.closed) return;
     if (!this.clientNick || !this.clientUser || this.capNegotiating) return;
@@ -616,7 +762,16 @@ class BouncerSession {
     this.closeWithError(text);
   }
 
+  // Called at CAP END / registration completion. Auth may already be resolved
+  // via SASL (this.saslUser); otherwise fall back to the ZNC-style PASS floor.
   private authenticate(): void {
+    if (this.saslUser) {
+      // SASL PLAIN already authenticated; the network selector rides the SASL
+      // authcid, falling back to the USER field (`USER user/network …`).
+      const networkSel = this.saslNetwork ?? unmarshalLogin(this.clientUser || '').network;
+      this.completeAttach(this.saslUser, networkSel);
+      return;
+    }
     if (authThrottled(this.remoteIp)) {
       this.closeWithError('Too many failed logins — try again later');
       return;
@@ -636,8 +791,22 @@ class BouncerSession {
       this.failRegistration('Invalid username or password/token');
       return;
     }
+    this.completeAttach(user, creds.network);
+  }
+
+  // Shared tail for both auth paths: pick the network, enforce caps, attach to
+  // the live upstream, and replay the welcome burst.
+  private completeAttach(user: User, networkSel: string | null): void {
     if (user.is_paused) {
       this.failRegistration('Account is paused');
+      return;
+    }
+    // soju's multi-upstream `*` mode was removed upstream; we never supported
+    // it. Reject explicitly (deliberate divergence) rather than "unknown network".
+    if (networkSel === '*') {
+      this.failRegistration(
+        'Multi-upstream (*) attach is not supported — attach one network per connection',
+      );
       return;
     }
     const networks = listNetworksForUser(user.id);
@@ -646,12 +815,12 @@ class BouncerSession {
       return;
     }
     let network: Network | undefined;
-    if (creds.network) {
-      const sel = creds.network.toLowerCase();
+    if (networkSel) {
+      const sel = networkSel.toLowerCase();
       network = networks.find((n) => n.name.toLowerCase() === sel || String(n.id) === sel);
       if (!network) {
         this.failRegistration(
-          `Unknown network '${creds.network}' — available: ${networks.map((n) => n.name).join(', ')}`,
+          `Unknown network '${networkSel}' — available: ${networks.map((n) => n.name).join(', ')}`,
         );
         return;
       }
@@ -659,7 +828,7 @@ class BouncerSession {
       network = networks[0];
     } else {
       this.failRegistration(
-        `Multiple networks — log in as ${creds.username}/<network>. Available: ${networks
+        `Multiple networks — log in as ${user.username}/<network>. Available: ${networks
           .map((n) => n.name)
           .join(', ')}`,
       );
@@ -919,6 +1088,13 @@ class BouncerSession {
         return;
       case 'USER':
         this.numeric('462', ':You may not reregister');
+        return;
+      case 'AUTHENTICATE':
+        // The bouncer owns the upstream's SASL. A post-registration
+        // AUTHENTICATE from an attached client carries credentials and would
+        // otherwise be relayed to the network (default branch) and drive an
+        // unexpected upstream re-auth — swallow it.
+        this.write(`:${SERVER_NAME} 904 ${this.currentNick() || '*'} :Already authenticated`);
         return;
     }
 
@@ -1266,8 +1442,11 @@ function tlsOptions(): { cert: Buffer; key: Buffer } | null {
   return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) };
 }
 
-export function startBouncer(port: number = bouncerPort(), host?: string): void {
-  if (server) return;
+export function startBouncer(
+  port: number = bouncerPort(),
+  host?: string,
+): net.Server | tls.Server | null {
+  if (server) return server;
   const tlsOpts = tlsOptions();
   const onConnection = (socket: net.Socket) => {
     // Global backstop: refuse new sockets once the process-wide ceiling is hit.
@@ -1305,6 +1484,7 @@ export function startBouncer(port: number = bouncerPort(), host?: string): void 
     for (const session of sessions) session.heartbeat(now);
   }, HEARTBEAT_INTERVAL_MS);
   heartbeatTimer.unref?.();
+  return server;
 }
 
 export function stopBouncer(): void {
