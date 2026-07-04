@@ -46,6 +46,10 @@ export class FakeUpstream {
   channels = new Map<string, FakeChannel>();
   // Lines the bouncer forwarded to the upstream network via conn.raw().
   rawSent: string[] = [];
+  // Whether this fake network negotiated IRCv3 message-tags. The bouncer gates
+  // client-only tag relay on it (mirrors IrcConnection.supportsMessageTags);
+  // flip to false in a test to exercise the non-IRCv3 strip path.
+  messageTags = true;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any;
 
@@ -71,6 +75,10 @@ export class FakeUpstream {
 
   raw(line: string): void {
     this.rawSent.push(line);
+  }
+
+  supportsMessageTags(): boolean {
+    return this.messageTags;
   }
 
   // Simulate the upstream network sending a raw line down to attached clients.

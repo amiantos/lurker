@@ -227,6 +227,38 @@ describe('live relay', () => {
     expect(line).toBe(':bob!b@h PRIVMSG #chan :hello there');
   });
 
+  it('relays a client TAGMSG with its client-only typing tag to the upstream', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'typer' });
+    const c = await harness.connect();
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    await c.waitForCommand('422');
+    c.send('@+typing=active TAGMSG #chan');
+    // PING is handled locally and in-order after TAGMSG, so a PONG proves the
+    // TAGMSG was already processed and relayed.
+    c.send('PING sync');
+    await c.waitFor((l) => l.includes('PONG'));
+    expect(acct.upstream.rawSent).toContain('@+typing=active TAGMSG #chan');
+  });
+
+  it('strips client-only tags when the upstream lacks message-tags', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'plainnet' });
+    acct.upstream.messageTags = false;
+    const c = await harness.connect();
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    await c.waitForCommand('422');
+    c.send('@+typing=active TAGMSG #chan');
+    c.send('PING sync');
+    await c.waitFor((l) => l.includes('PONG'));
+    // The bare command still forwards; the tag prefix is dropped so a non-IRCv3
+    // server doesn't parse `@+typing=active` as the command.
+    expect(acct.upstream.rawSent).toContain('TAGMSG #chan');
+    expect(acct.upstream.rawSent.some((l) => l.includes('+typing'))).toBe(false);
+  });
+
   it('never forwards a post-registration AUTHENTICATE to the upstream', async () => {
     const acct = harnessMod.seedAccount({ nick: 'noauth' });
     const c = await harness.connect();

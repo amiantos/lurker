@@ -101,6 +101,16 @@ describe('parseClientLine', () => {
     expect(parseClientLine('@+ TAGMSG #c')?.clientTags).toBeUndefined();
   });
 
+  it('drops the whole tag set when it exceeds the client-tag byte cap', () => {
+    // A client could otherwise pad the tag section up to the input-buffer limit
+    // and have the bouncer relay an oversized line that drops the shared socket.
+    const huge = Array.from({ length: 1200 }, (_, i) => `+t${i}=x`).join(';');
+    const parsed = parseClientLine(`@${huge} TAGMSG #c`)!;
+    expect(parsed.command).toBe('TAGMSG'); // command still parses
+    expect(parsed.params).toEqual(['#c']);
+    expect(parsed.clientTags).toBeUndefined(); // tags dropped, not truncated
+  });
+
   it('strips CR/LF/NUL and rejects empty lines', () => {
     expect(parseClientLine('\r\n')).toBeNull();
     expect(parseClientLine('')).toBeNull();

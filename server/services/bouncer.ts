@@ -159,6 +159,9 @@ const HEARTBEAT_INTERVAL_MS = 45_000;
 const HEARTBEAT_PING_AFTER_MS = 90_000;
 const HEARTBEAT_REAP_AFTER_MS = 240_000;
 const MAX_INPUT_BUFFER = 64 * 1024;
+// IRCv3 caps the client-only tag section at 4096 bytes including the leading
+// `@` and the trailing space; 4094 is the room left for the tag content we relay.
+const MAX_CLIENT_TAG_BYTES = 4094;
 // How often to check the TLS cert file for a renewal and hot-swap it. Renewal
 // is never time-critical (certs renew well before expiry), so a slow poll is
 // fine and far simpler and more robust than fs.watch across symlink renames.
@@ -218,9 +221,12 @@ export interface ParsedClientLine {
   params: string[];
   // Client-only message tags (the `+`-prefixed ones, e.g. `+typing`,
   // `+draft/react`) exactly as the client sent them, joined by `;` with no
-  // leading `@`. Preserved so TAGMSG/PRIVMSG relayed upstream keep their
-  // typing/reaction payload; server-authoritative tags (time, account, msgid,
-  // label, batch) are dropped here — mirrors soju's copyClientTags.
+  // leading `@`. Preserved so a relayed TAGMSG (and other commands routed
+  // through the verbatim `default:` relay) keeps its typing/reaction payload.
+  // NOTE: PRIVMSG/NOTICE route through ircManager.send, which carries no tags,
+  // so tags on a message body are NOT forwarded yet (tracked separately).
+  // Server-authoritative tags (time, account, msgid, label, batch) are dropped
+  // here — mirrors soju's copyClientTags.
   clientTags?: string;
 }
 
@@ -243,7 +249,13 @@ export function parseClientLine(raw: string): ParsedClientLine | null {
       .slice(1, sp)
       .split(';')
       .filter((t) => t.startsWith('+') && t.length > 1);
-    if (kept.length > 0) clientTags = kept.join(';');
+    // Bound what we'll relay upstream. The IRCv3 client-tag section is capped
+    // at 4096 bytes (`@` + tags + space); a client could otherwise pad a line
+    // up to MAX_INPUT_BUFFER with `+`-tags and have us forward an oversized
+    // line that the network drops — killing the upstream socket shared by
+    // every other session on this account. Over the limit → forward tagless.
+    const joined = kept.join(';');
+    if (kept.length > 0 && joined.length <= MAX_CLIENT_TAG_BYTES) clientTags = joined;
     line = line.slice(sp + 1);
   }
   line = line.replace(/^ +/, '');
@@ -1652,9 +1664,20 @@ class BouncerSession {
       default:
         // Everything else (MODE, TOPIC, WHOIS, WHO, NAMES, LIST, KICK, INVITE,
         // NICK, …) forwards verbatim; replies come back via the raw relay.
-        conn.raw(rebuildLine(msg));
+        this.relayRaw(conn, msg);
         return;
     }
+  }
+
+  // Forward a parsed client line to the upstream, re-attaching its client-only
+  // tags only when the network speaks message-tags. On a non-IRCv3 server a
+  // leading `@+tag …` prefix is parsed as the command, mangling the real
+  // command into ERR_UNKNOWNCOMMAND — the same hazard IrcConnection.sendTyping
+  // guards against — so drop the tags and forward the bare command there.
+  private relayRaw(conn: IrcConnection, msg: ParsedClientLine): void {
+    const forward =
+      msg.clientTags && !conn.supportsMessageTags() ? { ...msg, clientTags: undefined } : msg;
+    conn.raw(rebuildLine(forward));
   }
 
   private handleClientMessage(msg: ParsedClientLine): void {
@@ -1673,8 +1696,9 @@ class BouncerSession {
       const isAction = text.startsWith('\u0001ACTION ') || text.startsWith('\u0001ACTION\u0001');
       if (text.startsWith('\u0001') && !isAction) {
         // Non-ACTION CTCP (VERSION, PING, replies…): forward on the wire
-        // untouched; these aren't conversation and don't persist.
-        conn.raw(rebuildLine({ command: msg.command, params: [target, text] }));
+        // untouched; these aren't conversation and don't persist. Spread msg so
+        // any client-only tags ride along (gated on upstream message-tags).
+        this.relayRaw(conn, { ...msg, params: [target, text] });
         continue;
       }
       // /me actions and NOTICEs aren't encrypted yet, so ircManager refuses
