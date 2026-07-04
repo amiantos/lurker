@@ -22,6 +22,8 @@ let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
 let hasConversationForTarget: typeof import('./messages.js').hasConversationForTarget;
 let listSpeakers: typeof import('./messages.js').listSpeakers;
 let listBufferTargets: typeof import('./messages.js').listBufferTargets;
+let loadHistoryWindow: typeof import('./messages.js').loadHistoryWindow;
+let listActiveTargetsInWindow: typeof import('./messages.js').listActiveTargetsInWindow;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
@@ -38,6 +40,8 @@ beforeAll(async () => {
     hasConversationForTarget,
     listSpeakers,
     listBufferTargets,
+    loadHistoryWindow,
+    listActiveTargetsInWindow,
   } = await import('./messages.js'));
 });
 
@@ -876,5 +880,107 @@ describe('maxIdForBuffer', () => {
     chat(net1.id, '#b', 'bob', 'b1');
     chat(net2.id, '#a', 'eve', 'e1');
     expect(maxIdForBuffer(net1.id, '#a')).toBe(a2.id);
+  });
+});
+
+describe('chathistory window queries', () => {
+  // Insert a message at a controlled ISO time so the timestamp resolvers are
+  // deterministic; ids stay monotonic in insertion order.
+  function at(networkId: number, target: string, iso: string, text: string) {
+    return Number(
+      insertMessage({ networkId, target, time: iso, type: 'message', nick: 'n', text, self: false })
+        .id,
+    );
+  }
+
+  function evt(networkId: number, target: string, iso: string, type: string) {
+    return Number(insertMessage({ networkId, target, time: iso, type, nick: 'x', self: false }).id);
+  }
+
+  it('loadHistoryWindow applies exclusive time bounds and returns oldest-first', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    const ids = [1, 2, 3, 4, 5].map((n) =>
+      at(net.id, '#w', `2023-05-23T06:00:0${n}.000Z`, `m${n}`),
+    );
+    // upper bound (BEFORE): strictly earlier than :03, newest-first cap → oldest-first out.
+    const before = loadHistoryWindow(net.id, '#w', null, '2023-05-23T06:00:03.000Z', 100, {
+      newestFirst: true,
+    });
+    expect(before.map((m) => m.id)).toEqual([ids[0], ids[1]]);
+    // lower bound (AFTER): strictly later than :02, earliest-first.
+    const after = loadHistoryWindow(net.id, '#w', '2023-05-23T06:00:02.000Z', null, 100);
+    expect(after.map((m) => m.id)).toEqual([ids[2], ids[3], ids[4]]);
+    // newestFirst caps from the recent end but still returns oldest-first.
+    const latest2 = loadHistoryWindow(net.id, '#w', null, null, 2, { newestFirst: true });
+    expect(latest2.map((m) => m.id)).toEqual([ids[3], ids[4]]);
+  });
+
+  it('loadHistoryWindow orders/selects by time even when id order diverges', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    // Insert out of chronological order (a chained/ZNC upstream replaying old
+    // buffered messages as live lines): the OLD-time row gets the highest id.
+    at(net.id, '#o', '2023-05-23T06:00:02.000Z', 'newer');
+    const oldId = at(net.id, '#o', '2023-05-23T06:00:01.000Z', 'older'); // higher id, older time
+    // LATEST must return them oldest-first BY TIME, not by id.
+    const latest = loadHistoryWindow(net.id, '#o', null, null, 10, { newestFirst: true });
+    expect(latest.map((m) => m.text)).toEqual(['older', 'newer']);
+    // BEFORE :02 selects the older-time row (id-ordering would have missed it).
+    const before = loadHistoryWindow(net.id, '#o', null, '2023-05-23T06:00:02.000Z', 10, {
+      newestFirst: true,
+    });
+    expect(before.map((m) => m.id)).toEqual([oldId]);
+  });
+
+  it('loadHistoryWindow excludes non-message rows so limit counts real messages', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    const m1 = at(net.id, '#n', '2023-05-23T06:00:01.000Z', 'hello');
+    // A flood of joins/quits after the message must not fill the window.
+    for (let i = 2; i <= 9; i++) evt(net.id, '#n', `2023-05-23T06:00:0${i}.000Z`, 'join');
+    const rows = loadHistoryWindow(net.id, '#n', null, null, 3, { newestFirst: true });
+    expect(rows.map((r) => r.id)).toEqual([m1]); // the joins are skipped, not counted
+  });
+
+  it('listActiveTargetsInWindow returns buffers active in the window, newest first', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    at(net.id, '#old', '2023-05-20T00:00:00.000Z', 'old');
+    at(net.id, '#a', '2023-05-23T06:00:00.000Z', 'a');
+    at(net.id, '#b', '2023-05-23T07:00:00.000Z', 'b');
+    at(net.id, ':server:x', '2023-05-23T06:30:00.000Z', 'srv'); // excluded (pseudo-buffer)
+    evt(net.id, '#joinonly', '2023-05-23T06:45:00.000Z', 'join'); // excluded (no real message)
+    const targets = listActiveTargetsInWindow(
+      net.id,
+      '2023-05-23T00:00:00.000Z',
+      '2023-05-24T00:00:00.000Z',
+      100,
+    );
+    expect(targets.map((t) => t.target)).toEqual(['#b', '#a']); // #old outside window; :server:/#joinonly excluded
   });
 });

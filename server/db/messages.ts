@@ -237,6 +237,84 @@ export function hasNewerRow(networkId: number, target: string, id: number): bool
   return hasNewerThan(networkId, target, id);
 }
 
+// --- IRCv3 draft/chathistory window queries --------------------------------
+
+// Only replayable conversation rows count toward a chathistory window/limit:
+// joins/parts/quits/nick/mode/topic events and mirrored server-buffer dupes are
+// excluded, so a `limit` of N yields up to N real messages (a window full of a
+// netsplit's QUITs must not come back as an empty batch — that would make a
+// client think it reached the start of history and stop paging). Matches what
+// playbackLines will actually emit onto the wire.
+const CHATHISTORY_MSG_FILTER = `type IN ('message', 'action', 'notice') AND mirrored = 0 AND text IS NOT NULL AND text != ''`;
+
+// Windowed history fetch for CHATHISTORY. `lower`/`upper` are exclusive ISO time
+// bounds (null = unbounded on that side). `newestFirst` takes the `limit` from
+// the recent end of the window (BEFORE/LATEST) vs the old end (AFTER); the
+// result is ALWAYS returned oldest-first (the batch must be chronological).
+//
+// Ordered by `time` (id as a stable tie-breaker for same-millisecond rows), NOT
+// by id: chathistory is a timestamp-semantic API and a client pages by the
+// returned lines' @time, so window selection and ordering must follow time.
+// These usually coincide (id is assigned in receive order), but a chained/ZNC
+// upstream that replays its buffer as live PRIVMSGs with old server-time tags
+// (stored as event.time) breaks that — old-time rows get fresh, high ids. The
+// time sort is unindexed, but this is an on-demand path with a bounded LIMIT.
+export function loadHistoryWindow(
+  networkId: number,
+  target: string,
+  lower: string | null,
+  upper: string | null,
+  limit: number,
+  { newestFirst = false }: { newestFirst?: boolean } = {},
+): MessageEvent[] {
+  const conds = ['network_id = ?', 'target = ?', CHATHISTORY_MSG_FILTER];
+  const params: (string | number)[] = [networkId, target];
+  if (lower !== null) {
+    conds.push('time > ?');
+    params.push(lower);
+  }
+  if (upper !== null) {
+    conds.push('time < ?');
+    params.push(upper);
+  }
+  params.push(limit);
+  const dir = newestFirst ? 'DESC' : 'ASC';
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages WHERE ${conds.join(' AND ')}
+       ORDER BY time ${dir}, id ${dir} LIMIT ?`,
+    )
+    .all(...params) as MessageRow[];
+  const events = rows.map(rowToEvent);
+  return newestFirst ? events.toReversed() : events;
+}
+
+// Buffers with real message activity inside a time window (exclusive), newest
+// first, for CHATHISTORY TARGETS. Excludes :server: pseudo-buffers and applies
+// the same message filter (a buffer whose only in-window rows are JOINs isn't
+// "active"). The two bounds may arrive in either order; we normalize.
+export function listActiveTargetsInWindow(
+  networkId: number,
+  isoA: string,
+  isoB: string,
+  limit: number,
+): BufferSummary[] {
+  const [lo, hi] = isoA <= isoB ? [isoA, isoB] : [isoB, isoA];
+  return db
+    .prepare(
+      `SELECT target, MAX(time) AS lastMessageAt
+         FROM messages
+        WHERE network_id = ?
+          AND target NOT LIKE ':server:%'
+          AND ${CHATHISTORY_MSG_FILTER}
+          AND time > ? AND time < ?
+        GROUP BY target
+        ORDER BY lastMessageAt DESC
+        LIMIT ?`,
+    )
+    .all(networkId, lo, hi, limit) as BufferSummary[];
+}
+
 export function listRecentForBuffers(
   networkId: number,
   targets: string[],
