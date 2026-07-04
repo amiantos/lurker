@@ -25,6 +25,7 @@ import {
   sendRejectionTargetKind,
   sendRejectionText,
   outgoingAddr,
+  resolveKeyModeChange,
 } from './ircConnection.js';
 import { createIdentdServer, unregisterIdent } from './identd.js';
 import { getRecent } from './systemLog.js';
@@ -1786,6 +1787,31 @@ describe('channel mode display (status bar)', () => {
     expect(modes).toContain('k');
     expect(modes).not.toContain('b');
     expect(modes).not.toContain('secret');
+  });
+});
+
+describe('resolveKeyModeChange', () => {
+  it('clears the stored key on -k', () => {
+    expect(resolveKeyModeChange('-', 'ignored')).toEqual({ key: null });
+    expect(resolveKeyModeChange('-', undefined)).toEqual({ key: null });
+  });
+
+  it('sets the key on +k with a real value', () => {
+    expect(resolveKeyModeChange('+', 'hunter2')).toEqual({ key: 'hunter2' });
+  });
+
+  it('leaves the stored key untouched for a value-less +k (on-join mode burst)', () => {
+    // The dangerous case: a +k echoed without its value must NOT wipe the key
+    // we persisted from the join command, or the channel loses its key on the
+    // next reconnect.
+    expect(resolveKeyModeChange('+', undefined)).toBeNull();
+    expect(resolveKeyModeChange('+', '')).toBeNull();
+  });
+
+  it('leaves the stored key untouched for a masked +k (* placeholder)', () => {
+    // Some servers hide the key from non-ops by echoing it as `*`; persisting
+    // that would replace the real key with an unusable one.
+    expect(resolveKeyModeChange('+', '*')).toBeNull();
   });
 });
 

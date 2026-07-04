@@ -78,23 +78,50 @@ function awayStateFromRow(row: AwayStateRow | null) {
   };
 }
 
-// Plan the JOINs for auto-rejoin on (re)registration. Keyed channels each get
-// their own keyed JOIN — a comma JOIN uses a positional key list
-// (JOIN #a,#b k_a,k_b) that's easy to get wrong, and keyed channels are rare.
-// Keyless channels coalesce into comma-separated batches per IRC line: a tight
-// loop of single JOINs trips Libera's per-connection flood limit ("Closing
-// Link: ... (Excess Flood)"), so we chunk well under the 512-byte line cap.
-// Pure and export-only so the batching/keying is unit-testable without a socket.
+// Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single
+// JOINs trips Libera's per-connection flood limit ("Closing Link: ... (Excess
+// Flood)"), so channels coalesce into comma-separated JOIN lines chunked well
+// under the 512-byte cap. Keyed and keyless channels go in SEPARATE lines:
+// keyed lines carry a positional key list (JOIN #a,#b k_a,k_b), so keeping each
+// keyed line all-keyed means every key lines up 1:1 with its channel — no
+// cross-type alignment to get wrong. Pure + export-only so it's unit-testable
+// without a socket; the caller maps each op to client.join(channels, keys).
 export function planChannelRejoins(
   channels: Array<{ name: string; key: string | null }>,
-): Array<{ channel: string; key?: string }> {
-  const ops: Array<{ channel: string; key?: string }> = [];
-  for (const c of channels) if (c.key) ops.push({ channel: c.name, key: c.key });
+): Array<{ channels: string; keys?: string }> {
   const MAX = 400;
+  const ops: Array<{ channels: string; keys?: string }> = [];
+
+  // Keyed channels: batch with an aligned key list. Budget both the channel and
+  // key lists plus the single space that joins them on the wire.
+  let names: string[] = [];
+  let keys: string[] = [];
+  let namesLen = 0;
+  let keysLen = 0;
+  const flushKeyed = () => {
+    if (names.length > 0) ops.push({ channels: names.join(','), keys: keys.join(',') });
+    names = [];
+    keys = [];
+    namesLen = 0;
+    keysLen = 0;
+  };
+  for (const c of channels) {
+    if (!c.key) continue;
+    const addName = names.length === 0 ? c.name.length : c.name.length + 1;
+    const addKey = keys.length === 0 ? c.key.length : c.key.length + 1;
+    if (namesLen + addName + 1 + keysLen + addKey > MAX && names.length > 0) flushKeyed();
+    names.push(c.name);
+    keys.push(c.key);
+    namesLen += names.length === 1 ? c.name.length : c.name.length + 1;
+    keysLen += keys.length === 1 ? c.key.length : c.key.length + 1;
+  }
+  flushKeyed();
+
+  // Keyless channels: names only.
   let chunk: string[] = [];
   let len = 0;
   const flush = () => {
-    if (chunk.length > 0) ops.push({ channel: chunk.join(',') });
+    if (chunk.length > 0) ops.push({ channels: chunk.join(',') });
     chunk = [];
     len = 0;
   };
@@ -106,6 +133,7 @@ export function planChannelRejoins(
     len += add;
   }
   flush();
+
   return ops;
 }
 
@@ -217,7 +245,7 @@ class IrcManager extends EventEmitter {
           text: `Auto-joining ${names.length} ${names.length === 1 ? 'channel' : 'channels'}: ${names.join(', ')}`,
         });
       }
-      for (const op of planChannelRejoins(joined)) connRef.join(op.channel, op.key);
+      for (const op of planChannelRejoins(joined)) connRef.join(op.channels, op.keys);
     });
 
     return conn;
@@ -267,11 +295,12 @@ class IrcManager extends EventEmitter {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
     // Persist the key (encrypted at rest) so the channel auto-rejoins keyed
-    // after a reconnect/restart. Only pass it through when supplied — a keyless
-    // re-join (clicking an already-keyed channel, /join with no key) must
-    // preserve the stored key, not wipe it (soju does the same). A key that no
-    // longer applies is cleared by the MODE -k handler, not here.
-    upsertChannel(networkId, name, true, key);
+    // after a reconnect/restart. Normalize an empty/absent key to undefined so a
+    // keyless re-join (clicking an already-keyed channel, /join with no key, or
+    // an API call passing key:"") preserves the stored key rather than wiping it
+    // — soju does the same. A key that no longer applies is cleared by the
+    // MODE -k handler, not here.
+    upsertChannel(networkId, name, true, key || undefined);
     // Joining is an explicit "I want this buffer back" — clear any stale
     // closed flag from a prior close. The matching channel-joined event will
     // recreate the buffer in clients via the normal flow.

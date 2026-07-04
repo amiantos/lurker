@@ -1796,12 +1796,11 @@ export class IrcConnection {
             }
           }
           // Keep the persisted +k key current so a live key change survives a
-          // reconnect. Only act on -k (clear) or a +k that carries the key —
-          // a +k echoed WITHOUT the value (common in the on-join mode burst)
-          // must not wipe the key we stored from the join command.
+          // reconnect (see resolveKeyModeChange for the value-less / masked-key
+          // guards that stop an on-join mode burst from wiping the real key).
           if (letter === 'k') {
-            if (sign === '-') setChannelKey(this.network.id, ch.name, null);
-            else if (m.param) setChannelKey(this.network.id, ch.name, m.param);
+            const change = resolveKeyModeChange(sign, m.param);
+            if (change) setChannelKey(this.network.id, ch.name, change.key);
           }
         }
       }
@@ -4067,6 +4066,22 @@ export class IrcConnection {
 const PREFIX_MODES = new Set(['q', 'a', 'o', 'h', 'v']);
 function isPrefixMode(letter: string): boolean {
   return PREFIX_MODES.has(letter);
+}
+
+// Decide how a channel +k / -k MODE change should update the persisted key.
+// Returns null for "leave the stored key alone" — the two cases that must NOT
+// touch it are (a) a +k echoed WITHOUT its value (common in the on-join mode
+// burst) and (b) a masked +k where the server sends the key as `*` to hide it
+// from non-ops. Either would otherwise clobber the real key we stored at join
+// time, so the channel would fail to auto-rejoin on the next reconnect. -k
+// clears; +k with a real value sets. Pure + exported so the guard is unit-tested.
+export function resolveKeyModeChange(
+  sign: string,
+  param: string | undefined,
+): { key: string | null } | null {
+  if (sign === '-') return { key: null };
+  if (sign === '+' && param && param !== '*') return { key: param };
+  return null;
 }
 
 // Pure helper for the pre-registration nick-fallback ladder. The configured

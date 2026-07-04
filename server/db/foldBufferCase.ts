@@ -195,16 +195,20 @@ export function foldBufferCase(
       }
 
       // channels: UNIQUE(network_id, name). Fold to canon (joined if ANY variant
-      // was joined, earliest created_at), then drop the off-case variant.
+      // was joined, earliest created_at, and any +k key from either side), then
+      // drop the off-case variant. Carrying `key` here is essential — without it
+      // the merge would strip the channel key off a case-forked keyed channel
+      // and it would fail to auto-rejoin after the next reconnect.
       db.exec(`
-        INSERT INTO channels (network_id, name, joined, created_at)
-          SELECT ch.network_id, c.canon, ch.joined, ch.created_at
+        INSERT INTO channels (network_id, name, joined, created_at, key)
+          SELECT ch.network_id, c.canon, ch.joined, ch.created_at, ch.key
           FROM channels ch JOIN _buf_canon c
             ON c.network_id = ch.network_id AND c.lkey = lower(ch.name)
           WHERE ${pred('ch.name')} AND c.canon <> ch.name
         ON CONFLICT(network_id, name) DO UPDATE SET
           joined = MAX(channels.joined, excluded.joined),
-          created_at = MIN(channels.created_at, excluded.created_at)
+          created_at = MIN(channels.created_at, excluded.created_at),
+          key = COALESCE(channels.key, excluded.key)
       `);
       db.exec(`
         DELETE FROM channels WHERE ${pred('name')} AND EXISTS (

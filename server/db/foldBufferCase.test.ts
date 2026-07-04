@@ -19,6 +19,8 @@ let createNetwork: typeof import('./networks.js').createNetwork;
 let insertMessage: typeof import('./messages.js').insertMessage;
 let setReadState: typeof import('./bufferReads.js').setReadState;
 let foldBufferCase: typeof import('./foldBufferCase.js').foldBufferCase;
+let upsertChannel: typeof import('./networks.js').upsertChannel;
+let listChannels: typeof import('./networks.js').listChannels;
 let userId: number;
 
 const T = '2026-06-01T00:00:00.000Z';
@@ -26,7 +28,7 @@ const T = '2026-06-01T00:00:00.000Z';
 beforeAll(async () => {
   db = (await import('./index.js')).default;
   ({ createUser } = await import('./users.js'));
-  ({ createNetwork } = await import('./networks.js'));
+  ({ createNetwork, upsertChannel, listChannels } = await import('./networks.js'));
   ({ insertMessage } = await import('./messages.js'));
   ({ setReadState } = await import('./bufferReads.js'));
   ({ foldBufferCase } = await import('./foldBufferCase.js'));
@@ -81,6 +83,23 @@ describe('foldBufferCase', () => {
 
     // Channel and DM each collapse onto the majority casing; no stray rows left.
     expect(targetCounts(net)).toEqual({ '#CoolChan': 4, Bob: 3 });
+  });
+
+  it('preserves a +k channel key when folding a case-forked channel', () => {
+    const net = freshNetwork();
+    // '#Secret' is the majority casing (canon); the stray '#secret' variant is
+    // the one carrying the key — the merge must carry it onto the canon, not
+    // drop it when the stray row is deleted.
+    seed(net, '#Secret', 3);
+    seed(net, '#secret', 1);
+    upsertChannel(net, '#Secret', true); // canon row, no key
+    upsertChannel(net, '#secret', true, 'strays-key'); // stray row holds the key
+
+    foldBufferCase(db, { scope: 'all' });
+
+    const chans = listChannels(net);
+    expect(chans.map((c) => c.name)).toEqual(['#Secret']); // variant gone
+    expect(chans[0].key).toBe('strays-key'); // key survived the merge
   });
 
   it('channels-only scope leaves DM forks untouched', () => {
