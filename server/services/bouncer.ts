@@ -1,12 +1,14 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Built-in IRC bouncer (ZNC-style). An opt-in TCP/TLS listener that speaks the
-// IRC *server* protocol, so any ordinary IRC client (WeeChat, irssi, Textual,
-// HexChat, …) can attach to a user's always-on Lurker connection and use it
-// like a ZNC network: shared upstream socket, shared nick, history playback on
-// attach, and everything the client sends flows through the same ircManager
-// paths the web UI uses (so messages persist and fan out to web tabs too).
+// Built-in IRC bouncer (ZNC- and soju-compatible). An opt-in TCP/TLS listener
+// that speaks the IRC *server* protocol, so any ordinary IRC client (WeeChat,
+// irssi, Textual, HexChat, …) can attach to a user's always-on Lurker connection
+// and use it like a ZNC network: shared upstream socket, shared nick, history
+// playback on attach, and everything the client sends flows through the same
+// ircManager paths the web UI uses (so messages persist and fan out to web tabs
+// too). Modern clients also negotiate SASL, soju.im/bouncer-networks (network
+// discovery/BIND), and draft/chathistory (on-demand scrollback).
 //
 // Attach protocol. Two interchangeable credential transports:
 //   1. PASS (ZNC-compatible floor — dumb clients like mIRC):

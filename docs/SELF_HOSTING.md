@@ -194,7 +194,7 @@ Unset, it falls back to the upstream project link.
 
 ### IRC bouncer (attach from other IRC clients)
 
-Lurker can act as a ZNC-style bouncer: enable the built-in IRC listener and any ordinary IRC client (WeeChat, irssi, Textual, HexChat, …) can attach to the same always-on connection your web UI uses — same nick, same channels, recent history replayed on attach, and anything you send from the client lands in your Lurker history and web tabs too. Detaching never disconnects you from IRC.
+Lurker can act as a bouncer (ZNC- and soju-compatible): enable the built-in IRC listener and any ordinary IRC client (WeeChat, irssi, Textual, HexChat, …) can attach to the same always-on connection your web UI uses — same nick, same channels, recent history replayed on attach, and anything you send from the client lands in your Lurker history and web tabs too. Detaching never disconnects you from IRC.
 
 ```yaml
 environment:
@@ -208,6 +208,14 @@ Point your IRC client at the host/port with a **server password** of:
 - `username/networkname:secret` — to pick one of several (the network's name as shown in the web UI, or its numeric id)
 
 The secret can be your Lurker account password, but a **read-write API token** (web UI → **Settings → API tokens**) is the better choice — IRC clients store the server password in plaintext config files, and a token can be revoked without changing your password.
+
+Modern IRCv3 clients (Halloy, gamja, Goguma, …) get more than the server-password floor above:
+
+- **SASL** — log in with the same credential via SASL PLAIN instead of a server password.
+- **Network discovery** (`soju.im/bouncer-networks`) — the client lists and binds your networks itself, so you don't hardcode `username/networkname`; connect as just `username` and pick from the list.
+- **On-demand scrollback** (`draft/chathistory`) — page back through history on demand instead of relying only on the fixed replay-on-attach.
+
+These are negotiated automatically; plain clients that don't support them keep working over the server-password path.
 
 #### TLS
 
