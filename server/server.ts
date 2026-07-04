@@ -12,7 +12,7 @@ import { getNodeSecret } from './middleware/nodeAuth.js';
 import { nodeUploadConfigured } from './services/uploadProviders/nodeUpload.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
-import { backfillEncryptNetworkSecrets } from './db/networks.js';
+import { backfillEncryptNetworkSecrets, backfillEncryptChannelKeys } from './db/networks.js';
 import { backfillEncryptE2eSecrets } from './db/e2e.js';
 import { resolveSessionSecret } from './utils/sessionSecret.js';
 import { getEdition, isNodeMode } from './utils/edition.js';
@@ -95,6 +95,13 @@ const wrapped = backfillEncryptNetworkSecrets();
 if (wrapped.encrypted > 0) {
   console.log(`[lurker] encrypted ${wrapped.encrypted} network-secret row(s) at rest`);
   systemLog.log({ scope: 'server', text: `Encrypted ${wrapped.encrypted} network-secret row(s)` });
+}
+
+// Same re-seal for stored +k channel keys.
+const wrappedKeys = backfillEncryptChannelKeys();
+if (wrappedKeys.encrypted > 0) {
+  console.log(`[lurker] encrypted ${wrappedKeys.encrypted} channel-key row(s) at rest`);
+  systemLog.log({ scope: 'server', text: `Encrypted ${wrappedKeys.encrypted} channel-key row(s)` });
 }
 
 // Same re-seal for the RPE2E keyring's secret columns (identity privkey +

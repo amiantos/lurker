@@ -47,9 +47,9 @@ import { findUserByUsername, getPasswordHash } from '../db/users.js';
 import type { User } from '../db/users.js';
 import { verifyPassword, hashPassword } from './password.js';
 import { hashToken, findActiveByHash, touchLastUsed } from '../db/apiTokens.js';
-import { listNetworksForUser, upsertChannel } from '../db/networks.js';
+import { listNetworksForUser } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { reopenBuffer, closedKeySetForUser } from '../db/closedBuffers.js';
+import { closedKeySetForUser } from '../db/closedBuffers.js';
 import {
   listMessages,
   listBuffersForNetwork,
@@ -1632,16 +1632,10 @@ class BouncerSession {
         const channels = first.split(',').filter(Boolean);
         const keys = (msg.params[1] || '').split(',');
         channels.forEach((channel, i) => {
+          // joinChannel now carries the optional key: it persists it (encrypted,
+          // for keyed auto-rejoin), reopens the buffer, and JOINs with the key.
           const key = (keys[i] || '').trim();
-          if (key) {
-            // ircManager.joinChannel can't carry a key; persist + reopen the
-            // buffer the same way it does, then JOIN with the key ourselves.
-            upsertChannel(this.networkId, channel, true);
-            reopenBuffer(this.userId, this.networkId, channel);
-            conn.raw(`JOIN ${channel} ${key}`);
-          } else {
-            ircManager.joinChannel(this.userId, this.networkId, channel);
-          }
+          ircManager.joinChannel(this.userId, this.networkId, channel, key || undefined);
         });
         return;
       }

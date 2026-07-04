@@ -37,6 +37,12 @@ export const ENCRYPTED_NETWORK_COLUMNS = [
   'connect_commands',
 ] as const;
 
+// Channel-scoped secrets encrypted at rest on hosted cells, same envelope as the
+// network columns above. The +k channel key is a credential of the same class
+// (it gates entry to the channel), so it gets the same treatment: ciphertext in
+// the R2-replicated SQLite, plaintext passthrough on self-host.
+export const ENCRYPTED_CHANNEL_COLUMNS = ['key'] as const;
+
 // FTS5 maintains its own shadow tables (messages_fts_data, _idx, _content,
 // _docsize, _config). Only the virtual `messages_fts` itself surfaces in
 // sqlite_master as a row the registry needs to address; the shadows are
@@ -117,7 +123,7 @@ export const EXPORT_TABLES = Object.freeze({
     pk: 'id',
     rekeyOnImport: true,
     fkRekey: { network_id: 'networks' },
-    columns: ['id', 'network_id', 'name', 'joined', 'created_at'],
+    columns: ['id', 'network_id', 'name', 'joined', 'created_at', 'key'],
   },
 
   // Friends/contacts. contacts is a rekey root (its id is referenced by

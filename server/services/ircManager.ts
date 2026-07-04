@@ -78,6 +78,37 @@ function awayStateFromRow(row: AwayStateRow | null) {
   };
 }
 
+// Plan the JOINs for auto-rejoin on (re)registration. Keyed channels each get
+// their own keyed JOIN — a comma JOIN uses a positional key list
+// (JOIN #a,#b k_a,k_b) that's easy to get wrong, and keyed channels are rare.
+// Keyless channels coalesce into comma-separated batches per IRC line: a tight
+// loop of single JOINs trips Libera's per-connection flood limit ("Closing
+// Link: ... (Excess Flood)"), so we chunk well under the 512-byte line cap.
+// Pure and export-only so the batching/keying is unit-testable without a socket.
+export function planChannelRejoins(
+  channels: Array<{ name: string; key: string | null }>,
+): Array<{ channel: string; key?: string }> {
+  const ops: Array<{ channel: string; key?: string }> = [];
+  for (const c of channels) if (c.key) ops.push({ channel: c.name, key: c.key });
+  const MAX = 400;
+  let chunk: string[] = [];
+  let len = 0;
+  const flush = () => {
+    if (chunk.length > 0) ops.push({ channel: chunk.join(',') });
+    chunk = [];
+    len = 0;
+  };
+  for (const c of channels) {
+    if (c.key) continue;
+    const add = chunk.length === 0 ? c.name.length : c.name.length + 1;
+    if (len + add > MAX && chunk.length > 0) flush();
+    chunk.push(c.name);
+    len += add;
+  }
+  flush();
+  return ops;
+}
+
 class IrcManager extends EventEmitter {
   byUser: Map<number, Map<number, IrcConnection>>;
 
@@ -176,9 +207,8 @@ class IrcManager extends EventEmitter {
       launch();
     }
     conn.client.on('registered', () => {
-      const names = listChannels(networkId)
-        .filter((c) => c.joined)
-        .map((c) => c.name);
+      const joined = listChannels(networkId).filter((c) => c.joined);
+      const names = joined.map((c) => c.name);
       if (names.length > 0) {
         systemLog.log({
           userId,
@@ -187,24 +217,7 @@ class IrcManager extends EventEmitter {
           text: `Auto-joining ${names.length} ${names.length === 1 ? 'channel' : 'channels'}: ${names.join(', ')}`,
         });
       }
-      // Send JOINs as comma-separated batches per IRC line. A tight loop of
-      // single JOINs trips Libera's per-connection flood limit ("Closing Link:
-      // ... (Excess Flood)"), so we coalesce into one line and chunk well under
-      // the 512-byte IRC line cap.
-      const MAX = 400;
-      let chunk: string[] = [];
-      let len = 0;
-      for (const name of names) {
-        const add = chunk.length === 0 ? name.length : name.length + 1;
-        if (len + add > MAX && chunk.length > 0) {
-          connRef.join(chunk.join(','));
-          chunk = [];
-          len = 0;
-        }
-        chunk.push(name);
-        len += add;
-      }
-      if (chunk.length > 0) connRef.join(chunk.join(','));
+      for (const op of planChannelRejoins(joined)) connRef.join(op.channel, op.key);
     });
 
     return conn;
@@ -253,7 +266,12 @@ class IrcManager extends EventEmitter {
   joinChannel(userId: number, networkId: number, name: string, key?: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
-    upsertChannel(networkId, name, true);
+    // Persist the key (encrypted at rest) so the channel auto-rejoins keyed
+    // after a reconnect/restart. Only pass it through when supplied — a keyless
+    // re-join (clicking an already-keyed channel, /join with no key) must
+    // preserve the stored key, not wipe it (soju does the same). A key that no
+    // longer applies is cleared by the MODE -k handler, not here.
+    upsertChannel(networkId, name, true, key);
     // Joining is an explicit "I want this buffer back" — clear any stale
     // closed flag from a prior close. The matching channel-joined event will
     // recreate the buffer in clients via the normal flow.

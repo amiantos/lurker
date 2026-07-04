@@ -18,9 +18,11 @@ let setUserPaused: typeof import('../db/users.js').setUserPaused;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
 let insertDccTransfer: typeof import('../db/dccTransfers.js').insertDccTransfer;
 let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
+let planChannelRejoins: typeof import('./ircManager.js').planChannelRejoins;
 
 beforeAll(async () => {
   ircManager = (await import('./ircManager.js')).default;
+  ({ planChannelRejoins } = await import('./ircManager.js'));
   connectScheduler = (await import('./connectScheduler.js')).default;
   systemLog = (await import('./systemLog.js')).default;
   ({ createUser, setUserPaused } = await import('../db/users.js'));
@@ -368,5 +370,37 @@ describe('ircManager contacts', () => {
     expect(ircManager.deleteContact(other.id, made.id)).toBe(false);
     expect(ircManager.deleteContact(user.id, made.id)).toBe(true);
     expect(ircManager.listContacts(user.id)).toEqual([]);
+  });
+});
+
+describe('planChannelRejoins', () => {
+  it('emits a keyed JOIN per keyed channel and one batched JOIN for keyless ones', () => {
+    const ops = planChannelRejoins([
+      { name: '#alsoplain', key: null },
+      { name: '#keyed', key: 'sekret' },
+      { name: '#plain', key: null },
+    ]);
+    // Keyed channels first (each with its key), then the keyless batch — and the
+    // keyed channel is never folded into the batch.
+    expect(ops).toEqual([{ channel: '#keyed', key: 'sekret' }, { channel: '#alsoplain,#plain' }]);
+  });
+
+  it('splits keyless channels into multiple JOINs under the IRC line cap', () => {
+    // 50 channels of 12 chars each (≈650 with separators) blow past the
+    // 400-char budget → more than one batch.
+    const many = Array.from({ length: 50 }, (_, i) => ({
+      name: `#channel-${String(i).padStart(3, '0')}`,
+      key: null as string | null,
+    }));
+    const ops = planChannelRejoins(many);
+    expect(ops.length).toBeGreaterThan(1);
+    // Every batch stays under the cap, and every channel appears exactly once.
+    for (const op of ops) expect(op.channel.length).toBeLessThanOrEqual(400);
+    const rejoined = ops.flatMap((o) => o.channel.split(','));
+    expect(rejoined.toSorted()).toEqual(many.map((c) => c.name).toSorted());
+  });
+
+  it('returns nothing for no joined channels', () => {
+    expect(planChannelRejoins([])).toEqual([]);
   });
 });

@@ -30,7 +30,7 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { Statement, RunResult } from 'better-sqlite3';
 import db from '../db/index.js';
 import { EXPORT_TABLES, EXPORT_FORMAT_VERSION, IMPORT_ORDER } from '../db/exportSchema.js';
-import { ENCRYPTED_NETWORK_COLUMNS } from '../db/networks.js';
+import { ENCRYPTED_NETWORK_COLUMNS, ENCRYPTED_CHANNEL_COLUMNS } from '../db/networks.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import type { IgnorePatternKind } from '../db/ignoredMasks.js';
@@ -200,6 +200,12 @@ function insertTable(
       // secure behavior during import.
       if (row.trusted_certificates === undefined) row.trusted_certificates = 1;
       for (const col of ENCRYPTED_NETWORK_COLUMNS) {
+        if (typeof row[col] === 'string') row[col] = encryptSecret(row[col] as string);
+      }
+    }
+    // Same re-encrypt for the imported +k channel key.
+    if (table === 'channels') {
+      for (const col of ENCRYPTED_CHANNEL_COLUMNS) {
         if (typeof row[col] === 'string') row[col] = encryptSecret(row[col] as string);
       }
     }

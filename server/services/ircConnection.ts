@@ -10,7 +10,7 @@ import {
   listBufferTargets,
 } from '../db/messages.js';
 import type { Network } from '../db/networks.js';
-import { upsertChannel } from '../db/networks.js';
+import { upsertChannel, setChannelKey } from '../db/networks.js';
 import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
 import { listTargetsForNetwork as listFriendTargetsForNetwork } from '../db/contacts.js';
 import * as chanlistDb from '../db/chanlist.js';
@@ -1794,6 +1794,14 @@ export class IrcConnection {
             } else if (sign === '-' && ch.modes.delete(letter)) {
               chanModesChanged = true;
             }
+          }
+          // Keep the persisted +k key current so a live key change survives a
+          // reconnect. Only act on -k (clear) or a +k that carries the key —
+          // a +k echoed WITHOUT the value (common in the on-join mode burst)
+          // must not wipe the key we stored from the join command.
+          if (letter === 'k') {
+            if (sign === '-') setChannelKey(this.network.id, ch.name, null);
+            else if (m.param) setChannelKey(this.network.id, ch.name, m.param);
           }
         }
       }
