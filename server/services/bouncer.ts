@@ -51,10 +51,15 @@ import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
 
 const SERVER_NAME = 'lurker.bouncer';
 
-// A precomputed scrypt hash used ONLY to equalize login latency (see
-// verifyUser): every auth path runs one scrypt so an unknown/passwordless
-// username can't be distinguished from a real one by response time.
-const TIMING_DUMMY_HASH = hashPassword('lurker-bouncer-timing-equalizer');
+// A scrypt hash used ONLY to equalize login latency (see verifyUser): every
+// auth path runs one scrypt so an unknown/passwordless username can't be told
+// apart from a real one by response time. Computed lazily on the first bouncer
+// login rather than at import, so a disabled bouncer costs no startup scrypt.
+let timingDummyHash: string | null = null;
+function timingEqualizerHash(): string {
+  if (timingDummyHash === null) timingDummyHash = hashPassword('lurker-bouncer-timing-equalizer');
+  return timingDummyHash;
+}
 
 // Caps we can honestly offer an attaching client. server-time stamps playback
 // and relayed lines; message-tags passes upstream tags through verbatim;
@@ -108,6 +113,10 @@ const PLAYBACK_MAX_DM_BUFFERS = 20;
 // attempts from that address are refused before touching scrypt.
 const AUTH_FAIL_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_FAIL_MAX = 10;
+// Cap the number of tracked IPs so a spray of one-off failures from many
+// distinct addresses can't grow the map without bound; when the cap is hit we
+// sweep expired entries (each lives at most AUTH_FAIL_WINDOW_MS).
+const AUTH_FAIL_MAX_TRACKED = 10_000;
 const authFailures = new Map<string, { count: number; resetAt: number }>();
 
 function authThrottled(ip: string): boolean {
@@ -124,6 +133,9 @@ function noteAuthFailure(ip: string): void {
   const now = Date.now();
   const entry = authFailures.get(ip);
   if (!entry || now > entry.resetAt) {
+    if (authFailures.size >= AUTH_FAIL_MAX_TRACKED) {
+      for (const [key, e] of authFailures) if (now > e.resetAt) authFailures.delete(key);
+    }
     authFailures.set(ip, { count: 1, resetAt: now + AUTH_FAIL_WINDOW_MS });
   } else {
     entry.count += 1;
@@ -702,7 +714,7 @@ class BouncerSession {
     // Always run exactly one scrypt (against a dummy hash when the user is
     // unknown or has no password) so login latency can't reveal whether the
     // username exists — verifyPassword(_, null) would otherwise return instantly.
-    const passwordOk = verifyPassword(secret, storedHash ?? TIMING_DUMMY_HASH);
+    const passwordOk = verifyPassword(secret, storedHash ?? timingEqualizerHash());
     if (!user) return null;
     if (passwordOk && storedHash) return user;
     const token = findActiveByHash(hashToken(secret));
