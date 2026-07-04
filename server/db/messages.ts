@@ -251,9 +251,14 @@ const CHATHISTORY_MSG_FILTER = `type IN ('message', 'action', 'notice') AND mirr
 // bounds (null = unbounded on that side). `newestFirst` takes the `limit` from
 // the recent end of the window (BEFORE/LATEST) vs the old end (AFTER); the
 // result is ALWAYS returned oldest-first (the batch must be chronological).
-// Filtering by time is unindexed, but ORDER BY id + LIMIT lets SQLite stop after
-// `limit` matches, and this is correct regardless of whether time is monotonic
-// in id (unlike an id-boundary seek).
+//
+// Ordered by `time` (id as a stable tie-breaker for same-millisecond rows), NOT
+// by id: chathistory is a timestamp-semantic API and a client pages by the
+// returned lines' @time, so window selection and ordering must follow time.
+// These usually coincide (id is assigned in receive order), but a chained/ZNC
+// upstream that replays its buffer as live PRIVMSGs with old server-time tags
+// (stored as event.time) breaks that — old-time rows get fresh, high ids. The
+// time sort is unindexed, but this is an on-demand path with a bounded LIMIT.
 export function loadHistoryWindow(
   networkId: number,
   target: string,
@@ -273,10 +278,11 @@ export function loadHistoryWindow(
     params.push(upper);
   }
   params.push(limit);
+  const dir = newestFirst ? 'DESC' : 'ASC';
   const rows = db
     .prepare(
       `SELECT * FROM messages WHERE ${conds.join(' AND ')}
-       ORDER BY id ${newestFirst ? 'DESC' : 'ASC'} LIMIT ?`,
+       ORDER BY time ${dir}, id ${dir} LIMIT ?`,
     )
     .all(...params) as MessageRow[];
   const events = rows.map(rowToEvent);

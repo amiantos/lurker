@@ -922,6 +922,29 @@ describe('chathistory window queries', () => {
     expect(latest2.map((m) => m.id)).toEqual([ids[3], ids[4]]);
   });
 
+  it('loadHistoryWindow orders/selects by time even when id order diverges', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    // Insert out of chronological order (a chained/ZNC upstream replaying old
+    // buffered messages as live lines): the OLD-time row gets the highest id.
+    at(net.id, '#o', '2023-05-23T06:00:02.000Z', 'newer');
+    const oldId = at(net.id, '#o', '2023-05-23T06:00:01.000Z', 'older'); // higher id, older time
+    // LATEST must return them oldest-first BY TIME, not by id.
+    const latest = loadHistoryWindow(net.id, '#o', null, null, 10, { newestFirst: true });
+    expect(latest.map((m) => m.text)).toEqual(['older', 'newer']);
+    // BEFORE :02 selects the older-time row (id-ordering would have missed it).
+    const before = loadHistoryWindow(net.id, '#o', null, '2023-05-23T06:00:02.000Z', 10, {
+      newestFirst: true,
+    });
+    expect(before.map((m) => m.id)).toEqual([oldId]);
+  });
+
   it('loadHistoryWindow excludes non-message rows so limit counts real messages', () => {
     const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
     const net = createNetwork(user.id, {
