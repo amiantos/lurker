@@ -48,7 +48,14 @@ import { hashToken, findActiveByHash, touchLastUsed } from '../db/apiTokens.js';
 import { listNetworksForUser, upsertChannel } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { reopenBuffer, closedKeySetForUser } from '../db/closedBuffers.js';
-import { listMessages, listBuffersForNetwork } from '../db/messages.js';
+import {
+  listMessages,
+  listBuffersForNetwork,
+  listMessagesBetween,
+  firstIdAtOrAfterTime,
+  lastIdAtOrBeforeTime,
+  listActiveTargetsInWindow,
+} from '../db/messages.js';
 import type { MessageEvent } from '../db/messages.js';
 import { splitSay, splitAction } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
@@ -87,10 +94,18 @@ const SUPPORTED_CAPS = [
   // networks; -notify opts into unsolicited BOUNCER NETWORK state pushes.
   'soju.im/bouncer-networks',
   'soju.im/bouncer-networks-notify',
+  // draft/chathistory: on-demand scrollback fetch (CHATHISTORY BEFORE/AFTER/…).
+  'draft/chathistory',
 ];
 
 const CAP_BOUNCER_NETWORKS = 'soju.im/bouncer-networks';
 const CAP_BOUNCER_NETWORKS_NOTIFY = 'soju.im/bouncer-networks-notify';
+const CAP_CHATHISTORY = 'draft/chathistory';
+
+// Max messages a single CHATHISTORY request may return (advertised as the
+// CHATHISTORY ISUPPORT token). Requests over this are rejected, not clamped —
+// matching soju, whose clients read the token and stay under it.
+const MAX_CHATHISTORY = 1000;
 
 // The SASL mechanisms we implement. Advertised as a `sasl=…` value only under
 // CAP 302 (bare `sasl` otherwise, since pre-302 CAP LS carries no cap values).
@@ -386,6 +401,18 @@ function toIrcTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
 }
+
+// IRCv3 server-time layout used by CHATHISTORY `timestamp=` selectors:
+// exactly `YYYY-MM-DDThh:mm:ss.sssZ` (millisecond precision, literal Z).
+export function isValidServerTime(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(s) && !Number.isNaN(Date.parse(s));
+}
+
+// A CHATHISTORY selector: `*` (LATEST only), `msgid=<id>` (our msgid is the
+// numeric messages.id), or `timestamp=<iso>`.
+type ChatBound = { star: true } | { msgid: number } | { iso: string };
+// id sentinel for an unbounded window edge (larger than any real message id).
+const CHATHISTORY_MAX_ID = Number.MAX_SAFE_INTEGER;
 
 function isChannelName(target: string): boolean {
   return target.startsWith('#') || target.startsWith('&');
@@ -1027,11 +1054,17 @@ class BouncerSession {
         `:${requested}!${conn.client.user?.username || 'lurker'}@${SERVER_NAME} NICK :${liveNick}`,
       );
     }
-    // Tell a bouncer-networks-aware client which network it bound to. The
-    // upstream's own 005 can't carry this, so append our own ISUPPORT line.
-    if (this.caps.has(CAP_BOUNCER_NETWORKS)) {
+    // Append our own ISUPPORT for tokens the upstream's 005 can't carry:
+    // BOUNCER_NETID (which network this connection bound) and the chathistory
+    // limits. Bundled into one 005 line, gated on the relevant caps.
+    const extraIsupport: string[] = [];
+    if (this.caps.has(CAP_BOUNCER_NETWORKS)) extraIsupport.push(`BOUNCER_NETID=${this.networkId}`);
+    if (this.caps.has(CAP_CHATHISTORY)) {
+      extraIsupport.push(`CHATHISTORY=${MAX_CHATHISTORY}`, 'MSGREFTYPES=msgid,timestamp');
+    }
+    if (extraIsupport.length > 0) {
       this.write(
-        `:${SERVER_NAME} 005 ${liveNick} BOUNCER_NETID=${this.networkId} :are supported by this server`,
+        `:${SERVER_NAME} 005 ${liveNick} ${extraIsupport.join(' ')} :are supported by this server`,
       );
     }
     this.write(`:${SERVER_NAME} 422 ${liveNick} :MOTD File is missing`);
@@ -1186,6 +1219,178 @@ class BouncerSession {
     this.write(`:${SERVER_NAME} BOUNCER NETWORK ${networkId} ${attrs}`);
   }
 
+  // --- CHATHISTORY (draft/chathistory) ---------------------------------------
+
+  private handleChatHistory(msg: ParsedClientLine): void {
+    const sub = (msg.params[0] || '').toUpperCase();
+    // History is per-network; a control connection has no bound buffers.
+    if (this.isControl || !this.networkId) {
+      this.write(
+        `:${SERVER_NAME} FAIL CHATHISTORY INVALID_TARGET ${sub || '*'} :Cannot fetch chat history on the bouncer connection`,
+      );
+      return;
+    }
+    if (sub === 'TARGETS') {
+      this.handleChatHistoryTargets(msg);
+      return;
+    }
+    if (!['BEFORE', 'AFTER', 'LATEST', 'AROUND', 'BETWEEN'].includes(sub)) {
+      this.write(`:${SERVER_NAME} FAIL CHATHISTORY INVALID_PARAMS ${sub || '*'} :Unknown command`);
+      return;
+    }
+    const target = msg.params[1] || '';
+    if (!target) {
+      this.numeric('461', 'CHATHISTORY :Not enough parameters');
+      return;
+    }
+    const isBetween = sub === 'BETWEEN';
+    const limit = this.parseChatHistoryLimit(sub, msg.params[isBetween ? 4 : 3] || '');
+    if (limit === null) return;
+    const bound0 = this.parseChatHistoryBound(sub, msg.params[2] || '', sub === 'LATEST', 'first');
+    if (!bound0) return;
+    let bound1: ChatBound | null = null;
+    if (isBetween) {
+      bound1 = this.parseChatHistoryBound(sub, msg.params[3] || '', false, 'second');
+      if (!bound1) return;
+    }
+    const rows = this.loadChatHistory(sub, target, bound0, bound1, limit);
+    this.sendChatHistoryBatch(target, rows);
+  }
+
+  private handleChatHistoryTargets(msg: ParsedClientLine): void {
+    // TARGETS has no <target>; two timestamp bounds + limit. soju (and we) only
+    // accept timestamp selectors here, not msgid.
+    const isoA = this.parseTimestampBound(msg.params[1] || '', 'first');
+    if (isoA === null) return;
+    const isoB = this.parseTimestampBound(msg.params[2] || '', 'second');
+    if (isoB === null) return;
+    const limit = this.parseChatHistoryLimit('TARGETS', msg.params[3] || '');
+    if (limit === null) return;
+    const targets = listActiveTargetsInWindow(this.networkId, isoA, isoB, limit);
+    const batched = this.caps.has('batch');
+    const ref = `lct${++this.batchSeq}`;
+    if (batched) this.write(`:${SERVER_NAME} BATCH +${ref} draft/chathistory-targets`);
+    const tag = batched ? `@batch=${ref} ` : '';
+    for (const t of targets) {
+      this.write(
+        `${tag}:${SERVER_NAME} CHATHISTORY TARGETS ${t.target} ${toIrcTime(t.lastMessageAt)}`,
+      );
+    }
+    if (batched) this.write(`:${SERVER_NAME} BATCH -${ref}`);
+  }
+
+  // Map a subcommand + bound(s) + limit onto the message store. Every mode is
+  // expressed as a single id-window fetch (exclusive bounds), so the wire
+  // contract — chronological, oldest-first — always holds.
+  private loadChatHistory(
+    sub: string,
+    target: string,
+    bound0: ChatBound,
+    bound1: ChatBound | null,
+    limit: number,
+  ): MessageEvent[] {
+    const nid = this.networkId;
+    const lower = (b: ChatBound): number =>
+      'msgid' in b ? b.msgid : 'iso' in b ? (lastIdAtOrBeforeTime(nid, target, b.iso) ?? 0) : 0;
+    const upper = (b: ChatBound): number =>
+      'msgid' in b
+        ? b.msgid
+        : 'iso' in b
+          ? (firstIdAtOrAfterTime(nid, target, b.iso) ?? CHATHISTORY_MAX_ID)
+          : CHATHISTORY_MAX_ID;
+    const before = (b: ChatBound, n: number) =>
+      listMessagesBetween(nid, target, 0, upper(b), n, { newestFirst: true });
+    const after = (b: ChatBound, n: number) =>
+      listMessagesBetween(nid, target, lower(b), CHATHISTORY_MAX_ID, n);
+
+    switch (sub) {
+      case 'BEFORE':
+        return before(bound0, limit);
+      case 'AFTER':
+        return after(bound0, limit);
+      case 'LATEST': {
+        const lo = 'star' in bound0 ? 0 : lower(bound0);
+        return listMessagesBetween(nid, target, lo, CHATHISTORY_MAX_ID, limit, {
+          newestFirst: true,
+        });
+      }
+      case 'AROUND': {
+        const beforeLimit = Math.ceil(limit / 2);
+        return [...before(bound0, beforeLimit), ...after(bound0, limit - beforeLimit)];
+      }
+      case 'BETWEEN': {
+        const b1 = bound1!;
+        // Order the two bounds; take the earliest `limit` when ascending, the
+        // most recent when descending (soju semantics), always emit oldest-first.
+        const ascending = lower(bound0) <= lower(b1);
+        const loB = ascending ? bound0 : b1;
+        const hiB = ascending ? b1 : bound0;
+        return listMessagesBetween(nid, target, lower(loB), upper(hiB), limit, {
+          newestFirst: !ascending,
+        });
+      }
+    }
+    return [];
+  }
+
+  private sendChatHistoryBatch(target: string, rows: MessageEvent[]): void {
+    const batched = this.caps.has('batch');
+    const ref = `lch${++this.batchSeq}`;
+    if (batched) this.write(`:${SERVER_NAME} BATCH +${ref} chathistory ${target}`);
+    const lines = this.playbackLines(rows, target, isChannelName(target), {
+      batchRef: batched ? ref : undefined,
+      withMsgid: true,
+    });
+    for (const line of lines) this.write(line);
+    if (batched) this.write(`:${SERVER_NAME} BATCH -${ref}`);
+  }
+
+  // Parse a CHATHISTORY selector; on error writes a FAIL and returns null.
+  private parseChatHistoryBound(
+    sub: string,
+    boundStr: string,
+    allowStar: boolean,
+    which: 'first' | 'second',
+  ): ChatBound | null {
+    if (allowStar && boundStr === '*') return { star: true };
+    const eq = boundStr.indexOf('=');
+    const key = eq === -1 ? '' : boundStr.slice(0, eq);
+    const val = eq === -1 ? '' : boundStr.slice(eq + 1);
+    if (key === 'msgid') {
+      const id = Number(val);
+      if (Number.isInteger(id) && id > 0) return { msgid: id };
+    } else if (key === 'timestamp' && isValidServerTime(val)) {
+      return { iso: val };
+    }
+    this.write(
+      `:${SERVER_NAME} FAIL CHATHISTORY INVALID_PARAMS ${sub} ${boundStr} :Invalid ${which} bound`,
+    );
+    return null;
+  }
+
+  private parseTimestampBound(boundStr: string, which: 'first' | 'second'): string | null {
+    const eq = boundStr.indexOf('=');
+    if (eq !== -1 && boundStr.slice(0, eq) === 'timestamp') {
+      const val = boundStr.slice(eq + 1);
+      if (isValidServerTime(val)) return val;
+    }
+    this.write(
+      `:${SERVER_NAME} FAIL CHATHISTORY INVALID_PARAMS TARGETS ${boundStr} :Invalid ${which} bound`,
+    );
+    return null;
+  }
+
+  private parseChatHistoryLimit(sub: string, limitStr: string): number | null {
+    const n = Number(limitStr);
+    if (!Number.isInteger(n) || n < 0 || n > MAX_CHATHISTORY) {
+      this.write(
+        `:${SERVER_NAME} FAIL CHATHISTORY INVALID_PARAMS ${sub} ${limitStr} :Invalid limit`,
+      );
+      return null;
+    }
+    return n;
+  }
+
   private isupportPrefixes(): Array<{ mode: string; symbol: string }> {
     const raw = this.conn?.client.network?.options?.PREFIX as unknown;
     if (
@@ -1248,7 +1453,23 @@ class BouncerSession {
     }
   }
 
-  private playbackLines(rows: MessageEvent[], bufferTarget: string, isChannel: boolean): string[] {
+  // Assemble the leading IRCv3 tag block for a replayed line, honoring the
+  // client's negotiated caps. `batch` ties a line to an open BATCH; `time`
+  // needs server-time; `msgid` needs message-tags.
+  private formatTags(opts: { time?: string; msgid?: number; batchRef?: string }): string {
+    const tags: string[] = [];
+    if (opts.batchRef) tags.push(`batch=${opts.batchRef}`);
+    if (opts.time && this.caps.has('server-time')) tags.push(`time=${toIrcTime(opts.time)}`);
+    if (opts.msgid != null && this.caps.has('message-tags')) tags.push(`msgid=${opts.msgid}`);
+    return tags.length > 0 ? `@${tags.join(';')} ` : '';
+  }
+
+  private playbackLines(
+    rows: MessageEvent[],
+    bufferTarget: string,
+    isChannel: boolean,
+    opts: { batchRef?: string; withMsgid?: boolean } = {},
+  ): string[] {
     const out: string[] = [];
     const selfNick = this.currentNick() || this.clientNick || '*';
     for (const row of rows) {
@@ -1285,9 +1506,12 @@ class BouncerSession {
           ? [`\u0001ACTION ${row.text.replace(/\n/g, ' ')}\u0001`]
           : row.text.split('\n');
       for (const body of bodies) {
-        let line = `:${prefix} ${cmd} ${target} :${body}`;
-        if (this.caps.has('server-time')) line = `@time=${toIrcTime(row.time)} ${line}`;
-        out.push(line);
+        const tags = this.formatTags({
+          time: row.time,
+          msgid: opts.withMsgid ? (row.id as number) : undefined,
+          batchRef: opts.batchRef,
+        });
+        out.push(`${tags}:${prefix} ${cmd} ${target} :${body}`);
       }
     }
     return out;
@@ -1335,6 +1559,12 @@ class BouncerSession {
         // Network enumeration/management works from any registered connection,
         // bound or control (it doesn't touch a specific upstream).
         this.handleBouncer(msg);
+        return;
+      case 'CHATHISTORY':
+        // Answered locally from the message store — placed here so it works even
+        // when the upstream is disconnected (a bouncer's whole point), bypassing
+        // the liveConn() gate below.
+        this.handleChatHistory(msg);
         return;
     }
 

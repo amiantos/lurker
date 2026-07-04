@@ -20,6 +20,7 @@ let isServicesNick: typeof import('./bouncer.js').isServicesNick;
 let escapeTagValue: typeof import('./bouncer.js').escapeTagValue;
 let buildNetworkAttrs: typeof import('./bouncer.js').buildNetworkAttrs;
 let bouncerNetworkState: typeof import('./bouncer.js').bouncerNetworkState;
+let isValidServerTime: typeof import('./bouncer.js').isValidServerTime;
 let maxSessionsPerUser: typeof import('./bouncer.js').maxSessionsPerUser;
 let maxSessionsTotal: typeof import('./bouncer.js').maxSessionsTotal;
 let maxTotalPlaybackLines: typeof import('./bouncer.js').maxTotalPlaybackLines;
@@ -38,6 +39,7 @@ beforeAll(async () => {
   escapeTagValue = mod.escapeTagValue;
   buildNetworkAttrs = mod.buildNetworkAttrs;
   bouncerNetworkState = mod.bouncerNetworkState;
+  isValidServerTime = mod.isValidServerTime;
   maxSessionsPerUser = mod.maxSessionsPerUser;
   maxSessionsTotal = mod.maxSessionsTotal;
   maxTotalPlaybackLines = mod.maxTotalPlaybackLines;
@@ -344,6 +346,19 @@ describe('buildNetworkAttrs', () => {
     const attrs = buildNetworkAttrs(network, { state: 'disconnected', nickname: 'me_' });
     expect(attrs).toContain('state=disconnected');
     expect(attrs).toContain('nickname=me_');
+  });
+});
+
+describe('isValidServerTime', () => {
+  it('accepts exactly the millisecond-precision UTC layout', () => {
+    expect(isValidServerTime('2023-05-23T06:00:00.000Z')).toBe(true);
+  });
+  it('rejects other formats', () => {
+    expect(isValidServerTime('2023-05-23T06:00:00Z')).toBe(false); // no millis
+    expect(isValidServerTime('2023-05-23 06:00:00.000Z')).toBe(false); // space
+    expect(isValidServerTime('2023-05-23T06:00:00.000+00:00')).toBe(false); // offset
+    expect(isValidServerTime('not-a-time')).toBe(false);
+    expect(isValidServerTime('2023-13-45T99:99:99.000Z')).toBe(false); // impossible
   });
 });
 

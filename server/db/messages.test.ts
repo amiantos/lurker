@@ -22,6 +22,10 @@ let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
 let hasConversationForTarget: typeof import('./messages.js').hasConversationForTarget;
 let listSpeakers: typeof import('./messages.js').listSpeakers;
 let listBufferTargets: typeof import('./messages.js').listBufferTargets;
+let listMessagesBetween: typeof import('./messages.js').listMessagesBetween;
+let firstIdAtOrAfterTime: typeof import('./messages.js').firstIdAtOrAfterTime;
+let lastIdAtOrBeforeTime: typeof import('./messages.js').lastIdAtOrBeforeTime;
+let listActiveTargetsInWindow: typeof import('./messages.js').listActiveTargetsInWindow;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
@@ -38,6 +42,10 @@ beforeAll(async () => {
     hasConversationForTarget,
     listSpeakers,
     listBufferTargets,
+    listMessagesBetween,
+    firstIdAtOrAfterTime,
+    lastIdAtOrBeforeTime,
+    listActiveTargetsInWindow,
   } = await import('./messages.js'));
 });
 
@@ -876,5 +884,80 @@ describe('maxIdForBuffer', () => {
     chat(net1.id, '#b', 'bob', 'b1');
     chat(net2.id, '#a', 'eve', 'e1');
     expect(maxIdForBuffer(net1.id, '#a')).toBe(a2.id);
+  });
+});
+
+describe('chathistory window queries', () => {
+  // Insert a message at a controlled ISO time so the timestamp resolvers are
+  // deterministic; ids stay monotonic in insertion order.
+  function at(networkId: number, target: string, iso: string, text: string) {
+    return Number(
+      insertMessage({ networkId, target, time: iso, type: 'message', nick: 'n', text, self: false })
+        .id,
+    );
+  }
+
+  it('listMessagesBetween returns ids strictly inside the window, oldest-first', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    const ids = [1, 2, 3, 4, 5].map((n) =>
+      at(net.id, '#w', `2023-05-23T06:00:0${n}.000Z`, `m${n}`),
+    );
+    // Exclusive both ends: between ids[0] and ids[4] → the three middle rows.
+    const mid = listMessagesBetween(net.id, '#w', ids[0], ids[4], 100);
+    expect(mid.map((m) => m.id)).toEqual([ids[1], ids[2], ids[3]]);
+    // newestFirst caps from the top but still returns oldest-first.
+    const top2 = listMessagesBetween(net.id, '#w', ids[0], ids[4], 2, { newestFirst: true });
+    expect(top2.map((m) => m.id)).toEqual([ids[2], ids[3]]);
+  });
+
+  it('resolves timestamp boundaries to ids', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    const a = at(net.id, '#t', '2023-05-23T06:00:00.000Z', 'a');
+    const b = at(net.id, '#t', '2023-05-23T06:00:02.000Z', 'b');
+    // A timestamp between the two rows: first-at-or-after is b, last-at-or-before is a.
+    expect(firstIdAtOrAfterTime(net.id, '#t', '2023-05-23T06:00:01.000Z')).toBe(b);
+    expect(lastIdAtOrBeforeTime(net.id, '#t', '2023-05-23T06:00:01.000Z')).toBe(a);
+    // Exact matches are inclusive on both sides.
+    expect(firstIdAtOrAfterTime(net.id, '#t', '2023-05-23T06:00:00.000Z')).toBe(a);
+    expect(lastIdAtOrBeforeTime(net.id, '#t', '2023-05-23T06:00:02.000Z')).toBe(b);
+    // Out of range → null.
+    expect(firstIdAtOrAfterTime(net.id, '#t', '2024-01-01T00:00:00.000Z')).toBeNull();
+    expect(lastIdAtOrBeforeTime(net.id, '#t', '2020-01-01T00:00:00.000Z')).toBeNull();
+  });
+
+  it('listActiveTargetsInWindow returns buffers active in the window, newest first', () => {
+    const user = createUser(`cw_${Math.random().toString(36).slice(2)}`);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    at(net.id, '#old', '2023-05-20T00:00:00.000Z', 'old');
+    at(net.id, '#a', '2023-05-23T06:00:00.000Z', 'a');
+    at(net.id, '#b', '2023-05-23T07:00:00.000Z', 'b');
+    at(net.id, ':server:x', '2023-05-23T06:30:00.000Z', 'srv'); // excluded
+    const targets = listActiveTargetsInWindow(
+      net.id,
+      '2023-05-23T00:00:00.000Z',
+      '2023-05-24T00:00:00.000Z',
+      100,
+    );
+    expect(targets.map((t) => t.target)).toEqual(['#b', '#a']); // #old outside window, :server: excluded
   });
 });

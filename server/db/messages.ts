@@ -237,6 +237,90 @@ export function hasNewerRow(networkId: number, target: string, id: number): bool
   return hasNewerThan(networkId, target, id);
 }
 
+// --- IRCv3 draft/chathistory window queries --------------------------------
+
+// Messages strictly between two ids (both bounds exclusive), for CHATHISTORY
+// BETWEEN. `newestFirst` selects which end the `limit` is taken from — the most
+// recent `limit` in the window vs the earliest — but results are ALWAYS
+// returned oldest-first (the chathistory batch must be chronological).
+export function listMessagesBetween(
+  networkId: number,
+  target: string,
+  loId: number,
+  hiId: number,
+  limit: number,
+  { newestFirst = false }: { newestFirst?: boolean } = {},
+): MessageEvent[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages WHERE network_id = ? AND target = ? AND id > ? AND id < ?
+       ORDER BY id ${newestFirst ? 'DESC' : 'ASC'} LIMIT ?`,
+    )
+    .all(networkId, target, loId, hiId, limit) as MessageRow[];
+  const events = rows.map(rowToEvent);
+  return newestFirst ? events.toReversed() : events;
+}
+
+// Resolve an ISO-8601 timestamp to a message-id boundary within a buffer, so
+// CHATHISTORY's `timestamp=` selectors can page on the fast (network,target,id)
+// index. id order tracks insert (time) order, so scanning that index and taking
+// the first row past the timestamp finds the boundary without a time index.
+// firstIdAtOrAfterTime → smallest id with time >= iso: `id < result` is exactly
+// "everything strictly before the timestamp" (the BEFORE boundary).
+export function firstIdAtOrAfterTime(
+  networkId: number,
+  target: string,
+  iso: string,
+): number | null {
+  const row = db
+    .prepare(
+      `SELECT id FROM messages WHERE network_id = ? AND target = ? AND time >= ?
+       ORDER BY id ASC LIMIT 1`,
+    )
+    .get(networkId, target, iso) as { id: number } | undefined;
+  return row?.id ?? null;
+}
+
+// lastIdAtOrBeforeTime → largest id with time <= iso: `id > result` is exactly
+// "everything strictly after the timestamp" (the AFTER boundary).
+export function lastIdAtOrBeforeTime(
+  networkId: number,
+  target: string,
+  iso: string,
+): number | null {
+  const row = db
+    .prepare(
+      `SELECT id FROM messages WHERE network_id = ? AND target = ? AND time <= ?
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(networkId, target, iso) as { id: number } | undefined;
+  return row?.id ?? null;
+}
+
+// Buffers with activity inside a time window (exclusive), newest-activity first,
+// for CHATHISTORY TARGETS. Excludes :server: pseudo-buffers. The two bounds may
+// arrive in either order; we normalize.
+export function listActiveTargetsInWindow(
+  networkId: number,
+  isoA: string,
+  isoB: string,
+  limit: number,
+): BufferSummary[] {
+  const [lo, hi] = isoA <= isoB ? [isoA, isoB] : [isoB, isoA];
+  return db
+    .prepare(
+      `SELECT target, MAX(time) AS lastMessageAt
+         FROM messages
+        WHERE network_id = ?
+          AND target NOT LIKE ':server:%'
+          AND time > ? AND time < ?
+        GROUP BY target
+        ORDER BY lastMessageAt DESC
+        LIMIT ?`,
+    )
+    .all(networkId, lo, hi, limit) as BufferSummary[];
+}
+
 export function listRecentForBuffers(
   networkId: number,
   targets: string[],
