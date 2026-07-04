@@ -153,6 +153,11 @@ export function attachedFor(acct: HarnessAccount): number {
   return attachedSessionCount(acct.user.id, acct.network.id);
 }
 
+/** Simulate an upstream network state change flowing through ircManager. */
+export function emitNetworkState(userId: number, networkId: number, state: string): void {
+  ircManager.emit('event', { userId, networkId, type: 'state', state });
+}
+
 /** Add a second network + upstream to an already-seeded user. */
 export function seedNetwork(
   user: User,
