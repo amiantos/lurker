@@ -17,6 +17,9 @@ let filterRelayLine: typeof import('./bouncer.js').filterRelayLine;
 let memberPrefixSymbol: typeof import('./bouncer.js').memberPrefixSymbol;
 let buildNamesLines: typeof import('./bouncer.js').buildNamesLines;
 let isServicesNick: typeof import('./bouncer.js').isServicesNick;
+let escapeTagValue: typeof import('./bouncer.js').escapeTagValue;
+let buildNetworkAttrs: typeof import('./bouncer.js').buildNetworkAttrs;
+let bouncerNetworkState: typeof import('./bouncer.js').bouncerNetworkState;
 let maxSessionsPerUser: typeof import('./bouncer.js').maxSessionsPerUser;
 let maxSessionsTotal: typeof import('./bouncer.js').maxSessionsTotal;
 let maxTotalPlaybackLines: typeof import('./bouncer.js').maxTotalPlaybackLines;
@@ -32,6 +35,9 @@ beforeAll(async () => {
   memberPrefixSymbol = mod.memberPrefixSymbol;
   buildNamesLines = mod.buildNamesLines;
   isServicesNick = mod.isServicesNick;
+  escapeTagValue = mod.escapeTagValue;
+  buildNetworkAttrs = mod.buildNetworkAttrs;
+  bouncerNetworkState = mod.bouncerNetworkState;
   maxSessionsPerUser = mod.maxSessionsPerUser;
   maxSessionsTotal = mod.maxSessionsTotal;
   maxTotalPlaybackLines = mod.maxTotalPlaybackLines;
@@ -309,6 +315,45 @@ describe('isServicesNick', () => {
     for (const n of ['bob', 'serv', 'nickservv', 'server1', 'preserve1', 'quinn', 'xavier']) {
       expect(isServicesNick(n)).toBe(false);
     }
+  });
+});
+
+describe('escapeTagValue (IRCv3 message-tag escaping)', () => {
+  it('escapes space, semicolon, backslash, CR and LF', () => {
+    expect(escapeTagValue('My Awesome Network')).toBe('My\\sAwesome\\sNetwork');
+    expect(escapeTagValue('a;b')).toBe('a\\:b');
+    expect(escapeTagValue('a\\b')).toBe('a\\\\b');
+    expect(escapeTagValue('a\r\nb')).toBe('a\\r\\nb');
+  });
+
+  it('leaves ordinary text untouched', () => {
+    expect(escapeTagValue('libera.chat')).toBe('libera.chat');
+  });
+});
+
+describe('buildNetworkAttrs', () => {
+  const network = { name: 'Libera Chat', host: 'irc.libera.chat', port: 6697, tls: 1, nick: 'me' };
+
+  it('encodes the network as a tag-escaped attribute list', () => {
+    expect(buildNetworkAttrs(network, { state: 'connected' })).toBe(
+      'name=Libera\\sChat;state=connected;host=irc.libera.chat;port=6697;tls=1;nickname=me',
+    );
+  });
+
+  it('reports the given state and honors a live nickname override', () => {
+    const attrs = buildNetworkAttrs(network, { state: 'disconnected', nickname: 'me_' });
+    expect(attrs).toContain('state=disconnected');
+    expect(attrs).toContain('nickname=me_');
+  });
+});
+
+describe('bouncerNetworkState', () => {
+  it('maps upstream states to spec values (connecting/reconnecting → connecting)', () => {
+    expect(bouncerNetworkState('connected')).toBe('connected');
+    expect(bouncerNetworkState('connecting')).toBe('connecting');
+    expect(bouncerNetworkState('reconnecting')).toBe('connecting');
+    expect(bouncerNetworkState('disconnected')).toBe('disconnected');
+    expect(bouncerNetworkState(undefined)).toBe('disconnected');
   });
 });
 

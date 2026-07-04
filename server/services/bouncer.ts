@@ -79,7 +79,18 @@ const SUPPORTED_CAPS = [
   'message-tags',
   'echo-message',
   'znc.in/self-message',
+  // batch groups the BOUNCER NETWORK burst (LISTNETWORKS / initial -notify dump)
+  // — advertised so a client can opt into the batched form; without it we send
+  // the same lines unwrapped.
+  'batch',
+  // soju's bouncer-networks: a control connection can enumerate/bind the user's
+  // networks; -notify opts into unsolicited BOUNCER NETWORK state pushes.
+  'soju.im/bouncer-networks',
+  'soju.im/bouncer-networks-notify',
 ];
+
+const CAP_BOUNCER_NETWORKS = 'soju.im/bouncer-networks';
+const CAP_BOUNCER_NETWORKS_NOTIFY = 'soju.im/bouncer-networks-notify';
 
 // The SASL mechanisms we implement. Advertised as a `sasl=…` value only under
 // CAP 302 (bare `sasl` otherwise, since pre-302 CAP LS carries no cap values).
@@ -402,6 +413,46 @@ export function isServicesNick(nick: string): boolean {
   );
 }
 
+// IRCv3 message-tag value escaping (space→\s, ;→\:, \→\\, CR→\r, LF→\n). Used
+// to encode a network's `key=value;…` attribute list for BOUNCER NETWORK.
+export function escapeTagValue(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/;/g, '\\:')
+    .replace(/ /g, '\\s')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
+}
+
+// Map an IrcConnection state to a bouncer-networks `state` attribute value.
+// soju itself only ever emits connected/disconnected, but the spec defines
+// `connecting` and requires clients to accept it, so we surface the extra
+// fidelity of the connecting/reconnecting phase (a deliberate divergence — a
+// mid-connect network must not be advertised as `disconnected`).
+export function bouncerNetworkState(connState: string | undefined): string {
+  if (connState === 'connected') return 'connected';
+  if (connState === 'connecting' || connState === 'reconnecting') return 'connecting';
+  return 'disconnected';
+}
+
+// Build the tag-encoded attribute list for one network's BOUNCER NETWORK line.
+// (v1 omits soju's `error`/`username`/`realname` — LISTNETWORKS is read-only and
+// we don't yet plumb a per-network last-error string here.)
+export function buildNetworkAttrs(
+  network: { name: string; host: string; port: number; tls: number | boolean; nick: string },
+  opts: { state: string; nickname?: string },
+): string {
+  const attrs: Array<[string, string]> = [
+    ['name', network.name],
+    ['state', opts.state],
+    ['host', network.host],
+    ['port', String(network.port)],
+    ['tls', network.tls ? '1' : '0'],
+    ['nickname', opts.nickname || network.nick],
+  ];
+  return attrs.map(([k, v]) => `${k}=${escapeTagValue(v)}`).join(';');
+}
+
 // ---------------------------------------------------------------------------
 // Session registry
 // ---------------------------------------------------------------------------
@@ -472,6 +523,15 @@ class BouncerSession {
   private closed = false;
   private conn: IrcConnection | null = null;
   private network: Network | null = null;
+  // Control (unbound) mode: a `soju.im/bouncer-networks` client that registered
+  // without binding a network (no conn/networkId). It can only enumerate and
+  // manage networks via BOUNCER, never send channel/user traffic.
+  private isControl = false;
+  // A pre-registration `BOUNCER BIND <id>` selector, consumed at completeAttach
+  // (takes precedence over a username-embedded network name).
+  private boundNetId: number | null = null;
+  // A per-session counter for BATCH reference tags (LISTNETWORKS / initial dump).
+  private batchSeq = 0;
   // Outbound sends awaiting their self-echo event from ircManager, so a
   // client that didn't negotiate echo-message doesn't get its own message
   // back (it already rendered it locally). Other attached clients and web
@@ -601,6 +661,9 @@ class BouncerSession {
         break;
       case 'AUTHENTICATE':
         this.handleSasl(msg);
+        break;
+      case 'BOUNCER':
+        this.handleBouncerPreReg(msg);
         break;
       case 'PING':
         // Answer keepalive PINGs during CAP/registration so strict clients
@@ -794,8 +857,16 @@ class BouncerSession {
     this.completeAttach(user, creds.network);
   }
 
-  // Shared tail for both auth paths: pick the network, enforce caps, attach to
-  // the live upstream, and replay the welcome burst.
+  private clearRegTimer(): void {
+    if (this.regTimer) {
+      clearTimeout(this.regTimer);
+      this.regTimer = null;
+    }
+  }
+
+  // Called at CAP END / registration completion. Resolves the target network
+  // (BIND id > username selector > single-network default), or drops into
+  // control mode for a bouncer-networks client that named no network.
   private completeAttach(user: User, networkSel: string | null): void {
     if (user.is_paused) {
       this.failRegistration('Account is paused');
@@ -809,13 +880,41 @@ class BouncerSession {
       );
       return;
     }
+    // A valid login can otherwise open unbounded connections; cap how many a
+    // single account may hold at once (bound and control connections both count).
+    if (attachedSessionCount(user.id) >= maxSessionsPerUser()) {
+      this.failRegistration(
+        `Too many bouncer connections for this account (max ${maxSessionsPerUser()})`,
+      );
+      return;
+    }
+
+    // Control (unbound) mode: a bouncer-networks-aware client that named no
+    // network manages its networks via BOUNCER instead of attaching to one.
+    const hasSelector = this.boundNetId !== null || !!networkSel;
+    if (!hasSelector && this.caps.has(CAP_BOUNCER_NETWORKS)) {
+      this.registerControl(user);
+      return;
+    }
+
     const networks = listNetworksForUser(user.id);
     if (networks.length === 0) {
       this.failRegistration('No IRC networks configured — add one in the web UI first');
       return;
     }
     let network: Network | undefined;
-    if (networkSel) {
+    if (this.boundNetId !== null) {
+      // A `BOUNCER BIND <id>` selector resolves by numeric id and reports
+      // failures with the bouncer-networks FAIL vocabulary, not a 464.
+      network = networks.find((n) => n.id === this.boundNetId);
+      if (!network) {
+        this.write(
+          `:${SERVER_NAME} FAIL BOUNCER INVALID_NETID ${this.boundNetId} :Unknown network ID`,
+        );
+        this.closeWithError('Unknown network ID');
+        return;
+      }
+    } else if (networkSel) {
       const sel = networkSel.toLowerCase();
       network = networks.find((n) => n.name.toLowerCase() === sel || String(n.id) === sel);
       if (!network) {
@@ -834,14 +933,12 @@ class BouncerSession {
       );
       return;
     }
-    // A valid login can otherwise open unbounded attach connections; cap how
-    // many a single account may hold at once (across all its networks).
-    if (attachedSessionCount(user.id) >= maxSessionsPerUser()) {
-      this.failRegistration(
-        `Too many bouncer connections for this account (max ${maxSessionsPerUser()})`,
-      );
-      return;
-    }
+    this.bindNetwork(user, network);
+  }
+
+  // Attach the session to one network's live upstream and replay its welcome
+  // burst. Shared by every bound-registration path.
+  private bindNetwork(user: User, network: Network): void {
     // Attach to the live upstream connection; attaching to a stopped or dead
     // network (re)connects it, mirroring how ZNC brings a network up when a
     // client attaches. A conn object stuck in 'disconnected' (e.g. its boot-
@@ -863,10 +960,7 @@ class BouncerSession {
     this.network = network;
     this.conn = conn;
     this.registered = true;
-    if (this.regTimer) {
-      clearTimeout(this.regTimer);
-      this.regTimer = null;
-    }
+    this.clearRegTimer();
     attachToRegistry(this);
     this.sendAttachBurst();
     systemLog.log({
@@ -874,6 +968,22 @@ class BouncerSession {
       scope: 'bouncer',
       fields: { networkId: this.networkId },
       text: `IRC client attached from ${this.remoteIp} (${attachedSessionCount(this.userId, this.networkId)} attached to ${network.name})`,
+    });
+  }
+
+  // Register a control (unbound) connection: authenticated, bound to no network.
+  // It lives only in the global `sessions` set (no per-network registry); state
+  // notifications reach it via the user-scoped fan-out in dispatchIrcEvent.
+  private registerControl(user: User): void {
+    this.userId = user.id;
+    this.isControl = true;
+    this.registered = true;
+    this.clearRegTimer();
+    this.sendControlBurst();
+    systemLog.log({
+      userId: this.userId,
+      scope: 'bouncer',
+      text: `Bouncer control connection from ${this.remoteIp}`,
     });
   }
 
@@ -910,18 +1020,18 @@ class BouncerSession {
         this.write(rewriteNumericTarget(line, requested));
       }
     } else {
-      this.write(
-        `:${SERVER_NAME} 001 ${requested} :Welcome to the ${APP_NAME} bouncer, ${requested}`,
-      );
-      this.write(
-        `:${SERVER_NAME} 002 ${requested} :Your host is ${SERVER_NAME}, running ${APP_NAME} ${APP_VERSION}`,
-      );
-      this.write(`:${SERVER_NAME} 003 ${requested} :This server was created for you`);
-      this.write(`:${SERVER_NAME} 004 ${requested} ${SERVER_NAME} ${APP_NAME}-${APP_VERSION} o o`);
+      this.writeWelcomeNumerics(requested);
     }
     if (requested !== liveNick) {
       this.write(
         `:${requested}!${conn.client.user?.username || 'lurker'}@${SERVER_NAME} NICK :${liveNick}`,
+      );
+    }
+    // Tell a bouncer-networks-aware client which network it bound to. The
+    // upstream's own 005 can't carry this, so append our own ISUPPORT line.
+    if (this.caps.has(CAP_BOUNCER_NETWORKS)) {
+      this.write(
+        `:${SERVER_NAME} 005 ${liveNick} BOUNCER_NETID=${this.networkId} :are supported by this server`,
       );
     }
     this.write(`:${SERVER_NAME} 422 ${liveNick} :MOTD File is missing`);
@@ -934,6 +1044,10 @@ class BouncerSession {
       this.sendJoinBurst();
       this.sendPlayback();
     }
+
+    // A -notify client gets the full network list up-front (soju sends this at
+    // registration completion for bound and control connections alike).
+    if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();
 
     // Live relay attaches AFTER playback so replayed history and the live
     // stream don't interleave out of order.
@@ -949,6 +1063,127 @@ class BouncerSession {
     // irc-framework's Client is an eventemitter3, which has no listener-count
     // cap — several attached clients can listen on one upstream client freely.
     conn.client.on('raw', this.onRawUpstream);
+  }
+
+  // --- control (unbound) connection ------------------------------------------
+
+  // The 001–004 welcome numerics, shared by the control burst and the
+  // no-registrationLines fallback of the bound attach burst.
+  private writeWelcomeNumerics(nick: string): void {
+    this.write(`:${SERVER_NAME} 001 ${nick} :Welcome to the ${APP_NAME} bouncer, ${nick}`);
+    this.write(
+      `:${SERVER_NAME} 002 ${nick} :Your host is ${SERVER_NAME}, running ${APP_NAME} ${APP_VERSION}`,
+    );
+    this.write(`:${SERVER_NAME} 003 ${nick} :This server was created for you`);
+    this.write(`:${SERVER_NAME} 004 ${nick} ${SERVER_NAME} ${APP_NAME}-${APP_VERSION} o o`);
+  }
+
+  // Minimal welcome for a control connection: it binds no network, so no
+  // registrationLines / JOIN / playback / relay. The bouncer-scoped ISUPPORT
+  // omits BOUNCER_NETID (its absence is how a client detects control mode).
+  private sendControlBurst(): void {
+    const nick = this.clientNick || 'user';
+    this.writeWelcomeNumerics(nick);
+    this.write(
+      `:${SERVER_NAME} 005 ${nick} NETWORK=${APP_NAME} CASEMAPPING=ascii :are supported by this server`,
+    );
+    this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
+    // A -notify client gets the full network list up-front as a batch.
+    if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();
+  }
+
+  // --- BOUNCER command -------------------------------------------------------
+
+  // Pre-registration BOUNCER: only BIND is legal here (soju parity). BIND
+  // stashes the netid to resolve at completeAttach; everything else is refused.
+  private handleBouncerPreReg(msg: ParsedClientLine): void {
+    if (!this.caps.has(CAP_BOUNCER_NETWORKS)) {
+      this.write(
+        `:${SERVER_NAME} FAIL BOUNCER UNKNOWN_COMMAND :Negotiate the soju.im/bouncer-networks capability first`,
+      );
+      return;
+    }
+    const sub = (msg.params[0] || '').toUpperCase();
+    if (sub !== 'BIND') {
+      this.write(`:${SERVER_NAME} FAIL BOUNCER UNKNOWN_COMMAND ${sub || '*'} :Unknown subcommand`);
+      return;
+    }
+    // Binding needs an authenticated account. In our flow that means either SASL
+    // already succeeded or a PASS is present to verify at CAP END.
+    if (!this.saslUser && !this.passRaw) {
+      this.write(
+        `:${SERVER_NAME} FAIL BOUNCER ACCOUNT_REQUIRED BIND :Authentication needed to bind to bouncer network`,
+      );
+      return;
+    }
+    const raw = msg.params[1] || '';
+    const id = Number(raw);
+    if (!raw || !Number.isInteger(id) || id <= 0) {
+      this.write(`:${SERVER_NAME} FAIL BOUNCER INVALID_NETID BIND ${raw} :Invalid network ID`);
+      return;
+    }
+    this.boundNetId = id;
+  }
+
+  // Post-registration BOUNCER: LISTNETWORKS (+ BIND is now too late; CRUD is
+  // deferred to the web UI).
+  private handleBouncer(msg: ParsedClientLine): void {
+    if (!this.caps.has(CAP_BOUNCER_NETWORKS)) {
+      this.write(
+        `:${SERVER_NAME} FAIL BOUNCER UNKNOWN_COMMAND :Negotiate the soju.im/bouncer-networks capability first`,
+      );
+      return;
+    }
+    const sub = (msg.params[0] || '').toUpperCase();
+    switch (sub) {
+      case 'LISTNETWORKS':
+        this.sendNetworkList();
+        return;
+      case 'BIND':
+        this.write(
+          `:${SERVER_NAME} FAIL BOUNCER REGISTRATION_IS_COMPLETED BIND :Cannot bind to a network after registration`,
+        );
+        return;
+      case 'ADDNETWORK':
+      case 'CHANGENETWORK':
+      case 'DELNETWORK':
+        // CRUD is managed in the web UI; keep soju's error vocabulary.
+        this.write(
+          `:${SERVER_NAME} FAIL BOUNCER UNKNOWN_COMMAND ${sub} :Manage networks in the ${APP_NAME} web UI`,
+        );
+        return;
+      default:
+        this.write(
+          `:${SERVER_NAME} FAIL BOUNCER UNKNOWN_COMMAND ${sub || '*'} :Unknown subcommand`,
+        );
+        return;
+    }
+  }
+
+  // Reply to LISTNETWORKS (and the initial -notify dump) with a BOUNCER NETWORK
+  // line per network. The soju.im/bouncer-networks batch wrapper (and its
+  // `@batch=` message tag) is only used when the client negotiated `batch` —
+  // otherwise we must not emit tags, so send the same lines unwrapped.
+  private sendNetworkList(): void {
+    const batched = this.caps.has('batch');
+    const ref = `lbnc${++this.batchSeq}`;
+    if (batched) this.write(`:${SERVER_NAME} BATCH +${ref} soju.im/bouncer-networks`);
+    const tag = batched ? `@batch=${ref} ` : '';
+    for (const network of listNetworksForUser(this.userId)) {
+      const conn = ircManager.getConnection(this.userId, network.id);
+      const attrs = buildNetworkAttrs(network, {
+        state: bouncerNetworkState(conn?.state),
+        nickname: conn?.currentNick || network.nick,
+      });
+      this.write(`${tag}:${SERVER_NAME} BOUNCER NETWORK ${network.id} ${attrs}`);
+    }
+    if (batched) this.write(`:${SERVER_NAME} BATCH -${ref}`);
+  }
+
+  // Push an unsolicited (unbatched) network state change to a -notify client.
+  private notifyNetworkState(networkId: number, attrs: string): void {
+    if (this.closed || !this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) return;
+    this.write(`:${SERVER_NAME} BOUNCER NETWORK ${networkId} ${attrs}`);
   }
 
   private isupportPrefixes(): Array<{ mode: string; symbol: string }> {
@@ -1096,6 +1331,20 @@ class BouncerSession {
         // unexpected upstream re-auth — swallow it.
         this.write(`:${SERVER_NAME} 904 ${this.currentNick() || '*'} :Already authenticated`);
         return;
+      case 'BOUNCER':
+        // Network enumeration/management works from any registered connection,
+        // bound or control (it doesn't touch a specific upstream).
+        this.handleBouncer(msg);
+        return;
+    }
+
+    // A control connection has no upstream: it can only speak BOUNCER (handled
+    // above). Anything network-facing is refused, soju-style.
+    if (this.isControl) {
+      this.notice(
+        'Cannot interact with channels and users on the bouncer connection — bind a network.',
+      );
+      return;
     }
 
     const conn = this.liveConn();
@@ -1271,6 +1520,16 @@ class BouncerSession {
     }
   }
 
+  // A -notify client's view of ANY of the user's networks changing state (both
+  // control and bound connections receive these). Emits only the changed
+  // attributes, soju-style (a connect also clears any prior error).
+  onNetworkNotify(networkId: number, connState: string): void {
+    if (this.closed) return;
+    const state = bouncerNetworkState(connState);
+    const attrs = state === 'connected' ? 'state=connected;error=' : `state=${state}`;
+    this.notifyNetworkState(networkId, attrs);
+  }
+
   heartbeat(now: number): void {
     if (this.closed) return;
     const idle = now - this.lastActivityAt;
@@ -1308,7 +1567,13 @@ class BouncerSession {
     }
     this.onRawUpstream = null;
     sessions.delete(this);
-    if (this.registered) {
+    if (this.registered && this.isControl) {
+      systemLog.log({
+        userId: this.userId,
+        scope: 'bouncer',
+        text: `Bouncer control connection closed${reason ? ` (${reason})` : ''}`,
+      });
+    } else if (this.registered) {
       detachFromRegistry(this);
       systemLog.log({
         userId: this.userId,
@@ -1349,9 +1614,21 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   const userId = Number(event.userId);
   const networkId = Number(event.networkId);
   if (!userId || !networkId) return;
+  const type = String(event.type || '');
+  // A -notify client (bound OR control) tracks state for ALL of the user's
+  // networks — including ones no bound session is attached to — so fan state
+  // events across every one of the user's sessions, before the per-network
+  // early-return below. State transitions are infrequent, so the scan is cheap.
+  if (type === 'state') {
+    const state = String(event.state || '');
+    for (const session of sessions) {
+      if (session.userId === userId && session.isRegistered()) {
+        session.onNetworkNotify(networkId, state);
+      }
+    }
+  }
   const set = registry.get(registryKey(userId, networkId));
   if (!set || set.size === 0) return;
-  const type = String(event.type || '');
   if (type === 'state') {
     const state = String(event.state || '');
     // Deleting from a Set mid-iteration is safe; handlers only ever remove.
