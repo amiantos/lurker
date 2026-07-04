@@ -209,9 +209,13 @@ Point your IRC client at the host/port with a **server password** of:
 
 The secret can be your Lurker account password, but a **read-write API token** (web UI → **Settings → API tokens**) is the better choice — IRC clients store the server password in plaintext config files, and a token can be revoked without changing your password.
 
-Security notes:
+#### TLS
 
-- Plain-text IRC sends that credential in the clear. Either keep the listener private — `LURKER_BOUNCER_BIND=127.0.0.1` behind an SSH tunnel, or a VPN/Tailscale interface — or give it a certificate so it speaks TLS:
+Plain-text IRC would send that credential across the wire in the clear, so **the bouncer speaks TLS by default** — you don't have to do anything to get an encrypted connection. Connect in your IRC client's **TLS/SSL** mode. There are three ways the cert is sourced:
+
+- **Self-signed (default, zero setup).** With no cert configured, Lurker generates a self-signed cert on first boot and persists it next to the database (so it survives container rebuilds). It's the ZNC model: the wire is encrypted, and to also protect against man-in-the-middle you **pin the certificate's fingerprint** in your client. Lurker prints the SHA-256 fingerprint at startup — in the container logs and in the in-app **system buffer** — e.g. `TLS certificate fingerprint (SHA-256): AB:CD:…`. Most clients (WeeChat, irssi, Textual, …) let you pin that fingerprint; do it once and any impostor cert is rejected thereafter.
+
+- **Your own Let's Encrypt cert (browser-trusted, no pinning).** If you want a cert clients trust without pinning, get one for a hostname (e.g. `irc.example.com`) with certbot and point Lurker at the PEM files — bind-mount them into the container and set:
 
   ```yaml
   environment:
@@ -219,7 +223,11 @@ Security notes:
     - LURKER_BOUNCER_TLS_KEY=/certs/privkey.pem
   ```
 
-- Repeated failed logins from an address are throttled automatically.
+  Note the bouncer is raw IRC over TCP, so your **HTTP reverse proxy (Caddy/Cloudflare) can't front it** — the bouncer terminates its own TLS. Lurker re-reads the cert files periodically and hot-swaps a renewed cert, so certbot renewals need no restart.
+
+- **Plain-text (opt-in, private networks only).** If — and only if — you keep the listener private (`LURKER_BOUNCER_BIND=127.0.0.1` behind an SSH tunnel, or a VPN/Tailscale interface), you can turn TLS off with `LURKER_BOUNCER_TLS=off`. On a non-loopback bind without TLS, Lurker logs a loud security warning. Don't do this on a public address.
+
+Repeated failed logins from an address are throttled automatically.
 
 Playback replays the last 50 lines per joined channel (plus your 20 most recently active DMs) on attach; tune with `LURKER_BOUNCER_PLAYBACK` (0 disables, max 1000). Clients that negotiate IRCv3 `server-time` get real timestamps on replayed lines.
 

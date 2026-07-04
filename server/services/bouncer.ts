@@ -59,6 +59,11 @@ import { splitSay, splitAction } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
+import {
+  loadOrCreateSelfSignedCert,
+  certFingerprint,
+  keyMatchesCert,
+} from '../utils/bouncerCert.js';
 
 const SERVER_NAME = 'lurker.bouncer';
 
@@ -152,6 +157,10 @@ const HEARTBEAT_INTERVAL_MS = 45_000;
 const HEARTBEAT_PING_AFTER_MS = 90_000;
 const HEARTBEAT_REAP_AFTER_MS = 240_000;
 const MAX_INPUT_BUFFER = 64 * 1024;
+// How often to check the TLS cert file for a renewal and hot-swap it. Renewal
+// is never time-critical (certs renew well before expiry), so a slow poll is
+// fine and far simpler and more robust than fs.watch across symlink renames.
+const CERT_RELOAD_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // Ceiling on an accumulated multi-chunk SASL response. A PLAIN payload is tiny
 // (username + network + token); this only exists to stop an endless stream of
 // 400-char AUTHENTICATE chunks from growing the heap without bound.
@@ -1874,6 +1883,11 @@ function dropSessionsForUser(userId: number, reason: string): void {
 
 let server: net.Server | tls.Server | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let certReloadTimer: ReturnType<typeof setInterval> | null = null;
+// Paths + current fingerprint of the live TLS cert, so the reload poll can
+// detect a renewed cert on disk and swap it in without a restart. null =
+// plaintext listener.
+let bouncerTlsState: { certPath: string; keyPath: string; fingerprint: string } | null = null;
 let onIrcEvent: ((event: Record<string, unknown>) => void) | null = null;
 let onUserDisposed: ((payload: { userId: number }) => void) | null = null;
 let onUserSuspended: ((payload: { userId: number }) => void) | null = null;
@@ -1925,24 +1939,135 @@ export function maxSessionsTotal(): number {
   return Math.floor(n);
 }
 
-// TLS when both cert and key paths are set (LURKER_BOUNCER_TLS_CERT/KEY).
-// Read once at startup; a reload requires a restart, same as the web server.
-function tlsOptions(): { cert: Buffer; key: Buffer } | null {
-  const certPath = (process.env.LURKER_BOUNCER_TLS_CERT || '').trim();
-  const keyPath = (process.env.LURKER_BOUNCER_TLS_KEY || '').trim();
-  if (!certPath || !keyPath) return null;
-  return { cert: fs.readFileSync(certPath), key: fs.readFileSync(keyPath) };
+// Plaintext IRC ships the login credential in the clear, so TLS is the default.
+// Only an explicit LURKER_BOUNCER_TLS=off (0/false/no/off) turns it off.
+function bouncerTlsDisabled(): boolean {
+  return /^(0|false|no|off)$/i.test((process.env.LURKER_BOUNCER_TLS || '').trim());
 }
 
-export function startBouncer(
+function isLoopbackBind(host: string | undefined): boolean {
+  const h = (host ?? bouncerBindHost() ?? '').trim();
+  return h === '127.0.0.1' || h === '::1' || h === 'localhost';
+}
+
+interface ResolvedTls {
+  cert: Buffer;
+  key: Buffer;
+  certPath: string;
+  keyPath: string;
+  source: 'configured' | 'self-signed';
+  fingerprint: string;
+}
+
+// Resolve the bouncer's TLS material: an operator-supplied cert
+// (LURKER_BOUNCER_TLS_CERT/KEY) if provided, otherwise an auto-generated
+// self-signed cert persisted in the data dir. Returns null only when TLS is
+// explicitly disabled. Async because first-boot self-signed generation is.
+async function resolveBouncerTls(): Promise<ResolvedTls | null> {
+  if (bouncerTlsDisabled()) return null;
+  const envCert = (process.env.LURKER_BOUNCER_TLS_CERT || '').trim();
+  const envKey = (process.env.LURKER_BOUNCER_TLS_KEY || '').trim();
+  // Half a config (one of the pair set) is almost certainly a typo. Don't
+  // silently self-sign under it — a client that trusted the intended real cert
+  // would then get an unexpected self-signed one. Warn, then fall back.
+  if (Boolean(envCert) !== Boolean(envKey)) {
+    fallbackWarn(
+      'LURKER_BOUNCER_TLS_CERT and LURKER_BOUNCER_TLS_KEY must BOTH be set to use your own certificate — only one is set',
+    );
+  } else if (envCert && envKey) {
+    // Validate the operator's pair up front (as reload does): an unreadable or
+    // mismatched cert/key would otherwise start a TLS listener whose every
+    // handshake fails. Fall back to a working self-signed cert instead.
+    try {
+      const cert = fs.readFileSync(envCert);
+      const key = fs.readFileSync(envKey);
+      if (keyMatchesCert(cert, key)) {
+        return {
+          cert,
+          key,
+          certPath: envCert,
+          keyPath: envKey,
+          source: 'configured',
+          fingerprint: certFingerprint(cert),
+        };
+      }
+      fallbackWarn('the configured TLS certificate and key do not match');
+    } catch (e) {
+      fallbackWarn(`could not read the configured TLS certificate/key (${(e as Error).message})`);
+    }
+  }
+  const { certPath, keyPath } = await loadOrCreateSelfSignedCert();
+  const cert = fs.readFileSync(certPath);
+  const key = fs.readFileSync(keyPath);
+  return {
+    cert,
+    key,
+    certPath,
+    keyPath,
+    source: 'self-signed',
+    fingerprint: certFingerprint(cert),
+  };
+}
+
+// Warn (console + system buffer) that a configured-cert problem forced the
+// self-signed fallback, so the operator can see why TLS isn't using their cert.
+function fallbackWarn(reason: string): void {
+  const msg = `${reason} — falling back to a self-signed certificate.`;
+  console.warn(`[bouncer] ${msg}`);
+  systemLog.log({ scope: 'bouncer', text: msg });
+}
+
+// Re-read the cert from disk and hot-swap it into the running TLS server if it
+// changed (an operator's LE renewal, or a control-plane wildcard rotation).
+// Called on a poll and exported for tests. No fs.watch — a periodic
+// fingerprint check is robust across certbot's atomic symlink renames, and cert
+// renewal is never time-critical (certs renew well before expiry).
+export function reloadBouncerTls(): 'reloaded' | 'unchanged' | 'skipped' | 'error' {
+  if (!server || !bouncerTlsState || !('setSecureContext' in server)) return 'skipped';
+  try {
+    const cert = fs.readFileSync(bouncerTlsState.certPath);
+    const fingerprint = certFingerprint(cert);
+    if (fingerprint === bouncerTlsState.fingerprint) return 'unchanged';
+    const key = fs.readFileSync(bouncerTlsState.keyPath);
+    // Guard the renewal race: a poll can land after the cert file was replaced
+    // but before the key. setSecureContext wouldn't catch the mismatch (it never
+    // validates the pair) — so verify here, and if they don't match yet, keep
+    // the current context and retry next poll (don't advance the fingerprint).
+    if (!keyMatchesCert(cert, key)) {
+      console.warn(
+        '[bouncer] new TLS cert does not match the key on disk yet — keeping current cert',
+      );
+      return 'error';
+    }
+    (server as tls.Server).setSecureContext({ cert, key });
+    bouncerTlsState.fingerprint = fingerprint;
+    console.log(`[bouncer] reloaded TLS certificate (SHA-256 ${fingerprint})`);
+    systemLog.log({
+      scope: 'bouncer',
+      text: `Reloaded TLS certificate — new fingerprint: ${fingerprint}`,
+    });
+    return 'reloaded';
+  } catch (e) {
+    // A partial write mid-renewal, etc. — keep the current context and retry next poll.
+    console.warn(
+      `[bouncer] TLS cert reload check failed (keeping current): ${(e as Error).message}`,
+    );
+    return 'error';
+  }
+}
+
+export async function startBouncer(
   port: number = bouncerPort(),
   host?: string,
-): net.Server | tls.Server | null {
+): Promise<net.Server | tls.Server | null> {
   // Already running → signal a no-op with null rather than handing back a server
   // that's already past its 'listening' event (a caller awaiting that event on
   // the returned handle would otherwise wait forever).
   if (server) return null;
-  const tlsOpts = tlsOptions();
+  const tlsInfo = await resolveBouncerTls();
+  // Between the await and here another call could have started the server; if so,
+  // yield to it (drop the cert we just resolved).
+  if (server) return null;
   const onConnection = (socket: net.Socket) => {
     // Global backstop: refuse new sockets once the process-wide ceiling is hit.
     // An unauthenticated flood is otherwise bounded only by the registration
@@ -1953,18 +2078,42 @@ export function startBouncer(
     }
     sessions.add(new BouncerSession(socket));
   };
-  server = tlsOpts ? tls.createServer(tlsOpts, onConnection) : net.createServer(onConnection);
+  if (tlsInfo) {
+    server = tls.createServer({ cert: tlsInfo.cert, key: tlsInfo.key }, onConnection);
+    bouncerTlsState = {
+      certPath: tlsInfo.certPath,
+      keyPath: tlsInfo.keyPath,
+      fingerprint: tlsInfo.fingerprint,
+    };
+    certReloadTimer = setInterval(() => reloadBouncerTls(), CERT_RELOAD_INTERVAL_MS);
+    certReloadTimer.unref?.();
+  } else {
+    server = net.createServer(onConnection);
+    bouncerTlsState = null;
+  }
   server.on('error', (err) => {
     console.warn(`[bouncer] listener error: ${(err as Error).message}`);
   });
   server.listen(port, host, () => {
-    console.log(
-      `[bouncer] IRC bouncer listening on ${host || '0.0.0.0'}:${port}${tlsOpts ? ' (TLS)' : ''}`,
-    );
-    systemLog.log({
-      scope: 'bouncer',
-      text: `IRC bouncer listening on port ${port}${tlsOpts ? ' (TLS)' : ''}`,
-    });
+    const mode = tlsInfo ? `TLS (${tlsInfo.source})` : 'PLAINTEXT';
+    console.log(`[bouncer] IRC bouncer listening on ${host || '0.0.0.0'}:${port} — ${mode}`);
+    systemLog.log({ scope: 'bouncer', text: `IRC bouncer listening on port ${port} — ${mode}` });
+    if (tlsInfo) {
+      const pin =
+        tlsInfo.source === 'self-signed'
+          ? ' (self-signed — verify/pin this fingerprint in your IRC client)'
+          : '';
+      console.log(`[bouncer] TLS certificate SHA-256: ${tlsInfo.fingerprint}${pin}`);
+      systemLog.log({
+        scope: 'bouncer',
+        text: `TLS certificate fingerprint (SHA-256): ${tlsInfo.fingerprint}${pin}`,
+      });
+    } else if (!isLoopbackBind(host)) {
+      const warning =
+        'SECURITY: bouncer is running WITHOUT TLS on a non-loopback address — login credentials travel in the clear. Remove LURKER_BOUNCER_TLS=off, or bind to 127.0.0.1 behind a tunnel/VPN.';
+      console.warn(`[bouncer] ${warning}`);
+      systemLog.log({ scope: 'bouncer', text: warning });
+    }
   });
 
   onIrcEvent = (event) => dispatchIrcEvent(event as Record<string, unknown>);
@@ -1987,6 +2136,11 @@ export function stopBouncer(): void {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
   }
+  if (certReloadTimer) {
+    clearInterval(certReloadTimer);
+    certReloadTimer = null;
+  }
+  bouncerTlsState = null;
   if (onIrcEvent) {
     ircManager.off('event', onIrcEvent);
     onIrcEvent = null;

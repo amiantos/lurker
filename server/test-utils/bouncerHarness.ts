@@ -14,6 +14,7 @@
 // bouncer forwards back upstream (client → network).
 
 import net from 'net';
+import tls from 'tls';
 import { EventEmitter, once } from 'node:events';
 import ircManager from '../services/ircManager.js';
 import {
@@ -254,9 +255,19 @@ export interface Harness {
   stop(): void;
 }
 
-/** Start the real bouncer on an ephemeral port. Call stop() in afterAll. */
-export async function startHarness(): Promise<Harness> {
-  const srv = startBouncer(0, '127.0.0.1');
+/**
+ * Start the real bouncer on an ephemeral port. Call stop() in afterAll.
+ * TLS is a hard default in production, but the protocol tests speak plain IRC,
+ * so this forces plaintext (LURKER_BOUNCER_TLS=off) unless `tls: true` is passed
+ * — in which case the listener speaks TLS (self-signed) and connect() does a
+ * TLS handshake with cert validation off.
+ */
+export async function startHarness({
+  tls: useTls = false,
+}: { tls?: boolean } = {}): Promise<Harness> {
+  if (useTls) delete process.env.LURKER_BOUNCER_TLS;
+  else process.env.LURKER_BOUNCER_TLS = 'off';
+  const srv = await startBouncer(0, '127.0.0.1');
   if (!srv) throw new Error('bouncer already started');
   // Guard the await: if the server somehow already bound, its 'listening' event
   // has fired and once() would hang.
@@ -268,8 +279,10 @@ export async function startHarness(): Promise<Harness> {
   return {
     port,
     async connect(): Promise<BouncerClient> {
-      const socket = net.connect({ port, host: '127.0.0.1' });
-      await once(socket, 'connect');
+      const socket = useTls
+        ? tls.connect({ port, host: '127.0.0.1', rejectUnauthorized: false })
+        : net.connect({ port, host: '127.0.0.1' });
+      await once(socket, useTls ? 'secureConnect' : 'connect');
       const client = new BouncerClient(socket);
       clients.push(client);
       return client;
@@ -278,6 +291,8 @@ export async function startHarness(): Promise<Harness> {
       for (const c of clients) c.close();
       resetAuthThrottle();
       stopBouncer();
+      // Don't leak the TLS override into later tests sharing this worker's env.
+      delete process.env.LURKER_BOUNCER_TLS;
     },
   };
 }
