@@ -159,6 +159,9 @@ const HEARTBEAT_INTERVAL_MS = 45_000;
 const HEARTBEAT_PING_AFTER_MS = 90_000;
 const HEARTBEAT_REAP_AFTER_MS = 240_000;
 const MAX_INPUT_BUFFER = 64 * 1024;
+// IRCv3 caps the client-only tag section at 4096 bytes including the leading
+// `@` and the trailing space; 4094 is the room left for the tag content we relay.
+const MAX_CLIENT_TAG_BYTES = 4094;
 // How often to check the TLS cert file for a renewal and hot-swap it. Renewal
 // is never time-critical (certs renew well before expiry), so a slow poll is
 // fine and far simpler and more robust than fs.watch across symlink renames.
@@ -216,15 +219,43 @@ export function resetAuthThrottle(): void {
 export interface ParsedClientLine {
   command: string;
   params: string[];
+  // Client-only message tags (the `+`-prefixed ones, e.g. `+typing`,
+  // `+draft/react`) exactly as the client sent them, joined by `;` with no
+  // leading `@`. Preserved so a relayed TAGMSG (and other commands routed
+  // through the verbatim `default:` relay) keeps its typing/reaction payload.
+  // NOTE: PRIVMSG/NOTICE route through ircManager.send, which carries no tags,
+  // so tags on a message body are NOT forwarded yet (tracked separately).
+  // Server-authoritative tags (time, account, msgid, label, batch) are dropped
+  // here — mirrors soju's copyClientTags.
+  clientTags?: string;
 }
 
-/** Parse one client→server IRC line: optional @tags and :prefix are ignored. */
+/**
+ * Parse one client→server IRC line. The `:prefix` is ignored; message tags are
+ * dropped EXCEPT client-only (`+`-prefixed) tags, which are retained on
+ * `clientTags` so they can be relayed upstream (typing, reactions, …).
+ */
 export function parseClientLine(raw: string): ParsedClientLine | null {
   // eslint-disable-next-line no-control-regex
   let line = raw.replace(/[\r\n\u0000]/g, '');
+  let clientTags: string | undefined;
   if (line.startsWith('@')) {
     const sp = line.indexOf(' ');
     if (sp === -1) return null;
+    // Keep only client-only tags (IRCv3 `+`-prefixed); server-authoritative
+    // tags a client must not set (time, account, msgid, label, batch, …) are
+    // discarded. Matches soju's copyClientTags.
+    const kept = line
+      .slice(1, sp)
+      .split(';')
+      .filter((t) => t.startsWith('+') && t.length > 1);
+    // Bound what we'll relay upstream. The IRCv3 client-tag section is capped
+    // at 4096 bytes (`@` + tags + space); a client could otherwise pad a line
+    // up to MAX_INPUT_BUFFER with `+`-tags and have us forward an oversized
+    // line that the network drops — killing the upstream socket shared by
+    // every other session on this account. Over the limit → forward tagless.
+    const joined = kept.join(';');
+    if (kept.length > 0 && joined.length <= MAX_CLIENT_TAG_BYTES) clientTags = joined;
     line = line.slice(sp + 1);
   }
   line = line.replace(/^ +/, '');
@@ -247,16 +278,21 @@ export function parseClientLine(raw: string): ParsedClientLine | null {
   const command = parts.shift()!.toUpperCase();
   const params = parts;
   if (trailing !== null) params.push(trailing);
-  return { command, params };
+  return { command, params, clientTags };
 }
 
-/** Rebuild a parsed client line for verbatim upstream forwarding. */
-export function rebuildLine({ command, params }: ParsedClientLine): string {
-  if (params.length === 0) return command;
+/**
+ * Rebuild a parsed client line for verbatim upstream forwarding, re-attaching
+ * any preserved client-only tags as an `@tag;tag ` prefix so typing/reaction
+ * payloads survive the round-trip to the network.
+ */
+export function rebuildLine({ command, params, clientTags }: ParsedClientLine): string {
+  const prefix = clientTags ? `@${clientTags} ` : '';
+  if (params.length === 0) return prefix + command;
   const head = params.slice(0, -1);
   const last = params[params.length - 1];
   const needsTrailing = last === '' || last.includes(' ') || last.startsWith(':');
-  return [command, ...head, needsTrailing ? `:${last}` : last].join(' ');
+  return prefix + [command, ...head, needsTrailing ? `:${last}` : last].join(' ');
 }
 
 export interface ParsedLogin {
@@ -1628,9 +1664,20 @@ class BouncerSession {
       default:
         // Everything else (MODE, TOPIC, WHOIS, WHO, NAMES, LIST, KICK, INVITE,
         // NICK, …) forwards verbatim; replies come back via the raw relay.
-        conn.raw(rebuildLine(msg));
+        this.relayRaw(conn, msg);
         return;
     }
+  }
+
+  // Forward a parsed client line to the upstream, re-attaching its client-only
+  // tags only when the network speaks message-tags. On a non-IRCv3 server a
+  // leading `@+tag …` prefix is parsed as the command, mangling the real
+  // command into ERR_UNKNOWNCOMMAND — the same hazard IrcConnection.sendTyping
+  // guards against — so drop the tags and forward the bare command there.
+  private relayRaw(conn: IrcConnection, msg: ParsedClientLine): void {
+    const forward =
+      msg.clientTags && !conn.supportsMessageTags() ? { ...msg, clientTags: undefined } : msg;
+    conn.raw(rebuildLine(forward));
   }
 
   private handleClientMessage(msg: ParsedClientLine): void {
@@ -1649,8 +1696,9 @@ class BouncerSession {
       const isAction = text.startsWith('\u0001ACTION ') || text.startsWith('\u0001ACTION\u0001');
       if (text.startsWith('\u0001') && !isAction) {
         // Non-ACTION CTCP (VERSION, PING, replies…): forward on the wire
-        // untouched; these aren't conversation and don't persist.
-        conn.raw(rebuildLine({ command: msg.command, params: [target, text] }));
+        // untouched; these aren't conversation and don't persist. Spread msg so
+        // any client-only tags ride along (gated on upstream message-tags).
+        this.relayRaw(conn, { ...msg, params: [target, text] });
         continue;
       }
       // /me actions and NOTICEs aren't encrypted yet, so ircManager refuses

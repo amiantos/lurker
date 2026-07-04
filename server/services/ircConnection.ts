@@ -3841,6 +3841,12 @@ export class IrcConnection {
     // eslint-disable-next-line no-control-regex
     this.client.raw(line.replace(/[\u000d\u000a\u0000]/g, ''));
   }
+  // Whether the network negotiated IRCv3 message-tags. Client-only tags
+  // (+typing, +draft/react, …) and TAGMSG only mean anything to a server that
+  // speaks it; forwarding them to one that doesn't yields ERR_UNKNOWNCOMMAND.
+  supportsMessageTags(): boolean {
+    return (this.client.network?.cap?.enabled || []).includes('message-tags');
+  }
   sendTyping(target: string, state: string): void {
     // +typing is a client-only tag carried over TAGMSG, which only exists when
     // the server negotiated the message-tags capability. Networks that don't
@@ -3848,7 +3854,7 @@ export class IrcConnection {
     // ERR_UNKNOWNCOMMAND, which our 'irc error' handler surfaces as a toast —
     // so an ungated send spams an error on each keystroke. Typing indicators
     // are a best-effort nicety; no cap, no send.
-    if (!(this.client.network?.cap?.enabled || []).includes('message-tags')) return;
+    if (!this.supportsMessageTags()) return;
     // Suppress typing TAGMSGs to a target the server has refused our messages to
     // (a +R/+M channel needing a registered nick to speak, a +R user, ...).
     // Every typing TAGMSG to it bounces as another send rejection; we learned it
