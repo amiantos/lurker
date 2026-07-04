@@ -1788,3 +1788,56 @@ describe('channel mode display (status bar)', () => {
     expect(modes).not.toContain('secret');
   });
 });
+
+describe('join key forwarding', () => {
+  function makeConn(): IrcConnection {
+    return new IrcConnection({
+      network: {
+        id: 1,
+        user_id: 1,
+        name: 'n',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates: 1,
+        nick: 'me',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        created_at: new Date().toISOString(),
+      },
+      onEvent: () => {},
+    });
+  }
+
+  it('forwards a string key to the underlying client', () => {
+    const conn = makeConn();
+    const join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.join = join;
+    conn.join('#secret', 'hunter2');
+    expect(join).toHaveBeenCalledWith('#secret', 'hunter2');
+  });
+
+  it('drops a non-string key rather than passing it to the raw serialiser', () => {
+    // A numeric key from an untrusted payload would otherwise throw inside
+    // irc-framework (.match on a Number) and crash the process.
+    const conn = makeConn();
+    const join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.join = join;
+    conn.join('#secret', 123 as unknown as string);
+    expect(join).toHaveBeenCalledWith('#secret', undefined);
+  });
+
+  it('omits the key for a plain join', () => {
+    const conn = makeConn();
+    const join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.join = join;
+    conn.join('#open');
+    expect(join).toHaveBeenCalledWith('#open', undefined);
+  });
+});

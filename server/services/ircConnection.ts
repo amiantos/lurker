@@ -2485,16 +2485,18 @@ export class IrcConnection {
   }
 
   // List-type channel modes (CHANMODES group A) carry a mask param — bans,
-  // ban/invite exceptions, solanum-style +q quiets — that we don't surface in
-  // the status bar. We read the set from the server's ISUPPORT CHANMODES so
-  // it's correct per-ircd (e.g. +q is a list mode on solanum but a member
-  // prefix on UnrealIRCd, where it's handled via PREFIX instead), falling back
-  // to the RFC defaults before 005 has been parsed. This is the same
-  // categorisation weechat/irssi/gamja use. Parameter modes like +k/+l are
-  // NOT list modes, so they still land in the (+...) display.
+  // ban/invite exceptions, and quiets on ircds that model them as a list — that
+  // we don't surface in the status bar. We read the set from the server's
+  // ISUPPORT CHANMODES so it's correct per-ircd, falling back to the RFC
+  // defaults before 005 has been parsed (`??`, so a server that legitimately
+  // declares an empty group A keeps its empty set rather than the default).
+  // This is the same categorisation weechat/irssi/gamja use. Parameter modes
+  // like +k/+l are NOT list modes, so they still land in the (+...) display.
+  // Member-prefix modes (o/v/h, plus q/a where an ircd uses them as prefixes)
+  // are filtered earlier by isPrefixMode(), so they never reach this set.
   private listModes(): Set<string> {
     const chanmodes = this.client.network?.options?.CHANMODES as string[] | undefined;
-    return new Set((chanmodes?.[0] || 'beI').split(''));
+    return new Set((chanmodes?.[0] ?? 'beI').split(''));
   }
 
   publishLag(): void {
@@ -2584,7 +2586,12 @@ export class IrcConnection {
   }
 
   join(channel: string, key?: string): void {
-    this.client.join(channel, key);
+    // Only a string is a valid channel key. Guard against a non-string sneaking
+    // in from an untrusted ws/HTTP join payload — irc-framework's raw serialiser
+    // calls .match() on the last arg, so a numeric key throws a TypeError that,
+    // with no global uncaught handler (see wsHub sendSnapshot backstop), would
+    // drop the whole (shared, on hosted) process.
+    this.client.join(channel, typeof key === 'string' ? key : undefined);
   }
   part(channel: string, reason?: string): void {
     this.client.part(channel, reason);
