@@ -22,11 +22,15 @@ acquisition makes sense. The **critical path** to that is deliberately narrow:
 
 > **Admin & Onboarding → Bouncer & Hosted Backbone → Mobile Apps**
 
-The native mobile apps attach *through* the app.lurker.chat bouncer, so the
-bouncer is a hard prerequisite, not a parallel track. Security hardening (#242)
-and mobile push are treated as launch-blocking. Almost everything else —
-protocol depth, react/reply, theming, engine decoupling — is intentionally
-**post-launch**.
+The native mobile apps are first-party Lurker clients: they speak Lurker's own
+WebSocket + REST contract directly (through the CP proxy when hosted) — the same
+protocol the web app uses. They do **not** go through the IRC bouncer. So the real
+prerequisite for mobile is **Bearer-token auth on the WebSocket** (it's cookie-only
+today) plus **native push**; security hardening (#242) is also treated as
+launch-blocking. The **BYOC bouncer** (for third-party IRC clients like WeeChat /
+irssi / mIRC) is a valuable but *independent* track, largely already shipped — not
+on the mobile critical path. Almost everything else — protocol depth, react/reply,
+theming, engine decoupling — is intentionally **post-launch**.
 
 ---
 
@@ -52,18 +56,25 @@ The first thing a new hosted user touches. Highest-priority milestone.
 
 ## Next — the commercial launch path
 
-These three, in order, are what stand between today and confidently spending on ads.
-
-### [Bouncer & Hosted Backbone](https://github.com/amiantos/lurker/milestone/5) · **launch-critical**
-Lurker-as-bouncer / BYOC for app.lurker.chat. **Hard prerequisite for the mobile apps.**
-- #483 Relay client-only tags on PRIVMSG (reply/react), not just TAGMSG
-- #242 Security audit: auth/session, deps, rate-limiting hardening *(launch-blocking)*
-- _Needs a bouncer umbrella issue authored (tracked separately)._
+What stands between today and confidently spending on ads: onboarding, the
+server-side enablers for native clients, and the apps themselves.
 
 ### [Mobile Apps (iOS & Android)](https://github.com/amiantos/lurker/milestone/6) · **launch-critical**
-Native clients for the paid service, **including mobile push**. The gate to advertising.
-Depends on the Bouncer milestone.
-- _Umbrella issues to be authored (iOS MVP, Android MVP, native push)._
+Native first-party clients for the paid service — the gate to advertising. They talk
+to Lurker's own WS + REST contract (via the CP proxy when hosted), *not* the bouncer.
+The blocking server work lives here too:
+- Native session tokens — accept `Authorization: Bearer` on the WebSocket (cookie-only today) *(the "one real blocker")*
+- Native push (APNs + FCM) — extend the push surface beyond Web Push/VAPID *(launch table-stakes)*
+- iOS app (MVP) · Android app (MVP) — parity with mobile web, minus the customization surface
+- #242 Security audit: auth/session, deps, rate-limiting hardening *(launch-blocking)*
+- _Umbrella/enabler issues to be authored._
+
+### [Bouncer (BYOC)](https://github.com/amiantos/lurker/milestone/5) · independent track (largely shipped)
+Lurker-as-bouncer / BYOC — lets **third-party** IRC clients (WeeChat, irssi, mIRC)
+attach to your always-on connection. Core is merged (soju-parity phases 0–4); hosted
+ingress is tracked in the control-plane repo. Not a mobile prerequisite.
+- #483 Relay client-only tags on PRIVMSG (reply/react), not just TAGMSG
+- _Remaining = phase-6 polish (labeled-response for WHOIS/LIST, detached channels, read markers)._
 
 ---
 
