@@ -1,0 +1,139 @@
+# Lurker Roadmap
+
+This is a **living, high-level roadmap** — a sense of direction, not a promise of dates.
+The authoritative, always-current source of truth is
+[GitHub Milestones](https://github.com/amiantos/lurker/milestones); this document
+just groups them into a narrative and explains _why_ the order is what it is.
+
+Lurker ships continuously (see [Releases](https://github.com/amiantos/lurker/releases)) —
+milestones describe **themes**, and their issues land across many point releases.
+
+---
+
+## The through-line
+
+There are two audiences on one codebase:
+
+1. **Self-hosters** — the open-source IRC client/bouncer you run yourself.
+2. **[lurker.chat](https://lurker.chat)** — the hosted, paid service.
+
+The near-term priority is getting the hosted service to a state where paid
+acquisition makes sense. The **critical path** to that is deliberately narrow:
+
+> **Admin & Onboarding → Native-app enablers (Bearer WS auth + push) → Mobile Apps**
+
+The native mobile apps are first-party Lurker clients: they speak Lurker's own
+WebSocket + REST contract directly (through the CP proxy when hosted) — the same
+protocol the web app uses. They do **not** go through the IRC bouncer. So the real
+prerequisite for mobile is **Bearer-token auth on the WebSocket** (it's cookie-only
+today) plus **native push**; security hardening (#242) is also treated as
+launch-blocking. The **BYOC bouncer** (for third-party IRC clients like WeeChat /
+irssi / mIRC) is a valuable but _independent_ track, largely already shipped — not
+on the mobile critical path. Almost everything else — protocol depth, react/reply,
+theming, engine decoupling — is intentionally **post-launch**.
+
+---
+
+## Now — in flight
+
+### [1.1.0](https://github.com/amiantos/lurker/milestone/3) · unread & notification correctness
+
+The current release train, ~90% closed. Scoped down to the unread/notification
+correctness cluster so it can ship clean.
+
+- #463 PWA stuck unread badge
+- #454 Unify per-user buffer enumeration (badge can't drift from in-app count)
+- #470 Audit server-buffer unread state
+- #441 Audit web-push failure cases
+- #230 Clear buffer unread state when sending a message
+- #411 "Add Channel" modal on the + button
+
+### [Admin & Onboarding](https://github.com/amiantos/lurker/milestone/4) · **top priority**
+
+The first thing a new hosted user touches. Highest-priority milestone.
+
+- #300 First-run onboarding flow · #298 Suggested networks & channels · #308 `defaultChannel` in builtinNetworks
+- #299 Instance-level default uploader · #271 Local upload hosting & direct S3 · #177 Hoarder uploader tooltip
+- #304 Host standalone under a path · #57 User manual
+
+---
+
+## Next — the commercial launch path
+
+What stands between today and confidently spending on ads: onboarding, the
+server-side enablers for native clients, and the apps themselves.
+
+### [Mobile Apps (iOS & Android)](https://github.com/amiantos/lurker/milestone/6) · **launch-critical**
+
+Native first-party clients for the paid service — the gate to advertising. They talk
+to Lurker's own WS + REST contract (via the CP proxy when hosted), _not_ the bouncer.
+The blocking server work lives here too:
+
+- Native session tokens — accept `Authorization: Bearer` on the WebSocket (cookie-only today) _(the "one real blocker")_
+- Native push (APNs + FCM) — extend the push surface beyond Web Push/VAPID _(launch table-stakes)_
+- iOS app (MVP) · Android app (MVP) — parity with mobile web, minus the customization surface
+- #242 Security audit: auth/session, deps, rate-limiting hardening _(launch-blocking)_
+- _Umbrella/enabler issues to be authored._
+
+### [Bouncer (BYOC)](https://github.com/amiantos/lurker/milestone/5) · independent track (largely shipped)
+
+Lurker-as-bouncer / BYOC — lets **third-party** IRC clients (WeeChat, irssi, mIRC)
+attach to your always-on connection. Core is merged (soju-parity phases 0–4); hosted
+ingress is tracked in the control-plane repo. Not a mobile prerequisite.
+
+- #483 Relay client-only tags on PRIVMSG (reply/react), not just TAGMSG
+- _Remaining = phase-6 polish (labeled-response for WHOIS/LIST, detached channels, read markers)._
+
+---
+
+## Later — post-launch depth & polish
+
+Valuable, but none of it blocks the commercial launch. Roughly parallelizable.
+
+### [IRC Protocol Completeness](https://github.com/amiantos/lurker/milestone/7)
+
+Make Lurker a rock-solid IRC citizen.
+
+- #206 Caller ID · #459 certfp · #486 Derive isPrefixMode from ISUPPORT PREFIX
+- #315 Surface channel list-mode replies (ban/invite/ban-exception)
+- #434 Route command-result error numerics to the originating buffer
+- #430 Auto-replies honor /ignore · #291 Test against a variety of ircds
+- #450 Capture IRCv3 msgid + echo-message — _foundation for a future react/reply epic_
+
+### [Engine & Performance](https://github.com/amiantos/lurker/milestone/8)
+
+Zero-downtime deploys and stability.
+
+- #385 In-process IRC transport seam · #386 Decouple engine from app tier
+- #469 Lazy-load online-buffer unread in connect snapshot · #265 Optimization session
+- #442 Fix crash when controlling terminal goes away (dead-pty write)
+
+### [Customization & Power-User](https://github.com/amiantos/lurker/milestone/9)
+
+- #375 Custom CSS · #395 System light/dark preference · #474 Custom font upload
+- #445 Log-length customization · #422 Buffer status icons
+- #276 mIRC-style command aliases · #412 `/p` and `/j` aliases
+
+### [Mobile UX Polish](https://github.com/amiantos/lurker/milestone/10)
+
+PWA/mobile-web refinements (distinct from the native Mobile Apps milestone).
+
+- #200 Swipe-right to go back to buffer list · #201 Mobile notification improvements
+- #239 iOS nick-suggester touch target · #161 Show line-return character in input bar
+
+### [DCC/XDCC](https://github.com/amiantos/lurker/milestone/11)
+
+- #270 Finish the download manager (phase 4: authed browser download + per-bot concurrency)
+
+---
+
+## Icebox — speculative or blocked
+
+Not scheduled. Ideas, big bets, cleanups, and work blocked on external dependencies.
+
+- #22 Plugin system · #264 MCP / REST API · #67 AIO Electron build · #303 SOCKS/HTTP proxied connections
+- #414 RPE2E DMs — _blocked on repartee's DM E2E_
+- #55 Accessibility: screen-reader support for completion UIs
+- #485 Schema-driven export/import at-rest encryption
+- #146 Remove redundant asyncHandler wrapper · #184 Revisit node:22 Docker pin
+- #2 Containerized IRCD + Lurker guide
