@@ -78,6 +78,65 @@ function awayStateFromRow(row: AwayStateRow | null) {
   };
 }
 
+// Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single
+// JOINs trips Libera's per-connection flood limit ("Closing Link: ... (Excess
+// Flood)"), so channels coalesce into comma-separated JOIN lines chunked well
+// under the 512-byte cap. Keyed and keyless channels go in SEPARATE lines:
+// keyed lines carry a positional key list (JOIN #a,#b k_a,k_b), so keeping each
+// keyed line all-keyed means every key lines up 1:1 with its channel — no
+// cross-type alignment to get wrong. Pure + export-only so it's unit-testable
+// without a socket; the caller maps each op to client.join(channels, keys).
+export function planChannelRejoins(
+  channels: Array<{ name: string; key: string | null }>,
+): Array<{ channels: string; keys?: string }> {
+  const MAX = 400;
+  const ops: Array<{ channels: string; keys?: string }> = [];
+
+  // Keyed channels: batch with an aligned key list. Budget both the channel and
+  // key lists plus the single space that joins them on the wire.
+  let names: string[] = [];
+  let keys: string[] = [];
+  let namesLen = 0;
+  let keysLen = 0;
+  const flushKeyed = () => {
+    if (names.length > 0) ops.push({ channels: names.join(','), keys: keys.join(',') });
+    names = [];
+    keys = [];
+    namesLen = 0;
+    keysLen = 0;
+  };
+  for (const c of channels) {
+    if (!c.key) continue;
+    const addName = names.length === 0 ? c.name.length : c.name.length + 1;
+    const addKey = keys.length === 0 ? c.key.length : c.key.length + 1;
+    if (namesLen + addName + 1 + keysLen + addKey > MAX && names.length > 0) flushKeyed();
+    names.push(c.name);
+    keys.push(c.key);
+    namesLen += names.length === 1 ? c.name.length : c.name.length + 1;
+    keysLen += keys.length === 1 ? c.key.length : c.key.length + 1;
+  }
+  flushKeyed();
+
+  // Keyless channels: names only.
+  let chunk: string[] = [];
+  let len = 0;
+  const flush = () => {
+    if (chunk.length > 0) ops.push({ channels: chunk.join(',') });
+    chunk = [];
+    len = 0;
+  };
+  for (const c of channels) {
+    if (c.key) continue;
+    const add = chunk.length === 0 ? c.name.length : c.name.length + 1;
+    if (len + add > MAX && chunk.length > 0) flush();
+    chunk.push(c.name);
+    len += add;
+  }
+  flush();
+
+  return ops;
+}
+
 class IrcManager extends EventEmitter {
   byUser: Map<number, Map<number, IrcConnection>>;
 
@@ -176,9 +235,8 @@ class IrcManager extends EventEmitter {
       launch();
     }
     conn.client.on('registered', () => {
-      const names = listChannels(networkId)
-        .filter((c) => c.joined)
-        .map((c) => c.name);
+      const joined = listChannels(networkId).filter((c) => c.joined);
+      const names = joined.map((c) => c.name);
       if (names.length > 0) {
         systemLog.log({
           userId,
@@ -187,24 +245,7 @@ class IrcManager extends EventEmitter {
           text: `Auto-joining ${names.length} ${names.length === 1 ? 'channel' : 'channels'}: ${names.join(', ')}`,
         });
       }
-      // Send JOINs as comma-separated batches per IRC line. A tight loop of
-      // single JOINs trips Libera's per-connection flood limit ("Closing Link:
-      // ... (Excess Flood)"), so we coalesce into one line and chunk well under
-      // the 512-byte IRC line cap.
-      const MAX = 400;
-      let chunk: string[] = [];
-      let len = 0;
-      for (const name of names) {
-        const add = chunk.length === 0 ? name.length : name.length + 1;
-        if (len + add > MAX && chunk.length > 0) {
-          connRef.join(chunk.join(','));
-          chunk = [];
-          len = 0;
-        }
-        chunk.push(name);
-        len += add;
-      }
-      if (chunk.length > 0) connRef.join(chunk.join(','));
+      for (const op of planChannelRejoins(joined)) connRef.join(op.channels, op.keys);
     });
 
     return conn;
@@ -250,15 +291,25 @@ class IrcManager extends EventEmitter {
     return this.startNetwork(userId, networkId);
   }
 
-  joinChannel(userId: number, networkId: number, name: string): boolean {
+  joinChannel(userId: number, networkId: number, name: string, key?: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
-    upsertChannel(networkId, name, true);
+    // Coerce the key to a safe string-or-undefined once, up front. The ws/HTTP
+    // join payloads are unvalidated, so a non-string (e.g. a number) can reach
+    // here — it must not flow into upsertChannel → encryptSecret (which throws
+    // on a non-string and, on the unguarded ws path, would take down the shared
+    // cell process). An empty string coerces to undefined too, so a keyless
+    // re-join preserves a stored key instead of wiping it (soju does the same);
+    // a key that no longer applies is cleared by the MODE -k handler, not here.
+    const safeKey = typeof key === 'string' && key !== '' ? key : undefined;
+    // Persist the key (encrypted at rest) so the channel auto-rejoins keyed
+    // after a reconnect/restart.
+    upsertChannel(networkId, name, true, safeKey);
     // Joining is an explicit "I want this buffer back" — clear any stale
     // closed flag from a prior close. The matching channel-joined event will
     // recreate the buffer in clients via the normal flow.
     reopenBuffer(userId, networkId, name);
-    conn.join(name);
+    conn.join(name, safeKey);
     return true;
   }
 

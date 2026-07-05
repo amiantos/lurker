@@ -405,3 +405,42 @@ describe('shell unseeded lifecycle', () => {
     expect(Object.keys(store.byKey('1::#a')!.speakers).sort()).toEqual(['alice', 'bob']);
   });
 });
+
+describe('joinOrActivate channel key', () => {
+  // /join #chan <key> must forward the key so keyed (+k) channels are joinable.
+  it('includes the key in the JOIN payload for a brand-new channel', () => {
+    const store = useBuffersStore();
+    store.joinOrActivate(1, '#secret', 'sekret');
+    expect(socketSend).toHaveBeenCalledWith({
+      type: 'join',
+      networkId: 1,
+      channel: '#secret',
+      key: 'sekret',
+    });
+  });
+
+  it('re-sends JOIN with the key when the buffer exists but we are not in it', () => {
+    const store = useBuffersStore();
+    // Open the buffer but leave it un-joined (e.g. after a part/kick).
+    store.replaceBacklog(1, '#secret', [], undefined, undefined, undefined);
+    store.byKey('1::#secret')!.joined = false;
+    vi.mocked(socketSend).mockClear();
+
+    store.joinOrActivate(1, '#secret', 'sekret');
+
+    expect(socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'join', channel: '#secret', key: 'sekret' }),
+    );
+  });
+
+  it('omits the key when none is given (plain /join)', () => {
+    const store = useBuffersStore();
+    store.joinOrActivate(1, '#open');
+    expect(socketSend).toHaveBeenCalledWith({
+      type: 'join',
+      networkId: 1,
+      channel: '#open',
+      key: undefined,
+    });
+  });
+});

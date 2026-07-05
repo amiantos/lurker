@@ -20,12 +20,24 @@ let updateNetwork: typeof import('./networks.js').updateNetwork;
 let ownsNetwork: typeof import('./networks.js').ownsNetwork;
 let listNetworksForUser: typeof import('./networks.js').listNetworksForUser;
 let reorderNetworks: typeof import('./networks.js').reorderNetworks;
+let upsertChannel: typeof import('./networks.js').upsertChannel;
+let listChannels: typeof import('./networks.js').listChannels;
+let setChannelKey: typeof import('./networks.js').setChannelKey;
 
 beforeAll(async () => {
   db = (await import('./index.js')).default;
   ({ createUser } = await import('./users.js'));
-  ({ createNetwork, getNetwork, updateNetwork, ownsNetwork, listNetworksForUser, reorderNetworks } =
-    await import('./networks.js'));
+  ({
+    createNetwork,
+    getNetwork,
+    updateNetwork,
+    ownsNetwork,
+    listNetworksForUser,
+    reorderNetworks,
+    upsertChannel,
+    listChannels,
+    setChannelKey,
+  } = await import('./networks.js'));
 });
 
 afterAll(() => {
@@ -218,5 +230,57 @@ describe('network secrets without an encryption key (self-host)', () => {
       })!;
       expect(net.trusted_certificates).toBe(0);
     });
+  });
+});
+
+describe('channel key persistence', () => {
+  let seq = 0;
+  function net(): number {
+    return createNetwork(createUser(`chk-${seq++}`).id, {
+      name: 'n',
+      host: 'irc.example.test',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!.id;
+  }
+
+  it('stores a key on join and returns it from listChannels', () => {
+    const id = net();
+    upsertChannel(id, '#secret', true, 'hunter2');
+    const ch = listChannels(id).find((c) => c.name === '#secret');
+    expect(ch!.key).toBe('hunter2');
+    expect(ch!.joined).toBe(1);
+  });
+
+  it('preserves the stored key when a later keyless upsert re-joins the channel', () => {
+    const id = net();
+    upsertChannel(id, '#secret', true, 'hunter2');
+    // A plain re-join / NAMES / reopen passes no key — it must not wipe it.
+    upsertChannel(id, '#secret', true);
+    expect(listChannels(id).find((c) => c.name === '#secret')!.key).toBe('hunter2');
+  });
+
+  it('updates the key when a new one is supplied', () => {
+    const id = net();
+    upsertChannel(id, '#secret', true, 'old');
+    upsertChannel(id, '#secret', true, 'new');
+    expect(listChannels(id).find((c) => c.name === '#secret')!.key).toBe('new');
+  });
+
+  it('setChannelKey updates and clears (null) the key, case-insensitively', () => {
+    const id = net();
+    upsertChannel(id, '#Secret', true, 'first');
+    // MODE arrives with a different case than the joined name.
+    setChannelKey(id, '#secret', 'second');
+    expect(listChannels(id).find((c) => c.name === '#Secret')!.key).toBe('second');
+    setChannelKey(id, '#SECRET', null);
+    expect(listChannels(id).find((c) => c.name === '#Secret')!.key).toBeNull();
+  });
+
+  it('defaults to a null key for a channel joined without one', () => {
+    const id = net();
+    upsertChannel(id, '#open', true);
+    expect(listChannels(id).find((c) => c.name === '#open')!.key).toBeNull();
   });
 });

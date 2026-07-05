@@ -10,7 +10,7 @@ import {
   listBufferTargets,
 } from '../db/messages.js';
 import type { Network } from '../db/networks.js';
-import { upsertChannel } from '../db/networks.js';
+import { upsertChannel, setChannelKey } from '../db/networks.js';
 import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
 import { listTargetsForNetwork as listFriendTargetsForNetwork } from '../db/contacts.js';
 import * as chanlistDb from '../db/chanlist.js';
@@ -1767,6 +1767,7 @@ export class IrcConnection {
       // the snapshot keeps current modes after page reload.
       let memberModesChanged = false;
       let chanModesChanged = false;
+      const listModes = this.listModes();
       if (ch) {
         for (const m of eventModes) {
           if (!m || !m.mode) continue;
@@ -1783,16 +1784,23 @@ export class IrcConnection {
             memberModesChanged = true;
             continue;
           }
-          // Channel-level flag mode (no param, or list-type mode like +b that
-          // we don't surface in the status bar). We only track flag modes
-          // (no param) so +b/+e/+I bans don't pollute the (+...) display.
-          if (!m.param) {
+          // Channel-level flag mode (or parameter mode like +k/+l). We track
+          // them to surface them in the status bar, but exclude list-type modes
+          // (bans/exceptions/quiets) so their masks don't pollute the display.
+          if (!listModes.has(letter)) {
             if (sign === '+' && !ch.modes.has(letter)) {
               ch.modes.add(letter);
               chanModesChanged = true;
             } else if (sign === '-' && ch.modes.delete(letter)) {
               chanModesChanged = true;
             }
+          }
+          // Keep the persisted +k key current so a live key change survives a
+          // reconnect (see resolveKeyModeChange for the value-less / masked-key
+          // guards that stop an on-join mode burst from wiping the real key).
+          if (letter === 'k') {
+            const change = resolveKeyModeChange(sign, m.param);
+            if (change) setChannelKey(this.network.id, ch.name, change.key);
           }
         }
       }
@@ -1823,11 +1831,12 @@ export class IrcConnection {
       if (!eventChannel || !eventModes) return;
       const ch = this.channels.get(eventChannel.toLowerCase());
       if (!ch) return;
+      const listModes = this.listModes();
       const next = new Set<string>();
       for (const m of eventModes) {
-        if (!m || !m.mode || m.param) continue;
+        if (!m || !m.mode) continue;
         const letter = m.mode.replace(/^[+-]/, '');
-        if (!letter) continue;
+        if (!letter || listModes.has(letter)) continue;
         next.add(letter);
       }
       const before = [...ch.modes].toSorted().join('');
@@ -2482,6 +2491,21 @@ export class IrcConnection {
     });
   }
 
+  // List-type channel modes (CHANMODES group A) carry a mask param — bans,
+  // ban/invite exceptions, and quiets on ircds that model them as a list — that
+  // we don't surface in the status bar. We read the set from the server's
+  // ISUPPORT CHANMODES so it's correct per-ircd, falling back to the RFC
+  // defaults before 005 has been parsed (`??`, so a server that legitimately
+  // declares an empty group A keeps its empty set rather than the default).
+  // This is the same categorisation weechat/irssi/gamja use. Parameter modes
+  // like +k/+l are NOT list modes, so they still land in the (+...) display.
+  // Member-prefix modes (o/v/h, plus q/a where an ircd uses them as prefixes)
+  // are filtered earlier by isPrefixMode(), so they never reach this set.
+  private listModes(): Set<string> {
+    const chanmodes = this.client.network?.options?.CHANMODES as string[] | undefined;
+    return new Set((chanmodes?.[0] ?? 'beI').split(''));
+  }
+
   publishLag(): void {
     this.publish({
       type: 'lag',
@@ -2568,8 +2592,13 @@ export class IrcConnection {
     });
   }
 
-  join(channel: string): void {
-    this.client.join(channel);
+  join(channel: string, key?: string): void {
+    // Only a string is a valid channel key. Guard against a non-string sneaking
+    // in from an untrusted ws/HTTP join payload — irc-framework's raw serialiser
+    // calls .match() on the last arg, so a numeric key throws a TypeError that,
+    // with no global uncaught handler (see wsHub sendSnapshot backstop), would
+    // drop the whole (shared, on hosted) process.
+    this.client.join(channel, typeof key === 'string' ? key : undefined);
   }
   part(channel: string, reason?: string): void {
     this.client.part(channel, reason);
@@ -4037,6 +4066,22 @@ export class IrcConnection {
 const PREFIX_MODES = new Set(['q', 'a', 'o', 'h', 'v']);
 function isPrefixMode(letter: string): boolean {
   return PREFIX_MODES.has(letter);
+}
+
+// Decide how a channel +k / -k MODE change should update the persisted key.
+// Returns null for "leave the stored key alone" — the two cases that must NOT
+// touch it are (a) a +k echoed WITHOUT its value (common in the on-join mode
+// burst) and (b) a masked +k where the server sends the key as `*` to hide it
+// from non-ops. Either would otherwise clobber the real key we stored at join
+// time, so the channel would fail to auto-rejoin on the next reconnect. -k
+// clears; +k with a real value sets. Pure + exported so the guard is unit-tested.
+export function resolveKeyModeChange(
+  sign: string,
+  param: string | undefined,
+): { key: string | null } | null {
+  if (sign === '-') return { key: null };
+  if (sign === '+' && param && param !== '*') return { key: param };
+  return null;
 }
 
 // Pure helper for the pre-registration nick-fallback ladder. The configured

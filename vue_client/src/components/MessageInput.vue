@@ -2731,9 +2731,13 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'join':
       if (rest[0]) {
         const ch = rest[0].startsWith('#') ? rest[0] : `#${rest[0]}`;
+        // A channel key is a single whitespace-free token — take just the next
+        // arg, not the rest joined (which would fold trailing words into an
+        // invalid, space-bearing key).
+        const key = rest[1] || undefined;
         // Switch to the channel if we're already in it; otherwise join. Returns
         // false only when a JOIN had to be sent but the socket was closed.
-        if (buffers.joinOrActivate(networkId, ch)) return true;
+        if (buffers.joinOrActivate(networkId, ch, key)) return true;
         toastSendFailure('disconnected', line);
         return false;
       }

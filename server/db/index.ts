@@ -807,6 +807,10 @@ ensureColumn('messages', 'extra', 'TEXT');
 ensureColumn('messages', 'userhost', 'TEXT');
 ensureColumn('networks', 'sasl_account', 'TEXT');
 ensureColumn('networks', 'sasl_password', 'TEXT');
+// The +k channel key, so a keyed channel can be auto-rejoined with its key
+// after a reconnect/restart (like soju/znc/thelounge). Stored encrypted at rest
+// on hosted cells (see secretCrypto), NULL for keyless channels.
+ensureColumn('channels', 'key', 'TEXT');
 ensureColumn('networks', 'trusted_certificates', 'INTEGER NOT NULL DEFAULT 1');
 // Newline-delimited raw IRC commands fired after RPL_WELCOME, IRCCloud-style.
 // Supports `WAIT <seconds>` lines that pause before the next command.

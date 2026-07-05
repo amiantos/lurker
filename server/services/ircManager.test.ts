@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
 
 // The startNetwork gate is the linchpin of the pause feature: a paused account
@@ -16,15 +16,18 @@ let systemLog: typeof import('./systemLog.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let setUserPaused: typeof import('../db/users.js').setUserPaused;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
+let listChannels: typeof import('../db/networks.js').listChannels;
 let insertDccTransfer: typeof import('../db/dccTransfers.js').insertDccTransfer;
 let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
+let planChannelRejoins: typeof import('./ircManager.js').planChannelRejoins;
 
 beforeAll(async () => {
   ircManager = (await import('./ircManager.js')).default;
+  ({ planChannelRejoins } = await import('./ircManager.js'));
   connectScheduler = (await import('./connectScheduler.js')).default;
   systemLog = (await import('./systemLog.js')).default;
   ({ createUser, setUserPaused } = await import('../db/users.js'));
-  ({ createNetwork } = await import('../db/networks.js'));
+  ({ createNetwork, listChannels } = await import('../db/networks.js'));
   ({ insertDccTransfer, updateDccTransferState } = await import('../db/dccTransfers.js'));
 });
 
@@ -368,5 +371,102 @@ describe('ircManager contacts', () => {
     expect(ircManager.deleteContact(other.id, made.id)).toBe(false);
     expect(ircManager.deleteContact(user.id, made.id)).toBe(true);
     expect(ircManager.listContacts(user.id)).toEqual([]);
+  });
+});
+
+describe('planChannelRejoins', () => {
+  it('batches keyed channels (with an aligned key list) separately from keyless ones', () => {
+    const ops = planChannelRejoins([
+      { name: '#alsoplain', key: null },
+      { name: '#k1', key: 'key1' },
+      { name: '#plain', key: null },
+      { name: '#k2', key: 'key2' },
+    ]);
+    // One keyed JOIN line with a positional key list, then the keyless batch —
+    // keyed channels are never folded into the keyless (key-less) line.
+    expect(ops).toEqual([
+      { channels: '#k1,#k2', keys: 'key1,key2' },
+      { channels: '#alsoplain,#plain' },
+    ]);
+  });
+
+  it('keeps keys aligned 1:1 with channels within each keyed batch', () => {
+    const keyed = Array.from({ length: 40 }, (_, i) => ({
+      name: `#keyed-${String(i).padStart(2, '0')}`,
+      key: `secret-${String(i).padStart(2, '0')}`,
+    }));
+    const ops = planChannelRejoins(keyed);
+    expect(ops.length).toBeGreaterThan(1); // must split under the line cap
+    const seen: Record<string, string> = {};
+    for (const op of ops) {
+      const chans = op.channels.split(',');
+      const ks = (op.keys ?? '').split(',');
+      expect(ks).toHaveLength(chans.length); // no misalignment across the split
+      expect(op.channels.length + 1 + (op.keys ?? '').length).toBeLessThanOrEqual(400);
+      chans.forEach((c, i) => (seen[c] = ks[i]));
+    }
+    for (const c of keyed) expect(seen[c.name]).toBe(c.key); // each kept its own key
+  });
+
+  it('splits keyless channels into multiple JOINs under the IRC line cap', () => {
+    // 50 channels of 12 chars each (≈650 with separators) blow past the
+    // 400-char budget → more than one batch.
+    const many = Array.from({ length: 50 }, (_, i) => ({
+      name: `#channel-${String(i).padStart(3, '0')}`,
+      key: null as string | null,
+    }));
+    const ops = planChannelRejoins(many);
+    expect(ops.length).toBeGreaterThan(1);
+    // Every batch stays under the cap, and every channel appears exactly once.
+    for (const op of ops) expect(op.channels.length).toBeLessThanOrEqual(400);
+    const rejoined = ops.flatMap((o) => o.channels.split(','));
+    expect(rejoined.toSorted()).toEqual(many.map((c) => c.name).toSorted());
+  });
+
+  it('returns nothing for no joined channels', () => {
+    expect(planChannelRejoins([])).toEqual([]);
+  });
+
+  it('joinChannel persists the key end-to-end so the rejoin plan carries it', () => {
+    const user = createUser('irc-join-e2e');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    // deferrable parks the socket launch (drained in afterEach); stub join so
+    // no bytes hit the (never-opened) socket.
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.join = vi.fn<(channel: string, key?: string) => void>();
+
+    ircManager.joinChannel(user.id, net.id, '#secret', 'hunter2');
+
+    // The key made it to the DB and comes back out in the rejoin plan.
+    const joined = listChannels(net.id).filter((c) => c.joined);
+    expect(planChannelRejoins(joined)).toContainEqual({ channels: '#secret', keys: 'hunter2' });
+  });
+
+  it('joinChannel drops a non-string key from an untrusted payload without throwing', () => {
+    const user = createUser('irc-join-badkey');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.join = vi.fn<(channel: string, key?: string) => void>();
+
+    // A number sneaks in via an unvalidated ws/HTTP join payload. It must not
+    // reach encryptSecret (which throws on a non-string and, on the unguarded
+    // ws path, would crash the process).
+    expect(() =>
+      ircManager.joinChannel(user.id, net.id, '#x', 123 as unknown as string),
+    ).not.toThrow();
+    expect(listChannels(net.id).find((c) => c.name === '#x')!.key).toBeNull(); // dropped
+    expect(conn.client.join).toHaveBeenCalledWith('#x', undefined);
   });
 });

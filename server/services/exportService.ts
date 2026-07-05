@@ -25,6 +25,7 @@ import {
   EXPORT_TABLES,
   EXPORT_FORMAT_VERSION,
   ENCRYPTED_NETWORK_COLUMNS,
+  ENCRYPTED_CHANNEL_COLUMNS,
 } from '../db/exportSchema.js';
 import { decryptSecret } from '../utils/secretCrypto.js';
 
@@ -237,6 +238,14 @@ export async function buildExportZip(
     if (table === 'networks') {
       for (const row of rows) {
         for (const col of ENCRYPTED_NETWORK_COLUMNS) {
+          row[col] = decryptSecret(row[col] as string | null);
+        }
+      }
+    }
+    // Same portability decrypt for the +k channel key.
+    if (table === 'channels') {
+      for (const row of rows) {
+        for (const col of ENCRYPTED_CHANNEL_COLUMNS) {
           row[col] = decryptSecret(row[col] as string | null);
         }
       }

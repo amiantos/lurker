@@ -181,12 +181,12 @@ router.post('/:id/reconnect', (req: Request, res: Response) => {
 
 router.post('/:id/join', (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const { channel } = req.body || {};
+  const { channel, key } = req.body || {};
   if (!channel) {
     res.status(400).json({ error: 'channel required' });
     return;
   }
-  if (!ircManager.joinChannel(req.user!.id, id, channel)) {
+  if (!ircManager.joinChannel(req.user!.id, id, channel, key)) {
     res.status(409).json({ error: 'network not connected' });
     return;
   }
