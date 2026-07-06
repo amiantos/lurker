@@ -35,7 +35,7 @@
       </li>
     </ul>
     <p class="about-warning">
-      Lurker is free and source-available — anyone can host it themselves at no cost. If you're
+      Lurker is free and open source software — anyone can host it themselves at no cost. If you're
       paying for it, be sure you know why.
     </p>
   </section>
