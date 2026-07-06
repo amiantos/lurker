@@ -295,6 +295,7 @@ import { useSocket } from '../composables/useSocket.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { useActiveBuffer } from '../composables/useActiveBuffer.js';
+import { useBufferSearchScope } from '../composables/useBufferSearchScope.js';
 import { useSettingsStore } from '../stores/settings.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
@@ -323,7 +324,6 @@ import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useFriendsStore } from '../stores/friends.js';
 import { useDccStore } from '../stores/dcc.js';
-import { useSearchStore } from '../stores/search.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
@@ -379,48 +379,24 @@ const joinChannelModal = reactive(useJoinChannelModal());
 const imageModal = reactive(useImageModal());
 const networkEditor = reactive(useNetworkEditor());
 const navHistory = useNavHistoryStore();
-const showHighlights = ref(false);
 const showBookmarks = ref(false);
 const showTopic = ref(false);
 const showUploads = ref(false);
 const showSwitcher = ref(false);
-const showSearch = ref(false);
 const showKbdHelp = ref(false);
 const pendingScrollId = ref<number | null>(null);
 
-// Per-buffer scope for search & highlights: `in:<target> on:<network>`, mirroring
-// the mobile topic bar's scoped buttons. The `on:` token is dropped when the
-// network name has whitespace (the filter parser splits tokens on spaces, so it
-// couldn't round-trip); `in:<target>` alone still scopes by channel/nick. Null
-// for server/system buffers, which have no per-buffer scope.
-const searchScope = ref<string | null>(null);
-const highlightScope = ref<string | null>(null);
-const bufferScope = computed<string | null>(() => {
-  const a = active.value;
-  if (!a || isServerBuffer.value || isSystemBuffer.value || !a.target) return null;
-  const netName = (a.network as { name?: string } | null)?.name;
-  const onTok = netName && !/\s/.test(netName) ? ` on:${netName}` : '';
-  return `in:${a.target}${onTok}`;
-});
-// Topic-bar buttons pass scoped=true so the modal opens pre-filtered to this
-// buffer; the sidebar-foot and keyboard shortcut pass false for the global view.
-// Both share one modal instance — the scope ref differentiates the two entries.
-function openSearch(scoped: boolean) {
-  searchScope.value = scoped ? bufferScope.value : null;
-  showSearch.value = true;
-}
-function openHighlights(scoped: boolean) {
-  highlightScope.value = scoped ? bufferScope.value : null;
-  showHighlights.value = true;
-}
-
-// "View activity" from the Friends overview: open Search with the scoped query
-// (from:<nick> on:<network>) and run it immediately.
-function onViewActivity(query: string) {
-  useSearchStore().runQuery(query);
-  searchScope.value = null;
-  showSearch.value = true;
-}
+// Search & Highlights modal state + per-buffer `in:/on:` scoping, shared with
+// MobileChat (#496).
+const {
+  showSearch,
+  showHighlights,
+  searchScope,
+  highlightScope,
+  openSearch,
+  openHighlights,
+  onViewActivity,
+} = useBufferSearchScope();
 const messageInputRef = ref<{ focus: () => void } | null>(null);
 const messageListRef = ref<{ scrollByPage: (dir: number) => void } | null>(null);
 

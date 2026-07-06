@@ -43,8 +43,8 @@ import { computed, onMounted, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
-import { useToastsStore } from '../stores/toasts.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
+import { ensureChannelPrefix } from '../utils/channelTarget.js';
 
 const props = defineProps<{ networkId: number }>();
 const emit = defineEmits<{ close: [] }>();
@@ -61,34 +61,24 @@ const networkLabel = computed(() => {
   return net?.name || `net:${props.networkId}`;
 });
 
-// Prepend a leading # when the user omits a channel prefix (#, &, +, !) — a
-// bare, prefix-less name is what people usually type. (This is slightly more
-// permissive than the /join command, which only auto-prefixes with #.) Returns
-// '' for anything that isn't a valid target so the Join button stays disabled:
-// channel names can't contain whitespace, and a lone prefix has no name — either
-// would otherwise send a JOIN the server just rejects.
+// Settle the channel prefix (ensureChannelPrefix: bare names get a leading #),
+// then reject anything that isn't a valid target so the Join button stays
+// disabled: channel names can't contain whitespace, and a lone prefix has no
+// name — either would otherwise send a JOIN the server just rejects.
 const normalized = computed(() => {
   const raw = channel.value.trim();
   if (!raw || /\s/.test(raw)) return '';
-  const withPrefix = /^[#&+!]/.test(raw) ? raw : `#${raw}`;
+  const withPrefix = ensureChannelPrefix(raw);
   return withPrefix.length > 1 ? withPrefix : '';
 });
 
 function onJoin() {
   const target = normalized.value;
   if (!target) return;
-  // joinOrActivate switches to an already-open buffer or sends a JOIN; it only
-  // returns false when a JOIN had to go out but the socket is closed. Surface
-  // that so the click isn't a silent no-op (the modal still closes either way).
-  if (!buffers.joinOrActivate(props.networkId, target)) {
-    useToastsStore().push({
-      kind: 'warn',
-      title: 'Not connected',
-      body: `Can't join ${target} while disconnected.`,
-      networkId: props.networkId,
-      ttlMs: 5000,
-    });
-  }
+  // joinOrToast switches to an already-open buffer or sends a JOIN, and warns
+  // if the socket is closed so the click isn't a silent no-op. The modal still
+  // closes either way.
+  buffers.joinOrToast(props.networkId, target);
   emit('close');
 }
 

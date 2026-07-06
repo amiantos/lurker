@@ -172,6 +172,7 @@ import {
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
+import { ensureChannelPrefix } from '../utils/channelTarget.js';
 import {
   findActiveShortcode,
   findCompletedShortcode,
@@ -2730,7 +2731,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     }
     case 'join':
       if (rest[0]) {
-        const ch = rest[0].startsWith('#') ? rest[0] : `#${rest[0]}`;
+        const ch = ensureChannelPrefix(rest[0]);
         // A channel key is a single whitespace-free token — take just the next
         // arg, not the rest joined (which would fold trailing words into an
         // invalid, space-bearing key).

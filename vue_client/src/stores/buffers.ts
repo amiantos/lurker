@@ -885,6 +885,23 @@ export const useBuffersStore = defineStore('buffers', {
       if (ok) this.requestJoin(nid, channel);
       return ok;
     },
+    // "Join a channel from a button" — the shared path behind JoinChannelModal
+    // and the channel-list browser. joinOrActivate returns false only when a
+    // JOIN had to go out over a closed socket; surface that as an offline toast
+    // so the click isn't a silent no-op. Returns joinOrActivate's result.
+    joinOrToast(networkId: number | string, target: string): boolean {
+      const ok = this.joinOrActivate(networkId, target);
+      if (!ok) {
+        useToastsStore().push({
+          kind: 'warn',
+          title: 'Not connected',
+          body: `Can't join ${target} while disconnected.`,
+          networkId: typeof networkId === 'string' ? Number(networkId) : networkId,
+          ttlMs: 5000,
+        });
+      }
+      return ok;
+    },
     setJoined(networkId: number | string, target: string, joined: boolean) {
       // Resolve case-insensitively (#327): channel-joined/-parted already arrive
       // canonical from the server (canonicalChannelTarget), but fold here too so
