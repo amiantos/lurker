@@ -11,10 +11,10 @@
     "typecheck": "vue-tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.2.0",
+    "@fortawesome/fontawesome-free": "^7.3.0",
     "@simplewebauthn/browser": "^13.3.0",
     "pinia": "^3.0.4",
-    "vue": "^3.5.38",
+    "vue": "^3.5.39",
     "vue-router": "^5.1.0",
     "vuedraggable": "^4.1.0"
   },
@@ -23,8 +23,8 @@
     "@vitejs/plugin-vue": "^6.0.7",
     "postcss-hover-media-feature": "^1.0.2",
     "typescript": "^6.0.3",
-    "vite": "^8.0.16",
+    "vite": "^8.1.0",
     "vite-plugin-mkcert": "^2.1.0",
-    "vue-tsc": "^3.3.5"
+    "vue-tsc": "^3.3.6"
   }
 }
