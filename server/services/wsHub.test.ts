@@ -760,4 +760,31 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
     // so this isn't a vacuous 0 === 0.
     expect(computeTotalHighlights(u)).toBe(3 + (Number(systemFrame.highlights) || 0));
   });
+
+  it('buildOfflineBacklogFrames reuses a pre-walked enumeration identically to walking itself', () => {
+    // The connect snapshot materializes eachUserBufferTarget once and hands it to
+    // buildOfflineBacklogFrames so the per-network listBufferTargets/listNetworksForUser
+    // DB reads run 1× per snapshot, not once here and once in the live loop. This
+    // locks that the reuse path yields the exact same frames as the standalone walk.
+    const u = createUser('reuse').id;
+    const net = netFor(u, 'reusenet');
+    ins(net, '#a', 'one');
+    ins(net, 'dee', 'dm');
+    ins(net, '#closed', 'gone');
+    closeBuffer(u, net, '#closed');
+    ins(net, `:server:${net}`, 'notice');
+
+    const shape = (frames: ReturnType<typeof buildOfflineBacklogFrames>) =>
+      frames
+        .filter((f) => f.networkId === net)
+        .map((f) => `${f.target}|${f.kind}|${(f as { unread?: number }).unread ?? ''}`)
+        .sort();
+
+    const standalone = shape(buildOfflineBacklogFrames(u));
+    const reused = shape(buildOfflineBacklogFrames(u, undefined, [...eachUserBufferTarget(u)]));
+    expect(reused).toEqual(standalone);
+    // The closed buffer is absent and the server pseudo-buffer is present in both.
+    expect(standalone.some((s) => s.startsWith('#closed|'))).toBe(false);
+    expect(standalone.some((s) => s.startsWith(`:server:${net}|`))).toBe(true);
+  });
 });

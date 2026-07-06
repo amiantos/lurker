@@ -794,31 +794,37 @@ export function buildSystemHistoryReply(userId: number, msg: WsPayload): WsPaylo
 // connection exists — which a paused user can never establish. Reuses
 // buildBufferBacklog, which reads purely from the DB and reports joined:false
 // when no connection is tracking the channel.
-// `closed` defaults to a fresh query so standalone callers (tests) stay simple;
-// sendSnapshot passes the Set it already computed for the live loop to avoid a
-// redundant DB read per snapshot.
+// The frame for one offline buffer. The server pseudo-buffer ships its real
+// recent slice (one cheap read per network, and it's where the disconnect reason
+// the user wants lives); channel/DM buffers ship as lazy-load shells — that's
+// where the read cost and buffer count actually pile up on a long-lived account.
+// No live conn, so channelJoined folds #channels to parted and DMs to joined
+// (they never dim). Shared by buildOfflineBacklogFrames and the snapshot's single
+// enumeration pass so the offline carve-out lives in exactly one place.
+function buildOfflineFrame(userId: number, networkId: number, target: string): WsPayload {
+  return target.startsWith(':server:')
+    ? buildBufferBacklog(userId, networkId, target)
+    : buildBufferShell(userId, networkId, target, channelJoined(target));
+}
+
+// `closed` defaults to a fresh query so standalone callers (tests) stay simple.
+// `targets` lets the snapshot hand in the enumeration it already materialized for
+// the live loop, so a connect snapshot walks eachUserBufferTarget — and its
+// per-network listBufferTargets/listNetworksForUser DB reads — exactly ONCE
+// instead of once here and once in the live loop.
 export function buildOfflineBacklogFrames(
   userId: number,
   closed: Set<string> = closedKeySetForUser(userId),
+  targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId, closed),
 ): WsPayload[] {
   const frames: WsPayload[] = [];
-  for (const { networkId, target, conn } of eachUserBufferTarget(userId, closed)) {
+  for (const { networkId, target, conn } of targets) {
     // Offline backlog only: the app-scoped system buffer ships via its own frame,
     // and live networks are handled by the snapshot's live loop. eachUserBufferTarget
     // has already applied the closed-flag carve-out (nothing is joined offline, so
     // there's no autorejoin race to defend against here — unlike the live loop).
     if (networkId == null || conn) continue;
-    // The server pseudo-buffer ships its real recent slice (one cheap read per
-    // network, and it's where the disconnect reason the user wants lives).
-    // Channel/DM buffers ship as lazy-load shells — that's where the read cost
-    // and buffer count actually pile up on a long-lived account.
-    frames.push(
-      target.startsWith(':server:')
-        ? buildBufferBacklog(userId, networkId, target)
-        : // Offline: no live conn, so channelJoined folds #channels to parted
-          // and DMs to joined (they never dim).
-          buildBufferShell(userId, networkId, target, channelJoined(target)),
-    );
+    frames.push(buildOfflineFrame(userId, networkId, target));
   }
   return frames;
 }
@@ -1614,18 +1620,25 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const clearedState = listClearedStateForUser(userId);
     const closed = closedKeySetForUser(userId);
     const seedsMs = Date.now() - tSeeds;
+    // Walk the shared enumerator ONCE per snapshot and reuse it for both the live
+    // loop and the offline backlog. Each walk runs a listBufferTargets DB query
+    // (recursive CTE) per network plus listNetworksForUser (SELECT * + decryptRow),
+    // so materializing here — rather than iterating the generator separately in the
+    // live loop and again in buildOfflineBacklogFrames — keeps those per-network
+    // reads at 1× on this ping-timeout-sensitive path (#454/#460). The array holds
+    // buffer references (incl. live conns), which stay valid for the rest of this
+    // synchronous snapshot. The system buffer / :server: / closed-joined precedence
+    // and joined-channel-even-without-history rules all live in the enumerator.
+    const allTargets = [...eachUserBufferTarget(userId, closed)];
     const tOnline = Date.now();
     let maxSentId = ws.sinceId || 0;
     let bufferCount = 0;
     let unreadMs = 0;
     let sliceMs = 0;
-    // Live buffers come from the shared enumerator so this loop, the offline
-    // backlog, and the push-badge total can't disagree on the set (#454). It
-    // yields the system buffer and offline networks too — skip both here: the
-    // system buffer ships via its own frame above, and offline networks are
-    // handled by buildOfflineBacklogFrames below. Closed/joined precedence and
-    // the joined-channel-even-without-history rule already live in the enumerator.
-    for (const { networkId: nid, target, conn } of eachUserBufferTarget(userId, closed)) {
+    // Live loop: the enumerator yields the system buffer and offline networks too —
+    // skip both here. The system buffer ships via its own frame above, and offline
+    // networks are handled by buildOfflineBacklogFrames below (same materialized set).
+    for (const { networkId: nid, target, conn } of allTargets) {
       if (nid == null || !conn) continue;
       // Fresh-network branch: this connection just came online, so the client
       // has never received a backlog frame for any of its buffers this
@@ -1722,8 +1735,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // reattachToLive (buffers.ts activate() → 'history' mode:'latest'), the same
     // lazy path brand-new buffers already use. This keeps the connect snapshot
     // from reading recent backlog for every historical/offline buffer — the bulk
-    // of the synchronous read burst on a long-lived account.
-    for (const frame of buildOfflineBacklogFrames(userId, closed)) {
+    // of the synchronous read burst on a long-lived account. Reuses the enumeration
+    // materialized above so this doesn't re-run the per-network DB reads.
+    for (const frame of buildOfflineBacklogFrames(userId, closed, allTargets)) {
       for (const e of frame.events as Array<{ id?: number | null }>) {
         if (e.id != null && e.id > maxSentId) maxSentId = e.id;
       }
