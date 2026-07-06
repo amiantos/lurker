@@ -710,12 +710,30 @@ type AnyTableDef = {
   blobColumns?: string[];
 };
 
+// Columns re-derived on the target instance rather than round-tripped verbatim,
+// so they legitimately differ from the source and must be excluded from the
+// payload comparison. `ignored_masks` is the only table re-inserted through a
+// service on import (ignoreRulesService.add, for regex/expiry validation — see
+// importService), and that path lets the DB stamp `created_at` at import time
+// instead of preserving the original. Every other table round-trips created_at
+// via the positional insert, so this exclusion is deliberately table-scoped —
+// widening it would mask a real regression elsewhere. (Comparing created_at
+// here is also what made this test flaky: alice's seed time and bob's import
+// time differ whenever the clock ticks a second mid-run.)
+// `satisfies` keeps the keys checked against the real table registry — a
+// mistyped table name is a compile error rather than a silently-ineffective
+// exclusion (which would let the flake back in) — while the `Record<string, …>`
+// annotation keeps it indexable by the arbitrary `table` string below.
+const VOLATILE_COLUMNS: Record<string, string[]> = {
+  ignored_masks: ['created_at'],
+} satisfies Partial<Record<keyof typeof EXPORT_TABLES, string[]>>;
+
 // Columns that legitimately differ between the source and target accounts.
 // Per-table FK-rekey columns are taken from the registry; PKs of
 // autoincrement tables also differ; matched_rule_id can legitimately turn
 // to NULL on import if its rule wasn't carried over (it shouldn't here).
-function projectionFor(_table: string, def: AnyTableDef): string[] {
-  const skip = new Set<string>();
+function projectionFor(table: string, def: AnyTableDef): string[] {
+  const skip = new Set<string>(VOLATILE_COLUMNS[table] ?? []);
   if (def.pk) skip.add(def.pk);
   if (def.fkRekey) for (const col of Object.keys(def.fkRekey)) skip.add(col);
   const blobColumns = def.blobColumns ?? [];
@@ -930,6 +948,15 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
 
     // BLOBs aren't in the column projection — verify separately.
     expect(blobsFor(bob.id)).toEqual(blobsFor(alice.id));
+
+    // created_at for ignored_masks is excluded from the payload diff above
+    // (VOLATILE_COLUMNS) because import re-stamps it. Assert it's still
+    // populated on the imported side rather than dropped/null.
+    const bobMaskTimes = db
+      .prepare('SELECT created_at FROM ignored_masks WHERE user_id = ?')
+      .all(bob.id) as Array<{ created_at: string | null }>;
+    expect(bobMaskTimes.length).toBeGreaterThan(0);
+    expect(bobMaskTimes.every((r) => !!r.created_at)).toBe(true);
 
     // Structural FK sanity: every per-network row in bob's tables must
     // point at one of bob's networks, not alice's.
