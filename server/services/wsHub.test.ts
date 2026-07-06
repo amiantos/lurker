@@ -781,7 +781,7 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
         .sort();
 
     const standalone = shape(buildOfflineBacklogFrames(u));
-    const reused = shape(buildOfflineBacklogFrames(u, undefined, [...eachUserBufferTarget(u)]));
+    const reused = shape(buildOfflineBacklogFrames(u, [...eachUserBufferTarget(u)]));
     expect(reused).toEqual(standalone);
     // The closed buffer is absent and the server pseudo-buffer is present in both.
     expect(standalone.some((s) => s.startsWith('#closed|'))).toBe(false);

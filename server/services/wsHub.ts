@@ -807,15 +807,14 @@ function buildOfflineFrame(userId: number, networkId: number, target: string): W
     : buildBufferShell(userId, networkId, target, channelJoined(target));
 }
 
-// `closed` defaults to a fresh query so standalone callers (tests) stay simple.
 // `targets` lets the snapshot hand in the enumeration it already materialized for
 // the live loop, so a connect snapshot walks eachUserBufferTarget — and its
 // per-network listBufferTargets/listNetworksForUser DB reads — exactly ONCE
-// instead of once here and once in the live loop.
+// instead of once here and once in the live loop. Standalone callers (tests) omit
+// it and get a fresh walk (which computes its own closed set).
 export function buildOfflineBacklogFrames(
   userId: number,
-  closed: Set<string> = closedKeySetForUser(userId),
-  targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId, closed),
+  targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId),
 ): WsPayload[] {
   const frames: WsPayload[] = [];
   for (const { networkId, target, conn } of targets) {
@@ -1619,7 +1618,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);
     const closed = closedKeySetForUser(userId);
-    const seedsMs = Date.now() - tSeeds;
     // Walk the shared enumerator ONCE per snapshot and reuse it for both the live
     // loop and the offline backlog. Each walk runs a listBufferTargets DB query
     // (recursive CTE) per network plus listNetworksForUser (SELECT * + decryptRow),
@@ -1629,7 +1627,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // buffer references (incl. live conns), which stay valid for the rest of this
     // synchronous snapshot. The system buffer / :server: / closed-joined precedence
     // and joined-channel-even-without-history rules all live in the enumerator.
+    // Counted in seedsMs (it's a bulk pre-loop read like readState/clearedState),
+    // so onlineMs/offlineMs stay pure per-buffer frame-build time.
     const allTargets = [...eachUserBufferTarget(userId, closed)];
+    const seedsMs = Date.now() - tSeeds;
     const tOnline = Date.now();
     let maxSentId = ws.sinceId || 0;
     let bufferCount = 0;
@@ -1737,7 +1738,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // from reading recent backlog for every historical/offline buffer — the bulk
     // of the synchronous read burst on a long-lived account. Reuses the enumeration
     // materialized above so this doesn't re-run the per-network DB reads.
-    for (const frame of buildOfflineBacklogFrames(userId, closed, allTargets)) {
+    for (const frame of buildOfflineBacklogFrames(userId, allTargets)) {
       for (const e of frame.events as Array<{ id?: number | null }>) {
         if (e.id != null && e.id > maxSentId) maxSentId = e.id;
       }
