@@ -104,6 +104,47 @@ describe('listEnabledForUser', () => {
   });
 });
 
+describe('failure tracking (#441)', () => {
+  function freshSub(endpoint: string) {
+    const out = mod.upsertSubscription(alice.id, { endpoint, p256dh: 'k', auth: 'a' });
+    return (out as Extract<typeof out, { ok: true }>).sub!;
+  }
+
+  it('recordFailure increments and returns the running count', () => {
+    const sub = freshSub('https://example.test/fail-count');
+    expect(sub.fail_count).toBe(0);
+    expect(mod.recordFailure(sub.id)).toBe(1);
+    expect(mod.recordFailure(sub.id)).toBe(2);
+    expect(mod.getByEndpoint(sub.endpoint)!.fail_count).toBe(2);
+  });
+
+  it('touchSubscription clears the failure streak on success', () => {
+    const sub = freshSub('https://example.test/fail-reset');
+    mod.recordFailure(sub.id);
+    mod.recordFailure(sub.id);
+    mod.touchSubscription(sub.id);
+    expect(mod.getByEndpoint(sub.endpoint)!.fail_count).toBe(0);
+  });
+
+  it('disableSubscription drops the row out of listEnabledForUser without deleting it', () => {
+    const sub = freshSub('https://example.test/fail-disable');
+    mod.disableSubscription(sub.id);
+    expect(mod.getByEndpoint(sub.endpoint)).not.toBeNull();
+    expect(mod.getByEndpoint(sub.endpoint)!.enabled).toBe(false);
+    expect(mod.listEnabledForUser(alice.id).find((s) => s.id === sub.id)).toBeFalsy();
+  });
+
+  it('re-subscribing re-enables and resets the streak', () => {
+    const sub = freshSub('https://example.test/fail-resub');
+    mod.recordFailure(sub.id);
+    mod.disableSubscription(sub.id);
+    freshSub('https://example.test/fail-resub'); // same endpoint → upsert UPDATE path
+    const after = mod.getByEndpoint('https://example.test/fail-resub')!;
+    expect(after.enabled).toBe(true);
+    expect(after.fail_count).toBe(0);
+  });
+});
+
 describe('app_meta', () => {
   it('getMeta / setMeta round-trip', () => {
     expect(mod.getMeta('vapid_public')).toBeNull();

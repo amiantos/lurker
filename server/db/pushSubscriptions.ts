@@ -14,6 +14,7 @@ export interface PushSubscriptionRow {
   enabled: number;
   created_at: string;
   last_seen_at: string;
+  fail_count: number;
 }
 
 /** Projected push subscription with boolean `enabled`. */
@@ -27,6 +28,7 @@ export interface PushSubscription {
   enabled: boolean;
   created_at: string;
   last_seen_at: string;
+  fail_count: number;
 }
 
 function rowToSub(row: PushSubscriptionRow | undefined): PushSubscription | null {
@@ -41,6 +43,7 @@ function rowToSub(row: PushSubscriptionRow | undefined): PushSubscription | null
     enabled: !!row.enabled,
     created_at: row.created_at,
     last_seen_at: row.last_seen_at,
+    fail_count: row.fail_count ?? 0,
   };
 }
 
@@ -107,7 +110,8 @@ export function upsertSubscription(
       `
       UPDATE push_subscriptions
       SET p256dh = ?, auth = ?, user_agent = COALESCE(?, user_agent),
-          enabled = 1, last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          enabled = 1, fail_count = 0,
+          last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE endpoint = ?
     `,
     ).run(p256dh, auth, userAgent || null, endpoint);
@@ -156,10 +160,30 @@ export function deleteById(id: number, userId: number): void {
 export function touchSubscription(id: number): void {
   // strftime with Z suffix so the value parses back as UTC on the client.
   // SQLite's bare datetime('now') returns 'YYYY-MM-DD HH:MM:SS' with no TZ
-  // marker, which Date.parse() then treats as local time.
+  // marker, which Date.parse() then treats as local time. A successful
+  // delivery also clears the failure streak (#441).
   db.prepare(
-    "UPDATE push_subscriptions SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
+    "UPDATE push_subscriptions SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), fail_count = 0 WHERE id = ?",
   ).run(id);
+}
+
+// Record a non-permanent delivery failure and return the new consecutive-failure
+// count (#441). The caller disables the subscription once this crosses a
+// threshold so a chronically-broken endpoint stops erroring on every push; any
+// success (touchSubscription) or re-subscribe (upsertSubscription) resets it.
+export function recordFailure(id: number): number {
+  db.prepare('UPDATE push_subscriptions SET fail_count = fail_count + 1 WHERE id = ?').run(id);
+  const row = db.prepare('SELECT fail_count FROM push_subscriptions WHERE id = ?').get(id) as
+    | { fail_count: number }
+    | undefined;
+  return row?.fail_count ?? 0;
+}
+
+// Stop delivering to a subscription without deleting it, so the row (and its
+// history) survives and a later re-subscribe re-enables it. Used when an
+// endpoint has failed too many times in a row (#441).
+export function disableSubscription(id: number): void {
+  db.prepare('UPDATE push_subscriptions SET enabled = 0 WHERE id = ?').run(id);
 }
 
 // app_meta single-key store for VAPID config

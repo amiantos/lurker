@@ -898,6 +898,11 @@ ensureColumn('upload_history', 'removed', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('dcc_transfers', 'peer_host', 'TEXT');
 ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
 
+// Consecutive push-delivery failures (#441): reset to 0 on any success, bumped
+// on a non-permanent error, and used to disable a chronically-failing endpoint
+// so it stops erroring on every notification.
+ensureColumn('push_subscriptions', 'fail_count', 'INTEGER NOT NULL DEFAULT 0');
+
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.

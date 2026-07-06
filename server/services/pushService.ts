@@ -7,12 +7,20 @@ import {
   listEnabledForUser,
   hasEnabledForUser,
   deleteById,
+  disableSubscription,
+  recordFailure,
   touchSubscription,
   getMeta,
   setMeta,
 } from '../db/pushSubscriptions.js';
 
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:lurker@localhost';
+
+// A subscription that draws this many concrete 4xx rejections in a row — i.e.
+// not an outright 404/410 (handled immediately) and not a transient 429/5xx or
+// transport-level error (never counted) — is disabled so it stops erroring on
+// every push (#441). Any success resets the streak.
+const MAX_CONSECUTIVE_FAILURES = 5;
 
 let vapidConfigured = false;
 let publicKey: string | null = null;
@@ -78,6 +86,7 @@ export async function deliver(
     const err = r.reason as webpush.WebPushError & { statusCode?: number };
     const status = err?.statusCode;
     if (status === 404 || status === 410) {
+      // The push service says this endpoint is gone for good — drop it.
       deleteById(sub.id, sub.user_id);
       dropped += 1;
       return;
@@ -88,9 +97,36 @@ export async function deliver(
     } catch (_) {
       /* ignore */
     }
+    // Don't count a failure toward the disable threshold unless the push
+    // service actually rejected the subscription with an HTTP status. Rate
+    // limits (429), server errors (5xx), and transport-level errors with no
+    // statusCode (DNS/connect blips, timeouts) are the network or the service
+    // having a bad moment — not a dead subscription. The subscription lives and
+    // we simply didn't deliver this time; otherwise a short outage during a
+    // burst of notifications could disable a perfectly healthy endpoint.
+    if (status == null || status === 429 || status >= 500) {
+      dropped += 1;
+      return;
+    }
+    // A concrete 4xx rejection (auth rejects, malformed requests, gone-but-not-
+    // 404/410) is a strike against this subscription. After enough consecutive
+    // strikes we disable it so it stops erroring on every notification; a
+    // re-subscribe re-enables it. This also bounds the console noise to a
+    // handful of lines per broken endpoint instead of one on every push (#441).
+    const failures = recordFailure(sub.id);
     const body = typeof err?.body === 'string' ? err.body.slice(0, 500) : '';
+    if (failures >= MAX_CONSECUTIVE_FAILURES) {
+      disableSubscription(sub.id);
+      dropped += 1;
+      console.warn(
+        `[push] disabled sub ${sub.id} (${host}) after ${failures} consecutive failures: ` +
+          `status=${status ?? '?'} message=${err?.message || String(err)} body=${body}`,
+      );
+      return;
+    }
+    dropped += 1;
     console.warn(
-      `[push] delivery failed for sub ${sub.id} (${host}): ` +
+      `[push] delivery failed for sub ${sub.id} (${host}) [${failures}/${MAX_CONSECUTIVE_FAILURES}]: ` +
         `status=${status ?? '?'} message=${err?.message || String(err)} body=${body}`,
     );
   });

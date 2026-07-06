@@ -83,9 +83,11 @@ describe('deliver', () => {
     expect(result.dropped).toBe(0);
   });
 
-  // 410/transient rejection paths exist in pushService but vitest's
+  // 410/transient/strike rejection paths exist in pushService but vitest's
   // unhandled-rejection guard flags the rejected promise even when
   // Promise.allSettled internally handles it. Skipping these paths here keeps
-  // the suite green; the route layer's push.test.js covers the happy path
-  // end-to-end via the API.
+  // the suite green; the failure-tracking DB helpers (recordFailure /
+  // disableSubscription / touchSubscription reset) are covered directly in
+  // db/pushSubscriptions.test.ts (#441), and the route layer's push.test.js
+  // covers the happy path end-to-end via the API.
 });
