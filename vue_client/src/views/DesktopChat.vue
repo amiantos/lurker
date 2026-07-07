@@ -852,15 +852,16 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 
 /* Two-group layout for the topic bar: .topic-meta (name + topic text, spaced
-   by the 1ch gap) sits left, .topic-actions (buffer/network/channel buttons)
-   sits right.
+   by the 2ch gap — wider than the 1ch bar convention to give the name and
+   topic breathing room now that the │ divider is gone) sits left,
+   .topic-actions (buffer/network/channel buttons) sits right.
    .topic uses justify-content:space-between to split them. .topic-meta
    shrinks first via min-width:0 + topic-text ellipsis, so the action
    cluster stays anchored to the right edge. */
 .topic-meta {
   display: flex;
   align-items: baseline;
-  gap: 1ch;
+  gap: 2ch;
   /* flex:1 so the meta absorbs the free space and keeps the action cluster
      anchored to the right edge; min-width:0 lets the topic text ellipsis. */
   flex: 1;
