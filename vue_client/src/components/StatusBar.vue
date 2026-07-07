@@ -534,10 +534,11 @@ function onToggleColorPicker() {
 .seg.split.bad {
   color: var(--bad);
 }
-/* Keyboard glyph standing in for the old "Typing:" label — nudge it off the
-   first nick (a bare inline space sits too tight against the icon). */
+/* Keyboard glyph standing in for the old "Typing:" label — one character of
+   space off the first nick, matching the 1ch gap/pipe spacing used across the
+   bar. */
 .seg.typing i {
-  margin-right: 0.5ch;
+  margin-right: 1ch;
 }
 .seg.jump-unread,
 .seg.return-present {

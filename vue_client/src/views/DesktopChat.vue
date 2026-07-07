@@ -90,7 +90,6 @@
       <div class="topic-meta">
         <span v-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
         <template v-if="active && topic">
-          <span class="sep">│</span>
           <button
             type="button"
             class="topic-text"
@@ -812,9 +811,6 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .topic .buffer {
   color: var(--accent);
 }
-.topic .sep {
-  color: var(--border);
-}
 .topic .topic-text {
   color: var(--fg-muted);
   text-overflow: ellipsis;
@@ -855,8 +851,9 @@ useChatBootstrap({ onJump: onJumpToMessage });
   grid-area: input;
 }
 
-/* Two-group layout for the topic bar: .topic-meta (name + │ + topic text)
-   sits left, .topic-actions (buffer/network/channel buttons) sits right.
+/* Two-group layout for the topic bar: .topic-meta (name + topic text, spaced
+   by the 1ch gap) sits left, .topic-actions (buffer/network/channel buttons)
+   sits right.
    .topic uses justify-content:space-between to split them. .topic-meta
    shrinks first via min-width:0 + topic-text ellipsis, so the action
    cluster stays anchored to the right edge. */
