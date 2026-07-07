@@ -33,7 +33,33 @@ export function startAppBadge(): void {
   scope = effectScope(true);
   scope.run(() => {
     const buffers = useBuffersStore();
+    // The change-only watcher below is one of TWO writers of the app-icon badge:
+    // the service worker also writes it from push payloads (syncAppBadge in
+    // public/sw.js) while the app is hidden/closed — the exact window this
+    // in-page watcher can't reach. So the badge can be left showing a count the
+    // store never matches once the app returns to the foreground with an
+    // unchanged total (the watcher only fires on a CHANGE, so it never re-clears
+    // it). Re-assert the current store total whenever the page returns to the
+    // foreground, so the page always wins over a stale service-worker write (#463).
     watch(() => buffers.totalHighlights, applyBadge, { immediate: true });
+    // Two return-to-foreground signals, mirroring usePresence's listener set:
+    // visibilitychange covers a tab/PWA that was document.hidden (mobile,
+    // minimized, tab-discarded); window focus covers a desktop PWA window that
+    // stayed visibilityState='visible' but lost focus — e.g. across an OS sleep
+    // where the socket dropped — which fires no visibilitychange on return. The
+    // !document.hidden guard keeps focus-while-hidden a no-op. These live for the
+    // whole session (the detached scope is never stopped — see above), which is
+    // correct: they must survive logout→login and keep reconciling.
+    if (typeof document !== 'undefined') {
+      const reconcile = () => {
+        if (!document.hidden) applyBadge(buffers.totalHighlights);
+      };
+      document.addEventListener('visibilitychange', reconcile);
+      // Guarded independently of document: a partial DOM shim could expose one
+      // without the other, and losing focus reconciliation shouldn't cost us the
+      // visibilitychange one.
+      if (typeof window !== 'undefined') window.addEventListener('focus', reconcile);
+    }
   });
 }
 
