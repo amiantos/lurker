@@ -73,9 +73,9 @@ describe('computeFallbackNick', () => {
 
 describe('isServerBufferDeniedNumeric (#342)', () => {
   it('denies numerics another handler already renders or that would flood', () => {
-    // MOTD block, /LIST (cached off-wire), auto-WHO replies, MONITOR presence,
-    // and nick-collision errors are surfaced elsewhere — the raw handler skips
-    // them so they aren't duplicated in the server buffer.
+    // MOTD block, /LIST (cached off-wire), auto-WHO replies, NAMES (nicklist),
+    // MONITOR presence, and nick-collision errors are surfaced elsewhere — the
+    // raw handler skips them so they aren't duplicated in the server buffer.
     for (const n of [
       '372',
       '375',
@@ -87,6 +87,8 @@ describe('isServerBufferDeniedNumeric (#342)', () => {
       '352',
       '315',
       '354', // WHO
+      '353',
+      '366', // NAMES
       '730',
       '731',
       '732',
@@ -99,8 +101,8 @@ describe('isServerBufferDeniedNumeric (#342)', () => {
   });
 
   it('shows everything else by default — there is no curated allowlist', () => {
-    // The whole point of #342: greeting, whois, oper, time, names, topic and
-    // even ISUPPORT all fall through to the raw renderer instead of vanishing.
+    // The whole point of #342: greeting, whois, oper, time, topic and even
+    // ISUPPORT all fall through to the raw renderer instead of vanishing.
     for (const n of [
       '001',
       '002',
@@ -113,7 +115,6 @@ describe('isServerBufferDeniedNumeric (#342)', () => {
       '319',
       '381',
       '391',
-      '353',
       '332',
       '364',
     ]) {
