@@ -16,6 +16,8 @@ let listMessages: typeof import('./messages.js').listMessages;
 let listMessagesAround: typeof import('./messages.js').listMessagesAround;
 let searchMessages: typeof import('./messages.js').searchMessages;
 let countNewer: typeof import('./messages.js').countNewer;
+let countServerBufferUnread: typeof import('./messages.js').countServerBufferUnread;
+let typeCountsForUnread: typeof import('./messages.js').typeCountsForUnread;
 let countHighlightsNewer: typeof import('./messages.js').countHighlightsNewer;
 let listUserHighlights: typeof import('./messages.js').listUserHighlights;
 let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
@@ -24,16 +26,20 @@ let listSpeakers: typeof import('./messages.js').listSpeakers;
 let listBufferTargets: typeof import('./messages.js').listBufferTargets;
 let loadHistoryWindow: typeof import('./messages.js').loadHistoryWindow;
 let listActiveTargetsInWindow: typeof import('./messages.js').listActiveTargetsInWindow;
+let demoteLegacyServerStatusNotices: typeof import('./index.js').demoteLegacyServerStatusNotices;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
   ({ createNetwork } = await import('./networks.js'));
+  ({ demoteLegacyServerStatusNotices } = await import('./index.js'));
   ({
     insertMessage,
     listMessages,
     listMessagesAround,
     searchMessages,
     countNewer,
+    countServerBufferUnread,
+    typeCountsForUnread,
     countHighlightsNewer,
     listUserHighlights,
     maxIdForBuffer,
@@ -77,6 +83,104 @@ function event(networkId: number, target: string, type: string, nick: string | n
 function altsFor(networkId: number, target: string) {
   return listMessages(networkId, target, { limit: 1000 }).map((m) => m.alt);
 }
+
+describe('countServerBufferUnread (#470)', () => {
+  let seq = 0;
+  const net = () => {
+    const user = createUser(`sbu-${++seq}`);
+    return createNetwork(user.id, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'me' })!.id;
+  };
+  const put = (
+    networkId: number,
+    target: string,
+    type: string,
+    opts: { nick?: string; notable?: boolean; fromIgnored?: boolean; mirrored?: boolean } = {},
+  ) =>
+    Number(
+      insertMessage({
+        networkId,
+        target,
+        time: new Date().toISOString(),
+        type,
+        nick: opts.nick ?? 'someone',
+        text: 'x',
+        self: false,
+        notable: opts.notable,
+        fromIgnored: opts.fromIgnored,
+        mirrored: opts.mirrored,
+      }).id,
+    );
+
+  it('counts errors, inbound notices/messages, and mirrors; skips Lurker status notices', () => {
+    const n = net();
+    const target = `:server:${n}`;
+    put(n, target, 'error'); // killed/banned/etc. — countNewer would NOT count this
+    put(n, target, 'notice', { nick: 'NickServ' }); // inbound notice
+    put(n, target, 'message', { nick: 'irc.server' }); // server message
+    put(n, target, 'notice', { nick: 'ChanServ', mirrored: true }); // closed-buffer mirror → still counts
+    put(n, target, 'notice', { nick: 'lurker', notable: false }); // "Connecting…" — must NOT count
+    put(n, target, 'notice', { nick: 'lurker', notable: false }); // "Reconnecting…" — must NOT count
+
+    expect(countServerBufferUnread(n, target, 0)).toBe(4);
+    // The generic channel count disagrees on BOTH axes: it drops the 'error' but
+    // counts the two notable=0 Lurker status notices (it ignores the flag) — so it
+    // sees the 5 notice/message rows and misses the error. Exactly why :server:
+    // needs its own count.
+    expect(countNewer(n, target, 0)).toBe(5);
+  });
+
+  it('honors the read pointer and excludes ignored senders', () => {
+    const n = net();
+    const target = `:server:${n}`;
+    const a = put(n, target, 'notice', { nick: 'a' });
+    put(n, target, 'notice', { nick: 'b' });
+    put(n, target, 'notice', { nick: 'spammer', fromIgnored: true }); // ignored → not counted
+    expect(countServerBufferUnread(n, target, 0)).toBe(2);
+    expect(countServerBufferUnread(n, target, a)).toBe(1); // only lines after `a`
+  });
+
+  it('returns 0 when every server line is a non-notable Lurker status notice', () => {
+    const n = net();
+    const target = `:server:${n}`;
+    put(n, target, 'notice', { nick: 'lurker', notable: false });
+    put(n, target, 'notice', { nick: 'lurker', notable: false });
+    expect(countServerBufferUnread(n, target, 0)).toBe(0);
+  });
+
+  it('typeCountsForUnread: :server: counts errors, other buffers do not — matches the count queries', () => {
+    // This is the rule the live read-state-broadcast trigger uses (wsHub). A
+    // :server: 'error' (a disconnect/quit echo, a kill/ban) must count here, or
+    // its badge wouldn't refresh until the next ordinary countable event — the
+    // delayed-badge bug. Everything countNewer counts still counts everywhere.
+    expect(typeCountsForUnread(':server:1', 'error')).toBe(true);
+    expect(typeCountsForUnread(':server:1', 'notice')).toBe(true);
+    expect(typeCountsForUnread(':server:1', 'message')).toBe(true);
+    expect(typeCountsForUnread(':server:1', 'motd')).toBe(false); // motd never counts
+    // Channels/DMs keep the narrower set: an error there doesn't badge.
+    expect(typeCountsForUnread('#chan', 'error')).toBe(false);
+    expect(typeCountsForUnread('#chan', 'message')).toBe(true);
+    expect(typeCountsForUnread('bob', 'notice')).toBe(true);
+  });
+
+  it('backfill demotes historical Lurker :server: status notices, sparing inbound and channel rows', () => {
+    const n = net();
+    const server = `:server:${n}`;
+    // Simulate PRE-migration rows: all notable=1 (the column default), including
+    // Lurker's own status notices, which were only tagged notable=false going
+    // forward. A real inbound :server: notice and a #channel notice from a
+    // (coincidentally) 'lurker'-nicked sender must survive the backfill.
+    put(n, server, 'notice', { nick: 'lurker' }); // status notice → should be demoted
+    put(n, server, 'notice', { nick: 'NickServ' }); // inbound → keep
+    put(n, '#room', 'notice', { nick: 'lurker' }); // wrong buffer → keep (LIKE ':server:%' scope)
+    expect(countServerBufferUnread(n, server, 0)).toBe(2);
+    expect(countServerBufferUnread(n, '#room', 0)).toBe(1);
+
+    demoteLegacyServerStatusNotices();
+
+    expect(countServerBufferUnread(n, server, 0)).toBe(1); // only the status notice dropped
+    expect(countServerBufferUnread(n, '#room', 0)).toBe(1); // channel row untouched
+  });
+});
 
 describe('hasConversationForTarget (#439)', () => {
   it('is true only when a non-notice message exists for the target', () => {

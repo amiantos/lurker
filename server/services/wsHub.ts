@@ -32,11 +32,12 @@ import {
   listBufferTargets,
   listSpeakers,
   countNewer,
+  countServerBufferUnread,
   countHighlightsNewer,
   maxIdByBuffer,
   maxIdForBuffer,
   maxMessageId,
-  COUNTABLE_TYPES,
+  typeCountsForUnread,
 } from '../db/messages.js';
 import {
   listReadStateForUser,
@@ -326,7 +327,12 @@ function computeUnreadFor(
     return { lastReadId: lastReadId || 0, unread, highlights: unread, highlightsCapped: false };
   }
   const nid = networkId as number;
-  const unread = countNewer(nid, target, lastReadId);
+  // The server pseudo-buffer applies a notability filter (#470): routine
+  // Lurker-generated connection-status notices don't mark it unread, but errors,
+  // inbound notices, and closed-buffer mirrors do. Channels/DMs count normally.
+  const unread = target.startsWith(':server:')
+    ? countServerBufferUnread(nid, target, lastReadId)
+    : countNewer(nid, target, lastReadId);
   // A DM is inherently a mention of you, so — like the system buffer — every
   // unread line counts as a highlight. This lights the buffer-list row up in
   // the highlight color and shows the ● badge, surfacing unread DMs above
@@ -1318,8 +1324,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // Countable persisted events change the buffer's unread/highlight counts
     // for this user. Broadcast the recomputed read-state so every tab —
     // including inactive ones — reflects the new badge without the client
-    // having to mirror the server's counting logic.
-    if (decorated.id != null && decorated.target && COUNTABLE_TYPES.has(decorated.type)) {
+    // having to mirror the server's counting logic. The `:server:` buffer also
+    // counts 'error' lines (a disconnect/quit echo, a kill/ban); without matching
+    // that here the badge wouldn't refresh until the NEXT countable event landed
+    // (e.g. a reconnect's "Connecting…" notice) — the delayed-badge bug (#470).
+    if (
+      decorated.id != null &&
+      decorated.target &&
+      typeCountsForUnread(decorated.target, decorated.type)
+    ) {
       const lastReadId = getReadState(eventUserId, decorated.networkId, decorated.target);
       broadcastReadState(eventUserId, decorated.networkId, decorated.target, lastReadId);
     }

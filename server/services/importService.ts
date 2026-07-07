@@ -291,6 +291,10 @@ async function streamMessagesInBatches(
       // mirrored (#439) was added later too — same NOT NULL fallback so a
       // pre-#439 archive (no `mirrored` key) doesn't fail the insert.
       if (row.mirrored === undefined) row.mirrored = 0;
+      // notable (#470) was added later — pre-#470 archives omit it and the column
+      // is NOT NULL. Default to 1 (notable), matching the column default: old
+      // history predates the server-buffer notability model, so it all counts.
+      if (row.notable === undefined) row.notable = 1;
       const result = insertOne(stmt, cols, row);
       messagesMap.set(original.id, result.lastInsertRowid);
       inserted += 1;

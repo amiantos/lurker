@@ -172,6 +172,7 @@ export const EXPORT_TABLES = Object.freeze({
       'alt',
       'from_ignored',
       'mirrored',
+      'notable',
     ],
   },
 
