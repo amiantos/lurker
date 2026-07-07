@@ -891,6 +891,13 @@ export class IrcConnection {
       this.useMonitor = false;
       this.monitorLimit = 0;
       this.pendingMonitorSeed = false;
+      // Safety-net presence sweep. The primary one runs in 'socket close',
+      // which fires on every disconnect (including auto-reconnect blips), so it
+      // has almost always swept already by the time this terminal 'close'
+      // fires. This covers any clean-close path that somehow skipped it;
+      // markAllPeersOffline is idempotent and disposed-guarded, so the double
+      // call is a no-op.
+      this.markAllPeersOffline();
       this.setState('disconnected');
     });
 
@@ -1032,6 +1039,21 @@ export class IrcConnection {
     // log line.
     c.on('socket close', (err: Record<string, unknown>) => {
       this.setState('disconnected');
+      // Our socket to this network just dropped — from our vantage point every
+      // peer we track here is now unreachable, so mark them all offline. This is
+      // the fix for the "stuck online" gap on networks without MONITOR: if a
+      // peer quit while we were disconnected we never saw their QUIT, but our own
+      // disconnect is a discontinuity we DO observe, so we stop asserting a stale
+      // 'online'. 'socket close' (not 'close') is the hook: irc-framework
+      // auto-reconnects a blip internally and emits only 'socket close' +
+      // 'reconnecting' — it reserves 'close' for a terminal give-up/dispose
+      // (connection.js:111 always fires 'socket close'; :141 fires 'close' only
+      // when it won't retry), so sweeping in 'close' alone would miss the common
+      // reconnect. On reconnect the peers we can still observe are re-lit
+      // (MONITOR re-seed + WHO-on-join); the rest stay honestly offline. No
+      // came-online suppression — a reconnect re-firing "came online" for peers
+      // still around is the honest signal, and toasts are already rate-limited.
+      this.markAllPeersOffline();
       // Release this socket's identd mapping (a reconnect re-registers via the
       // 'raw socket connected' handler above and gets a fresh handle).
       unregisterIdent(this.identdId);
@@ -1941,13 +1963,23 @@ export class IrcConnection {
         const m = ch.members.get((u.nick as string).toLowerCase());
         if (!m) continue;
         const next = !!u.away;
-        // Bridge the WHO away flag to the DM/friend presence rail for tracked
-        // peers. away-notify keeps presence live, but it doesn't fire on join —
-        // so without this a friend who's away when we (re)connect and share a
-        // channel would read as online. The transition gates in markPeerEvent
-        // make this idempotent: 'away' sets away; 'back' only clears a stale
-        // away and otherwise no-ops, so it never disturbs online/offline.
-        this.markPeerEvent(u.nick as string, next ? 'away' : 'back');
+        // Bridge the WHO snapshot to the DM/friend presence rail for tracked
+        // peers. away-notify doesn't fire on join, so this is where a peer we
+        // share a channel with gets (re-)established — critically on reconnect,
+        // where markAllPeersOffline has just forced every tracked peer offline
+        // and a friend still sitting in a channel we rejoin must be promoted
+        // back to online here (the server sends existing occupants via NAMES,
+        // not JOIN, so the 'join' handler never fires for them). 'away' sets
+        // away; for a present, non-away member 'online' promotes an
+        // offline/unknown row while 'back' clears a stale away. Each call is
+        // gated to its valid prior state, so at most one writes and an
+        // already-online peer is left untouched.
+        if (next) {
+          this.markPeerEvent(u.nick as string, 'away');
+        } else {
+          this.markPeerEvent(u.nick as string, 'online');
+          this.markPeerEvent(u.nick as string, 'back');
+        }
         if (m.away !== next) {
           m.away = next;
           changed = true;
@@ -2248,6 +2280,26 @@ export class IrcConnection {
     // push when no client is visible — mirrors the client-side toast gate.
     const cameOnline = state === 'online' && prevState === 'offline';
     this.publishPeerPresence(canonical, next, cameOnline);
+  }
+
+  // Mark every tracked peer on this network offline — called when our own
+  // socket drops (see the 'socket close' handler). trackedPeers is still
+  // populated at close time (it's only cleared/re-hydrated on the next
+  // 'registered'), so we can walk it directly. markPeerEvent's per-state gate
+  // keeps this a no-op for peers already offline, so a flap doesn't churn
+  // timestamps.
+  markAllPeersOffline(): void {
+    // Skip during dispose. dispose() sets disposed=true right before tearing the
+    // socket down, and on a *deletion* dispose the network row — and its
+    // peer_presence_state rows, via ON DELETE CASCADE — can already be gone by
+    // the time the async socket close fires. A writePeerState here would then
+    // hit a foreign-key violation and throw inside the close listener. This is
+    // the same reason publish()/publishEphemeral() gate on disposed; see
+    // ircManager.disposeNetwork/disposeUser (and the note at ircManager.ts:679).
+    if (this.disposed) return;
+    for (const nick of this.trackedPeers.keys()) {
+      this.markPeerEvent(nick, 'offline');
+    }
   }
 
   // Bulk-seed the MONITOR watch list from the tracked DM peers set. Called

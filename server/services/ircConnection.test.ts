@@ -31,6 +31,7 @@ import { createIdentdServer, unregisterIdent } from './identd.js';
 import { getRecent } from './systemLog.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import { getPeerPresence } from '../db/peerPresence.js';
 import { setUserSetting, deleteUserSetting } from '../db/settings.js';
 
 // The bare IrcConnections built below carry user_id: 1, and their join/part
@@ -1177,6 +1178,105 @@ describe('away/back presence logging (#310)', () => {
     conn.markPeerEvent('stranger', 'away', 'nope');
     const texts = getRecent(1).map((l) => l.text);
     expect(texts).not.toContain('Presence: stranger away (nope)');
+  });
+});
+
+// The "stuck online" fix for networks without MONITOR: our own disconnect
+// forces every tracked peer offline, and WHO-on-join re-lights the peers we can
+// still observe on reconnect (existing channel occupants arrive via NAMES, not
+// JOIN, so the 'join' handler never fires for them).
+describe('disconnect-offline sweep + WHO re-light (no-MONITOR presence)', () => {
+  function makeConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  it('markAllPeersOffline forces every tracked peer (DM + friend) offline', () => {
+    const conn = makeConn('disco');
+    conn.trackFriend('pal', 1);
+    conn.trackDmPeer('dmpal');
+    conn.markPeerEvent('pal', 'online');
+    conn.markPeerEvent('dmpal', 'away', 'brb');
+    conn.markAllPeersOffline();
+    expect(getPeerPresence(conn.network.id, 'pal')?.state).toBe('offline');
+    expect(getPeerPresence(conn.network.id, 'dmpal')?.state).toBe('offline');
+  });
+
+  it('never writes a row for an untracked nick during the sweep', () => {
+    const conn = makeConn('disco2');
+    conn.markPeerEvent('stranger', 'online'); // untracked → gated out, no row
+    conn.markAllPeersOffline();
+    expect(getPeerPresence(conn.network.id, 'stranger')).toBeNull();
+  });
+
+  // dispose() sets disposed=true before the socket tears down; on a deletion
+  // dispose the network row (+ its peer_presence_state rows) may already be gone
+  // when the async socket-close fires, so a write here would hit a FK violation.
+  // The guard makes the sweep a no-op in that window.
+  it('is a no-op when the connection is disposed (avoids a post-delete FK write)', () => {
+    const conn = makeConn('disco-disposed');
+    conn.trackFriend('pal', 1);
+    conn.markPeerEvent('pal', 'online');
+    conn.disposed = true;
+    conn.markAllPeersOffline();
+    expect(getPeerPresence(conn.network.id, 'pal')?.state).toBe('online'); // untouched
+  });
+
+  // The sweep is wired to 'socket close' (not 'close') because irc-framework
+  // auto-reconnects a blip internally and only emits 'socket close' — 'close' is
+  // reserved for a terminal give-up/dispose, so it would miss the common case.
+  it("fires the sweep from the 'socket close' event (the auto-reconnect path)", () => {
+    const conn = makeConn('sockclose');
+    conn.publish = vi.fn<typeof conn.publish>(); // skip the disconnected-state + error publishes
+    conn.trackFriend('pal', 1);
+    conn.markPeerEvent('pal', 'online');
+    conn.client.emit('socket close', {});
+    expect(getPeerPresence(conn.network.id, 'pal')?.state).toBe('offline');
+  });
+
+  it('WHO-on-join promotes a still-present peer back to online after the sweep', () => {
+    const conn = makeConn('relight');
+    conn.publish = vi.fn<typeof conn.publish>(); // assert on presence, not history
+    conn.client.user.nick = 'me';
+    conn.trackFriend('chanpal', 9);
+    // Peer shares a channel with us…
+    conn.client.emit('join', { channel: '#room', nick: 'chanpal', ident: 'u', hostname: 'h' });
+    // …then our socket drops (peer quit unseen or not — doesn't matter):
+    conn.markAllPeersOffline();
+    expect(getPeerPresence(conn.network.id, 'chanpal')?.state).toBe('offline');
+    // Reconnect: existing occupant arrives via WHO, not JOIN, and isn't away.
+    conn.client.emit('wholist', {
+      target: '#room',
+      users: [{ nick: 'chanpal', away: false }],
+    });
+    expect(getPeerPresence(conn.network.id, 'chanpal')?.state).toBe('online');
+  });
+
+  it('WHO-on-join records an away peer as away and clears a stale away to back', () => {
+    const conn = makeConn('relight-away');
+    conn.publish = vi.fn<typeof conn.publish>();
+    conn.client.user.nick = 'me';
+    conn.trackFriend('awaychan', 10);
+    conn.client.emit('join', { channel: '#room', nick: 'awaychan' });
+    conn.client.emit('wholist', { target: '#room', users: [{ nick: 'awaychan', away: true }] });
+    expect(getPeerPresence(conn.network.id, 'awaychan')?.state).toBe('away');
+    // A later WHO with the away flag cleared must move away → back (renders online).
+    conn.client.emit('wholist', { target: '#room', users: [{ nick: 'awaychan', away: false }] });
+    expect(getPeerPresence(conn.network.id, 'awaychan')?.state).toBe('back');
   });
 });
 
