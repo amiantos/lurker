@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Brad Root
+//Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
 import IRC, { ircLineParser } from 'irc-framework';
@@ -175,6 +175,9 @@ interface AwayState {
 interface IrcEvent {
   type: string;
   target?: string;
+  // Server-buffer notability (#470). Pass false on Lurker's own status notices
+  // so they render but don't mark the server buffer unread; omitted = notable.
+  notable?: boolean;
   [key: string]: unknown;
 }
 
@@ -573,6 +576,7 @@ export class IrcConnection {
         userhost: (event.userhost as string | null | undefined) ?? null,
         fromIgnored,
         mirrored: event.mirrored as boolean | undefined,
+        notable: event.notable as boolean | undefined,
       });
       enriched.id = id;
       enriched.alt = alt;
@@ -805,6 +809,7 @@ export class IrcConnection {
           type: 'notice',
           target: this.serverTarget(),
           nick: 'lurker',
+          notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
           text: `Connected as ${registeredNick} (configured nick ${this.network.nick} was unavailable).`,
         });
         // Defer the MONITOR + handshake until ISUPPORT tells us the server
@@ -900,6 +905,7 @@ export class IrcConnection {
           type: 'notice',
           target: this.serverTarget(),
           nick: 'lurker',
+          notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
           text: `Nick ${requested} is already in use.`,
         });
         return;
@@ -1058,6 +1064,7 @@ export class IrcConnection {
         type: 'notice',
         target: this.serverTarget(),
         nick: 'lurker',
+        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
         text,
       });
     });
@@ -1664,6 +1671,7 @@ export class IrcConnection {
               type: 'notice',
               target: this.serverTarget(),
               nick: 'lurker',
+              notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
               text: `Reclaimed nick ${this.regainNick}.`,
             });
           }
@@ -2268,6 +2276,7 @@ export class IrcConnection {
         type: 'notice',
         target: this.serverTarget(),
         nick: 'lurker',
+        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
         text: `MONITOR limit (${this.monitorLimit}) reached; live presence skipped for ${overflow} nick${overflow === 1 ? '' : 's'}.`,
       });
     }
@@ -2364,6 +2373,7 @@ export class IrcConnection {
         type: 'notice',
         target: this.serverTarget(),
         nick: 'lurker',
+        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
         text: `MONITOR limit (${this.monitorLimit}) reached; live presence skipped for ${nick}.`,
       });
       return true;
@@ -2560,6 +2570,7 @@ export class IrcConnection {
       type: 'notice',
       target: this.serverTarget(),
       nick: 'lurker',
+      notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
       text: `Connecting to ${this.network.host}:${this.network.port}${proto}…`,
     });
     this.client.connect({

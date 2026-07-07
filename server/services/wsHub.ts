@@ -32,6 +32,7 @@ import {
   listBufferTargets,
   listSpeakers,
   countNewer,
+  countServerBufferUnread,
   countHighlightsNewer,
   maxIdByBuffer,
   maxIdForBuffer,
@@ -326,7 +327,12 @@ function computeUnreadFor(
     return { lastReadId: lastReadId || 0, unread, highlights: unread, highlightsCapped: false };
   }
   const nid = networkId as number;
-  const unread = countNewer(nid, target, lastReadId);
+  // The server pseudo-buffer applies a notability filter (#470): routine
+  // Lurker-generated connection-status notices don't mark it unread, but errors,
+  // inbound notices, and closed-buffer mirrors do. Channels/DMs count normally.
+  const unread = target.startsWith(':server:')
+    ? countServerBufferUnread(nid, target, lastReadId)
+    : countNewer(nid, target, lastReadId);
   // A DM is inherently a mention of you, so — like the system buffer — every
   // unread line counts as a highlight. This lights the buffer-list row up in
   // the highlight color and shows the ● badge, surfacing unread DMs above

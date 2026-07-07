@@ -864,6 +864,37 @@ ensureColumn('messages', 'from_ignored', 'INTEGER NOT NULL DEFAULT 0');
 // doesn't double up its real copy. Old rows default to 0 (not a mirror).
 ensureColumn('messages', 'mirrored', 'INTEGER NOT NULL DEFAULT 0');
 
+// Server-buffer notability (#470). Lurker's own connection-status notices —
+// connecting/reconnecting, nick fallback/in-use/reclaimed, MONITOR-limit (all
+// published with nick:'lurker') — are stamped notable=0 so they still render in
+// the server buffer but never mark it unread. Genuine inbound notices/messages,
+// server errors (killed/banned/etc.), and closed-buffer NOTICE mirrors stay
+// notable=1 (the default). Only the :server: unread count consults this column
+// (countServerBufferUnread); channel/DM counts never filter on it, so they're
+// unaffected. Old rows default to 1 — no behavior change for existing history.
+const hadNotableColumn = columnExists('messages', 'notable');
+ensureColumn('messages', 'notable', 'INTEGER NOT NULL DEFAULT 1');
+// One-time backfill on the migration that introduces the column: existing rows
+// all defaulted to notable=1, so historical Lurker status notices ("Connecting…",
+// "Reconnecting…" etc. — published with nick:'lurker' into a :server: buffer)
+// would keep marking the server buffer unread until read. Demote them so the new
+// behavior applies to existing history too. Gated on the column having been
+// absent, so it runs exactly once — never a repeated full scan on later boots.
+if (!hadNotableColumn) demoteLegacyServerStatusNotices();
+
+// #470 backfill body, split out so it can be unit-tested against seeded rows
+// (a hoisted declaration, so the gated call above reaches it). Demotes only
+// Lurker's own status notices — nick:'lurker' NOTICEs in a :server: buffer — so
+// genuine inbound content in channels/DMs is never touched. The nick heuristic is
+// used only here for historical rows; going forward the notable flag is stamped
+// explicitly at publish, never inferred from nick.
+export function demoteLegacyServerStatusNotices(): void {
+  db.exec(
+    `UPDATE messages SET notable = 0
+       WHERE type = 'notice' AND nick = 'lurker' AND target LIKE ':server:%'`,
+  );
+}
+
 // Per-(user, buffer) /clear marker. cleared_before_message_id is the highest
 // message id hidden from the live view; messages with id > it remain visible.
 // cleared_at is the wall-clock time the user issued /clear (shown in the

@@ -118,6 +118,31 @@ describe('buildBufferBacklog', () => {
     expect(buildBufferBacklog(userId, networkId, 'carol').joined).toBe(true);
   });
 
+  it('server buffer unread counts notable lines only, and includes errors (#470)', () => {
+    const target = `:server:${networkId}`;
+    const putServer = (type: string, opts: { nick?: string; notable?: boolean } = {}) =>
+      insertMessage({
+        networkId,
+        target,
+        time: new Date().toISOString(),
+        type,
+        nick: opts.nick ?? 'server',
+        text: 'x',
+        self: false,
+        notable: opts.notable,
+      });
+    putServer('notice', { nick: 'lurker', notable: false }); // "Connecting…" — not unread
+    putServer('notice', { nick: 'lurker', notable: false }); // "Reconnecting…" — not unread
+    putServer('notice', { nick: 'NickServ' }); // inbound notice → unread
+    putServer('error'); // killed/banned → unread (countNewer would drop this)
+
+    const frame = buildBufferBacklog(userId, networkId, target);
+    // All 4 lines render in the buffer...
+    expect((frame.events as unknown[]).length).toBe(4);
+    // ...but only the inbound notice + the error mark it unread.
+    expect(frame.unread).toBe(2);
+  });
+
   it('counts every unread DM line as a highlight (yellow row treatment, like the system buffer)', () => {
     seed('erin', 'one');
     seed('erin', 'two');
