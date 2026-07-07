@@ -55,7 +55,10 @@ export function startAppBadge(): void {
         if (!document.hidden) applyBadge(buffers.totalHighlights);
       };
       document.addEventListener('visibilitychange', reconcile);
-      window.addEventListener('focus', reconcile);
+      // Guarded independently of document: a partial DOM shim could expose one
+      // without the other, and losing focus reconciliation shouldn't cost us the
+      // visibilitychange one.
+      if (typeof window !== 'undefined') window.addEventListener('focus', reconcile);
     }
   });
 }
