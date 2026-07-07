@@ -4219,6 +4219,11 @@ const SERVER_BUFFER_DENIED_NUMERICS = new Set<string>([
   '352',
   '315',
   '354',
+  // RPL_NAMREPLY/RPL_ENDOFNAMES — the server sends NAMES on every join; the
+  // nicklist is the pretty surface (rebuilt from the parsed 'userlist' event),
+  // so the raw per-batch lines are a redundant flood in the server buffer.
+  '353',
+  '366',
   // RPL_MON* — MONITOR presence, surfaced by the presence rail, not the buffer.
   '730',
   '731',

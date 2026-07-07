@@ -534,10 +534,13 @@ function onToggleColorPicker() {
 .seg.split.bad {
   color: var(--bad);
 }
-/* Keyboard glyph standing in for the old "Typing:" label — nudge it off the
-   first nick (a bare inline space sits too tight against the icon). */
-.seg.typing i {
-  margin-right: 0.5ch;
+/* Keyboard glyph standing in for the old "Typing:" label. The 1ch space off the
+   first nick lives on the nick span, NOT the icon: `ch` is measured against the
+   element's own font, and the FontAwesome `<i>` has no '0' glyph, so its `ch`
+   falls back to ~0.5em — half the intended gap. The nick span inherits the mono
+   text font, where 1ch is a true character, matching the bar's gap/pipe spacing. */
+.seg.typing > span:first-of-type {
+  margin-left: 1ch;
 }
 .seg.jump-unread,
 .seg.return-present {
