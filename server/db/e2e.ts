@@ -15,7 +15,7 @@
 
 import { globToRegexSource } from '../../shared/textMatch.js';
 import { E2eError } from '../services/e2e/errors.js';
-import { decryptSecret, encryptSecret, hasSecretKey, isEncrypted } from '../utils/secretCrypto.js';
+import { decryptSecret, encryptSecret } from '../utils/secretCrypto.js';
 import db from './index.js';
 
 // ─── types ───────────────────────────────────────────────────────────────────
@@ -879,47 +879,9 @@ export const replaceKeyringForImport = db.transaction(
   },
 );
 
-// ─── at-rest backfill ────────────────────────────────────────────────────────
-
-// (table, secret-column) pairs holding sealed key material. All are rowid
-// tables, so the re-seal can address rows by rowid regardless of their
-// composite PK.
-const E2E_SEALED_COLUMNS: ReadonlyArray<readonly [string, string]> = [
-  ['e2e_identity', 'privkey'],
-  ['e2e_incoming_sessions', 'sk'],
-  ['e2e_outgoing_sessions', 'sk'],
-];
-
-/**
- * Re-seal any e2e secret columns left as plaintext hex from a keyless window
- * (the documented self-host→hosted migration, or a key added post-hoc). The
- * lazy on-write seal only fires at creation, so without this a privkey/sk
- * written keyless would stay cleartext in SQLite — and Litestream ships that to
- * R2 (the whole reason these columns are sealed under LURKER_SECRET_KEY). The
- * analog of networks.ts::backfillEncryptNetworkSecrets; run once at boot. No-op
- * without a key (every self-host), and the isEncrypted() guard skips already-
- * sealed rows so a fully-sealed table does zero writes.
- */
-export function backfillEncryptE2eSecrets(): { scanned: number; encrypted: number } {
-  if (!hasSecretKey()) return { scanned: 0, encrypted: 0 };
-  let scanned = 0;
-  let encrypted = 0;
-  const tx = db.transaction(() => {
-    for (const [table, col] of E2E_SEALED_COLUMNS) {
-      const rows = db.prepare(`SELECT rowid AS rid, ${col} AS v FROM ${table}`).all() as Array<{
-        rid: number;
-        v: string | null;
-      }>;
-      const update = db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`);
-      for (const row of rows) {
-        scanned += 1;
-        if (typeof row.v === 'string' && row.v !== '' && !isEncrypted(row.v)) {
-          update.run(encryptSecret(row.v), row.rid);
-          encrypted += 1;
-        }
-      }
-    }
-  });
-  tx();
-  return { scanned, encrypted };
-}
+// The at-rest re-seal of e2e secret columns (identity privkey + session sk) left
+// plaintext from a keyless window is now schema-driven: those columns declare
+// `encryptedColumns` in exportSchema.ts and the shared boot backfill
+// (db/secretBackfill.ts::backfillEncryptColumns) re-seals them alongside the
+// network/channel secrets. They stay `mode: 'skip'`, so the keyring is never
+// decrypted into the bulk export — only via the dedicated /e2e export.

@@ -16,6 +16,7 @@ let e2e: typeof import('./e2e.js');
 let db: typeof import('./index.js').default;
 let createUser: typeof import('./users.js').createUser;
 let createNetwork: typeof import('./networks.js').createNetwork;
+let backfillEncryptColumns: typeof import('./secretBackfill.js').backfillEncryptColumns;
 
 let userId: number;
 let otherUserId: number;
@@ -31,6 +32,7 @@ beforeAll(async () => {
   db = (await import('./index.js')).default;
   ({ createUser } = await import('./users.js'));
   ({ createNetwork } = await import('./networks.js'));
+  ({ backfillEncryptColumns } = await import('./secretBackfill.js'));
 
   userId = createUser('keyring-alice').id;
   otherUserId = createUser('keyring-bob').id;
@@ -399,7 +401,7 @@ describe('review hardening', () => {
     };
     expect(before.privkey.startsWith('lk1.')).toBe(false);
 
-    expect(e2e.backfillEncryptE2eSecrets().encrypted).toBeGreaterThanOrEqual(1);
+    expect(backfillEncryptColumns().encrypted).toBeGreaterThanOrEqual(1);
 
     const after = db
       .prepare(`SELECT privkey FROM e2e_identity WHERE user_id=?`)

@@ -19,7 +19,7 @@ let createNetwork: typeof import('./networks.js').createNetwork;
 let updateNetwork: typeof import('./networks.js').updateNetwork;
 let getNetwork: typeof import('./networks.js').getNetwork;
 let listNetworksForUser: typeof import('./networks.js').listNetworksForUser;
-let backfillEncryptNetworkSecrets: typeof import('./networks.js').backfillEncryptNetworkSecrets;
+let backfillEncryptColumns: typeof import('./secretBackfill.js').backfillEncryptColumns;
 let isEncrypted: typeof import('../utils/secretCrypto.js').isEncrypted;
 
 const SECRETS = {
@@ -32,13 +32,9 @@ const SECRETS = {
 beforeAll(async () => {
   db = (await import('./index.js')).default;
   ({ createUser } = await import('./users.js'));
-  ({
-    createNetwork,
-    updateNetwork,
-    getNetwork,
-    listNetworksForUser,
-    backfillEncryptNetworkSecrets,
-  } = await import('./networks.js'));
+  ({ createNetwork, updateNetwork, getNetwork, listNetworksForUser } =
+    await import('./networks.js'));
+  ({ backfillEncryptColumns } = await import('./secretBackfill.js'));
   ({ isEncrypted } = await import('../utils/secretCrypto.js'));
 });
 
@@ -118,7 +114,7 @@ describe('network secret encryption at rest (key configured)', () => {
     );
     expect(isEncrypted(rawRow(net.id).server_password)).toBe(false);
 
-    const first = backfillEncryptNetworkSecrets();
+    const first = backfillEncryptColumns();
     expect(first.encrypted).toBeGreaterThanOrEqual(1);
     const raw = rawRow(net.id);
     expect(isEncrypted(raw.server_password)).toBe(true);
@@ -126,6 +122,6 @@ describe('network secret encryption at rest (key configured)', () => {
     expect(getNetwork(net.id, carol.id)!.server_password).toBe('legacy-plain');
 
     // Second run finds nothing left to wrap.
-    expect(backfillEncryptNetworkSecrets().encrypted).toBe(0);
+    expect(backfillEncryptColumns().encrypted).toBe(0);
   });
 });

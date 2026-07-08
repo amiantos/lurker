@@ -30,7 +30,6 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { Statement, RunResult } from 'better-sqlite3';
 import db from '../db/index.js';
 import { EXPORT_TABLES, EXPORT_FORMAT_VERSION, IMPORT_ORDER } from '../db/exportSchema.js';
-import { ENCRYPTED_NETWORK_COLUMNS, ENCRYPTED_CHANNEL_COLUMNS } from '../db/networks.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import type { IgnorePatternKind } from '../db/ignoredMasks.js';
@@ -47,6 +46,7 @@ interface ExportTableDefFull {
   section?: string;
   pk?: string;
   blobColumns?: string[];
+  encryptedColumns?: string[];
   rekeyOnImport?: boolean;
   fkRekey?: Record<string, string>;
   // FK columns that should be set to NULL — rather than causing the whole
@@ -193,19 +193,19 @@ function insertTable(
   for (const original of rows) {
     const row = rekeyRow(original, def, idMaps, targetUserId);
 
-    // Export carries network secrets as plaintext; re-encrypt them at rest when
-    // importing onto a keyed (hosted) cell. No-op without a key.
-    if (table === 'networks') {
-      // Pre-trust-toggle exports don't carry this NOT NULL column; default to
-      // secure behavior during import.
-      if (row.trusted_certificates === undefined) row.trusted_certificates = 1;
-      for (const col of ENCRYPTED_NETWORK_COLUMNS) {
-        if (typeof row[col] === 'string') row[col] = encryptSecret(row[col] as string);
-      }
+    // Pre-trust-toggle exports don't carry this NOT NULL column; default to
+    // secure behavior during import. (networks-specific legacy default, not
+    // an encryption concern.)
+    if (table === 'networks' && row.trusted_certificates === undefined) {
+      row.trusted_certificates = 1;
     }
-    // Same re-encrypt for the imported +k channel key.
-    if (table === 'channels') {
-      for (const col of ENCRYPTED_CHANNEL_COLUMNS) {
+
+    // Export carries at-rest secrets (network passwords, +k channel keys) as
+    // plaintext; re-encrypt them when importing onto a keyed (hosted) cell.
+    // No-op without a key. Which columns is declared per-table via
+    // `encryptedColumns` in exportSchema.ts.
+    if (def.encryptedColumns) {
+      for (const col of def.encryptedColumns) {
         if (typeof row[col] === 'string') row[col] = encryptSecret(row[col] as string);
       }
     }

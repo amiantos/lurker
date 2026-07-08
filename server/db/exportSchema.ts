@@ -19,29 +19,24 @@
 
 export const EXPORT_FORMAT_VERSION = 1;
 
-// Columns holding IRC network secrets that are encrypted at rest on hosted
-// cells (see server/utils/secretCrypto.ts). connect_commands is included
-// because it routinely carries `/msg NickServ identify <password>` and oper
-// passwords — IRCCloud encrypts it for the same reason. Encryption is a no-op
-// (plaintext passthrough) unless LURKER_SECRET_KEY is configured, so self-host
-// is unaffected.
+// `encryptedColumns` (declared per-table below) lists columns holding secrets
+// that are encrypted at rest on hosted cells (see server/utils/secretCrypto.ts).
+// It's the single source of truth for three otherwise-scattered behaviors, so
+// adding a newly-encrypted column is one edit here instead of four:
+//   - the export DECRYPTS these columns to portable plaintext (exportService.ts)
+//   - the import RE-ENCRYPTS them at rest on a keyed cell (importService.ts)
+//   - the boot backfill wraps any plaintext left from a keyless window
+//     (db/secretBackfill.ts, driven by encryptedColumnsByTable())
+// Encryption is a no-op (plaintext passthrough) unless LURKER_SECRET_KEY is
+// configured, so self-host is unaffected. Because the export/import loops only
+// touch exported tables, declaring encryptedColumns on a `skip` table (the e2e
+// keyring) feeds the boot backfill WITHOUT ever decrypting it into an export.
 //
-// Lives here (a db-singleton-free module) rather than in db/networks.ts so the
-// worker-safe export builder can import it without pulling the db connection
-// into a worker thread's import graph. db/networks.ts re-exports it for the
-// callers that still reach for it there.
-export const ENCRYPTED_NETWORK_COLUMNS = [
-  'server_password',
-  'sasl_account',
-  'sasl_password',
-  'connect_commands',
-] as const;
-
-// Channel-scoped secrets encrypted at rest on hosted cells, same envelope as the
-// network columns above. The +k channel key is a credential of the same class
-// (it gates entry to the channel), so it gets the same treatment: ciphertext in
-// the R2-replicated SQLite, plaintext passthrough on self-host.
-export const ENCRYPTED_CHANNEL_COLUMNS = ['key'] as const;
+// This module is db-singleton-free so the worker-safe export builder can import
+// it without pulling the db connection into a worker thread's import graph;
+// ENCRYPTED_NETWORK_COLUMNS / ENCRYPTED_CHANNEL_COLUMNS are derived from the
+// declarations below and re-exported by db/networks.ts for the runtime CRUD
+// paths that still reach for them there.
 
 // FTS5 maintains its own shadow tables (messages_fts_data, _idx, _content,
 // _docsize, _config). Only the virtual `messages_fts` itself surfaces in
@@ -95,6 +90,10 @@ export const EXPORT_TABLES = Object.freeze({
     pk: 'id',
     rekeyOnImport: true,
     fkRekey: { user_id: 'users' },
+    // connect_commands is encrypted because it routinely carries
+    // `/msg NickServ identify <password>` and oper passwords — IRCCloud
+    // encrypts it for the same reason.
+    encryptedColumns: ['server_password', 'sasl_account', 'sasl_password', 'connect_commands'],
     columns: [
       'id',
       'user_id',
@@ -123,6 +122,9 @@ export const EXPORT_TABLES = Object.freeze({
     pk: 'id',
     rekeyOnImport: true,
     fkRekey: { network_id: 'networks' },
+    // The +k channel key gates entry to the channel — same credential class as
+    // the network secrets, so same at-rest treatment.
+    encryptedColumns: ['key'],
     columns: ['id', 'network_id', 'name', 'joined', 'created_at', 'key'],
   },
 
@@ -478,8 +480,14 @@ export const EXPORT_TABLES = Object.freeze({
   // explicitly-warned `/e2e export` (mirrors repartee's standalone keyring
   // export) that MUST ship when E2E goes live, so migrating users keep their
   // identity + trust pins rather than silently resetting them.
+  // The three e2e tables carrying sealed key material declare encryptedColumns
+  // so the boot backfill (secretBackfill.ts) re-seals any plaintext left from a
+  // keyless window — the same treatment networks/channels get. They stay
+  // `mode: 'skip'`, so this NEVER decrypts them into the bulk export; the keyring
+  // is exported only via the dedicated, explicitly-warned /e2e export.
   e2e_identity: {
     mode: 'skip',
+    encryptedColumns: ['privkey'],
     reason:
       'E2E identity private key; cryptographic secret, exported via the dedicated /e2e export',
   },
@@ -489,10 +497,12 @@ export const EXPORT_TABLES = Object.freeze({
   },
   e2e_incoming_sessions: {
     mode: 'skip',
+    encryptedColumns: ['sk'],
     reason: 'E2E per-sender session keys; cryptographic secrets, exported via /e2e export',
   },
   e2e_outgoing_sessions: {
     mode: 'skip',
+    encryptedColumns: ['sk'],
     reason: 'E2E per-channel session keys; cryptographic secrets, exported via /e2e export',
   },
   e2e_channel_config: {
@@ -508,6 +518,25 @@ export const EXPORT_TABLES = Object.freeze({
     reason: 'E2E key-distribution bookkeeping; transient keyring state, exported via /e2e export',
   },
 });
+
+// Derived view of the networks `encryptedColumns` declaration above, kept as a
+// named export because the runtime CRUD paths in db/networks.ts (read-decrypt,
+// write-encrypt) reach for it by name. Deriving it here keeps the schema the
+// single source of truth — the declaration and the view can't drift. Channels
+// need no analogue: their CRUD encrypts `key` directly without the list.
+export const ENCRYPTED_NETWORK_COLUMNS: readonly string[] = EXPORT_TABLES.networks.encryptedColumns;
+
+// { table → encrypted columns } for every table that declares any, regardless of
+// export mode. Drives the boot backfill (secretBackfill.ts) so networks,
+// channels, and the e2e keyring are all re-sealed from one schema-derived map.
+export function encryptedColumnsByTable(): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const [table, def] of Object.entries(EXPORT_TABLES)) {
+    const cols = (def as { encryptedColumns?: readonly string[] }).encryptedColumns;
+    if (cols && cols.length > 0) out[table] = [...cols];
+  }
+  return out;
+}
 
 // Insertion order on import. Each table must come after every table it
 // references in `fkRekey`. Tables not listed here are inserted in the order

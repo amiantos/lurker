@@ -21,12 +21,7 @@ import type { Writable } from 'stream';
 import { Readable } from 'stream';
 import type { Database } from 'better-sqlite3';
 import { ZipArchive } from 'archiver';
-import {
-  EXPORT_TABLES,
-  EXPORT_FORMAT_VERSION,
-  ENCRYPTED_NETWORK_COLUMNS,
-  ENCRYPTED_CHANNEL_COLUMNS,
-} from '../db/exportSchema.js';
+import { EXPORT_TABLES, EXPORT_FORMAT_VERSION } from '../db/exportSchema.js';
 import { decryptSecret } from '../utils/secretCrypto.js';
 
 interface ExportTableDefWithScope {
@@ -36,6 +31,7 @@ interface ExportTableDefWithScope {
   section?: string;
   pk?: string;
   blobColumns?: string[];
+  encryptedColumns?: string[];
   rekeyOnImport?: boolean;
   fkRekey?: Record<string, string>;
 }
@@ -231,21 +227,14 @@ export async function buildExportZip(
     if (d.mode !== 'export' && d.mode !== 'partial') continue;
     if (d.section && d.section !== 'data') continue;
     const rows = selectAll(db, table, d, userId);
-    // Network secrets live encrypted at rest on hosted cells; decrypt them so
-    // the export is portable plaintext (restorable on a self-host without the
-    // key) — same content the user sees in the app. No-op on a self-host
-    // (values are already plaintext).
-    if (table === 'networks') {
+    // Secrets encrypted at rest on hosted cells (network passwords, +k channel
+    // keys) decrypt to portable plaintext so the export is restorable on a
+    // self-host without the key — same content the user sees in the app. No-op
+    // on a self-host (values are already plaintext). Which columns is declared
+    // per-table via `encryptedColumns` in exportSchema.ts.
+    if (d.encryptedColumns) {
       for (const row of rows) {
-        for (const col of ENCRYPTED_NETWORK_COLUMNS) {
-          row[col] = decryptSecret(row[col] as string | null);
-        }
-      }
-    }
-    // Same portability decrypt for the +k channel key.
-    if (table === 'channels') {
-      for (const row of rows) {
-        for (const col of ENCRYPTED_CHANNEL_COLUMNS) {
+        for (const col of d.encryptedColumns) {
           row[col] = decryptSecret(row[col] as string | null);
         }
       }
