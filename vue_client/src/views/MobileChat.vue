@@ -39,6 +39,9 @@
         <button class="icon" title="Add network" @click="openAddNetwork">
           <i class="fa-solid fa-plus"></i>
         </button>
+        <RouterLink v-if="showAdminEntry" class="icon" to="/admin" title="Admin panel">
+          <i class="fa-solid fa-shield-halved"></i>
+        </RouterLink>
         <RouterLink class="icon" to="/settings" title="Settings">
           <i class="fa-solid fa-gear"></i>
         </RouterLink>
@@ -259,10 +262,18 @@ import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useVisualViewport } from '../composables/useVisualViewport.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const auth = useAuthStore();
+const config = useConfigStore();
+
+// Admin panel entry in the mobile top bar — admin-only, and only when the
+// instance enabled LURKER_NEW_ADMIN_PANEL. With the flag off it never renders.
+const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
 const { connected } = useSocket();
 const { keyboardOpen } = useVisualViewport();
 const {

@@ -40,6 +40,10 @@ export const useAuthStore = defineStore('auth', {
     // Whole-UI read-only gate. Components key their disabled/banner state off
     // this rather than poking at user?.is_paused directly.
     isPaused: (s): boolean => s.user?.is_paused === true,
+    // Instance-admin gate. Every admin-only surface (Settings "Users" category,
+    // the admin panel + its entry buttons, the /admin route guard) keys off this
+    // rather than re-deriving `user?.role === 'admin'` at each call site.
+    isAdmin: (s): boolean => s.user?.role === 'admin',
   },
   actions: {
     // Live flip from the server's 'account-state' WS event, so an open tab

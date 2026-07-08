@@ -7,15 +7,20 @@ import { api } from '../api.js';
 export interface AdminUser {
   id: number;
   username: string;
+  role?: 'admin' | 'user';
   createdAt: string;
+  lastSeenAt?: string | null;
   isPaused?: boolean;
 }
 
 export interface AdminInvite {
   token: string;
+  url: string;
+  status: string;
   createdAt: string;
   expiresAt: string | null;
   usedAt: string | null;
+  usedByUsername?: string | null;
 }
 
 export const useAdminStore = defineStore('admin', {

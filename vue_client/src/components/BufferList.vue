@@ -43,6 +43,17 @@
             <i class="fa-solid fa-plus"></i>
           </button>
           <button
+            v-if="showAdminEntry"
+            type="button"
+            class="net-action net-admin"
+            title="Admin panel"
+            aria-label="Admin panel"
+            @click.stop="openAdmin"
+            @contextmenu.stop.prevent
+          >
+            <i class="fa-solid fa-shield-halved"></i>
+          </button>
+          <button
             type="button"
             class="net-action net-settings"
             title="Settings"
@@ -334,6 +345,8 @@ import { useDraftStore } from '../stores/drafts.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
 import { useNetworkActions } from '../composables/useNetworkActions.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
@@ -351,6 +364,8 @@ const drafts = useDraftStore();
 const pins = usePinsStore();
 const ignores = useIgnoresStore();
 const settings = useSettingsStore();
+const auth = useAuthStore();
+const config = useConfigStore();
 const bufferActions = useBufferActions();
 const networkActions = useNetworkActions();
 const networkEditor = useNetworkEditor();
@@ -371,6 +386,14 @@ function openAddNetwork(): void {
 // copy since this header is unmounted while collapsed (see DesktopChat).
 function openSettings(): void {
   router.push('/settings').catch((err) => console.error('[BufferList] open settings failed', err));
+}
+
+// The shield next to the gear opens the dedicated admin panel — admin-only, and
+// only when the instance enabled it (LURKER_NEW_ADMIN_PANEL). With the flag off,
+// admin controls stay in Settings and this button never renders.
+const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+function openAdmin(): void {
+  router.push('/admin').catch((err) => console.error('[BufferList] open admin failed', err));
 }
 
 function isNetworkConnected(net: Network): boolean {

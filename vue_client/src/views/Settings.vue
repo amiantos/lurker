@@ -71,7 +71,7 @@ const config = useConfigStore();
 const route = useRoute();
 const router = useRouter();
 
-const isAdmin = computed(() => auth.user?.role === 'admin');
+const isAdmin = computed(() => auth.isAdmin);
 const error = ref('');
 
 // One component per bespoke category. Registry-driven categories all share
@@ -89,7 +89,13 @@ const BESPOKE_PANES: Record<string, Component> = {
 };
 
 const visibleCategories = computed(() =>
-  CATEGORIES.filter((c) => categoryVisible(c, { isAdmin: isAdmin.value, isNode: config.isNode })),
+  CATEGORIES.filter((c) =>
+    categoryVisible(c, {
+      isAdmin: isAdmin.value,
+      isNode: config.isNode,
+      newAdminPanel: config.newAdminPanel,
+    }),
+  ),
 );
 
 const firstCategoryId = computed(() => visibleCategories.value[0]?.id || 'appearance');

@@ -29,6 +29,14 @@
         <button v-if="!showChannels" class="link" @click="openSettings" title="Settings">
           <i class="fa-solid fa-gear"></i>
         </button>
+        <button
+          v-if="!showChannels && showAdminEntry"
+          class="link"
+          @click="openAdmin"
+          title="Admin panel"
+        >
+          <i class="fa-solid fa-shield-halved"></i>
+        </button>
         <button v-if="!showChannels" class="link" @click="openAddNetwork" title="Add network">
           <i class="fa-solid fa-plus"></i>
         </button>
@@ -296,6 +304,8 @@ import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { useActiveBuffer } from '../composables/useActiveBuffer.js';
 import { useBufferSearchScope } from '../composables/useBufferSearchScope.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import FriendsOverview from '../components/FriendsOverview.vue';
@@ -363,6 +373,8 @@ const {
 } = useActiveBuffer();
 
 const settings = useSettingsStore();
+const auth = useAuthStore();
+const config = useConfigStore();
 const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
 const friends = useFriendsStore();
@@ -566,6 +578,13 @@ const router = useRouter();
 // collapsed (BufferList v-if), so the rail offers the cog here instead (#355).
 function openSettings() {
   router.push('/settings');
+}
+
+// Admin panel entry (collapsed-rail twin of the BufferList header shield):
+// admin-only, and only when the instance enabled LURKER_NEW_ADMIN_PANEL.
+const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+function openAdmin() {
+  router.push('/admin');
 }
 
 // Collapsed-rail add-network (the expanded affordance is the LURKER header's +,

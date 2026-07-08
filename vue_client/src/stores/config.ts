@@ -2,19 +2,29 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Deployment config the client reads once at boot from the public /api/config
-// endpoint. Today it carries only the edition (self-hosted standalone vs a
-// hosted lurker.chat cell), which the Settings UI uses to gate operator-only
-// surfaces (A3). Defaults to 'standalone' so a fetch failure degrades to the
-// fully-featured self-hosted experience rather than hiding things wrongly.
+// endpoint. It carries the edition (self-hosted standalone vs a hosted
+// lurker.chat cell), which the Settings UI uses to gate operator-only surfaces
+// (A3), plus instance-level feature flags like the dedicated admin panel. Both
+// default to their safe/off value so a fetch failure degrades to the
+// fully-featured self-hosted experience rather than hiding or misplacing things.
 
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
 
 export type Edition = 'standalone' | 'node';
 
+// Shared in-flight fetch so concurrent callers — App.vue's boot fetch and the
+// router guard on a cold /admin deep-link — coalesce onto one request instead
+// of each firing their own GET /api/config. Module-scoped (not store state) so
+// it stays non-reactive.
+let inflight: Promise<Edition> | null = null;
+
 export const useConfigStore = defineStore('config', {
   state: () => ({
     edition: 'standalone' as Edition,
+    // When true, instance administration lives in the dedicated /admin panel
+    // rather than the "Users" category inside Settings (Milestone 4).
+    newAdminPanel: false,
     checked: false,
   }),
   getters: {
@@ -23,15 +33,26 @@ export const useConfigStore = defineStore('config', {
   },
   actions: {
     async fetch(): Promise<Edition> {
-      try {
-        const data = await api<{ edition?: string }>('/api/config');
-        this.edition = data.edition === 'node' ? 'node' : 'standalone';
-      } catch (_err) {
-        this.edition = 'standalone';
-      } finally {
-        this.checked = true;
-      }
-      return this.edition;
+      if (this.checked) return this.edition; // already resolved — never refetch
+      if (inflight) return inflight; // a fetch is in flight — share its result
+      inflight = (async () => {
+        try {
+          const data = await api<{ edition?: string; newAdminPanel?: boolean }>('/api/config');
+          this.edition = data.edition === 'node' ? 'node' : 'standalone';
+          this.newAdminPanel = data.newAdminPanel === true;
+          // Latch `checked` ONLY on success. A transient failure must not wedge
+          // the session on the safe defaults — leaving it false lets the next
+          // caller (a later /admin navigation, or App.vue) retry and self-heal.
+          this.checked = true;
+        } catch (_err) {
+          this.edition = 'standalone';
+          this.newAdminPanel = false;
+        } finally {
+          inflight = null;
+        }
+        return this.edition;
+      })();
+      return inflight;
     },
   },
 });
