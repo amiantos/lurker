@@ -34,6 +34,7 @@
           class="link"
           @click="openAdmin"
           title="Admin panel"
+          aria-label="Admin panel"
         >
           <i class="fa-solid fa-shield-halved"></i>
         </button>

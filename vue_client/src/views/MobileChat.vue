@@ -39,7 +39,13 @@
         <button class="icon" title="Add network" @click="openAddNetwork">
           <i class="fa-solid fa-plus"></i>
         </button>
-        <RouterLink v-if="showAdminEntry" class="icon" to="/admin" title="Admin panel">
+        <RouterLink
+          v-if="showAdminEntry"
+          class="icon"
+          to="/admin"
+          title="Admin panel"
+          aria-label="Admin panel"
+        >
           <i class="fa-solid fa-shield-halved"></i>
         </RouterLink>
         <RouterLink class="icon" to="/settings" title="Settings">
