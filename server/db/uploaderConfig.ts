@@ -50,12 +50,16 @@ export function encodeSecrets(secrets: Record<string, string>): string | null {
   return encryptSecret(JSON.stringify(secrets));
 }
 
-/** Inverse of encodeSecrets: decrypt + parse back to a flat object. */
+/** Inverse of encodeSecrets: decrypt + parse back to a flat object. A malformed
+ *  or undecryptable envelope (e.g. after a LURKER_SECRET_KEY rotation with no
+ *  re-wrap) degrades to no-secrets rather than throwing — the caller then gets a
+ *  clean "uploader unconfigured" 4xx/503 instead of a 500, and no ciphertext is
+ *  handed to a driver. */
 export function decodeSecrets(enc: string | null): Record<string, string> {
   if (!enc) return {};
-  const json = decryptSecret(enc);
-  if (!json) return {};
   try {
+    const json = decryptSecret(enc);
+    if (!json) return {};
     const parsed = JSON.parse(json);
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {};
   } catch {

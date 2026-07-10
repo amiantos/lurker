@@ -79,6 +79,14 @@ describe('uploaderConfig', () => {
     expect(mod.resolvedConfig(row)).toEqual({ userhash: 'topsecret' });
   });
 
+  it('degrades an undecryptable secret to {} instead of throwing (avoids a 500)', () => {
+    process.env.LURKER_SECRET_KEY = Buffer.alloc(32, 7).toString('base64');
+    resetKeyRegistryForTests();
+    // A well-formed envelope whose keyid does not match the configured key
+    // (e.g. a row wrapped under a since-rotated key). Must not throw.
+    expect(mod.decodeSecrets('lk1.00000000.AAAAAAAAAAAAAAAAAAAAAA')).toEqual({});
+  });
+
   it('client projection carries only { id, driver, label } — no secrets', () => {
     const id = mod.createUploaderConfig({
       scope: 'user',

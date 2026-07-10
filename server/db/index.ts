@@ -1531,10 +1531,15 @@ try {
 // locked hosted uploader from env + allow_user_defined=0 (hosted). Behavior is
 // byte-identical post-migration. Passed `db` (not importing it) to avoid an
 // import cycle, matching foldMutedIntoIgnoreRules above. See db/uploaderConfigSeed.ts.
+let uploaderSeedOk = true;
 if (schemaVersion < 14) {
   try {
     seedUploaderConfig(db);
   } catch (err) {
+    // Leave schema_version un-bumped (see the version write below) so this
+    // genuinely retries next boot rather than being permanently skipped. The
+    // seed is idempotent, so a retry after a partial/failed run is safe.
+    uploaderSeedOk = false;
     console.warn('[db] uploader-config seed migration failed (will retry next boot):', err);
   }
 }
@@ -1549,7 +1554,10 @@ try {
   console.warn('[db] hosted uploader env reconcile failed:', err);
 }
 
-if (schemaVersion < SCHEMA_VERSION) {
+// Gate on uploaderSeedOk: if the #510 seed threw, keep schema_version below 14 so
+// the seed retries on the next boot instead of being silently skipped forever
+// (the other <14 blocks are shape/data-gated, so re-running them is a no-op).
+if (schemaVersion < SCHEMA_VERSION && uploaderSeedOk) {
   db.prepare(
     `INSERT INTO app_meta (key, value) VALUES ('schema_version', ?)
               ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

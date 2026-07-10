@@ -50,7 +50,6 @@ const stub = {
 vi.mock('../services/uploadProviders/index.js', () => ({
   driverIds: ['x0', 'catbox', 'hoarder'],
   getDriver: () => stub,
-  secretFieldKeys: () => [],
   splitConfigBySchema: (_driver: unknown, values: Record<string, string>) => ({
     config: values,
     secrets: {},

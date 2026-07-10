@@ -23,7 +23,7 @@ import {
   resolvedConfig,
   type UploaderConfigRow,
 } from '../../db/uploaderConfig.js';
-import { getDriver, type UploadDriver, type DriverCapabilities } from './index.js';
+import { getDriver, type UploadDriver } from './index.js';
 
 // Policy metadata lives in config_json under `policy.<key>` string values so the
 // driver config (the schema fields) stays clean. Seeded onto the hosted locked
@@ -46,10 +46,6 @@ export interface ResolvedUploader {
   configId: number;
   driverId: string;
   driver: UploadDriver;
-  label: string;
-  capabilities: DriverCapabilities;
-  scope: 'instance' | 'user';
-  locked: boolean;
   // Driver fields only (schema keys + decrypted secrets); policy stripped.
   driverConfig: Record<string, string>;
   policy: UploaderPolicy;
@@ -154,10 +150,6 @@ export function resolveUploader(input: ResolveInput): ResolvedUploader {
     configId: chosen.id,
     driverId: chosen.driver,
     driver,
-    label: chosen.label,
-    capabilities: driver.capabilities,
-    scope: chosen.scope,
-    locked: chosen.locked === 1,
     driverConfig,
     policy,
   };

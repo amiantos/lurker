@@ -32,12 +32,6 @@ export function getDriver(id: string): UploadDriver | null {
   return DRIVERS[id] ?? null;
 }
 
-/** The keys of a driver's `type:'secret'` config fields — the fields that get
- *  encrypted into `secrets_enc` and never projected to the client. */
-export function secretFieldKeys(driver: UploadDriver): string[] {
-  return driver.configSchema.filter((f) => f.type === 'secret').map((f) => f.key);
-}
-
 /**
  * Split a flat config object into its non-secret and secret halves per a
  * driver's schema. Unknown keys are dropped (schema is the allowlist). Used on
