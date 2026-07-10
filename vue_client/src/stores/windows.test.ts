@@ -106,6 +106,25 @@ describe('z stays bounded by the window count', () => {
     const b = store.byKey('1::#b')!;
     expect(a.z).toBeGreaterThan(b.z);
   });
+
+  // The canvas renders a keyed v-for over `windows`. If focusing reordered the
+  // array, Vue would move the frame's DOM node, and moving a node releases its
+  // pointer capture — killing the drag that raised the window in the first
+  // place. Stacking must live in z alone.
+  it('never reorders the array, so the frame DOM node is not moved', () => {
+    const store = useWindowsStore();
+    store.open('1::#a');
+    store.open('1::#b');
+    store.open('1::#c');
+    const order = store.windows.map((w) => w.key);
+
+    store.focus('1::#a');
+    store.focus('1::#c');
+    store.focus('1::#b');
+
+    expect(store.windows.map((w) => w.key)).toEqual(order);
+    expect(store.visible.map((w) => w.key)).toEqual(order);
+  });
 });
 
 describe('resize', () => {

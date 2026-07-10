@@ -188,10 +188,12 @@ function onPointerMove(e: PointerEvent): void {
 
   if (!gesture.grip) {
     // Move. Clamp so the titlebar can't be dragged off the canvas entirely:
-    // the top edge stays on-canvas, and enough of the frame's width remains to
-    // grab it again.
+    // enough of the frame stays inside to grab it again. The lower bounds are 0
+    // rather than something negative, matching windows.clampTo() — if a drag
+    // could park a window at a negative origin, the next canvas resize would
+    // clamp it back to 0 and the window would jump on its own.
     const GRAB = 80;
-    const x = Math.max(-(o.w - GRAB), Math.min(o.x + dx, props.canvasWidth - GRAB));
+    const x = Math.max(0, Math.min(o.x + dx, Math.max(0, props.canvasWidth - GRAB)));
     const y = Math.max(0, Math.min(o.y + dy, Math.max(0, props.canvasHeight - 24)));
     windows.move(key, x, y);
     return;

@@ -196,7 +196,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, toRef } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref, toRef, watch } from 'vue';
 import type { Network } from '../stores/networks.js';
 import { useNetworksStore } from '../stores/networks.js';
 import type { Buffer } from '../stores/buffers.js';
@@ -281,7 +281,19 @@ const api: PaneApi = {
   focusInput: () => messageInputRef.value?.focus(),
   scrollByPage: (dir: number) => messageListRef.value?.scrollByPage(dir),
 };
-onMounted(() => registerPane(bufferKey.value, api));
+// Registration follows the key, not the mount. The single-pane shell keeps one
+// BufferPane alive across every buffer switch (its key prop changes), and it
+// first mounts while activeKey is still null — so registering once at mount
+// would leave the registry empty forever and quietly break type-ahead focus,
+// PageUp/PageDown, and click-anywhere-to-focus-the-input.
+watch(
+  bufferKey,
+  (key, prev) => {
+    if (prev) unregisterPane(prev, api);
+    registerPane(key, api);
+  },
+  { immediate: true },
+);
 onBeforeUnmount(() => unregisterPane(bufferKey.value, api));
 
 // True when this buffer is a DM (not a channel, not the network's server

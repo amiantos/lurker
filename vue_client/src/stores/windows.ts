@@ -38,9 +38,13 @@ const CASCADE_WRAP = 8;
 
 export const useWindowsStore = defineStore('windows', {
   state: () => ({
-    // Array order IS stacking order: last element is on top. Focusing moves a
-    // window to the end and renumbers, which keeps z dense (1..N) rather than
-    // monotonically increasing. That matters because the frames render at
+    // Insertion order, and it must STAY insertion order: the canvas renders a
+    // keyed v-for over this array, and reordering it makes Vue move the frame's
+    // DOM node. Moving a node implicitly releases its pointer capture, which
+    // would kill the very drag that raised the window.
+    //
+    // Stacking therefore lives in `z`, kept dense in 1..N (1 = bottom). Dense
+    // rather than a monotonic counter because the frames render at
     // `calc(var(--z-window) + z)` — a counter that climbed with every click
     // would eventually cross --z-modal and paint windows over modals.
     windows: [] as BufferWindow[],
@@ -55,13 +59,14 @@ export const useWindowsStore = defineStore('windows', {
     // hidden pane mounted would cost a full DOM tree per minimized buffer.
     visible: (state) => state.windows.filter((w) => w.state !== 'minimized'),
     minimized: (state) => state.windows.filter((w) => w.state === 'minimized'),
-    // Topmost visible window: the one the shortcuts and stray clicks act on.
+    // Highest-z visible window: the one the shortcuts and stray clicks act on.
     focusedKey(state): string | null {
-      for (let i = state.windows.length - 1; i >= 0; i--) {
-        const w = state.windows[i];
-        if (w.state !== 'minimized') return w.key;
+      let best: BufferWindow | null = null;
+      for (const w of state.windows) {
+        if (w.state === 'minimized') continue;
+        if (!best || w.z > best.z) best = w;
       }
-      return null;
+      return best?.key ?? null;
     },
   },
   actions: {
@@ -90,21 +95,24 @@ export const useWindowsStore = defineStore('windows', {
     },
     close(key: string): void {
       const idx = this.windows.findIndex((w) => w.key === key);
-      if (idx >= 0) this.windows.splice(idx, 1);
-      this.renumber();
+      if (idx < 0) return;
+      const gone = this.windows[idx].z;
+      this.windows.splice(idx, 1);
+      // Close the hole so z stays dense.
+      for (const w of this.windows) if (w.z > gone) w.z -= 1;
     },
+    // Raise to the top of the stack by rewriting z, never by reordering the
+    // array (see the `windows` state comment). Everything that was above the
+    // window drops one rung; it takes the top rung.
     focus(key: string): void {
-      const idx = this.windows.findIndex((w) => w.key === key);
+      const win = this.byKey(key);
+      if (!win) return;
+      const top = this.windows.length;
       // Already on top — don't dirty the store on every click.
-      if (idx < 0 || idx === this.windows.length - 1) return;
-      const [win] = this.windows.splice(idx, 1);
-      this.windows.push(win);
-      this.renumber();
-    },
-    renumber(): void {
-      this.windows.forEach((w, i) => {
-        w.z = i + 1;
-      });
+      if (win.z === top) return;
+      const from = win.z;
+      for (const w of this.windows) if (w.z > from) w.z -= 1;
+      win.z = top;
     },
     move(key: string, x: number, y: number): void {
       const win = this.byKey(key);
