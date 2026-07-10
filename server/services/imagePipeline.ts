@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import sharp, { type Metadata } from 'sharp';
+import { canScrubInPlace, scrubMetadata } from './metadataScrub.js';
 
 const THUMB_SIZE = 128;
 
@@ -72,15 +73,44 @@ export async function optimize(
 
   const animated = (meta.pages || 1) > 1;
   if (animated) {
-    return {
-      buffer,
-      mime: fmt.mime,
-      ext: fmt.ext,
-      width: meta.width || null,
-      height: meta.height || null,
-      byteSize: buffer.length,
-      animated: true,
-    };
+    // Passthrough keeps frames intact but must still honor "strip metadata":
+    // animated WebP/APNG can carry GPS EXIF. Scrub in-container (no re-encode)
+    // for the formats we can do surgically.
+    if (canScrubInPlace(meta.format)) {
+      const scrubbed = scrubMetadata(buffer, meta.format);
+      return {
+        buffer: scrubbed,
+        mime: fmt.mime,
+        ext: fmt.ext,
+        width: meta.width || null,
+        height: meta.height || null,
+        byteSize: scrubbed.length,
+        animated: true,
+      };
+    }
+
+    // No surgical scrubber for this container (multi-page TIFF, animated
+    // AVIF/HEIF). Re-encode to strip metadata rather than leak it — prefer
+    // keeping the animation, and only if the codec can't round-trip do we fall
+    // through to the static single-frame encode below. Either way the metadata
+    // is gone; we never pass an un-scrubbed image through.
+    try {
+      const out = await sharp(buffer, { animated: true })
+        .toFormat(meta.format)
+        .toBuffer({ resolveWithObject: true });
+      return {
+        buffer: out.data,
+        mime: fmt.mime,
+        ext: fmt.ext,
+        width: meta.width || null,
+        height: meta.height || null,
+        byteSize: out.data.length,
+        animated: true,
+      };
+    } catch {
+      // Codec can't re-encode animated — fall through to the static path, which
+      // flattens to a metadata-free JPEG first frame. Degraded but never leaks.
+    }
   }
 
   // SVG is a static vector — we pass it through unchanged. sharp can rasterize
@@ -95,13 +125,15 @@ export async function optimize(
       err.code = 'UNSUPPORTED_FORMAT';
       throw err;
     }
+    // Strip <metadata>/comments from the vector without rasterizing it.
+    const scrubbed = scrubMetadata(buffer, meta.format);
     return {
-      buffer,
+      buffer: scrubbed,
       mime: fmt.mime,
       ext: fmt.ext,
       width: meta.width || null,
       height: meta.height || null,
-      byteSize: buffer.length,
+      byteSize: scrubbed.length,
       animated: false,
     };
   }

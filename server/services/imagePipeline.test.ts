@@ -67,6 +67,46 @@ describe('imagePipeline.optimize', () => {
     expect(Buffer.compare(out.buffer, buf)).toBe(0);
   });
 
+  it('scrubs a Comment Extension from an animated GIF while keeping frames', async () => {
+    const base = animatedGif();
+    const comment = Buffer.concat([
+      Buffer.from([0x21, 0xfe, 0x0a]),
+      Buffer.from('SECRET-GPS', 'latin1'),
+      Buffer.from([0x00]),
+    ]);
+    // Splice the comment in just before the trailer (final 0x3B byte).
+    const withComment = Buffer.concat([
+      base.subarray(0, base.length - 1),
+      comment,
+      base.subarray(base.length - 1),
+    ]);
+
+    const out = await optimize(withComment, { maxDim: 1024, quality: 80 });
+    expect(out.animated).toBe(true);
+    expect(out.byteSize).toBe(out.buffer.length);
+    expect(out.buffer.toString('latin1')).not.toContain('SECRET-GPS');
+    // Still a valid, still-animated GIF.
+    const meta = await sharp(out.buffer).metadata();
+    expect(meta.format).toBe('gif');
+    expect((meta.pages ?? 1) > 1).toBe(true);
+  });
+
+  it('scrubs <metadata> and comments from a passed-through SVG', async () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">' +
+        '<!-- SECRET-GPS 40.7,-74.0 --><metadata>SECRET-META</metadata>' +
+        '<rect width="10" height="10"/></svg>',
+      'utf8',
+    );
+    const out = await optimize(svg, { maxDim: 1024, quality: 80 });
+    expect(out.mime).toBe('image/svg+xml');
+    expect(out.byteSize).toBe(out.buffer.length);
+    const text = out.buffer.toString('utf8');
+    expect(text).not.toContain('SECRET-GPS');
+    expect(text).not.toContain('SECRET-META');
+    expect(text).toContain('<rect width="10" height="10"/>');
+  });
+
   it('rejects unsupported formats with code UNSUPPORTED_FORMAT', async () => {
     const garbage = Buffer.from('this is definitely not an image');
     await expect(optimize(garbage, { maxDim: 1024, quality: 80 })).rejects.toMatchObject({
