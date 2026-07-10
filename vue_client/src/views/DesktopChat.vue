@@ -147,8 +147,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import type { Network } from '../stores/networks.js';
-import { useBuffersStore, type Buffer } from '../stores/buffers.js';
+import { useBuffersStore } from '../stores/buffers.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { useSocket } from '../composables/useSocket.js';
 import { useNetworksStore } from '../stores/networks.js';
@@ -400,6 +399,9 @@ useChatBootstrap({ onJump: onJumpToMessage });
   --sidebar-w: 220px;
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr;
+  /* Explicit 1fr rather than an implicit auto row: the pane and canvas both
+     need a definite height to size their own scrollers against. */
+  grid-template-rows: 1fr;
   grid-template-areas: 'sidebar content';
   /* Height sized to the dynamic viewport. iOS scrolls the page
      naturally when the keyboard opens; the input row at the bottom

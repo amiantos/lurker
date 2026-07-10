@@ -25,33 +25,43 @@
 -->
 
 <template>
-  <div ref="canvasEl" class="window-canvas">
-    <WindowFrame
-      v-for="win in windows.visible"
-      :key="win.key"
-      :win="win"
-      :label="labelFor(win.key)"
-      :unread="unreadFor(win.key)"
-      :highlighted="highlightedFor(win.key)"
-      :is-focused="win.key === windows.focusedKey"
-      :canvas-width="canvasWidth"
-      :canvas-height="canvasHeight"
-      @close="onClose(win.key)"
-      @minimize="onMinimize(win.key)"
-    >
-      <BufferPane
-        :buffer-key="win.key"
-        :show-nav="false"
-        :pending-scroll-id="win.key === networks.activeKey ? (props.pendingScrollId ?? null) : null"
-        @open-search="(scoped: boolean) => emit('open-search', scoped)"
-        @open-highlights="(scoped: boolean) => emit('open-highlights', scoped)"
-        @show-topic="emit('show-topic')"
-        @view-activity="(q: string) => emit('view-activity', q)"
-      />
-    </WindowFrame>
+  <div class="window-canvas">
+    <!-- The stage is the positioning context and the maximize bounds, so a
+         maximized window fills it without sliding under the taskbar. -->
+    <div ref="stageEl" class="stage">
+      <WindowFrame
+        v-for="win in windows.visible"
+        :key="win.key"
+        :win="win"
+        :label="labelFor(win.key)"
+        :unread="unreadFor(win.key)"
+        :highlighted="highlightedFor(win.key)"
+        :is-focused="win.key === windows.focusedKey"
+        :canvas-width="stageWidth"
+        :canvas-height="stageHeight"
+        @close="onClose(win.key)"
+        @minimize="onMinimize(win.key)"
+      >
+        <BufferPane
+          :buffer-key="win.key"
+          :show-nav="false"
+          :pending-scroll-id="
+            win.key === networks.activeKey ? (props.pendingScrollId ?? null) : null
+          "
+          @open-search="(scoped: boolean) => emit('open-search', scoped)"
+          @open-highlights="(scoped: boolean) => emit('open-highlights', scoped)"
+          @show-topic="emit('show-topic')"
+          @view-activity="(q: string) => emit('view-activity', q)"
+        />
+      </WindowFrame>
 
-    <div v-if="windows.windows.length === 0" class="empty">
-      Pick a buffer from the list to open a window.
+      <div v-if="windows.visible.length === 0" class="empty">
+        {{
+          windows.minimized.length > 0
+            ? 'Every window is minimized.'
+            : 'Pick a buffer from the list to open a window.'
+        }}
+      </div>
     </div>
 
     <!-- Taskbar: minimized windows keep their geometry but drop their pane, so
@@ -97,9 +107,9 @@ const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const friends = useFriendsStore();
 
-const canvasEl = ref<HTMLElement | null>(null);
-const canvasWidth = ref(0);
-const canvasHeight = ref(0);
+const stageEl = ref<HTMLElement | null>(null);
+const stageWidth = ref(0);
+const stageHeight = ref(0);
 
 // Titles and badges come from the buffer, so a minimized window's taskbar entry
 // keeps counting while it's hidden.
@@ -175,20 +185,22 @@ function onRestore(key: string): void {
   windows.restore(key);
 }
 
+// The taskbar appearing shrinks the stage, so this also re-clamps when the last
+// window is minimized — a window pinned to the old bottom edge stays grabbable.
 let observer: ResizeObserver | null = null;
 function measure(): void {
-  const el = canvasEl.value;
+  const el = stageEl.value;
   if (!el) return;
-  canvasWidth.value = el.clientWidth;
-  canvasHeight.value = el.clientHeight;
-  windows.clampTo(canvasWidth.value, canvasHeight.value);
+  stageWidth.value = el.clientWidth;
+  stageHeight.value = el.clientHeight;
+  windows.clampTo(stageWidth.value, stageHeight.value);
 }
 
 onMounted(() => {
   measure();
-  if (typeof ResizeObserver !== 'undefined' && canvasEl.value) {
+  if (typeof ResizeObserver !== 'undefined' && stageEl.value) {
     observer = new ResizeObserver(measure);
-    observer.observe(canvasEl.value);
+    observer.observe(stageEl.value);
   }
 });
 onBeforeUnmount(() => {
@@ -199,13 +211,21 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .window-canvas {
-  position: relative;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
-  /* A hair darker than the window bodies so the frames read as floating on a
-     desktop rather than as panels welded to the shell. */
-  background: var(--bg-alt, var(--bg));
+  overflow: hidden;
+}
+/* Lighter than the window bodies so the frames read as floating on a desktop
+   rather than as panels welded to the shell. */
+.stage {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-soft);
 }
 
 .empty {
@@ -218,11 +238,7 @@ onBeforeUnmount(() => {
 }
 
 .taskbar {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: calc(var(--z-window) + 1000);
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);

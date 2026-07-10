@@ -26,11 +26,7 @@
     :style="frameStyle"
     @pointerdown="windows.focus(win.key)"
   >
-    <header
-      class="titlebar"
-      @pointerdown="onTitlePointerDown"
-      @dblclick="windows.toggleMaximize(win.key)"
-    >
+    <header class="titlebar" @pointerdown="onTitlePointerDown" @dblclick="onTitleDoubleClick">
       <span class="title">{{ label }}</span>
       <span v-if="unread > 0" class="unread" :class="{ highlight: highlighted > 0 }">{{
         unread
@@ -171,6 +167,13 @@ function onTitlePointerDown(e: PointerEvent): void {
   beginGesture(e, null);
 }
 
+// Double-click the bar to maximize — but not when the double-click landed on a
+// control, where two fast clicks on Minimize would otherwise also maximize.
+function onTitleDoubleClick(e: MouseEvent): void {
+  if ((e.target as Element).closest('button')) return;
+  windows.toggleMaximize(props.win.key);
+}
+
 function onGripPointerDown(e: PointerEvent, grip: Grip): void {
   windows.focus(props.win.key);
   beginGesture(e, grip);
@@ -251,7 +254,7 @@ function endGesture(e: PointerEvent): void {
   gap: var(--space-4);
   padding: var(--space-2) var(--space-4);
   border-bottom: 1px solid var(--border);
-  background: var(--bg-alt, var(--bg));
+  background: var(--bg-soft);
   cursor: move;
   user-select: none;
   touch-action: none;
@@ -297,7 +300,7 @@ function endGesture(e: PointerEvent): void {
   color: var(--fg);
 }
 .ctl.close:hover {
-  color: var(--err, var(--warn));
+  color: var(--bad);
 }
 
 .body {
