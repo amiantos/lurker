@@ -68,6 +68,57 @@ describe('resolveUploader', () => {
     expect(() => resolve.resolveUploader({ userId })).toThrow(resolve.UploaderUnavailableError);
   });
 
+  describe('P0 bridge: legacy uploads.provider dropdown', () => {
+    it('honors the dropdown, overriding the migration-seeded uploader_id', () => {
+      const x0 = cfg.createUploaderConfig({
+        scope: 'instance',
+        driver: 'x0',
+        offeredToUsers: true,
+        isDefault: true,
+      });
+      const catbox = cfg.createUploaderConfig({
+        scope: 'instance',
+        driver: 'catbox',
+        offeredToUsers: true,
+      });
+      // Migration pointed uploader_id at x0; the user then switched the dropdown.
+      setUserSetting(userId, 'uploads.uploader_id', x0);
+      setUserSetting(userId, 'uploads.provider', 'catbox');
+      expect(resolve.resolveUploader({ userId }).configId).toBe(catbox);
+    });
+
+    it('prefers the user’s own configured uploader for that driver (carries secrets)', () => {
+      cfg.createUploaderConfig({
+        scope: 'instance',
+        driver: 'catbox',
+        offeredToUsers: true,
+        isDefault: true,
+      });
+      const mine = cfg.createUploaderConfig({
+        scope: 'user',
+        ownerUserId: userId,
+        driver: 'catbox',
+        values: { userhash: 'h' },
+      });
+      setUserSetting(userId, 'uploads.provider', 'catbox');
+      const r = resolve.resolveUploader({ userId });
+      expect(r.configId).toBe(mine);
+      expect(r.driverConfig).toEqual({ userhash: 'h' });
+    });
+
+    it('falls through to the instance default when the enum maps to nothing usable', () => {
+      const x0 = cfg.createUploaderConfig({
+        scope: 'instance',
+        driver: 'x0',
+        offeredToUsers: true,
+        isDefault: true,
+      });
+      // No hoarder row exists for this user → unmappable → default, not an error.
+      setUserSetting(userId, 'uploads.provider', 'hoarder');
+      expect(resolve.resolveUploader({ userId }).configId).toBe(x0);
+    });
+  });
+
   it('an explicit requested id that is not allowed is an error, not a silent reroute', () => {
     cfg.createUploaderConfig({
       scope: 'instance',
