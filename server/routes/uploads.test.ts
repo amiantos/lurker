@@ -172,6 +172,20 @@ describe('POST /api/uploads', () => {
     expect(res.status).toBe(502);
     stub.shouldThrow = null;
   });
+
+  it('rejects a content class the resolved driver does not accept (415)', async () => {
+    const prev = stub.capabilities.acceptsContentClasses;
+    stub.capabilities.acceptsContentClasses = ['image']; // no text
+    try {
+      const res = await agent.post('/api/uploads').attach('image', Buffer.from('hello'), {
+        filename: 'note.txt',
+        contentType: 'text/plain',
+      });
+      expect(res.status).toBe(415);
+    } finally {
+      stub.capabilities.acceptsContentClasses = prev;
+    }
+  });
 });
 
 describe('GET /api/uploads/:id/thumb', () => {

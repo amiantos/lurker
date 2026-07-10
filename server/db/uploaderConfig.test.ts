@@ -124,4 +124,10 @@ describe('uploaderConfig', () => {
       /unknown upload driver/,
     );
   });
+
+  it('rejects a user-scoped row with no owner (would be orphaned)', () => {
+    expect(() => mod.createUploaderConfig({ scope: 'user', driver: 'catbox' })).toThrow(
+      /requires ownerUserId/,
+    );
+  });
 });

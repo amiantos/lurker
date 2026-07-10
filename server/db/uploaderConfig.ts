@@ -142,6 +142,11 @@ const insertStmt = db.prepare(`
 export function createUploaderConfig(p: CreateUploaderConfigParams): number {
   const drv = getDriver(p.driver);
   if (!drv) throw new Error(`unknown upload driver: ${p.driver}`);
+  // A user-scoped row without an owner is orphaned — the resolver's allowed-set
+  // can never match it (owner_user_id NULL !== any userId). Fail fast.
+  if (p.scope === 'user' && p.ownerUserId == null) {
+    throw new Error('a user-scoped uploader requires ownerUserId');
+  }
   const { config, secrets } = splitConfigBySchema(drv, p.values ?? {});
   const info = insertStmt.run(
     p.scope,

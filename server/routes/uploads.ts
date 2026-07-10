@@ -14,6 +14,7 @@ import {
   resolveUploader,
   UploaderUnavailableError,
   UploaderNotConfiguredError,
+  type ResolvedUploader,
 } from '../services/uploadProviders/resolve.js';
 import type { UploadListRow } from '../db/uploadHistory.js';
 import { insertUpload, listUploads, getThumbnail, deleteUpload } from '../db/uploadHistory.js';
@@ -53,7 +54,7 @@ router.post(
       // Resolve the configured uploader. Every isNodeMode() branch the old route
       // made (which provider, whose credentials, which caps, SVG policy, thumbnail
       // strategy) is now derived from the resolved uploader's driver + policy.
-      let resolved;
+      let resolved: ResolvedUploader;
       try {
         resolved = resolveUploader({
           userId: req.user!.id,
@@ -89,6 +90,15 @@ router.post(
       // straight through with a .txt extension and no thumbnail.
       const isText = req.file.mimetype === 'text/plain';
       const contentClass: ContentClass = isText ? 'text' : 'image';
+
+      // Validate stage: the resolved driver must accept this content class. In P0
+      // every driver accepts image + text, so this never rejects — but it makes
+      // acceptsContentClasses a real gate (defense-in-depth) once binary-capable
+      // drivers land, rather than a declared-but-unused capability.
+      if (!resolved.driver.capabilities.acceptsContentClasses.includes(contentClass)) {
+        res.status(415).json({ error: `this uploader does not accept ${contentClass} files` });
+        return;
+      }
 
       let outBuffer: Buffer;
       let outMime: string;
