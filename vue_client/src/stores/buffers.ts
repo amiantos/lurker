@@ -978,13 +978,46 @@ export const useBuffersStore = defineStore('buffers', {
     unclearBuffer(networkId: number | string, target: string) {
       socketSend({ type: 'unclear-buffer', networkId, target });
     },
+    // "The user stopped looking at this buffer." Drops the visit-scoped local
+    // state: the pinned unread divider, the unread/highlight counters, and any
+    // detached history slice.
+    //
+    // Split out of activate() because focus and visibility are the same thing in
+    // the single-pane shell and different things on the windowed canvas. With
+    // one pane, switching away IS stopping looking, so activate() calls this for
+    // the previous buffer. With windows, a buffer you focused away from is still
+    // on screen and still being read — what means "stopped looking" there is
+    // closing or minimizing its window, so the canvas calls this itself.
+    leaveBuffer(bufKey: string) {
+      const prev = this.buffers[bufKey];
+      if (!prev) return;
+      prev.dividerAfterId = null;
+      prev.unread = 0;
+      prev.highlighted = 0;
+      prev.highlightsCapped = false;
+      // Carrying a detached slice across buffer switches gets weird fast
+      // (the user can't see the detach status on a buffer they aren't
+      // viewing, the live counter ticks invisibly, the next entry has
+      // to remember whether to render the slice or live). Drop it and
+      // wipe the slice on switch-away — re-entry then reseeds from
+      // snapshot or the next history fetch as if it were fresh.
+      if (prev.detached) this.clearDetached(prev.networkId, prev.target, { wipeMessages: true });
+    },
     // Switch to a buffer. We mark the entered buffer read on focus-IN (not
     // on focus-OUT of the previous one) so that a tab close / reload / lost
     // socket before switch-away still leaves the buffer marked read — no
     // phantom divider on the next session. The previous buffer's pointer
     // is already current because pushMessage keeps it synced live while
     // focused (see pushMessage), so leaving it just drops local state.
-    activate(networkId: number | string | null, target: string) {
+    //
+    // `retainPrevious` suppresses the leave-teardown of the outgoing buffer, for
+    // callers where focusing elsewhere doesn't mean the old buffer left the
+    // screen — i.e. the windowed canvas, which owns that lifecycle itself.
+    activate(
+      networkId: number | string | null,
+      target: string,
+      opts: { retainPrevious?: boolean } = {},
+    ) {
       const networks = useNetworksStore();
       // Resolve to the canonical open buffer first (case-insensitive): a DM
       // activated from a member-list nick, /query, the profile modal, or a
@@ -1000,23 +1033,7 @@ export const useBuffersStore = defineStore('buffers', {
       // (networkId null) and the usual `${networkId}::${target}` otherwise.
       const newKey = key(networkId, canonTarget);
       const prevKey = networks.activeKey;
-      if (prevKey && prevKey !== newKey) {
-        const prev = this.buffers[prevKey];
-        if (prev) {
-          prev.dividerAfterId = null;
-          prev.unread = 0;
-          prev.highlighted = 0;
-          prev.highlightsCapped = false;
-          // Carrying a detached slice across buffer switches gets weird fast
-          // (the user can't see the detach status on a buffer they aren't
-          // viewing, the live counter ticks invisibly, the next entry has
-          // to remember whether to render the slice or live). Drop it and
-          // wipe the slice on switch-away — re-entry then reseeds from
-          // snapshot or the next history fetch as if it were fresh.
-          if (prev.detached)
-            this.clearDetached(prev.networkId, prev.target, { wipeMessages: true });
-        }
-      }
+      if (!opts.retainPrevious && prevKey && prevKey !== newKey) this.leaveBuffer(prevKey);
       networks.setActive(networkId, canonTarget);
       const buf = ensureBuffer(this, networkId, canonTarget);
       // Snapshot the divider from the CURRENT lastReadId before we advance

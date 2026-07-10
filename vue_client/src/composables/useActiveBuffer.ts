@@ -30,9 +30,15 @@ export function provideBufferKey(key: Ref<string | null>): void {
   provide(BUFFER_KEY, key);
 }
 
-// The buffer key for this subtree: the provided one, or the global active
-// buffer when this component isn't inside a pane. Must be called from setup().
-export function useBufferKey(): Ref<string | null> {
+// The buffer key for this subtree, in precedence order: an explicitly passed
+// key, the injected one, then the global active buffer. Must be called from
+// setup().
+//
+// The explicit form exists for the component that *provides* the key: Vue
+// resolves inject() against the parent's provides, so a pane asking for its own
+// key would get the global activeKey it just shadowed.
+export function useBufferKey(explicit?: Ref<string | null>): Ref<string | null> {
+  if (explicit) return explicit;
   const provided = inject(BUFFER_KEY, null);
   if (provided) return provided;
   return storeToRefs(useNetworksStore()).activeKey;
@@ -59,10 +65,10 @@ export interface ActiveBufferState {
   hasNicklist: ComputedRef<boolean>;
 }
 
-export function useActiveBuffer(): ActiveBufferState {
+export function useActiveBuffer(explicitKey?: Ref<string | null>): ActiveBufferState {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
-  const activeKey = useBufferKey();
+  const activeKey = useBufferKey(explicitKey);
 
   const active = computed(() => networks.bufferFor(activeKey.value));
   const virtualCfg = computed(() => virtualConfig(activeKey.value));

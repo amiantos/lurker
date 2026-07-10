@@ -169,6 +169,12 @@ export const useNetworksStore = defineStore('networks', {
     activateVirtual(key: string) {
       this.activeKey = key;
     },
+    // No buffer on screen — the state a fresh load starts in. The windowed
+    // canvas returns here when the last window is closed or minimized, so that
+    // re-picking the same buffer in the sidebar is a change and re-opens it.
+    clearActive() {
+      this.activeKey = null;
+    },
     applySnapshot(networks: NetworkState[]) {
       const map: Record<number | string, NetworkState> = {};
       for (const snap of networks) map[snap.networkId] = snap;
