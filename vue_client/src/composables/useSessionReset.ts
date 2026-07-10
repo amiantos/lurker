@@ -14,7 +14,8 @@ import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
-import { resetScrollState } from './useScrollState.js';
+import { resetAllScrollState } from './useScrollState.js';
+import { resetViewedBuffers } from './useViewedBuffer.js';
 import { clearAppBadgeNow } from './useAppBadge.js';
 
 // Wipe every session-scoped piece of client state so the next user (after
@@ -40,7 +41,8 @@ export function resetSession(): void {
   usePushSubscriptionsStore().$reset();
   usePinsStore().$reset();
   resetPresence();
-  resetScrollState();
+  resetAllScrollState();
+  resetViewedBuffers();
   // Drop the PWA app-icon badge so a stale highlight count doesn't outlive the
   // session. buffers.$reset() above already zeroes the total, but clear
   // explicitly in case the Badging watcher isn't wired in this context.
