@@ -8,27 +8,52 @@
 // `url` is already the public CDN URL.
 
 import { USER_AGENT } from '../../utils/userAgent.js';
+import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
-export const id = 'hoarder';
-export const requiresSecrets = true;
+export const driver = 'hoarder';
+export const label = 'Hoarder';
+export const capabilities: DriverCapabilities = {
+  storesRemotely: true,
+  supportsDelete: false,
+  mintsKeys: false,
+  acceptsContentClasses: ['image', 'text'],
+};
+export const configSchema: ConfigField[] = [
+  {
+    key: 'url',
+    label: 'Hoarder URL',
+    type: 'string',
+    required: true,
+    default: '',
+    description: 'Base URL of your Hoarder instance (e.g. https://upload.example.com).',
+  },
+  {
+    key: 'api_key',
+    label: 'Hoarder API key',
+    type: 'secret',
+    required: true,
+    default: '',
+    description: 'API key for your Hoarder instance.',
+  },
+];
 
 export async function upload(
   buffer: Buffer,
-  { filename, mime, kind }: { filename: string; mime: string; kind?: string },
-  secrets: { url?: string; api_key?: string } = {},
-): Promise<{ url: string }> {
-  if (!secrets.url) {
-    throw Object.assign(new Error('hoarder provider requires uploads.hoarder.url'), {
+  { filename, mime, kind }: UploadMeta,
+  config: { url?: string; api_key?: string } = {},
+): Promise<UploadResult> {
+  if (!config.url) {
+    throw Object.assign(new Error('hoarder uploader requires a url'), {
       code: 'PROVIDER_CONFIG',
     });
   }
-  if (!secrets.api_key) {
-    throw Object.assign(new Error('hoarder provider requires uploads.hoarder.api_key'), {
+  if (!config.api_key) {
+    throw Object.assign(new Error('hoarder uploader requires an api_key'), {
       code: 'PROVIDER_CONFIG',
     });
   }
 
-  const base = secrets.url.replace(/\/+$/, '');
+  const base = config.url.replace(/\/+$/, '');
   const form = new FormData();
   // Text fields before the file so multipart parsers populate req.body reliably.
   if (kind) form.append('kind', kind);
@@ -37,7 +62,7 @@ export async function upload(
   const resp = await fetch(`${base}/api/upload`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${secrets.api_key}`,
+      Authorization: `Bearer ${config.api_key}`,
       'User-Agent': USER_AGENT,
     },
     body: form,

@@ -50,16 +50,22 @@ export interface InsertUploadFields {
   byte_size: number;
   width?: number | null;
   height?: number | null;
-  // Exactly one of thumbnail (inline BLOB, standalone) or thumbnail_url (remote
-  // CDN object, node edition) is set; both null for thumbnail-less uploads (txt).
+  // Exactly one of thumbnail (inline BLOB, self-host) or thumbnail_url (remote
+  // CDN object) is set; both null for thumbnail-less uploads (txt).
   thumbnail: Buffer | null;
   thumbnail_url?: string | null;
+  // The configured uploader (uploader_config.id) that produced this upload, and
+  // the driver's opaque delete handle. Both nullable in P0 (no path reads them
+  // back yet) — the seam later phases (delete, s3/local) build on.
+  uploader_config_id?: number | null;
+  ref?: string | null;
 }
 
 const insertStmt = db.prepare(`
   INSERT INTO upload_history
-    (user_id, provider, url, filename, mime, byte_size, width, height, thumbnail, thumbnail_url)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (user_id, provider, url, filename, mime, byte_size, width, height, thumbnail,
+     thumbnail_url, uploader_config_id, ref)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 export function insertUpload(userId: number, row: InsertUploadFields): number {
@@ -74,6 +80,8 @@ export function insertUpload(userId: number, row: InsertUploadFields): number {
     row.height ?? null,
     row.thumbnail,
     row.thumbnail_url ?? null,
+    row.uploader_config_id ?? null,
+    row.ref ?? null,
   );
   return Number(info.lastInsertRowid);
 }
