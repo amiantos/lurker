@@ -13,14 +13,10 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { generate as generateSelfSigned } from 'selfsigned';
+import { resolveDataDir } from './dataDir.js';
 
 const CERT_FILE = 'bouncer-cert.pem';
 const KEY_FILE = 'bouncer-key.pem';
-
-function defaultDataDir(): string {
-  if (process.env.DATABASE_PATH) return path.dirname(process.env.DATABASE_PATH);
-  return path.join(import.meta.dirname, '../../data');
-}
 
 export interface BouncerCertFiles {
   certPath: string;
@@ -34,7 +30,7 @@ export interface BouncerCertFiles {
 // expiry. Returns the file paths (the caller reads + watches them, sharing the
 // hot-reload path with operator-supplied certs).
 export async function loadOrCreateSelfSignedCert({
-  dataDir = defaultDataDir(),
+  dataDir = resolveDataDir(),
 }: { dataDir?: string } = {}): Promise<BouncerCertFiles> {
   fs.mkdirSync(dataDir, { recursive: true });
   const certPath = path.join(dataDir, CERT_FILE);

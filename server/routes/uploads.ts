@@ -12,12 +12,19 @@ import { driverIds } from '../services/uploadProviders/index.js';
 import type { ContentClass } from '../services/uploadProviders/index.js';
 import {
   resolveUploader,
+  loadDriverForRef,
   UploaderUnavailableError,
   UploaderNotConfiguredError,
   type ResolvedUploader,
 } from '../services/uploadProviders/resolve.js';
 import type { UploadListRow } from '../db/uploadHistory.js';
-import { insertUpload, listUploads, getThumbnail, deleteUpload } from '../db/uploadHistory.js';
+import {
+  insertUpload,
+  listUploads,
+  getThumbnail,
+  getUploadForReap,
+  deleteUpload,
+} from '../db/uploadHistory.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { reportUploadSoon } from '../services/moderationReport.js';
 
@@ -30,6 +37,48 @@ router.use(requireAuth);
 // — i.e. every self-host uploader. Untyped (JS module) → Record<string, unknown>.
 function effectiveSettings(userId: number): Record<string, unknown> {
   return { ...defaultsAsObject(), ...getUserSettings(userId) };
+}
+
+// The absolute origin (scheme + host) a `local` upload's relative URL is prefixed
+// with so the pasted link works from IRC. PUBLIC_BASE_URL wins (explicit,
+// proxy-safe); otherwise derive from the request, honoring the reverse-proxy
+// forwarding headers a self-hoster's Caddy/nginx sets. Read here rather than via
+// a global `trust proxy` so the rest of the app's request handling is unchanged.
+// A forwarding header may be a list ("proto1, proto2"); take the first hop.
+function firstHeaderValue(v: unknown): string {
+  return String(v ?? '')
+    .split(',')[0]
+    .trim();
+}
+
+function requestOrigin(req: Request): string {
+  const proto = firstHeaderValue(req.headers['x-forwarded-proto']) || req.protocol || 'https';
+  const host = firstHeaderValue(req.headers['x-forwarded-host']) || req.get('host') || '';
+  return host ? `${proto}://${host}` : '';
+}
+
+// Warn once (per process) the first time a local-upload link is built from
+// request headers because PUBLIC_BASE_URL isn't set. That fallback is the only
+// path where a client-supplied Host/X-Forwarded-Host reaches the minted URL, so
+// an operator who wants stable, un-spoofable links should set PUBLIC_BASE_URL.
+let warnedRequestOriginFallback = false;
+
+/** Absolutize a driver result URL. Drivers that store remotely already return an
+ *  absolute URL; the local driver returns a root-relative path we prefix with the
+ *  instance's public base (PUBLIC_BASE_URL, else the request origin). */
+function absolutizeUrl(url: string, storesRemotely: boolean, req: Request): string {
+  if (storesRemotely || !url.startsWith('/')) return url;
+  const configured = process.env.PUBLIC_BASE_URL;
+  if (!configured && !warnedRequestOriginFallback) {
+    warnedRequestOriginFallback = true;
+    console.warn(
+      '[lurker] PUBLIC_BASE_URL is not set; local-upload links are derived from ' +
+        'the request Host/X-Forwarded-Host header, which a client can spoof. Set ' +
+        'PUBLIC_BASE_URL to this instance’s public origin for stable links.',
+    );
+  }
+  const base = (configured || requestOrigin(req)).replace(/\/+$/, '');
+  return base ? base + url : url;
 }
 
 // multer needs configuring up-front, before we know the effective per-uploader
@@ -164,6 +213,9 @@ router.post(
         return;
       }
 
+      const storesRemotely = resolved.driver.capabilities.storesRemotely;
+      const mainUrl = absolutizeUrl(result.url as string, storesRemotely, req);
+
       // Thumbnail strategy is a resolved policy value, not isNodeMode(): a
       // hostsThumbnails uploader (the hosted in-house one) stores the thumb as a
       // remote object under a `thumbs/` prefix so it doesn't bloat the cell DB /
@@ -179,7 +231,7 @@ router.post(
             resolved.driverConfig,
           );
           if (tRes && typeof tRes.url === 'string') {
-            thumbnailUrl = tRes.url;
+            thumbnailUrl = absolutizeUrl(tRes.url, storesRemotely, req);
             thumbnailBlob = null;
           }
         } catch {
@@ -189,7 +241,7 @@ router.post(
 
       const id = insertUpload(req.user!.id, {
         provider: resolved.driverId,
-        url: result.url,
+        url: mainUrl,
         filename: originalName || null,
         mime: outMime,
         byte_size: outByteSize,
@@ -207,7 +259,7 @@ router.post(
       reportUploadSoon({
         cell_upload_id: id,
         cell_user_id: req.user!.id,
-        url: result.url,
+        url: mainUrl,
         thumb_url: thumbnailUrl,
         mime: outMime,
         byte_size: outByteSize,
@@ -215,7 +267,7 @@ router.post(
         height: outHeight,
       });
 
-      res.json({ id, url: result.url, ...(thumbnailUrl ? { thumbnail_url: thumbnailUrl } : {}) });
+      res.json({ id, url: mainUrl, ...(thumbnailUrl ? { thumbnail_url: thumbnailUrl } : {}) });
     } catch (err) {
       next(err);
     }
@@ -255,12 +307,33 @@ router.get('/:id/thumb', (req: Request, res: Response) => {
 });
 
 router.delete('/:id', (req: Request, res: Response) => {
-  const ok = deleteUpload(req.user!.id, Number(req.params.id));
+  const id = Number(req.params.id);
+  // Capture the delete handle before dropping the row so we can reap the bytes
+  // for drivers that own their storage (local disk). Ownership is enforced by the
+  // user-scoped lookup — a caller can only reap their own upload.
+  const reap = getUploadForReap(req.user!.id, id);
+  const ok = deleteUpload(req.user!.id, id);
   if (!ok) {
     res.status(404).json({ error: 'not found' });
     return;
   }
+  // Best-effort, fire-and-forget: a failed unlink leaves an orphan file but must
+  // never fail the user's delete or block the response. Non-owning drivers
+  // (x0/catbox/hoarder) don't advertise delete, so this is a no-op for them.
+  if (reap && reap.ref && reap.uploader_config_id != null) {
+    void reapUploadBytes(reap.uploader_config_id, reap.ref);
+  }
   res.json({ ok: true });
 });
+
+async function reapUploadBytes(configId: number, ref: string): Promise<void> {
+  try {
+    const loaded = loadDriverForRef(configId);
+    if (!loaded || !loaded.driver.capabilities.supportsDelete || !loaded.driver.delete) return;
+    await loaded.driver.delete(ref, loaded.driverConfig);
+  } catch (err) {
+    console.error('[lurker] upload byte reap failed:', err);
+  }
+}
 
 export default router;

@@ -1004,7 +1004,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'uploads',
     group: 'provider',
     type: 'enum',
-    choices: ['x0', 'catbox', 'hoarder'],
+    choices: ['x0', 'catbox', 'hoarder', 'local'],
     default: 'x0',
     // Node edition forces the operator's in-house uploader (A8); a tenant never
     // picks a host, so this and the provider-credential settings below are
@@ -1013,7 +1013,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Where pasted/picked images are uploaded. x0.at and catbox.moe are ' +
       'anonymous public hosts. hoarder uploads to your own self-hosted ' +
-      'Hoarder instance using the URL + API key configured below.',
+      'Hoarder instance using the URL + API key configured below. local stores ' +
+      'files on this server’s own disk and serves them back (set ' +
+      'PUBLIC_BASE_URL so the links resolve from other clients).',
   },
   {
     key: 'uploads.image.max_dimension',

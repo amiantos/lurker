@@ -55,4 +55,9 @@ describe('buildObjectKey', () => {
   it('randomId is 12 hex chars (48 bits)', () => {
     expect(randomId()).toMatch(/^[0-9a-f]{12}$/);
   });
+  it('caps an over-long extension so the key stays servable', () => {
+    // The local serve route's key regex accepts at most 16 ext chars; a key we
+    // mint must never exceed that or the file we wrote becomes un-servable.
+    expect(buildObjectKey({ ext: 'x'.repeat(40) })).toMatch(/^[0-9a-f]{12}\.x{16}$/);
+  });
 });

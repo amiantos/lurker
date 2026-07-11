@@ -7,7 +7,11 @@ import path from 'path';
 import fs from 'fs';
 import { isNodeMode } from '../utils/edition.js';
 import { foldBufferCase } from './foldBufferCase.js';
-import { seedUploaderConfig, reconcileHostedUploaderFromEnv } from './uploaderConfigSeed.js';
+import {
+  seedUploaderConfig,
+  reconcileBuiltInUploaders,
+  reconcileHostedUploaderFromEnv,
+} from './uploaderConfigSeed.js';
 
 // Guardrail: under vitest, refuse to fall back to the real database. A test
 // that forgets to isolate DATABASE_PATH would otherwise open data/lurker.db and
@@ -990,7 +994,7 @@ ensureColumn('push_subscriptions', 'fail_count', 'INTEGER NOT NULL DEFAULT 0');
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -1526,13 +1530,20 @@ try {
   }
 }
 
-// Issue #510: seed the uploader data model once — instance x0/catbox rows +
+// Issue #510: seed the uploader data model — instance x0/catbox rows +
 // per-user conversion of existing uploads.* settings (self-host), or a single
 // locked hosted uploader from env + allow_user_defined=0 (hosted). Behavior is
 // byte-identical post-migration. Passed `db` (not importing it) to avoid an
 // import cycle, matching foldMutedIntoIgnoreRules above. See db/uploaderConfigSeed.ts.
+//
+// The gate is the current SCHEMA_VERSION (not a fixed 14) because the seed is
+// fully idempotent: bumping the version re-runs it to introduce a newly-added
+// built-in instance row on already-migrated installs without a bespoke block.
+// v15 (#511) adds the self-host `local` disk uploader this way — a DB seeded at
+// v14 by P0 has no `local` row, so the dropdown would resolve to nothing and
+// fall back to x0 until this re-seed creates it.
 let uploaderSeedOk = true;
-if (schemaVersion < 14) {
+if (schemaVersion < SCHEMA_VERSION) {
   try {
     seedUploaderConfig(db);
   } catch (err) {
@@ -1542,6 +1553,16 @@ if (schemaVersion < 14) {
     uploaderSeedOk = false;
     console.warn('[db] uploader-config seed migration failed (will retry next boot):', err);
   }
+}
+
+// Ensure the self-host built-in instance uploaders exist on every boot
+// (idempotent). Independent of the version-gated seed above so a newly-added
+// built-in (the #511 local disk driver) reaches an already-migrated DB even
+// though its schema_version won't re-trigger the one-shot seed.
+try {
+  reconcileBuiltInUploaders(db);
+} catch (err) {
+  console.warn('[db] built-in uploader reconcile failed:', err);
 }
 
 // Re-sync the hosted locked uploader from env on every boot — idempotent no-op on
@@ -1554,9 +1575,10 @@ try {
   console.warn('[db] hosted uploader env reconcile failed:', err);
 }
 
-// Gate on uploaderSeedOk: if the #510 seed threw, keep schema_version below 14 so
-// the seed retries on the next boot instead of being silently skipped forever
-// (the other <14 blocks are shape/data-gated, so re-running them is a no-op).
+// Gate on uploaderSeedOk: if the uploader seed threw, leave schema_version
+// un-bumped so the seed retries on the next boot instead of being silently
+// skipped forever (the other version blocks are shape/data-gated, so re-running
+// them is a no-op).
 if (schemaVersion < SCHEMA_VERSION && uploaderSeedOk) {
   db.prepare(
     `INSERT INTO app_meta (key, value) VALUES ('schema_version', ?)

@@ -132,6 +132,24 @@ export function getThumbnail(userId: number, id: number): { thumbnail: Buffer | 
     .get(userId, Number(id)) as { thumbnail: Buffer | null } | undefined;
 }
 
+/** The delete-reap view of a row: which configured uploader produced it and the
+ *  driver's opaque on-storage handle, so the caller can unlink the bytes for
+ *  drivers that own their storage (local, s3). User-scoped, so a caller can only
+ *  reap their own uploads. */
+export interface UploadReapRow {
+  uploader_config_id: number | null;
+  ref: string | null;
+  provider: string;
+}
+
+export function getUploadForReap(userId: number, id: number): UploadReapRow | undefined {
+  return db
+    .prepare(
+      'SELECT uploader_config_id, ref, provider FROM upload_history WHERE user_id = ? AND id = ?',
+    )
+    .get(userId, Number(id)) as UploadReapRow | undefined;
+}
+
 export function deleteUpload(userId: number, id: number): boolean {
   const info = db
     .prepare(

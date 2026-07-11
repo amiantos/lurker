@@ -138,6 +138,24 @@ function lockedButUnconfigured(
   return driver.configSchema.some((f) => f.required && !driverConfig[f.key]);
 }
 
+/**
+ * Load a driver + its decrypted, policy-stripped config by uploader_config id,
+ * skipping the user/policy allow-set checks. Used by the delete path to reap the
+ * stored bytes of an upload the user already owns (ownership was checked when the
+ * history row was fetched). Returns null when the config row or its driver is
+ * gone — the caller then just drops the history row without a byte reap.
+ */
+export function loadDriverForRef(
+  configId: number,
+): { driver: UploadDriver; driverConfig: Record<string, string> } | null {
+  const row = getUploaderConfig(configId);
+  if (!row) return null;
+  const driver = getDriver(row.driver);
+  if (!driver) return null;
+  const { driverConfig } = splitPolicy(resolvedConfig(row));
+  return { driver, driverConfig };
+}
+
 export function resolveUploader(input: ResolveInput): ResolvedUploader {
   const { userId, isAdmin = false, requestedId = null } = input;
 

@@ -13,15 +13,11 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { resolveDataDir } from './dataDir.js';
 
 const SECRET_FILENAME = 'session-secret.key';
 
-function defaultDataDir(): string {
-  if (process.env.DATABASE_PATH) return path.dirname(process.env.DATABASE_PATH);
-  return path.join(import.meta.dirname, '../../data');
-}
-
-export function resolveSessionSecret({ dataDir = defaultDataDir() }: { dataDir?: string } = {}): {
+export function resolveSessionSecret({ dataDir = resolveDataDir() }: { dataDir?: string } = {}): {
   secret: string;
   source: 'env' | 'file' | 'generated';
   path?: string;

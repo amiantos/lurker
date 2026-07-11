@@ -91,6 +91,47 @@ function setInstanceSettingIfAbsent(db: Database.Database, key: string, value: s
   ).run(key, value);
 }
 
+function hasInstanceDefault(db: Database.Database): boolean {
+  return !!db
+    .prepare(`SELECT 1 FROM uploader_config WHERE scope = 'instance' AND is_default = 1 LIMIT 1`)
+    .get();
+}
+
+/**
+ * Ensure the self-host built-in instance uploaders (x0 default, catbox, local
+ * disk) and the allow_user_defined policy exist. Purely additive and idempotent:
+ * ensureInstanceRow only inserts when a driver's row is absent, so an existing
+ * row's default/label/config is never clobbered. x0 is claimed as the default
+ * only when no instance default exists yet, so re-running this never conflicts
+ * with the one-default unique index (and never overrides a self-hoster's chosen
+ * default). Returns the x0/catbox ids the per-user conversion points at.
+ */
+function ensureSelfHostInstanceRows(db: Database.Database): { x0Id: number; catboxId: number } {
+  const defaultExists = hasInstanceDefault(db);
+  const x0Id = ensureInstanceRow(db, {
+    driver: 'x0',
+    label: 'x0.at',
+    offered: true,
+    isDefault: !defaultExists,
+  });
+  const catboxId = ensureInstanceRow(db, {
+    driver: 'catbox',
+    label: 'catbox.moe',
+    offered: true,
+    isDefault: false,
+  });
+  // The zero-dependency self-host option (#511): files written to our own disk
+  // and served back. Offered but not the default — a self-hoster opts in.
+  ensureInstanceRow(db, {
+    driver: 'local',
+    label: 'Local disk',
+    offered: true,
+    isDefault: false,
+  });
+  setInstanceSettingIfAbsent(db, ALLOW_USER_DEFINED_KEY, '1');
+  return { x0Id, catboxId };
+}
+
 function getUserSettingsRaw(db: Database.Database, userId: number): Record<string, unknown> {
   const rows = db
     .prepare('SELECT key, value FROM user_settings WHERE user_id = ?')
@@ -182,20 +223,9 @@ export function seedUploaderConfig(db: Database.Database): void {
       return;
     }
 
-    // Self-host.
-    const x0Id = ensureInstanceRow(db, {
-      driver: 'x0',
-      label: 'x0.at',
-      offered: true,
-      isDefault: true,
-    });
-    const catboxId = ensureInstanceRow(db, {
-      driver: 'catbox',
-      label: 'catbox.moe',
-      offered: true,
-      isDefault: false,
-    });
-    setInstanceSettingIfAbsent(db, ALLOW_USER_DEFINED_KEY, '1');
+    // Self-host: ensure the built-in instance rows, then run the one-time
+    // per-user conversion of existing uploads.* settings.
+    const { x0Id, catboxId } = ensureSelfHostInstanceRows(db);
 
     const users = db.prepare('SELECT id FROM users').all() as Array<{ id: number }>;
     for (const { id: userId } of users) {
@@ -203,6 +233,22 @@ export function seedUploaderConfig(db: Database.Database): void {
     }
   });
   run();
+}
+
+/**
+ * Ensure the built-in instance uploaders exist on every boot (idempotent),
+ * independent of the version-gated one-time seed. This is what lets a
+ * newly-added built-in (e.g. the #511 local disk driver) reach an already-
+ * migrated DB: bumping SCHEMA_VERSION to re-run the one-shot seed is fragile —
+ * an interleaved boot can bump the version without the row — so the built-ins
+ * self-heal here instead. Self-host only; the hosted locked uploader is
+ * reconciled from env by reconcileHostedUploaderFromEnv.
+ */
+export function reconcileBuiltInUploaders(db: Database.Database): void {
+  if (isNodeMode()) return;
+  db.transaction(() => {
+    ensureSelfHostInstanceRows(db);
+  })();
 }
 
 function convertUser(db: Database.Database, userId: number, x0Id: number, catboxId: number): void {

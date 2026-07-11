@@ -32,6 +32,10 @@ const stub = {
   configSchema: [],
   shouldThrow: null as Error | null,
   capturedConfig: null as Record<string, string> | null,
+  // When set, upload() returns this instead of the default remote URL — used to
+  // exercise the storesRemotely:false (local-style relative URL) absolutization.
+  nextResult: null as { url: string; ref?: string } | null,
+  capturedDeleteRef: null as string | null,
   async upload(
     _buffer: Buffer,
     meta: { filename: string; mime: string },
@@ -39,7 +43,11 @@ const stub = {
   ) {
     stub.capturedConfig = config ?? null;
     if (stub.shouldThrow) throw stub.shouldThrow;
+    if (stub.nextResult) return stub.nextResult;
     return { url: `https://stub.example/${meta.filename}` };
+  },
+  async delete(ref: string) {
+    stub.capturedDeleteRef = ref;
   },
 };
 
@@ -55,6 +63,16 @@ vi.mock('../services/uploadProviders/index.js', () => ({
     secrets: {},
   }),
 }));
+
+// The byte reap is fire-and-forget (DELETE responds before the async unlink), so
+// poll for its effect rather than assume a single tick has run it.
+async function waitUntil(fn: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!fn()) {
+    if (Date.now() - start > timeoutMs) throw new Error('condition not met in time');
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 let app: Express;
 let agent: LurkerTestAgent;
@@ -184,6 +202,92 @@ describe('POST /api/uploads', () => {
       expect(res.status).toBe(415);
     } finally {
       stub.capabilities.acceptsContentClasses = prev;
+    }
+  });
+});
+
+describe('local-style (storesRemotely:false) uploads', () => {
+  it('absolutizes a relative driver URL against the request origin', async () => {
+    stub.capabilities.storesRemotely = false;
+    stub.nextResult = { url: '/uploads/local/abcdef012345.png', ref: 'abcdef012345.png' };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .set('X-Forwarded-Proto', 'https')
+        .set('X-Forwarded-Host', 'irc.example.com')
+        .attach('image', smallPng, { filename: 'local.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      expect(res.body.url).toBe('https://irc.example.com/uploads/local/abcdef012345.png');
+
+      // The absolutized URL — not the relative one — is what gets persisted.
+      const list = await agent.get('/api/uploads');
+      const row = list.body.items.find((r: { id: number }) => r.id === res.body.id);
+      expect(row.url).toBe('https://irc.example.com/uploads/local/abcdef012345.png');
+    } finally {
+      stub.capabilities.storesRemotely = true;
+      stub.nextResult = null;
+    }
+  });
+
+  it('prefers PUBLIC_BASE_URL over the request origin when set', async () => {
+    stub.capabilities.storesRemotely = false;
+    stub.nextResult = { url: '/uploads/local/aabbccddeeff.png', ref: 'aabbccddeeff.png' };
+    process.env.PUBLIC_BASE_URL = 'https://cdn.example.org/';
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .set('X-Forwarded-Host', 'ignored.example.com')
+        .attach('image', smallPng, { filename: 'local2.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      // Trailing slash on the base is trimmed; the request host is ignored.
+      expect(res.body.url).toBe('https://cdn.example.org/uploads/local/aabbccddeeff.png');
+    } finally {
+      delete process.env.PUBLIC_BASE_URL;
+      stub.capabilities.storesRemotely = true;
+      stub.nextResult = null;
+    }
+  });
+
+  it('reaps the on-disk bytes via driver.delete when a deletable upload is removed', async () => {
+    stub.capabilities.storesRemotely = false;
+    stub.capabilities.supportsDelete = true;
+    stub.nextResult = { url: '/uploads/local/112233445566.png', ref: '112233445566.png' };
+    stub.capturedDeleteRef = null;
+    try {
+      const up = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'reap.png', contentType: 'image/png' });
+      expect(up.status).toBe(200);
+
+      const del = await agent.delete(`/api/uploads/${up.body.id}`);
+      expect(del.status).toBe(200);
+      // The reap is fire-and-forget; poll until it runs rather than assume a tick.
+      await waitUntil(() => stub.capturedDeleteRef === '112233445566.png');
+      expect(stub.capturedDeleteRef).toBe('112233445566.png');
+    } finally {
+      stub.capabilities.storesRemotely = true;
+      stub.capabilities.supportsDelete = false;
+      stub.nextResult = null;
+    }
+  });
+
+  it('does not call driver.delete for a non-deletable driver (even with a ref)', async () => {
+    // A ref is present, but supportsDelete is false → the reap must short-circuit
+    // and never unlink (external forwarders offer list-only removal).
+    stub.capabilities.storesRemotely = false;
+    stub.nextResult = { url: '/uploads/local/778899aabbcc.png', ref: '778899aabbcc.png' };
+    stub.capturedDeleteRef = null;
+    try {
+      const up = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'keep.png', contentType: 'image/png' });
+      const del = await agent.delete(`/api/uploads/${up.body.id}`);
+      expect(del.status).toBe(200);
+      await new Promise((r) => setImmediate(r));
+      expect(stub.capturedDeleteRef).toBeNull();
+    } finally {
+      stub.capabilities.storesRemotely = true;
+      stub.nextResult = null;
     }
   });
 });

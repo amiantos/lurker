@@ -9,6 +9,7 @@
 import * as x0 from './x0.js';
 import * as catbox from './catbox.js';
 import * as hoarder from './hoarder.js';
+import * as local from './local.js';
 import type { UploadDriver } from './types.js';
 
 export type {
@@ -24,6 +25,7 @@ const DRIVERS: Record<string, UploadDriver> = {
   [x0.driver]: x0,
   [catbox.driver]: catbox,
   [hoarder.driver]: hoarder,
+  [local.driver]: local,
 };
 
 export const driverIds = Object.keys(DRIVERS);

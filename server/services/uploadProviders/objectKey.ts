@@ -22,6 +22,11 @@ import { randomBytes } from 'crypto';
 // enumerable keys at this scale.
 const RANDOM_BYTES = 6;
 const SEGMENT_MAX = 96;
+// Extension length cap. Keeps a minted key within what the local serving route's
+// key regex accepts (routes/localUploads.ts `KEY_RE`, [a-z0-9]{1,16}) so a file
+// we wrote can never be un-servable; also a sane bound for the s3 driver. Real
+// extensions are a few chars — this only ever trims a pathological input.
+const EXT_MAX = 16;
 
 /** Random, URL-safe, non-guessable id used as the locating segment of a key. */
 export function randomId(): string {
@@ -58,7 +63,11 @@ export interface BuildObjectKeyOpts {
  */
 export function buildObjectKey({ prefix, ext, originalBasename }: BuildObjectKeyOpts): string {
   const rnd = randomId();
-  const cleanExt = (ext || 'bin').replace(/[^A-Za-z0-9]+/g, '').toLowerCase() || 'bin';
+  const cleanExt =
+    (ext || 'bin')
+      .replace(/[^A-Za-z0-9]+/g, '')
+      .toLowerCase()
+      .slice(0, EXT_MAX) || 'bin';
   const p = prefix ? `${prefix.replace(/^\/+|\/+$/g, '')}/` : '';
   if (originalBasename != null && originalBasename !== '') {
     const base = sanitizeSegment(originalBasename.replace(/\.[^.]+$/, ''), 'file');
