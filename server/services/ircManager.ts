@@ -372,6 +372,39 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
+  // Offer an already-stored local file to a peer over DCC SEND. The route has
+  // validated DCC is enabled for the user, resolved the file inside the DCC dir,
+  // and read its size. Returns the new transfer id, or null when the network
+  // isn't connected.
+  sendDccFile(
+    userId: number,
+    networkId: number,
+    nick: string,
+    filePath: string,
+    filename: string,
+    size: number,
+  ): number | null {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return null;
+    return conn.offerDccSend(nick, filePath, filename, size);
+  }
+
+  /** Open (offer) a DCC chat to a peer. Returns false when the network's offline. */
+  dccChatOpen(userId: number, networkId: number, nick: string): boolean {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return false;
+    conn.offerDccChat(nick);
+    return true;
+  }
+
+  /** Close a live DCC chat. */
+  dccChatClose(userId: number, networkId: number, nick: string): boolean {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return false;
+    conn.closeDccChat(nick);
+    return true;
+  }
+
   // Long messages need to be split: irc-framework breaks anything past ~350
   // bytes into separate PRIVMSGs on the wire, but we used to publish the full
   // text as a single self-message event — so the sender saw one bubble while
@@ -380,6 +413,12 @@ class IrcManager extends EventEmitter {
   send(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
+
+    // A `=nick` buffer is a DCC chat, not IRC — route the line over the direct
+    // socket (which echoes it into the buffer itself), never onto the wire.
+    if (target.startsWith('=')) {
+      return conn.dccChatSend(target.slice(1), text);
+    }
 
     // RPE2E: on an encryption-enabled channel, transmit ciphertext chunks on the
     // wire but show the SENDER the readable plaintext locally (one bubble, lock
@@ -484,6 +523,9 @@ class IrcManager extends EventEmitter {
   action(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
+    // DCC chat has no ACTION verb — send the /me as a plain chat line so it
+    // rides the direct socket instead of leaking an IRC ACTION to a `=` "nick".
+    if (target.startsWith('=')) return conn.dccChatSend(target.slice(1), `* ${text}`);
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'action')) return true;
     const chunks = splitAction(text);
     for (const chunk of chunks) {
@@ -506,6 +548,8 @@ class IrcManager extends EventEmitter {
   notice(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
+    // A NOTICE to a DCC-chat buffer is just a chat line over the direct socket.
+    if (target.startsWith('=')) return conn.dccChatSend(target.slice(1), text);
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'notice')) return true;
     const chunks = splitSay(text);
     for (const chunk of chunks) {
@@ -525,7 +569,9 @@ class IrcManager extends EventEmitter {
   typing(userId: number, networkId: number, target: string, state: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
-    if (!target || target.startsWith(':server:')) return false;
+    // No typing notifications on the server pseudo-buffer or a DCC chat (the
+    // latter has no wire tagmsg — a `=` target isn't a real nick).
+    if (!target || target.startsWith(':server:') || target.startsWith('=')) return false;
     if (!['active', 'paused', 'done'].includes(state)) return false;
     conn.sendTyping(target, state);
     return true;

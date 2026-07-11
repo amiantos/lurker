@@ -8,6 +8,14 @@ import {
   crc32Update,
   decodeDccAddress,
   type DccSend,
+  type DccChat,
+  encodeDccAddress,
+  buildDccSend,
+  buildDccSendPassive,
+  buildDccSendReverse,
+  buildDccChat,
+  buildDccChatPassive,
+  buildDccChatReverse,
   formatBytes,
   formatDccOfferLine,
   isBlockedDccHost,
@@ -119,12 +127,110 @@ describe('parseDcc — SEND (passive/reverse)', () => {
 });
 
 describe('parseDcc — non-SEND subtypes', () => {
-  it('reports CHAT/RESUME as unsupported (we send RESUME, never receive it)', () => {
-    expect(parseDcc('CHAT chat 16843009 5000')).toEqual({ kind: 'unsupported', subtype: 'CHAT' });
+  it('reports RESUME as unsupported (we send RESUME, never receive it)', () => {
     expect(parseDcc('RESUME file.mkv 50612 1024')).toEqual({
       kind: 'unsupported',
       subtype: 'RESUME',
     });
+  });
+});
+
+describe('parseDcc — CHAT', () => {
+  function chat(args: string): DccChat {
+    const r = parseDcc(args);
+    expect(r.kind).toBe('chat');
+    return r as DccChat;
+  }
+
+  it('parses an active chat offer (uint32 address)', () => {
+    const c = chat('CHAT chat 16843009 5000');
+    expect(c).toEqual({
+      kind: 'chat',
+      protocol: 'chat',
+      host: '1.1.1.1',
+      port: 5000,
+      token: null,
+      passive: false,
+    });
+  });
+
+  it('parses a passive chat offer (port 0 + token)', () => {
+    const c = chat('CHAT chat 3232235777 0 42');
+    expect(c.passive).toBe(true);
+    expect(c.port).toBe(0);
+    expect(c.token).toBe(42);
+    expect(c.host).toBe('192.168.1.1');
+  });
+
+  it('rejects malformed CHAT', () => {
+    expect(parseDcc('CHAT chat').kind).toBe('invalid'); // missing addr/port
+    expect(parseDcc('CHAT chat 16843009 70000').kind).toBe('invalid'); // bad port
+    expect(parseDcc('CHAT chat notanip 5000').kind).toBe('invalid'); // bad addr
+  });
+});
+
+describe('encodeDccAddress', () => {
+  it('encodes dotted-quad IPv4 to its network-order uint32', () => {
+    expect(encodeDccAddress('1.1.1.1')).toBe('16843009');
+    expect(encodeDccAddress('192.168.1.1')).toBe('3232235777');
+    expect(encodeDccAddress('255.255.255.255')).toBe('4294967295');
+    expect(encodeDccAddress('0.0.0.0')).toBe('0');
+  });
+
+  it('round-trips with decodeDccAddress', () => {
+    for (const ip of ['1.2.3.4', '203.0.113.5', '8.8.8.8']) {
+      expect(decodeDccAddress(encodeDccAddress(ip)!)).toBe(ip);
+    }
+  });
+
+  it('passes an IPv6 literal through', () => {
+    expect(encodeDccAddress('2001:db8::1')).toBe('2001:db8::1');
+  });
+
+  it('returns null for junk', () => {
+    expect(encodeDccAddress('nope')).toBeNull();
+    expect(encodeDccAddress('999.1.1.1')).toBeNull();
+  });
+});
+
+describe('DCC offer builders', () => {
+  it('builds an active SEND, quoting names with spaces', () => {
+    expect(buildDccSend('scene.mkv', '203.0.113.5', 50000, 12345)).toBe(
+      'SEND scene.mkv 3405803781 50000 12345',
+    );
+    expect(buildDccSend('my file.bin', '1.1.1.1', 6000, 10)).toBe(
+      'SEND "my file.bin" 16843009 6000 10',
+    );
+  });
+
+  it('builds a passive SEND (port 0 + token)', () => {
+    expect(buildDccSendPassive('f.bin', '1.1.1.1', 99, 7)).toBe('SEND f.bin 16843009 0 99 7');
+  });
+
+  it('builds a reverse SEND reply (our port + peer token)', () => {
+    expect(buildDccSendReverse('f.bin', '1.1.1.1', 6001, 99, 7)).toBe(
+      'SEND f.bin 16843009 6001 99 7',
+    );
+  });
+
+  it('builds active + passive + reverse CHAT', () => {
+    expect(buildDccChat('1.1.1.1', 5000)).toBe('CHAT chat 16843009 5000');
+    expect(buildDccChatPassive('1.1.1.1', 9)).toBe('CHAT chat 16843009 0 9');
+    expect(buildDccChatReverse('1.1.1.1', 5001, 9)).toBe('CHAT chat 16843009 5001 9');
+  });
+
+  it('returns null when the host cannot be encoded', () => {
+    expect(buildDccSend('f', 'bogus', 1, 1)).toBeNull();
+    expect(buildDccChat('bogus', 1)).toBeNull();
+  });
+
+  it('round-trips: a built active SEND parses back to the same fields', () => {
+    const body = buildDccSend('anime.mkv', '203.0.113.5', 50000, 733880)!;
+    const parsed = parseDcc(body) as DccSend;
+    expect(parsed.kind).toBe('send');
+    expect(parsed.host).toBe('203.0.113.5');
+    expect(parsed.port).toBe(50000);
+    expect(parsed.size).toBe(733880);
   });
 });
 

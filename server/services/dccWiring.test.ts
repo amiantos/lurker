@@ -170,13 +170,14 @@ describe('inbound DCC SEND — enabled', () => {
     expect(row.state).toBe('pending_approval');
   });
 
-  it('records nothing for a non-SEND subtype but still surfaces it', () => {
+  it('records nothing for a genuinely unsupported subtype but still surfaces it', () => {
     enableDcc();
     const { conn, ctcpLines } = harness();
+    // CHAT is now handled (see DCC CHAT tests); use a real unsupported subtype.
     conn.client.emit('ctcp request', {
       nick: 'bob',
       type: 'DCC',
-      message: 'DCC CHAT chat 16843009 5000',
+      message: 'DCC WHITEBOARD 16843009 5000',
     });
     expect(listDccTransfers(1)).toHaveLength(0);
     expect(ctcpLines().at(-1)?.text).toBe('bob requested CTCP DCC (no reply)');
