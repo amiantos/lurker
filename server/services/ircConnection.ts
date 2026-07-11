@@ -64,9 +64,11 @@ import type { DccAccept, DccSend, DccChat as DccChatOffer } from './dcc.js';
 import {
   dccAllowPrivateHosts,
   dccEnabledForUser,
-  dccMaxFileBytes,
   dccActiveListenAvailable,
   dccExternalHost,
+  dccShouldAutoAccept,
+  dccPreferPassive,
+  dccEffectiveAcceptCap,
 } from './dccConfig.js';
 import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
 import { DccReceiver } from './dccReceiver.js';
@@ -97,6 +99,7 @@ import {
   fserveFindEnabled,
   fserveFindTrigger,
   fserveFindMaxResults,
+  buildFserveFilter,
   decideFserveAccess,
 } from './fserveConfig.js';
 import {
@@ -3033,6 +3036,29 @@ export class IrcConnection {
       this.acceptDccOffer(id, nick, offer);
       return;
     }
+    // Auto-accept from a trusted nick: if the user enabled auto-accept and this
+    // sender is on their allowlist (and the file is within the size cap), land it
+    // without the manual Accept step. Records the row accepted, like the active-
+    // chat case above. An over-cap file falls through to the manual UI instead.
+    const hostmask = this.fserveHostmask(nick, event);
+    const cap = dccEffectiveAcceptCap(this.network.user_id);
+    const withinCap = cap === 0 || offer.size <= 0 || offer.size <= cap;
+    if (withinCap && dccShouldAutoAccept(this.network.user_id, nick, hostmask)) {
+      const id = insertDccTransfer(this.network.user_id, {
+        network_id: this.network.id,
+        peer_nick: nick,
+        filename: offer.filename,
+        advertised_size: offer.size,
+        state: 'pending_approval',
+        passive: offer.passive,
+        token: offer.token,
+        peer_host: offer.host,
+        peer_port: offer.port,
+      });
+      this.publishDcc(id);
+      this.acceptDccOffer(id, nick, offer);
+      return;
+    }
     // Unsolicited: nothing auto-lands. Record for the Accept/Reject UI, keeping
     // the offer's host/port so the user can accept (dial it) later.
     const id = insertDccTransfer(this.network.user_id, {
@@ -3074,13 +3100,13 @@ export class IrcConnection {
       return;
     }
     // Require a real advertised size (so the receiver can bound the write) and
-    // honor an operator per-file cap.
+    // honor the effective per-file cap (tighter of operator + per-user).
     if (offer.size <= 0) {
       updateDccTransferState(transferId, 'failed', 'offer has no advertised size');
       this.surfaceCtcp(nick, `DCC: refusing "${offer.filename}" — no advertised file size`);
       return;
     }
-    const cap = dccMaxFileBytes();
+    const cap = dccEffectiveAcceptCap(this.network.user_id);
     if (cap > 0 && offer.size > cap) {
       updateDccTransferState(transferId, 'failed', `exceeds ${formatBytes(cap)} limit`);
       this.surfaceCtcp(
@@ -3183,7 +3209,7 @@ export class IrcConnection {
       );
       return;
     }
-    const cap = dccMaxFileBytes();
+    const cap = dccEffectiveAcceptCap(this.network.user_id);
     if (cap > 0 && offer.size > cap) {
       fail(
         `exceeds ${formatBytes(cap)} limit`,
@@ -3574,6 +3600,13 @@ export class IrcConnection {
     });
     this.publishDcc(transferId);
     const fn = filename.includes(' ') ? `"${filename}"` : filename;
+
+    // Prefer passive/reverse when the user asked for it (better through NAT / the
+    // bouncer): skip active-listen and let the peer connect to us.
+    if (dccPreferPassive(this.network.user_id)) {
+      this.offerPassiveDccSend(transferId, nick, filePath, filename, size);
+      return transferId;
+    }
 
     if (dccActiveListenAvailable()) {
       const externalHost = dccExternalHost();
@@ -4023,6 +4056,7 @@ export class IrcConnection {
       nick,
       welcome: welcome || undefined,
       password,
+      filter: buildFserveFilter(this.network.user_id),
       banner: () => this.fserveBanner(),
       idleTimeoutMs: fserveIdleTimeoutMs(this.network.user_id),
       onGet: (absPath) => {
@@ -4234,7 +4268,12 @@ export class IrcConnection {
     const maxResults = fserveFindMaxResults(uid);
     let found;
     try {
-      found = searchArchive(root, query, { maxResults, maxScan: 200_000, budgetMs: 400 });
+      found = searchArchive(root, query, {
+        maxResults,
+        maxScan: 200_000,
+        budgetMs: 400,
+        filter: buildFserveFilter(uid),
+      });
     } catch {
       return;
     }

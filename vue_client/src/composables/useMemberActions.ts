@@ -6,6 +6,8 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useFriendsStore } from '../stores/friends.js';
 import { useWhoisStore } from '../stores/whois.js';
+import { useDccStore } from '../stores/dcc.js';
+import { useConfigStore } from '../stores/config.js';
 import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
 import { addressNick } from './useComposerOverlay.js';
@@ -100,6 +102,8 @@ export function useMemberActions(): MemberActionsAPI {
   const nickNotes = useNickNotesStore();
   const friends = useFriendsStore();
   const whois = useWhoisStore();
+  const dcc = useDccStore();
+  const config = useConfigStore();
   const menu = useContextMenu();
 
   function buildItems(
@@ -144,6 +148,23 @@ export function useMemberActions(): MemberActionsAPI {
         icon: 'fa-solid fa-envelope',
         onClick: () => buffers.activate(ctx.networkId, nick),
       });
+      // DCC actions — a self-hosted-only feature, so only offered in the
+      // standalone edition (hosted cells have DCC dark). They degrade gracefully
+      // if DCC is off on the instance (the server returns an error).
+      if (!config.isNode) {
+        items.push({
+          label: 'Send file (DCC)',
+          icon: 'fa-solid fa-file-arrow-up',
+          onClick: () => dcc.promptSendFile(ctx.networkId, nick),
+        });
+        items.push({
+          label: 'Start DCC chat',
+          icon: 'fa-solid fa-comments',
+          onClick: () => {
+            dcc.openChat(ctx.networkId, nick).catch(() => {});
+          },
+        });
+      }
     }
     items.push({
       label: hasNote ? 'Edit Note…' : 'Add Note…',

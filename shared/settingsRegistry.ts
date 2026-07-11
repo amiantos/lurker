@@ -1647,6 +1647,92 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     selfHostedOnly: true,
     description: 'How many matching files a single @find reply lists.',
   },
+  {
+    key: 'fserve.hide_dotfiles',
+    label: 'Hide dotfiles',
+    category: 'fserve',
+    group: 'fserve-files',
+    type: 'bool',
+    default: true,
+    selfHostedOnly: true,
+    description: 'Hide entries starting with "." from listings, get, and @find.',
+  },
+  {
+    key: 'fserve.allowed_extensions',
+    label: 'Allowed extensions',
+    category: 'fserve',
+    group: 'fserve-files',
+    type: 'string',
+    default: '',
+    selfHostedOnly: true,
+    description:
+      'Comma/space list of file extensions peers may see and get (e.g. "mp3, flac, zip"). ' +
+      'Blank allows all. Directories are always browsable.',
+  },
+
+  // ─── DCC (peer-to-peer transfers) ─────────────────────────────────────────
+  // Self-host only + additionally gated on LURKER_DCC_ENABLED and the per-user
+  // DCC capability. These only tighten/automate the operator gates.
+  {
+    key: 'dcc.auto_accept',
+    label: 'Auto-accept from trusted nicks',
+    category: 'dcc',
+    group: 'dcc-incoming',
+    type: 'bool',
+    default: false,
+    selfHostedOnly: true,
+    description:
+      'Automatically accept incoming DCC file sends from nicks on the list below, ' +
+      'skipping the manual Accept step. Off by default.',
+  },
+  {
+    key: 'dcc.auto_accept_from',
+    label: 'Auto-accept list (nicks / hostmasks)',
+    category: 'dcc',
+    group: 'dcc-incoming',
+    type: 'string-list',
+    default: [],
+    selfHostedOnly: true,
+    description:
+      'Each entry is a nick or a nick!user@host glob (* and ? wildcards); a bare ' +
+      'nick matches that nick from any host. Empty means auto-accept never fires.',
+  },
+  {
+    key: 'dcc.max_accept_mb',
+    label: 'Max accept size (MB)',
+    category: 'dcc',
+    group: 'dcc-incoming',
+    type: 'int',
+    min: 0,
+    max: 1048576,
+    default: 0,
+    selfHostedOnly: true,
+    description:
+      'Refuse inbound transfers larger than this. 0 = no personal cap (the ' +
+      "operator's limit still applies). The tighter of the two wins.",
+  },
+  {
+    key: 'dcc.prefer_passive',
+    label: 'Prefer passive DCC',
+    category: 'dcc',
+    group: 'dcc-outgoing',
+    type: 'bool',
+    default: false,
+    selfHostedOnly: true,
+    description:
+      'Offer your sends as passive/reverse DCC (the peer connects to you). More ' +
+      'reliable through NAT or when you attach via the bouncer.',
+  },
+  {
+    key: 'dcc.notify_on_done',
+    label: 'Notify on transfer finish',
+    category: 'dcc',
+    group: 'dcc-notify',
+    type: 'bool',
+    default: true,
+    selfHostedOnly: true,
+    description: 'Show a notification when a DCC transfer completes or fails.',
+  },
 ]);
 
 const BY_KEY = new Map(REGISTRY.map((opt) => [opt.key, opt] as const));
@@ -1692,6 +1778,7 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   // (A7). Hide the whole category in the hosted edition.
   { id: 'api-tokens', label: 'API tokens', kind: 'bespoke', selfHostedOnly: true },
   { id: 'fserve', label: 'File server', kind: 'registry', selfHostedOnly: true },
+  { id: 'dcc', label: 'DCC transfers', kind: 'registry', selfHostedOnly: true },
   { id: 'data', label: 'Data', kind: 'bespoke' },
   { id: 'about', label: 'About', kind: 'bespoke' },
 ]);
@@ -1728,4 +1815,8 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   'fserve-queue': 'Queue & sends',
   'fserve-ads': 'Advertising',
   'fserve-find': 'Search (@find)',
+  'fserve-files': 'File filters',
+  'dcc-incoming': 'Incoming',
+  'dcc-outgoing': 'Outgoing',
+  'dcc-notify': 'Notifications',
 });

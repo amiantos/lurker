@@ -15,7 +15,7 @@ import path from 'path';
 import net from 'net';
 
 import { DccChat } from './dccChat.js';
-import { runFserveCommand, displayPath } from './fserveCommands.js';
+import { runFserveCommand, displayPath, type FserveFilter } from './fserveCommands.js';
 
 export interface FserveSessionOptions {
   socket: net.Socket;
@@ -30,6 +30,8 @@ export interface FserveSessionOptions {
   banner?: () => string[];
   /** When set, the peer must send this exact line before any command runs. */
   password?: string | null;
+  /** Optional visibility filter (hidden files / allowed extensions). */
+  filter?: FserveFilter;
   /** Idle disconnect in ms; 0/undefined disables. A grace warning precedes it. */
   idleTimeoutMs?: number;
   /** A resolved, in-sandbox file path the peer asked to `get` — the caller
@@ -103,7 +105,10 @@ export class FserveSession {
       return;
     }
 
-    const result = runFserveCommand({ root: this.opts.root, cwd: this.cwd }, line);
+    const result = runFserveCommand(
+      { root: this.opts.root, cwd: this.cwd, filter: this.opts.filter },
+      line,
+    );
 
     // Stateful command → delegate to the caller for the live answer.
     if (result.control && this.opts.onControl) {

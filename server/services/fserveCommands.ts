@@ -24,11 +24,36 @@
 import fs from 'fs';
 import path from 'path';
 
+/** Optional visibility filter for what a peer may see/get. Undefined = no
+ *  filtering (everything visible). Directories are always browsable; the
+ *  extension filter applies to files only. */
+export interface FserveFilter {
+  /** Hide entries whose name starts with "." */
+  hideDotfiles: boolean;
+  /** Lowercased extensions (no dot) a file must have to be visible; empty = all. */
+  allowedExts: string[];
+}
+
 export interface FserveState {
   /** Absolute, canonical archive root — the sandbox ceiling. */
   root: string;
   /** Absolute current directory; an invariant of every result is cwd ⊆ root. */
   cwd: string;
+  /** Optional visibility filter (hidden files / allowed extensions). */
+  filter?: FserveFilter;
+}
+
+// Whether an entry is visible under a filter. Dotfiles are hidden when
+// hideDotfiles is set; the extension allow-list applies to FILES only (dirs stay
+// browsable). No filter → always visible.
+function passesFilter(name: string, isDir: boolean, filter?: FserveFilter): boolean {
+  if (!filter) return true;
+  if (filter.hideDotfiles && name.startsWith('.')) return false;
+  if (isDir) return true;
+  if (filter.allowedExts.length === 0) return true;
+  const dot = name.lastIndexOf('.');
+  const ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+  return filter.allowedExts.includes(ext);
 }
 
 export interface FserveResult {
@@ -97,7 +122,10 @@ function resolveWithin(root: string, cwd: string, arg: string): string | null {
 
 // The sorted directory/file split used by both listing and number-letter
 // navigation, so the indices a peer sees in `dir` match what `2F` selects.
-function readEntries(dir: string): { dirs: string[]; files: string[] } | null {
+function readEntries(
+  dir: string,
+  filter?: FserveFilter,
+): { dirs: string[]; files: string[] } | null {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -105,11 +133,11 @@ function readEntries(dir: string): { dirs: string[]; files: string[] } | null {
     return null;
   }
   const dirs = entries
-    .filter((e) => e.isDirectory())
+    .filter((e) => e.isDirectory() && passesFilter(e.name, true, filter))
     .map((e) => e.name)
     .toSorted((a, b) => a.localeCompare(b));
   const files = entries
-    .filter((e) => e.isFile())
+    .filter((e) => e.isFile() && passesFilter(e.name, false, filter))
     .map((e) => e.name)
     .toSorted((a, b) => a.localeCompare(b));
   return { dirs, files };
@@ -184,7 +212,7 @@ export function runFserveCommand(state: FserveState, rawLine: string): FserveRes
 }
 
 function listDir(state: FserveState): FserveResult {
-  const ent = readEntries(state.cwd);
+  const ent = readEntries(state.cwd, state.filter);
   if (!ent) return { lines: ['Cannot read this directory.'] };
   const { dirs, files } = ent;
   const here = displayPath(state.root, state.cwd);
@@ -210,7 +238,7 @@ function listDir(state: FserveState): FserveResult {
 // selecting a file routes through getFile so the same sandbox + queue apply.
 function numberedNav(state: FserveState, index: number, kind: string): FserveResult {
   if (kind === 'd' && index === 0) return changeDir(state, '..');
-  const ent = readEntries(state.cwd);
+  const ent = readEntries(state.cwd, state.filter);
   if (!ent) return { lines: ['Cannot read this directory.'] };
   const list = kind === 'd' ? ent.dirs : ent.files;
   if (index < 1 || index > list.length) {
@@ -232,6 +260,10 @@ function changeDir(state: FserveState, arg: string): FserveResult {
     return { lines: [`No such directory: ${arg}`] };
   }
   if (!stat.isDirectory()) return { lines: [`Not a directory: ${arg}`] };
+  // Can't cd into a hidden directory when dotfiles are filtered (root always ok).
+  if (target !== state.root && !passesFilter(path.basename(target), true, state.filter)) {
+    return { lines: [`No such directory: ${arg}`] };
+  }
   return { lines: [`Now in ${displayPath(state.root, target)}`], newCwd: target };
 }
 
@@ -257,6 +289,9 @@ export interface SearchOptions {
   budgetMs?: number;
   /** Injectable clock for tests (defaults to Date.now). */
   now?: () => number;
+  /** Visibility filter — hidden dirs aren't descended, filtered files aren't
+   *  returned, matching the interpreter's listings. */
+  filter?: FserveFilter;
 }
 
 /**
@@ -301,8 +336,9 @@ export function searchArchive(root: string, query: string, opts: SearchOptions =
       scanned++;
       const abs = path.join(dir, e.name);
       if (e.isDirectory()) {
-        queue.push(abs);
+        if (passesFilter(e.name, true, opts.filter)) queue.push(abs);
       } else if (e.isFile()) {
+        if (!passesFilter(e.name, false, opts.filter)) continue;
         const rel = displayPath(root, abs).toLowerCase();
         if (terms.every((t) => rel.includes(t))) {
           let size = 0;
@@ -335,6 +371,11 @@ function getFile(state: FserveState, arg: string): FserveResult {
   }
   if (stat.isDirectory()) return { lines: [`"${arg}" is a directory — use cd, or get a file.`] };
   if (!stat.isFile()) return { lines: [`Not a regular file: ${arg}`] };
+  // Hidden/disallowed by the filter → behave as if it isn't there (don't confirm
+  // a filtered file exists by giving it a distinct error).
+  if (!passesFilter(path.basename(target), false, state.filter)) {
+    return { lines: [`No such file: ${arg}`] };
+  }
   // No status line here: the caller queues the send and reports the authoritative
   // outcome ("sending now" vs "queued in slot N"). We only hand back the path.
   return { lines: [], sendPath: target };

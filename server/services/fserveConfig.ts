@@ -17,6 +17,8 @@ import path from 'path';
 
 import { dccEnabledForUser } from './dccConfig.js';
 import { effectiveSetting } from './settingsService.js';
+import { maskToRegExp, allowlistMatches } from './hostmaskMatch.js';
+import type { FserveFilter } from './fserveCommands.js';
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
@@ -61,6 +63,32 @@ export function fserveTrigger(userId: number): string {
 
 export function fserveWelcome(userId: number): string {
   return settingStr(userId, 'fserve.welcome');
+}
+
+// --- visibility filter -------------------------------------------------------
+
+export function fserveHideDotfiles(userId: number): boolean {
+  // Default true; only an explicit stored `false` turns it off.
+  return effectiveSetting(userId, 'fserve.hide_dotfiles') !== false;
+}
+
+/** Parse the allowed-extensions setting into lowercased bare extensions (no
+ *  dot). Empty list = all files allowed. */
+export function fserveAllowedExtensions(userId: number): string[] {
+  const raw = settingStr(userId, 'fserve.allowed_extensions');
+  if (!raw) return [];
+  return raw
+    .split(/[\s,]+/)
+    .map((e) => e.trim().replace(/^\.+/, '').toLowerCase())
+    .filter(Boolean);
+}
+
+/** Build the interpreter's visibility filter from the user's settings. */
+export function buildFserveFilter(userId: number): FserveFilter {
+  return {
+    hideDotfiles: fserveHideDotfiles(userId),
+    allowedExts: fserveAllowedExtensions(userId),
+  };
 }
 
 export function fserveMaxSessions(userId: number): number {
@@ -149,27 +177,10 @@ export function fserveAdIntervalMs(userId: number): number {
 
 // --- access decision (pure) --------------------------------------------------
 
-/** Convert an IRC hostmask glob (`*`/`?` wildcards over nick!user@host) to a
- *  case-insensitive anchored RegExp. Everything else is escaped literally. */
-export function maskToRegExp(mask: string): RegExp {
-  const escaped = mask
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.');
-  return new RegExp(`^${escaped}$`, 'i');
-}
-
-/** Whether `hostmask` (nick!user@host) matches any allowlist entry. A bare nick
- *  entry (no `!`) also matches the nick alone, so "friend" allows friend!*@*. */
-export function allowlistMatches(allowlist: string[], hostmask: string, nick: string): boolean {
-  for (const entry of allowlist) {
-    const pat = entry.includes('!') || entry.includes('@') ? entry : `${entry}!*@*`;
-    if (maskToRegExp(pat).test(hostmask)) return true;
-    // Also allow a bare-nick entry to match the nick directly.
-    if (!entry.includes('!') && !entry.includes('@') && maskToRegExp(entry).test(nick)) return true;
-  }
-  return false;
-}
+// Hostmask glob matching lives in the shared hostmaskMatch module (reused by DCC
+// auto-accept); imported above and re-exported so existing fserve callers/tests
+// keep working.
+export { maskToRegExp, allowlistMatches };
 
 export type FserveAccessDecision =
   | { kind: 'allow' }

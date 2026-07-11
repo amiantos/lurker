@@ -218,6 +218,79 @@ describe('searchArchive (@find backend)', () => {
   });
 });
 
+describe('visibility filter (hidden files / allowed extensions)', () => {
+  let froot: string;
+  beforeAll(() => {
+    froot = fs.mkdtempSync(path.join(os.tmpdir(), 'fserve-filter-'));
+    fs.writeFileSync(path.join(froot, 'song.mp3'), 'a');
+    fs.writeFileSync(path.join(froot, 'notes.txt'), 'b');
+    fs.writeFileSync(path.join(froot, '.secret'), 'c');
+    fs.mkdirSync(path.join(froot, '.hidden'));
+    fs.mkdirSync(path.join(froot, 'music'));
+  });
+  afterAll(() => fs.rmSync(froot, { recursive: true, force: true }));
+
+  const withFilter = (hideDotfiles: boolean, allowedExts: string[]): FserveState => ({
+    root: froot,
+    cwd: froot,
+    filter: { hideDotfiles, allowedExts },
+  });
+
+  it('hides dotfiles + dot-dirs from dir when hideDotfiles is on', () => {
+    const r = runFserveCommand(withFilter(true, []), 'dir');
+    const joined = r.lines.join('\n');
+    expect(joined).not.toContain('.secret');
+    expect(joined).not.toContain('.hidden');
+    expect(joined).toContain('music/');
+    expect(joined).toContain('song.mp3');
+  });
+
+  it('shows dotfiles when hideDotfiles is off', () => {
+    const joined = runFserveCommand(withFilter(false, []), 'dir').lines.join('\n');
+    expect(joined).toContain('.secret');
+    expect(joined).toContain('.hidden');
+  });
+
+  it('extension allow-list restricts files but not directories', () => {
+    const joined = runFserveCommand(withFilter(true, ['mp3']), 'dir').lines.join('\n');
+    expect(joined).toContain('song.mp3');
+    expect(joined).not.toContain('notes.txt');
+    expect(joined).toContain('music/'); // dirs always browsable
+  });
+
+  it('get of a filtered-out file is refused as "no such file"', () => {
+    expect(runFserveCommand(withFilter(true, ['mp3']), 'get notes.txt').lines[0]).toMatch(
+      /No such file/,
+    );
+    expect(runFserveCommand(withFilter(true, []), 'get .secret').lines[0]).toMatch(/No such file/);
+    // an allowed file still sends
+    expect(runFserveCommand(withFilter(true, ['mp3']), 'get song.mp3').sendPath).toBe(
+      path.join(froot, 'song.mp3'),
+    );
+  });
+
+  it('cd into a hidden dir is refused when dotfiles are filtered', () => {
+    expect(runFserveCommand(withFilter(true, []), 'cd .hidden').lines[0]).toMatch(
+      /No such directory/,
+    );
+    expect(runFserveCommand(withFilter(false, []), 'cd .hidden').newCwd).toBe(
+      path.join(froot, '.hidden'),
+    );
+  });
+
+  it('searchArchive honours the filter (hidden + extension)', () => {
+    const all = searchArchive(froot, '.', { filter: { hideDotfiles: false, allowedExts: [] } });
+    expect(all.results.some((h) => h.path === '/.secret')).toBe(true);
+    const filtered = searchArchive(froot, '.', {
+      filter: { hideDotfiles: true, allowedExts: ['mp3'] },
+    });
+    const paths = filtered.results.map((h) => h.path);
+    expect(paths).toContain('/song.mp3');
+    expect(paths).not.toContain('/notes.txt');
+    expect(paths).not.toContain('/.secret');
+  });
+});
+
 describe('runFserveCommand — SANDBOX (path traversal must never escape root)', () => {
   const traversals = [
     'cd ..',

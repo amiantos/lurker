@@ -14,7 +14,11 @@ import {
   dccMasterEnabled,
   dccMaxFileBytes,
   parseDccEnabled,
+  dccShouldAutoAccept,
+  dccEffectiveAcceptCap,
+  dccPreferPassive,
 } from './dccConfig.js';
+import { setUserSetting } from '../db/settings.js';
 
 describe('parseDccEnabled', () => {
   it('treats the conventional truthy values as on (trimmed, case-insensitive)', () => {
@@ -88,5 +92,45 @@ describe('dccAllowPrivateHosts', () => {
     expect(dccAllowPrivateHosts()).toBe(false);
     process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
     expect(dccAllowPrivateHosts()).toBe(true);
+  });
+});
+
+describe('per-user DCC preferences', () => {
+  let uid: number;
+  beforeAll(() => {
+    uid = createUser('prefs-bob').id;
+  });
+  afterEach(() => delete process.env.LURKER_DCC_MAX_FILE_MB);
+
+  it('prefer-passive + auto-accept default off', () => {
+    expect(dccPreferPassive(uid)).toBe(false);
+    expect(dccShouldAutoAccept(uid, 'friend', 'friend!u@host')).toBe(false);
+  });
+
+  it('auto-accept only fires when ON and the sender matches the allowlist', () => {
+    setUserSetting(uid, 'dcc.auto_accept', true);
+    // enabled but empty allowlist → never matches
+    expect(dccShouldAutoAccept(uid, 'friend', 'friend!u@host')).toBe(false);
+    setUserSetting(uid, 'dcc.auto_accept_from', ['friend', '*!*@*.trusted.net']);
+    expect(dccShouldAutoAccept(uid, 'friend', 'friend!u@anywhere')).toBe(true);
+    expect(dccShouldAutoAccept(uid, 'stranger', 'stranger!u@box.trusted.net')).toBe(true);
+    expect(dccShouldAutoAccept(uid, 'stranger', 'stranger!u@box.evil.net')).toBe(false);
+    // toggle off → inert even with a matching list
+    setUserSetting(uid, 'dcc.auto_accept', false);
+    expect(dccShouldAutoAccept(uid, 'friend', 'friend!u@anywhere')).toBe(false);
+  });
+
+  it('effective accept cap is the tighter of env + per-user (0 = uncapped)', () => {
+    // neither set → uncapped
+    expect(dccEffectiveAcceptCap(uid)).toBe(0);
+    // user cap only
+    setUserSetting(uid, 'dcc.max_accept_mb', 50);
+    expect(dccEffectiveAcceptCap(uid)).toBe(50 * 1024 * 1024);
+    // env cap tighter → env wins
+    process.env.LURKER_DCC_MAX_FILE_MB = '20';
+    expect(dccEffectiveAcceptCap(uid)).toBe(20 * 1024 * 1024);
+    // env cap looser → user wins
+    process.env.LURKER_DCC_MAX_FILE_MB = '500';
+    expect(dccEffectiveAcceptCap(uid)).toBe(50 * 1024 * 1024);
   });
 });

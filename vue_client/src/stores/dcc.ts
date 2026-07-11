@@ -16,6 +16,8 @@
 
 import { defineStore } from 'pinia';
 import { api, apiMultipart } from '../api.js';
+import { useSettingsStore } from './settings.js';
+import { useToastsStore } from './toasts.js';
 
 // Mirror of the server DccTransferState union (db/dccTransfers.ts). Two entry
 // states (requested / pending_approval), an active receive path, and terminal
@@ -159,13 +161,31 @@ export const useDccStore = defineStore('dcc', {
       if (!t || typeof t.id !== 'number') return;
       const idx = this.transfers.findIndex((x) => x.id === t.id);
       if (idx >= 0) {
-        if (TERMINAL_STATES.has(this.transfers[idx].state) && !TERMINAL_STATES.has(t.state)) return;
+        const prev = this.transfers[idx];
+        if (TERMINAL_STATES.has(prev.state) && !TERMINAL_STATES.has(t.state)) return;
         this.transfers[idx] = t;
+        this.maybeNotifyDone(prev, t);
         return;
       }
       const at = this.transfers.findIndex((x) => x.id < t.id);
       if (at === -1) this.transfers.push(t);
       else this.transfers.splice(at, 0, t);
+    },
+
+    // Toast when a transfer finishes, gated on the dcc.notify_on_done setting
+    // (default on). Fires only on the transition INTO a terminal state so a
+    // redundant frame for an already-finished row doesn't re-notify.
+    maybeNotifyDone(prev: DccTransfer, t: DccTransfer): void {
+      const finished = t.state === 'completed' || t.state === 'failed';
+      if (!finished || TERMINAL_STATES.has(prev.state)) return;
+      if (useSettingsStore().effective('dcc.notify_on_done') === false) return;
+      const ok = t.state === 'completed';
+      useToastsStore().push({
+        title: ok ? 'DCC transfer complete' : 'DCC transfer failed',
+        body: ok ? `${t.filename} · ${t.peer_nick}` : `${t.filename} · ${t.error || 'failed'}`,
+        kind: ok ? 'info' : 'warn',
+        ttlMs: 6000,
+      });
     },
 
     async accept(id: number): Promise<DccTransfer> {
@@ -206,6 +226,31 @@ export const useDccStore = defineStore('dcc', {
 
     async closeChat(networkId: number, nick: string): Promise<void> {
       await api('/api/dcc/chat/close', { method: 'POST', body: { networkId, nick } });
+    },
+
+    // Open the OS file picker and, on choice, upload + offer the file to `nick`.
+    // A self-contained programmatic input so any surface (member menu, DM header,
+    // /dcc send) can trigger a send without owning a hidden <input>. Opens the
+    // Transfers panel so the new row's progress is visible.
+    promptSendFile(networkId: number, nick: string): void {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.style.display = 'none';
+      input.addEventListener(
+        'change',
+        () => {
+          const file = input.files && input.files[0];
+          input.remove();
+          if (!file) return;
+          this.panelOpen = true;
+          this.sendFile(networkId, nick, file).catch(() => {
+            /* error surfaces on the transfer row / via listError */
+          });
+        },
+        { once: true },
+      );
+      document.body.appendChild(input);
+      input.click();
     },
 
     // Upload a file and offer it to a peer over DCC SEND. Returns the new
