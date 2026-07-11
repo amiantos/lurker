@@ -229,6 +229,41 @@ describe('local-style (storesRemotely:false) uploads', () => {
     }
   });
 
+  it('ignores a spoofed non-http(s) X-Forwarded-Proto', async () => {
+    stub.capabilities.storesRemotely = false;
+    stub.nextResult = { url: '/uploads/local/ccddeeff0011.png', ref: 'ccddeeff0011.png' };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .set('X-Forwarded-Proto', 'javascript')
+        .set('X-Forwarded-Host', 'irc.example.com')
+        .attach('image', smallPng, { filename: 'x.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      // The bogus scheme is dropped; never javascript://.
+      expect(res.body.url).toBe('https://irc.example.com/uploads/local/ccddeeff0011.png');
+    } finally {
+      stub.capabilities.storesRemotely = true;
+      stub.nextResult = null;
+    }
+  });
+
+  it('leaves the URL relative when the forwarded host is malformed', async () => {
+    stub.capabilities.storesRemotely = false;
+    stub.nextResult = { url: '/uploads/local/223344556677.png', ref: '223344556677.png' };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .set('X-Forwarded-Host', 'evil.example.com/@attacker')
+        .attach('image', smallPng, { filename: 'x.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      // A host with authority-breaking chars is rejected → no base is prefixed.
+      expect(res.body.url).toBe('/uploads/local/223344556677.png');
+    } finally {
+      stub.capabilities.storesRemotely = true;
+      stub.nextResult = null;
+    }
+  });
+
   it('prefers PUBLIC_BASE_URL over the request origin when set', async () => {
     stub.capabilities.storesRemotely = false;
     stub.nextResult = { url: '/uploads/local/aabbccddeeff.png', ref: 'aabbccddeeff.png' };

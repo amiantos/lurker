@@ -51,9 +51,18 @@ function firstHeaderValue(v: unknown): string {
     .trim();
 }
 
+// A host is hostname[:port] or [ipv6][:port] — reject anything with characters
+// that could break out of the authority (slash, space, userinfo '@', etc.), so a
+// spoofed header can never inject path/scheme into the URL we construct + persist.
+const HOST_RE = /^[A-Za-z0-9.\-:[\]]+$/;
+
 function requestOrigin(req: Request): string {
-  const proto = firstHeaderValue(req.headers['x-forwarded-proto']) || req.protocol || 'https';
-  const host = firstHeaderValue(req.headers['x-forwarded-host']) || req.get('host') || '';
+  // Only http/https are valid schemes; anything else (a spoofed "javascript" or
+  // garbage X-Forwarded-Proto) is ignored so it can never reach the built URL.
+  const rawProto = firstHeaderValue(req.headers['x-forwarded-proto']) || req.protocol;
+  const proto = rawProto === 'http' || rawProto === 'https' ? rawProto : 'https';
+  const rawHost = firstHeaderValue(req.headers['x-forwarded-host']) || req.get('host') || '';
+  const host = HOST_RE.test(rawHost) ? rawHost : '';
   return host ? `${proto}://${host}` : '';
 }
 
