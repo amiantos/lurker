@@ -12,9 +12,12 @@ import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
+import { useWindowsStore } from '../stores/windows.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
-import { resetScrollState } from './useScrollState.js';
+import { resetAllScrollState } from './useScrollState.js';
+import { resetViewedBuffers } from './useViewedBuffer.js';
+import { resetPanes } from './usePaneRegistry.js';
 import { clearAppBadgeNow } from './useAppBadge.js';
 
 // Wipe every session-scoped piece of client state so the next user (after
@@ -39,8 +42,13 @@ export function resetSession(): void {
   drafts.$reset();
   usePushSubscriptionsStore().$reset();
   usePinsStore().$reset();
+  // Windows are keyed by buffer, so leaving them up would render the previous
+  // user's channel names in the next user's canvas and taskbar.
+  useWindowsStore().$reset();
   resetPresence();
-  resetScrollState();
+  resetAllScrollState();
+  resetViewedBuffers();
+  resetPanes();
   // Drop the PWA app-icon badge so a stale highlight count doesn't outlive the
   // session. buffers.$reset() above already zeroes the total, but clear
   // explicitly in case the Badging watcher isn't wired in this context.

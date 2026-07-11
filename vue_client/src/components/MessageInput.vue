@@ -161,7 +161,8 @@ import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
-import { requestScrollToBottom } from '../composables/useScrollState.js';
+import { useScrollState } from '../composables/useScrollState.js';
+import { useBufferKey } from '../composables/useActiveBuffer.js';
 import { setComposingState } from '../composables/useComposing.js';
 import {
   chunkCountForSay,
@@ -300,13 +301,16 @@ const emojiPickerOpen = ref(false);
 const emojiPickerQuery = ref('');
 const emojiPickerEl = ref<InstanceType<typeof EmojiPicker> | null>(null);
 
-const active = computed(() => networks.activeBuffer);
+const bufferKey = useBufferKey();
+const active = computed(() => networks.bufferFor(bufferKey.value));
+// Sending a line snaps this pane's message list back to the live tail.
+const { requestScrollToBottom } = useScrollState();
 
 // The app-scoped system buffer (issue #355) has no network, so networks
-// .activeBuffer reports null for it. It accepts slash commands, not chat, so it
+// .bufferFor reports null for it. It accepts slash commands, not chat, so it
 // gets a local-only input ref rather than a server-synced per-buffer draft (no
 // network to key a draft row to, and command typing needn't sync cross-device).
-const isSystemBuffer = computed(() => networks.activeKey === SYSTEM_KEY);
+const isSystemBuffer = computed(() => bufferKey.value === SYSTEM_KEY);
 const systemText = ref('');
 
 // Input contents are server-side per-buffer drafts — switching channels swaps

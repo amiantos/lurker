@@ -444,3 +444,78 @@ describe('joinOrActivate channel key', () => {
     });
   });
 });
+
+// Focus and visibility are the same thing in the single-pane shell and
+// different things on the windowed canvas, so the "user stopped looking at this
+// buffer" teardown is separable from activate().
+describe('leaveBuffer / retainPrevious', () => {
+  const seed = (store: ReturnType<typeof useBuffersStore>, target: string) => {
+    store.replaceBacklog(
+      1,
+      target,
+      [{ networkId: 1, target, id: 10, type: 'message', nick: 'bob', body: 'x' }],
+      undefined,
+      { lastReadId: 0, unread: 3, highlights: 2 },
+      true,
+      { hasMoreOlder: false },
+    );
+    return store.byKey(`1::${target}`)!;
+  };
+
+  it('activate() tears down the buffer it switched away from', () => {
+    const store = useBuffersStore();
+    seed(store, '#a');
+    store.activate(1, '#a');
+    seed(store, '#b');
+
+    const a = store.byKey('1::#a')!;
+    a.unread = 3;
+    a.highlighted = 2;
+    a.dividerAfterId = 7;
+
+    store.activate(1, '#b');
+
+    expect(a.unread).toBe(0);
+    expect(a.highlighted).toBe(0);
+    expect(a.dividerAfterId).toBeNull();
+  });
+
+  it('retainPrevious leaves the outgoing buffer alone — its window is still open', () => {
+    const store = useBuffersStore();
+    seed(store, '#a');
+    store.activate(1, '#a');
+    seed(store, '#b');
+
+    const a = store.byKey('1::#a')!;
+    a.unread = 3;
+    a.highlighted = 2;
+    a.dividerAfterId = 7;
+
+    store.activate(1, '#b', { retainPrevious: true });
+
+    expect(a.unread).toBe(3);
+    expect(a.highlighted).toBe(2);
+    expect(a.dividerAfterId).toBe(7);
+    // ...and the buffer we entered still got the normal focus-in treatment.
+    expect(h.activeKey).toBe('1::#b');
+  });
+
+  it('leaveBuffer() applies that teardown on demand (window close / minimize)', () => {
+    const store = useBuffersStore();
+    const a = seed(store, '#a');
+    a.unread = 3;
+    a.highlighted = 2;
+    a.dividerAfterId = 7;
+
+    store.leaveBuffer('1::#a');
+
+    expect(a.unread).toBe(0);
+    expect(a.highlighted).toBe(0);
+    expect(a.dividerAfterId).toBeNull();
+  });
+
+  it('leaveBuffer() on an unknown key is a no-op', () => {
+    const store = useBuffersStore();
+    expect(() => store.leaveBuffer('1::#nope')).not.toThrow();
+  });
+});

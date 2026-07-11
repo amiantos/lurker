@@ -77,17 +77,26 @@ export const useNetworksStore = defineStore('networks', {
           return { nick, state: 'offline', stateAt: null, awayMessage: null };
         return netState?.peerPresence?.[nick.toLowerCase()] ?? null;
       },
-    activeBuffer(state): ActiveBuffer | null {
-      if (!state.activeKey) return null;
-      // Virtual buffers (:system:, :friends:) use a flat sentinel key (no `::`).
-      // They have no IRC send target, so report "no IRC buffer active" — the
-      // views drive their own header/rendering. Friends still renders messages
-      // via buffers.byKey(activeKey) directly, not through this getter.
-      if (isVirtualKey(state.activeKey)) return null;
-      if (!state.activeKey.includes('::')) return null;
-      const [networkId, name] = state.activeKey.split('::');
-      const id = Number(networkId);
-      return { networkId: id, target: name, network: state.networks.find((n) => n.id === id) };
+    // Parse any buffer key into its (network, target) pair. Split out from
+    // activeBuffer so a view rendering a buffer OTHER than the active one (a
+    // windowed BufferPane) can resolve its own key through the same rules
+    // rather than re-implementing the `${networkId}::${target}` split.
+    bufferFor(state) {
+      return (key: string | null): ActiveBuffer | null => {
+        if (!key) return null;
+        // Virtual buffers (:system:, :friends:) use a flat sentinel key (no
+        // `::`). They have no IRC send target, so report "no IRC buffer" — the
+        // views drive their own header/rendering. Friends still renders
+        // messages via buffers.byKey(key) directly, not through this getter.
+        if (isVirtualKey(key)) return null;
+        if (!key.includes('::')) return null;
+        const [networkId, name] = key.split('::');
+        const id = Number(networkId);
+        return { networkId: id, target: name, network: state.networks.find((n) => n.id === id) };
+      };
+    },
+    activeBuffer(): ActiveBuffer | null {
+      return this.bufferFor(this.activeKey);
     },
   },
   actions: {
@@ -159,6 +168,12 @@ export const useNetworksStore = defineStore('networks', {
     // `${networkId}::${target}` parsers ignore them.
     activateVirtual(key: string) {
       this.activeKey = key;
+    },
+    // No buffer on screen — the state a fresh load starts in. The windowed
+    // canvas returns here when the last window is closed or minimized, so that
+    // re-picking the same buffer in the sidebar is a change and re-opens it.
+    clearActive() {
+      this.activeKey = null;
     },
     applySnapshot(networks: NetworkState[]) {
       const map: Record<number | string, NetworkState> = {};

@@ -51,6 +51,7 @@ import {
   prefixClass as modePrefixClass,
 } from '../utils/memberPrefix.js';
 import IgnoreModal from './IgnoreModal.vue';
+import { useBufferKey } from '../composables/useActiveBuffer.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -60,7 +61,8 @@ const ignores = useIgnoresStore();
 const modalMember = ref<BufferMember | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 
-const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
+const bufferKey = useBufferKey();
+const buffer = computed(() => (bufferKey.value ? buffers.byKey(bufferKey.value) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
 const selfNick = computed(() => {
   const b = buffer.value;

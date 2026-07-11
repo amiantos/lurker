@@ -697,6 +697,18 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'desktop layout. The members toggle in each channel’s topic bar ' +
       'overrides this per channel and is remembered. Has no effect on mobile.',
   },
+  {
+    key: 'look.layout.windowed',
+    label: 'Windowed buffers (desktop, experimental)',
+    category: 'appearance',
+    group: 'layout',
+    type: 'bool',
+    default: false,
+    description:
+      'Show buffers as mIRC-style windows you can move, resize, and minimize ' +
+      'inside the area right of the channel list, instead of one buffer filling ' +
+      'it. Experimental. Has no effect on mobile.',
+  },
 
   // ─── Join/part consolidation (IRCCloud-style summary line) ────────────
   {

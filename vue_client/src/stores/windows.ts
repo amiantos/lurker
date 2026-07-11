@@ -1,0 +1,172 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+import { defineStore } from 'pinia';
+
+// Windowed-buffer geometry and stacking, for the mIRC-style canvas
+// (look.layout.windowed). One entry per open window, keyed by buffer.
+//
+// Deliberately client-only and un-persisted for now: this is a prototype, and
+// where a window sits is a property of a screen, not of an account. Persisting
+// it means deciding what happens when the same account opens a second browser
+// at a different size, which is a real design question and not this layer's.
+//
+// Coordinates are pixels relative to the canvas's top-left, not the viewport,
+// so the canvas can be positioned however the shell likes.
+export type WindowState = 'normal' | 'minimized' | 'maximized';
+
+export interface BufferWindow {
+  key: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  z: number;
+  state: WindowState;
+  // Geometry to restore to when un-maximizing. Captured at maximize time.
+  restore: { x: number; y: number; w: number; h: number } | null;
+}
+
+const DEFAULT_W = 640;
+const DEFAULT_H = 420;
+const MIN_W = 260;
+const MIN_H = 160;
+// New windows step down-right from the origin so a fresh one never lands
+// exactly on the last, then wrap before they march off the canvas.
+const CASCADE_STEP = 28;
+const CASCADE_WRAP = 8;
+
+export const useWindowsStore = defineStore('windows', {
+  state: () => ({
+    // Insertion order, and it must STAY insertion order: the canvas renders a
+    // keyed v-for over this array, and reordering it makes Vue move the frame's
+    // DOM node. Moving a node implicitly releases its pointer capture, which
+    // would kill the very drag that raised the window.
+    //
+    // Stacking therefore lives in `z`, kept dense in 1..N (1 = bottom). Dense
+    // rather than a monotonic counter because the frames render at
+    // `calc(var(--z-window) + z)` — a counter that climbed with every click
+    // would eventually cross --z-modal and paint windows over modals.
+    windows: [] as BufferWindow[],
+    // How many windows have been opened, for cascade placement.
+    opened: 0,
+  }),
+  getters: {
+    byKey: (state) => (key: string) => state.windows.find((w) => w.key === key) ?? null,
+    isOpen: (state) => (key: string) => state.windows.some((w) => w.key === key),
+    // Windows that should render a pane. A minimized window keeps its geometry
+    // but unmounts its BufferPane — with no virtualized message list, keeping a
+    // hidden pane mounted would cost a full DOM tree per minimized buffer.
+    visible: (state) => state.windows.filter((w) => w.state !== 'minimized'),
+    minimized: (state) => state.windows.filter((w) => w.state === 'minimized'),
+    // Highest-z visible window: the one the shortcuts and stray clicks act on.
+    focusedKey(state): string | null {
+      let best: BufferWindow | null = null;
+      for (const w of state.windows) {
+        if (w.state === 'minimized') continue;
+        if (!best || w.z > best.z) best = w;
+      }
+      return best?.key ?? null;
+    },
+  },
+  actions: {
+    // Open (or focus, if already open) a window for a buffer. Returns it.
+    open(key: string): BufferWindow {
+      const existing = this.byKey(key);
+      if (existing) {
+        if (existing.state === 'minimized') existing.state = 'normal';
+        this.focus(key);
+        return existing;
+      }
+      const step = this.opened % CASCADE_WRAP;
+      const win: BufferWindow = {
+        key,
+        x: CASCADE_STEP * step,
+        y: CASCADE_STEP * step,
+        w: DEFAULT_W,
+        h: DEFAULT_H,
+        z: this.windows.length + 1,
+        state: 'normal',
+        restore: null,
+      };
+      this.opened += 1;
+      this.windows.push(win);
+      return win;
+    },
+    close(key: string): void {
+      const idx = this.windows.findIndex((w) => w.key === key);
+      if (idx < 0) return;
+      const gone = this.windows[idx].z;
+      this.windows.splice(idx, 1);
+      // Close the hole so z stays dense.
+      for (const w of this.windows) if (w.z > gone) w.z -= 1;
+    },
+    // Raise to the top of the stack by rewriting z, never by reordering the
+    // array (see the `windows` state comment). Everything that was above the
+    // window drops one rung; it takes the top rung.
+    focus(key: string): void {
+      const win = this.byKey(key);
+      if (!win) return;
+      const top = this.windows.length;
+      // Already on top — don't dirty the store on every click.
+      if (win.z === top) return;
+      const from = win.z;
+      for (const w of this.windows) if (w.z > from) w.z -= 1;
+      win.z = top;
+    },
+    move(key: string, x: number, y: number): void {
+      const win = this.byKey(key);
+      if (!win || win.state === 'maximized') return;
+      win.x = x;
+      win.y = y;
+    },
+    resize(key: string, w: number, h: number): void {
+      const win = this.byKey(key);
+      if (!win || win.state === 'maximized') return;
+      win.w = Math.max(MIN_W, w);
+      win.h = Math.max(MIN_H, h);
+    },
+    minimize(key: string): void {
+      const win = this.byKey(key);
+      if (win) win.state = 'minimized';
+    },
+    // Toggle: maximized -> normal, anything else -> maximized. Stashes the
+    // pre-maximize geometry so restore puts it back where the user left it.
+    toggleMaximize(key: string): void {
+      const win = this.byKey(key);
+      if (!win) return;
+      if (win.state === 'maximized') {
+        if (win.restore) Object.assign(win, win.restore);
+        win.restore = null;
+        win.state = 'normal';
+      } else {
+        if (win.state === 'normal') win.restore = { x: win.x, y: win.y, w: win.w, h: win.h };
+        win.state = 'maximized';
+      }
+      this.focus(key);
+    },
+    restore(key: string): void {
+      const win = this.byKey(key);
+      if (!win) return;
+      if (win.state === 'maximized' && win.restore) {
+        Object.assign(win, win.restore);
+        win.restore = null;
+      }
+      win.state = 'normal';
+      this.focus(key);
+    },
+    // Keep windows reachable when the canvas shrinks: clamp origins so at least
+    // a strip of titlebar stays grabbable inside the new bounds. Not a re-tile —
+    // a window the user placed deliberately should stay where they put it.
+    clampTo(width: number, height: number): void {
+      const GRAB = 80;
+      for (const win of this.windows) {
+        win.x = Math.max(0, Math.min(win.x, Math.max(0, width - GRAB)));
+        win.y = Math.max(0, Math.min(win.y, Math.max(0, height - GRAB)));
+      }
+    },
+  },
+});
+
+export const WINDOW_MIN_W = MIN_W;
+export const WINDOW_MIN_H = MIN_H;

@@ -16,7 +16,7 @@ import { useToastsStore, type ToastKind } from '../stores/toasts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useIgnoresStore } from '../stores/ignores.js';
-import { viewedBuffer } from './useViewedBuffer.js';
+import { isBufferViewed } from './useViewedBuffer.js';
 
 export interface NotifyEvent {
   self?: boolean;
@@ -95,14 +95,16 @@ function throttled(event: NotifyEvent, kind: ToastKind): boolean {
 //     and a toast would be redundant (issue #50) — Discord and Slack mute the
 //     focused channel the same way.
 //
-// "Viewed buffer" is viewedBuffer(), owned by MessageList — NOT networks
-// .activeKey. activeKey only tracks the last-opened buffer and lingers across
-// route / mobile-screen changes, so keying off it would wrongly suppress a
-// toast while the user sits on the Settings route or the mobile buffer list,
-// where no message list is mounted.
+// "Viewed buffer" is the isBufferViewed() set, owned by MessageList — NOT
+// networks.activeKey. activeKey only tracks the last-opened buffer and lingers
+// across route / mobile-screen changes, so keying off it would wrongly suppress
+// a toast while the user sits on the Settings route or the mobile buffer list,
+// where no message list is mounted. With windowed panes the set holds every
+// buffer on screen, so a highlight in any visible window is suppressed — not
+// just the focused one.
 function shouldNotifyInApp(event: NotifyEvent): boolean {
   if (typeof document === 'undefined' || document.hidden) return false;
-  return viewedBuffer() !== `${event.networkId}::${event.target}`;
+  return !isBufferViewed(`${event.networkId}::${event.target}`);
 }
 
 export function notifyForEvent(event: NotifyEvent | null | undefined): void {

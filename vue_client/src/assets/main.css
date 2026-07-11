@@ -67,12 +67,16 @@
      inventing bare numbers in components.
        base    in-flow lift (sticky headers, bg layers)
        raised  lifts above sibling content within a component
+       window  floating buffer windows on the mIRC-style canvas. Each frame
+               adds its stacking order on top of this base, so the whole
+               window layer stays below modals no matter how many are open.
        modal   modal/overlay shells (AppModal, QuickSwitcher)
        toast   toast stack — sits above modals so notifications stay visible
        menu    context menus
        popover input autocomplete (NickPicker) — top of the stack */
   --z-base: 1;
   --z-raised: 5;
+  --z-window: 10;
   --z-modal: 100;
   --z-toast: 200;
   --z-menu: 300;
