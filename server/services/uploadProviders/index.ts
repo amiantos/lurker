@@ -9,6 +9,9 @@
 import * as x0 from './x0.js';
 import * as catbox from './catbox.js';
 import * as hoarder from './hoarder.js';
+import * as zipline from './zipline.js';
+import * as chibisafe from './chibisafe.js';
+import * as s3 from './s3.js';
 import type { UploadDriver } from './types.js';
 
 export type {
@@ -24,6 +27,9 @@ const DRIVERS: Record<string, UploadDriver> = {
   [x0.driver]: x0,
   [catbox.driver]: catbox,
   [hoarder.driver]: hoarder,
+  [zipline.driver]: zipline,
+  [chibisafe.driver]: chibisafe,
+  [s3.driver]: s3,
 };
 
 export const driverIds = Object.keys(DRIVERS);
