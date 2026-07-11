@@ -58,11 +58,23 @@ import {
   isBlockedDccHost,
   parseCrcFromFilename,
   parseDcc,
+  encodeDccAddress,
 } from './dcc.js';
-import type { DccAccept, DccSend } from './dcc.js';
-import { dccAllowPrivateHosts, dccEnabledForUser, dccMaxFileBytes } from './dccConfig.js';
+import type { DccAccept, DccSend, DccChat as DccChatOffer } from './dcc.js';
+import {
+  dccAllowPrivateHosts,
+  dccEnabledForUser,
+  dccMaxFileBytes,
+  dccActiveListenAvailable,
+  dccExternalHost,
+} from './dccConfig.js';
 import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
 import { DccReceiver } from './dccReceiver.js';
+import { DccSender } from './dccSender.js';
+import { DccChat } from './dccChat.js';
+import { openDccListener } from './dccListener.js';
+import type { DccListenHandle } from './dccListener.js';
+import net from 'net';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
@@ -70,6 +82,7 @@ import {
   findResumableTransfer,
   getDccTransfer,
   insertDccTransfer,
+  insertDccSend,
   markDccCompleted,
   markDccFailed,
   markDccReceiving,
@@ -312,6 +325,29 @@ export class IrcConnection {
   // Active DCC downloads (#270), keyed by dcc_transfers.id, so their sockets
   // aren't GC'd mid-transfer and can be cancelled on dispose.
   private readonly dccReceivers = new Map<number, DccReceiver>();
+  // Open DCC listeners (a pending SEND/CHAT offer or a passive-receive reverse
+  // leg), keyed by transfer/session id, so dispose() can close them and free
+  // their ports instead of leaking a bound socket past the connection's life.
+  private readonly dccListeners = new Map<number, DccListenHandle>();
+  // Active outgoing sends, keyed by dcc_transfers.id, so their sockets survive
+  // mid-transfer and can be cancelled on user cancel / dispose.
+  private readonly dccSenders = new Map<number, DccSender>();
+  // Passive sends we offered and are awaiting the receiver's reverse reply on,
+  // keyed by the token we minted. When an inbound DCC SEND echoes one of these
+  // tokens it's the receiver telling us where to dial to push the file.
+  private readonly pendingPassiveSends = new Map<
+    number,
+    { transferId: number; nick: string; filePath: string; size: number }
+  >();
+  // Live DCC CHAT sessions, keyed by the peer's lowercased nick. Each is a direct
+  // TCP line-chat surfaced as a `=nick` buffer; the session is process-bound (it
+  // dies with the connection like the socket), so it's in-memory only — the
+  // chat's MESSAGES persist to the messages table under the `=nick` target.
+  private readonly dccChats = new Map<string, DccChat>();
+  // Open listeners for pending CHAT offers (active), closed on dispose.
+  private readonly dccChatListeners = new Set<DccListenHandle>();
+  // Passive CHAT offers awaiting the peer's reverse reply, keyed by our token.
+  private readonly pendingPassiveChats = new Map<number, { nick: string }>();
   // Resumes awaiting the sender's DCC ACCEPT, keyed by nick|filename. Each holds
   // a timeout so a bot that never accepts fails the transfer cleanly.
   private readonly dccPendingResume = new Map<
@@ -2869,11 +2905,25 @@ export class IrcConnection {
       this.handleDccAccept(nick, parsed);
       return;
     }
+    if (parsed.kind === 'chat') {
+      this.handleInboundDccChat(nick, parsed);
+      return;
+    }
     if (parsed.kind !== 'send') {
       this.routeCtcpStatus(event, formatCtcpRequestLine(nick, 'DCC', null));
       return;
     }
     const offer = parsed;
+    // Is this the receiver's reverse reply to a PASSIVE send WE offered? A real
+    // port + a token we minted for this nick means "here's where to dial me".
+    if (offer.token != null && !offer.passive) {
+      const pend = this.pendingPassiveSends.get(offer.token);
+      if (pend && pend.nick.toLowerCase() === nick.toLowerCase()) {
+        this.pendingPassiveSends.delete(offer.token);
+        this.handlePassiveSendReply(pend, offer);
+        return;
+      }
+    }
     const armed = findArmedRequest(this.network.user_id, this.network.id, nick);
     if (armed) {
       this.acceptDccOffer(armed.id, nick, offer);
@@ -2902,8 +2952,10 @@ export class IrcConnection {
   // connection nor the buffer gets hammered on a fast/large transfer.
   private acceptDccOffer(transferId: number, nick: string, offer: DccSend): void {
     if (offer.passive) {
-      updateDccTransferState(transferId, 'failed', 'passive DCC not yet supported');
-      this.surfaceCtcp(nick, `DCC: passive transfer from ${nick} not yet supported`);
+      // Reverse/passive receive: the sender is firewalled and asked US to listen.
+      // Handled on its own path (we open a listener + send a reverse offer back
+      // + accept the dial-in) rather than dialing out.
+      this.acceptPassiveDccOffer(transferId, nick, offer);
       return;
     }
     // SSRF guard: the host is attacker-controlled and the cell dials it directly,
@@ -2996,6 +3048,123 @@ export class IrcConnection {
     }
   }
 
+  // Accept a PASSIVE (reverse) DCC SEND: the sender is firewalled (offered port
+  // 0 + a token), so we open a listener, send back our own address/port echoing
+  // the token, and receive over the socket the sender then dials into us. Needs
+  // active listening configured (a public host + port range). Fresh-only —
+  // resume over passive is a rare combination we don't attempt; we just fetch
+  // the whole file. Mirrors acceptDccOffer's validation, minus the dial-out SSRF
+  // guard (we don't dial the sender here; we accept its inbound connection).
+  private acceptPassiveDccOffer(transferId: number, nick: string, offer: DccSend): void {
+    const fail = (reason: string, userMsg: string): void => {
+      updateDccTransferState(transferId, 'failed', reason);
+      this.surfaceCtcp(nick, userMsg);
+      this.publishDcc(transferId);
+    };
+    if (!dccActiveListenAvailable()) {
+      fail(
+        'passive DCC needs listening configured',
+        `DCC: can't accept passive "${offer.filename}" from ${nick} — this server has no DCC listen address configured`,
+      );
+      return;
+    }
+    if (offer.token == null) {
+      fail('passive offer missing token', `DCC: malformed passive offer from ${nick} (no token)`);
+      return;
+    }
+    if (offer.size <= 0) {
+      fail(
+        'offer has no advertised size',
+        `DCC: refusing "${offer.filename}" — no advertised file size`,
+      );
+      return;
+    }
+    const cap = dccMaxFileBytes();
+    if (cap > 0 && offer.size > cap) {
+      fail(
+        `exceeds ${formatBytes(cap)} limit`,
+        `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over the ${formatBytes(cap)} limit`,
+      );
+      return;
+    }
+    let destPath: string;
+    try {
+      const username = findUserById(this.network.user_id)?.username || 'user';
+      destPath = resolveDccDestination(username, offer.filename);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      fail(reason, `DCC: cannot start "${offer.filename}" — ${reason}`);
+      return;
+    }
+    if (!hasFreeSpaceFor(path.dirname(destPath), offer.size)) {
+      fail(
+        'insufficient disk space',
+        `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — not enough free disk space`,
+      );
+      return;
+    }
+    const externalHost = dccExternalHost();
+    const addr = externalHost ? encodeDccAddress(externalHost) : null;
+    if (addr === null) {
+      fail(
+        'external host not encodable',
+        `DCC: can't accept passive "${offer.filename}" — DCC external host is misconfigured`,
+      );
+      return;
+    }
+    const expectedCrc = parseCrcFromFilename(offer.filename);
+    markDccReceiving(transferId, {
+      filename: offer.filename,
+      advertised_size: offer.size,
+      destination_path: destPath,
+      passive: true,
+      token: offer.token,
+      crc_expected: expectedCrc,
+      received_bytes: 0,
+    });
+    this.publishDcc(transferId);
+    this.surfaceCtcp(
+      nick,
+      `DCC: accepting passive "${offer.filename}" (${formatBytes(offer.size)}) from ${nick}…`,
+    );
+
+    openDccListener({ expectPeerHost: offer.host })
+      .then((handle) => {
+        this.dccListeners.set(transferId, handle);
+        // Reverse offer back to the sender: our address/port + their token. Same
+        // filename-quoting as our RESUME/offer paths so the sender matches it.
+        const fn = offer.filename.includes(' ') ? `"${offer.filename}"` : offer.filename;
+        this.client.ctcpRequest(
+          nick,
+          'DCC',
+          'SEND',
+          fn,
+          addr,
+          String(handle.port),
+          String(offer.size),
+          String(offer.token),
+        );
+        handle.accepted
+          .then((socket) => {
+            this.dccListeners.delete(transferId);
+            this.startDccReceiver(transferId, nick, offer, destPath, 0, expectedCrc, socket);
+          })
+          .catch((err) => {
+            this.dccListeners.delete(transferId);
+            const msg = err instanceof Error ? err.message : String(err);
+            markDccFailed(transferId, 0, msg);
+            this.surfaceCtcp(nick, `DCC: passive "${offer.filename}" failed — ${msg}`);
+            this.publishDcc(transferId);
+          });
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        markDccFailed(transferId, 0, msg);
+        this.surfaceCtcp(nick, `DCC: can't open a listener for "${offer.filename}" — ${msg}`);
+        this.publishDcc(transferId);
+      });
+  }
+
   private dccResumeKey(nick: string, filename: string): string {
     // Fold case on both halves: a bot may echo the filename in different case in
     // its DCC ACCEPT than the SEND offer used, and the ACCEPT lookup must match.
@@ -3075,6 +3244,10 @@ export class IrcConnection {
     destPath: string,
     startOffset: number,
     expectedCrc: string | null,
+    // Set for a passive/reverse receive: the socket the firewalled sender dialed
+    // into the listener we opened. When present the receiver uses it instead of
+    // dialing offer.host:offer.port.
+    socket?: net.Socket,
   ): void {
     const resumed = startOffset > 0;
     let lastDbAt = 0;
@@ -3082,6 +3255,7 @@ export class IrcConnection {
     const receiver = new DccReceiver({
       host: offer.host,
       port: offer.port,
+      socket,
       size: offer.size,
       destPath,
       startOffset,
@@ -3202,6 +3376,27 @@ export class IrcConnection {
   // Cancel a transfer: abort the live receiver if one is running (its onError
   // marks 'cancelled'), otherwise flip a still-active row to 'cancelled'.
   cancelDcc(transferId: number): void {
+    // Outgoing send in flight → its onError marks 'cancelled'.
+    const sender = this.dccSenders.get(transferId);
+    if (sender) {
+      sender.cancel();
+      return;
+    }
+    // A pending passive send still waiting on the receiver's reverse reply.
+    for (const [token, p] of this.pendingPassiveSends) {
+      if (p.transferId === transferId) {
+        this.pendingPassiveSends.delete(token);
+        break;
+      }
+    }
+    // An open listener for a still-unanswered SEND/CHAT offer or passive-receive
+    // leg — close it (its accepted-promise catch is guarded against clobbering
+    // the 'cancelled' we set below).
+    const listener = this.dccListeners.get(transferId);
+    if (listener) {
+      listener.close();
+      this.dccListeners.delete(transferId);
+    }
     const receiver = this.dccReceivers.get(transferId);
     if (receiver) {
       receiver.cancel();
@@ -3227,6 +3422,402 @@ export class IrcConnection {
       clearTimeout(pending.timer);
       this.dccPendingResume.delete(key);
       return;
+    }
+  }
+
+  // --- Outgoing DCC SEND (#270 phase 2) --------------------------------------
+
+  // Mark a transfer failed ONLY if it's still active — so an async listener/dial
+  // failure can't clobber a 'cancelled' the user already set (or a completed row).
+  private failDccIfActive(transferId: number, received: number, msg: string): void {
+    const row = getDccTransfer(this.network.user_id, transferId);
+    if (row && DCC_ACTIVE_STATES.has(row.state)) {
+      markDccFailed(transferId, received, msg);
+      this.publishDcc(transferId);
+    }
+  }
+
+  // A positive 31-bit passive-DCC token not currently outstanding.
+  private mintDccToken(): number {
+    for (;;) {
+      const t = randomBytes(4).readUInt32BE(0) & 0x7fffffff;
+      if (t !== 0 && !this.pendingPassiveSends.has(t)) return t;
+    }
+  }
+
+  // Offer a local file to `nick` over DCC SEND. Active when we can listen (a
+  // public host + port range are configured) — we open a listener, advertise
+  // it, and the peer dials in. Otherwise (or if listening fails) passive/reverse
+  // — we advertise port 0 + a token and dial the receiver when it replies with
+  // its own listener. The caller has vetted that filePath is a real file inside
+  // the DCC directory and passes its size. Returns the transfer id.
+  offerDccSend(nick: string, filePath: string, filename: string, size: number): number {
+    const transferId = insertDccSend(this.network.user_id, {
+      network_id: this.network.id,
+      peer_nick: nick,
+      filename,
+      advertised_size: size,
+      source_path: filePath,
+      state: 'offering',
+    });
+    this.publishDcc(transferId);
+    const fn = filename.includes(' ') ? `"${filename}"` : filename;
+
+    if (dccActiveListenAvailable()) {
+      const externalHost = dccExternalHost();
+      const addr = externalHost ? encodeDccAddress(externalHost) : null;
+      if (addr === null) {
+        this.failDccIfActive(transferId, 0, 'DCC external host is misconfigured');
+        return transferId;
+      }
+      openDccListener()
+        .then((handle) => {
+          this.dccListeners.set(transferId, handle);
+          this.client.ctcpRequest(nick, 'DCC', 'SEND', fn, addr, String(handle.port), String(size));
+          this.surfaceCtcp(nick, `DCC: offering "${filename}" (${formatBytes(size)}) to ${nick}…`);
+          handle.accepted
+            .then((socket) => {
+              this.dccListeners.delete(transferId);
+              this.startDccSender(transferId, nick, filePath, size, socket);
+            })
+            .catch((err) => {
+              this.dccListeners.delete(transferId);
+              this.failDccIfActive(transferId, 0, err instanceof Error ? err.message : String(err));
+            });
+        })
+        .catch(() => {
+          // Couldn't bind a listener (range exhausted) — fall back to passive.
+          this.offerPassiveDccSend(transferId, nick, filePath, filename, size);
+        });
+      return transferId;
+    }
+    this.offerPassiveDccSend(transferId, nick, filePath, filename, size);
+    return transferId;
+  }
+
+  // Passive/reverse SEND: advertise port 0 + a token; the receiver listens and
+  // replies with its own address/port (arriving as an inbound DCC SEND echoing
+  // the token — see handleInboundDccRequest), which we then dial to push bytes.
+  // The address field is cosmetic in a passive offer (the receiver ignores it),
+  // so we send our external host if known, else 0.
+  private offerPassiveDccSend(
+    transferId: number,
+    nick: string,
+    filePath: string,
+    filename: string,
+    size: number,
+  ): void {
+    const externalHost = dccExternalHost();
+    const addr = (externalHost && encodeDccAddress(externalHost)) || '0';
+    const token = this.mintDccToken();
+    const fn = filename.includes(' ') ? `"${filename}"` : filename;
+    this.pendingPassiveSends.set(token, { transferId, nick, filePath, size });
+    this.client.ctcpRequest(nick, 'DCC', 'SEND', fn, addr, '0', String(size), String(token));
+    this.surfaceCtcp(
+      nick,
+      `DCC: offering "${filename}" (${formatBytes(size)}) to ${nick} (passive)…`,
+    );
+    // Expire the pending passive send if the receiver never answers.
+    const timer = setTimeout(() => {
+      if (!this.pendingPassiveSends.delete(token)) return;
+      this.failDccIfActive(transferId, 0, 'receiver did not accept the passive offer');
+    }, 120_000);
+    timer.unref?.();
+  }
+
+  // The receiver answered our passive SEND with its listener address — SSRF-guard
+  // it (we dial out) then connect and stream.
+  private handlePassiveSendReply(
+    pend: { transferId: number; nick: string; filePath: string; size: number },
+    offer: DccSend,
+  ): void {
+    const { transferId, nick, filePath, size } = pend;
+    if (!dccAllowPrivateHosts() && isBlockedDccHost(offer.host)) {
+      this.failDccIfActive(transferId, 0, `blocked address ${offer.host}`);
+      this.surfaceCtcp(
+        nick,
+        `DCC: won't dial ${offer.host} for "${offer.filename}" (private/reserved)`,
+      );
+      return;
+    }
+    updateDccTransferState(transferId, 'connecting');
+    this.publishDcc(transferId);
+    const sock = net.connect({ host: offer.host, port: offer.port });
+    sock.once('connect', () => this.startDccSender(transferId, nick, filePath, size, sock));
+    sock.once('error', (err) => {
+      this.failDccIfActive(transferId, 0, err.message);
+      this.surfaceCtcp(nick, `DCC: couldn't connect to ${nick} — ${err.message}`);
+    });
+  }
+
+  // Build + start the send engine over an already-connected socket. Throttled
+  // progress/status like the receive path; completion/cancel/fail update the row.
+  private startDccSender(
+    transferId: number,
+    nick: string,
+    filePath: string,
+    size: number,
+    socket: net.Socket,
+    startOffset = 0,
+  ): void {
+    updateDccTransferState(transferId, 'sending');
+    this.publishDcc(transferId);
+    const filename = path.basename(filePath);
+    let lastDbAt = 0;
+    let lastLineAt = Date.now();
+    const sender = new DccSender({
+      socket,
+      filePath,
+      size,
+      startOffset,
+      onProgress: (confirmed) => {
+        const now = Date.now();
+        if (now - lastDbAt >= 3000) {
+          lastDbAt = now;
+          updateDccReceivedBytes(transferId, confirmed);
+          this.publishDcc(transferId);
+        }
+        if (now - lastLineAt >= 8000) {
+          lastLineAt = now;
+          this.surfaceCtcp(
+            nick,
+            `DCC: sending "${filename}" ${formatBytes(confirmed)} / ${formatBytes(size)}`,
+          );
+        }
+      },
+      onDone: (sent) => {
+        this.dccSenders.delete(transferId);
+        markDccCompleted(transferId, sent, null, null);
+        this.surfaceCtcp(nick, `DCC: sent "${filename}" (${formatBytes(sent)}) to ${nick}`);
+        this.publishDcc(transferId);
+      },
+      onError: (err, sent) => {
+        this.dccSenders.delete(transferId);
+        if (err.message === 'cancelled') {
+          updateDccTransferState(transferId, 'cancelled');
+          this.surfaceCtcp(nick, `DCC: cancelled send of "${filename}"`);
+        } else {
+          this.failDccIfActive(transferId, sent, err.message);
+          this.surfaceCtcp(nick, `DCC: send of "${filename}" failed — ${err.message}`);
+        }
+        this.publishDcc(transferId);
+      },
+    });
+    this.dccSenders.set(transferId, sender);
+    sender.start();
+  }
+
+  // --- DCC CHAT (#270 phase 2) -----------------------------------------------
+
+  // The buffer target a DCC chat with `nick` shows under. The `=` prefix is the
+  // classic DCC-chat marker (distinct from `#` channels and plain-nick DMs) and
+  // the client routes a `=`-target buffer's sends back through dccChatSend.
+  private dccChatTarget(nick: string): string {
+    return `=${nick}`;
+  }
+
+  // Chat lifecycle status (connecting / connected / closed / failed). PERSISTED
+  // via publish (not ephemeral) so the `=nick` buffer actually opens and stays
+  // visible — otherwise a failed or quiet chat would leave the user with no
+  // buffer at all and no idea what happened.
+  private dccChatNotice(nick: string, text: string): void {
+    this.publish({ type: 'notice', target: this.dccChatTarget(nick), nick: 'DCC', text });
+  }
+
+  // A received/sent chat line — persisted + fanned out as a message in the
+  // `=nick` buffer so it has real history like a DM.
+  private publishDccChatLine(nick: string, text: string, self: boolean): void {
+    this.publish({
+      type: 'message',
+      target: this.dccChatTarget(nick),
+      nick: self ? this.currentNick || 'me' : nick,
+      text,
+      kind: 'privmsg',
+      self,
+    });
+  }
+
+  /** Whether a live DCC chat with `nick` exists. */
+  hasDccChat(nick: string): boolean {
+    return this.dccChats.has(nick.toLowerCase());
+  }
+
+  // Offer a DCC CHAT to `nick`. Active when we can listen; otherwise passive.
+  offerDccChat(nick: string): void {
+    if (this.disposed) return;
+    if (this.dccChats.has(nick.toLowerCase())) {
+      this.dccChatNotice(nick, `Already in a DCC chat with ${nick}.`);
+      return;
+    }
+    if (dccActiveListenAvailable()) {
+      const externalHost = dccExternalHost();
+      const addr = externalHost ? encodeDccAddress(externalHost) : null;
+      if (addr === null) {
+        this.dccChatNotice(nick, 'DCC chat: external host is misconfigured.');
+        return;
+      }
+      openDccListener()
+        .then((handle) => {
+          this.dccChatListeners.add(handle);
+          this.client.ctcpRequest(nick, 'DCC', 'CHAT', 'chat', addr, String(handle.port));
+          this.dccChatNotice(nick, `Offered a DCC chat to ${nick} — waiting for them to connect…`);
+          handle.accepted
+            .then((socket) => {
+              this.dccChatListeners.delete(handle);
+              this.startDccChat(nick, socket);
+            })
+            .catch((err) => {
+              this.dccChatListeners.delete(handle);
+              this.dccChatNotice(
+                nick,
+                `DCC chat offer to ${nick} failed: ${err instanceof Error ? err.message : err}`,
+              );
+            });
+        })
+        .catch(() => this.offerPassiveDccChat(nick));
+      return;
+    }
+    this.offerPassiveDccChat(nick);
+  }
+
+  private offerPassiveDccChat(nick: string): void {
+    const externalHost = dccExternalHost();
+    const addr = (externalHost && encodeDccAddress(externalHost)) || '0';
+    const token = this.mintDccToken();
+    this.pendingPassiveChats.set(token, { nick });
+    this.client.ctcpRequest(nick, 'DCC', 'CHAT', 'chat', addr, '0', String(token));
+    this.dccChatNotice(
+      nick,
+      `Offered a passive DCC chat to ${nick} — waiting for them to connect…`,
+    );
+    const timer = setTimeout(() => {
+      if (this.pendingPassiveChats.delete(token)) {
+        this.dccChatNotice(nick, `DCC chat offer to ${nick} timed out.`);
+      }
+    }, 120_000);
+    timer.unref?.();
+  }
+
+  // An inbound DCC CHAT offer. Active offer (real port): dial the peer (SSRF-
+  // guarded) and open the chat. Passive offer (port 0 + token): the peer wants
+  // US to listen — do so and reverse-reply, if listening is available. A reply
+  // that echoes one of our own pending passive-chat tokens is instead our peer
+  // answering — dial them.
+  private handleInboundDccChat(nick: string, offer: DccChatOffer): void {
+    // Our own passive-chat offer being answered? (real port + our token)
+    if (!offer.passive && offer.token != null && this.pendingPassiveChats.has(offer.token)) {
+      this.pendingPassiveChats.delete(offer.token);
+      this.dialDccChat(nick, offer.host, offer.port);
+      return;
+    }
+    if (this.dccChats.has(nick.toLowerCase())) return; // already chatting
+    if (offer.passive) {
+      // Peer is firewalled — we listen + reverse-reply. Needs listening.
+      if (!dccActiveListenAvailable() || offer.token == null) {
+        this.dccChatNotice(
+          nick,
+          `${nick} offered a passive DCC chat but this server can't listen for it.`,
+        );
+        return;
+      }
+      const externalHost = dccExternalHost();
+      const addr = externalHost ? encodeDccAddress(externalHost) : null;
+      if (addr === null) return;
+      openDccListener({ expectPeerHost: offer.host })
+        .then((handle) => {
+          this.dccChatListeners.add(handle);
+          this.client.ctcpRequest(
+            nick,
+            'DCC',
+            'CHAT',
+            'chat',
+            addr,
+            String(handle.port),
+            String(offer.token),
+          );
+          this.dccChatNotice(nick, `${nick} wants to DCC chat — connecting…`);
+          handle.accepted
+            .then((socket) => {
+              this.dccChatListeners.delete(handle);
+              this.startDccChat(nick, socket);
+            })
+            .catch(() => this.dccChatListeners.delete(handle));
+        })
+        .catch(() => {});
+      return;
+    }
+    // Active incoming offer — dial the peer (SSRF-guarded).
+    this.dialDccChat(nick, offer.host, offer.port);
+  }
+
+  private dialDccChat(nick: string, host: string, port: number): void {
+    if (!dccAllowPrivateHosts() && isBlockedDccHost(host)) {
+      this.dccChatNotice(
+        nick,
+        `Refusing DCC chat with ${nick} — address ${host} is private/reserved.`,
+      );
+      return;
+    }
+    this.dccChatNotice(nick, `Connecting to ${nick} at ${host}:${port} for DCC chat…`);
+    const sock = net.connect({ host, port });
+    // Bound the connect so an unreachable peer surfaces a timely, clear failure
+    // instead of hanging until the OS SYN timeout (~1–2 min).
+    sock.setTimeout(15_000);
+    sock.once('timeout', () => sock.destroy(new Error('connection timed out')));
+    sock.once('connect', () => {
+      sock.setTimeout(0);
+      this.startDccChat(nick, sock);
+    });
+    sock.once('error', (err) => {
+      // DCC is peer-to-peer: Lurker runs on the SERVER, so the peer's advertised
+      // address:port must be reachable FROM the server. A timeout/refused here
+      // usually means the peer is behind NAT/a firewall with that port not
+      // forwarded (e.g. a bot on a home LAN) — a topology issue, not a Lurker one.
+      this.dccChatNotice(
+        nick,
+        `Couldn't connect to ${nick} at ${host}:${port} — ${err.message}. ` +
+          `DCC connects from THIS server, so ${nick}'s address:port must be reachable from the internet ` +
+          `(a peer behind home NAT needs that port forwarded, or must offer passive/reverse DCC).`,
+      );
+    });
+  }
+
+  private startDccChat(nick: string, socket: net.Socket): void {
+    const key = nick.toLowerCase();
+    const chat = new DccChat({
+      socket,
+      onLine: (text) => this.publishDccChatLine(nick, text, false),
+      onClose: () => {
+        this.dccChats.delete(key);
+        this.dccChatNotice(nick, `DCC chat with ${nick} closed.`);
+      },
+      onError: (err) => {
+        this.dccChats.delete(key);
+        this.dccChatNotice(nick, `DCC chat with ${nick} error: ${err.message}`);
+      },
+    });
+    this.dccChats.set(key, chat);
+    chat.start();
+    this.dccChatNotice(nick, `DCC chat with ${nick} connected.`);
+  }
+
+  /** Send a line in a live DCC chat; echoes it into the `=nick` buffer. Returns
+   *  false when there's no session. */
+  dccChatSend(nick: string, text: string): boolean {
+    const chat = this.dccChats.get(nick.toLowerCase());
+    if (!chat) return false;
+    if (!chat.send(text)) return false;
+    this.publishDccChatLine(nick, text, true);
+    return true;
+  }
+
+  /** Close a live DCC chat (user /dcc chat close). */
+  closeDccChat(nick: string): void {
+    const key = nick.toLowerCase();
+    const chat = this.dccChats.get(key);
+    if (chat) {
+      this.dccChats.delete(key);
+      chat.close();
     }
   }
 
@@ -4020,6 +4611,21 @@ export class IrcConnection {
     // socket, so they'd otherwise outlive this connection) and drop resume timers.
     for (const receiver of this.dccReceivers.values()) receiver.cancel();
     this.dccReceivers.clear();
+    // Abort in-flight outgoing sends and drop any passive sends still awaiting a
+    // reverse reply (their tokens die with the connection).
+    for (const sender of this.dccSenders.values()) sender.cancel();
+    this.dccSenders.clear();
+    this.pendingPassiveSends.clear();
+    // Close live DCC chats + any listeners for pending chat offers.
+    for (const chat of this.dccChats.values()) chat.close();
+    this.dccChats.clear();
+    for (const handle of this.dccChatListeners) handle.close();
+    this.dccChatListeners.clear();
+    this.pendingPassiveChats.clear();
+    // Close any open DCC listeners (pending offers / passive-receive reverse
+    // legs) so their bound ports are released rather than leaked past dispose.
+    for (const handle of this.dccListeners.values()) handle.close();
+    this.dccListeners.clear();
     for (const pending of this.dccPendingResume.values()) {
       clearTimeout(pending.timer);
       // The row is mid-resume ('receiving') with no receiver to fail it — mark it

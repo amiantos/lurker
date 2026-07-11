@@ -88,6 +88,7 @@
       :open="channelPickerOpen"
       :query="channelPickerQuery"
       :network-id="active?.networkId ?? null"
+      :active-target="active?.target ?? null"
       :anchor="formEl"
       @select="onChannelPickerSelect"
       @close="closeChannelPicker"
@@ -128,6 +129,8 @@
         @cancel="onLongMessageCancel"
       />
     </Teleport>
+    <!-- Hidden picker for `/dcc send <nick>` — click()ed programmatically. -->
+    <input ref="dccFileInput" type="file" style="display: none" @change="onDccFileChosen" />
   </form>
 </template>
 
@@ -682,7 +685,10 @@ function buildNickStripItems(buf: Buffer, networkId: number, prefix: string): Ni
 }
 
 function buildChannelMatches(networkId: number, prefix: string): string[] {
-  return buildChannelCandidates(buffers.forNetwork(networkId), prefix);
+  // Pass the active buffer's target so the channel you're currently in sorts
+  // first (standard IRC `#`+Tab behavior); a DM target is ignored by the
+  // builder, leaving the list alphabetical.
+  return buildChannelCandidates(buffers.forNetwork(networkId), prefix, active.value?.target);
 }
 
 function applyCompletion() {
@@ -863,12 +869,18 @@ function onKeydown(e: KeyboardEvent): void {
     }
   }
   // The `#`-channel picker mirrors the nick picker above: while open with
-  // candidates it owns arrows (move highlight) and Tab/Enter (confirm), and
-  // Escape is left to ChannelPicker's own document listener. `#` is an explicit
-  // prefix, so Enter accepts here too (issue #221); Shift+Enter still newlines.
-  // Gated on hasCandidates() so a no-match `#zzz` lets Enter/Tab fall through to
-  // send / in-place completion below. refreshPicker keeps this and the nick
+  // candidates it owns arrows (move highlight) and Enter (confirm — inserts the
+  // highlighted channel + trailing space, for referencing a channel mid-message
+  // per issue #154), and Escape is left to ChannelPicker's own document
+  // listener. Shift+Enter still newlines. Gated on hasCandidates() so a no-match
+  // `#zzz` lets Enter/Tab fall through. refreshPicker keeps this and the nick
   // picker from being open at once, so the two blocks can't both fire.
+  //
+  // Tab is deliberately NOT a picker-confirm here: it closes the popover and
+  // falls through to the in-place Tab-completion cycle below, so `#`+Tab
+  // inserts the current channel (candidates are current-channel-first) and
+  // *repeated* Tab rotates through the other joined channels in place — the
+  // standard IRC tab-cycle, which a confirm-and-close can't do.
   if (channelPickerOpen.value && !e.isComposing && channelPickerEl.value?.hasCandidates()) {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
@@ -876,10 +888,13 @@ function onKeydown(e: KeyboardEvent): void {
         channelPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
         return;
       }
-    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    } else if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       channelPickerEl.value.confirmActive();
       return;
+    } else if (e.key === 'Tab') {
+      // Close the popover and let the in-place cycle take over (no return).
+      closeChannelPicker();
     }
   }
   // The mobile/compact nick strip owns navigation keys while open with
@@ -2208,6 +2223,39 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     }
     return;
   }
+  // DCC chat + file send are per-network (they ride that network's connection),
+  // so they need a network context — refuse from the network-agnostic system view.
+  if (cmd.kind === 'chat' || cmd.kind === 'chatClose' || cmd.kind === 'send') {
+    if (networkId == null) {
+      localInfo(
+        networkId,
+        target,
+        `/dcc ${cmd.kind === 'chatClose' ? 'close' : cmd.kind}: run this from a network buffer`,
+      );
+      return;
+    }
+    if (cmd.kind === 'chat') {
+      try {
+        await dcc.openChat(networkId, cmd.nick);
+        buffers.activate(networkId, `=${cmd.nick}`);
+      } catch (e: any) {
+        localInfo(networkId, target, `/dcc chat: ${e?.message || 'failed'}`);
+      }
+      return;
+    }
+    if (cmd.kind === 'chatClose') {
+      try {
+        await dcc.closeChat(networkId, cmd.nick);
+        localInfo(networkId, target, `/dcc: closed DCC chat with ${cmd.nick}`);
+      } catch (e: any) {
+        localInfo(networkId, target, `/dcc close: ${e?.message || 'failed'}`);
+      }
+      return;
+    }
+    // send — open the file picker; the actual upload fires on file selection.
+    openDccSendPicker(networkId, cmd.nick);
+    return;
+  }
   // accept / reject / cancel — the parser guarantees a numeric id here. They all
   // route through the store's shared act() path.
   const verb = cmd.kind;
@@ -2227,6 +2275,43 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
 function dccListRow(t: DccTransfer): string[] {
   const pct = t.advertised_size > 0 ? `${percentReceived(t)}%` : '';
   return [`#${t.id}`, t.filename, t.state, t.peer_nick, pct];
+}
+
+// `/dcc send <nick>` opens the OS file picker; the upload fires once a file is
+// chosen (onDccFileChosen). The hidden <input> lives in the template.
+const dccFileInput = ref<HTMLInputElement | null>(null);
+let dccSendCtx: { networkId: number; nick: string } | null = null;
+function openDccSendPicker(networkId: number, nick: string): void {
+  dccSendCtx = { networkId, nick };
+  const el = dccFileInput.value;
+  if (!el) return;
+  el.value = ''; // allow re-picking the same file
+  el.click();
+}
+async function onDccFileChosen(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  const ctx = dccSendCtx;
+  dccSendCtx = null;
+  if (!file || !ctx) return;
+  const sys = active.value;
+  try {
+    const t = await dcc.sendFile(ctx.networkId, ctx.nick, file);
+    localInfo(
+      sys?.networkId ?? ctx.networkId,
+      sys?.target ?? '',
+      t
+        ? `/dcc send: offering "${t.filename}" to ${ctx.nick} — ${t.state}`
+        : `/dcc send: offered to ${ctx.nick}`,
+    );
+    dcc.panelOpen = true;
+  } catch (err: any) {
+    localInfo(
+      sys?.networkId ?? ctx.networkId,
+      sys?.target ?? '',
+      `/dcc send: ${err?.message || 'failed'}`,
+    );
+  }
 }
 
 function runIgnore(argLine: string, networkId: number | null, target: string): boolean {
