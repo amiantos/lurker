@@ -75,6 +75,21 @@ import { DccChat } from './dccChat.js';
 import { openDccListener } from './dccListener.js';
 import type { DccListenHandle } from './dccListener.js';
 import net from 'net';
+import { FserveSession } from './fserve.js';
+import {
+  fserveEnabledForUser,
+  fserveRoot,
+  fserveTrigger,
+  fserveWelcome,
+  fserveMaxSessions,
+  fserveAccessMode,
+  fservePassword,
+  fserveAllowlist,
+  fserveAdChannel,
+  fserveAdMessage,
+  fserveAdIntervalMs,
+  decideFserveAccess,
+} from './fserveConfig.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
@@ -348,6 +363,11 @@ export class IrcConnection {
   private readonly dccChatListeners = new Set<DccListenHandle>();
   // Passive CHAT offers awaiting the peer's reverse reply, keyed by our token.
   private readonly pendingPassiveChats = new Map<number, { nick: string }>();
+  // Live fserve sessions (peers browsing this user's archive over DCC CHAT),
+  // for the concurrency cap + teardown on dispose.
+  private readonly fserveSessions = new Set<FserveSession>();
+  // Periodic fserve channel-ad timer (null when ads are off).
+  private fserveAdTimer: ReturnType<typeof setInterval> | null = null;
   // Resumes awaiting the sender's DCC ACCEPT, keyed by nick|filename. Each holds
   // a timeout so a bot that never accepts fails the transfer cleanly.
   private readonly dccPendingResume = new Map<
@@ -802,6 +822,8 @@ export class IrcConnection {
       this.currentNick = registeredNick;
       const fallbackUsed = this.nickAttempt > 0 && registeredNick !== this.network.nick;
       this.startLagPinger();
+      // Kick off fserve channel ads (no-op unless the user enabled ads).
+      this.startFserveAds();
       // Hydrate the DM-peer tracking set from open DM buffers — the union
       // of (a) targets we have any persisted history with and (b) targets
       // not in closed_buffers for this user. Closed DMs explicitly opted
@@ -1280,6 +1302,26 @@ export class IrcConnection {
       const isServer = !eventNick;
       const targetIsChannel = eventTarget && eventTarget.startsWith('#');
       const isNotice = eventType === 'notice';
+      // fserve trigger: a PRIVMSG (not NOTICE) addressed to us whose text is the
+      // configured trigger word opens a file-server session. Checked before the
+      // normal message plumbing (which still shows the DM). No-op when fserve is
+      // off or the text doesn't match.
+      if (
+        eventNick &&
+        !isServer &&
+        !targetIsChannel &&
+        !isNotice &&
+        eventMessage &&
+        me &&
+        eventTarget &&
+        eventTarget.toLowerCase() === me.toLowerCase()
+      ) {
+        try {
+          this.maybeTriggerFserve(eventNick, event, eventMessage);
+        } catch {
+          /* never let a trigger check break message handling */
+        }
+      }
 
       let target: string;
       if (isServer) target = `:server:${this.network.id}`;
@@ -2846,6 +2888,17 @@ export class IrcConnection {
     // can't burn a peer's budget and suppress its legitimate probes.
     if (!type) return;
     if (!this.ctcpLimiter.allowIncoming(this.ctcpPeerKey(event))) return;
+    // CTCP FSERVE opens the user's file server (the other trigger is a /msg of
+    // the configured word, handled in the message path). Gated + access-checked
+    // inside offerFserve; wrapped so a bad request can't disrupt the connection.
+    if (type === 'FSERVE' && fserveEnabledForUser(this.network.user_id)) {
+      try {
+        this.offerFserve(nick, this.fserveHostmask(nick, event));
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     // DCC rides CTCP but is never an auto-reply type. When DCC is enabled for
     // this user, hand the offer to the download manager instead of the generic
     // probe path; when disabled, fall through so it surfaces as an ordinary
@@ -2927,6 +2980,25 @@ export class IrcConnection {
     const armed = findArmedRequest(this.network.user_id, this.network.id, nick);
     if (armed) {
       this.acceptDccOffer(armed.id, nick, offer);
+      return;
+    }
+    // Auto-accept a SEND that arrives DURING an active DCC chat with this nick —
+    // that's the file we just `get`-ed from a remote fserve (the chat is the
+    // browsing session). Record it accepted and start receiving, no manual step.
+    if (this.dccChats.has(nick.toLowerCase())) {
+      const id = insertDccTransfer(this.network.user_id, {
+        network_id: this.network.id,
+        peer_nick: nick,
+        filename: offer.filename,
+        advertised_size: offer.size,
+        state: 'pending_approval',
+        passive: offer.passive,
+        token: offer.token,
+        peer_host: offer.host,
+        peer_port: offer.port,
+      });
+      this.publishDcc(id);
+      this.acceptDccOffer(id, nick, offer);
       return;
     }
     // Unsolicited: nothing auto-lands. Record for the Accept/Reject UI, keeping
@@ -3828,6 +3900,147 @@ export class IrcConnection {
     }
   }
 
+  // --- Fserve (DCC-CHAT file server) -----------------------------------------
+
+  // A DM whose text is the user's configured fserve trigger word opens a
+  // session for the requester. Called from the inbound-message handler; a no-op
+  // unless fserve is enabled and the text matches exactly (case-insensitive).
+  private maybeTriggerFserve(nick: string, event: Record<string, unknown>, text: string): void {
+    if (this.disposed || !fserveEnabledForUser(this.network.user_id)) return;
+    const trigger = fserveTrigger(this.network.user_id);
+    if (!trigger || text.trim().toLowerCase() !== trigger.toLowerCase()) return;
+    this.offerFserve(nick, this.fserveHostmask(nick, event));
+  }
+
+  private fserveHostmask(nick: string, event: Record<string, unknown>): string {
+    return `${nick}!${(event.ident as string) || ''}@${(event.hostname as string) || ''}`;
+  }
+
+  // Open an fserve session for `nick`: run the access policy, then DCC-CHAT them
+  // (we listen, they connect) and bind the socket to an FserveSession. Denials
+  // and errors surface as a NOTICE to the requester.
+  offerFserve(nick: string, hostmask: string): void {
+    if (this.disposed) return;
+    const userId = this.network.user_id;
+    if (!fserveEnabledForUser(userId)) return;
+    const root = fserveRoot();
+    if (!root) return;
+    const deny = (reason: string): void => {
+      try {
+        this.client.notice(nick, `fserve: ${reason}`);
+      } catch {
+        /* ignore */
+      }
+    };
+    const decision = decideFserveAccess(
+      fserveAccessMode(userId),
+      fserveAllowlist(userId),
+      hostmask,
+      nick,
+    );
+    if (decision.kind === 'deny') {
+      deny(`access denied — ${decision.reason}`);
+      return;
+    }
+    if (this.fserveSessions.size >= fserveMaxSessions(userId)) {
+      deny('the file server is busy — try again shortly');
+      return;
+    }
+    if (!dccActiveListenAvailable()) {
+      deny("this server isn't configured to host DCC — can't start a session");
+      return;
+    }
+    const externalHost = dccExternalHost();
+    const addr = externalHost ? encodeDccAddress(externalHost) : null;
+    if (addr === null) {
+      deny('server misconfiguration (DCC external host)');
+      return;
+    }
+    const password = decision.kind === 'password' ? fservePassword(userId) : null;
+    openDccListener({ timeoutMs: 60_000 })
+      .then((handle) => {
+        this.dccChatListeners.add(handle);
+        this.client.ctcpRequest(nick, 'DCC', 'CHAT', 'chat', addr, String(handle.port));
+        handle.accepted
+          .then((socket) => {
+            this.dccChatListeners.delete(handle);
+            this.startFserveSession(nick, socket, root, password);
+          })
+          .catch(() => this.dccChatListeners.delete(handle));
+      })
+      .catch(() => deny('could not open a listener'));
+  }
+
+  private startFserveSession(
+    nick: string,
+    socket: net.Socket,
+    root: string,
+    password: string | null,
+  ): void {
+    const welcome = fserveWelcome(this.network.user_id);
+    const session = new FserveSession({
+      socket,
+      root,
+      nick,
+      welcome: welcome || undefined,
+      password,
+      onGet: (absPath) => {
+        // The interpreter already sandboxed + stat'd it; re-stat for the size and
+        // to catch a file that vanished, then DCC-SEND it to the requester.
+        try {
+          const size = fs.statSync(absPath).size;
+          this.offerDccSend(nick, absPath, path.basename(absPath), size);
+        } catch {
+          /* file gone — the session already told the peer it was sending */
+        }
+      },
+      onClose: () => {
+        this.fserveSessions.delete(session);
+      },
+    });
+    this.fserveSessions.add(session);
+    session.start();
+    systemLog.log({
+      userId: this.network.user_id,
+      scope: `net:${this.network.name}`,
+      fields: { networkId: this.network.id },
+      text: `fserve session opened for ${nick}`,
+    });
+  }
+
+  // Start (or restart) the periodic channel-ad timer from the user's settings.
+  // Called on registration; cleared on dispose. A no-op when ads are off.
+  private startFserveAds(): void {
+    this.stopFserveAds();
+    if (!fserveEnabledForUser(this.network.user_id)) return;
+    const intervalMs = fserveAdIntervalMs(this.network.user_id);
+    const channel = fserveAdChannel(this.network.user_id);
+    const message = fserveAdMessage(this.network.user_id);
+    if (!intervalMs || !channel || !message) return;
+    this.fserveAdTimer = setInterval(() => {
+      if (this.disposed || this.state !== 'connected') return;
+      if (!fserveEnabledForUser(this.network.user_id)) return;
+      // Re-read live so a settings change takes effect without a reconnect.
+      const ch = fserveAdChannel(this.network.user_id);
+      const msg = fserveAdMessage(this.network.user_id);
+      if (ch && msg) {
+        try {
+          this.client.say(ch, msg);
+        } catch {
+          /* ignore */
+        }
+      }
+    }, intervalMs);
+    this.fserveAdTimer.unref?.();
+  }
+
+  private stopFserveAds(): void {
+    if (this.fserveAdTimer) {
+      clearInterval(this.fserveAdTimer);
+      this.fserveAdTimer = null;
+    }
+  }
+
   // Surface an inbound CTCP reply (a peer answered a query we sent), routed back
   // to the buffer the /ctcp was issued from. A SOLICITED reply (matches an
   // outstanding request) always shows; an UNSOLICITED one is rate-limited
@@ -4629,6 +4842,10 @@ export class IrcConnection {
     for (const handle of this.dccChatListeners) handle.close();
     this.dccChatListeners.clear();
     this.pendingPassiveChats.clear();
+    // Tear down fserve sessions + the ad timer.
+    for (const session of this.fserveSessions) session.close();
+    this.fserveSessions.clear();
+    this.stopFserveAds();
     // Close any open DCC listeners (pending offers / passive-receive reverse
     // legs) so their bound ports are released rather than leaked past dispose.
     for (const handle of this.dccListeners.values()) handle.close();

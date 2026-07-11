@@ -1444,6 +1444,125 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'travelling updates it on next connect. Leave blank to fall back to the ' +
       "server's local time.",
   },
+
+  // ─── Fserve (DCC-CHAT file server) ────────────────────────────────────────
+  // Self-host only, and additionally gated server-side on LURKER_FSERVE_ENABLED
+  // + LURKER_FSERVE_DIR + DCC being enabled. These are the per-user policy knobs.
+  {
+    key: 'fserve.enabled',
+    label: 'Run an fserve',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'bool',
+    default: false,
+    selfHostedOnly: true,
+    description:
+      'Serve your archive over DCC CHAT: peers open a session and browse with ' +
+      'dir/cd/get, downloading files over DCC. Requires the operator to set ' +
+      'LURKER_FSERVE_ENABLED + LURKER_FSERVE_DIR and to have DCC enabled for you.',
+  },
+  {
+    key: 'fserve.trigger',
+    label: 'Trigger word',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'string',
+    default: '',
+    selfHostedOnly: true,
+    description:
+      'A word that opens your fserve when someone /msgs it to you (e.g. "!files"). ' +
+      'A CTCP FSERVE always works too. Leave blank to allow only CTCP FSERVE.',
+  },
+  {
+    key: 'fserve.access',
+    label: 'Access',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'enum',
+    choices: ['open', 'allowlist', 'password'],
+    default: 'open',
+    selfHostedOnly: true,
+    description:
+      'open = anyone who triggers it; allowlist = only nicks/hostmasks below; ' +
+      'password = the session prompts for the password below.',
+  },
+  {
+    key: 'fserve.password',
+    label: 'Fserve password',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'secret',
+    default: '',
+    selfHostedOnly: true,
+    description: 'Required on connect when Access is "password". Share it with allowed users.',
+  },
+  {
+    key: 'fserve.allowlist',
+    label: 'Allowlist (nicks / hostmasks)',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'string-list',
+    default: [],
+    selfHostedOnly: true,
+    description:
+      'Used when Access is "allowlist". Each entry is a nick or a nick!user@host ' +
+      'glob (* and ? wildcards); a bare nick matches that nick from any host.',
+  },
+  {
+    key: 'fserve.welcome',
+    label: 'Welcome message',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'string',
+    default: '',
+    selfHostedOnly: true,
+    description: 'Shown to a peer when their session opens (before the prompt). Optional.',
+  },
+  {
+    key: 'fserve.max_sessions',
+    label: 'Max concurrent sessions',
+    category: 'fserve',
+    group: 'fserve',
+    type: 'int',
+    min: 1,
+    max: 20,
+    default: 3,
+    selfHostedOnly: true,
+    description: 'How many peers can browse your fserve at once. Extras are turned away.',
+  },
+  {
+    key: 'fserve.ad_channel',
+    label: 'Ad channel',
+    category: 'fserve',
+    group: 'fserve-ads',
+    type: 'string',
+    default: '',
+    selfHostedOnly: true,
+    description:
+      'A channel to periodically advertise your fserve in (e.g. #warez). Blank = no ads.',
+  },
+  {
+    key: 'fserve.ad_message',
+    label: 'Ad message',
+    category: 'fserve',
+    group: 'fserve-ads',
+    type: 'string',
+    default: '',
+    selfHostedOnly: true,
+    description: 'The line posted to the ad channel (e.g. "/msg me !files for my archive").',
+  },
+  {
+    key: 'fserve.ad_interval',
+    label: 'Ad interval (minutes)',
+    category: 'fserve',
+    group: 'fserve-ads',
+    type: 'int',
+    min: 0,
+    max: 1440,
+    default: 0,
+    selfHostedOnly: true,
+    description: 'How often to post the ad. 0 disables ads. Minimum 1 minute when enabled.',
+  },
 ]);
 
 const BY_KEY = new Map(REGISTRY.map((opt) => [opt.key, opt] as const));
@@ -1488,6 +1607,7 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   // per-cell proxy, so the server doesn't mount /api/api-tokens or /mcp there
   // (A7). Hide the whole category in the hosted edition.
   { id: 'api-tokens', label: 'API tokens', kind: 'bespoke', selfHostedOnly: true },
+  { id: 'fserve', label: 'File server', kind: 'registry', selfHostedOnly: true },
   { id: 'data', label: 'Data', kind: 'bespoke' },
   { id: 'about', label: 'About', kind: 'bespoke' },
 ]);
@@ -1520,4 +1640,6 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   autocomplete: 'Autocomplete',
   formatting: 'Formatting',
   locale: 'Locale',
+  fserve: 'File server',
+  'fserve-ads': 'Advertising',
 });
