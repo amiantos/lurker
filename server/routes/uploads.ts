@@ -8,33 +8,33 @@ import { requireAuth } from '../middleware/auth.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from '../services/settingsRegistry.js';
 import * as imagePipeline from '../services/imagePipeline.js';
-import { getProvider, providerIds, secretsForProvider } from '../services/uploadProviders/index.js';
+import { driverIds } from '../services/uploadProviders/index.js';
+import type { ContentClass } from '../services/uploadProviders/index.js';
 import {
-  NODE_UPLOAD_PROVIDER_ID,
-  nodeUploadSecrets,
-  nodeUploadLimits,
-  nodeUploadConfigured,
-} from '../services/uploadProviders/nodeUpload.js';
+  resolveUploader,
+  UploaderUnavailableError,
+  UploaderNotConfiguredError,
+  type ResolvedUploader,
+} from '../services/uploadProviders/resolve.js';
 import type { UploadListRow } from '../db/uploadHistory.js';
 import { insertUpload, listUploads, getThumbnail, deleteUpload } from '../db/uploadHistory.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { isNodeMode } from '../utils/edition.js';
 import { reportUploadSoon } from '../services/moderationReport.js';
 
 const router = Router();
 router.use(requireAuth);
 
-// Resolve effective settings with registry defaults filled in. Reused across
-// the size-cap middleware and the route handler so they always agree.
-// Settings are untyped (JS module) — Record<string, unknown> is the best we can do.
+// Resolve effective settings with registry defaults filled in. The per-user
+// image-pipeline settings (size cap, max dimension, JPEG quality) are the
+// fallback used when the resolved uploader carries no operator-baked policy caps
+// — i.e. every self-host uploader. Untyped (JS module) → Record<string, unknown>.
 function effectiveSettings(userId: number): Record<string, unknown> {
   return { ...defaultsAsObject(), ...getUserSettings(userId) };
 }
 
-// multer doesn't know about per-user settings until we look up the user, but
-// it needs to be configured up-front. We use a generous hard ceiling (200 MB,
-// the registry max) so multer never rejects below the per-user cap; the route
-// handler enforces the actual per-user `uploads.image.max_upload_mb`.
+// multer needs configuring up-front, before we know the effective per-uploader
+// cap. Use a generous hard ceiling (200 MB, the registry max) so multer never
+// rejects below the real cap; the handler enforces the resolved cap.
 const HARD_BYTE_CEILING = 200 * 1024 * 1024;
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -51,43 +51,54 @@ router.post(
         return;
       }
 
-      // In node edition the operator must have configured the in-house uploader.
-      // Without it the forced provider would throw an error naming per-user
-      // settings a tenant can't see — fail fast with a clear, server-side signal
-      // instead. The boot warning already tells the operator what to set.
-      if (isNodeMode() && !nodeUploadConfigured()) {
-        res.status(503).json({ error: 'uploads are not configured on this server' });
-        return;
+      // Resolve the configured uploader. Every isNodeMode() branch the old route
+      // made (which provider, whose credentials, which caps, SVG policy, thumbnail
+      // strategy) is now derived from the resolved uploader's driver + policy.
+      let resolved: ResolvedUploader;
+      try {
+        resolved = resolveUploader({
+          userId: req.user!.id,
+          isAdmin: req.user!.role === 'admin',
+        });
+      } catch (err) {
+        // A locked instance default that the operator hasn't configured →
+        // server-side 503 (was: isNodeMode() && !nodeUploadConfigured()).
+        if (err instanceof UploaderNotConfiguredError) {
+          res.status(503).json({ error: err.message });
+          return;
+        }
+        // No usable uploader for this account → ask the user to pick one.
+        if (err instanceof UploaderUnavailableError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        throw err;
       }
 
       const settings = effectiveSettings(req.user!.id);
-      // The image-pipeline limits (size cap, max dimension, JPEG quality) are
-      // operator-controlled in node edition — sourced from env, not the tenant's
-      // settings, so a tenant can't lift their own cap or inflate storage. A3
-      // hides the matching UI. Standalone keeps these as per-user settings.
-      const limits = isNodeMode() ? nodeUploadLimits() : null;
-      const maxMb = limits ? limits.maxMb : Number(settings['uploads.image.max_upload_mb']) || 25;
+      // Size cap: operator-baked policy (hosted locked uploader) wins; otherwise
+      // the user's own setting. A tenant can't lift a policy cap because the
+      // policy is on the instance row, not their settings.
+      const maxMb =
+        resolved.policy.maxMb ?? (Number(settings['uploads.image.max_upload_mb']) || 25);
       if (req.file.size > maxMb * 1024 * 1024) {
         res.status(413).json({ error: `file exceeds ${maxMb} MB` });
         return;
       }
 
-      // In node edition the operator forces the in-house uploader and supplies
-      // its credentials from the environment — a tenant never picks a host or
-      // sees the keys. Standalone honors the user's chosen provider as before.
-      const providerId = isNodeMode()
-        ? NODE_UPLOAD_PROVIDER_ID
-        : String(settings['uploads.provider'] ?? '');
-      const provider = getProvider(providerId);
-      if (!provider) {
-        res.status(400).json({ error: `unknown provider: ${providerId}` });
-        return;
-      }
-
-      // Long-message → .txt upload bypasses the sharp pipeline. Providers
-      // (x0.at, catbox, hoarder) are MIME-agnostic, so we hand the raw bytes
+      // Long-message → .txt upload bypasses the sharp pipeline: the bytes go
       // straight through with a .txt extension and no thumbnail.
       const isText = req.file.mimetype === 'text/plain';
+      const contentClass: ContentClass = isText ? 'text' : 'image';
+
+      // Validate stage: the resolved driver must accept this content class. In P0
+      // every driver accepts image + text, so this never rejects — but it makes
+      // acceptsContentClasses a real gate (defense-in-depth) once binary-capable
+      // drivers land, rather than a declared-but-unused capability.
+      if (!resolved.driver.capabilities.acceptsContentClasses.includes(contentClass)) {
+        res.status(415).json({ error: `this uploader does not accept ${contentClass} files` });
+        return;
+      }
 
       let outBuffer: Buffer;
       let outMime: string;
@@ -108,14 +119,13 @@ router.post(
         let optimized: any;
         try {
           optimized = await imagePipeline.optimize(req.file.buffer, {
-            maxDim: limits
-              ? limits.maxDim
-              : Number(settings['uploads.image.max_dimension']) || 2048,
-            quality: limits ? limits.quality : Number(settings['uploads.image.quality']) || 85,
-            // Hosted service is raster images + .txt only — reject SVG (the one
-            // non-raster format sharp would otherwise pass through). Standalone
-            // keeps SVG passthrough.
-            rasterOnly: isNodeMode(),
+            maxDim:
+              resolved.policy.maxDim ?? (Number(settings['uploads.image.max_dimension']) || 2048),
+            quality: resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85),
+            // SVG is rejected only where the resolved uploader's policy says so
+            // (the hosted locked uploader serves raster + .txt). Self-host keeps
+            // the SVG passthrough. Was: rasterOnly = isNodeMode().
+            rasterOnly: resolved.policy.rasterOnly,
           });
         } catch (err) {
           const e = err as { code?: string; message?: string };
@@ -138,41 +148,35 @@ router.post(
       const baseName = originalName.replace(/\.[^.]+$/, '') || `upload-${Date.now()}`;
       const filename = `${baseName}.${outExt}`;
 
-      const secrets: Record<string, string> = isNodeMode()
-        ? nodeUploadSecrets()
-        : secretsForProvider(providerId, settings as Record<string, string>);
-      // provider.upload is from an untyped JS module
+      // provider.upload is from an untyped JS module boundary
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
-        result = await provider.upload(
+        result = await resolved.driver.upload(
           outBuffer,
-          {
-            filename,
-            mime: outMime,
-          },
-          secrets,
+          { filename, mime: outMime, contentClass },
+          resolved.driverConfig,
         );
       } catch (err) {
         const e = err as { code?: string; message?: string };
         const status = e.code === 'PROVIDER_AUTH' ? 401 : e.code === 'PROVIDER_CONFIG' ? 400 : 502;
-        res.status(status).json({ error: e.message, provider: providerId });
+        res.status(status).json({ error: e.message, provider: resolved.driverId });
         return;
       }
 
-      // In node edition the thumbnail goes to remote storage (a `thumbs/` prefix
-      // on the in-house dropper) instead of an inline BLOB, so it doesn't bloat
-      // the cell DB / R2 backups and is served straight from the CDN. Best-effort:
-      // a thumb-upload failure falls back to storing the BLOB (standalone path),
-      // so a hiccup never blocks the user's upload.
+      // Thumbnail strategy is a resolved policy value, not isNodeMode(): a
+      // hostsThumbnails uploader (the hosted in-house one) stores the thumb as a
+      // remote object under a `thumbs/` prefix so it doesn't bloat the cell DB /
+      // R2 backups; everyone else keeps the inline BLOB. Best-effort: a thumb
+      // upload failure falls back to the BLOB so a hiccup never blocks the user.
       let thumbnailBlob: Buffer | null = thumb;
       let thumbnailUrl: string | null = null;
-      if (isNodeMode() && thumb) {
+      if (resolved.policy.hostsThumbnails && thumb) {
         try {
-          const tRes = await provider.upload(
+          const tRes = await resolved.driver.upload(
             thumb,
-            { filename: 'thumb.jpg', mime: 'image/jpeg', kind: 'thumb' },
-            secrets,
+            { filename: 'thumb.jpg', mime: 'image/jpeg', contentClass: 'image', kind: 'thumb' },
+            resolved.driverConfig,
           );
           if (tRes && typeof tRes.url === 'string') {
             thumbnailUrl = tRes.url;
@@ -184,7 +188,7 @@ router.post(
       }
 
       const id = insertUpload(req.user!.id, {
-        provider: providerId,
+        provider: resolved.driverId,
         url: result.url,
         filename: originalName || null,
         mime: outMime,
@@ -193,23 +197,23 @@ router.post(
         height: outHeight,
         thumbnail: thumbnailBlob,
         thumbnail_url: thumbnailUrl,
+        uploader_config_id: resolved.configId,
+        ref: (result.ref as string | undefined) ?? null,
       });
 
-      // Node edition: report the upload to the control plane's moderation index.
-      // Fire-and-forget — never blocks the response; the flush reconciles if the
-      // CP is unreachable. No-op in standalone.
-      if (isNodeMode()) {
-        reportUploadSoon({
-          cell_upload_id: id,
-          cell_user_id: req.user!.id,
-          url: result.url,
-          thumb_url: thumbnailUrl,
-          mime: outMime,
-          byte_size: outByteSize,
-          width: outWidth,
-          height: outHeight,
-        });
-      }
+      // Report the upload to the control plane's moderation index. Self-gates to
+      // a no-op in standalone (no control plane configured), so it's called
+      // unconditionally; fire-and-forget, never blocks the response.
+      reportUploadSoon({
+        cell_upload_id: id,
+        cell_user_id: req.user!.id,
+        url: result.url,
+        thumb_url: thumbnailUrl,
+        mime: outMime,
+        byte_size: outByteSize,
+        width: outWidth,
+        height: outHeight,
+      });
 
       res.json({ id, url: result.url, ...(thumbnailUrl ? { thumbnail_url: thumbnailUrl } : {}) });
     } catch (err) {
@@ -226,22 +230,21 @@ router.get('/', (req: Request, res: Response) => {
     items: rows.map((r) => {
       const { has_thumbnail, thumbnail_url, removed, ...rest } = r;
       // A moderated-away upload keeps its row as a tombstone, but its bytes are
-      // gone (remote object deleted, BLOB cleared) — advertise no thumbnail so
-      // the client renders the tombstone instead of chasing a dead URL.
+      // gone — advertise no thumbnail so the client renders the tombstone.
       if (removed) return { ...rest, removed: true };
-      // Prefer a remote CDN thumbnail (node edition); otherwise fall back to the
-      // local BLOB-serving route when an inline thumbnail exists.
+      // Prefer a remote CDN thumbnail; otherwise fall back to the local
+      // BLOB-serving route when an inline thumbnail exists.
       const thumb = thumbnail_url || (has_thumbnail ? `/api/uploads/${r.id}/thumb` : null);
       return thumb ? { ...rest, thumbnail_url: thumb } : rest;
     }),
-    providers: providerIds,
+    providers: driverIds,
   });
 });
 
 router.get('/:id/thumb', (req: Request, res: Response) => {
   const row = getThumbnail(req.user!.id, Number(req.params.id));
-  // No inline BLOB → nothing to serve here. Node-edition uploads keep their
-  // thumbnail as a remote CDN object (thumbnail_url) the client uses directly.
+  // No inline BLOB → nothing to serve here. Remote-thumbnail uploads keep their
+  // thumbnail as a CDN object (thumbnail_url) the client uses directly.
   if (!row || !row.thumbnail) {
     res.status(404).json({ error: 'not found' });
     return;

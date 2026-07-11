@@ -15,36 +15,44 @@ import type { User } from '../db/users.js';
 
 const ctx = setupTestDb('routes-uploads');
 
-// Stub provider — the route exercises secrets/uploads/url plumbing without
-// reaching the real network. Behavior is configurable per-test via state on
-// the module-level `stub` so we can simulate auth failures, network errors,
-// etc., on demand.
+// Stub driver — the route exercises resolve/upload/url plumbing without reaching
+// the real network. Behavior is configurable per-test via state on the
+// module-level `stub`. The seed migration creates a real `x0` instance default in
+// the test DB; the resolver falls back to it, and the mocked getDriver returns
+// this stub for whatever driver id the resolved uploader names.
 const stub = {
-  id: 'stub',
-  requiresSecrets: false,
+  driver: 'stub',
+  label: 'Stub',
+  capabilities: {
+    storesRemotely: true,
+    supportsDelete: false,
+    mintsKeys: false,
+    acceptsContentClasses: ['image', 'text'] as ('image' | 'text' | 'binary')[],
+  },
+  configSchema: [],
   shouldThrow: null as Error | null,
-  capturedSecrets: null as Record<string, string> | null,
+  capturedConfig: null as Record<string, string> | null,
   async upload(
     _buffer: Buffer,
     meta: { filename: string; mime: string },
-    secrets?: Record<string, string>,
+    config?: Record<string, string>,
   ) {
-    stub.capturedSecrets = secrets ?? null;
+    stub.capturedConfig = config ?? null;
     if (stub.shouldThrow) throw stub.shouldThrow;
     return { url: `https://stub.example/${meta.filename}` };
   },
 };
 
-// The settings registry only accepts the real provider ids in `uploads.provider`,
-// so we can't redirect via settings. Instead, the mocked getProvider returns
-// the stub for whatever id the route asks for (typically the registry default
-// 'x0'). Tests that need to assert on "unknown provider" override
-// getProvider locally inside the spec.
+// Mock the registry so getDriver returns the stub for whatever driver the
+// resolved uploader names. splitConfigBySchema is provided because
+// db/uploaderConfig.ts imports it at load; the resolver reads driver.capabilities
+// + driver.configSchema off the stub.
 vi.mock('../services/uploadProviders/index.js', () => ({
-  providerIds: ['x0', 'catbox', 'hoarder'],
-  getProvider: () => stub,
-  secretsForProvider: (_id: string, settings: Record<string, string>) => ({
-    token: settings['uploads.stub.token'] || '',
+  driverIds: ['x0', 'catbox', 'hoarder'],
+  getDriver: () => stub,
+  splitConfigBySchema: (_driver: unknown, values: Record<string, string>) => ({
+    config: values,
+    secrets: {},
   }),
 }));
 
@@ -163,6 +171,20 @@ describe('POST /api/uploads', () => {
       .attach('image', smallPng, { filename: 'down.png', contentType: 'image/png' });
     expect(res.status).toBe(502);
     stub.shouldThrow = null;
+  });
+
+  it('rejects a content class the resolved driver does not accept (415)', async () => {
+    const prev = stub.capabilities.acceptsContentClasses;
+    stub.capabilities.acceptsContentClasses = ['image']; // no text
+    try {
+      const res = await agent.post('/api/uploads').attach('image', Buffer.from('hello'), {
+        filename: 'note.txt',
+        contentType: 'text/plain',
+      });
+      expect(res.status).toBe(415);
+    } finally {
+      stub.capabilities.acceptsContentClasses = prev;
+    }
   });
 });
 

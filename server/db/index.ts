@@ -7,6 +7,7 @@ import path from 'path';
 import fs from 'fs';
 import { isNodeMode } from '../utils/edition.js';
 import { foldBufferCase } from './foldBufferCase.js';
+import { seedUploaderConfig, reconcileHostedUploaderFromEnv } from './uploaderConfigSeed.js';
 
 // Guardrail: under vitest, refuse to fall back to the real database. A test
 // that forgets to isolate DATABASE_PATH would otherwise open data/lurker.db and
@@ -726,6 +727,48 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_e2e_recipients_handle
       ON e2e_outgoing_recipients(user_id, network_id, handle);
+
+    -- Configured uploaders (issue #510): a named instance of an upload driver
+    -- with its settings filled in. scope 'instance' rows are admin-defined
+    -- (secrets held server-side); 'user' rows are a user's own. config_json holds
+    -- the non-secret fields; secrets_enc is a secretCrypto envelope (lk1.*) of the
+    -- secret fields — plaintext no-op on self-host without LURKER_SECRET_KEY,
+    -- decrypted server-side at upload time and never sent to a client. locked
+    -- expresses the hosted "you get this default, can't touch it" case without a
+    -- separate edition fork; at most one instance row may be is_default. The
+    -- denormalized driver string on upload_history keeps display working even if
+    -- the config row is later deleted.
+    CREATE TABLE IF NOT EXISTS uploader_config (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scope TEXT NOT NULL CHECK (scope IN ('instance','user')),
+      owner_user_id INTEGER,
+      driver TEXT NOT NULL,
+      label TEXT NOT NULL,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      secrets_enc TEXT,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      offered_to_users INTEGER NOT NULL DEFAULT 0,
+      locked INTEGER NOT NULL DEFAULT 0,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_uploader_config_owner
+      ON uploader_config(owner_user_id) WHERE scope = 'user';
+    -- At most one instance default (partial unique index over is_default=1).
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_uploader_config_one_default
+      ON uploader_config(is_default) WHERE scope = 'instance' AND is_default = 1;
+
+    -- Minimal instance-level key/value settings (issue #510). First (and for now
+    -- only) key is uploads.allow_user_defined ('1'|'0'): may users define their
+    -- own uploaders at all — default '1' standalone, '0' hosted. Kept
+    -- uploader-scoped for now; the generalized instance-defaults surface (#299)
+    -- comes later.
+    CREATE TABLE IF NOT EXISTS instance_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 }
 
@@ -924,6 +967,15 @@ ensureColumn('upload_history', 'synced_to_cp', 'INTEGER NOT NULL DEFAULT 0');
 // image), but the bytes are gone from storage. Standalone never sets it.
 ensureColumn('upload_history', 'removed', 'INTEGER NOT NULL DEFAULT 0');
 
+// Issue #510: which configured uploader (uploader_config.id) produced this
+// upload — for a later delete + display — and `ref`, the driver's opaque delete
+// handle (object key / disk key), NULL for non-deletable drivers (all P0
+// drivers). The denormalized `provider` string above is kept for display even if
+// the uploader_config row is later deleted. Behavior-neutral in P0: no path yet
+// reads these back, they're the seam later phases (delete, s3/local) build on.
+ensureColumn('upload_history', 'uploader_config_id', 'INTEGER');
+ensureColumn('upload_history', 'ref', 'TEXT');
+
 // The offer's address/port, persisted so an unsolicited DCC SEND recorded as
 // pending_approval can be accepted later (the user clicks Accept seconds/minutes
 // after the bot offered). #270 phase 2.
@@ -938,7 +990,7 @@ ensureColumn('push_subscriptions', 'fail_count', 'INTEGER NOT NULL DEFAULT 0');
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -1474,7 +1526,38 @@ try {
   }
 }
 
-if (schemaVersion < SCHEMA_VERSION) {
+// Issue #510: seed the uploader data model once — instance x0/catbox rows +
+// per-user conversion of existing uploads.* settings (self-host), or a single
+// locked hosted uploader from env + allow_user_defined=0 (hosted). Behavior is
+// byte-identical post-migration. Passed `db` (not importing it) to avoid an
+// import cycle, matching foldMutedIntoIgnoreRules above. See db/uploaderConfigSeed.ts.
+let uploaderSeedOk = true;
+if (schemaVersion < 14) {
+  try {
+    seedUploaderConfig(db);
+  } catch (err) {
+    // Leave schema_version un-bumped (see the version write below) so this
+    // genuinely retries next boot rather than being permanently skipped. The
+    // seed is idempotent, so a retry after a partial/failed run is safe.
+    uploaderSeedOk = false;
+    console.warn('[db] uploader-config seed migration failed (will retry next boot):', err);
+  }
+}
+
+// Re-sync the hosted locked uploader from env on every boot — idempotent no-op on
+// self-host and when the hosted upload env is unset. The config now lives in the
+// DB row, so this is what lets a deploy that rotates LURKER_NODE_UPLOAD_API_KEY or
+// changes the caps still take effect.
+try {
+  reconcileHostedUploaderFromEnv(db);
+} catch (err) {
+  console.warn('[db] hosted uploader env reconcile failed:', err);
+}
+
+// Gate on uploaderSeedOk: if the #510 seed threw, keep schema_version below 14 so
+// the seed retries on the next boot instead of being silently skipped forever
+// (the other <14 blocks are shape/data-gated, so re-running them is a no-op).
+if (schemaVersion < SCHEMA_VERSION && uploaderSeedOk) {
   db.prepare(
     `INSERT INTO app_meta (key, value) VALUES ('schema_version', ?)
               ON CONFLICT(key) DO UPDATE SET value = excluded.value`,

@@ -18,20 +18,39 @@
 import { buildMultipart, postBuffer } from './multipart.js';
 import type { MultipartPart } from './multipart.js';
 import { USER_AGENT } from '../../utils/userAgent.js';
+import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 const ENDPOINT = 'https://catbox.moe/user/api.php';
 const TIMEOUT_MS = 60_000;
 
-export const id = 'catbox';
-export const requiresSecrets = false;
+export const driver = 'catbox';
+export const label = 'catbox.moe';
+export const capabilities: DriverCapabilities = {
+  storesRemotely: true,
+  supportsDelete: false,
+  mintsKeys: false,
+  acceptsContentClasses: ['image', 'text'],
+};
+export const configSchema: ConfigField[] = [
+  {
+    key: 'userhash',
+    label: 'Catbox userhash',
+    type: 'secret',
+    required: false,
+    default: '',
+    description:
+      'Optional catbox.moe account hash. Uploads made with a userhash can be ' +
+      'managed from your catbox account; without one they are anonymous.',
+  },
+];
 
 export async function upload(
   buffer: Buffer,
-  { filename, mime }: { filename: string; mime: string },
-  secrets: { userhash?: string } = {},
-): Promise<{ url: string }> {
+  { filename, mime }: UploadMeta,
+  config: { userhash?: string } = {},
+): Promise<UploadResult> {
   const parts: MultipartPart[] = [{ name: 'reqtype', value: 'fileupload' }];
-  if (secrets.userhash) parts.push({ name: 'userhash', value: secrets.userhash });
+  if (config.userhash) parts.push({ name: 'userhash', value: config.userhash });
   parts.push({
     name: 'fileToUpload',
     filename,

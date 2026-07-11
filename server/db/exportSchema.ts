@@ -304,6 +304,9 @@ export const EXPORT_TABLES = Object.freeze({
     skippedColumns: {
       synced_to_cp: 'operational: cell↔control-plane moderation-sync bookkeeping, not portable',
       removed: 'instance/CP-owned moderation state; a fresh instance starts it at the default 0',
+      uploader_config_id:
+        'instance-local: references an uploader_config row id that does not survive import (#510)',
+      ref: 'driver-local delete handle (object/disk key), not portable (#510)',
     },
   },
 
@@ -385,6 +388,20 @@ export const EXPORT_TABLES = Object.freeze({
   },
 
   // ---- skipped ----
+
+  uploader_config: {
+    mode: 'skip',
+    reason:
+      'instance-scoped uploader infrastructure (#510): user rows hold secrets encrypted with the ' +
+      'source instance key and reference driver ids/rows that do not survive import. In P0 a user’s ' +
+      'provider config is still carried by the legacy uploads.* user_settings keys (which ARE exported); ' +
+      'revisit the export contract when those legacy keys are removed.',
+  },
+
+  instance_settings: {
+    mode: 'skip',
+    reason: 'instance-level operational settings (e.g. uploads.allow_user_defined), not user data',
+  },
 
   sessions: {
     mode: 'skip',
