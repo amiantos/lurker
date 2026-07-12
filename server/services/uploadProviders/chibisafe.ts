@@ -15,6 +15,7 @@ import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from '
 export const driver = 'chibisafe';
 export const label = 'Chibisafe';
 export const capabilities: DriverCapabilities = {
+  creatable: true,
   storesRemotely: true,
   supportsDelete: false,
   mintsKeys: false,

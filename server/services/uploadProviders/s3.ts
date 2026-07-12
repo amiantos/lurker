@@ -28,6 +28,7 @@ import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from '
 export const driver = 's3';
 export const label = 'S3 / R2';
 export const capabilities: DriverCapabilities = {
+  creatable: true,
   storesRemotely: true,
   supportsDelete: false,
   // WE construct the object key (unlike a remote host that names the file).

@@ -6,15 +6,30 @@
   groups items by their `group` field, and renders one SettingsRow per item.
   Used for any category whose `kind: 'registry'` entry in CATEGORIES — i.e.
   the categories that are just a list of options with no contextual UI.
+
+  It's also embeddable: a BESPOKE pane whose category still has ordinary registry
+  options can render them here rather than hand-rolling SettingsRows. Pass
+  `embedded` (drops the <h2> and the category id, so the host pane keeps a single
+  DOM id) and optionally `only` to restrict it to certain groups. UploadsPane uses
+  both: its destination/uploader UI is table-backed and bespoke, but the image
+  pipeline underneath it is still just registry options.
 -->
 
 <template>
-  <section :id="categoryId" class="settings-pane">
-    <h2>{{ categoryLabel }}</h2>
+  <section
+    :id="embedded ? undefined : categoryId"
+    :class="embedded ? 'registry-embed' : 'settings-pane'"
+  >
+    <h2 v-if="!embedded">{{ categoryLabel }}</h2>
     <p v-if="error" class="error inline">{{ error }}</p>
 
     <template v-for="grp in groups" :key="grp.id">
-      <h3 v-if="groups.length > 1" :id="grp.id" class="subhead" :data-setting-group="grp.id">
+      <h3
+        v-if="embedded || groups.length > 1"
+        :id="grp.id"
+        class="subhead"
+        :data-setting-group="grp.id"
+      >
         {{ grp.title }}
       </h3>
       <ul class="rows">
@@ -30,7 +45,7 @@
       </ul>
     </template>
 
-    <p v-if="!groups.length" class="muted small">No settings in this category.</p>
+    <p v-if="!groups.length && !embedded" class="muted small">No settings in this category.</p>
   </section>
 </template>
 
@@ -42,7 +57,13 @@ import { CATEGORIES, GROUPS, optionVisible } from '../../utils/settingsRegistry.
 import type { SettingOption, SettingValue } from '../../../../shared/settingsRegistry.js';
 import SettingsRow from '../SettingsRow.vue';
 
-const props = defineProps<{ categoryId: string }>();
+const props = defineProps<{
+  categoryId: string;
+  /** Render for embedding in a bespoke pane: no <h2>, no category id. */
+  embedded?: boolean;
+  /** Restrict to these group ids (in this order). Omit for every group. */
+  only?: string[];
+}>();
 
 const settings = useSettingsStore();
 const config = useConfigStore();
@@ -55,7 +76,10 @@ const categoryLabel = computed(() => {
 
 const groups = computed(() => {
   const items = settings.registry.filter(
-    (opt) => opt.category === props.categoryId && optionVisible(opt, { isNode: config.isNode }),
+    (opt) =>
+      opt.category === props.categoryId &&
+      (!props.only || props.only.includes(opt.group || '_')) &&
+      optionVisible(opt, { isNode: config.isNode }),
   );
   if (!items.length) return [];
   const groupsMap = new Map<string, SettingOption[]>();
@@ -64,11 +88,15 @@ const groups = computed(() => {
     if (!groupsMap.has(gid)) groupsMap.set(gid, []);
     groupsMap.get(gid)!.push(opt);
   }
-  return Array.from(groupsMap, ([gid, gItems]) => ({
+  const built = Array.from(groupsMap, ([gid, gItems]) => ({
     id: gid,
     title: GROUPS[gid] || gid,
     items: gItems,
   }));
+  // `only` is an explicit ordering, not just a filter.
+  if (!props.only) return built;
+  const order = props.only;
+  return built.toSorted((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
 });
 
 async function onCommit(key: string, value: SettingValue) {

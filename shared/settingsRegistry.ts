@@ -998,25 +998,14 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
 
   // ─── Image uploads ────────────────────────────────────────────────────
-  {
-    key: 'uploads.provider',
-    label: 'Upload provider',
-    category: 'uploads',
-    group: 'provider',
-    type: 'enum',
-    choices: ['x0', 'catbox', 'hoarder', 'local'],
-    default: 'x0',
-    // Node edition forces the operator's in-house uploader (A8); a tenant never
-    // picks a host, so this and the provider-credential settings below are
-    // hidden in the hosted edition.
-    selfHostedOnly: true,
-    description:
-      'Where pasted/picked images are uploaded. x0.at and catbox.moe are ' +
-      'anonymous public hosts. hoarder uploads to your own self-hosted ' +
-      'Hoarder instance using the URL + API key configured below. local stores ' +
-      'files on this server’s own disk and serves them back (set ' +
-      'PUBLIC_BASE_URL so the links resolve from other clients).',
-  },
+  //
+  // WHERE a file goes is no longer a setting. The destination is a configured
+  // uploader (a `uploader_config` row: driver + its own credentials), managed in
+  // the bespoke half of the Uploads pane and selected via /api/uploaders. The old
+  // `uploads.provider` enum + the flat `uploads.catbox.*`/`uploads.hoarder.*`
+  // credential keys were removed in #514 and folded into rows by
+  // db/uploaderConfigSeed.ts#reconcileLegacyUploadSettings. What remains here is
+  // the part that genuinely is a per-user preference: the processing pipeline.
   {
     key: 'uploads.image.max_dimension',
     label: 'Max image dimension (longest edge)',
@@ -1069,43 +1058,6 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'When enabled, pasting an image into the input area uploads it and ' +
       'inserts the resulting URL. Disable to fall back to plain text paste.',
-  },
-  {
-    key: 'uploads.catbox.userhash',
-    label: 'Catbox userhash',
-    category: 'uploads',
-    group: 'catbox',
-    type: 'secret',
-    default: '',
-    selfHostedOnly: true,
-    description:
-      'Optional catbox.moe account hash. Uploads made with a userhash can ' +
-      'be managed from your catbox account; without one they are anonymous.',
-  },
-  {
-    key: 'uploads.hoarder.url',
-    label: 'Hoarder URL',
-    category: 'uploads',
-    group: 'hoarder',
-    type: 'string',
-    default: '',
-    selfHostedOnly: true,
-    description:
-      'Base URL of your Hoarder instance (e.g. https://upload.example.com). ' +
-      'Only used when the upload provider is set to hoarder.',
-  },
-  {
-    key: 'uploads.hoarder.api_key',
-    label: 'Hoarder API key',
-    category: 'uploads',
-    group: 'hoarder',
-    type: 'secret',
-    default: '',
-    selfHostedOnly: true,
-    description:
-      'API key for your Hoarder instance. Generate one on the Hoarder server ' +
-      'with `node scripts/gen-api-key.js` and add it to ' +
-      'web.auth.api_keys in its config.json.',
   },
 
   // ─── Notifications (unified intent, per signal type) ──────────────────
@@ -1478,7 +1430,10 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'appearance', label: 'Appearance', kind: 'registry' },
   { id: 'chat', label: 'Chat', kind: 'registry' },
   { id: 'input', label: 'Input bar', kind: 'registry' },
-  { id: 'uploads', label: 'Uploads', kind: 'registry' },
+  // Bespoke: the pane leads with the configured-uploader list + picker (which is
+  // table-backed, not registry-backed) and renders the surviving registry rows
+  // for the image pipeline underneath it.
+  { id: 'uploads', label: 'Uploads', kind: 'bespoke' },
   { id: 'notifications', label: 'Notifications', kind: 'bespoke' },
   { id: 'highlights', label: 'Highlights', kind: 'bespoke' },
   { id: 'ignores', label: 'Ignores', kind: 'bespoke' },
@@ -1511,11 +1466,8 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   connection: 'Connection',
   ctcp: 'CTCP replies',
   'auto-away': 'Auto-away',
-  provider: 'Provider',
   pipeline: 'Image pipeline',
   viewing: 'Viewing',
-  catbox: 'catbox.moe',
-  hoarder: 'Hoarder',
   alerts: 'Alerts',
   push_filters: 'Push filters',
   system_features: 'System text features',

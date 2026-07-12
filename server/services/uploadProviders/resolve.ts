@@ -81,23 +81,14 @@ function isAllowed(row: UploaderConfigRow, userId: number, isAdmin: boolean): bo
   return row.offered_to_users === 1 || isAdmin;
 }
 
-// P0 bridge helper: resolve a legacy `uploads.provider` enum value to a concrete
-// uploader this user may use, preferring their own configured row (which carries
-// their secrets, e.g. a catbox userhash) over an offered instance row for the
-// same driver. Returns null when the enum maps to nothing usable (e.g. 'hoarder'
-// with no configured row) so the caller can fall through. Removed with the bridge
-// at P3.
-function findAllowedByDriver(
-  driver: string,
-  userId: number,
-  isAdmin: boolean,
-): UploaderConfigRow | null {
-  const userRow = listUserUploaders(userId).find((r) => r.driver === driver && r.enabled === 1);
-  if (userRow) return userRow;
-  const instRow = listInstanceUploaders().find(
-    (r) => r.driver === driver && r.enabled === 1 && (r.offered_to_users === 1 || isAdmin),
-  );
-  return instRow ?? null;
+/**
+ * Every uploader this user is allowed to send a file to — the allowed-set from
+ * the header, materialized. The uploader picker in settings lists exactly this,
+ * so the UI can never offer something `resolveUploader` would then reject.
+ */
+export function listAllowedUploaders(userId: number, isAdmin = false): UploaderConfigRow[] {
+  const rows = [...listUserUploaders(userId), ...listInstanceUploaders()];
+  return rows.filter((r) => isAllowed(r, userId, isAdmin));
 }
 
 function splitPolicy(merged: Record<string, string>): {
@@ -168,23 +159,16 @@ export function resolveUploader(input: ResolveInput): ResolvedUploader {
     if (!r || !isAllowed(r, userId, isAdmin)) throw new UploaderUnavailableError();
     chosen = r;
   } else {
-    const settings = getUserSettings(userId);
-    // P0 bridge: the legacy `uploads.provider` dropdown is still the only live
-    // selection UI (the picker that writes uploads.uploader_id is P3), so honor it
-    // — map the enum to this user's matching uploader so changing the dropdown
-    // still switches hosts. Takes precedence over the migration-seeded
-    // uploads.uploader_id, which the dropdown does not update. Remove when the P3
-    // selection UI lands and writes uploads.uploader_id directly.
-    const provider = settings['uploads.provider'];
-    if (typeof provider === 'string' && provider) {
-      chosen = findAllowedByDriver(provider, userId, isAdmin);
-    }
-    if (!chosen) {
-      const savedId = settings['uploads.uploader_id'];
-      if (typeof savedId === 'number') {
-        const r = getUploaderConfig(savedId);
-        if (r && isAllowed(r, userId, isAdmin)) chosen = r;
-      }
+    // The user's chosen uploader (settings key `uploads.uploader_id`, written by
+    // the picker in routes/uploaders.ts — deliberately not a settingsRegistry key,
+    // since it's an id into a table rather than a preference). A pointer at an
+    // uploader they may no longer use (deleted, un-offered, disabled) falls back
+    // to the instance default rather than erroring: they didn't ask for this
+    // upload to go anywhere specific, so there's nothing to make them re-pick.
+    const savedId = getUserSettings(userId)['uploads.uploader_id'];
+    if (typeof savedId === 'number') {
+      const r = getUploaderConfig(savedId);
+      if (r && isAllowed(r, userId, isAdmin)) chosen = r;
     }
     if (!chosen) chosen = getInstanceDefault();
   }

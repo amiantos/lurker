@@ -15,6 +15,7 @@ import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from '
 export const driver = 'zipline';
 export const label = 'Zipline';
 export const capabilities: DriverCapabilities = {
+  creatable: true,
   storesRemotely: true,
   supportsDelete: false,
   mintsKeys: false,

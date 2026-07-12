@@ -21,6 +21,23 @@ import { nodeUploadSecrets, nodeUploadLimits } from '../services/uploadProviders
 // imported here — see header).
 const ALLOW_USER_DEFINED_KEY = 'uploads.allow_user_defined';
 
+/**
+ * The instance uploaders ensureSelfHostInstanceRows guarantees on every boot.
+ * Exported because "is this row a built-in?" has exactly one correct answer —
+ * "will the reconcile put it back if I delete it?" — and the admin route needs
+ * it to refuse a delete that would be pure theatre (and, for `local`, would
+ * strand the files already on disk with nothing left that can reap them).
+ *
+ * Note this is NOT the same question as the driver's `creatable` capability:
+ * `catbox` is both a seeded built-in AND a driver a user may instantiate with
+ * their own userhash.
+ */
+export const BUILT_IN_INSTANCE_DRIVERS: readonly string[] = Object.freeze([
+  'x0',
+  'catbox',
+  'local',
+]);
+
 // ─── low-level helpers (raw SQL against the passed db) ────────────────────────
 
 function encodeSecrets(secrets: Record<string, string>): string | null {
@@ -104,17 +121,17 @@ function hasInstanceDefault(db: Database.Database): boolean {
  * row's default/label/config is never clobbered. x0 is claimed as the default
  * only when no instance default exists yet, so re-running this never conflicts
  * with the one-default unique index (and never overrides a self-hoster's chosen
- * default). Returns the x0/catbox ids the per-user conversion points at.
+ * default).
  */
-function ensureSelfHostInstanceRows(db: Database.Database): { x0Id: number; catboxId: number } {
+function ensureSelfHostInstanceRows(db: Database.Database): void {
   const defaultExists = hasInstanceDefault(db);
-  const x0Id = ensureInstanceRow(db, {
+  ensureInstanceRow(db, {
     driver: 'x0',
     label: 'x0.at',
     offered: true,
     isDefault: !defaultExists,
   });
-  const catboxId = ensureInstanceRow(db, {
+  ensureInstanceRow(db, {
     driver: 'catbox',
     label: 'catbox.moe',
     offered: true,
@@ -129,7 +146,6 @@ function ensureSelfHostInstanceRows(db: Database.Database): { x0Id: number; catb
     isDefault: false,
   });
   setInstanceSettingIfAbsent(db, ALLOW_USER_DEFINED_KEY, '1');
-  return { x0Id, catboxId };
 }
 
 function getUserSettingsRaw(db: Database.Database, userId: number): Record<string, unknown> {
@@ -195,11 +211,13 @@ function findHostedRow(db: Database.Database): number | null {
 // ─── the migration ────────────────────────────────────────────────────────────
 
 /**
- * Seed the uploader model once. Hosted: a single locked `hoarder` instance
- * default from env + allow_user_defined=0. Self-host: instance x0 (default) +
- * catbox rows, allow_user_defined=1, and each user's existing uploads.* settings
- * converted into a user row with uploads.uploader_id pointed at it. Idempotent —
- * skips rows/users already converted, so a re-run is a no-op.
+ * Seed the uploader model. Hosted: a single locked `hoarder` instance default
+ * from env + allow_user_defined=0. Self-host: the built-in instance rows (x0
+ * default, catbox, local) + allow_user_defined=1. Fully idempotent.
+ *
+ * The per-user conversion off the legacy `uploads.*` settings is NOT here — it
+ * lives in reconcileLegacyUploadSettings, which runs every boot instead of behind
+ * this version gate. See that function's header.
  */
 export function seedUploaderConfig(db: Database.Database): void {
   const run = db.transaction(() => {
@@ -223,14 +241,10 @@ export function seedUploaderConfig(db: Database.Database): void {
       return;
     }
 
-    // Self-host: ensure the built-in instance rows, then run the one-time
-    // per-user conversion of existing uploads.* settings.
-    const { x0Id, catboxId } = ensureSelfHostInstanceRows(db);
-
-    const users = db.prepare('SELECT id FROM users').all() as Array<{ id: number }>;
-    for (const { id: userId } of users) {
-      convertUser(db, userId, x0Id, catboxId);
-    }
+    // Self-host: ensure the built-in instance rows. The per-user conversion of
+    // the legacy uploads.* settings is NOT done here — reconcileLegacyUploadSettings
+    // owns it and runs every boot (see its header for why a one-shot is wrong).
+    ensureSelfHostInstanceRows(db);
   });
   run();
 }
@@ -251,67 +265,172 @@ export function reconcileBuiltInUploaders(db: Database.Database): void {
   })();
 }
 
-function convertUser(db: Database.Database, userId: number, x0Id: number, catboxId: number): void {
-  const settings = getUserSettingsRaw(db, userId);
+// ─── legacy `uploads.*` keys → uploader_config rows (P3, #514) ────────────────
 
-  // Already converted (has a user row or an explicit uploader_id) → leave alone.
-  const hasUserRow = db
-    .prepare(`SELECT 1 FROM uploader_config WHERE scope = 'user' AND owner_user_id = ? LIMIT 1`)
-    .get(userId);
-  if (hasUserRow || settings['uploads.uploader_id'] != null) return;
+// The four per-user settings keys the pre-#510 uploader was configured through.
+// P3 deletes them from the registry, so this module owns the last leg of their
+// life: materialize whatever they still hold into real rows, then drop them.
+const LEGACY_KEYS = [
+  'uploads.provider',
+  'uploads.catbox.userhash',
+  'uploads.hoarder.url',
+  'uploads.hoarder.api_key',
+] as const;
 
-  const provider =
-    typeof settings['uploads.provider'] === 'string'
-      ? (settings['uploads.provider'] as string)
-      : 'x0';
-  const userhash =
-    typeof settings['uploads.catbox.userhash'] === 'string'
-      ? (settings['uploads.catbox.userhash'] as string)
-      : '';
-  const hoarderUrl =
-    typeof settings['uploads.hoarder.url'] === 'string'
-      ? (settings['uploads.hoarder.url'] as string)
-      : '';
-  const hoarderKey =
-    typeof settings['uploads.hoarder.api_key'] === 'string'
-      ? (settings['uploads.hoarder.api_key'] as string)
-      : '';
+const LEGACY_KEY_PLACEHOLDERS = LEGACY_KEYS.map(() => '?').join(',');
 
-  let targetId: number;
-  if (provider === 'catbox' && userhash) {
-    // Configured catbox → a user row carrying the userhash secret.
-    targetId = insertRow(db, {
-      scope: 'user',
-      owner_user_id: userId,
-      driver: 'catbox',
-      label: 'catbox.moe',
-      config_json: '{}',
-      secrets_enc: encodeSecrets({ userhash }),
-      enabled: 1,
-      offered_to_users: 0,
-      locked: 0,
-      is_default: 0,
-    });
-  } else if (provider === 'hoarder' && hoarderUrl && hoarderKey) {
-    // Configured self-host hoarder → a user row (url public, api_key secret).
-    targetId = insertRow(db, {
-      scope: 'user',
-      owner_user_id: userId,
-      driver: 'hoarder',
-      label: 'Hoarder',
-      config_json: JSON.stringify({ url: hoarderUrl }),
-      secrets_enc: encodeSecrets({ api_key: hoarderKey }),
-      enabled: 1,
-      offered_to_users: 0,
-      locked: 0,
-      is_default: 0,
-    });
-  } else {
-    // Anonymous catbox or x0 (or unconfigured) → point at the seeded instance row.
-    targetId = provider === 'catbox' ? catboxId : x0Id;
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function findUserRowByDriver(db: Database.Database, userId: number, driver: string): number | null {
+  const r = db
+    .prepare(
+      `SELECT id FROM uploader_config
+        WHERE scope = 'user' AND owner_user_id = ? AND driver = ? LIMIT 1`,
+    )
+    .get(userId, driver) as { id: number } | undefined;
+  return r ? r.id : null;
+}
+
+/**
+ * Create — or refresh — the user's row for a driver from their legacy settings.
+ *
+ * Refresh (rather than "never clobber", the P0 seed's rule) is deliberate and is
+ * the fix for the regression this migration exists to close: the settings keys
+ * were the ONLY UI that could edit these credentials, so a value sitting in
+ * user_settings is by definition at least as fresh as the one P0's one-shot seed
+ * copied into the row. If they're identical this is a no-op; if they differ, the
+ * settings value is the user's later intent and the row's is stale.
+ */
+function upsertUserRow(
+  db: Database.Database,
+  userId: number,
+  spec: {
+    driver: string;
+    label: string;
+    config: Record<string, string>;
+    secrets: Record<string, string>;
+  },
+): number {
+  const existing = findUserRowByDriver(db, userId, spec.driver);
+  if (existing != null) {
+    db.prepare(
+      `UPDATE uploader_config
+          SET config_json = ?, secrets_enc = ?, enabled = 1, updated_at = datetime('now')
+        WHERE id = ?`,
+    ).run(JSON.stringify(spec.config), encodeSecrets(spec.secrets), existing);
+    return existing;
+  }
+  return insertRow(db, {
+    scope: 'user',
+    owner_user_id: userId,
+    driver: spec.driver,
+    label: spec.label,
+    config_json: JSON.stringify(spec.config),
+    secrets_enc: encodeSecrets(spec.secrets),
+    enabled: 1,
+    offered_to_users: 0,
+    locked: 0,
+    is_default: 0,
+  });
+}
+
+function migrateUserOffLegacyKeys(db: Database.Database, userId: number): void {
+  const s = getUserSettingsRaw(db, userId);
+  const provider = str(s['uploads.provider']);
+  const userhash = str(s['uploads.catbox.userhash']);
+  const hoarderUrl = str(s['uploads.hoarder.url']);
+  const hoarderKey = str(s['uploads.hoarder.api_key']);
+
+  // Materialize every credential we find, REGARDLESS of which provider is
+  // selected. We are about to delete the only copy of these values, and a user
+  // who has a catbox userhash saved but is currently on x0 still owns that
+  // userhash — it should show up as a configured uploader they can switch to,
+  // not evaporate.
+  const catboxRowId = userhash
+    ? upsertUserRow(db, userId, {
+        driver: 'catbox',
+        label: 'catbox.moe',
+        config: {},
+        secrets: { userhash },
+      })
+    : null;
+  const hoarderRowId =
+    hoarderUrl && hoarderKey
+      ? upsertUserRow(db, userId, {
+          driver: 'hoarder',
+          label: 'Hoarder',
+          config: { url: hoarderUrl },
+          secrets: { api_key: hoarderKey },
+        })
+      : null;
+
+  // Then point their default at whatever the dropdown last said, because the
+  // dropdown — not uploads.uploader_id — is what the P0 bridge actually honored.
+  let targetId: number | null = null;
+  switch (provider) {
+    case 'catbox':
+      // Their own row if they have a userhash, else the anonymous instance row.
+      targetId = catboxRowId ?? findInstanceRowByDriver(db, 'catbox');
+      break;
+    case 'hoarder':
+      // There is no instance hoarder row on self-host: if they picked hoarder
+      // without complete credentials, the bridge was already silently sending
+      // their uploads to x0. Falling through to the x0 default below preserves
+      // that (broken) behavior rather than inventing a half-configured row.
+      targetId = hoarderRowId;
+      break;
+    case 'x0':
+    case 'local':
+      targetId = findInstanceRowByDriver(db, provider);
+      break;
+    default:
+      targetId = null;
   }
 
-  setUserSettingRaw(db, userId, 'uploads.uploader_id', targetId);
+  if (targetId == null) {
+    // No usable provider selection. Keep an existing pointer if they have one
+    // (the P0 seed set it); otherwise fall back to the instance x0 row, which is
+    // exactly where the old default-'x0' enum sent them.
+    if (typeof s['uploads.uploader_id'] === 'number') return;
+    targetId = findInstanceRowByDriver(db, 'x0');
+  }
+  if (targetId != null) setUserSettingRaw(db, userId, 'uploads.uploader_id', targetId);
+}
+
+/**
+ * Fold the legacy `uploads.*` credential/selection keys into real uploader_config
+ * rows and then delete them (issue #514). Runs on EVERY boot, not behind a
+ * SCHEMA_VERSION gate: the version-gated one-shot is exactly the pattern that
+ * wedged a dev DB during #511 (an interleaved restart bumped the version without
+ * running the seed), and this migration is naturally self-terminating anyway —
+ * once the keys are gone the guard SELECT returns nothing and it is a permanent
+ * no-op. That also makes it self-healing against an import that reintroduces the
+ * old keys from an archive predating this release.
+ *
+ * This is what closes the P0 hole where the keys were converted once and then
+ * ignored: a user who configured Hoarder (or changed their catbox userhash)
+ * *after* the P0 migration had their credential silently dropped and their
+ * uploads rerouted to the x0 public host.
+ *
+ * Hosted never honored these keys (node mode forced the operator's uploader), so
+ * there is nothing to materialize there — the keys are simply pruned.
+ */
+export function reconcileLegacyUploadSettings(db: Database.Database): void {
+  const holders = db
+    .prepare(`SELECT DISTINCT user_id FROM user_settings WHERE key IN (${LEGACY_KEY_PLACEHOLDERS})`)
+    .all(...LEGACY_KEYS) as Array<{ user_id: number }>;
+  if (holders.length === 0) return;
+
+  db.transaction(() => {
+    if (!isNodeMode()) {
+      for (const { user_id } of holders) migrateUserOffLegacyKeys(db, user_id);
+    }
+    db.prepare(`DELETE FROM user_settings WHERE key IN (${LEGACY_KEY_PLACEHOLDERS})`).run(
+      ...LEGACY_KEYS,
+    );
+  })();
 }
 
 /**

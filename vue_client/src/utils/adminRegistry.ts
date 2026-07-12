@@ -11,10 +11,12 @@
 // Settings today, relocated here. The commented entries below are the known
 // incoming domains; each becomes a live tab by adding its ADMIN_TABS row and a
 // pane in views/Admin.vue's component map, no other wiring:
-//   - instance-defaults — instance-level default uploader + other new-account
-//                          seed settings (#299)
 //   - capabilities      — per-user feature grants the admin toggles (e.g. DCC)
 //   - moderation        — upload takedowns / abuse review
+//
+// `uploaders` is the tab #299 penciled in as "instance defaults": the instance's
+// configured uploaders, which one new accounts inherit, and whether users may
+// define their own (#514).
 
 export interface AdminTab {
   /** URL slug (/admin/:id) and the key into the pane component map. */
@@ -26,7 +28,7 @@ export interface AdminTab {
 export const ADMIN_TABS: readonly AdminTab[] = Object.freeze([
   { id: 'users', label: 'Users' },
   { id: 'invites', label: 'Invites' },
-  // { id: 'instance-defaults', label: 'Instance defaults' }, // #299
+  { id: 'uploaders', label: 'Uploaders' },
   // { id: 'capabilities', label: 'Capabilities' },
   // { id: 'moderation', label: 'Moderation' },
 ]);

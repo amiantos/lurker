@@ -46,9 +46,9 @@ describe('categoryVisible', () => {
 
 describe('optionVisible', () => {
   it('hides selfHostedOnly settings in node edition, shows them standalone', () => {
-    expect(optionVisible(opt('uploads.provider'), { isNode: false })).toBe(true);
-    expect(optionVisible(opt('uploads.provider'), { isNode: true })).toBe(false);
-    expect(optionVisible(opt('uploads.hoarder.api_key'), { isNode: true })).toBe(false);
+    expect(optionVisible(opt('uploads.image.max_upload_mb'), { isNode: false })).toBe(true);
+    expect(optionVisible(opt('uploads.image.max_upload_mb'), { isNode: true })).toBe(false);
+    expect(optionVisible(opt('uploads.image.quality'), { isNode: true })).toBe(false);
   });
 
   it('hides the cost/abuse pipeline knobs in node edition (operator-controlled)', () => {

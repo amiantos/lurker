@@ -223,6 +223,24 @@ function insertTable(
     }
     if (drop) continue;
 
+    // `uploads.uploader_id` is an uploader_config row id that lives inside a
+    // user_settings VALUE, so the column-based FK-rekey machinery above can't see
+    // it — this is the one id in the archive that has to be rewritten by hand
+    // (#514). Unmapped means it pointed at an INSTANCE uploader (never exported),
+    // so drop the setting entirely and let the user land on the target instance's
+    // default rather than on a dangling id.
+    if (table === 'user_settings' && row.key === 'uploads.uploader_id') {
+      let oldId: unknown;
+      try {
+        oldId = JSON.parse(String(row.value));
+      } catch {
+        continue; // malformed archive value — drop the setting, fall back to default
+      }
+      const mapped = idMaps.uploader_config?.get(oldId);
+      if (mapped === undefined) continue;
+      row.value = JSON.stringify(mapped);
+    }
+
     // Route ignore rules through the service rather than a raw INSERT, so a
     // crafted/legacy archive can't plant an unvalidated regex (ReDoS surface), a
     // non-ISO expires_at that never lapses and never sweeps, or a duplicate —
@@ -336,6 +354,13 @@ function resetImportedData(userId: number): void {
     // re-inserts every contact (accountIsEmpty only counts networks), leaving
     // duplicated, target-less friends.
     db.prepare('DELETE FROM contacts WHERE user_id = ?').run(userId);
+    // Same class of problem as contacts: uploader_config only cascades on user
+    // delete, so without this a failed-then-retried import would leave the user
+    // with two copies of every personal uploader. Scoped to 'user' — the
+    // instance's own rows are not this user's to wipe.
+    db.prepare("DELETE FROM uploader_config WHERE scope = 'user' AND owner_user_id = ?").run(
+      userId,
+    );
   });
   wipe();
 }

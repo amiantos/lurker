@@ -26,6 +26,7 @@ const TIMEOUT_MS = 60_000;
 export const driver = 'catbox';
 export const label = 'catbox.moe';
 export const capabilities: DriverCapabilities = {
+  creatable: true,
   storesRemotely: true,
   supportsDelete: false,
   mintsKeys: false,

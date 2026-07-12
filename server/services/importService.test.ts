@@ -886,6 +886,9 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
         sql = `SELECT * FROM ${table}
                WHERE rule_id IN (SELECT id FROM highlight_rules WHERE user_id = ?)`;
         break;
+      case 'owned_uploaders':
+        sql = `SELECT * FROM ${table} WHERE scope = 'user' AND owner_user_id = ?`;
+        break;
       default:
         throw new Error(`unknown scope ${def.scope}`);
     }
@@ -1005,5 +1008,88 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
         .get(bob.id, bob.id) as { n: number }
     ).n;
     expect(junctionStray).toBe(0);
+  });
+});
+
+// A user's own configured uploaders (#514). They became exportable when the
+// legacy uploads.* settings keys — which used to carry this across an export —
+// were deleted, so without this they'd vanish from a user's data export entirely.
+describe('uploader_config — export/import', () => {
+  it('carries a personal uploader across, WITHOUT its secret', async () => {
+    const alice = createUser(`up_alice_${Date.now()}`);
+    const bob = createUser(`up_bob_${Date.now()}`);
+    const { createUploaderConfig } = await import('../db/uploaderConfig.js');
+    const { setUserSetting, getUserSettings } = await import('../db/settings.js');
+
+    const mine = createUploaderConfig({
+      scope: 'user',
+      ownerUserId: alice.id,
+      driver: 'zipline',
+      label: 'My Zipline',
+      values: { url: 'https://zip.example', token: 'TOP-SECRET-TOKEN' },
+    });
+    setUserSetting(alice.id, 'uploads.uploader_id', mine);
+
+    const buf = await exportToBuffer(alice.id, { includeMessages: false });
+    // The secret must not be anywhere in the archive: on a keyless self-host the
+    // at-rest envelope is a plaintext passthrough, so a naive export would put the
+    // token in the clear inside a zip the user hands around.
+    expect(buf.toString('binary')).not.toContain('TOP-SECRET-TOKEN');
+
+    await importFromZipBuffer(bob.id, buf);
+
+    const bobRows = db
+      .prepare(`SELECT * FROM uploader_config WHERE scope = 'user' AND owner_user_id = ?`)
+      .all(bob.id) as Array<{
+      id: number;
+      driver: string;
+      label: string;
+      config_json: string;
+      secrets_enc: string | null;
+      is_default: number;
+      offered_to_users: number;
+      locked: number;
+    }>;
+    expect(bobRows).toHaveLength(1);
+    expect(bobRows[0].driver).toBe('zipline');
+    expect(bobRows[0].label).toBe('My Zipline');
+    expect(JSON.parse(bobRows[0].config_json).url).toBe('https://zip.example');
+    // Arrives credential-less by design — Bob re-enters the token.
+    expect(bobRows[0].secrets_enc).toBeNull();
+    // An imported row can never smuggle itself in as an offered instance default.
+    expect(bobRows[0].is_default).toBe(0);
+    expect(bobRows[0].offered_to_users).toBe(0);
+    expect(bobRows[0].locked).toBe(0);
+
+    // The selection pointer is an id living inside a user_settings VALUE — the one
+    // id in the archive the column-based rekey machinery can't see. It must be
+    // rewritten to Bob's new row, not left pointing at Alice's.
+    expect(getUserSettings(bob.id)['uploads.uploader_id']).toBe(bobRows[0].id);
+    expect(getUserSettings(bob.id)['uploads.uploader_id']).not.toBe(mine);
+  });
+
+  it('does not export the INSTANCE uploaders, and drops a pointer at one', async () => {
+    const alice = createUser(`up_inst_alice_${Date.now()}`);
+    const bob = createUser(`up_inst_bob_${Date.now()}`);
+    const { listInstanceUploaders } = await import('../db/uploaderConfig.js');
+    const { setUserSetting, getUserSettings } = await import('../db/settings.js');
+
+    const x0 = listInstanceUploaders().find((r) => r.driver === 'x0')!;
+    setUserSetting(alice.id, 'uploads.uploader_id', x0.id);
+
+    const buf = await exportToBuffer(alice.id, { includeMessages: false });
+    await importFromZipBuffer(bob.id, buf);
+
+    // The operator's rows are not Alice's data and must not ride along.
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM uploader_config WHERE scope = 'user' AND owner_user_id = ?`,
+        )
+        .get(bob.id),
+    ).toEqual({ n: 0 });
+    // An instance id means nothing on the target, so the pointer is dropped and
+    // Bob lands on the target's own default rather than a dangling id.
+    expect(getUserSettings(bob.id)['uploads.uploader_id']).toBeUndefined();
   });
 });
