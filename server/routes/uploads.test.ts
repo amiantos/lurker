@@ -12,6 +12,10 @@ import {
   createAnonAgent,
 } from '../test-utils/testApp.js';
 import type { User } from '../db/users.js';
+import type { UploadSource } from '../services/uploadProviders/source.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { resolveDataDir } from '../utils/dataDir.js';
 
 const ctx = setupTestDb('routes-uploads');
 
@@ -36,12 +40,17 @@ const stub = {
   // exercise the storesRemotely:false (local-style relative URL) absolutization.
   nextResult: null as { url: string; ref?: string } | null,
   capturedDeleteRef: null as string | null,
+  // What the route handed us. Drivers take an UploadSource now (#543): a
+  // passthrough upload must arrive as a `file` (streamed off multer's temp file,
+  // never in the heap), while an optimized image arrives as a small `buffer`.
+  capturedSource: null as UploadSource | null,
   async upload(
-    _buffer: Buffer,
+    source: UploadSource,
     meta: { filename: string; mime: string },
     config?: Record<string, string>,
   ) {
     stub.capturedConfig = config ?? null;
+    stub.capturedSource = source;
     if (stub.shouldThrow) throw stub.shouldThrow;
     if (stub.nextResult) return stub.nextResult;
     return { url: `https://stub.example/${meta.filename}` };
@@ -447,5 +456,97 @@ describe('DELETE /api/uploads/:id', () => {
       stub.capabilities.supportsDelete = false;
       stub.nextResult = null;
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #543: uploads stream through a temp file instead of living in the heap. What
+// matters here is the shape handed to the driver and that the temp file never
+// outlives the request — an orphan per upload is a slow disk leak.
+describe('temp-file lifecycle (#543)', () => {
+  const tmpDir = (): string => path.join(resolveDataDir(), 'tmp', 'uploads');
+  const tempFiles = (): string[] => {
+    try {
+      return fs.readdirSync(tmpDir()).filter((f) => f.startsWith('up-'));
+    } catch {
+      return [];
+    }
+  };
+
+  it('hands the driver a FILE source for passthrough, a BUFFER source for images', async () => {
+    stub.shouldThrow = null;
+
+    // Text passes through untouched: it must arrive as a file the driver streams,
+    // never read into memory. This is the property the whole PR exists for.
+    await agent.post('/api/uploads').attach('image', Buffer.from('a passthrough upload'), {
+      filename: 'note.txt',
+      contentType: 'text/plain',
+    });
+    expect(stub.capturedSource!.kind).toBe('file');
+
+    // An image is re-encoded by the pipeline, so what goes out is the optimized
+    // buffer — small, bounded, and not worth a temp-file round trip.
+    await agent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'pic.png', contentType: 'image/png' });
+    expect(stub.capturedSource!.kind).toBe('buffer');
+  });
+
+  it('removes the temp file after a successful upload', async () => {
+    stub.shouldThrow = null;
+    const before = tempFiles().length;
+    const res = await agent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'clean.png', contentType: 'image/png' });
+    expect(res.status).toBe(200);
+    expect(tempFiles().length).toBe(before);
+  });
+
+  it('removes the temp file when the driver fails', async () => {
+    const before = tempFiles().length;
+    stub.shouldThrow = Object.assign(new Error('upstream down'), { code: 'PROVIDER_ERROR' });
+    const res = await agent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'boom.png', contentType: 'image/png' });
+    expect(res.status).toBe(502);
+    // A failed upload must not strand its bytes on disk.
+    expect(tempFiles().length).toBe(before);
+    stub.shouldThrow = null;
+  });
+
+  it('rejects an over-cap upload with 413 — mid-stream, not after ingesting it', async () => {
+    const { setUserSetting } = await import('../db/settings.js');
+    setUserSetting(user.id, 'uploads.image.max_upload_mb', 1);
+    try {
+      const before = tempFiles().length;
+      const big = Buffer.alloc(2 * 1024 * 1024, 0x7a); // 2 MB against a 1 MB cap
+      const res = await agent
+        .post('/api/uploads')
+        .attach('image', big, { filename: 'big.bin', contentType: 'text/plain' });
+      expect(res.status).toBe(413);
+      // multer aborts and unlinks its own partial file when the limit trips.
+      expect(tempFiles().length).toBe(before);
+    } finally {
+      setUserSetting(user.id, 'uploads.image.max_upload_mb', 25);
+    }
+  });
+
+  it('sweeps orphaned temp files a crash left behind, but never a live one', async () => {
+    const { sweepTempUploads } = await import('./uploads.js');
+    fs.mkdirSync(tmpDir(), { recursive: true });
+    const stale = path.join(tmpDir(), 'up-stale-orphan');
+    const fresh = path.join(tmpDir(), 'up-fresh-inflight');
+    fs.writeFileSync(stale, 'x');
+    fs.writeFileSync(fresh, 'x');
+    // Backdate the orphan past the age gate; the fresh one stands in for an
+    // upload in flight right now, which a sweep must not yank out from under.
+    const old = Date.now() - 2 * 60 * 60 * 1000;
+    fs.utimesSync(stale, new Date(old), new Date(old));
+
+    const removed = await sweepTempUploads();
+    expect(removed).toBe(1);
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(fresh)).toBe(true);
+    fs.unlinkSync(fresh);
   });
 });

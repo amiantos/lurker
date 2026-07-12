@@ -1,10 +1,15 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { requireAuth } from '../middleware/auth.js';
+import { resolveDataDir } from '../utils/dataDir.js';
+import { randomId } from '../services/uploadProviders/objectKey.js';
+import { bufferSource, fileSource, type UploadSource } from '../services/uploadProviders/source.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from '../services/settingsRegistry.js';
 import * as imagePipeline from '../services/imagePipeline.js';
@@ -100,18 +105,101 @@ function providerErrorStatus(e: { code?: string }): number {
   return e.code === 'PROVIDER_CONFIG' ? 400 : 502;
 }
 
-// multer needs configuring up-front, before we know the effective per-uploader
-// cap. Use a generous hard ceiling (200 MB, the registry max) so multer never
-// rejects below the real cap; the handler enforces the resolved cap.
-const HARD_BYTE_CEILING = 200 * 1024 * 1024;
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: HARD_BYTE_CEILING, files: 1 },
+// Uploads land in a temp file, never in the heap. multer's memoryStorage used to
+// hold the whole file, and the drivers then copied it again (and fetch copied it a
+// third time) — a 200 MB upload cost ~1 GB of RSS. See services/uploadProviders/
+// source.ts for the measurements. Everything downstream takes an UploadSource.
+const TMP_DIR = path.join(resolveDataDir(), 'tmp', 'uploads');
+fs.mkdirSync(TMP_DIR, { recursive: true });
+
+// The registry's own ceiling; a per-user cap can't exceed it, so neither can multer.
+const MAX_CAP_MB = 200;
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, TMP_DIR),
+  filename: (_req, _file, cb) => cb(null, `up-${randomId()}`),
 });
+
+/** The cap to hand multer, resolved BEFORE a byte is read (requireAuth already
+ *  ran, so we know who's asking). The old code gave multer a flat 200 MB and let
+ *  the handler reject afterwards — which meant a user capped at 25 MB could still
+ *  make the server ingest 200 MB before being told no. The per-upload `uploaderId`
+ *  override lives in the multipart body, which isn't parsed yet, so this resolves
+ *  the DEFAULT uploader's cap; the handler re-checks against the actually-resolved
+ *  uploader, which is what catches an override with a tighter policy cap. */
+function capMbFor(userId: number, isAdmin: boolean): number {
+  const settings = effectiveSettings(userId);
+  const userCap = Number(settings['uploads.image.max_upload_mb']) || 25;
+  let cap = userCap;
+  try {
+    cap = resolveUploader({ userId, isAdmin, requestedId: null }).policy.maxMb ?? userCap;
+  } catch {
+    // No usable uploader → the handler will produce the real error. Fall back to
+    // the user's own cap so we still bound what we're willing to read.
+  }
+  return Math.max(1, Math.min(cap, MAX_CAP_MB));
+}
+
+/** Best-effort removal of an upload's temp file. Tolerates ENOENT: the `local`
+ *  driver RENAMES the temp file into its storage dir (zero copies), so by the time
+ *  we clean up there may be nothing left to remove — which is the good case. */
+async function discardTemp(file?: Express.Multer.File): Promise<void> {
+  if (!file?.path) return;
+  await fs.promises.unlink(file.path).catch(() => {});
+}
+
+/**
+ * Delete temp uploads left behind by a crash (an in-flight upload when the process
+ * died — the one case the handler's `finally` can't cover). Called once at boot.
+ * Age-gated so it can never race a live upload in another worker: only files older
+ * than the request timeout are candidates.
+ */
+export async function sweepTempUploads(maxAgeMs = 60 * 60 * 1000): Promise<number> {
+  let removed = 0;
+  let entries: string[];
+  try {
+    entries = await fs.promises.readdir(TMP_DIR);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  for (const name of entries) {
+    if (!name.startsWith('up-')) continue;
+    const full = path.join(TMP_DIR, name);
+    try {
+      const stat = await fs.promises.stat(full);
+      if (stat.mtimeMs < cutoff) {
+        await fs.promises.unlink(full);
+        removed++;
+      }
+    } catch {
+      // vanished under us (another sweep, or the handler finishing) — fine
+    }
+  }
+  if (removed > 0) console.log(`[lurker] swept ${removed} orphaned upload temp file(s)`);
+  return removed;
+}
+
+const uploadToDisk = (req: Request, res: Response, next: NextFunction): void => {
+  const capMb = capMbFor(req.user!.id, req.user!.role === 'admin');
+  const handler = multer({
+    storage,
+    limits: { fileSize: capMb * 1024 * 1024, files: 1 },
+  }).single('image');
+  handler(req, res, (err: unknown) => {
+    // multer aborts the stream and unlinks its partial file once the cap is hit,
+    // so an oversized upload is refused mid-flight instead of after we've eaten it.
+    if ((err as { code?: string })?.code === 'LIMIT_FILE_SIZE') {
+      res.status(413).json({ error: `file exceeds ${capMb} MB` });
+      return;
+    }
+    next(err as Error | undefined);
+  });
+};
 
 router.post(
   '/',
-  upload.single('image'),
+  uploadToDisk,
   asyncHandler(async (req: Request, res: Response, next: NextFunction) => {
     try {
       if (!req.file) {
@@ -180,7 +268,7 @@ router.post(
         return;
       }
 
-      let outBuffer: Buffer;
+      let outSource: UploadSource;
       let outMime: string;
       let outExt: string;
       let outByteSize: number;
@@ -189,7 +277,9 @@ router.post(
       let thumb: Buffer | null = null;
 
       if (isText) {
-        outBuffer = req.file.buffer;
+        // Passthrough: the bytes go out of the temp file exactly as they came in.
+        // Nothing reads them into memory — the driver streams the file.
+        outSource = fileSource(req.file.path, req.file.size);
         outMime = 'text/plain';
         outExt = 'txt';
         outByteSize = req.file.size;
@@ -198,7 +288,7 @@ router.post(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let optimized: any;
         try {
-          optimized = await imagePipeline.optimize(req.file.buffer, {
+          optimized = await imagePipeline.optimize(req.file.path, {
             maxDim:
               resolved.policy.maxDim ?? (Number(settings['uploads.image.max_dimension']) || 2048),
             quality: resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85),
@@ -215,8 +305,11 @@ router.post(
           }
           throw err;
         }
-        thumb = (await imagePipeline.thumbnail(req.file.buffer)) as Buffer | null;
-        outBuffer = optimized.buffer as Buffer;
+        thumb = (await imagePipeline.thumbnail(req.file.path)) as Buffer | null;
+        // The optimized image is small and bounded (resized + re-encoded), so it
+        // stays a buffer — round-tripping it through another temp file would be
+        // pointless I/O. The heap blowup this PR removes was the ORIGINAL bytes.
+        outSource = bufferSource(optimized.buffer as Buffer);
         outMime = optimized.mime as string;
         outExt = optimized.ext as string;
         outByteSize = optimized.byteSize as number;
@@ -233,7 +326,7 @@ router.post(
       let result: any;
       try {
         result = await resolved.driver.upload(
-          outBuffer,
+          outSource,
           { filename, mime: outMime, contentClass },
           resolved.driverConfig,
         );
@@ -256,7 +349,7 @@ router.post(
       if (resolved.policy.hostsThumbnails && thumb) {
         try {
           const tRes = await resolved.driver.upload(
-            thumb,
+            bufferSource(thumb),
             { filename: 'thumb.jpg', mime: 'image/jpeg', contentClass: 'image', kind: 'thumb' },
             resolved.driverConfig,
           );
@@ -309,6 +402,11 @@ router.post(
       });
     } catch (err) {
       next(err);
+    } finally {
+      // Every exit takes the temp file with it: success, 4xx/5xx, driver failure,
+      // or a throw. (A client abort never reaches the handler — multer unlinks its
+      // own partial file — and sweepTempUploads() catches anything a crash left.)
+      await discardTemp(req.file);
     }
   }),
 );

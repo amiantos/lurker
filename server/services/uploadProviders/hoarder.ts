@@ -8,6 +8,8 @@
 // `url` is already the public CDN URL.
 
 import { USER_AGENT } from '../../utils/userAgent.js';
+import { postMultipart, isOk, jsonBody, type StreamPart } from './multipart.js';
+import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 export const driver = 'hoarder';
@@ -38,7 +40,7 @@ export const configSchema: ConfigField[] = [
 ];
 
 export async function upload(
-  buffer: Buffer,
+  source: UploadSource,
   { filename, mime, kind }: UploadMeta,
   config: { url?: string; api_key?: string } = {},
 ): Promise<UploadResult> {
@@ -54,28 +56,26 @@ export async function upload(
   }
 
   const base = config.url.replace(/\/+$/, '');
-  const form = new FormData();
+  const parts: StreamPart[] = [];
   // Text fields before the file so multipart parsers populate req.body reliably.
-  if (kind) form.append('kind', kind);
-  form.append('file', new Blob([new Uint8Array(buffer)], { type: mime }), filename);
+  if (kind) parts.push({ name: 'kind', value: kind });
+  parts.push({ name: 'file', filename, contentType: mime, source });
 
-  const resp = await fetch(`${base}/api/upload`, {
-    method: 'POST',
+  const resp = await postMultipart(`${base}/api/upload`, parts, {
     headers: {
       Authorization: `Bearer ${config.api_key}`,
       'User-Agent': USER_AGENT,
     },
-    body: form,
   });
 
-  if (!resp.ok) {
-    const text = (await resp.text()).slice(0, 200);
+  if (!isOk(resp)) {
+    const text = resp.text.slice(0, 200);
     throw Object.assign(new Error(`hoarder upload failed: ${resp.status} ${text}`), {
       code: resp.status === 401 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const body = (await resp.json().catch(() => null)) as any;
+  const body = jsonBody(resp) as any;
   if (!body || typeof body.url !== 'string') {
     throw Object.assign(new Error('hoarder returned no url'), { code: 'PROVIDER_ERROR' });
   }

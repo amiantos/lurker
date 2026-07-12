@@ -37,6 +37,7 @@ import {
   shutdownExportJobs,
 } from './services/exportJobs.js';
 import { startIgnoreSweeper, stopIgnoreSweeper } from './services/ignoreSweeper.js';
+import { sweepTempUploads } from './routes/uploads.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
 
 const PORT = Number(process.env.PORT || 8010);
@@ -126,6 +127,12 @@ startOrchestratorClient();
 // In node edition, periodically reconcile any upload moderation records that
 // didn't reach the control plane at upload time. No-op in standalone.
 startModerationReporter();
+
+// Uploads stream through a temp file, and the request handler removes it on every
+// exit — except a crash mid-upload, which is what this cleans up (#543).
+void sweepTempUploads().catch((err: unknown) => {
+  console.warn('[lurker] upload temp sweep failed:', (err as Error).message);
+});
 
 server.listen(PORT, HOST, () => {
   console.log(`[lurker] listening on http://${HOST || '0.0.0.0'}:${PORT}`);
