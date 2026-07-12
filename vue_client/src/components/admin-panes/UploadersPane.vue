@@ -49,7 +49,7 @@
     <h3 class="subhead">instance uploaders</h3>
     <p v-if="!store.uploadersLoaded" class="muted small">Loading…</p>
     <ul v-else class="device-list">
-      <li v-for="u in store.uploaders" :key="u.id" class="device">
+      <li v-for="u in store.uploaders" :key="u.id" class="device stacked">
         <span class="ua">
           <span class="name">{{ u.label }}</span>
           <span class="driver">{{ u.driver }}</span>
@@ -58,7 +58,9 @@
           <span v-else-if="!u.offeredToUsers" class="badge off">admin only</span>
           <span v-if="u.locked" class="badge off">managed</span>
         </span>
-        <template v-if="!store.uploadersManaged && !u.locked">
+        <!-- Five actions is more than the default .device grid holds — hence the
+             `stacked` row + the shared .row-actions cluster underneath. -->
+        <div v-if="!store.uploadersManaged && !u.locked" class="row-actions">
           <button
             v-if="!u.isDefault"
             class="link"
@@ -80,7 +82,7 @@
           <button v-if="isDeletable(u)" class="link danger" :disabled="busy" @click="onDelete(u)">
             delete
           </button>
-        </template>
+        </div>
       </li>
     </ul>
 

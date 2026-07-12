@@ -27,44 +27,43 @@
     <h3 class="subhead">destination</h3>
     <p v-if="loading && !loaded" class="muted small">Loading…</p>
     <ul v-else class="device-list">
-      <li
-        v-for="u in uploaders"
-        :key="u.id"
-        class="device"
-        :class="{ selected: u.id === selectedId }"
-      >
+      <li v-for="u in uploaders" :key="u.id" class="device stacked">
         <span class="ua">
           <span class="name">{{ u.label }}</span>
           <span class="driver">{{ u.driver }}</span>
           <span v-if="u.scope === 'user'" class="badge">yours</span>
+          <span v-if="u.id === selectedId" class="badge in-use">in use</span>
         </span>
-        <button v-if="u.id !== selectedId" class="link" :disabled="busy" @click="onSelect(u.id)">
-          use
-        </button>
-        <span v-else class="muted small">selected</span>
-        <!-- Editable AND describable: a row whose driver we have no schema for
-             can't be rendered as a form, so offer removal but not editing. -->
-        <button
-          v-if="u.editable && driverFor(u.driver)"
-          class="link"
-          :disabled="busy"
-          @click="onEdit(u)"
-        >
-          edit
-        </button>
-        <button v-if="u.editable" class="link danger" :disabled="busy" @click="onDelete(u)">
-          remove
-        </button>
+        <div class="row-actions">
+          <button v-if="u.id !== selectedId" class="link" :disabled="busy" @click="onSelect(u.id)">
+            use this one
+          </button>
+          <!-- Editable AND describable: a row whose driver we have no schema for
+               can't be rendered as a form, so offer removal but not editing. -->
+          <button
+            v-if="u.editable && driverFor(u.driver)"
+            class="link"
+            :disabled="busy"
+            @click="onEdit(u)"
+          >
+            edit
+          </button>
+          <button v-if="u.editable" class="link danger" :disabled="busy" @click="onDelete(u)">
+            remove
+          </button>
+        </div>
       </li>
-      <li class="device" :class="{ selected: selectedId === null }">
+      <li class="device stacked">
         <span class="ua">
           <span class="name">Server default</span>
           <span class="driver">follow whatever the admin has set</span>
+          <span v-if="selectedId === null" class="badge in-use">in use</span>
         </span>
-        <button v-if="selectedId !== null" class="link" :disabled="busy" @click="onSelect(null)">
-          use
-        </button>
-        <span v-else class="muted small">selected</span>
+        <div class="row-actions">
+          <button v-if="selectedId !== null" class="link" :disabled="busy" @click="onSelect(null)">
+            use this one
+          </button>
+        </div>
       </li>
     </ul>
 
@@ -256,10 +255,9 @@ onMounted(refresh);
 
 <style src="./panes.css"></style>
 <style scoped>
-.device.selected {
-  border-color: var(--accent);
-}
-
+/* Which uploader is live is carried by the "in use" badge on the identity line,
+   not by tinting the row: .device only has a border-TOP, so an accent border on
+   the selected row reads as a stray rule above it rather than as selection. */
 .device .name {
   color: var(--fg);
 }
@@ -270,6 +268,10 @@ onMounted(refresh);
 
 .badge {
   color: var(--fg-muted);
+}
+
+.badge.in-use {
+  color: var(--accent);
 }
 
 .driver-pick {
