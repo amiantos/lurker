@@ -119,11 +119,23 @@ export function listUserUploaders(userId: number): UploaderConfigRow[] {
     .all(userId) as UploaderConfigRow[];
 }
 
-/** The single instance default (unique partial index guarantees at most one). */
+/**
+ * The single instance default (unique partial index guarantees at most one).
+ *
+ * `enabled = 1` is part of the query, not an afterthought: this row is the
+ * fallback for every account that hasn't chosen an uploader, and it's reached in
+ * resolveUploader WITHOUT going through isAllowed() (it's the default — being
+ * offered to you is the whole point). Without this clause, an admin who disables
+ * the default keeps every one of those accounts silently uploading through it.
+ * Returning null instead surfaces as "no usable uploader" (decision 15), which is
+ * the honest answer.
+ */
 export function getInstanceDefault(): UploaderConfigRow | null {
   return (
     (db
-      .prepare(`SELECT * FROM uploader_config WHERE scope = 'instance' AND is_default = 1`)
+      .prepare(
+        `SELECT * FROM uploader_config WHERE scope = 'instance' AND is_default = 1 AND enabled = 1`,
+      )
       .get() as UploaderConfigRow | undefined) ?? null
   );
 }

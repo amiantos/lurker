@@ -77,6 +77,28 @@ describe('GET /api/admin/uploaders', () => {
     expect(res.body.allowUserDefined).toBe(true);
   });
 
+  it('never projects a LOCKED row’s config (the hosted operator’s endpoint)', async () => {
+    // The hosted default is seeded from the operator env and re-derived every
+    // boot. A cell tenant holding the admin role has no business reading its
+    // endpoint, and nothing can edit it anyway (PATCH 409s).
+    const { createUploaderConfig } = await import('../db/uploaderConfig.js');
+    createUploaderConfig({
+      scope: 'instance',
+      driver: 'hoarder',
+      label: 'Hosted uploader',
+      values: { url: 'https://internal-dropper.lurker.chat', api_key: 'operator-key' },
+      locked: true,
+    });
+
+    const res = await adminAgent.get('/api/admin/uploaders');
+    const locked = res.body.uploaders.find((u: any) => u.locked);
+    expect(locked.label).toBe('Hosted uploader'); // still nameable…
+    expect(locked.config).toEqual({}); // …but opaque
+    expect(locked.secretsSet).toEqual({});
+    expect(JSON.stringify(res.body)).not.toContain('internal-dropper');
+    expect(JSON.stringify(res.body)).not.toContain('operator-key');
+  });
+
   it('marks the seeded rows built-in — including catbox, which is ALSO user-creatable', async () => {
     const res = await adminAgent.get('/api/admin/uploaders');
     const byDriver = Object.fromEntries(res.body.uploaders.map((u: any) => [u.driver, u]));
@@ -159,6 +181,31 @@ describe('the instance default (#299)', () => {
     expect(res.status).toBe(409);
 
     await adminAgent.patch(`/api/admin/uploaders/${catbox.id}`).send({ enabled: true });
+  });
+
+  // The default is reached WITHOUT going through the allowed-set check (being
+  // offered to you is the whole point of a default), so a disabled one would
+  // otherwise keep quietly serving every account that never picked an uploader.
+  it('refuses to DISABLE the current default', async () => {
+    const x0 = instanceRow('x0');
+    const res = await adminAgent.patch(`/api/admin/uploaders/${x0.id}`).send({ enabled: false });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/another default/);
+    expect(getUploaderConfig(x0.id)!.enabled).toBe(1);
+  });
+
+  it('a default that somehow ends up disabled resolves to nothing, not to itself', async () => {
+    // Belt and braces: the route above blocks the obvious path, but the resolver
+    // must not trust the flag either — a disabled row is not a usable uploader,
+    // and "no usable uploader" is the honest answer (decision 15).
+    const { updateUploaderConfig } = await import('../db/uploaderConfig.js');
+    const x0 = instanceRow('x0');
+    updateUploaderConfig(x0.id, { enabled: false }); // bypass the route guard
+
+    const { UploaderUnavailableError } = await import('../services/uploadProviders/resolve.js');
+    expect(() => resolveUploader({ userId: plainUser.id })).toThrow(UploaderUnavailableError);
+
+    updateUploaderConfig(x0.id, { enabled: true });
   });
 });
 

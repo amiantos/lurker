@@ -62,6 +62,7 @@
     <template v-if="editing">
       <h3 class="subhead">edit {{ editing.label }}</h3>
       <UploaderConfigForm
+        :key="`edit-${editing.id}`"
         :driver="driverFor(editing.driver)!"
         :existing="{
           label: editing.label,
@@ -85,6 +86,7 @@
           </select>
         </label>
         <UploaderConfigForm
+          :key="`add-${adding}`"
           :driver="driverFor(adding)!"
           :busy="busy"
           :error="formError"

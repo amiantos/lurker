@@ -54,7 +54,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import {
   type UploaderDriver,
   type UploaderConfigField,
@@ -76,20 +76,18 @@ const emit = defineEmits<{
   (e: 'cancel'): void;
 }>();
 
-const label = ref('');
-const values = ref<Record<string, string>>({});
-
-// Re-seed whenever the driver changes (the add-form's driver picker) or a
-// different uploader is opened for editing.
-watch(
-  () => [props.driver, props.existing] as const,
-  () => {
-    label.value = props.existing?.label ?? '';
-    values.value = props.existing
-      ? valuesFrom(props.driver, props.existing.config)
-      : emptyValues(props.driver);
-  },
-  { immediate: true },
+// Seeded ONCE, at setup. Callers must `:key` this component on the thing it's
+// editing (the driver id when adding, the uploader id when editing) so switching
+// target remounts it with fresh state.
+//
+// Deliberately NOT a watcher on `props.existing`: parents pass that as an inline
+// object literal, so its identity changes on EVERY parent re-render — and a
+// re-render is exactly what happens when a save fails and the parent sets an
+// error. A watcher would re-seed the form at that moment and silently wipe what
+// the user typed, right as we tell them to fix it.
+const label = ref(props.existing?.label ?? '');
+const values = ref<Record<string, string>>(
+  props.existing ? valuesFrom(props.driver, props.existing.config) : emptyValues(props.driver),
 );
 
 const incomplete = computed(() =>

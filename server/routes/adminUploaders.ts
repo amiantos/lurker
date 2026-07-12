@@ -106,10 +106,15 @@ function isBuiltIn(driverId: string): boolean {
 
 router.get('/', (_req: Request, res: Response) => {
   res.json({
-    uploaders: listInstanceUploaders().map((row) => ({
-      ...toDetail(row),
-      builtIn: isBuiltIn(row.driver),
-    })),
+    uploaders: listInstanceUploaders().map((row) => {
+      const detail = { ...toDetail(row), builtIn: isBuiltIn(row.driver) };
+      // A LOCKED row is the hosted operator's, configured from their environment
+      // and re-derived on every boot. Its endpoint isn't a cell tenant's business
+      // even when that tenant happens to hold the admin role on their cell — and
+      // nothing can edit it anyway (PATCH 409s). Name and flags only.
+      if (row.locked === 1) return { ...detail, config: {}, secretsSet: {} };
+      return detail;
+    }),
     allowUserDefined: allowUserDefinedUploaders(),
     drivers: creatableDrivers(),
     // The client hides the whole management surface on a hosted cell rather than
@@ -176,6 +181,14 @@ router.patch('/:id', (req: Request, res: Response) => {
   const invalid = validateValues(row.driver, values, { partial: true });
   if (invalid) {
     res.status(400).json({ error: invalid });
+    return;
+  }
+  // Disabling the default would leave every account that hasn't picked an
+  // uploader with nothing to resolve to — uploads would start failing across the
+  // instance. Same reasoning (and same 409) as refusing to delete it: reassign the
+  // default first.
+  if (row.is_default === 1 && bool(req.body, 'enabled') === false) {
+    res.status(409).json({ error: 'choose another default before disabling this uploader' });
     return;
   }
   updateUploaderConfig(id, {
