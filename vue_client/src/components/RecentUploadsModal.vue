@@ -42,17 +42,6 @@
             <div class="sub">{{ metaLine(u) }}</div>
           </div>
           <div class="row-actions">
-            <!-- A removed upload's URL is dead, so there's nothing to copy. -->
-            <button
-              v-if="!u.removed"
-              class="link copy"
-              :class="{ copied: copiedId === u.id }"
-              @click="onCopy(u)"
-              :title="copiedId === u.id ? 'copied' : 'copy URL'"
-              :aria-label="copiedId === u.id ? 'copied' : 'copy URL'"
-            >
-              <i :class="copiedId === u.id ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
-            </button>
             <!-- Delete destroys the stored file. Offered only where that's true
                  (can_delete) — there is no remove-the-record-only action. -->
             <button
@@ -66,6 +55,17 @@
               <i
                 :class="deletingId === u.id ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-trash'"
               ></i>
+            </button>
+            <!-- A removed upload's URL is dead, so there's nothing to copy. -->
+            <button
+              v-if="!u.removed"
+              class="link copy"
+              :class="{ copied: copiedId === u.id }"
+              @click="onCopy(u)"
+              :title="copiedId === u.id ? 'copied' : 'copy URL'"
+              :aria-label="copiedId === u.id ? 'copied' : 'copy URL'"
+            >
+              <i :class="copiedId === u.id ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
             </button>
           </div>
         </li>
