@@ -156,6 +156,35 @@ Lurker supports background push notifications for highlights and DMs, delivered 
 
 If you change `VAPID_SUBJECT` later, existing subscriptions continue to work — the subject only affects new push JWTs, not the keypair.
 
+### File uploads on your own disk
+
+By default, images you paste or drop into the message box are uploaded to a third-party host (x0.at). If you'd rather keep them on your own server, pick **local** in **Settings → Uploads**. Lurker then writes the file to disk and serves it back from your own instance, and the link it pastes into IRC points at you — no third party involved.
+
+Files land in `uploads/` next to the SQLite database (so they're on your mounted volume and already covered by the [backup](#backups) advice above). Point them somewhere else with:
+
+```yaml
+environment:
+  - LOCAL_UPLOADS_DIR=/data/uploads
+```
+
+The link Lurker pastes into IRC has to be an **absolute** URL, or nobody else can open it. Lurker works the origin out from the incoming request, which is right for most reverse-proxy setups. If your links come out with the wrong hostname or scheme, pin it explicitly:
+
+```yaml
+environment:
+  - PUBLIC_BASE_URL=https://lurker.example.com
+```
+
+::: warning Cloudflare users: turn off Hotlink Protection
+If you expose Lurker through Cloudflare (including a [Cloudflare Tunnel](#exposing-lurker-to-the-internet-recommended-cloudflare-tunnel)), **Hotlink Protection will break local uploads.** It's a Cloudflare feature that blocks image files whenever they're loaded from a page on another domain — which is exactly what an uploaded image _is_ once you share the link on IRC. Cloudflare returns a `403` at the edge and the request never reaches Lurker, so the image loads for you but is broken for everyone else.
+
+Fix it in the Cloudflare dashboard under **Scrape Shield → Hotlink Protection → Off**. If you want to keep it on for the rest of your site, leave it enabled and add a **Configuration Rule** that turns it off just for your uploads:
+
+- **When incoming requests match:** `URI Path` `starts with` `/uploads/local/`
+- **Then the settings are:** `Hotlink Protection` → `Off`
+
+See [Uploaded images are broken for other people](#uploaded-images-are-broken-for-other-people-403) if you've already hit this.
+:::
+
 ### Secure cookies
 
 Lurker's session cookies are **not** flagged `Secure` by default. This sounds wrong but is correct for the common self-hosted shapes:
@@ -273,6 +302,37 @@ Now Lurker is reachable on `http://localhost:9999`.
 ### Reverse-proxy / CORS errors
 
 If you're seeing browser console errors about CORS, your browser is hitting a different origin than what Lurker expects. The bundled image serves both the API and the UI from the same port, so the default no-`CORS_ORIGIN` config is correct for almost everyone. Only set `CORS_ORIGIN` if you're running the Vue dev server (`npm run dev`) against a containerized API, or doing something similarly unusual.
+
+### Uploaded images are broken for other people (403)
+
+Symptom: you're using the **local** uploader, and an uploaded image loads fine when you open the link in a new tab, but shows as broken when it's embedded — in someone else's client, or in Lurker's own image viewer on a different domain.
+
+That asymmetry is the tell. Opening a link directly and embedding it on a page are different requests: the embedded one carries a `Referer` header naming the page it's embedded on. **Cloudflare's Hotlink Protection blocks image files whose `Referer` is a different domain**, returning a `403` at the edge before the request ever reaches Lurker.
+
+Confirm it with two `curl`s against the same URL, where the _only_ difference is the `Referer` header:
+
+```bash
+# 1. No referer → 200, and Lurker serves the image
+curl -sS -o /dev/null -D - \
+  https://lurker.example.com/uploads/local/<key>.jpg \
+  | grep -iE '^HTTP/|^content-type:'
+#   HTTP/2 200
+#   content-type: image/jpeg
+
+# 2. Cross-domain referer → 403, and your image never gets served
+curl -sS -o /dev/null -D - -H 'Referer: https://example.org/' \
+  https://lurker.example.com/uploads/local/<key>.jpg \
+  | grep -iE '^HTTP/|^content-type:|^vary:'
+#   HTTP/2 403
+#   content-type: text/plain; charset=UTF-8
+#   vary: referer
+```
+
+If adding a `Referer` is all it takes to flip a `200` into a `403`, that's Hotlink Protection. The `403` comes back as `text/plain` (Cloudflare's block page) rather than your image, and `vary: referer` is Cloudflare telling you the decision was made on the referer.
+
+> Don't try to tell the two apart by looking for `server: cloudflare` — Cloudflare proxies the _successful_ response too, so that header is on both. The status flip is the signal.
+
+Turn Hotlink Protection off (or scope it around `/uploads/local/`) — see [File uploads on your own disk](#file-uploads-on-your-own-disk).
 
 ### Container logs
 
