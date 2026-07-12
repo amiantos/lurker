@@ -12,6 +12,7 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 let db: typeof import('./index.js').default;
 let seedUploaderConfig: typeof import('./uploaderConfigSeed.js').seedUploaderConfig;
 let reconcileBuiltInUploaders: typeof import('./uploaderConfigSeed.js').reconcileBuiltInUploaders;
+let reconcileLegacyUploadSettings: typeof import('./uploaderConfigSeed.js').reconcileLegacyUploadSettings;
 let createUser: typeof import('./users.js').createUser;
 let setUserSetting: typeof import('./settings.js').setUserSetting;
 let getUserSettings: typeof import('./settings.js').getUserSettings;
@@ -52,7 +53,8 @@ const allowUserDefined = (): string | undefined =>
 
 beforeAll(async () => {
   db = (await import('./index.js')).default;
-  ({ seedUploaderConfig, reconcileBuiltInUploaders } = await import('./uploaderConfigSeed.js'));
+  ({ seedUploaderConfig, reconcileBuiltInUploaders, reconcileLegacyUploadSettings } =
+    await import('./uploaderConfigSeed.js'));
   ({ createUser } = await import('./users.js'));
   ({ setUserSetting, getUserSettings } = await import('./settings.js'));
 });
@@ -86,41 +88,15 @@ describe('seedUploaderConfig (self-host)', () => {
     expect(allowUserDefined()).toBe('1');
   });
 
-  it('converts a configured catbox user into a user row + uploader_id', () => {
-    const u = createUser('seed-catbox');
-    setUserSetting(u.id, 'uploads.provider', 'catbox');
-    setUserSetting(u.id, 'uploads.catbox.userhash', 'hash1');
-    seedUploaderConfig(db);
-
-    const rows = userRows(u.id);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].driver).toBe('catbox');
-    expect(rows[0].secrets_enc).toContain('hash1'); // secret carried across
-    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(rows[0].id);
-  });
-
-  it('converts a configured self-host hoarder user (url public, key secret)', () => {
-    const u = createUser('seed-hoarder');
-    setUserSetting(u.id, 'uploads.provider', 'hoarder');
-    setUserSetting(u.id, 'uploads.hoarder.url', 'https://u.example');
-    setUserSetting(u.id, 'uploads.hoarder.api_key', 'k-secret');
-    seedUploaderConfig(db);
-
-    const rows = userRows(u.id);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].driver).toBe('hoarder');
-    expect(JSON.parse(rows[0].config_json)).toEqual({ url: 'https://u.example' });
-    expect(rows[0].secrets_enc).toContain('k-secret');
-    expect(rows[0].config_json).not.toContain('k-secret');
-    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(rows[0].id);
-  });
-
-  it('points an x0 / unconfigured user at the instance x0 row, no user row', () => {
+  it('leaves a user with no legacy settings entirely alone (they follow the instance default)', () => {
     const u = createUser('seed-x0'); // no settings at all
     seedUploaderConfig(db);
+    reconcileLegacyUploadSettings(db);
+    // No row and no pointer — deliberately. An absent uploads.uploader_id means
+    // "use the instance default", so a new account silently inherits whatever the
+    // admin has set (#299) instead of being frozen onto x0 by the migration.
     expect(userRows(u.id)).toHaveLength(0);
-    const x0 = instanceRows().find((r) => r.driver === 'x0')!;
-    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(x0.id);
+    expect(getUserSettings(u.id)['uploads.uploader_id']).toBeUndefined();
   });
 
   it('re-seed adds a newly-introduced built-in row (local) to a P0-era DB', () => {
@@ -169,13 +145,152 @@ describe('seedUploaderConfig (self-host)', () => {
     setUserSetting(u.id, 'uploads.provider', 'catbox');
     setUserSetting(u.id, 'uploads.catbox.userhash', 'hh');
     seedUploaderConfig(db);
+    reconcileLegacyUploadSettings(db);
     const firstUserRowId = userRows(u.id)[0].id;
     const firstUploaderId = getUserSettings(u.id)['uploads.uploader_id'];
 
     seedUploaderConfig(db);
+    reconcileLegacyUploadSettings(db);
     expect(instanceRows()).toHaveLength(3); // still just x0 + catbox + local
     expect(userRows(u.id)).toHaveLength(1);
     expect(userRows(u.id)[0].id).toBe(firstUserRowId);
     expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(firstUploaderId);
+  });
+});
+
+// The migration that retires the legacy `uploads.*` keys (#514) — and, in doing
+// so, fixes the P0 hole where those keys were converted ONCE and then ignored, so
+// anything configured or changed afterwards was silently dropped.
+describe('reconcileLegacyUploadSettings (self-host)', () => {
+  const legacyKeys = (uid: number): string[] =>
+    (
+      db
+        .prepare(`SELECT key FROM user_settings WHERE user_id = ? AND key LIKE 'uploads.%'`)
+        .all(uid) as Array<{ key: string }>
+    ).map((r) => r.key);
+
+  beforeEach(() => seedUploaderConfig(db));
+
+  it('materializes a configured catbox user into a user row + pointer', () => {
+    const u = createUser('rec-catbox');
+    setUserSetting(u.id, 'uploads.provider', 'catbox');
+    setUserSetting(u.id, 'uploads.catbox.userhash', 'hash1');
+
+    reconcileLegacyUploadSettings(db);
+
+    const rows = userRows(u.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].driver).toBe('catbox');
+    expect(rows[0].secrets_enc).toContain('hash1');
+    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(rows[0].id);
+  });
+
+  it('materializes a configured hoarder user (url public, key secret)', () => {
+    const u = createUser('rec-hoarder');
+    setUserSetting(u.id, 'uploads.provider', 'hoarder');
+    setUserSetting(u.id, 'uploads.hoarder.url', 'https://u.example');
+    setUserSetting(u.id, 'uploads.hoarder.api_key', 'k-secret');
+
+    reconcileLegacyUploadSettings(db);
+
+    const rows = userRows(u.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].driver).toBe('hoarder');
+    expect(JSON.parse(rows[0].config_json)).toEqual({ url: 'https://u.example' });
+    expect(rows[0].secrets_enc).toContain('k-secret');
+    expect(rows[0].config_json).not.toContain('k-secret');
+    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(rows[0].id);
+  });
+
+  // ── THE REGRESSION (see the module header) ─────────────────────────────────
+  // A user P0 already converted (pointer at the instance x0 row, no user row) who
+  // then configures Hoarder through the only UI that existed. P0's one-shot seed
+  // never looked again, findAllowedByDriver('hoarder') found nothing, and their
+  // upload silently went to x0 — a PUBLIC host — instead of their private one.
+  it('rescues a user who configured Hoarder AFTER the P0 migration', () => {
+    const u = createUser('rec-late-hoarder');
+    const x0 = instanceRows().find((r) => r.driver === 'x0')!;
+    setUserSetting(u.id, 'uploads.uploader_id', x0.id); // what P0 left them with
+    setUserSetting(u.id, 'uploads.provider', 'hoarder');
+    setUserSetting(u.id, 'uploads.hoarder.url', 'https://private.example');
+    setUserSetting(u.id, 'uploads.hoarder.api_key', 'late-key');
+
+    reconcileLegacyUploadSettings(db);
+
+    const rows = userRows(u.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].driver).toBe('hoarder');
+    expect(rows[0].secrets_enc).toContain('late-key');
+    // Repointed off x0 and onto their own Hoarder — the bytes stop leaking public.
+    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(rows[0].id);
+    expect(getUserSettings(u.id)['uploads.uploader_id']).not.toBe(x0.id);
+  });
+
+  // The other half of the same hole: the row exists, but the credential in it is
+  // stale because the user edited the setting afterwards and nothing re-read it.
+  it('refreshes a credential the user changed after the P0 migration', () => {
+    const u = createUser('rec-stale');
+    setUserSetting(u.id, 'uploads.provider', 'catbox');
+    setUserSetting(u.id, 'uploads.catbox.userhash', 'old-hash');
+    reconcileLegacyUploadSettings(db); // stands in for the P0 conversion
+    const rowId = userRows(u.id)[0].id;
+
+    // User later changes their userhash through the settings UI.
+    setUserSetting(u.id, 'uploads.catbox.userhash', 'new-hash');
+    reconcileLegacyUploadSettings(db);
+
+    const rows = userRows(u.id);
+    expect(rows).toHaveLength(1); // refreshed in place, not duplicated
+    expect(rows[0].id).toBe(rowId);
+    expect(rows[0].secrets_enc).toContain('new-hash');
+    expect(rows[0].secrets_enc).not.toContain('old-hash');
+  });
+
+  it('keeps a credential the user saved but is not currently using', () => {
+    const u = createUser('rec-unused');
+    setUserSetting(u.id, 'uploads.provider', 'x0'); // uploading to x0 today…
+    setUserSetting(u.id, 'uploads.catbox.userhash', 'kept'); // …but this is theirs
+    reconcileLegacyUploadSettings(db);
+
+    // We're deleting the only copy of that userhash, so it has to survive as a
+    // row they can switch to — not evaporate because it wasn't selected.
+    const rows = userRows(u.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].driver).toBe('catbox');
+    expect(rows[0].secrets_enc).toContain('kept');
+    // …while their actual selection stays x0.
+    const x0 = instanceRows().find((r) => r.driver === 'x0')!;
+    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(x0.id);
+  });
+
+  it('deletes the legacy keys and then no-ops forever', () => {
+    const u = createUser('rec-prune');
+    setUserSetting(u.id, 'uploads.provider', 'catbox');
+    setUserSetting(u.id, 'uploads.catbox.userhash', 'h');
+    setUserSetting(u.id, 'uploads.paste.enabled', false); // a SURVIVING uploads.* key
+
+    reconcileLegacyUploadSettings(db);
+
+    const remaining = legacyKeys(u.id);
+    expect(remaining).not.toContain('uploads.provider');
+    expect(remaining).not.toContain('uploads.catbox.userhash');
+    // The pipeline/paste keys are not part of this migration and must be intact.
+    expect(remaining).toContain('uploads.paste.enabled');
+    expect(remaining).toContain('uploads.uploader_id');
+
+    // Second run: guard SELECT finds nothing, so nothing changes.
+    const before = userRows(u.id);
+    reconcileLegacyUploadSettings(db);
+    expect(userRows(u.id)).toEqual(before);
+  });
+
+  it('points a local-disk user at the instance local row', () => {
+    const u = createUser('rec-local');
+    setUserSetting(u.id, 'uploads.provider', 'local');
+    reconcileLegacyUploadSettings(db);
+
+    const local = instanceRows().find((r) => r.driver === 'local')!;
+    expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(local.id);
+    expect(userRows(u.id)).toHaveLength(0); // zero-config: no user row needed
   });
 });

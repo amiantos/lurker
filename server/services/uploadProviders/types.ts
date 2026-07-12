@@ -37,6 +37,14 @@ export interface DriverCapabilities {
   acceptsContentClasses: ContentClass[];
   // local, s3 — never offered on the hosted fleet.
   selfHostOnly?: boolean;
+  // May a human stand up a new instance of this driver in the management UI
+  // (#514)? Not derivable, so it's declared: `x0` and `local` are zero-config
+  // singletons whose seeded instance row IS the driver (a second row would be
+  // byte-identical), and `hoarder` is the operator/seed-managed hosted dropper
+  // that decision 12 retired from the self-host menu. Existing rows of a
+  // non-creatable driver keep working — this gates the "add an uploader" list
+  // only. Defaults to false so a new driver has to opt in deliberately.
+  creatable?: boolean;
 }
 
 export interface UploadMeta {

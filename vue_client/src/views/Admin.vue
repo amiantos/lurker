@@ -39,6 +39,7 @@ import { DEFAULT_ADMIN_TAB, isAdminTab } from '../utils/adminRegistry.js';
 import AdminSidebar from '../components/AdminSidebar.vue';
 import UsersPane from '../components/admin-panes/UsersPane.vue';
 import InvitesPane from '../components/admin-panes/InvitesPane.vue';
+import UploadersPane from '../components/admin-panes/UploadersPane.vue';
 
 useSocket();
 
@@ -49,6 +50,7 @@ const router = useRouter();
 const PANES: Record<string, Component> = {
   users: UsersPane,
   invites: InvitesPane,
+  uploaders: UploadersPane,
 };
 
 const activeTabId = computed((): string => {

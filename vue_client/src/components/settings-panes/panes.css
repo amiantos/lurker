@@ -108,6 +108,40 @@
   justify-self: end;
 }
 
+/* STACKED rows: identity on the first line, actions on the second.
+
+   The default .device is a three-column grid sized for [identity][meta][one
+   action]. Some rows carry an action cluster that simply doesn't fit that —
+   the uploader rows have five (make default / enable / offer / edit / delete) —
+   and cramming them into the right-hand columns squeezes the identity down to a
+   sliver, then wraps the overflow into ragged implicit grid rows. Opt into this
+   instead of inventing a per-pane layout: one column, actions underneath and
+   left-aligned so they read as a toolbar for the row above them. */
+.settings-pane .device.stacked {
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+.settings-pane .device.stacked .row-actions {
+  grid-column: 1 / -1;
+  justify-self: start;
+  flex-wrap: wrap;
+}
+/* Adjacent spans inside .ua (name + driver + badges) otherwise render with NO gap
+   at all: Vue's default whitespace: 'condense' strips whitespace-only text nodes
+   that contain a newline, so `x0.at` and `x0` collide into "x0.atx0". ApiTokensPane
+   already works around this with the same flex+gap in its own scoped styles.
+
+   Scoped to .stacked rather than hoisted onto every .device on purpose: AccountPane's
+   .ua wraps a full-width <input>, which a flex container would reflow, and that's not
+   something this change can verify. Hoisting it (and de-duplicating ApiTokensPane)
+   wants eyes on all three panes — see #538. */
+.settings-pane .device.stacked .ua {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1ch;
+}
+
 .settings-pane .hl-sep {
   border: none;
   border-top: 1px solid var(--border);

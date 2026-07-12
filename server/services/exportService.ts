@@ -57,6 +57,13 @@ function scopeFilter(scope: string, userId: number): { where: string; params: nu
         where: 'WHERE rule_id IN (SELECT id FROM highlight_rules WHERE user_id = ?)',
         params: [userId],
       };
+    // uploader_config (#514): a user's OWN uploaders only. The scope='user' half
+    // is load-bearing, not decoration — without it an export would rake in the
+    // instance's x0/catbox/local rows (owner_user_id IS NULL, so they'd slip a
+    // `WHERE owner_user_id = ?` only by luck) and hand the operator's
+    // configuration to whoever asked for their data.
+    case 'owned_uploaders':
+      return { where: "WHERE scope = 'user' AND owner_user_id = ?", params: [userId] };
     default:
       throw new Error(`exportService: unknown scope "${scope}"`);
   }

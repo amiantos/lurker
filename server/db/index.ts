@@ -10,6 +10,7 @@ import { foldBufferCase } from './foldBufferCase.js';
 import {
   seedUploaderConfig,
   reconcileBuiltInUploaders,
+  reconcileLegacyUploadSettings,
   reconcileHostedUploaderFromEnv,
 } from './uploaderConfigSeed.js';
 
@@ -1563,6 +1564,16 @@ try {
   reconcileBuiltInUploaders(db);
 } catch (err) {
   console.warn('[db] built-in uploader reconcile failed:', err);
+}
+
+// Fold the legacy per-user `uploads.*` credential/selection keys into real
+// uploader_config rows and delete them (#514). MUST run after the built-in
+// reconcile above, which is what guarantees the instance rows this points users
+// at actually exist. Self-terminating: once the keys are gone it's a no-op.
+try {
+  reconcileLegacyUploadSettings(db);
+} catch (err) {
+  console.warn('[db] legacy upload-settings reconcile failed:', err);
 }
 
 // Re-sync the hosted locked uploader from env on every boot — idempotent no-op on

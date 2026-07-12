@@ -112,11 +112,23 @@ router.post(
       // Resolve the configured uploader. Every isNodeMode() branch the old route
       // made (which provider, whose credentials, which caps, SVG policy, thumbnail
       // strategy) is now derived from the resolved uploader's driver + policy.
+      // Per-upload override (design decision 9): send this one file somewhere
+      // other than your default. Multipart, so it arrives as a string field. An
+      // override that isn't in the caller's allowed set is a 400, never a silent
+      // reroute to their default (decision 15).
+      const requestedRaw = (req.body as { uploaderId?: unknown } | undefined)?.uploaderId;
+      const requestedId = requestedRaw == null || requestedRaw === '' ? null : Number(requestedRaw);
+      if (requestedId != null && !Number.isInteger(requestedId)) {
+        res.status(400).json({ error: 'uploaderId must be an integer' });
+        return;
+      }
+
       let resolved: ResolvedUploader;
       try {
         resolved = resolveUploader({
           userId: req.user!.id,
           isAdmin: req.user!.role === 'admin',
+          requestedId,
         });
       } catch (err) {
         // A locked instance default that the operator hasn't configured →

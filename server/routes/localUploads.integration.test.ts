@@ -33,12 +33,17 @@ beforeAll(async () => {
 
   const { createUser } = await import('../db/users.js');
   const { setUserSetting } = await import('../db/settings.js');
+  const { listInstanceUploaders } = await import('../db/uploaderConfig.js');
   const uploadsRouter = (await import('./uploads.js')).default;
   const localRouter = (await import('./localUploads.js')).default;
 
   user = createUser('localint-alice');
-  // Select the seeded self-host `local` instance uploader via the P0 dropdown.
-  setUserSetting(user.id, 'uploads.provider', 'local');
+  // Select the seeded self-host `local` instance uploader the way the picker does
+  // (#514): by uploader_config id. The legacy `uploads.provider` dropdown this
+  // used to go through no longer exists.
+  const localRow = listInstanceUploaders().find((r) => r.driver === 'local');
+  if (!localRow) throw new Error('expected the seeded self-host local uploader row');
+  setUserSetting(user.id, 'uploads.uploader_id', localRow.id);
 
   app = createTestApp({ '/api/uploads': uploadsRouter, '/uploads/local': localRouter });
   agent = await createAuthedAgent(app, user.id);

@@ -22,6 +22,7 @@ import bookmarksRouter from './routes/bookmarks.js';
 import pushRouter from './routes/push.js';
 import adminRouter from './routes/admin.js';
 import uploadsRouter from './routes/uploads.js';
+import uploadersRouter from './routes/uploaders.js';
 import localUploadsRouter from './routes/localUploads.js';
 import dccRouter from './routes/dcc.js';
 import draftsRouter from './routes/drafts.js';
@@ -62,6 +63,7 @@ export function buildApp(sessionSecret: string): Express {
   app.use('/api/push', pushRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/uploads', uploadsRouter);
+  app.use('/api/uploaders', uploadersRouter);
   // Public (no-auth) serving of local-driver files. Off /api by design: the URL
   // is opened by anyone the uploader shares it with, protected only by its
   // non-guessable key. Mounted before the SPA fallback so it wins the route.
