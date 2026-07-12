@@ -42,7 +42,16 @@
           use
         </button>
         <span v-else class="muted small">selected</span>
-        <button v-if="u.editable" class="link" :disabled="busy" @click="onEdit(u)">edit</button>
+        <!-- Editable AND describable: a row whose driver we have no schema for
+             can't be rendered as a form, so offer removal but not editing. -->
+        <button
+          v-if="u.editable && driverFor(u.driver)"
+          class="link"
+          :disabled="busy"
+          @click="onEdit(u)"
+        >
+          edit
+        </button>
         <button v-if="u.editable" class="link danger" :disabled="busy" @click="onDelete(u)">
           remove
         </button>
@@ -59,11 +68,11 @@
       </li>
     </ul>
 
-    <template v-if="editing">
+    <template v-if="editing && editingDriver">
       <h3 class="subhead">edit {{ editing.label }}</h3>
       <UploaderConfigForm
         :key="`edit-${editing.id}`"
-        :driver="driverFor(editing.driver)!"
+        :driver="editingDriver"
         :existing="{
           label: editing.label,
           config: editing.config ?? {},
@@ -76,18 +85,20 @@
       />
     </template>
 
-    <template v-else-if="allowUserDefined && drivers.length">
+    <template v-else-if="allowUserDefined && addableDrivers.length">
       <h3 class="subhead">add your own uploader</h3>
-      <template v-if="adding">
+      <template v-if="addingDriver">
         <label class="driver-pick">
           <span>Type</span>
           <select v-model="adding" :disabled="busy">
-            <option v-for="d in drivers" :key="d.driver" :value="d.driver">{{ d.label }}</option>
+            <option v-for="d in addableDrivers" :key="d.driver" :value="d.driver">
+              {{ d.label }}
+            </option>
           </select>
         </label>
         <UploaderConfigForm
-          :key="`add-${adding}`"
-          :driver="driverFor(adding)!"
+          :key="`add-${addingDriver.driver}`"
+          :driver="addingDriver"
           :busy="busy"
           :error="formError"
           @save="onSaveNew"
@@ -95,7 +106,7 @@
         />
       </template>
       <p v-else class="add-row">
-        <button class="link" :disabled="busy" @click="adding = drivers[0].driver">
+        <button class="link" :disabled="busy" @click="adding = addableDrivers[0].driver">
           add an uploader
         </button>
       </p>
@@ -110,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { api } from '../../api.js';
 import RegistryPane from './RegistryPane.vue';
 import UploaderConfigForm from '../UploaderConfigForm.vue';
@@ -134,6 +145,16 @@ const editing = ref<Uploader | null>(null);
 function driverFor(id: string): UploaderDriver | undefined {
   return drivers.value.find((d) => d.driver === id);
 }
+
+// The "add" menu is the CREATABLE subset — `drivers` also carries the drivers we
+// only need in order to describe rows the user already owns (a `hoarder` row
+// migrated off the legacy settings is editable but not creatable).
+const addableDrivers = computed(() => drivers.value.filter((d) => d.creatable));
+
+// Resolved driver objects, so the template never hands the form an undefined
+// driver (which would blow up on `.configSchema`).
+const addingDriver = computed(() => (adding.value ? driverFor(adding.value) : undefined));
+const editingDriver = computed(() => (editing.value ? driverFor(editing.value.driver) : undefined));
 
 async function refresh() {
   loading.value = true;

@@ -24,6 +24,12 @@ export interface UploaderDriver {
   driver: string;
   label: string;
   configSchema: UploaderConfigField[];
+  // May a NEW uploader of this driver be stood up? The server sends every driver
+  // (you need a schema to render an edit form for a row you already own — e.g. a
+  // `hoarder` row migrated off the legacy settings, which is editable but not
+  // creatable), so the "add an uploader" menu filters on this rather than on
+  // whatever happens to be in the list.
+  creatable: boolean;
 }
 
 /** One configured uploader, as the user-facing API projects it. */

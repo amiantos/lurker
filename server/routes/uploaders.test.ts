@@ -55,20 +55,53 @@ describe('GET /api/uploaders', () => {
     expect((await request(app).get('/api/uploaders')).status).toBe(401);
   });
 
-  it('lists the seeded instance uploaders and the creatable drivers', async () => {
+  it('lists the seeded instance uploaders, and flags which drivers may be ADDED', async () => {
     const res = await agent.get('/api/uploaders');
     expect(res.status).toBe(200);
     expect(res.body.uploaders.map((u: any) => u.driver)).toEqual(
       expect.arrayContaining(['x0', 'catbox', 'local']),
     );
-    // The "add an uploader" menu: drivers with config that a human may stand up.
+    // The "add an uploader" menu is the `creatable` subset — NOT the whole list
+    // (see the migrated-hoarder case below for why the list is the whole set).
     // x0 and local are zero-config singletons; hoarder is the seed-managed dropper.
-    const offered = res.body.drivers.map((d: any) => d.driver);
-    expect(offered).toEqual(expect.arrayContaining(['catbox', 'zipline', 'chibisafe', 's3']));
-    expect(offered).not.toContain('x0');
-    expect(offered).not.toContain('local');
-    expect(offered).not.toContain('hoarder');
+    const creatable = res.body.drivers.filter((d: any) => d.creatable).map((d: any) => d.driver);
+    expect(creatable).toEqual(expect.arrayContaining(['catbox', 'zipline', 'chibisafe', 's3']));
+    expect(creatable).not.toContain('x0');
+    expect(creatable).not.toContain('local');
+    expect(creatable).not.toContain('hoarder');
     expect(res.body.selectedId).toBeNull();
+  });
+
+  // The user reconcileLegacyUploadSettings rescues owns a `hoarder` row: editable,
+  // but NOT creatable. If the driver list only carried creatable drivers, the
+  // client would have no schema to render their edit form from — and the pane blew
+  // up on it. The people this release exists to rescue are exactly the people who
+  // must not hit a wall here.
+  it('describes EVERY driver an owned row can reference, not just the creatable ones', async () => {
+    const { createUploaderConfig } = await import('../db/uploaderConfig.js');
+    const migrated = createUploaderConfig({
+      scope: 'user',
+      ownerUserId: user.id,
+      driver: 'hoarder', // what the legacy-settings migration produces
+      label: 'Hoarder',
+      values: { url: 'https://hoard.example', api_key: 'k' },
+    });
+
+    const res = await agent.get('/api/uploaders');
+    const row = res.body.uploaders.find((u: any) => u.id === migrated);
+    expect(row.editable).toBe(true);
+
+    // …so a descriptor for its driver MUST be present, or the form can't render.
+    const hoarder = res.body.drivers.find((d: any) => d.driver === 'hoarder');
+    expect(hoarder).toBeDefined();
+    expect(hoarder.creatable).toBe(false); // but still not offered in the add menu
+    expect(hoarder.configSchema.map((f: any) => f.key)).toEqual(['url', 'api_key']);
+
+    // And editing it still works end-to-end, secret preserved on omit.
+    const patched = await agent.patch(`/api/uploaders/${migrated}`).send({ label: 'My Hoarder' });
+    expect(patched.status).toBe(200);
+    const { resolvedConfig } = await import('../db/uploaderConfig.js');
+    expect(resolvedConfig(getUploaderConfig(migrated)!).api_key).toBe('k');
   });
 
   it('serves each driver’s own configSchema (the form is the driver’s, not the client’s)', async () => {

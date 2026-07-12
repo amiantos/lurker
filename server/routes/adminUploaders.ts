@@ -50,11 +50,20 @@ function refuseOnNode(res: Response): boolean {
   return true;
 }
 
-function creatableDrivers() {
+/** Every driver, with `creatable` saying which may be stood up as a NEW uploader.
+ *  Same reasoning as routes/uploaders.ts#visibleDrivers: describing a row you
+ *  already have and adding a new one are different questions, and an instance row
+ *  can exist for a non-creatable driver (the seeded x0/local, or a locked hosted
+ *  dropper). A schema is field metadata, never a value. */
+function visibleDrivers() {
   return driverIds
     .map((id) => getDriver(id)!)
-    .filter((d) => d.capabilities.creatable)
-    .map((d) => ({ driver: d.driver, label: d.label, configSchema: d.configSchema }));
+    .map((d) => ({
+      driver: d.driver,
+      label: d.label,
+      configSchema: d.configSchema,
+      creatable: Boolean(d.capabilities.creatable),
+    }));
 }
 
 function validateValues(
@@ -116,7 +125,7 @@ router.get('/', (_req: Request, res: Response) => {
       return detail;
     }),
     allowUserDefined: allowUserDefinedUploaders(),
-    drivers: creatableDrivers(),
+    drivers: visibleDrivers(),
     // The client hides the whole management surface on a hosted cell rather than
     // offering buttons that will 409.
     managed: isNodeMode(),

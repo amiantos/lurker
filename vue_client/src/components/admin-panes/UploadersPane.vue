@@ -85,11 +85,11 @@
     </ul>
 
     <template v-if="!store.uploadersManaged">
-      <template v-if="editing">
+      <template v-if="editing && editingDriver">
         <h3 class="subhead">edit {{ editing.label }}</h3>
         <UploaderConfigForm
           :key="`edit-${editing.id}`"
-          :driver="driverFor(editing.driver)!"
+          :driver="editingDriver"
           :existing="{
             label: editing.label,
             config: editing.config,
@@ -102,20 +102,20 @@
         />
       </template>
 
-      <template v-else-if="store.uploaderDrivers.length">
+      <template v-else-if="addableDrivers.length">
         <h3 class="subhead">add an uploader</h3>
-        <template v-if="adding">
+        <template v-if="addingDriver">
           <label class="driver-pick">
             <span>Type</span>
             <select v-model="adding" :disabled="busy">
-              <option v-for="d in store.uploaderDrivers" :key="d.driver" :value="d.driver">
+              <option v-for="d in addableDrivers" :key="d.driver" :value="d.driver">
                 {{ d.label }}
               </option>
             </select>
           </label>
           <UploaderConfigForm
-            :key="`add-${adding}`"
-            :driver="driverFor(adding)!"
+            :key="`add-${addingDriver.driver}`"
+            :driver="addingDriver"
             :busy="busy"
             :error="formError"
             @save="onSaveNew"
@@ -123,7 +123,7 @@
           />
         </template>
         <p v-else class="add-row">
-          <button class="link" :disabled="busy" @click="adding = store.uploaderDrivers[0].driver">
+          <button class="link" :disabled="busy" @click="adding = addableDrivers[0].driver">
             add an uploader
           </button>
         </p>
@@ -133,7 +133,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
 import UploaderConfigForm from '../UploaderConfigForm.vue';
 import type { AdminUploader, UploaderDriver } from '../../utils/uploaders.js';
@@ -149,6 +149,13 @@ const editing = ref<AdminUploader | null>(null);
 function driverFor(id: string): UploaderDriver | undefined {
   return store.uploaderDrivers.find((d) => d.driver === id);
 }
+
+// `uploaderDrivers` carries EVERY driver (a schema is needed to describe rows
+// that already exist, not just ones you may add); the add menu is the creatable
+// subset.
+const addableDrivers = computed(() => store.uploaderDrivers.filter((d) => d.creatable));
+const addingDriver = computed(() => (adding.value ? driverFor(adding.value) : undefined));
+const editingDriver = computed(() => (editing.value ? driverFor(editing.value.driver) : undefined));
 
 /** Zero-config drivers (x0, local disk) have nothing to edit. */
 function hasFields(u: AdminUploader): boolean {

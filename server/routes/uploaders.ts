@@ -47,18 +47,37 @@ interface DriverDescriptor {
   driver: string;
   label: string;
   configSchema: UploadDriver['configSchema'];
+  // Whether a human may stand up a NEW one. The client filters the "add an
+  // uploader" menu by this.
+  creatable: boolean;
 }
 
-/** Drivers a human may instantiate here: declared `creatable` (so not a
- *  zero-config singleton like x0/local, nor the seed-managed hosted dropper), and
- *  not self-host-only when we're a hosted cell. */
-function creatableDrivers(): DriverDescriptor[] {
+/**
+ * Every driver the client might need to describe — NOT just the creatable ones.
+ *
+ * These are two different questions and conflating them was a bug: "what may I
+ * add?" is `creatable`, but "what schema describes this row I already own?" is
+ * any driver at all. A self-hoster migrated off the legacy Hoarder settings owns a
+ * `hoarder` row — editable, and NOT creatable — so a creatable-only list left the
+ * client with no schema to render their edit form from. They are precisely the
+ * people this release exists to rescue, so they are precisely the people who must
+ * not hit a wall on this pane.
+ *
+ * Config VALUES still only ever ship for rows the caller owns (projectForUser);
+ * a schema is just field metadata — labels and types, never a secret.
+ */
+function visibleDrivers(): DriverDescriptor[] {
   const out: DriverDescriptor[] = [];
   for (const id of driverIds) {
     const d = getDriver(id);
-    if (!d || !d.capabilities.creatable) continue;
+    if (!d) continue;
     if (d.capabilities.selfHostOnly && isNodeMode()) continue;
-    out.push({ driver: d.driver, label: d.label, configSchema: d.configSchema });
+    out.push({
+      driver: d.driver,
+      label: d.label,
+      configSchema: d.configSchema,
+      creatable: Boolean(d.capabilities.creatable),
+    });
   }
   return out;
 }
@@ -137,7 +156,7 @@ router.get('/', (req: Request, res: Response) => {
     uploaders: allowed.map((r) => projectForUser(r, userId)),
     selectedId,
     allowUserDefined: allowUserDefinedUploaders(),
-    drivers: creatableDrivers(),
+    drivers: visibleDrivers(),
   });
 });
 
