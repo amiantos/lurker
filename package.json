@@ -68,6 +68,7 @@
     "@types/yauzl": "^3.4.0",
     "@vitest/coverage-v8": "^4.1.10",
     "concurrently": "^10.0.3",
+    "happy-dom": "^20.10.6",
     "oxfmt": "^0.57.0",
     "oxlint": "^1.72.0",
     "supertest": "^7.2.2",
