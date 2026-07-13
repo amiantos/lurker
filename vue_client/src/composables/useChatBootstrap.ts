@@ -6,6 +6,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useToastsStore } from '../stores/toasts.js';
+import { useOnboarding } from './useOnboarding.js';
 import { startPresenceReporter, reportNow } from './usePresence.js';
 import { registerSW, onSWPushMessage } from './usePush.js';
 import { onJumpIntent } from './useJumpIntent.js';
@@ -113,6 +114,7 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
   const networks = useNetworksStore();
   const settings = useSettingsStore();
   const buffers = useBuffersStore();
+  const onboarding = useOnboarding();
   const disposers: Array<() => void> = [];
 
   // Wire all three jump entry points synchronously in setup so onBeforeUnmount
@@ -132,8 +134,14 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
   }
 
   onMounted(async () => {
-    if (!settings.loaded) settings.fetchAll().catch(() => {});
+    // Both of these have to have *answered* before the first-run flow can tell a
+    // new account apart from a slow one — see useOnboarding.evaluate(). Settling
+    // rather than awaiting in sequence keeps a settings hiccup from holding up
+    // the networks fetch the rest of bootstrap depends on; evaluate() reads the
+    // stores' `loaded` flags and simply does nothing if either never landed.
+    const settingsReady = settings.loaded ? Promise.resolve() : settings.fetchAll().catch(() => {});
     await networks.fetchAll();
+    void settingsReady.then(() => onboarding.evaluate());
     startPresenceReporter();
     reportNow();
     // Mirror the unread-highlight total onto the PWA app icon (#451). Idempotent

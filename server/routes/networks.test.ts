@@ -153,6 +153,40 @@ describe('POST /api/networks', () => {
     ).toBeTruthy();
   });
 
+  // default_channel is a channel *list* (IRC's own "JOIN #a,#b" syntax), which is
+  // how the first-run flow (#300) joins several at once. Before this, a
+  // comma-separated value produced a single channel literally named "#a,#b".
+  it('splits a comma-separated default_channel into one channel each', async () => {
+    const created = await makeNet(aliceAgent, {
+      name: 'multi-default',
+      default_channel: '#lurker,#libera',
+    });
+    const names = created.body.network.channels.map((c: { name: string }) => c.name);
+    expect(names).toContain('#lurker');
+    expect(names).toContain('#libera');
+    expect(names).not.toContain('#lurker,#libera');
+  });
+
+  it('tolerates whitespace, blanks, and case-insensitive repeats in default_channel', async () => {
+    const created = await makeNet(aliceAgent, {
+      name: 'messy-default',
+      default_channel: ' #lurker ,, #Dev  #lurker,#LURKER ',
+    });
+    const names = created.body.network.channels.map((c: { name: string }) => c.name).toSorted();
+    // Whitespace separates too (it's what people type), empties are dropped, and
+    // a channel repeated in another casing is the same channel — the first
+    // spelling seen is the one stored. Sorted because listChannels() picks the
+    // row order, which isn't what this test is about.
+    expect(names).toStrictEqual(['#Dev', '#lurker']);
+  });
+
+  it('creates no channels when default_channel is absent or blank', async () => {
+    const blank = await makeNet(aliceAgent, { name: 'blank-default', default_channel: '   ' });
+    expect(blank.body.network.channels).toStrictEqual([]);
+    const absent = await makeNet(aliceAgent, { name: 'absent-default' });
+    expect(absent.body.network.channels).toStrictEqual([]);
+  });
+
   it('allows disabling trusted-cert verification on create', async () => {
     const res = await makeNet(aliceAgent, { name: 'self-signed-ok', trusted_certificates: false });
     expect(res.status).toBe(201);

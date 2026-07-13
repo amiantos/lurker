@@ -1400,6 +1400,19 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'travelling updates it on next connect. Leave blank to fall back to the ' +
       "server's local time.",
   },
+  {
+    key: 'onboarding.completed',
+    label: 'Onboarding completed',
+    category: 'system',
+    group: 'onboarding',
+    type: 'bool',
+    default: false,
+    description:
+      'Set once the first-run flow has been finished or skipped, so it never shows ' +
+      'again. Lives here rather than in localStorage so it follows the user across ' +
+      'devices. Must default to false: settingsService drops any row whose value ' +
+      'equals the registry default, so a true default would be unstorable.',
+  },
 ]);
 
 const BY_KEY = new Map(REGISTRY.map((opt) => [opt.key, opt] as const));

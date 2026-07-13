@@ -106,8 +106,9 @@
             />
           </label>
           <label v-if="!isEdit">
-            <span>Default channel</span>
+            <span>Channels to join</span>
             <input v-model="form.default_channel" :placeholder="channelPlaceholder" />
+            <small>Comma-separated, e.g. #lurker, #libera</small>
           </label>
           <label>
             <span>Commands to run on connect</span>
@@ -169,7 +170,12 @@ import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore, type Network } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
-import { LURKER_TAG, type BuiltinNetwork } from '../utils/builtinNetworks.js';
+import {
+  FALLBACK_CHANNEL,
+  LURKER_CHANNEL,
+  suggestedChannels,
+  type BuiltinNetwork,
+} from '../utils/builtinNetworks.js';
 
 const props = withDefaults(
   defineProps<{
@@ -200,7 +206,7 @@ const form = reactive({
   server_password: '',
   sasl_account: (netRaw?.sasl_account as string | undefined) ?? '',
   sasl_password: '',
-  default_channel: '#lurker',
+  default_channel: LURKER_CHANNEL,
   autoconnect: netRaw ? !!netRaw.autoconnect : true,
   connect_commands: (netRaw?.connect_commands as string | undefined) ?? '',
 });
@@ -228,9 +234,12 @@ function onPick(net: BuiltinNetwork): void {
   form.host = net.host;
   form.port = net.port;
   form.tls = net.tls;
-  // Always land the user in a channel rather than an empty server buffer:
-  // #lurker for a lurker-tagged network, else #chat as a common-enough lobby.
-  form.default_channel = net.tags.includes(LURKER_TAG) ? '#lurker' : '#chat';
+  // Always land the user in a channel rather than an empty server buffer: the
+  // channels we can vouch for (#lurker, the network's own — #308), else #chat as
+  // a common-enough lobby. The server splits this on commas, so a network with
+  // both gets both.
+  const suggested = suggestedChannels(net);
+  form.default_channel = suggested.length ? suggested.join(', ') : FALLBACK_CHANNEL;
   picked.value = net;
   step.value = 'form';
 }
@@ -242,7 +251,7 @@ function onManual(): void {
   form.host = '';
   form.port = 6697;
   form.tls = true;
-  form.default_channel = '#lurker';
+  form.default_channel = LURKER_CHANNEL;
   step.value = 'form';
 }
 
@@ -258,9 +267,11 @@ const showSaslHint = computed(
 const saslRequired = computed(() => showSaslHint.value);
 
 // Placeholder echoes the prefilled default if the user clears the field.
-const channelPlaceholder = computed(() =>
-  picked.value && !picked.value.tags.includes(LURKER_TAG) ? '#chat' : '#lurker',
-);
+const channelPlaceholder = computed(() => {
+  if (!picked.value) return LURKER_CHANNEL;
+  const suggested = suggestedChannels(picked.value);
+  return suggested.length ? suggested.join(', ') : FALLBACK_CHANNEL;
+});
 
 // Passwords are write-only as far as the client is concerned: the API returns
 // only has_password / has_sasl_password booleans, never the secret, so the

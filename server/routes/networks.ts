@@ -25,6 +25,27 @@ router.use(requireAuth);
 // sidebar renders. See blockWritesWhenPaused.
 router.use(blockWritesWhenPaused);
 
+// `default_channel` is a comma-separated channel list, matching IRC's own JOIN
+// syntax ("JOIN #a,#b") — the onboarding flow and `/network add -channel` both
+// send several at once. Whitespace is accepted as a separator too, since that's
+// what a user typing into a free-text field tends to reach for. Names are folded
+// case-insensitively when de-duplicating (servers are inconsistent about the
+// casing they echo back), but the first spelling seen is what gets stored.
+function parseChannelList(raw: unknown): string[] {
+  if (typeof raw !== 'string') return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of raw.split(/[,\s]+/)) {
+    const channel = name.trim();
+    if (!channel) continue;
+    const key = channel.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(channel);
+  }
+  return out;
+}
+
 function networkPayload(network: Network | undefined | null): Record<string, unknown> | null {
   if (!network) return null;
   const { server_password, sasl_password, ...safe } = network;
@@ -85,8 +106,9 @@ router.post('/', (req: Request, res: Response) => {
     res.status(500).json({ error: 'failed to create network' });
     return;
   }
-  const channel = (default_channel || '').trim();
-  if (channel) upsertChannel(network.id, channel, true);
+  for (const channel of parseChannelList(default_channel)) {
+    upsertChannel(network.id, channel, true);
+  }
   // Creating a network is an explicit "Save & connect" action, so connect now
   // regardless of `autoconnect`. The `autoconnect` flag governs only whether a
   // network is connected automatically at cold-start (connectScheduler /
