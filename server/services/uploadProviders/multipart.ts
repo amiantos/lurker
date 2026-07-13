@@ -155,7 +155,14 @@ function sendStreamed(
     // Owning the agent (rather than letting node's global one pool sockets to
     // providers between uploads) keeps the old header's real benefit: nothing is
     // reused, the connection still goes away as soon as we're done with it.
-    const agent = new lib.Agent({ keepAlive: true });
+    //
+    // keepAlive is about what we put ON THE WIRE, not about pooling: it is what
+    // makes node send `Connection: keep-alive`. maxFreeSockets:0 then says never
+    // park an idle socket, so the connection dies the moment the exchange is done
+    // even if the destroy() below never runs. Do NOT "simplify" this to
+    // keepAlive:false — that sends `Connection: close` again and brings the bug
+    // straight back.
+    const agent = new lib.Agent({ keepAlive: true, maxFreeSockets: 0 });
 
     let settled = false;
     const done = (r: PostBufferResult): void => {
