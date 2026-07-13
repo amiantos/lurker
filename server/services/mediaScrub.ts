@@ -56,6 +56,10 @@ const CONTAINERS = new Set(['moov', 'trak', 'mdia']);
 // shift anything; 0 is the spec's "unset".
 const TIMESTAMPED = new Set(['mvhd', 'tkhd', 'mdhd']);
 
+// Real files bottom out at moov → trak → mdia (depth 3). The headroom is generous;
+// exceeding it means the tree isn't one a muxer produced.
+const MAX_BOX_DEPTH = 8;
+
 const FREE = Buffer.from('free');
 const ZERO_CHUNK = Buffer.alloc(64 * 1024);
 
@@ -80,7 +84,15 @@ async function walkBoxes(
   end: number,
   depth: number,
 ): Promise<void> {
-  if (depth > 8) return; // no legitimate metadata nests this deep
+  // A real file bottoms out at depth 3 (moov → trak → mdia), so this is unreachable
+  // for anything a muxer wrote. REFUSE rather than return: giving up quietly would
+  // leave a `udta` below the guard un-scrubbed, which is neither scrubbing nor
+  // refusing — the exact middle ground this module promises not to occupy. (Nesting
+  // `moov` inside `moov` to hide metadata only hides the uploader's OWN metadata
+  // from us, so this is a contract fix, not an exploit fix.)
+  if (depth > MAX_BOX_DEPTH) {
+    throw new MediaScrubError(`box nesting deeper than ${MAX_BOX_DEPTH} — refusing to guess`);
+  }
   let pos = start;
   const header = Buffer.alloc(16);
 

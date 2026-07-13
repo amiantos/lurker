@@ -196,3 +196,46 @@ describe('scrubMediaFile — MP3', () => {
     expect(fs.readFileSync(p).equals(original)).toBe(true);
   });
 });
+
+describe('scrubMediaFile — pathological nesting', () => {
+  function box(type: string, payload: Buffer): Buffer {
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(8 + payload.length);
+    return Buffer.concat([size, Buffer.from(type, 'latin1'), payload]);
+  }
+
+  // Copilot's find: the depth guard used to `return` silently, so a udta hidden
+  // below it survived un-scrubbed — neither scrubbed nor refused, which is the one
+  // outcome this module promises never to produce. (Not an exploit: nesting moov in
+  // moov hides only the uploader's OWN metadata from us.)
+  it('refuses a file that nests metadata below the depth guard, rather than passing it through', async () => {
+    let inner = box('udta', Buffer.from('+37.7749-122.4194/'));
+    for (let i = 0; i < 10; i++) inner = box('moov', inner); // absurd nesting
+    const ftyp = box(
+      'ftyp',
+      Buffer.concat([Buffer.from('isom'), Buffer.alloc(4), Buffer.from('mp42')]),
+    );
+    const p = write('nested.mp4', Buffer.concat([ftyp, inner]));
+
+    await expect(scrubMediaFile(p, 'video/mp4')).rejects.toBeInstanceOf(MediaScrubError);
+    // And it stays untouched on disk, so nothing half-scrubbed can be dispatched:
+    // the route turns the throw into a 415 and the temp file is discarded.
+    expect(fs.readFileSync(p).includes(Buffer.from('+37.7749'))).toBe(true);
+  });
+
+  it('still handles the deepest nesting a real muxer produces (moov → trak → mdia)', async () => {
+    const mdia = box('mdia', box('udta', Buffer.from('device: iPhone')));
+    const trak = box('trak', Buffer.concat([mdia, box('udta', Buffer.from('+37.7749/'))]));
+    const moov = box('moov', trak);
+    const ftyp = box(
+      'ftyp',
+      Buffer.concat([Buffer.from('isom'), Buffer.alloc(4), Buffer.from('mp42')]),
+    );
+    const p = write('deep-ok.mp4', Buffer.concat([ftyp, moov]));
+
+    await scrubMediaFile(p, 'video/mp4');
+    const after = fs.readFileSync(p);
+    expect(after.includes(Buffer.from('+37.7749'))).toBe(false);
+    expect(after.includes(Buffer.from('iPhone'))).toBe(false); // nested one level deeper
+  });
+});
