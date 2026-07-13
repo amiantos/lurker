@@ -60,9 +60,12 @@ describe('builtinNetworks data', () => {
   it('every defaultChannel is a well-formed channel name', () => {
     const withChannel = builtinNetworks.filter((n) => n.defaultChannel !== undefined);
     expect(withChannel.length).toBeGreaterThan(0);
-    for (const n of withChannel) {
-      expect(n.defaultChannel, n.name).toMatch(/^#{1,2}[^\s,]+$/);
-    }
+    // Collected rather than asserted per-item so a failure reports *which*
+    // networks are malformed, not just the first one.
+    const malformed = withChannel
+      .filter((n) => !/^#{1,2}[^\s,]+$/.test(n.defaultChannel!))
+      .map((n) => `${n.name}: ${n.defaultChannel}`);
+    expect(malformed).toStrictEqual([]);
   });
 
   it('has no duplicate hosts', () => {
