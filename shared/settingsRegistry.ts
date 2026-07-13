@@ -86,7 +86,6 @@ export interface SettingCategory {
   id: string;
   label: string;
   kind: 'registry' | 'bespoke';
-  adminOnly?: boolean;
   // As on BaseOption: hide the whole category in the hosted (node) edition.
   selfHostedOnly?: boolean;
 }
@@ -1453,7 +1452,6 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'highlights', label: 'Highlights', kind: 'bespoke' },
   { id: 'ignores', label: 'Ignores', kind: 'bespoke' },
   { id: 'away', label: 'Away', kind: 'registry' },
-  { id: 'users', label: 'Users', kind: 'bespoke', adminOnly: true },
   { id: 'networks', label: 'Networks', kind: 'bespoke' },
   { id: 'account', label: 'Account', kind: 'bespoke' },
   // Disabled in node edition: bearer clients can't be routed through the

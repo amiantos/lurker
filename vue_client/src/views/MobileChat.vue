@@ -277,9 +277,8 @@ const buffers = useBuffersStore();
 const auth = useAuthStore();
 const config = useConfigStore();
 
-// Admin panel entry in the mobile top bar — admin-only, and only when the
-// instance enabled LURKER_NEW_ADMIN_PANEL. With the flag off it never renders.
-const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+// Admin panel entry in the mobile top bar.
+const showAdminEntry = computed(() => auth.isAdmin);
 const { connected } = useSocket();
 const { keyboardOpen } = useVisualViewport();
 const {

@@ -8,34 +8,19 @@ const cat = (id: string) => CATEGORIES.find((c) => c.id === id)!;
 const opt = (key: string) => REGISTRY.find((o) => o.key === key)!;
 
 describe('categoryVisible', () => {
-  const standalone = { isAdmin: false, isNode: false, newAdminPanel: false };
-  const node = { isAdmin: false, isNode: true, newAdminPanel: false };
+  const standalone = { isNode: false };
+  const node = { isNode: true };
 
-  it('hides adminOnly categories from non-admins, shows them to admins', () => {
-    expect(
-      categoryVisible(cat('users'), { isAdmin: false, isNode: false, newAdminPanel: false }),
-    ).toBe(false);
-    expect(
-      categoryVisible(cat('users'), { isAdmin: true, isNode: false, newAdminPanel: false }),
-    ).toBe(true);
-  });
-
-  it('removes adminOnly categories from Settings when the admin panel is enabled', () => {
-    // They relocate to the dedicated /admin panel, so even an admin no longer
-    // sees them in the Settings sidebar.
-    expect(
-      categoryVisible(cat('users'), { isAdmin: true, isNode: false, newAdminPanel: true }),
-    ).toBe(false);
+  // Instance administration now lives entirely in the /admin panel, so Settings
+  // holds nothing an admin sees and a regular user doesn't — the whole adminOnly
+  // dimension (and the "users" category that was its only user) is gone.
+  it('no longer carries an admin-only category', () => {
+    expect(CATEGORIES.some((c) => c.id === 'users')).toBe(false);
   });
 
   it('hides selfHostedOnly categories in node edition only', () => {
     expect(categoryVisible(cat('api-tokens'), standalone)).toBe(true);
     expect(categoryVisible(cat('api-tokens'), node)).toBe(false);
-    // selfHostedOnly is independent of role — a node-edition admin still can't
-    // see it (the route isn't mounted there anyway).
-    expect(
-      categoryVisible(cat('api-tokens'), { isAdmin: true, isNode: true, newAdminPanel: false }),
-    ).toBe(false);
   });
 
   it('shows ordinary categories in both editions', () => {

@@ -388,10 +388,9 @@ function openSettings(): void {
   router.push('/settings').catch((err) => console.error('[BufferList] open settings failed', err));
 }
 
-// The shield next to the gear opens the dedicated admin panel — admin-only, and
-// only when the instance enabled it (LURKER_NEW_ADMIN_PANEL). With the flag off,
-// admin controls stay in Settings and this button never renders.
-const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+// The shield next to the gear opens the dedicated admin panel. Admin-only: it's
+// the sole entry to instance administration, which no longer lives in Settings.
+const showAdminEntry = computed(() => auth.isAdmin);
 function openAdmin(): void {
   router.push('/admin').catch((err) => console.error('[BufferList] open admin failed', err));
 }

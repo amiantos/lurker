@@ -581,9 +581,8 @@ function openSettings() {
   router.push('/settings');
 }
 
-// Admin panel entry (collapsed-rail twin of the BufferList header shield):
-// admin-only, and only when the instance enabled LURKER_NEW_ADMIN_PANEL.
-const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+// Admin panel entry (collapsed-rail twin of the BufferList header shield).
+const showAdminEntry = computed(() => auth.isAdmin);
 function openAdmin() {
   router.push('/admin');
 }
