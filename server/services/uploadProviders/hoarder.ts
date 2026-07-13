@@ -18,12 +18,10 @@ export const capabilities: DriverCapabilities = {
   storesRemotely: true,
   supportsDelete: false,
   mintsKeys: false,
-  // NOT media yet: the hosted dropper hard-rejects anything but raster images +
-  // text/plain (control-plane dropper/src/app.ts, ALLOWED_MIME -> 415), so this is
-  // honest rather than conservative. Flips to media once the dropper ships
-  // (control-plane #56) — and it must ship FIRST, or a cell that thinks it can send
-  // video gets a 415 back from a dropper that can't take it.
-  acceptsContentClasses: ['image', 'text'],
+  // The hosted dropper accepts the same media set the cell scrubs (control-plane
+  // #56). ⚠ The dropper has to be DEPLOYED before a cell running this code, or the
+  // cell will happily send a video to a dropper that still 415s it.
+  acceptsContentClasses: ['image', 'text', 'media'],
 };
 export const configSchema: ConfigField[] = [
   {
