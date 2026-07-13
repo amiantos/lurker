@@ -3,9 +3,13 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
-import request from 'supertest';
 import type { Express } from 'express';
-import { setupTestDb, createTestApp, createAuthedAgent } from '../test-utils/testApp.js';
+import {
+  setupTestDb,
+  createTestApp,
+  createAuthedAgent,
+  testRequest,
+} from '../test-utils/testApp.js';
 import type { User } from '../db/users.js';
 
 const ctx = setupTestDb('routes-api-tokens');
@@ -31,7 +35,7 @@ afterAll(() => ctx.cleanup());
 
 describe('GET /api/api-tokens (auth)', () => {
   it('401 when no session cookie', async () => {
-    const res = await request(app).get('/api/api-tokens');
+    const res = await testRequest(app).get('/api/api-tokens');
     expect(res.status).toBe(401);
   });
 

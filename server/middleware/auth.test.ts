@@ -3,12 +3,12 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Router } from 'express';
-import request from 'supertest';
 import type { Express } from 'express';
 import {
   setupTestDb,
   createTestApp,
   createAuthedAgent,
+  testRequest,
   type TestDbContext,
 } from '../test-utils/testApp.js';
 
@@ -47,7 +47,7 @@ describe('requireAuth stale-session recovery', () => {
   it('clears BOTH lurker_session and cp_session on a stale (bad-signature) cookie', async () => {
     // A cookie signed with a different secret — what a rebuilt cell with a fresh
     // SESSION_SECRET sees from a browser holding the old lurker_session.
-    const res = await request(app)
+    const res = await testRequest(app)
       .get('/protected')
       .set('Cookie', 'lurker_session=s%3Astale.deadbeefbadsignature');
     expect(res.status).toBe(401);
@@ -57,7 +57,7 @@ describe('requireAuth stale-session recovery', () => {
   });
 
   it('does not clear cookies when no session cookie was sent', async () => {
-    const res = await request(app).get('/protected');
+    const res = await testRequest(app).get('/protected');
     expect(res.status).toBe(401);
     expect(res.headers['set-cookie']).toBeUndefined();
   });
