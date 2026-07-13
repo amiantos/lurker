@@ -199,10 +199,23 @@ function hostedConfigFromEnv(): { config_json: string; secrets_enc: string | nul
   };
 }
 
+/**
+ * The hosted cell's one locked instance uploader.
+ *
+ * ⚠ Matches BOTH ids, and that is load-bearing rather than tidy. The driver was
+ * renamed `hoarder` → `dropper` (#537), and if this only matched the new id it
+ * would fail to recognise a row that hadn't been migrated yet — whereupon
+ * seedUploaderConfig would insert a SECOND locked row with is_default = 1 and hit
+ * the one-default partial unique index, failing the seed on every boot from then
+ * on. The seed re-runs on any future SCHEMA_VERSION bump, so "the migration
+ * already ran" is not a safe assumption to bake in here.
+ */
 function findHostedRow(db: Database.Database): number | null {
   const r = db
     .prepare(
-      `SELECT id FROM uploader_config WHERE scope = 'instance' AND locked = 1 AND driver = 'hoarder' LIMIT 1`,
+      `SELECT id FROM uploader_config
+        WHERE scope = 'instance' AND locked = 1 AND driver IN ('dropper', 'hoarder')
+        LIMIT 1`,
     )
     .get() as { id: number } | undefined;
   return r ? r.id : null;
@@ -211,7 +224,7 @@ function findHostedRow(db: Database.Database): number | null {
 // ─── the migration ────────────────────────────────────────────────────────────
 
 /**
- * Seed the uploader model. Hosted: a single locked `hoarder` instance default
+ * Seed the uploader model. Hosted: a single locked `dropper` instance default
  * from env + allow_user_defined=0. Self-host: the built-in instance rows (x0
  * default, catbox, local) + allow_user_defined=1. Fully idempotent.
  *
@@ -227,7 +240,7 @@ export function seedUploaderConfig(db: Database.Database): void {
         insertRow(db, {
           scope: 'instance',
           owner_user_id: null,
-          driver: 'hoarder',
+          driver: 'dropper',
           label: 'Hosted uploader',
           config_json,
           secrets_enc,
@@ -359,7 +372,10 @@ function migrateUserOffLegacyKeys(db: Database.Database, userId: number): void {
   const hoarderRowId =
     hoarderUrl && hoarderKey
       ? upsertUserRow(db, userId, {
-          driver: 'hoarder',
+          // The row's LABEL stays "Hoarder": a self-hoster who set these keys is
+          // pointing at an actual Hoarder instance, and that's their name for it.
+          // Only the internal adapter id changes (#537).
+          driver: 'dropper',
           label: 'Hoarder',
           config: { url: hoarderUrl },
           secrets: { api_key: hoarderKey },
@@ -448,4 +464,36 @@ export function reconcileHostedUploaderFromEnv(db: Database.Database): void {
   db.prepare(
     `UPDATE uploader_config SET config_json = ?, secrets_enc = ?, updated_at = datetime('now') WHERE id = ?`,
   ).run(config_json, secrets_enc, rowId);
+}
+
+/**
+ * Rewrite the old `hoarder` driver id to `dropper` (#537).
+ *
+ * Runs on EVERY boot, not behind a SCHEMA_VERSION gate — the one-shot gate is
+ * exactly what wedged a dev DB in #511, and this doesn't need one: it's
+ * self-terminating (once no row says `hoarder`, both statements match nothing).
+ *
+ * Two tables, because the id is persisted in two places:
+ *   • uploader_config.driver     — the rows themselves.
+ *   • upload_history.provider    — denormalized onto every historical upload, on
+ *                                  purpose, so it survives the config row being
+ *                                  deleted. It's a display string, and leaving it
+ *                                  would mean the uploads list showed "hoarder" for
+ *                                  old rows and "dropper" for new ones — more
+ *                                  confusing than either name alone.
+ *
+ * MUST run before reconcileHostedUploaderFromEnv (which looks the hosted row up by
+ * driver id) and after reconcileLegacyUploadSettings (which is the last thing that
+ * could still mint a row from legacy keys).
+ *
+ * NOTE this is a tidy-up, not a correctness dependency: getDriver() accepts
+ * `hoarder` as an alias, so a row that somehow escapes this — an old export
+ * imported between boots — still resolves.
+ */
+export function renameHoarderDriver(db: Database.Database): void {
+  const run = db.transaction(() => {
+    db.prepare(`UPDATE uploader_config SET driver = 'dropper' WHERE driver = 'hoarder'`).run();
+    db.prepare(`UPDATE upload_history SET provider = 'dropper' WHERE provider = 'hoarder'`).run();
+  });
+  run();
 }

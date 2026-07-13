@@ -7,6 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import sharp from 'sharp';
+import { bufferSource } from '../services/uploadProviders/source.js';
 import { createTestApp, createAnonAgent } from '../test-utils/testApp.js';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import * as local from '../services/uploadProviders/local.js';
@@ -18,7 +19,7 @@ const prevEnv = process.env.LOCAL_UPLOADS_DIR;
 
 // Write a buffer through the real driver and return the served path.
 async function put(buffer: Buffer, filename: string, mime: string): Promise<string> {
-  const res = await local.upload(buffer, { filename, mime }, {});
+  const res = await local.upload(bufferSource(buffer), { filename, mime }, {});
   return res.url; // /uploads/local/<key>
 }
 

@@ -23,10 +23,49 @@ import cookieParser from 'cookie-parser';
 import { sign as signCookie } from 'cookie-signature';
 import request from 'supertest';
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 
 export const TEST_SESSION_SECRET = 'test-session-secret';
+
+// One listening server per app, reused by every agent and every request.
+//
+// Handed a bare Express app, supertest binds a fresh ephemeral port with
+// listen(0) for EACH request and close()s it once the response lands. Across a
+// full suite run that churns thousands of short-lived listeners, and a small
+// fraction of those connections get reset by the kernel — surfacing as a
+// "socket hang up" that fails whichever route test happened to be running.
+// It's rare, load-dependent, and lands on an arbitrary test, which is exactly
+// what makes it read as a flaky assertion rather than a transport fault.
+//
+// Handing supertest an ALREADY-LISTENING server instead makes it skip both the
+// listen and the close (see supertest's Test#serverAddress / Test#end), so the
+// whole file shares one stable port. listen() binds synchronously, so
+// address() is live by the time an agent issues its first request.
+const servers = new WeakMap<Express, http.Server>();
+let openServers: http.Server[] = [];
+
+function listeningServer(app: Express): http.Server {
+  const existing = servers.get(app);
+  if (existing) return existing;
+  const server = http.createServer(app);
+  // No host argument: listen(0) binds synchronously, so address() is live on
+  // return. Passing a host defers the bind to a DNS/next-tick path, address()
+  // stays null, and supertest would silently go right back to listening per
+  // request.
+  server.listen(0);
+  // If address() is ever null here, supertest quietly falls back to listening
+  // per request and the flake comes back unnoticed — fail loudly instead.
+  if (!server.address()) {
+    throw new Error('test server did not bind synchronously; supertest would listen per request');
+  }
+  // Never let a stray listener hold the vitest worker open.
+  server.unref();
+  servers.set(app, server);
+  openServers.push(server);
+  return server;
+}
 
 export interface TestDbContext {
   tmpDir: string;
@@ -49,6 +88,8 @@ export function setupTestDb(suffix = ''): TestDbContext {
     tmpDir,
     dbPath: process.env.DATABASE_PATH,
     cleanup() {
+      for (const server of openServers) server.close();
+      openServers = [];
       fs.rmSync(tmpDir, { recursive: true, force: true });
     },
   };
@@ -75,6 +116,13 @@ export function createTestApp(routerMounts: Record<string, Router>): Express {
   return app;
 }
 
+// One-off (agent-less) requests. Use this instead of supertest's `request(app)`
+// so the request goes through the file's shared listener rather than binding
+// and tearing down a port of its own — see listeningServer above.
+export function testRequest(app: Express): request.Agent {
+  return request(listeningServer(app));
+}
+
 // Returns a supertest agent pre-loaded with a signed lurker_session cookie for
 // the given user. Creates a real session row via db/sessions.js — the route
 // handlers then go through the unmodified loadSession path.
@@ -84,7 +132,7 @@ export async function createAuthedAgent(app: Express, userId: number): Promise<L
   const { createSession } = await import('../db/sessions.js');
   const { token } = createSession(userId);
   const signed = 's:' + signCookie(token, TEST_SESSION_SECRET);
-  const agent = request.agent(app);
+  const agent = request.agent(listeningServer(app));
   // request.agent stores cookies by jar, but the simplest reliable approach is
   // to set the Cookie header on every request. Supertest's .set('Cookie',...)
   // sticks for the agent's lifetime.
@@ -94,5 +142,5 @@ export async function createAuthedAgent(app: Express, userId: number): Promise<L
 
 // Convenience: build an unauthenticated supertest agent against the app.
 export function createAnonAgent(app: Express): LurkerTestAgent {
-  return request.agent(app);
+  return request.agent(listeningServer(app));
 }

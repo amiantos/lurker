@@ -22,6 +22,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import fs from 'fs';
 import { fileTypeFromBuffer } from 'file-type';
+import { isUtf8, trimPartialUtf8 } from '../utils/utf8.js';
 import { resolveDiskPath } from '../services/uploadProviders/local.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 
@@ -50,6 +51,13 @@ const INLINE_MIME = new Set<string>([
   'video/mp4',
   'video/ogg',
   'video/webm',
+  // The media the upload route accepts (#515). quicktime/m4v/m4a weren't here
+  // because nothing could produce them; now they can, and a shared clip should play
+  // when you click it rather than land in Downloads.
+  'video/quicktime',
+  'video/x-m4v',
+  'audio/x-m4a',
+  'audio/mp4',
 ]);
 
 // file-type recommends >= 4100 bytes to recognize every supported signature.
@@ -66,30 +74,6 @@ async function sniffHead(fullPath: string): Promise<Buffer> {
     return buf.subarray(0, bytesRead);
   } finally {
     await fd.close();
-  }
-}
-
-// Drop a trailing incomplete UTF-8 multibyte sequence, so a valid text file whose
-// SNIFF_BYTES window happens to split a character isn't misjudged as binary and
-// force-downloaded. Walks back over continuation bytes (0b10xxxxxx) to the lead
-// byte; if the sequence it starts runs past the window, trim it.
-function trimPartialUtf8(buf: Buffer): Buffer {
-  for (let i = 1; i <= 3 && buf.length - i >= 0; i++) {
-    const b = buf[buf.length - i];
-    if ((b & 0xc0) === 0x80) continue; // continuation byte — keep walking back
-    const seqLen = b < 0x80 ? 1 : b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1;
-    return i < seqLen ? buf.subarray(0, buf.length - i) : buf; // incomplete → drop
-  }
-  return buf;
-}
-
-function isUtf8(buf: Buffer): boolean {
-  if (buf.length === 0) return false;
-  try {
-    new TextDecoder('utf-8', { fatal: true }).decode(buf);
-    return true;
-  } catch {
-    return false;
   }
 }
 

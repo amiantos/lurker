@@ -18,54 +18,84 @@
 <template>
   <section id="uploads" class="settings-pane">
     <h2>Uploads</h2>
-    <p class="section-desc">
+    <!-- Three variants, because `allowUserDefined` defaults to true before the fetch
+         lands: without the `loaded` gate a hosted user is briefly told they can
+         choose an uploader, which isn't true. -->
+    <p v-if="!loaded" class="section-desc">
+      Where pasted and picked files are uploaded. Lurker pastes a link into the message — the file
+      itself is hosted by an uploader, not by Lurker.
+    </p>
+    <p v-else-if="canChoose" class="section-desc">
       Where pasted and picked files are uploaded. Lurker pastes a link into the message — the file
       itself is hosted by whichever uploader you choose here.
     </p>
+    <p v-else class="section-desc">
+      Where pasted and picked files are uploaded. Lurker pastes a link into the message — the file
+      itself is hosted by
+      <strong>{{ soleUploaderLabel }}</strong
+      >, which this server provides.
+    </p>
     <p v-if="error" class="error inline">{{ error }}</p>
 
-    <h3 class="subhead">destination</h3>
-    <p v-if="loading && !loaded" class="muted small">Loading…</p>
-    <ul v-else class="device-list">
-      <li v-for="u in uploaders" :key="u.id" class="device stacked">
-        <span class="ua">
-          <span class="name">{{ u.label }}</span>
-          <span class="driver">{{ u.driver }}</span>
-          <span v-if="u.scope === 'user'" class="badge">yours</span>
-          <span v-if="u.id === selectedId" class="badge in-use">in use</span>
-        </span>
-        <div class="row-actions">
-          <button v-if="u.id !== selectedId" class="link" :disabled="busy" @click="onSelect(u.id)">
-            use this one
-          </button>
-          <!-- Editable AND describable: a row whose driver we have no schema for
+    <!-- The destination picker only exists to make a CHOICE. On the hosted service
+         there is exactly one uploader and personal ones are off, so it rendered the
+         same destination twice — once as itself and once as "Server default" — and
+         asked you to pick between them. Nothing to choose → no chooser; the line
+         above says where the files go instead. -->
+    <template v-if="canChoose">
+      <h3 class="subhead">destination</h3>
+      <p v-if="loading && !loaded" class="muted small">Loading…</p>
+      <ul v-else class="device-list">
+        <li v-for="u in uploaders" :key="u.id" class="device stacked">
+          <span class="ua">
+            <span class="name">{{ u.label }}</span>
+            <span class="driver">{{ u.driver }}</span>
+            <span v-if="u.scope === 'user'" class="badge">yours</span>
+            <span v-if="u.id === selectedId" class="badge in-use">in use</span>
+          </span>
+          <div class="row-actions">
+            <button
+              v-if="u.id !== selectedId"
+              class="link"
+              :disabled="busy"
+              @click="onSelect(u.id)"
+            >
+              use this one
+            </button>
+            <!-- Editable AND describable: a row whose driver we have no schema for
                can't be rendered as a form, so offer removal but not editing. -->
-          <button
-            v-if="u.editable && driverFor(u.driver)"
-            class="link"
-            :disabled="busy"
-            @click="onEdit(u)"
-          >
-            edit
-          </button>
-          <button v-if="u.editable" class="link danger" :disabled="busy" @click="onDelete(u)">
-            remove
-          </button>
-        </div>
-      </li>
-      <li class="device stacked">
-        <span class="ua">
-          <span class="name">Server default</span>
-          <span class="driver">follow whatever the admin has set</span>
-          <span v-if="selectedId === null" class="badge in-use">in use</span>
-        </span>
-        <div class="row-actions">
-          <button v-if="selectedId !== null" class="link" :disabled="busy" @click="onSelect(null)">
-            use this one
-          </button>
-        </div>
-      </li>
-    </ul>
+            <button
+              v-if="u.editable && driverFor(u.driver)"
+              class="link"
+              :disabled="busy"
+              @click="onEdit(u)"
+            >
+              edit
+            </button>
+            <button v-if="u.editable" class="link danger" :disabled="busy" @click="onDelete(u)">
+              remove
+            </button>
+          </div>
+        </li>
+        <li class="device stacked">
+          <span class="ua">
+            <span class="name">Server default</span>
+            <span class="driver">follow whatever the admin has set</span>
+            <span v-if="selectedId === null" class="badge in-use">in use</span>
+          </span>
+          <div class="row-actions">
+            <button
+              v-if="selectedId !== null"
+              class="link"
+              :disabled="busy"
+              @click="onSelect(null)"
+            >
+              use this one
+            </button>
+          </div>
+        </li>
+      </ul>
+    </template>
 
     <template v-if="editing && editingDriver">
       <h3 class="subhead">edit {{ editing.label }}</h3>
@@ -110,7 +140,7 @@
         </button>
       </p>
     </template>
-    <p v-else-if="!allowUserDefined" class="muted small">
+    <p v-else-if="!allowUserDefined && canChoose" class="muted small">
       This server doesn’t allow personal uploaders — you can pick from the ones above.
     </p>
 
@@ -124,12 +154,18 @@ import { ref, computed, onMounted } from 'vue';
 import { api } from '../../api.js';
 import RegistryPane from './RegistryPane.vue';
 import UploaderConfigForm from '../UploaderConfigForm.vue';
+import { hasUploaderChoice } from '../../utils/uploaders.js';
 import type { Uploader, UploaderDriver } from '../../utils/uploaders.js';
 
 const uploaders = ref<Uploader[]>([]);
 const drivers = ref<UploaderDriver[]>([]);
 const selectedId = ref<number | null>(null);
 const allowUserDefined = ref(true);
+
+const canChoose = computed(() => hasUploaderChoice(uploaders.value.length, allowUserDefined.value));
+
+/** Where files actually go when there's nothing to choose. */
+const soleUploaderLabel = computed(() => uploaders.value[0]?.label ?? 'this server’s uploader');
 
 const loading = ref(false);
 const loaded = ref(false);

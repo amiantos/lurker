@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import fs from 'node:fs';
 import sharp, { type Metadata } from 'sharp';
 import { canScrubInPlace, scrubMetadata } from './metadataScrub.js';
 
@@ -44,17 +45,27 @@ export function extensionFor(mime: string, fallback = 'bin'): string {
 // Animated images (sharp.metadata.pages > 1) bypass the resize/re-encode and
 // are returned verbatim, which is a hard requirement so reaction GIFs / animated
 // WebP / APNG don't lose animation on the way through Lurker.
+// `input` is a path (an upload's temp file) or a Buffer. sharp accepts either, so
+// the image path never has to read a file into the heap just to hand it over; the
+// scrub/passthrough branches below do read the bytes, but only after sharp has
+// confirmed it's an image, which the size cap already bounds.
 export async function optimize(
-  buffer: Buffer,
+  input: Buffer | string,
   {
     maxDim,
     quality,
     rasterOnly = false,
   }: { maxDim: number; quality: number; rasterOnly?: boolean },
 ): Promise<OptimizeResult> {
+  // Only the passthrough/scrub branches need the bytes in memory; the resize path
+  // hands the path straight to sharp. Read lazily so an ordinary image upload
+  // never materializes its original file in the heap.
+  const readInput = async (): Promise<Buffer> =>
+    typeof input === 'string' ? fs.promises.readFile(input) : input;
+
   let meta: Metadata;
   try {
-    meta = await sharp(buffer).metadata();
+    meta = await sharp(input).metadata();
   } catch (cause) {
     const err = new Error(
       `unable to read image: ${(cause as Error).message || String(cause)}`,
@@ -77,7 +88,7 @@ export async function optimize(
     // animated WebP/APNG can carry GPS EXIF. Scrub in-container (no re-encode)
     // for the formats we can do surgically.
     if (canScrubInPlace(meta.format)) {
-      const scrubbed = scrubMetadata(buffer, meta.format);
+      const scrubbed = scrubMetadata(await readInput(), meta.format);
       return {
         buffer: scrubbed,
         mime: fmt.mime,
@@ -95,7 +106,7 @@ export async function optimize(
     // through to the static single-frame encode below. Either way the metadata
     // is gone; we never pass an un-scrubbed image through.
     try {
-      const out = await sharp(buffer, { animated: true })
+      const out = await sharp(input, { animated: true })
         .toFormat(meta.format)
         .toBuffer({ resolveWithObject: true });
       return {
@@ -126,7 +137,7 @@ export async function optimize(
       throw err;
     }
     // Strip <metadata>/comments from the vector without rasterizing it.
-    const scrubbed = scrubMetadata(buffer, meta.format);
+    const scrubbed = scrubMetadata(await readInput(), meta.format);
     return {
       buffer: scrubbed,
       mime: fmt.mime,
@@ -138,7 +149,7 @@ export async function optimize(
     };
   }
 
-  const out = await sharp(buffer)
+  const out = await sharp(input)
     .rotate()
     .resize({
       width: maxDim,
@@ -160,9 +171,9 @@ export async function optimize(
   };
 }
 
-export async function thumbnail(buffer: Buffer): Promise<Buffer> {
+export async function thumbnail(input: Buffer | string): Promise<Buffer> {
   // Force first frame for animated inputs; cover-crop to a square JPEG.
-  return sharp(buffer, { animated: false })
+  return sharp(input, { animated: false })
     .rotate()
     .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
     .jpeg({ quality: 80 })

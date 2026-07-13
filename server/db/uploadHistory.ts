@@ -39,6 +39,11 @@ export interface UploadListRow {
   // 1 once the control plane has moderated the upload away. The row stays so the
   // owner sees a tombstone, but its bytes are gone from storage.
   removed: number;
+  // Which configured uploader produced the row, and whether the driver handed
+  // back a delete handle — the API derives the row's `can_delete` from these
+  // (never shipping the ref itself to the client).
+  uploader_config_id: number | null;
+  has_ref: number;
 }
 
 /** Fields passed to insertUpload. */
@@ -98,7 +103,8 @@ export function listUploads(
       .prepare(
         `
       SELECT id, provider, url, filename, mime, byte_size, width, height, created_at,
-             thumbnail_url, removed, (thumbnail IS NOT NULL) AS has_thumbnail
+             thumbnail_url, removed, uploader_config_id,
+             (thumbnail IS NOT NULL) AS has_thumbnail, (ref IS NOT NULL) AS has_ref
       FROM upload_history
       WHERE user_id = ? AND id < ?
       ORDER BY id DESC
@@ -111,7 +117,8 @@ export function listUploads(
     .prepare(
       `
     SELECT id, provider, url, filename, mime, byte_size, width, height, created_at,
-           thumbnail_url, removed, (thumbnail IS NOT NULL) AS has_thumbnail
+           thumbnail_url, removed, uploader_config_id,
+           (thumbnail IS NOT NULL) AS has_thumbnail, (ref IS NOT NULL) AS has_ref
     FROM upload_history
     WHERE user_id = ?
     ORDER BY id DESC
@@ -140,12 +147,13 @@ export interface UploadReapRow {
   uploader_config_id: number | null;
   ref: string | null;
   provider: string;
+  removed: number;
 }
 
 export function getUploadForReap(userId: number, id: number): UploadReapRow | undefined {
   return db
     .prepare(
-      'SELECT uploader_config_id, ref, provider FROM upload_history WHERE user_id = ? AND id = ?',
+      'SELECT uploader_config_id, ref, provider, removed FROM upload_history WHERE user_id = ? AND id = ?',
     )
     .get(userId, Number(id)) as UploadReapRow | undefined;
 }

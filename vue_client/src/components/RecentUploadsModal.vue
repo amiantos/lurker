@@ -6,6 +6,7 @@
 <template>
   <AppModal word="uploads" title="recent uploads" size="xl" fill-height @close="$emit('close')">
     <p v-if="uploads.listError" class="error">{{ uploads.listError }}</p>
+    <p v-if="deleteError" class="error">{{ deleteError }}</p>
 
     <div ref="listEl" class="list-wrap" @scroll="onScroll">
       <ul v-if="recentRows.length" class="list">
@@ -31,7 +32,7 @@
               loading="lazy"
             />
             <div v-else class="thumb thumb-placeholder">
-              <i class="fa-solid fa-file-lines fa-2x"></i>
+              <i class="fa-solid fa-2x" :class="iconForMime(u.mime)"></i>
             </div>
           </a>
           <div class="meta">
@@ -41,6 +42,20 @@
             <div class="sub">{{ metaLine(u) }}</div>
           </div>
           <div class="row-actions">
+            <!-- Delete destroys the stored file. Offered only where that's true
+                 (can_delete) — there is no remove-the-record-only action. -->
+            <button
+              v-if="!u.removed && u.can_delete"
+              class="link delete"
+              :disabled="deletingId !== null"
+              @click="onDelete(u)"
+              title="delete file"
+              aria-label="delete file"
+            >
+              <i
+                :class="deletingId === u.id ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-trash'"
+              ></i>
+            </button>
             <!-- A removed upload's URL is dead, so there's nothing to copy. -->
             <button
               v-if="!u.removed"
@@ -57,7 +72,7 @@
       </ul>
       <p v-else-if="uploads.loading && !uploads.loaded" class="empty">Loading…</p>
       <p v-else-if="uploads.loaded" class="empty">
-        No uploads yet. Paste, drop, or pick an image in the input.
+        No uploads yet. Paste, drop, or pick a file in the input.
       </p>
       <p v-if="uploads.loading && uploads.loaded" class="empty small">Loading more…</p>
     </div>
@@ -70,6 +85,7 @@ import AppModal from './AppModal.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem } from '../stores/uploads.js';
 import { formatRelative } from '../utils/timestamp.js';
+import { iconForMime } from '../utils/uploaders.js';
 
 // The server response can include extra metadata fields not tracked in the
 // store's base UploadItem shape (they come from the GET /api/uploads list).
@@ -89,6 +105,8 @@ const uploads = useUploadsStore();
 const recentRows = computed(() => uploads.recent as UploadRow[]);
 const listEl = ref<HTMLDivElement | null>(null);
 const copiedId = ref<number | null>(null);
+const deletingId = ref<number | null>(null);
+const deleteError = ref('');
 
 onMounted(() => {
   uploads.loadRecent().catch(() => {
@@ -114,6 +132,24 @@ async function onCopy(u: UploadRow) {
   } catch (_) {
     // Clipboard API can fail without a user-gesture context on Firefox/Safari;
     // the user can fall back to right-click-copy on the URL text.
+  }
+}
+
+async function onDelete(u: UploadRow) {
+  // One delete at a time: a second in-flight delete would fight over the single
+  // deletingId ref (spinner/disabled state desync). All delete buttons are
+  // disabled while one runs; this guard covers the pre-render window.
+  if (deletingId.value !== null) return;
+  if (!confirm(`Delete "${u.filename || u.url}"? The file is removed from storage.`)) return;
+  deletingId.value = u.id;
+  deleteError.value = '';
+  try {
+    await uploads.remove(u.id);
+  } catch (e: any) {
+    // The bytes weren't destroyed, so the row stays and the reason surfaces.
+    deleteError.value = e.message || 'delete failed';
+  } finally {
+    deletingId.value = null;
   }
 }
 
@@ -233,12 +269,20 @@ function metaLine(u: UploadRow): string {
   align-items: center;
   margin-left: var(--space-6);
 }
-/* Copy is the lone row action now, so it stays in its own column on every
-   width — a single icon needs no separate mobile bar. Padding gives it a
-   comfortable tap target. */
-.copy {
+/* Two icon actions at most (copy + delete) — they fit the actions column on
+   every width, no separate mobile bar needed. Padding gives each a comfortable
+   tap target. */
+.copy,
+.delete {
   padding: var(--space-3) var(--space-4);
   font-size: var(--icon-md);
+}
+.delete:hover {
+  color: var(--bad);
+}
+.delete:disabled {
+  color: var(--fg-muted);
+  cursor: default;
 }
 .copy.copied {
   color: var(--good);

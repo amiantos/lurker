@@ -195,7 +195,7 @@ describe('reconcileLegacyUploadSettings (self-host)', () => {
 
     const rows = userRows(u.id);
     expect(rows).toHaveLength(1);
-    expect(rows[0].driver).toBe('hoarder');
+    expect(rows[0].driver).toBe('dropper');
     expect(JSON.parse(rows[0].config_json)).toEqual({ url: 'https://u.example' });
     expect(rows[0].secrets_enc).toContain('k-secret');
     expect(rows[0].config_json).not.toContain('k-secret');
@@ -219,7 +219,7 @@ describe('reconcileLegacyUploadSettings (self-host)', () => {
 
     const rows = userRows(u.id);
     expect(rows).toHaveLength(1);
-    expect(rows[0].driver).toBe('hoarder');
+    expect(rows[0].driver).toBe('dropper');
     expect(rows[0].secrets_enc).toContain('late-key');
     // Repointed off x0 and onto their own Hoarder — the bytes stop leaking public.
     expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(rows[0].id);
@@ -292,5 +292,86 @@ describe('reconcileLegacyUploadSettings (self-host)', () => {
     const local = instanceRows().find((r) => r.driver === 'local')!;
     expect(getUserSettings(u.id)['uploads.uploader_id']).toBe(local.id);
     expect(userRows(u.id)).toHaveLength(0); // zero-config: no user row needed
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #537: the driver id `hoarder` is renamed to `dropper`. It's persisted in two
+// tables and in old .lurk exports, so this is a data migration, not a rename.
+describe('renameHoarderDriver (#537)', () => {
+  let renameHoarderDriver: typeof import('./uploaderConfigSeed.js').renameHoarderDriver;
+  let getDriver: typeof import('../services/uploadProviders/index.js').getDriver;
+
+  beforeAll(async () => {
+    renameHoarderDriver = (await import('./uploaderConfigSeed.js')).renameHoarderDriver;
+    getDriver = (await import('../services/uploadProviders/index.js')).getDriver;
+  });
+
+  const uploaderDrivers = (): string[] =>
+    (
+      db.prepare(`SELECT driver FROM uploader_config ORDER BY id`).all() as { driver: string }[]
+    ).map((r) => r.driver);
+
+  it('rewrites the id in uploader_config AND in upload_history', async () => {
+    const user = createUser(`rename-${Date.now()}`);
+    db.prepare(
+      `INSERT INTO uploader_config (scope, owner_user_id, driver, label, config_json, secrets_enc,
+         enabled, offered_to_users, locked, is_default)
+       VALUES ('user', ?, 'hoarder', 'Hoarder', '{"url":"https://h.test"}', NULL, 1, 0, 0, 0)`,
+    ).run(user.id);
+    db.prepare(
+      `INSERT INTO upload_history (user_id, provider, url, mime, byte_size)
+       VALUES (?, 'hoarder', 'https://cdn.test/a.png', 'image/png', 10)`,
+    ).run(user.id);
+
+    renameHoarderDriver(db);
+
+    expect(uploaderDrivers()).toContain('dropper');
+    expect(uploaderDrivers()).not.toContain('hoarder');
+    // The history string is denormalized and display-only — but leaving it would
+    // show "hoarder" for old uploads and "dropper" for new ones in the same list.
+    const provider = (
+      db.prepare(`SELECT provider FROM upload_history WHERE user_id = ?`).get(user.id) as {
+        provider: string;
+      }
+    ).provider;
+    expect(provider).toBe('dropper');
+  });
+
+  it('is idempotent and self-terminating (it runs on every boot)', () => {
+    const before = uploaderDrivers();
+    renameHoarderDriver(db);
+    renameHoarderDriver(db);
+    expect(uploaderDrivers()).toEqual(before);
+  });
+
+  // The catastrophe this rename can cause, and the reason findHostedRow matches
+  // BOTH ids: if a hosted row still said `hoarder` and the lookup only knew
+  // `dropper`, the seed would insert a SECOND locked is_default row and trip the
+  // one-default unique index — failing the seed on every boot thereafter. The seed
+  // re-runs on any future SCHEMA_VERSION bump, so this is reachable.
+  it('a not-yet-migrated hosted row is still found, so the seed never duplicates it', async () => {
+    const { seedUploaderConfig: seed } = await import('./uploaderConfigSeed.js');
+    db.prepare(`DELETE FROM uploader_config WHERE scope = 'instance'`).run();
+    db.prepare(
+      `INSERT INTO uploader_config (scope, owner_user_id, driver, label, config_json, secrets_enc,
+         enabled, offered_to_users, locked, is_default)
+       VALUES ('instance', NULL, 'hoarder', 'Hosted uploader', '{}', NULL, 1, 1, 1, 1)`,
+    ).run();
+
+    // Re-running the seed against the old id must NOT insert a second locked row.
+    expect(() => seed(db)).not.toThrow();
+    const locked = db
+      .prepare(`SELECT COUNT(*) AS n FROM uploader_config WHERE scope = 'instance' AND locked = 1`)
+      .get() as { n: number };
+    expect(locked.n).toBe(1);
+  });
+
+  // A .lurk export taken before the rename can be imported at any time — including
+  // between boots, when the migration hasn't swept it up yet. The row still has to
+  // resolve to a driver, or that user's uploads simply stop working.
+  it('the old id still resolves to a driver, so an old export is never stranded', () => {
+    expect(getDriver('hoarder')).toBe(getDriver('dropper'));
+    expect(getDriver('dropper')?.driver).toBe('dropper');
   });
 });

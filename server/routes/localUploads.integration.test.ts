@@ -62,16 +62,6 @@ afterAll(() => {
   ctx.cleanup();
 });
 
-// The byte reap is fire-and-forget (the DELETE responds before the async unlink
-// finishes), so poll for its effect rather than assume a single tick.
-async function waitUntil(fn: () => boolean, timeoutMs = 2000): Promise<void> {
-  const start = Date.now();
-  while (!fn()) {
-    if (Date.now() - start > timeoutMs) throw new Error('condition not met in time');
-    await new Promise((r) => setTimeout(r, 10));
-  }
-}
-
 describe('local uploader — full round trip', () => {
   it('uploads to disk, serves it back, and reaps bytes on delete', async () => {
     const up = await agent
@@ -99,10 +89,10 @@ describe('local uploader — full round trip', () => {
     expect(served.headers['x-content-type-options']).toBe('nosniff');
     expect(served.headers['content-type']).toMatch(/^image\//);
 
-    // Deleting the history row reaps the on-disk file (orphan reap).
+    // Delete destroys the bytes BEFORE dropping the row (decision 8), so by the
+    // time the response lands the file is gone from disk.
     const del = await agent.delete(`/api/uploads/${up.body.id}`);
     expect(del.status).toBe(200);
-    await waitUntil(() => !fs.existsSync(local.resolveDiskPath(key)));
     expect(fs.existsSync(local.resolveDiskPath(key))).toBe(false);
   });
 });

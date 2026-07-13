@@ -95,3 +95,71 @@ export function missingRequired(
     return !String(values[f.key] ?? '').trim();
   });
 }
+
+// What the upload route accepts: images, text, and the media we can strip metadata
+// from (mp4/mov/m4v/m4a/mp3 — see server/services/contentClass.ts). ONE definition,
+// so the file picker's `accept` and the drag-drop gate can't drift apart.
+//
+// Extensions are listed alongside the MIME types because browsers disagree about
+// what they call an .m4a (audio/x-m4a vs audio/mp4) and macOS greys out anything
+// the attribute doesn't match, with no "All Files" escape.
+export const ACCEPTED_FILE_TYPES = [
+  'image/*',
+  'text/plain',
+  '.txt',
+  'video/mp4',
+  'video/quicktime',
+  'video/x-m4v',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/x-m4a',
+  '.mp4',
+  '.mov',
+  '.m4v',
+  '.m4a',
+  '.mp3',
+].join(',');
+
+// Deliberately LOOSER than the accepted set: the drop/paste gates exist to ignore
+// things that obviously aren't uploads, not to enforce policy. The server is the
+// gate, and its 415 names the problem ("webm files are not accepted — Lurker takes
+// …"), which is far more useful than a drop that silently does nothing — the bug
+// this replaces.
+export function isUploadableType(mime: string): boolean {
+  return (
+    mime.startsWith('image/') ||
+    mime.startsWith('audio/') ||
+    mime.startsWith('video/') ||
+    mime === 'text/plain'
+  );
+}
+
+/** A Font Awesome icon for an upload with no thumbnail, from its MIME. The recent-
+ *  uploads browser used one generic page glyph for everything, so a PDF, a song and
+ *  a video were indistinguishable. */
+export function iconForMime(mime: string | null | undefined): string {
+  const m = mime || '';
+  if (m.startsWith('video/')) return 'fa-file-video';
+  if (m.startsWith('audio/')) return 'fa-file-audio';
+  if (m.startsWith('image/')) return 'fa-file-image';
+  if (m.startsWith('text/')) return 'fa-file-lines';
+  return 'fa-file';
+}
+
+/**
+ * Is there an actual choice of upload destination to make?
+ *
+ * A picker with one option isn't a picker. On the hosted service there is exactly
+ * one uploader (the locked dropper) and personal ones are disabled, so the settings
+ * pane offered the SAME destination twice — once by name, and once as the "Server
+ * default" pseudo-row that resolves to it — and asked the user to choose between
+ * them.
+ *
+ * ⚠ `allowUserDefined` counts even when there's only one uploader: you can add a
+ * second, so the picker has a job to do. And a locked-down self-host that offers
+ * several instance uploaders also has one. The ONLY case with no choice is "a single
+ * destination that you cannot add to" — which is exactly the hosted cell.
+ */
+export function hasUploaderChoice(uploaderCount: number, allowUserDefined: boolean): boolean {
+  return allowUserDefined || uploaderCount > 1;
+}

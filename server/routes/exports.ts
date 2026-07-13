@@ -129,6 +129,9 @@ const IMPORT_TMP_DIR = path.join(os.tmpdir(), 'lurker-imports');
 fs.mkdirSync(IMPORT_TMP_DIR, { recursive: true, mode: 0o700 });
 const upload = multer({
   dest: IMPORT_TMP_DIR,
+  // See routes/uploads.ts: busboy's default param charset is latin-1, which mangles
+  // any non-ASCII filename.
+  defParamCharset: 'utf8',
   limits: { fileSize: HARD_IMPORT_LIMIT, files: 1 },
 });
 

@@ -22,6 +22,7 @@ import fs from 'fs';
 import path from 'path';
 import { resolveDataDir } from '../../utils/dataDir.js';
 import { buildObjectKey, randomId } from './objectKey.js';
+import { moveTo, sizeOf, type UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 export const driver = 'local';
@@ -32,7 +33,7 @@ export const capabilities: DriverCapabilities = {
   storesRemotely: false,
   supportsDelete: true,
   mintsKeys: true,
-  acceptsContentClasses: ['image', 'text'],
+  acceptsContentClasses: ['image', 'text', 'media'],
   selfHostOnly: true,
 };
 
@@ -65,7 +66,7 @@ export function resolveDiskPath(key: string, storageDir = resolveStorageDir()): 
 }
 
 export async function upload(
-  buffer: Buffer,
+  source: UploadSource,
   { filename }: UploadMeta,
   _config: Record<string, string>,
 ): Promise<UploadResult> {
@@ -75,13 +76,16 @@ export async function upload(
   const ext = filename.split('.').pop() || 'bin';
   const key = buildObjectKey({ ext });
   const full = resolveDiskPath(key, storageDir);
+  const bytes = sizeOf(source);
   await fs.promises.mkdir(path.dirname(full), { recursive: true });
-  // Write to a temp sibling then rename so a crash mid-write never leaves a
-  // half-written file at the served key. (The whole buffer is already in memory
-  // via multer.memoryStorage — there's no streaming/abort path to clean up.)
+  // Land the bytes at a temp sibling, then rename into place, so a crash mid-write
+  // never leaves a half-written file at the served key. moveTo does the right
+  // thing for either source shape: a passthrough upload is already a file on disk
+  // (multer's temp), so it's a rename — the bytes never enter the heap at all;
+  // an optimized image is a small buffer, so it's a write.
   const tmp = `${full}.tmp-${randomId()}`;
   try {
-    await fs.promises.writeFile(tmp, buffer, { mode: 0o644 });
+    await moveTo(source, tmp);
     await fs.promises.rename(tmp, full);
   } catch (err) {
     await fs.promises.unlink(tmp).catch(() => {});
@@ -89,7 +93,7 @@ export async function upload(
       code: 'PROVIDER_ERROR',
     });
   }
-  return { url: `/uploads/local/${key}`, ref: key, bytes: buffer.length };
+  return { url: `/uploads/local/${key}`, ref: key, bytes };
 }
 
 /** Orphan reap: unlink the on-disk file when its history row is deleted. Missing

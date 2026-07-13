@@ -23,6 +23,8 @@
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { USER_AGENT } from '../../utils/userAgent.js';
+import { putSource, isOk } from './multipart.js';
+import { hashOf, type UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 export const driver = 's3';
@@ -30,10 +32,10 @@ export const label = 'S3 / R2';
 export const capabilities: DriverCapabilities = {
   creatable: true,
   storesRemotely: true,
-  supportsDelete: false,
+  supportsDelete: true,
   // WE construct the object key (unlike a remote host that names the file).
   mintsKeys: true,
-  acceptsContentClasses: ['image', 'text', 'binary'],
+  acceptsContentClasses: ['image', 'text', 'media'],
   selfHostOnly: true,
 };
 export const configSchema: ConfigField[] = [
@@ -135,35 +137,45 @@ export function buildObjectKey(
   return segments.join('/');
 }
 
-export interface SignedPut {
+export interface SignedRequest {
   url: string;
   headers: Record<string, string>;
 }
 
-/** Build a SigV4-signed PUT for one object. Pure given `now`, so tests can pin
- *  the clock and assert determinism. */
-export function signPutObject(
+/** Build a SigV4-signed request for one object. Pure given `now`, so tests can
+ *  pin the clock and assert determinism. PUT carries the payload plus the
+ *  cache/content headers a store may validate; DELETE signs an empty payload
+ *  and only the mandatory host/x-amz headers. */
+export function signObjectRequest(
   {
+    method,
     endpoint,
     bucket,
     key,
-    payload,
+    payload = Buffer.alloc(0),
+    payloadHash: precomputedHash,
     contentType,
     region,
     accessKeyId,
     secretAccessKey,
   }: {
+    method: 'PUT' | 'DELETE';
     endpoint: string;
     bucket: string;
     key: string;
-    payload: Buffer;
-    contentType: string;
+    payload?: Buffer;
+    // Hex sha256 of the body, when the caller already has it. SigV4 needs the
+    // payload hash to sign, but an upload's payload may be a 200 MB temp file we
+    // refuse to read into memory — so the caller streams it through a hash first
+    // (source.hashOf) and passes the digest here instead of the bytes.
+    payloadHash?: string;
+    contentType?: string;
     region: string;
     accessKeyId: string;
     secretAccessKey: string;
   },
   now: Date = new Date(),
-): SignedPut {
+): SignedRequest {
   const base = endpoint.replace(/\/+$/, '');
   const url = new URL(`${base}/${bucket}/${key}`);
   const host = url.host;
@@ -175,23 +187,25 @@ export function signPutObject(
     .replace(/\.\d{3}Z$/, 'Z');
   const dateStamp = amzDate.slice(0, 8);
   const scope = `${dateStamp}/${region}/s3/aws4_request`;
-  const payloadHash = sha256hex(payload);
+  const payloadHash = precomputedHash ?? sha256hex(payload);
 
   // Signed headers, sorted by lowercase name. Everything we send that the server
   // may validate is signed — including cache-control, so a store can't reject it
   // as an unsigned x-amz-adjacent header surprise.
   const headers: Record<string, string> = {
-    'cache-control': 'public, max-age=31536000, immutable',
-    'content-type': contentType,
     host,
     'x-amz-content-sha256': payloadHash,
     'x-amz-date': amzDate,
   };
+  if (method === 'PUT') {
+    headers['cache-control'] = 'public, max-age=31536000, immutable';
+    headers['content-type'] = contentType || 'application/octet-stream';
+  }
   const signedHeaderNames = Object.keys(headers).sort();
   const canonicalHeaders = signedHeaderNames.map((h) => `${h}:${headers[h].trim()}\n`).join('');
   const signedHeaders = signedHeaderNames.join(';');
 
-  const canonicalRequest = ['PUT', path, '', canonicalHeaders, signedHeaders, payloadHash].join(
+  const canonicalRequest = [method, path, '', canonicalHeaders, signedHeaders, payloadHash].join(
     '\n',
   );
 
@@ -222,7 +236,7 @@ function requireField(config: Record<string, string>, field: string): string {
 }
 
 export async function upload(
-  buffer: Buffer,
+  source: UploadSource,
   { filename, mime, kind }: UploadMeta,
   config: Record<string, string> = {},
 ): Promise<UploadResult> {
@@ -235,29 +249,69 @@ export async function upload(
   const region = (config.region || '').trim() || 'auto';
 
   const key = buildObjectKey(filename, { kind, prefix: config.key_prefix });
-  const signed = signPutObject({
+  // SigV4 signs the payload hash, so the bytes get read twice: once to hash
+  // (streamed, constant memory), once to send (streamed, constant memory). Two
+  // passes over a warm temp file beats holding it in the heap. UNSIGNED-PAYLOAD
+  // would avoid the first pass but changes the signing contract — not this PR.
+  const payloadHash = await hashOf(source);
+  const signed = signObjectRequest({
+    method: 'PUT',
     endpoint,
     bucket,
     key,
-    payload: buffer,
+    payloadHash,
     contentType: mime,
     region,
     accessKeyId,
     secretAccessKey,
   });
 
-  const resp = await fetch(signed.url, {
-    method: 'PUT',
-    headers: signed.headers,
-    body: new Uint8Array(buffer),
-  });
+  const resp = await putSource(signed.url, source, { headers: signed.headers });
 
-  if (!resp.ok) {
-    const text = (await resp.text()).slice(0, 200);
+  if (!isOk(resp)) {
+    const text = resp.text.slice(0, 200);
     throw Object.assign(new Error(`s3 upload failed: ${resp.status} ${text}`), {
       code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });
   }
-  // key is the delete handle if delete is ever added; harmless to surface now.
+  // key is the delete handle consumed by delete() below.
   return { url: `${publicBase.replace(/\/+$/, '')}/${key}`, ref: key };
 }
+
+/** Remove one object by its key (the ref upload() returned). S3 DeleteObject is
+ *  idempotent by protocol — deleting a key that's already gone returns 204 — so
+ *  the "already deleted counts as success" contract holds with NO 404
+ *  carve-out. Deliberately so: a 404 here means the request never reached a
+ *  real DeleteObject handler (repointed endpoint, wrong bucket), and swallowing
+ *  it would drop the record while the original object lives on. */
+async function deleteObject(ref: string, config: Record<string, string> = {}): Promise<void> {
+  const endpoint = requireField(config, 'endpoint');
+  const bucket = requireField(config, 'bucket');
+  const accessKeyId = requireField(config, 'access_key_id');
+  const secretAccessKey = requireField(config, 'secret_access_key');
+  const region = (config.region || '').trim() || 'auto';
+
+  const signed = signObjectRequest({
+    method: 'DELETE',
+    endpoint,
+    bucket,
+    key: ref,
+    region,
+    accessKeyId,
+    secretAccessKey,
+  });
+
+  const resp = await fetch(signed.url, {
+    method: 'DELETE',
+    headers: signed.headers,
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!resp.ok) {
+    const text = (await resp.text()).slice(0, 200);
+    throw Object.assign(new Error(`s3 delete failed: ${resp.status} ${text}`), {
+      code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
+    });
+  }
+}
+
+export { deleteObject as delete };

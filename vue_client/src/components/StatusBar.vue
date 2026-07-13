@@ -68,8 +68,8 @@
           type="button"
           class="tool-btn"
           :disabled="!sendable"
-          title="upload image"
-          aria-label="upload image"
+          title="upload file"
+          aria-label="upload file"
           @click="onPickFile"
         >
           <i class="fa-solid fa-paperclip"></i>

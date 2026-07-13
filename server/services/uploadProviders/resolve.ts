@@ -131,10 +131,10 @@ function lockedButUnconfigured(
 
 /**
  * Load a driver + its decrypted, policy-stripped config by uploader_config id,
- * skipping the user/policy allow-set checks. Used by the delete path to reap the
- * stored bytes of an upload the user already owns (ownership was checked when the
- * history row was fetched). Returns null when the config row or its driver is
- * gone — the caller then just drops the history row without a byte reap.
+ * skipping the user/policy allow-set checks. Used by the delete path to destroy
+ * the stored bytes of an upload the user already owns (ownership was checked
+ * when the history row was fetched). Returns null when the config row or its
+ * driver is gone — such rows are simply not deletable.
  */
 export function loadDriverForRef(
   configId: number,
@@ -145,6 +145,20 @@ export function loadDriverForRef(
   if (!driver) return null;
   const { driverConfig } = splitPolicy(resolvedConfig(row));
   return { driver, driverConfig };
+}
+
+/**
+ * THE deletability predicate: can this driver, with this config, destroy stored
+ * bytes? Row-level deletability is this ∧ a captured ref. Every projection of
+ * "deletable" (POST response, GET list, the DELETE gate) goes through here so
+ * the client's trash button and the route's refusal can never disagree.
+ */
+export function deletableWith(driver: UploadDriver, driverConfig: Record<string, string>): boolean {
+  return (
+    driver.capabilities.supportsDelete &&
+    typeof driver.delete === 'function' &&
+    (driver.canDeleteWith ? driver.canDeleteWith(driverConfig) : true)
+  );
 }
 
 export function resolveUploader(input: ResolveInput): ResolvedUploader {

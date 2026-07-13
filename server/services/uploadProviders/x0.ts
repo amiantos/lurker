@@ -5,6 +5,8 @@
 // body is the bare URL with a trailing newline.
 
 import { USER_AGENT } from '../../utils/userAgent.js';
+import { postMultipart } from './multipart.js';
+import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 const ENDPOINT = 'https://x0.at/';
@@ -15,24 +17,21 @@ export const capabilities: DriverCapabilities = {
   storesRemotely: true,
   supportsDelete: false,
   mintsKeys: false,
-  acceptsContentClasses: ['image', 'text'],
+  acceptsContentClasses: ['image', 'text', 'media'],
 };
 export const configSchema: ConfigField[] = [];
 
 export async function upload(
-  buffer: Buffer,
+  source: UploadSource,
   { filename, mime }: UploadMeta,
 ): Promise<UploadResult> {
-  const form = new FormData();
-  form.append('file', new Blob([new Uint8Array(buffer)], { type: mime }), filename);
-
-  const resp = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'User-Agent': USER_AGENT },
-    body: form,
-  });
-  const text = (await resp.text()).trim();
-  if (!resp.ok) {
+  const resp = await postMultipart(
+    ENDPOINT,
+    [{ name: 'file', filename, contentType: mime, source }],
+    { headers: { 'User-Agent': USER_AGENT } },
+  );
+  const text = resp.text.trim();
+  if (resp.status < 200 || resp.status >= 300) {
     throw Object.assign(new Error(`x0.at upload failed: ${resp.status} ${text.slice(0, 200)}`), {
       code: 'PROVIDER_ERROR',
     });
