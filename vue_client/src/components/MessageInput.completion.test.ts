@@ -12,8 +12,8 @@
 // Tab cycle that dead-ended on the first match because the commit appended a
 // space that terminated the token.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -29,7 +29,10 @@ vi.mock('../composables/useSocket.js', () => ({
 }));
 
 const CHANNELS = ['#apple', '#mango', '#zebra'];
-const MEMBERS = ['alice', 'alexis', 'bob', 'me'];
+// `mallory` exists so the self-exclusion test has a positive control: without a
+// second m-nick, "your own nick isn't offered" and "completion did nothing at
+// all" produce identical text and the assertion can't tell them apart.
+const MEMBERS = ['alice', 'alexis', 'bob', 'mallory', 'me'];
 
 function seedStores(activeTarget = '#zebra', recent: string[] = []) {
   const networks = useNetworksStore();
@@ -54,8 +57,15 @@ function seedStores(activeTarget = '#zebra', recent: string[] = []) {
   return { networks, buffers, recentBuffers };
 }
 
+// Mounted composers are torn down in afterEach: MessageInput's onMounted adds a
+// window listener and registers itself with setComposerOverlayHandlers — module
+// singletons — so a leaked mount would leave the *previous* test's composer
+// wired to the overlay handlers.
+let mounted: VueWrapper[] = [];
+
 async function mountComposer() {
   const wrapper = mount(MessageInput, { attachTo: document.body });
+  mounted.push(wrapper);
   await flush();
   const textarea = wrapper.find('textarea');
   expect(textarea.exists()).toBe(true);
@@ -87,6 +97,11 @@ async function tab(el: HTMLTextAreaElement, opts: { shift?: boolean } = {}) {
 describe('MessageInput Tab-completion', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+  });
+
+  afterEach(() => {
+    for (const wrapper of mounted) wrapper.unmount();
+    mounted = [];
   });
 
   describe('channels', () => {
@@ -191,13 +206,33 @@ describe('MessageInput Tab-completion', () => {
     });
 
     it('never offers your own nick', async () => {
+      // Both m-nicks match "@m"; only mallory may be offered. The positive half
+      // of this assertion matters as much as the negative one — with `me` as the
+      // sole m-nick, "self was correctly skipped" and "completion did nothing"
+      // would leave identical text.
       seedStores('#zebra');
       const { el } = await mountComposer();
 
       await type(el, '@m');
       await tab(el);
 
-      expect(el.value).not.toContain('me');
+      expect(el.value).toBe('mallory: ');
+    });
+
+    it('completes an @-token in place once the picker is dismissed', async () => {
+      // The picker owns Tab only while it's open. Escape closes it, and Tab then
+      // falls through to in-place completion — which used to match nothing,
+      // because it stripped the '#' sigil off channels but left the '@' on
+      // nicks, then asked for nicks beginning with '@'.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+
+      await type(el, 'hey @al');
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await flush();
+
+      await tab(el);
+      expect(el.value).toBe('hey alexis');
     });
   });
 

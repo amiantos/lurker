@@ -47,14 +47,20 @@ export function buildChannelCandidates(
   rank: (target: string) => number,
 ): string[] {
   const lower = prefix.toLowerCase();
-  return buffers
-    .map((b) => b.target ?? '')
-    .filter((t) => t.startsWith('#') && t.toLowerCase().startsWith(lower))
-    .toSorted((a, b) => {
-      const ra = rank(a);
-      const rb = rank(b);
-      // Equality first: two unvisited channels are both Infinity, and
-      // Infinity - Infinity is NaN — which would silently corrupt the sort.
-      return ra === rb ? a.localeCompare(b) : ra - rb;
-    });
+  return (
+    buffers
+      .map((b) => b.target ?? '')
+      .filter((t) => t.startsWith('#') && t.toLowerCase().startsWith(lower))
+      // Rank each candidate once up front rather than inside the comparator: a
+      // rank lookup is a linear scan of the MRU trail, and a comparator would
+      // repeat it twice per comparison — on every keystroke, since the picker's
+      // row list is a computed that rebuilds as you type.
+      .map((target) => ({ target, rank: rank(target) }))
+      .toSorted((a, b) =>
+        // Equality first: two unvisited channels both rank Infinity, and
+        // Infinity - Infinity is NaN — which would silently corrupt the sort.
+        a.rank === b.rank ? a.target.localeCompare(b.target) : a.rank - b.rank,
+      )
+      .map((c) => c.target)
+  );
 }

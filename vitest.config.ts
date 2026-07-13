@@ -17,7 +17,13 @@ export default defineConfig({
       {
         test: {
           name: 'server',
-          include: ['server/**/*.test.ts', 'shared/**/*.test.ts'],
+          // Catch-all, minus the client — deliberately not a list of the
+          // directories that happen to hold tests today. A project that includes
+          // only known paths doesn't *skip* a test file added outside them, it
+          // never collects it, and the run still reports all-green. Everything
+          // that isn't the client's belongs to this project.
+          include: ['**/*.{test,spec}.ts'],
+          exclude: ['**/node_modules/**', 'vue_client/**'],
           environment: 'node',
         },
       },

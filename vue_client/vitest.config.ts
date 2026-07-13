@@ -22,7 +22,10 @@ export default defineConfig({
   plugins: [vue()],
   test: {
     name: 'client',
-    include: ['src/**/*.test.ts'],
+    // Catch-all under src/, not a list of the directories that hold tests today:
+    // a file outside the pattern isn't skipped, it's never collected, and the
+    // run still passes.
+    include: ['src/**/*.{test,spec}.ts'],
     // Node stays the default — the store and pure-util suites are the bulk of
     // this project and don't want a DOM. Component tests opt in per-file with a
     // `// @vitest-environment happy-dom` docblock.

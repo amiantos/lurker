@@ -570,7 +570,6 @@ function endTypingTo(target: { networkId: number; target: string } | null | unde
 interface CompletionState {
   prefix: string;
   tail: string;
-  token: string;
   // What follows the pick: ': ' for a nick being addressed at line start, ' '
   // for a channel committed out of the ChannelPicker, '' otherwise. Stored on
   // the session rather than re-derived on each cycle so every Tab reproduces
@@ -744,19 +743,24 @@ function applyCompletion() {
 // the walk continues through exactly the list the user was just looking at —
 // and without that UI's display cap (50 rows in the popovers, 30 in the strip),
 // so a cycle can reach a candidate the list truncated.
-function commitCompletion(
-  start: number,
-  end: number,
-  pick: string,
-  suffix: string,
-  matches: string[],
-): void {
+// Named rather than positional: `start`/`end` and `pick`/`suffix` are adjacent
+// same-typed arguments, so a transposition would typecheck cleanly and only
+// show up as a garbled insertion at runtime.
+function commitCompletion(opts: {
+  // The span of `text` the pick replaces — the token under the cursor, sigil
+  // included ('@ali', '#ap').
+  start: number;
+  end: number;
+  pick: string;
+  suffix: string;
+  matches: string[];
+}): void {
+  const { start, end, pick, suffix, matches } = opts;
   const value = text.value;
   const found = matches.indexOf(pick);
   completion = {
     prefix: value.slice(0, start),
     tail: value.slice(end),
-    token: value.slice(start, end),
     suffix,
     // Fall back to the pick alone when it isn't in the rebuilt list (no network,
     // a member parting mid-keystroke): the insertion still lands, there's just
@@ -1179,7 +1183,12 @@ function onKeydown(e: KeyboardEvent): void {
   const networkId = active.value.networkId;
 
   const isChannel = token.startsWith('#');
-  const stripped = isChannel ? token.slice(1) : token;
+  // Strip the sigil off both forms. '#' is part of a channel name so it stays in
+  // the *result*, but neither sigil belongs in the *prefix* we match on: asking
+  // buildNickCandidates for nicks starting with '@' matches nothing, which is
+  // how `@ali`+Tab used to silently do nothing once the picker had been
+  // dismissed with Escape (the picker owns Tab only while it's open).
+  const stripped = isChannel || token.startsWith('@') ? token.slice(1) : token;
   const matches = isChannel
     ? buildChannelMatches(networkId, token)
     : buildNickMatches(buf, networkId, stripped);
@@ -1191,7 +1200,7 @@ function onKeydown(e: KeyboardEvent): void {
   // Channels never take one — the '#' is already part of the name.
   const suffix = !isChannel && isAtLineStart(prefix) ? ': ' : '';
 
-  completion = { prefix, tail, token, suffix, matches, index: 0, caret: 0 };
+  completion = { prefix, tail, suffix, matches, index: 0, caret: 0 };
   applyCompletion();
 }
 
@@ -1459,13 +1468,13 @@ function onPickerSelect(nick: string): void {
   const suffix = isAtLineStart(text.value.slice(0, pickerTokenStart)) ? ': ' : ' ';
   // pickerQuery is the token minus its '@' — the bare prefix buildNickMatches
   // expects. Read before commitCompletion, which closes the picker and clears it.
-  commitCompletion(
-    pickerTokenStart,
-    pickerTokenEnd,
-    nick,
+  commitCompletion({
+    start: pickerTokenStart,
+    end: pickerTokenEnd,
+    pick: nick,
     suffix,
-    buf && networkId != null ? buildNickMatches(buf, networkId, pickerQuery.value) : [],
-  );
+    matches: buf && networkId != null ? buildNickMatches(buf, networkId, pickerQuery.value) : [],
+  });
 }
 
 function onChannelPickerSelect(channel: string): void {
@@ -1479,13 +1488,13 @@ function onChannelPickerSelect(channel: string): void {
   // nicks' ': ', and the '#' is already part of the inserted name. The sent
   // `#channel` renders as a clickable join link for the recipient
   // (RenderSegments → openChannel), which is the whole point (issue #154).
-  commitCompletion(
-    channelPickerTokenStart,
-    channelPickerTokenEnd,
-    channel,
-    ' ',
-    networkId == null ? [] : buildChannelMatches(networkId, token),
-  );
+  commitCompletion({
+    start: channelPickerTokenStart,
+    end: channelPickerTokenEnd,
+    pick: channel,
+    suffix: ' ',
+    matches: networkId == null ? [] : buildChannelMatches(networkId, token),
+  });
 }
 
 function onStripSelect(nick: string): void {
@@ -1502,13 +1511,13 @@ function onStripSelect(nick: string): void {
   // The strip is prefix-less: its token is the bare word under the cursor, which
   // is already the prefix buildNickMatches wants (no '@' to strip).
   const token = text.value.slice(stripTokenStart, stripTokenEnd);
-  commitCompletion(
-    stripTokenStart,
-    stripTokenEnd,
-    nick,
+  commitCompletion({
+    start: stripTokenStart,
+    end: stripTokenEnd,
+    pick: nick,
     suffix,
-    buf && networkId != null ? buildNickMatches(buf, networkId, token) : [],
-  );
+    matches: buf && networkId != null ? buildNickMatches(buf, networkId, token) : [],
+  });
 }
 
 // Reply action from the message list's action bar: prepend `nick: ` to the
