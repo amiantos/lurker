@@ -566,10 +566,19 @@ interface CompletionState {
   prefix: string;
   tail: string;
   token: string;
-  isChannel: boolean;
-  atLineStart: boolean;
+  // What follows the pick: ': ' for a nick being addressed at line start, ' '
+  // for a channel committed out of the ChannelPicker, '' otherwise. Stored on
+  // the session rather than re-derived on each cycle so every Tab reproduces
+  // the same shape of insertion the first one made — the picker commits with a
+  // trailing space, in-place completion doesn't, and a cycle seeded from the
+  // picker has to keep the space it already put there.
+  suffix: string;
   matches: string[];
   index: number;
+  // Caret position after the last insertion, used to detect a session the user
+  // has since abandoned: if the caret has moved somewhere we didn't put it
+  // (a click, a tap), the prefix/tail offsets no longer describe the text and
+  // the session must not be applied.
   caret: number;
 }
 let completion: CompletionState | null = null;
@@ -696,7 +705,7 @@ function buildChannelMatches(networkId: number, prefix: string): string[] {
 function applyCompletion() {
   if (!completion || !completion.matches.length) return;
   const pick = completion.matches[completion.index];
-  const suffix = completion.atLineStart && !completion.isChannel ? ': ' : '';
+  const suffix = completion.suffix;
   // Tab-completion owns the input now; any open @-picker or mobile suggestion
   // strip would be stale (cycling suppresses onInput → refreshPicker doesn't
   // fire, so they wouldn't close on their own).
@@ -1097,6 +1106,14 @@ function onKeydown(e: KeyboardEvent): void {
   const el = inputEl.value;
   if (!el) return;
 
+  // A live session cycles — but only if the caret is still where the last
+  // insertion left it. A click or tap inside the textarea moves the caret
+  // without any keydown we'd see, which would leave prefix/tail pointing at
+  // offsets that no longer describe the text; applying the session then would
+  // rewrite the wrong span. Drop it and start a fresh completion from whatever
+  // token is under the cursor now.
+  if (completion && (el.selectionStart ?? -1) !== completion.caret) resetCompletion();
+
   if (completion) {
     const dir = e.shiftKey ? -1 : 1;
     const n = completion.matches.length;
@@ -1124,9 +1141,11 @@ function onKeydown(e: KeyboardEvent): void {
 
   const prefix = value.slice(0, start);
   const tail = value.slice(end);
-  const atLineStart = isAtLineStart(prefix);
+  // A nick at line start is being *addressed* and wants an opening ': '.
+  // Channels never take one — the '#' is already part of the name.
+  const suffix = !isChannel && isAtLineStart(prefix) ? ': ' : '';
 
-  completion = { prefix, tail, token, isChannel, atLineStart, matches, index: 0, caret: 0 };
+  completion = { prefix, tail, token, suffix, matches, index: 0, caret: 0 };
   applyCompletion();
 }
 
@@ -1410,23 +1429,41 @@ function onChannelPickerSelect(channel: string): void {
     closeChannelPicker();
     return;
   }
-  const before = value.slice(0, channelPickerTokenStart);
-  const after = value.slice(channelPickerTokenEnd);
-  // Channels just get a trailing space — there's no "addressing" form like
-  // nicks' ': ', and the '#' is already part of the inserted name. The sent
-  // `#channel` renders as a clickable join link for the recipient
-  // (RenderSegments → openChannel), which is the whole point (issue #154).
-  cycling = true;
-  text.value = before + channel + ' ' + after;
-  cycling = false;
-  closeChannelPicker();
-  queueMicrotask(() => {
-    const el = inputEl.value;
-    if (!el) return;
-    const caret = before.length + channel.length + 1;
-    el.focus();
-    el.setSelectionRange(caret, caret);
-  });
+  const token = value.slice(channelPickerTokenStart, channelPickerTokenEnd);
+  const networkId = active.value?.networkId;
+  // Commit through a Tab-completion session rather than a one-shot insert, so a
+  // repeat Tab keeps cycling. Confirming closes the picker and the insertion
+  // ends in a space, so the next Tab would find no token under the caret
+  // (tokenAtCursor stops at whitespace) and dead-end on the first match — `#`+Tab
+  // could never walk past it. The session carries the candidate list forward,
+  // so the walk continues through the very list the user was just looking at.
+  //
+  // Rebuilding the matches here rather than plumbing the picker's rows out is
+  // deliberate: same builder, same store, same order — but without the picker's
+  // 50-row display cap, so a cycle can reach a channel the popover truncated.
+  const matches = networkId == null ? [] : buildChannelMatches(networkId, token);
+  const index = matches.indexOf(channel);
+  completion = {
+    prefix: value.slice(0, channelPickerTokenStart),
+    tail: value.slice(channelPickerTokenEnd),
+    token,
+    // Channels just get a trailing space — there's no "addressing" form like
+    // nicks' ': ', and the '#' is already part of the inserted name. The sent
+    // `#channel` renders as a clickable join link for the recipient
+    // (RenderSegments → openChannel), which is the whole point (issue #154).
+    suffix: ' ',
+    // Fall back to the confirmed channel alone if it somehow isn't in the
+    // rebuilt list (an empty networkId, a buffer parted mid-keystroke): the
+    // insertion still lands, there's just nothing to cycle through.
+    matches: index === -1 ? [channel] : matches,
+    index: index === -1 ? 0 : index,
+    caret: 0,
+  };
+  // A pointer-selected row leaves focus on the popover; applyCompletion only
+  // sets the caret, so take focus back first or setSelectionRange lands on a
+  // textarea the user isn't in.
+  inputEl.value?.focus();
+  applyCompletion(); // inserts, closes the picker, and parks the caret
 }
 
 function onStripSelect(nick: string): void {
