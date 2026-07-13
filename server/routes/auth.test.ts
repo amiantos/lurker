@@ -3,8 +3,12 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Express } from 'express';
-import request from 'supertest';
-import { setupTestDb, createTestApp, createAuthedAgent } from '../test-utils/testApp.js';
+import {
+  setupTestDb,
+  createTestApp,
+  createAuthedAgent,
+  testRequest,
+} from '../test-utils/testApp.js';
 
 const ctx = setupTestDb('routes-auth');
 
@@ -19,7 +23,7 @@ afterAll(() => ctx.cleanup());
 
 describe('GET /api/auth/setup-status', () => {
   it('reports needsSetup=true on a fresh install (no users)', async () => {
-    const res = await request(app).get('/api/auth/setup-status');
+    const res = await testRequest(app).get('/api/auth/setup-status');
     expect(res.status).toBe(200);
     expect(res.body.needsSetup).toBe(true);
   });
@@ -27,7 +31,7 @@ describe('GET /api/auth/setup-status', () => {
 
 describe('GET /api/auth/auth-methods (pre-setup)', () => {
   it('reports passkey=false when no credentials exist', async () => {
-    const res = await request(app).get('/api/auth/auth-methods');
+    const res = await testRequest(app).get('/api/auth/auth-methods');
     expect(res.status).toBe(200);
     expect(res.body.passkey).toBe(false);
   });
@@ -35,7 +39,7 @@ describe('GET /api/auth/auth-methods (pre-setup)', () => {
 
 describe('POST /api/auth/setup/password', () => {
   it('rejects an invalid username', async () => {
-    const res = await request(app).post('/api/auth/setup/password').send({
+    const res = await testRequest(app).post('/api/auth/setup/password').send({
       username: '!!bad!!',
       password: 'longenoughpw',
     });
@@ -43,7 +47,7 @@ describe('POST /api/auth/setup/password', () => {
   });
 
   it('rejects too-short passwords', async () => {
-    const res = await request(app).post('/api/auth/setup/password').send({
+    const res = await testRequest(app).post('/api/auth/setup/password').send({
       username: 'firstadmin',
       password: 'short',
     });
@@ -51,7 +55,7 @@ describe('POST /api/auth/setup/password', () => {
   });
 
   it('creates the first admin and signs them in', async () => {
-    const res = await request(app).post('/api/auth/setup/password').send({
+    const res = await testRequest(app).post('/api/auth/setup/password').send({
       username: 'firstadmin',
       password: 'longenoughpw',
     });
@@ -66,7 +70,7 @@ describe('POST /api/auth/setup/password', () => {
   });
 
   it('subsequent setup attempts return 409', async () => {
-    const res = await request(app).post('/api/auth/setup/password').send({
+    const res = await testRequest(app).post('/api/auth/setup/password').send({
       username: 'second',
       password: 'longenoughpw',
     });
@@ -74,19 +78,19 @@ describe('POST /api/auth/setup/password', () => {
   });
 
   it('setup-status switches to false after the first user', async () => {
-    const res = await request(app).get('/api/auth/setup-status');
+    const res = await testRequest(app).get('/api/auth/setup-status');
     expect(res.body.needsSetup).toBe(false);
   });
 });
 
 describe('login / logout / me', () => {
   it('rejects unknown user + wrong password identically', async () => {
-    const ghost = await request(app).post('/api/auth/login/password').send({
+    const ghost = await testRequest(app).post('/api/auth/login/password').send({
       username: 'ghost',
       password: 'doesnotmatter',
     });
     expect(ghost.status).toBe(401);
-    const wrong = await request(app).post('/api/auth/login/password').send({
+    const wrong = await testRequest(app).post('/api/auth/login/password').send({
       username: 'firstadmin',
       password: 'wrong-password',
     });
@@ -95,8 +99,8 @@ describe('login / logout / me', () => {
   });
 
   it('rejects login when fields are missing or empty', async () => {
-    const r1 = await request(app).post('/api/auth/login/password').send({});
-    const r2 = await request(app)
+    const r1 = await testRequest(app).post('/api/auth/login/password').send({});
+    const r2 = await testRequest(app)
       .post('/api/auth/login/password')
       .send({ username: 'firstadmin', password: '' });
     expect(r1.status).toBe(400);
@@ -104,7 +108,7 @@ describe('login / logout / me', () => {
   });
 
   it('valid password login issues a session cookie', async () => {
-    const res = await request(app).post('/api/auth/login/password').send({
+    const res = await testRequest(app).post('/api/auth/login/password').send({
       username: 'firstadmin',
       password: 'longenoughpw',
     });
@@ -118,7 +122,7 @@ describe('login / logout / me', () => {
   });
 
   it('/me requires auth', async () => {
-    const res = await request(app).get('/api/auth/me');
+    const res = await testRequest(app).get('/api/auth/me');
     expect(res.status).toBe(401);
   });
 
@@ -132,7 +136,7 @@ describe('login / logout / me', () => {
   });
 
   it('/logout clears the cookie', async () => {
-    const res = await request(app).post('/api/auth/logout');
+    const res = await testRequest(app).post('/api/auth/logout');
     expect(res.status).toBe(200);
     // Should set the clearCookie header even when no token was present.
     expect(
@@ -145,7 +149,7 @@ describe('login / logout / me', () => {
 
 describe('password management', () => {
   it('GET /api/auth/password requires auth', async () => {
-    const res = await request(app).get('/api/auth/password');
+    const res = await testRequest(app).get('/api/auth/password');
     expect(res.status).toBe(401);
   });
 
@@ -173,13 +177,13 @@ describe('password management', () => {
     expect(res.status).toBe(200);
 
     // Old password no longer works.
-    const fail = await request(app).post('/api/auth/login/password').send({
+    const fail = await testRequest(app).post('/api/auth/login/password').send({
       username: 'firstadmin',
       password: 'longenoughpw',
     });
     expect(fail.status).toBe(401);
     // New one does.
-    const ok = await request(app).post('/api/auth/login/password').send({
+    const ok = await testRequest(app).post('/api/auth/login/password').send({
       username: 'firstadmin',
       password: 'newerpassword',
     });
@@ -206,7 +210,7 @@ describe('password management', () => {
 
 describe('GET /api/auth/passkeys', () => {
   it('requires auth', async () => {
-    const res = await request(app).get('/api/auth/passkeys');
+    const res = await testRequest(app).get('/api/auth/passkeys');
     expect(res.status).toBe(401);
   });
 
@@ -221,21 +225,21 @@ describe('GET /api/auth/passkeys', () => {
 
 describe('GET /api/auth/invite/:token', () => {
   it('valid:false for an unknown token', async () => {
-    const res = await request(app).get('/api/auth/invite/no-such-token');
+    const res = await testRequest(app).get('/api/auth/invite/no-such-token');
     expect(res.body).toEqual({ valid: false });
   });
 });
 
 describe('POST /api/auth/login/options', () => {
   it('409 when no passkeys exist', async () => {
-    const res = await request(app).post('/api/auth/login/options');
+    const res = await testRequest(app).post('/api/auth/login/options');
     expect(res.status).toBe(409);
   });
 });
 
 describe('POST /api/auth/invite/:token/password', () => {
   it('404 for an invalid token', async () => {
-    const res = await request(app).post('/api/auth/invite/bogus/password').send({
+    const res = await testRequest(app).post('/api/auth/invite/bogus/password').send({
       username: 'someone',
       password: 'longenoughpw',
     });
@@ -247,7 +251,7 @@ describe('POST /api/auth/invite/:token/password', () => {
     const { createInvite } = await import('../db/invites.js');
     const admin = findUserByUsername('firstadmin')!;
     const invite = createInvite(admin.id, { expiresInDays: 1 })!;
-    const res = await request(app).post(`/api/auth/invite/${invite.token}/password`).send({
+    const res = await testRequest(app).post(`/api/auth/invite/${invite.token}/password`).send({
       username: 'invitee',
       password: 'longenoughpw',
     });
@@ -261,12 +265,12 @@ describe('POST /api/auth/invite/:token/password', () => {
     const { createInvite } = await import('../db/invites.js');
     const admin = findUserByUsername('firstadmin')!;
     const invite = createInvite(admin.id, { expiresInDays: 1 })!;
-    const ok = await request(app).post(`/api/auth/invite/${invite.token}/password`).send({
+    const ok = await testRequest(app).post(`/api/auth/invite/${invite.token}/password`).send({
       username: 'one-shot',
       password: 'longenoughpw',
     });
     expect(ok.status).toBe(200);
-    const reuse = await request(app).post(`/api/auth/invite/${invite.token}/password`).send({
+    const reuse = await testRequest(app).post(`/api/auth/invite/${invite.token}/password`).send({
       username: 'two-shot',
       password: 'longenoughpw',
     });

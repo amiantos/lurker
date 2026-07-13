@@ -4,8 +4,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
-import request from 'supertest';
-import { setupTestDb } from '../test-utils/testApp.js';
+import { setupTestDb, testRequest } from '../test-utils/testApp.js';
 import type { User } from '../db/users.js';
 import type { Network } from '../db/networks.js';
 import type { CreateTokenResult } from '../db/apiTokens.js';
@@ -56,7 +55,7 @@ beforeAll(async () => {
 afterAll(() => ctx.cleanup());
 
 function rpc(token: string, body: object) {
-  return request(app)
+  return testRequest(app)
     .post('/mcp')
     .set('Authorization', `Bearer ${token}`)
     .set('Content-Type', 'application/json')
@@ -65,7 +64,7 @@ function rpc(token: string, body: object) {
 
 describe('MCP server', () => {
   it('401 without a bearer token', async () => {
-    const res = await request(app)
+    const res = await testRequest(app)
       .post('/mcp')
       .send({ jsonrpc: '2.0', id: 1, method: 'initialize' });
     expect(res.status).toBe(401);
