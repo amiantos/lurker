@@ -11,6 +11,7 @@ import {
   seedUploaderConfig,
   reconcileBuiltInUploaders,
   reconcileLegacyUploadSettings,
+  renameHoarderDriver,
   reconcileHostedUploaderFromEnv,
 } from './uploaderConfigSeed.js';
 
@@ -290,7 +291,7 @@ function migrate() {
     -- Per-user log of every successful image upload. Thumbnail is a 128² JPEG
     -- generated at upload time and served back via /api/uploads/:id/thumb,
     -- so the recent-uploads modal stays cheap even if the original lives on a
-    -- third-party host. provider is the upload destination ('hoarder', 'catbox',
+    -- third-party host. provider is the upload destination ('dropper', 'catbox',
     -- 'x0') so the modal can label rows and so we know whether to attempt any
     -- provider-side delete (none today; tracked as a follow-up).
     CREATE TABLE IF NOT EXISTS upload_history (
@@ -1574,6 +1575,16 @@ try {
   reconcileLegacyUploadSettings(db);
 } catch (err) {
   console.warn('[db] legacy upload-settings reconcile failed:', err);
+}
+
+// Rewrite the old `hoarder` driver id to `dropper` (#537). Every boot, idempotent,
+// self-terminating. MUST come after the legacy reconcile above (the last thing that
+// can still mint a row from legacy keys) and BEFORE the hosted reconcile below,
+// which finds its row by driver id.
+try {
+  renameHoarderDriver(db);
+} catch (err) {
+  console.warn('[db] hoarder→dropper driver rename failed:', err);
 }
 
 // Re-sync the hosted locked uploader from env on every boot — idempotent no-op on

@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as x0 from './x0.js';
 import * as catbox from './catbox.js';
-import * as hoarder from './hoarder.js';
+import * as dropper from './dropper.js';
 import * as zipline from './zipline.js';
 import * as chibisafe from './chibisafe.js';
 import * as s3 from './s3.js';
@@ -294,7 +294,7 @@ describe('catbox provider', () => {
   });
 });
 
-describe('hoarder provider', () => {
+describe('dropper provider', () => {
   it('POSTs to {base}/api/upload with Authorization: Bearer and `file` field', async () => {
     const cap = capturePost();
     postResponse = {
@@ -302,7 +302,7 @@ describe('hoarder provider', () => {
       headers: {},
       text: JSON.stringify({ id: 'aB3kZ', url: 'https://cdn.test/aB3kZ.gif' }),
     };
-    const result = await hoarder.upload(
+    const result = await dropper.upload(
       src([0xff, 0xd8]),
       { filename: 'wave.gif', mime: 'image/gif' },
       { url: 'https://upload.example.com', api_key: 'sekret' },
@@ -321,7 +321,7 @@ describe('hoarder provider', () => {
       headers: {},
       text: JSON.stringify({ url: 'https://cdn.test/x.png' }),
     };
-    await hoarder.upload(
+    await dropper.upload(
       src([1]),
       { filename: 'x.png', mime: 'image/png' },
       { url: 'https://upload.example.com/', api_key: 'k' },
@@ -331,13 +331,13 @@ describe('hoarder provider', () => {
 
   it('rejects with PROVIDER_CONFIG when url is missing', async () => {
     await expect(
-      hoarder.upload(src([1]), { filename: 'x.png', mime: 'image/png' }, { api_key: 'k' }),
+      dropper.upload(src([1]), { filename: 'x.png', mime: 'image/png' }, { api_key: 'k' }),
     ).rejects.toMatchObject({ code: 'PROVIDER_CONFIG' });
   });
 
   it('rejects with PROVIDER_CONFIG when api_key is missing', async () => {
     await expect(
-      hoarder.upload(src([1]), { filename: 'x.png', mime: 'image/png' }, { url: 'https://u' }),
+      dropper.upload(src([1]), { filename: 'x.png', mime: 'image/png' }, { url: 'https://u' }),
     ).rejects.toMatchObject({ code: 'PROVIDER_CONFIG' });
   });
 
@@ -348,7 +348,7 @@ describe('hoarder provider', () => {
       text: 'Invalid API key',
     });
     await expect(
-      hoarder.upload(
+      dropper.upload(
         src([1]),
         { filename: 'x.png', mime: 'image/png' },
         { url: 'https://u', api_key: 'bad' },
@@ -363,7 +363,7 @@ describe('hoarder provider', () => {
       text: JSON.stringify({ id: 'x' }),
     });
     await expect(
-      hoarder.upload(
+      dropper.upload(
         src([1]),
         { filename: 'x.png', mime: 'image/png' },
         { url: 'https://u', api_key: 'k' },

@@ -24,10 +24,10 @@ const ctx = setupTestDb('routes-uploads-node');
 // Same stub pattern as uploads.test.ts: capture the config the route hands the
 // driver so we can prove the hosted uploader sources its credentials from the
 // baked instance row (seeded from the operator env), never from the tenant's
-// per-user settings. The configSchema mirrors hoarder (url + api_key required) so
+// per-user settings. The configSchema mirrors dropper (url + api_key required) so
 // the resolver's "locked-but-unconfigured → 503" check has fields to test.
 const stub = {
-  driver: 'hoarder',
+  driver: 'dropper',
   label: 'Hosted uploader',
   capabilities: {
     storesRemotely: true,
@@ -147,7 +147,7 @@ describe('POST /api/uploads (node edition)', () => {
     const list = await agent.get('/api/uploads');
     const row = list.body.items.find((r: { id: number }) => r.id === res.body.id);
     // Recorded as the forced in-house provider, not the tenant's 'catbox' pick.
-    expect(row.provider).toBe('hoarder');
+    expect(row.provider).toBe('dropper');
   });
 
   it('hands the provider operator env credentials, not per-user settings', async () => {

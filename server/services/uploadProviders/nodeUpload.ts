@@ -13,7 +13,7 @@
 import { getOption } from '../settingsRegistry.js';
 
 /** Provider id forced for every upload in node edition. */
-export const NODE_UPLOAD_PROVIDER_ID = 'hoarder';
+export const NODE_UPLOAD_PROVIDER_ID = 'dropper';
 
 /**
  * Operator-supplied in-house uploader credentials, read fresh from the

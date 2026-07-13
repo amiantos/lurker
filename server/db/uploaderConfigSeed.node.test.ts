@@ -49,7 +49,7 @@ describe('seedUploaderConfig (hosted)', () => {
       .prepare(`SELECT * FROM uploader_config WHERE scope = 'instance' AND locked = 1`)
       .get() as Row | undefined;
     expect(row).toBeTruthy();
-    expect(row!.driver).toBe('hoarder');
+    expect(row!.driver).toBe('dropper');
     expect(row!.is_default).toBe(1);
     expect(row!.offered_to_users).toBe(1);
 
@@ -78,6 +78,6 @@ describe('seedUploaderConfig (hosted)', () => {
         driver: string;
       }[]
     ).map((r) => r.driver);
-    expect(drivers).toEqual(['hoarder']);
+    expect(drivers).toEqual(['dropper']);
   });
 });
