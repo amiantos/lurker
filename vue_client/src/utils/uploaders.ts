@@ -96,17 +96,52 @@ export function missingRequired(
   });
 }
 
-// What the upload route accepts today: images (optimized by the sharp pipeline)
-// and text/plain (passthrough). ONE definition, so the file picker's `accept` and
-// the drag-drop gate can't drift apart — they had, and the picker was the stricter
-// of the two: it listed images only, so a .txt could not be selected at all on
-// macOS (non-matching files are greyed out, with no "All Files" escape) even
-// though the server has always taken one.
+// What the upload route accepts: images, text, and the media we can strip metadata
+// from (mp4/mov/m4v/m4a/mp3 — see server/services/contentClass.ts). ONE definition,
+// so the file picker's `accept` and the drag-drop gate can't drift apart.
 //
-// #515 replaces this with the effective accepted set projected from the server,
-// once media lands and "what's allowed" stops being a constant.
-export const ACCEPTED_FILE_TYPES = 'image/*,text/plain,.txt';
+// Extensions are listed alongside the MIME types because browsers disagree about
+// what they call an .m4a (audio/x-m4a vs audio/mp4) and macOS greys out anything
+// the attribute doesn't match, with no "All Files" escape.
+export const ACCEPTED_FILE_TYPES = [
+  'image/*',
+  'text/plain',
+  '.txt',
+  'video/mp4',
+  'video/quicktime',
+  'video/x-m4v',
+  'audio/mpeg',
+  'audio/mp4',
+  'audio/x-m4a',
+  '.mp4',
+  '.mov',
+  '.m4v',
+  '.m4a',
+  '.mp3',
+].join(',');
 
+// Deliberately LOOSER than the accepted set: the drop/paste gates exist to ignore
+// things that obviously aren't uploads, not to enforce policy. The server is the
+// gate, and its 415 names the problem ("webm files are not accepted — Lurker takes
+// …"), which is far more useful than a drop that silently does nothing — the bug
+// this replaces.
 export function isUploadableType(mime: string): boolean {
-  return mime.startsWith('image/') || mime === 'text/plain';
+  return (
+    mime.startsWith('image/') ||
+    mime.startsWith('audio/') ||
+    mime.startsWith('video/') ||
+    mime === 'text/plain'
+  );
+}
+
+/** A Font Awesome icon for an upload with no thumbnail, from its MIME. The recent-
+ *  uploads browser used one generic page glyph for everything, so a PDF, a song and
+ *  a video were indistinguishable. */
+export function iconForMime(mime: string | null | undefined): string {
+  const m = mime || '';
+  if (m.startsWith('video/')) return 'fa-file-video';
+  if (m.startsWith('audio/')) return 'fa-file-audio';
+  if (m.startsWith('image/')) return 'fa-file-image';
+  if (m.startsWith('text/')) return 'fa-file-lines';
+  return 'fa-file';
 }

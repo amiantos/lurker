@@ -32,7 +32,7 @@
               loading="lazy"
             />
             <div v-else class="thumb thumb-placeholder">
-              <i class="fa-solid fa-file-lines fa-2x"></i>
+              <i class="fa-solid fa-2x" :class="iconForMime(u.mime)"></i>
             </div>
           </a>
           <div class="meta">
@@ -72,7 +72,7 @@
       </ul>
       <p v-else-if="uploads.loading && !uploads.loaded" class="empty">Loading…</p>
       <p v-else-if="uploads.loaded" class="empty">
-        No uploads yet. Paste, drop, or pick an image in the input.
+        No uploads yet. Paste, drop, or pick a file in the input.
       </p>
       <p v-if="uploads.loading && uploads.loaded" class="empty small">Loading more…</p>
     </div>
@@ -85,6 +85,7 @@ import AppModal from './AppModal.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem } from '../stores/uploads.js';
 import { formatRelative } from '../utils/timestamp.js';
+import { iconForMime } from '../utils/uploaders.js';
 
 // The server response can include extra metadata fields not tracked in the
 // store's base UploadItem shape (they come from the GET /api/uploads list).

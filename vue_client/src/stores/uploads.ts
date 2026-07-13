@@ -84,7 +84,11 @@ export const useUploadsStore = defineStore('uploads', {
         // — the same gate the server's GET response applies. Text uploads have
         // no thumbnail.
         if (this.loaded) {
-          const isImage = typeof file.type === 'string' && file.type.startsWith('image/');
+          // Trust the server's mime — it's derived from the magic bytes, whereas
+          // file.type is the browser's guess and can be wrong or absent. It decides
+          // which type icon the row shows, so a lie here is visible.
+          const mime: string | null = result.mime ?? (file.type || null);
+          const isImage = typeof mime === 'string' && mime.startsWith('image/');
           const thumbnail_url =
             result.thumbnail_url || (isImage ? `/api/uploads/${result.id}/thumb` : undefined);
           this.recent.unshift({
@@ -92,7 +96,7 @@ export const useUploadsStore = defineStore('uploads', {
             provider: undefined, // server-only field; recent-uploads modal will re-fetch if it cares
             url: result.url,
             filename,
-            mime: file.type || null,
+            mime,
             can_delete: !!result.can_delete,
             ...(thumbnail_url ? { thumbnail_url } : {}),
           });

@@ -35,7 +35,7 @@ export const capabilities: DriverCapabilities = {
   // never offers delete.
   supportsDelete: true,
   mintsKeys: false,
-  acceptsContentClasses: ['image', 'text'],
+  acceptsContentClasses: ['image', 'text', 'media'],
 };
 export const configSchema: ConfigField[] = [
   {

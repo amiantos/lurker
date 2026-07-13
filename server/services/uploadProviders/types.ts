@@ -10,7 +10,12 @@
 
 import type { UploadSource } from './source.js';
 
-export type ContentClass = 'image' | 'text' | 'binary';
+// image  — decoded + re-encoded by the sharp pipeline (optimize + metadata strip)
+// text    — passthrough, .txt
+// media   — passthrough, metadata scrubbed in place (services/mediaScrub.ts)
+// binary  — RESERVED and deliberately unused: arbitrary binary is not a feature,
+//           DCC is the file-transfer path (design decision 20). No driver declares it.
+export type ContentClass = 'image' | 'text' | 'media' | 'binary';
 
 /** One field a driver needs configured. `secret` fields are encrypted at rest
  *  and never projected to the client. This single declaration drives the admin

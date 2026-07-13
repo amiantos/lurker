@@ -17,7 +17,7 @@ export const capabilities: DriverCapabilities = {
   storesRemotely: true,
   supportsDelete: false,
   mintsKeys: false,
-  acceptsContentClasses: ['image', 'text'],
+  acceptsContentClasses: ['image', 'text', 'media'],
 };
 export const configSchema: ConfigField[] = [];
 

@@ -13,6 +13,7 @@ import {
 } from '../test-utils/testApp.js';
 import type { User } from '../db/users.js';
 import type { UploadSource } from '../services/uploadProviders/source.js';
+import type { ContentClass } from '../services/uploadProviders/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveDataDir } from '../utils/dataDir.js';
@@ -31,7 +32,7 @@ const stub = {
     storesRemotely: true,
     supportsDelete: false,
     mintsKeys: false,
-    acceptsContentClasses: ['image', 'text'] as ('image' | 'text' | 'binary')[],
+    acceptsContentClasses: ['image', 'text'] as ContentClass[],
   },
   configSchema: [],
   shouldThrow: null as Error | null,
@@ -44,6 +45,10 @@ const stub = {
   // passthrough upload must arrive as a `file` (streamed off multer's temp file,
   // never in the heap), while an optimized image arrives as a small `buffer`.
   capturedSource: null as UploadSource | null,
+  // The bytes the driver was actually given — the only place to prove that what
+  // leaves the building is scrubbed, since the temp file is unlinked afterwards.
+  capturedBytes: null as Buffer | null,
+  capturedMeta: null as { filename: string; mime: string } | null,
   async upload(
     source: UploadSource,
     meta: { filename: string; mime: string },
@@ -51,6 +56,9 @@ const stub = {
   ) {
     stub.capturedConfig = config ?? null;
     stub.capturedSource = source;
+    stub.capturedMeta = meta;
+    stub.capturedBytes =
+      source.kind === 'file' ? fs.readFileSync(source.path) : Buffer.from(source.data);
     if (stub.shouldThrow) throw stub.shouldThrow;
     if (stub.nextResult) return stub.nextResult;
     return { url: `https://stub.example/${meta.filename}` };
@@ -463,9 +471,29 @@ describe('DELETE /api/uploads/:id', () => {
 // #543: uploads stream through a temp file instead of living in the heap. What
 // matters here is the shape handed to the driver and that the temp file never
 // outlives the request — an orphan per upload is a slow disk leak.
-describe('temp-file lifecycle (#543)', () => {
-  const tmpDir = (): string => path.join(resolveDataDir(), 'tmp', 'uploads');
+const tmpDir = (): string => path.join(resolveDataDir(), 'tmp', 'uploads');
+const tempFiles = (): string[] => {
+  try {
+    return fs.readdirSync(tmpDir()).filter((f) => f.startsWith('up-'));
+  } catch {
+    return [];
+  }
+};
+// The handler unlinks the temp file in a `finally`, which runs AFTER the response
+// is sent, so poll — and poll for the ABSOLUTE invariant (the dir drains to empty),
+// not a delta against a `before` count, which is itself racy against a preceding
+// test's pending unlink.
+const waitForNoTemps = async (timeoutMs = 3000): Promise<void> => {
+  const start = Date.now();
+  while (tempFiles().length > 0) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`temp files not cleaned up: ${tempFiles().join(', ')}`);
+    }
+    await new Promise((r) => setTimeout(r, 5));
+  }
+};
 
+describe('temp-file lifecycle (#543)', () => {
   // The handler unlinks the temp file in a `finally`, which runs AFTER the response
   // is sent — so the client can observe the reply before the unlink has landed.
   // Two consequences, both of which bit this test in CI:
@@ -564,5 +592,116 @@ describe('temp-file lifecycle (#543)', () => {
     expect(fs.existsSync(stale)).toBe(false);
     expect(fs.existsSync(fresh)).toBe(true);
     fs.unlinkSync(fresh);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #515: media uploads. The route classifies from magic bytes and scrubs metadata
+// before dispatch — the two things that make "we accept video" safe to say.
+describe('media uploads (#515)', () => {
+  /** An mp4 carrying GPS in moov/udta/©xyz, exactly where a phone puts it. */
+  const GPS = '+37.7749-122.4194/';
+  function box(type: string, payload: Buffer): Buffer {
+    const size = Buffer.alloc(4);
+    size.writeUInt32BE(8 + payload.length);
+    return Buffer.concat([size, Buffer.from(type, 'latin1'), payload]);
+  }
+  function mp4WithGps(): Buffer {
+    const ftyp = box(
+      'ftyp',
+      Buffer.concat([Buffer.from('isom'), Buffer.alloc(4), Buffer.from('mp42')]),
+    );
+    const mvhd = Buffer.alloc(100);
+    mvhd.writeUInt32BE(0xe679e672, 4);
+    const udta = box(
+      'udta',
+      box('©xyz', Buffer.concat([Buffer.from([0, 0x12, 0x15, 0xc7]), Buffer.from(GPS)])),
+    );
+    const moov = box('moov', Buffer.concat([box('mvhd', mvhd), udta]));
+    return Buffer.concat([ftyp, moov, box('mdat', Buffer.alloc(1024, 0xab))]);
+  }
+
+  beforeAll(() => {
+    stub.capabilities.acceptsContentClasses = ['image', 'text', 'media'];
+  });
+  afterAll(() => {
+    stub.capabilities.acceptsContentClasses = ['image', 'text'];
+  });
+
+  it('accepts an mp4, passes it through unoptimized, and gives it no thumbnail', async () => {
+    stub.shouldThrow = null;
+    const res = await agent
+      .post('/api/uploads')
+      .attach('image', mp4WithGps(), { filename: 'clip.mp4', contentType: 'video/mp4' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mime).toBe('video/mp4');
+    // Passthrough: the driver gets the temp FILE, streamed, not a buffer.
+    expect(stub.capturedSource!.kind).toBe('file');
+    expect(stub.capturedMeta!.filename).toMatch(/\.mp4$/);
+
+    const list = await agent.get('/api/uploads');
+    const row = list.body.items.find((r: { id: number }) => r.id === res.body.id);
+    expect(row.thumbnail_url).toBeUndefined(); // no ffmpeg, no poster frame
+    await waitForNoTemps();
+  });
+
+  // The whole reason video needs anything more than "pass the bytes through".
+  it('strips the GPS out of a video BEFORE it leaves the server', async () => {
+    stub.shouldThrow = null;
+    const original = mp4WithGps();
+    expect(original.includes(Buffer.from(GPS))).toBe(true);
+
+    await agent
+      .post('/api/uploads')
+      .attach('image', original, { filename: 'vacation.mp4', contentType: 'video/mp4' });
+
+    const sent = stub.capturedBytes!;
+    expect(sent.includes(Buffer.from(GPS))).toBe(false);
+    expect(sent.includes(Buffer.from('udta'))).toBe(false);
+    // Size-preserving, so the recorded byte_size is still right.
+    expect(sent.length).toBe(original.length);
+    await waitForNoTemps();
+  });
+
+  it('415s a type we cannot clean, naming what is allowed', async () => {
+    const webm = Buffer.from([
+      0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01, 0x42, 0xf2,
+      0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d, 0x42, 0x87,
+      0x81, 0x02, 0x42, 0x85, 0x81, 0x02, 0x18, 0x53, 0x80, 0x67, 0x01, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00,
+    ]);
+    const res = await agent
+      .post('/api/uploads')
+      .attach('image', webm, { filename: 'rec.webm', contentType: 'video/webm' });
+    expect(res.status).toBe(415);
+    expect(res.body.error).toMatch(/not accepted/);
+    await waitForNoTemps();
+  });
+
+  it('415s media when the resolved uploader does not accept it (the hosted dropper)', async () => {
+    stub.capabilities.acceptsContentClasses = ['image', 'text'];
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .attach('image', mp4WithGps(), { filename: 'clip.mp4', contentType: 'video/mp4' });
+      expect(res.status).toBe(415);
+      expect(res.body.error).toMatch(/does not accept media/);
+    } finally {
+      stub.capabilities.acceptsContentClasses = ['image', 'text', 'media'];
+    }
+    await waitForNoTemps();
+  });
+
+  // The claim cannot pick the class — otherwise it's a route around the EXIF scrub.
+  it('optimizes an image even when the client swears it is a video', async () => {
+    stub.shouldThrow = null;
+    const res = await agent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'liar.mp4', contentType: 'video/mp4' });
+    expect(res.status).toBe(200);
+    expect(res.body.mime).toBe('image/jpeg'); // ran through the pipeline regardless
+    expect(stub.capturedSource!.kind).toBe('buffer');
+    await waitForNoTemps();
   });
 });

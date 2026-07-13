@@ -33,7 +33,7 @@ export const capabilities: DriverCapabilities = {
   storesRemotely: false,
   supportsDelete: true,
   mintsKeys: true,
-  acceptsContentClasses: ['image', 'text'],
+  acceptsContentClasses: ['image', 'text', 'media'],
   selfHostOnly: true,
 };
 

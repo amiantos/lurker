@@ -35,7 +35,7 @@ export const capabilities: DriverCapabilities = {
   supportsDelete: true,
   // WE construct the object key (unlike a remote host that names the file).
   mintsKeys: true,
-  acceptsContentClasses: ['image', 'text', 'binary'],
+  acceptsContentClasses: ['image', 'text', 'media'],
   selfHostOnly: true,
 };
 export const configSchema: ConfigField[] = [

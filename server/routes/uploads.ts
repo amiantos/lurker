@@ -14,7 +14,12 @@ import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from '../services/settingsRegistry.js';
 import * as imagePipeline from '../services/imagePipeline.js';
 import { driverIds } from '../services/uploadProviders/index.js';
-import type { ContentClass } from '../services/uploadProviders/index.js';
+import {
+  classifyUpload,
+  UnsupportedTypeError,
+  type Classification,
+} from '../services/contentClass.js';
+import { scrubMediaFile, MediaScrubError } from '../services/mediaScrub.js';
 import {
   resolveUploader,
   loadDriverForRef,
@@ -257,17 +262,30 @@ router.post(
         return;
       }
 
-      // Long-message → .txt upload bypasses the sharp pipeline: the bytes go
-      // straight through with a .txt extension and no thumbnail.
-      const isText = req.file.mimetype === 'text/plain';
-      const contentClass: ContentClass = isText ? 'text' : 'image';
+      // Classify from the MAGIC BYTES, never the client's claimed MIME (#515). The
+      // claim used to decide this, which was survivable only while the alternative
+      // branch was the image pipeline — the moment a class means "passthrough", a
+      // claimed MIME is a route around imagePipeline.optimize(), and that's where
+      // the EXIF scrub lives. See services/contentClass.ts.
+      let classified: Classification;
+      try {
+        classified = await classifyUpload(req.file.path, req.file.mimetype);
+      } catch (err) {
+        if (err instanceof UnsupportedTypeError) {
+          res.status(415).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+      const contentClass = classified.contentClass;
 
-      // Validate stage: the resolved driver must accept this content class. In P0
-      // every driver accepts image + text, so this never rejects — but it makes
-      // acceptsContentClasses a real gate (defense-in-depth) once binary-capable
-      // drivers land, rather than a declared-but-unused capability.
+      // Validate stage: the resolved driver must accept this class. This is what
+      // makes hosted (whose dropper takes images + text only) refuse media, without
+      // a policy flag anywhere.
       if (!resolved.driver.capabilities.acceptsContentClasses.includes(contentClass)) {
-        res.status(415).json({ error: `this uploader does not accept ${contentClass} files` });
+        res.status(415).json({
+          error: `${resolved.driver.label} does not accept ${contentClass} files`,
+        });
         return;
       }
 
@@ -279,12 +297,27 @@ router.post(
       let outHeight: number | null = null;
       let thumb: Buffer | null = null;
 
-      if (isText) {
+      if (contentClass === 'text' || contentClass === 'media') {
         // Passthrough: the bytes go out of the temp file exactly as they came in.
-        // Nothing reads them into memory — the driver streams the file.
+        // Nothing reads them into memory — the driver streams the file (#543).
+        if (contentClass === 'media') {
+          // …except the metadata, which is stripped in place first. A phone's MP4
+          // carries GPS in moov/udta; passing it through untouched would re-open
+          // exactly the leak #516 closed for photos. The scrub is size-preserving,
+          // so req.file.size stays correct.
+          try {
+            await scrubMediaFile(req.file.path, classified.mime);
+          } catch (err) {
+            if (err instanceof MediaScrubError) {
+              res.status(415).json({ error: err.message });
+              return;
+            }
+            throw err;
+          }
+        }
         outSource = fileSource(req.file.path, req.file.size);
-        outMime = 'text/plain';
-        outExt = 'txt';
+        outMime = classified.mime;
+        outExt = classified.ext;
         outByteSize = req.file.size;
       } else {
         // imagePipeline is an untyped JS module — any is unavoidable here
@@ -400,6 +433,10 @@ router.post(
       res.json({
         id,
         url: mainUrl,
+        // The REAL mime, derived from the bytes — the client builds its optimistic
+        // history row from this rather than from what the browser guessed, so the
+        // row's type icon isn't a lie until the next refetch.
+        mime: outMime,
         can_delete: canDelete,
         ...(thumbnailUrl ? { thumbnail_url: thumbnailUrl } : {}),
       });

@@ -1042,7 +1042,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'int',
     min: 1,
     max: 200,
-    default: 25,
+    // 100, not 25: a 30-second phone video clears 25 MB instantly, and media
+    // uploads (#515) make that the common case rather than the exotic one.
+    default: 100,
     selfHostedOnly: true,
     description:
       'Hard cap on the raw upload size in megabytes. Anything larger is ' +
@@ -1050,7 +1052,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
   {
     key: 'uploads.paste.enabled',
-    label: 'Upload pasted images',
+    label: 'Upload pasted files',
     category: 'uploads',
     group: 'pipeline',
     type: 'bool',
