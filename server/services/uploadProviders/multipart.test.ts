@@ -154,6 +154,11 @@ describe('postMultipart', () => {
 
     // A well-behaved server: answer immediately, but keep reading the body so the
     // client's writes never fail. The response is reliably delivered.
+    //
+    // This only holds because we no longer send `Connection: close`: a server told
+    // to close destroys the socket as soon as it has written its answer, draining
+    // or not, and the 413 dies with it (~30% of the time on a body this size). So
+    // this test doubles as the guard on that — bring the header back and it flakes.
     const polite = createServer((req, res) => {
       req.once('data', () => {
         res.writeHead(413, { 'content-type': 'text/plain' });
