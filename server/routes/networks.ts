@@ -16,6 +16,7 @@ import {
   upsertChannel,
 } from '../db/networks.js';
 import ircManager from '../services/ircManager.js';
+import { isNetworkHostAllowed, hostAllowedChecker } from '../services/networkPolicy.js';
 import { fanOutToUser } from '../services/wsHub.js';
 
 const router = Router();
@@ -46,7 +47,12 @@ function parseChannelList(raw: unknown): string[] {
   return out;
 }
 
-function networkPayload(network: Network | undefined | null): Record<string, unknown> | null {
+// `isAllowed` is injectable so a caller mapping over several networks can resolve
+// the (instance-global) policy once instead of re-reading it per row.
+function networkPayload(
+  network: Network | undefined | null,
+  isAllowed: (host: string) => boolean = isNetworkHostAllowed,
+): Record<string, unknown> | null {
   if (!network) return null;
   const { server_password, sasl_password, ...safe } = network;
   return {
@@ -57,11 +63,17 @@ function networkPayload(network: Network | undefined | null): Record<string, unk
     has_password: !!server_password,
     has_sasl_password: !!sasl_password,
     channels: listChannels(network.id),
+    // True when the admin has locked the instance down and this network's host
+    // isn't on the list (#298). The row survives untouched — it just can't
+    // connect — so the client needs this to say why, rather than leaving the user
+    // to click Connect and watch nothing happen.
+    blocked: !isAllowed(network.host),
   };
 }
 
 router.get('/', (req: Request, res: Response) => {
-  const networks = listNetworksForUser(req.user!.id).map(networkPayload);
+  const isAllowed = hostAllowedChecker();
+  const networks = listNetworksForUser(req.user!.id).map((n) => networkPayload(n, isAllowed));
   res.json({ networks });
 });
 
@@ -84,6 +96,10 @@ router.post('/', (req: Request, res: Response) => {
   } = req.body || {};
   if (!name || !host || !nick) {
     res.status(400).json({ error: 'name, host, and nick are required' });
+    return;
+  }
+  if (!isNetworkHostAllowed(host)) {
+    res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
     return;
   }
 
@@ -127,13 +143,14 @@ router.post('/reorder', (req: Request, res: Response) => {
     res.status(400).json({ error: 'ids array required' });
     return;
   }
+  const isAllowed = hostAllowedChecker();
   const next = reorderNetworks(req.user!.id, ids);
   if (next === null) {
-    const networks = listNetworksForUser(req.user!.id).map(networkPayload);
+    const networks = listNetworksForUser(req.user!.id).map((n) => networkPayload(n, isAllowed));
     res.status(409).json({ error: 'network set mismatch', networks });
     return;
   }
-  const networks = listNetworksForUser(req.user!.id).map(networkPayload);
+  const networks = listNetworksForUser(req.user!.id).map((n) => networkPayload(n, isAllowed));
   res.json({ networks });
 });
 
@@ -142,6 +159,20 @@ router.patch('/:id', (req: Request, res: Response) => {
   const existing = getNetwork(id, req.user!.id);
   if (!existing) {
     res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  // Editing the host has to clear the same bar as creating one, or the lockdown
+  // is a formality: create an approved network, then point it anywhere. Only a
+  // *changed* host is checked — an existing off-list network stays editable
+  // (rename it, fix its nick) even while it's blocked from connecting, since the
+  // policy blocks connections, not custody of the row.
+  const nextHost = (req.body || {}).host;
+  if (
+    typeof nextHost === 'string' &&
+    nextHost.toLowerCase() !== existing.host.toLowerCase() &&
+    !isNetworkHostAllowed(nextHost)
+  ) {
+    res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
     return;
   }
   const updated = updateNetwork(id, req.user!.id, req.body || {});
@@ -175,6 +206,13 @@ router.post('/:id/connect', (req: Request, res: Response) => {
     res.status(404).json({ error: 'network not found' });
     return;
   }
+  // startNetwork enforces the lockdown itself (that's the real gate — it also
+  // covers boot autoconnect), but it enforces it by returning null. Say so out
+  // loud here, or the user clicks Connect and watches nothing whatsoever happen.
+  if (!isNetworkHostAllowed(network.host)) {
+    res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
+    return;
+  }
   ircManager.startNetwork(req.user!.id, id);
   res.json({ ok: true });
 });
@@ -195,6 +233,12 @@ router.post('/:id/reconnect', (req: Request, res: Response) => {
   const network = getNetwork(id, req.user!.id);
   if (!network) {
     res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  // Same as /connect: restartNetwork routes through startNetwork, which refuses
+  // silently. Report it instead of a no-op "ok".
+  if (!isNetworkHostAllowed(network.host)) {
+    res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
     return;
   }
   ircManager.restartNetwork(req.user!.id, id);

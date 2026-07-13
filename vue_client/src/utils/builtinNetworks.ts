@@ -36,6 +36,23 @@ export interface BuiltinNetwork {
   tags: string[];
 }
 
+/**
+ * What the picker actually renders: a bundled builtin, or a network the
+ * instance's admin defined (#298). The two are deliberately the same shape so
+ * the picker merges them into one list instead of branching per row.
+ */
+export interface NetworkPreset extends BuiltinNetwork {
+  /**
+   * The admin's recommended channels for an instance preset — pre-checked in the
+   * first-run flow. Plural, unlike a builtin's single `defaultChannel`: an admin
+   * knows their own network and can reasonably say "join #general and #random",
+   * whereas for a public network we only ever claim to know its one main channel.
+   */
+  recommendedChannels?: string[];
+  /** True for an admin-defined preset. They pin above the builtins and get a badge. */
+  isInstance?: boolean;
+}
+
 // Sorted most-popular-first so the picker's default order is meaningful; entries
 // without a user count sink to the bottom but keep their relative input order.
 // Networks carrying this tag have an active #lurker channel. The picker floats
@@ -61,11 +78,18 @@ export const LURKER_CHANNEL = '#lurker';
 // it will not one-click-join a brand-new user into a channel we invented.
 export const FALLBACK_CHANNEL = '#chat';
 
-// The channels we can actually stand behind for a network: its own documented
-// main channel (#308) and #lurker where there's an active one. Order matters —
-// #lurker leads, because a new user is better served by the room where they can
-// get help with the client than by the network's general chat.
-export function suggestedChannels(net: BuiltinNetwork): string[] {
+// The channels we can actually stand behind for a network.
+//
+// For an admin-defined instance preset that's simply whatever the admin listed —
+// they run the place, so their word is the last word, and we don't second-guess
+// it with #lurker.
+//
+// For a builtin it's the network's own documented main channel (#308) plus
+// #lurker where there's an active one. Order matters: #lurker leads, because a
+// new user is better served by the room where they can get help with the client
+// than by the network's general chat.
+export function suggestedChannels(net: NetworkPreset): string[] {
+  if (net.isInstance) return [...(net.recommendedChannels ?? [])];
   const out: string[] = [];
   if (net.tags.includes(LURKER_TAG)) out.push(LURKER_CHANNEL);
   const own = net.defaultChannel;

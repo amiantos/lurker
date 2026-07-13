@@ -12,6 +12,7 @@ import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
+import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
 import { resetScrollState } from './useScrollState.js';
@@ -40,6 +41,10 @@ export function resetSession(): void {
   drafts.$reset();
   usePushSubscriptionsStore().$reset();
   usePinsStore().$reset();
+  // Instance policy is the same for everyone on the box, but the *fetched* flag
+  // isn't — leaving it loaded would hand the next user a picker built from a
+  // response fetched under someone else's session.
+  useNetworkPresetsStore().$reset();
   resetPresence();
   resetScrollState();
   // Closing the first-run flow unmounts it, which is what drops the half-filled

@@ -361,3 +361,109 @@ describe('POST /api/networks/reorder', () => {
     expect(res.body.networks.map((n: { name: string }) => n.name)).toEqual(['c', 'a', 'b']);
   });
 });
+
+// The instance network lockdown (#298). The predicate itself is covered in
+// services/networkPolicy.test.ts; what's tested here is that every route which
+// could get a user onto an off-list host actually consults it. Each of these was
+// a bypass before it was closed.
+describe('instance network lockdown', () => {
+  let lockdownAgent: LurkerTestAgent;
+  let carol: User;
+
+  beforeAll(async () => {
+    const { createUser } = await import('../db/users.js');
+    carol = createUser('net-carol');
+    lockdownAgent = await createAuthedAgent(app, carol.id);
+  });
+
+  beforeEach(async () => {
+    const dbMod = (await import('../db/index.js')).default;
+    dbMod.prepare('DELETE FROM instance_network').run();
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const { createInstanceNetwork } = await import('../db/instanceNetworks.js');
+    createInstanceNetwork({ name: 'Corp', host: 'irc.corp.example' });
+    setAllowUserDefinedNetworks(false);
+  });
+
+  afterAll(async () => {
+    const dbMod = (await import('../db/index.js')).default;
+    dbMod.prepare('DELETE FROM instance_network').run();
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    setAllowUserDefinedNetworks(true);
+  });
+
+  it('refuses to create a network on an unlisted host', async () => {
+    const res = await makeNet(lockdownAgent, { name: 'libera', host: 'irc.libera.chat' });
+    expect(res.status).toBe(403);
+    expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(false);
+  });
+
+  it('still allows creating a network on a listed host', async () => {
+    const res = await makeNet(lockdownAgent, { name: 'corp', host: 'irc.corp.example' });
+    expect(res.status).toBe(201);
+    expect(res.body.network.blocked).toBe(false);
+  });
+
+  // The bypass that makes the whole thing a formality if it's missed: create an
+  // approved network, then simply edit its host to wherever you actually wanted.
+  it('refuses to repoint an approved network at an unlisted host', async () => {
+    const created = await makeNet(lockdownAgent, { name: 'corp', host: 'irc.corp.example' });
+    const res = await lockdownAgent
+      .patch(`/api/networks/${created.body.network.id}`)
+      .send({ host: 'irc.libera.chat' });
+    expect(res.status).toBe(403);
+  });
+
+  it('still allows editing everything else on an approved network', async () => {
+    const created = await makeNet(lockdownAgent, { name: 'corp', host: 'irc.corp.example' });
+    const res = await lockdownAgent
+      .patch(`/api/networks/${created.body.network.id}`)
+      .send({ nick: 'newnick' });
+    expect(res.status).toBe(200);
+    expect(res.body.network.nick).toBe('newnick');
+  });
+
+  describe('a network that predates the lockdown', () => {
+    // Created while the instance was still open, then locked down underneath it.
+    // The row survives — the policy blocks connections, it doesn't confiscate
+    // networks or (via ON DELETE CASCADE) destroy their history.
+    async function makeStranded() {
+      const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+      setAllowUserDefinedNetworks(true);
+      const created = await makeNet(lockdownAgent, { name: 'old', host: 'irc.libera.chat' });
+      setAllowUserDefinedNetworks(false);
+      fakeManager.reset();
+      return created.body.network.id as number;
+    }
+
+    it('is reported as blocked, and survives', async () => {
+      const id = await makeStranded();
+      const res = await lockdownAgent.get('/api/networks');
+      const row = res.body.networks.find((n: { id: number }) => n.id === id);
+      expect(row).toBeTruthy();
+      expect(row.blocked).toBe(true);
+    });
+
+    it('cannot be connected', async () => {
+      const id = await makeStranded();
+      const res = await lockdownAgent.post(`/api/networks/${id}/connect`);
+      expect(res.status).toBe(403);
+      expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(false);
+    });
+
+    it('cannot be reconnected', async () => {
+      const id = await makeStranded();
+      const res = await lockdownAgent.post(`/api/networks/${id}/reconnect`);
+      expect(res.status).toBe(403);
+      expect(fakeManager.calls.some(([m]) => m === 'restartNetwork')).toBe(false);
+    });
+
+    // Blocked is not the same as owned-by-the-admin: the user can still get rid
+    // of it, which is their only way out if they don't want it sitting there.
+    it('can still be deleted by its owner', async () => {
+      const id = await makeStranded();
+      const res = await lockdownAgent.delete(`/api/networks/${id}`);
+      expect(res.status).toBe(200);
+    });
+  });
+});

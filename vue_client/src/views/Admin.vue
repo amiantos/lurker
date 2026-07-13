@@ -40,6 +40,7 @@ import AdminSidebar from '../components/AdminSidebar.vue';
 import UsersPane from '../components/admin-panes/UsersPane.vue';
 import InvitesPane from '../components/admin-panes/InvitesPane.vue';
 import UploadersPane from '../components/admin-panes/UploadersPane.vue';
+import NetworksPane from '../components/admin-panes/NetworksPane.vue';
 
 useSocket();
 
@@ -51,6 +52,7 @@ const PANES: Record<string, Component> = {
   users: UsersPane,
   invites: InvitesPane,
   uploaders: UploadersPane,
+  networks: NetworksPane,
 };
 
 const activeTabId = computed((): string => {

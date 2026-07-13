@@ -80,7 +80,12 @@
              connects from a datacenter IP, which some networks refuse without
              SASL. Self-hosted users don't hit this, so they aren't asked. -->
         <template v-if="saslRequired">
-          <p class="sasl-hint">
+          <p v-if="picked?.isInstance" class="sasl-hint">
+            <strong>{{ picked.name }}</strong> requires an account, so these are
+            <strong>not optional</strong> — register your nick with the network first, then enter it
+            here.
+          </p>
+          <p v-else class="sasl-hint">
             <strong>{{ picked?.name }}</strong> blocks unauthenticated connections from hosted
             servers, so these are <strong>not optional</strong> — register your nick with the
             network first, then enter it here.
@@ -159,7 +164,7 @@ import { nickFromUsername } from '../utils/ircNick.js';
 import {
   FALLBACK_CHANNEL,
   suggestedChannels,
-  type BuiltinNetwork,
+  type NetworkPreset,
 } from '../utils/builtinNetworks.js';
 
 const networks = useNetworksStore();
@@ -168,7 +173,7 @@ const auth = useAuthStore();
 const onboarding = useOnboarding();
 
 const step = ref<'pick' | 'setup'>('pick');
-const picked = ref<BuiltinNetwork | null>(null);
+const picked = ref<NetworkPreset | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 
@@ -194,7 +199,16 @@ const extraPlaceholder = computed(() =>
   chips.value.length ? '#another, #channel' : FALLBACK_CHANNEL,
 );
 
-const saslRequired = computed(() => config.isNode && !!picked.value?.saslLikelyRequired);
+// The builtin catalogue's saslLikelyRequired flag is specifically about
+// datacenter IPs — some networks refuse unauthenticated connections from one —
+// so for a builtin it only applies on a hosted cell. An admin who ticks the flag
+// on their OWN instance preset is stating a fact about their network, and that
+// holds on every edition.
+const saslRequired = computed(() => {
+  const net = picked.value;
+  if (!net?.saslLikelyRequired) return false;
+  return net.isInstance === true || config.isNode;
+});
 
 function toggle(channel: string): void {
   const idx = selected.value.indexOf(channel);
@@ -202,7 +216,7 @@ function toggle(channel: string): void {
   else selected.value.push(channel);
 }
 
-function onPick(net: BuiltinNetwork): void {
+function onPick(net: NetworkPreset): void {
   picked.value = net;
   form.name = net.name;
   form.host = net.host;

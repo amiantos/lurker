@@ -7,10 +7,10 @@ import {
   suggestedChannels,
   LURKER_CHANNEL,
   LURKER_TAG,
-  type BuiltinNetwork,
+  type NetworkPreset,
 } from './builtinNetworks.js';
 
-function net(overrides: Partial<BuiltinNetwork> = {}): BuiltinNetwork {
+function net(overrides: Partial<NetworkPreset> = {}): NetworkPreset {
   return {
     name: 'Example',
     host: 'irc.example.org',
@@ -51,6 +51,22 @@ describe('suggestedChannels', () => {
   it('does not list the same channel twice when defaultChannel IS #lurker', () => {
     const both = net({ tags: [LURKER_TAG], defaultChannel: '#Lurker' });
     expect(suggestedChannels(both)).toStrictEqual([LURKER_CHANNEL]);
+  });
+
+  // An admin-defined instance preset (#298) is the admin's call, full stop. We
+  // don't append #lurker to it: they run the place, and a corporate instance
+  // doesn't want its new hires auto-joined into a public support channel.
+  it('takes an instance preset’s channels verbatim, without adding #lurker', () => {
+    const preset = net({
+      isInstance: true,
+      recommendedChannels: ['#general', '#random'],
+      tags: [LURKER_TAG],
+    });
+    expect(suggestedChannels(preset)).toStrictEqual(['#general', '#random']);
+  });
+
+  it('offers nothing for an instance preset with no recommended channels', () => {
+    expect(suggestedChannels(net({ isInstance: true }))).toStrictEqual([]);
   });
 });
 

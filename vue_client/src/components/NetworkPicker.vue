@@ -22,8 +22,10 @@
         spellcheck="false"
         aria-label="Search networks"
       />
+      <!-- The tag chips are a facet over the builtin catalogue's metadata. With
+           the builtins hidden (locked-down instance) they'd filter nothing. -->
       <button
-        v-if="builtinNetworkTags.length"
+        v-if="showTagFilter"
         type="button"
         class="filter-toggle"
         :class="{ on: showFilters || !!active }"
@@ -36,12 +38,7 @@
       </button>
     </div>
 
-    <div
-      v-if="showFilters && builtinNetworkTags.length"
-      class="tags"
-      role="group"
-      aria-label="Filter by tag"
-    >
+    <div v-if="showFilters && showTagFilter" class="tags" role="group" aria-label="Filter by tag">
       <button
         v-for="tag in builtinNetworkTags"
         :key="tag"
@@ -56,11 +53,12 @@
     </div>
 
     <ul class="list">
-      <li v-for="net in filtered" :key="net.name">
+      <li v-for="net in filtered" :key="net.isInstance ? `i:${net.host}` : net.name">
         <button type="button" class="net-card" @click="$emit('select', net)">
           <span class="net-head">
             <span class="net-name">{{ net.name }}</span>
-            <span v-if="displayTags(net).length" class="net-tags">
+            <span v-if="net.isInstance" class="net-instance">recommended here</span>
+            <span v-else-if="displayTags(net).length" class="net-tags">
               {{ displayTags(net).join(', ') }}
             </span>
           </span>
@@ -88,28 +86,45 @@
       <li v-if="!filtered.length" class="none">No networks match.</li>
     </ul>
 
-    <button type="button" class="manual" @click="$emit('manual')">Enter details manually →</button>
+    <!-- Locked down: no manual entry, because the server would refuse the host
+         anyway (403). Say why rather than leaving a dead end where the escape
+         hatch used to be. -->
+    <button v-if="presets.allowUserDefined" type="button" class="manual" @click="$emit('manual')">
+      Enter details manually →
+    </button>
+    <p v-else class="locked">This server only allows the networks listed above.</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import {
   builtinNetworks,
   builtinNetworkTags,
   LURKER_TAG,
-  type BuiltinNetwork,
+  type NetworkPreset,
 } from '../utils/builtinNetworks.js';
+import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 
-defineEmits<{ select: [net: BuiltinNetwork]; manual: [] }>();
+defineEmits<{ select: [net: NetworkPreset]; manual: [] }>();
+
+const presets = useNetworkPresetsStore();
+// Idempotent (the store coalesces in-flight fetches), and failing is fine: the
+// store stays permissive and empty, so the picker degrades to exactly the
+// builtins-only list it showed before this feature existed.
+onMounted(() => {
+  if (!presets.loaded) presets.fetchAll().catch(() => {});
+});
 
 // The lurker marker is shown as a badge, not in the card's tag list.
-function displayTags(net: BuiltinNetwork): string[] {
+function displayTags(net: NetworkPreset): string[] {
   return net.tags.filter((t) => t !== LURKER_TAG);
 }
-function hasLurker(net: BuiltinNetwork): boolean {
+function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
 }
+
+const showTagFilter = computed(() => presets.allowUserDefined && builtinNetworkTags.length > 0);
 
 const query = ref('');
 // Single-select tag filter: clicking a chip selects it (clearing any other);
@@ -132,13 +147,26 @@ function formatCount(n: number): string {
 // Text search matches network name OR any tag (partial), so typing "gam" finds
 // gaming networks too; the (single) selected chip narrows by exact category.
 // The two AND together.
-const filtered = computed<BuiltinNetwork[]>(() => {
+// Everything on offer, admin-defined presets first (#298). When the instance is
+// locked down the builtins aren't merely deprioritized, they're gone: a private
+// or corporate instance would otherwise show a brand-new user a wall of 95
+// public networks they are not permitted to connect to. The server enforces this
+// independently (services/networkPolicy) — this is the UI keeping its promise
+// not to offer what the connect path would refuse.
+const offered = computed<NetworkPreset[]>(() =>
+  presets.allowUserDefined ? [...presets.presets, ...builtinNetworks] : [...presets.presets],
+);
+
+const filtered = computed<NetworkPreset[]>(() => {
   const q = query.value.trim().toLowerCase();
   const tag = active.value;
-  return builtinNetworks.filter((n) => {
+  return offered.value.filter((n) => {
     if (q && !n.name.toLowerCase().includes(q) && !n.tags.some((t) => t.toLowerCase().includes(q)))
       return false;
-    if (tag && !n.tags.includes(tag)) return false;
+    // Tag chips are a facet over the builtin catalogue's metadata; instance
+    // presets carry no tags, so a tag filter would silently hide the admin's own
+    // networks. Keep them pinned through it.
+    if (tag && !n.isInstance && !n.tags.includes(tag)) return false;
     return true;
   });
 });
@@ -280,6 +308,15 @@ const filtered = computed<BuiltinNetwork[]>(() => {
   color: var(--warn);
   white-space: nowrap;
 }
+/* Marks a network the instance's admin defined, distinguishing it from the
+   bundled catalogue it's pinned above. */
+.net-instance {
+  flex: 1;
+  min-width: 0;
+  color: var(--accent);
+  text-align: right;
+  white-space: nowrap;
+}
 .stat i {
   opacity: 0.75;
 }
@@ -287,6 +324,12 @@ const filtered = computed<BuiltinNetwork[]>(() => {
   color: var(--fg-muted);
   padding: var(--space-4);
   text-align: center;
+}
+/* Stands where "enter details manually" would be on an unrestricted instance. */
+.locked {
+  margin: 0;
+  padding: var(--space-2) 0;
+  color: var(--fg-muted);
 }
 .manual {
   align-self: flex-start;

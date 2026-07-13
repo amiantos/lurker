@@ -452,6 +452,14 @@ export const EXPORT_TABLES = Object.freeze({
     reason: 'instance-level operational settings (e.g. uploads.allow_user_defined), not user data',
   },
 
+  instance_network: {
+    mode: 'skip',
+    reason:
+      'the networks THIS instance recommends (#298) — admin config, not user data. A user’s own ' +
+      'networks live in `networks` and export normally; the presets belong to whichever instance ' +
+      'they are imported into, which may recommend something else entirely',
+  },
+
   sessions: {
     mode: 'skip',
     reason: 'cookie-based session tokens; new instance issues its own',

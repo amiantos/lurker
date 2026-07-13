@@ -44,7 +44,12 @@
           <span>Real name (optional)</span>
           <input v-model="form.realname" />
         </label>
-        <p v-if="showSaslHint" class="sasl-hint">
+        <p v-if="showSaslHint && picked?.isInstance" class="sasl-hint">
+          <strong>{{ picked.name }}</strong> requires an account, so the SASL account and password
+          below are <strong>not optional</strong> — register your nick with the network first, then
+          enter it here.
+        </p>
+        <p v-else-if="showSaslHint" class="sasl-hint">
           <strong>{{ picked?.name }}</strong> blocks unauthenticated connections from hosted
           servers, so the SASL account and password below are <strong>not optional</strong> —
           register your nick with the network first, then enter it here.
@@ -174,7 +179,7 @@ import {
   FALLBACK_CHANNEL,
   LURKER_CHANNEL,
   suggestedChannels,
-  type BuiltinNetwork,
+  type NetworkPreset,
 } from '../utils/builtinNetworks.js';
 
 const props = withDefaults(
@@ -227,9 +232,9 @@ const showAdvanced = ref(
 // form. Picking a built-in prefills the connection fields so the user only has
 // to supply a nick.
 const step = ref<'pick' | 'form'>(isEdit.value ? 'form' : 'pick');
-const picked = ref<BuiltinNetwork | null>(null);
+const picked = ref<NetworkPreset | null>(null);
 
-function onPick(net: BuiltinNetwork): void {
+function onPick(net: NetworkPreset): void {
   form.name = net.name;
   form.host = net.host;
   form.port = net.port;
@@ -257,10 +262,16 @@ function onManual(): void {
 
 // Node (hosted-cell) clients connect from a datacenter IP, where some networks
 // (e.g. Libera) refuse unauthenticated connections — nudge the user to fill in
-// SASL. Self-hosted (standalone) connections don't hit this, so it's node-only.
-const showSaslHint = computed(
-  () => step.value === 'form' && config.isNode && !!picked.value?.saslLikelyRequired,
-);
+// SASL. Self-hosted (standalone) connections don't hit this, so for a builtin
+// it's node-only. An admin-defined instance preset (#298) is different: ticking
+// "requires an account" there is a statement about their own network, true on
+// every edition.
+const showSaslHint = computed(() => {
+  if (step.value !== 'form') return false;
+  const net = picked.value;
+  if (!net?.saslLikelyRequired) return false;
+  return net.isInstance === true || config.isNode;
+});
 
 // When SASL is effectively required (a hosted cell on a network that blocks
 // unauthenticated cloud IPs), drop the "(optional)" qualifier on the labels.
