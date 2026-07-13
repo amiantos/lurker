@@ -51,10 +51,14 @@
     >
       <i class="fa-solid fa-circle-arrow-up"></i>
     </button>
+    <!-- Matches what the server actually accepts (image + text). It only listed
+         images, so a .txt — which the upload route has always taken, and which is
+         the passthrough path — could not be picked at all: macOS greys out
+         non-matching files, with no "All Files" escape. Widens further in #515. -->
     <input
       ref="fileInputEl"
       type="file"
-      accept="image/*"
+      :accept="ACCEPTED_FILE_TYPES"
       class="file-hidden"
       @change="onFileSelected"
     />
@@ -157,6 +161,7 @@ import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightR
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
 import { highlightRuleDetailParts } from '../utils/highlightFormat.js';
+import { ACCEPTED_FILE_TYPES, isUploadableType } from '../utils/uploaders.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
@@ -1748,7 +1753,7 @@ function onDrop(e: DragEvent): void {
   dragOver.value = false;
   if (!sendable.value) return;
   const file = e.dataTransfer?.files?.[0];
-  if (!file || !file.type.startsWith('image/')) return;
+  if (!file || !isUploadableType(file.type)) return;
   uploads.upload(file, file.name).catch(() => {});
 }
 

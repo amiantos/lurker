@@ -15,9 +15,10 @@
 //      while the same bytes via https.request succeed.
 // Both go away when we hand the body off to https.request directly.
 
-import { buildMultipart, postBuffer } from './multipart.js';
-import type { MultipartPart } from './multipart.js';
+import { buildMultipart, postBuffer, postMultipart } from './multipart.js';
+import type { StreamPart } from './multipart.js';
 import { USER_AGENT } from '../../utils/userAgent.js';
+import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 const ENDPOINT = 'https://catbox.moe/user/api.php';
@@ -50,25 +51,27 @@ export const configSchema: ConfigField[] = [
 ];
 
 export async function upload(
-  buffer: Buffer,
+  source: UploadSource,
   { filename, mime }: UploadMeta,
   config: { userhash?: string } = {},
 ): Promise<UploadResult> {
-  const parts: MultipartPart[] = [{ name: 'reqtype', value: 'fileupload' }];
+  const parts: StreamPart[] = [{ name: 'reqtype', value: 'fileupload' }];
   if (config.userhash) parts.push({ name: 'userhash', value: config.userhash });
   parts.push({
     name: 'fileToUpload',
     filename,
     contentType: mime,
-    value: buffer,
+    source,
   });
-  const { body, contentType } = buildMultipart(parts);
 
   let resp;
   try {
-    resp = await postBuffer(ENDPOINT, body, {
+    // postMultipart streams the file and still sends an exact Content-Length,
+    // which is the property catbox's PHP backend needs (it stalls on chunked
+    // transfer-encoding) — so this keeps the reason postBuffer existed while
+    // dropping the "whole file in a Buffer" part of it.
+    resp = await postMultipart(ENDPOINT, parts, {
       headers: {
-        'Content-Type': contentType,
         'User-Agent': USER_AGENT,
         Accept: '*/*',
       },

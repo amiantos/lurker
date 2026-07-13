@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import * as local from './local.js';
+import { bufferSource } from './source.js';
 
 let dir: string;
 const prevEnv = process.env.LOCAL_UPLOADS_DIR;
@@ -31,7 +32,11 @@ describe('local driver', () => {
 
   it('writes bytes to disk and returns a relative URL + on-disk ref', async () => {
     const bytes = Buffer.from('hello local disk');
-    const res = await local.upload(bytes, { filename: 'note.txt', mime: 'text/plain' }, {});
+    const res = await local.upload(
+      bufferSource(bytes),
+      { filename: 'note.txt', mime: 'text/plain' },
+      {},
+    );
 
     expect(res.url).toMatch(/^\/uploads\/local\/[0-9a-f]{12}\.txt$/);
     expect(res.ref).toMatch(/^[0-9a-f]{12}\.txt$/);
@@ -50,7 +55,7 @@ describe('local driver', () => {
 
   it('takes the extension from the pipeline filename, not a hostile claim', async () => {
     const res = await local.upload(
-      Buffer.from('x'),
+      bufferSource(Buffer.from('x')),
       // The route always passes {basename}.{pipeline-ext}; even a traversal-y
       // basename can only affect the (re-sanitized) extension, never the path.
       { filename: '../../etc/passwd.png', mime: 'image/png' },
@@ -61,7 +66,7 @@ describe('local driver', () => {
 
   it('deletes the on-disk bytes for its ref (orphan reap)', async () => {
     const res = await local.upload(
-      Buffer.from('to-delete'),
+      bufferSource(Buffer.from('to-delete')),
       { filename: 'x.txt', mime: 'text/plain' },
       {},
     );

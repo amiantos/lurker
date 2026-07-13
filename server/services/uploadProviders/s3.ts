@@ -23,6 +23,8 @@
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { USER_AGENT } from '../../utils/userAgent.js';
+import { putSource, isOk } from './multipart.js';
+import { hashOf, type UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
 
 export const driver = 's3';
@@ -151,6 +153,7 @@ export function signObjectRequest(
     bucket,
     key,
     payload = Buffer.alloc(0),
+    payloadHash: precomputedHash,
     contentType,
     region,
     accessKeyId,
@@ -161,6 +164,11 @@ export function signObjectRequest(
     bucket: string;
     key: string;
     payload?: Buffer;
+    // Hex sha256 of the body, when the caller already has it. SigV4 needs the
+    // payload hash to sign, but an upload's payload may be a 200 MB temp file we
+    // refuse to read into memory — so the caller streams it through a hash first
+    // (source.hashOf) and passes the digest here instead of the bytes.
+    payloadHash?: string;
     contentType?: string;
     region: string;
     accessKeyId: string;
@@ -179,7 +187,7 @@ export function signObjectRequest(
     .replace(/\.\d{3}Z$/, 'Z');
   const dateStamp = amzDate.slice(0, 8);
   const scope = `${dateStamp}/${region}/s3/aws4_request`;
-  const payloadHash = sha256hex(payload);
+  const payloadHash = precomputedHash ?? sha256hex(payload);
 
   // Signed headers, sorted by lowercase name. Everything we send that the server
   // may validate is signed — including cache-control, so a store can't reject it
@@ -228,7 +236,7 @@ function requireField(config: Record<string, string>, field: string): string {
 }
 
 export async function upload(
-  buffer: Buffer,
+  source: UploadSource,
   { filename, mime, kind }: UploadMeta,
   config: Record<string, string> = {},
 ): Promise<UploadResult> {
@@ -241,26 +249,27 @@ export async function upload(
   const region = (config.region || '').trim() || 'auto';
 
   const key = buildObjectKey(filename, { kind, prefix: config.key_prefix });
+  // SigV4 signs the payload hash, so the bytes get read twice: once to hash
+  // (streamed, constant memory), once to send (streamed, constant memory). Two
+  // passes over a warm temp file beats holding it in the heap. UNSIGNED-PAYLOAD
+  // would avoid the first pass but changes the signing contract — not this PR.
+  const payloadHash = await hashOf(source);
   const signed = signObjectRequest({
     method: 'PUT',
     endpoint,
     bucket,
     key,
-    payload: buffer,
+    payloadHash,
     contentType: mime,
     region,
     accessKeyId,
     secretAccessKey,
   });
 
-  const resp = await fetch(signed.url, {
-    method: 'PUT',
-    headers: signed.headers,
-    body: new Uint8Array(buffer),
-  });
+  const resp = await putSource(signed.url, source, { headers: signed.headers });
 
-  if (!resp.ok) {
-    const text = (await resp.text()).slice(0, 200);
+  if (!isOk(resp)) {
+    const text = resp.text.slice(0, 200);
     throw Object.assign(new Error(`s3 upload failed: ${resp.status} ${text}`), {
       code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });

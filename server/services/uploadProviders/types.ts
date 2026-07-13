@@ -8,6 +8,8 @@
 // registry) and the individual driver modules can import the types without an
 // import cycle.
 
+import type { UploadSource } from './source.js';
+
 export type ContentClass = 'image' | 'text' | 'binary';
 
 /** One field a driver needs configured. `secret` fields are encrypted at rest
@@ -75,7 +77,15 @@ export interface UploadDriver {
   label: string; // default human label
   capabilities: DriverCapabilities;
   configSchema: ConfigField[];
-  upload(buffer: Buffer, meta: UploadMeta, config: Record<string, string>): Promise<UploadResult>;
+  // The bytes arrive as an UploadSource (source.ts), not a Buffer: a passthrough
+  // upload can be hundreds of megabytes and lives in a temp file, which the driver
+  // streams rather than reads. A driver must NOT readAll() it on the upload path —
+  // that reintroduces exactly the heap blowup #543 removed.
+  upload(
+    source: UploadSource,
+    meta: UploadMeta,
+    config: Record<string, string>,
+  ): Promise<UploadResult>;
   // Present iff capabilities.supportsDelete. CONTRACT: must be idempotent —
   // "already gone" resolves rather than throws, because the route drops the DB
   // row only after delete() succeeds, so a delete whose response was lost gets

@@ -95,3 +95,18 @@ export function missingRequired(
     return !String(values[f.key] ?? '').trim();
   });
 }
+
+// What the upload route accepts today: images (optimized by the sharp pipeline)
+// and text/plain (passthrough). ONE definition, so the file picker's `accept` and
+// the drag-drop gate can't drift apart — they had, and the picker was the stricter
+// of the two: it listed images only, so a .txt could not be selected at all on
+// macOS (non-matching files are greyed out, with no "All Files" escape) even
+// though the server has always taken one.
+//
+// #515 replaces this with the effective accepted set projected from the server,
+// once media lands and "what's allowed" stops being a constant.
+export const ACCEPTED_FILE_TYPES = 'image/*,text/plain,.txt';
+
+export function isUploadableType(mime: string): boolean {
+  return mime.startsWith('image/') || mime === 'text/plain';
+}
