@@ -1143,29 +1143,33 @@ onBeforeUnmount(() => {
    absolute) so they sit beside the unread count without overlapping it (which is
    also why the count never has to step aside here). The container stays visible
    because the << collapse control is a persistent affordance — but the + (add
-   network) and gear (settings) reveal only on hover / selection / focus, like
-   the other headers' actions. */
+   network), shield (admin panel) and gear (settings) reveal only on hover /
+   selection / focus, like the other headers' actions. */
 .system-net .net-actions {
   position: static;
   transform: none;
   opacity: 1;
   pointer-events: auto;
 }
-/* On pointer (hover-capable) devices, declutter the header: hide the + and gear
-   until the row is hovered, selected, or focused. Touch devices have no hover to
-   reveal them (and display:none would make them unfocusable, so :focus-within
-   couldn't help either) — so there the whole block is skipped and they stay
-   visible. The collapse << is always visible on every device regardless. */
+/* On pointer (hover-capable) devices, declutter the header: hide the +, shield
+   and gear until the row is hovered, selected, or focused. Touch devices have no
+   hover to reveal them (and display:none would make them unfocusable, so
+   :focus-within couldn't help either) — so there the whole block is skipped and
+   they stay visible. The collapse << is always visible on every device. */
 @media (hover: hover) {
   .system-net .net-add,
+  .system-net .net-admin,
   .system-net .net-settings {
     display: none;
   }
   .system-net .net-head:hover .net-add,
+  .system-net .net-head:hover .net-admin,
   .system-net .net-head:hover .net-settings,
   .system-net .net-head.active .net-add,
+  .system-net .net-head.active .net-admin,
   .system-net .net-head.active .net-settings,
   .system-net .net-head:focus-within .net-add,
+  .system-net .net-head:focus-within .net-admin,
   .system-net .net-head:focus-within .net-settings {
     display: inline-flex;
   }
