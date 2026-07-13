@@ -40,7 +40,13 @@ function nextHistoryToken() {
 // (forNetwork, the sidebar) — skip them. Network buffers keep the
 // `${networkId}::${target}` form. networkId == null is what makes a buffer
 // app-scoped; there is no magic network value.
-function key(networkId: number | string | null, target: string) {
+// Exported because it is also the format networks.activeKey holds, and so the
+// format the navHistory/recentBuffers stores key their trails by: anything
+// ranking a buffer against those trails has to derive the same string from a
+// (networkId, target) pair. activate() canonicalizes casing before setActive(),
+// so a key built from a stored buffer's `target` always matches the activeKey
+// recorded for it.
+export function bufferKey(networkId: number | string | null, target: string) {
   return networkId == null ? target : `${networkId}::${target}`;
 }
 
@@ -56,7 +62,7 @@ function resolveExistingKey(
   networkId: number | string | null,
   target: string,
 ): string | null {
-  const exact = key(networkId, target);
+  const exact = bufferKey(networkId, target);
   if (buffers[exact]) return exact;
   if (target.startsWith(':')) return null;
   const nid = Number(networkId);
@@ -253,7 +259,7 @@ function ensureBuffer(
   // then under the target's own casing, so the first writer's case is canonical.
   const existing = resolveExistingKey(state.buffers, networkId, target);
   if (existing) return state.buffers[existing];
-  const k = key(networkId, target);
+  const k = bufferKey(networkId, target);
   state.buffers[k] = makeBuffer(networkId, target);
   return state.buffers[k];
 }
@@ -353,7 +359,7 @@ export const useBuffersStore = defineStore('buffers', {
       // Active-divider tracking + live mark-read. Applies to the system buffer
       // too (#355): it's now a normal buffer with a server-owned read pointer
       // (buffer_reads, null networkId), so a live line marks read the same way —
-      // key() folds the null networkId to the bare :system: key, and the
+      // bufferKey() folds the null networkId to the bare :system: key, and the
       // mark-read below rides through with networkId null.
       if (event.id != null) {
         const networks = useNetworksStore();
@@ -362,7 +368,7 @@ export const useBuffersStore = defineStore('buffers', {
         // `bob` while the user sits in the `Bob` buffer reads as inactive and
         // the divider/read-sync below silently skips (#327). Mirrors the same
         // resolve-then-compare applyReadState does.
-        const isActive = networks.activeKey === key(buf.networkId, buf.target);
+        const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
         if (isActive) {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
@@ -696,7 +702,7 @@ export const useBuffersStore = defineStore('buffers', {
       target: string,
       { wipeMessages = false } = {},
     ) {
-      const buf = this.buffers[key(networkId, target)];
+      const buf = this.buffers[bufferKey(networkId, target)];
       if (!buf || !buf.detached) return;
       buf.detached = false;
       buf.liveDuringDetach = 0;
@@ -932,9 +938,9 @@ export const useBuffersStore = defineStore('buffers', {
       const networks = useNetworksStore();
       // Compare against the resolved buffer's canonical key, not the (possibly
       // differently-cased) broadcast target, so badge suppression tracks the
-      // buffer the user is actually sitting in. key() also yields the bare
+      // buffer the user is actually sitting in. bufferKey() also yields the bare
       // sentinel for the app-scoped system buffer (networkId null).
-      const isActive = networks.activeKey === key(buf.networkId, buf.target);
+      const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
       // Suppress the unread badge for the buffer the user is sitting in.
       // A read-state broadcast can briefly carry a non-zero unread for the
       // active buffer when an IRC event lands before the mark-read echo;
@@ -996,9 +1002,9 @@ export const useBuffersStore = defineStore('buffers', {
       // target when none is open yet (first writer's case becomes canonical).
       const existing = this.findByTarget(networkId, target);
       const canonTarget = existing ? existing.target : target;
-      // key() yields the bare sentinel for the app-scoped system buffer
+      // bufferKey() yields the bare sentinel for the app-scoped system buffer
       // (networkId null) and the usual `${networkId}::${target}` otherwise.
-      const newKey = key(networkId, canonTarget);
+      const newKey = bufferKey(networkId, canonTarget);
       const prevKey = networks.activeKey;
       if (prevKey && prevKey !== newKey) {
         const prev = this.buffers[prevKey];
@@ -1147,7 +1153,7 @@ export const useBuffersStore = defineStore('buffers', {
       buf.typing[canon] = { nick, state, expiresAt: Date.now() + duration, userhost };
 
       const timer = setTimeout(() => {
-        const b = this.buffers[key(networkId, tkTarget)];
+        const b = this.buffers[bufferKey(networkId, tkTarget)];
         if (b && b.typing[canon]) {
           delete b.typing[canon];
         }
