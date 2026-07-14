@@ -7,6 +7,7 @@
     "website": "https://libera.chat",
     "users": 29173,
     "channels": 20622,
+    "defaultChannel": "#libera",
     "saslLikelyRequired": true,
     "tags": ["foss", "programming", "anime", "gaming", "lurker"]
   },
@@ -18,6 +19,7 @@
     "website": "https://www.undernet.org",
     "users": 15675,
     "channels": 5248,
+    "defaultChannel": "#Undernet",
     "saslLikelyRequired": false,
     "tags": []
   },
@@ -29,6 +31,7 @@
     "website": "https://www.ircnet.com",
     "users": 3286,
     "channels": 1913,
+    "defaultChannel": "#ircnet",
     "saslLikelyRequired": false,
     "tags": []
   },
@@ -51,6 +54,7 @@
     "website": "https://hackint.org",
     "users": 10724,
     "channels": 2053,
+    "defaultChannel": "#hackint",
     "saslLikelyRequired": false,
     "tags": ["hacking", "security", "tech"]
   },
@@ -62,6 +66,7 @@
     "website": "https://www.efnet.org",
     "users": 7741,
     "channels": 4943,
+    "defaultChannel": "#efnet",
     "saslLikelyRequired": false,
     "tags": ["tech"]
   },
@@ -95,6 +100,7 @@
     "website": "https://freenode.net",
     "users": 4685,
     "channels": 7541,
+    "defaultChannel": "#freenode",
     "saslLikelyRequired": false,
     "tags": ["foss", "programming", "tech"]
   },
@@ -205,6 +211,7 @@
     "website": "https://esper.net",
     "users": 1424,
     "channels": 1699,
+    "defaultChannel": "#esper",
     "saslLikelyRequired": false,
     "tags": ["gaming"]
   },
@@ -238,6 +245,7 @@
     "website": "https://www.oftc.net/",
     "users": 18866,
     "channels": 3923,
+    "defaultChannel": "#oftc",
     "saslLikelyRequired": false,
     "tags": ["foss", "tech", "linux"]
   },
@@ -282,6 +290,7 @@
     "website": "https://p2p-network.net/",
     "users": 7302,
     "channels": 684,
+    "defaultChannel": "#p2p-net",
     "saslLikelyRequired": false,
     "tags": ["filesharing", "international"]
   },
@@ -612,6 +621,7 @@
     "website": "https://www.irc4fun.net/",
     "users": 470,
     "channels": 220,
+    "defaultChannel": "#IRC4Fun",
     "saslLikelyRequired": false,
     "tags": ["activism", "international", "tech"]
   },
@@ -777,6 +787,7 @@
     "website": "https://www.afternet.org/",
     "users": 299,
     "channels": 158,
+    "defaultChannel": "#AfterNET",
     "saslLikelyRequired": false,
     "tags": ["international"]
   },

@@ -8,7 +8,6 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 // setting it here before importing the router scopes it to this file and lets us
 // assert the endpoint reflects the hosted-node edition.
 process.env.LURKER_EDITION = 'node';
-process.env.LURKER_NEW_ADMIN_PANEL = '1';
 
 import type { Express } from 'express';
 import { createTestApp, createAnonAgent } from '../test-utils/testApp.js';
@@ -22,14 +21,12 @@ beforeAll(async () => {
 
 afterAll(() => {
   delete process.env.LURKER_EDITION;
-  delete process.env.LURKER_NEW_ADMIN_PANEL;
 });
 
 describe('GET /api/config', () => {
-  it('is public (no auth) and reports the edition + feature flags', async () => {
+  it('is public (no auth) and reports the edition', async () => {
     const res = await createAnonAgent(app).get('/api/config');
     expect(res.status).toBe(200);
     expect(res.body.edition).toBe('node');
-    expect(res.body.newAdminPanel).toBe(true);
   });
 });

@@ -40,3 +40,24 @@ export function allowUserDefinedUploaders(): boolean {
 export function setAllowUserDefinedUploaders(allow: boolean): void {
   setInstanceSetting(ALLOW_USER_DEFINED_KEY, allow ? '1' : '0');
 }
+
+export const ALLOW_USER_DEFINED_NETWORKS_KEY = 'networks.allow_user_defined';
+
+/**
+ * May users connect to networks the admin hasn't listed? (#298)
+ *
+ * Default when unset: yes, on BOTH editions — unlike the uploader switch, which
+ * defaults off when hosted. A hosted customer is the admin of their own cell and
+ * connecting to whatever network they like is the entire product; defaulting them
+ * into a closed instance would lock them out of it. This is a self-hoster's
+ * opt-in for a private/corporate instance, not a fleet policy.
+ */
+export function allowUserDefinedNetworks(): boolean {
+  const v = getInstanceSetting(ALLOW_USER_DEFINED_NETWORKS_KEY);
+  if (v === null) return true;
+  return v === '1';
+}
+
+export function setAllowUserDefinedNetworks(allow: boolean): void {
+  setInstanceSetting(ALLOW_USER_DEFINED_NETWORKS_KEY, allow ? '1' : '0');
+}

@@ -25,24 +25,21 @@ export function getDefault(key: string): SettingValue | undefined {
   return opt ? opt.default : undefined;
 }
 
-/** Edition/role context that decides which settings surfaces are visible. */
+/** Edition context that decides which settings surfaces are visible. */
 export interface VisibilityContext {
-  isAdmin: boolean;
   isNode: boolean;
-  /** Whether the dedicated admin panel (LURKER_NEW_ADMIN_PANEL) is enabled. */
-  newAdminPanel: boolean;
 }
 
 /**
- * Whether a settings category shows in the sidebar. `adminOnly` categories are
- * hidden from non-admins; when the dedicated admin panel is enabled they leave
- * Settings entirely (they live at /admin instead). `selfHostedOnly` ones are
- * hidden in the hosted (node) edition where the operator, not the tenant, owns
- * them.
+ * Whether a settings category shows in the sidebar. `selfHostedOnly` categories
+ * are hidden in the hosted (node) edition, where the operator — not the tenant —
+ * owns them.
+ *
+ * There is deliberately no admin dimension here any more: instance administration
+ * lives entirely in the /admin panel, so Settings holds nothing an admin sees and
+ * a regular user doesn't.
  */
 export function categoryVisible(cat: SettingCategory, ctx: VisibilityContext): boolean {
-  if (cat.adminOnly && ctx.newAdminPanel) return false;
-  if (cat.adminOnly && !ctx.isAdmin) return false;
   if (cat.selfHostedOnly && ctx.isNode) return false;
   return true;
 }

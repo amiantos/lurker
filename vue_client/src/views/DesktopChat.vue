@@ -306,7 +306,6 @@ import { useActiveBuffer } from '../composables/useActiveBuffer.js';
 import { useBufferSearchScope } from '../composables/useBufferSearchScope.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
-import { useConfigStore } from '../stores/config.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import FriendsOverview from '../components/FriendsOverview.vue';
@@ -375,7 +374,6 @@ const {
 
 const settings = useSettingsStore();
 const auth = useAuthStore();
-const config = useConfigStore();
 const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
 const friends = useFriendsStore();
@@ -581,9 +579,8 @@ function openSettings() {
   router.push('/settings');
 }
 
-// Admin panel entry (collapsed-rail twin of the BufferList header shield):
-// admin-only, and only when the instance enabled LURKER_NEW_ADMIN_PANEL.
-const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+// Admin panel entry (collapsed-rail twin of the BufferList header shield).
+const showAdminEntry = computed(() => auth.isAdmin);
 function openAdmin() {
   router.push('/admin');
 }

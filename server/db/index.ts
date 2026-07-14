@@ -766,14 +766,37 @@ function migrate() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_uploader_config_one_default
       ON uploader_config(is_default) WHERE scope = 'instance' AND is_default = 1;
 
-    -- Minimal instance-level key/value settings (issue #510). First (and for now
-    -- only) key is uploads.allow_user_defined ('1'|'0'): may users define their
-    -- own uploaders at all — default '1' standalone, '0' hosted. Kept
-    -- uploader-scoped for now; the generalized instance-defaults surface (#299)
-    -- comes later.
+    -- Minimal instance-level key/value settings (issue #510). Keys today:
+    -- uploads.allow_user_defined and networks.allow_user_defined ('1'|'0').
     CREATE TABLE IF NOT EXISTS instance_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    );
+
+    -- Admin-defined network presets (#298): the networks THIS instance
+    -- recommends, floated to the top of the picker. Deliberately NOT a scope
+    -- column on the networks table (the uploader_config shape) — an uploader is
+    -- a shared thing you send to, but an IRC connection is inherently per-user
+    -- (own nick, own SASL, own session), so an admin cannot own one, only
+    -- recommend it. A preset is a template a user instantiates into their own
+    -- networks row; that keeps the networks table (and everything in ircManager
+    -- that assumes a user owns the row) completely untouched.
+    --
+    -- channels_json is a JSON string[] of recommended channels, pre-checked in
+    -- the first-run flow. Mirrors the shape of the client's builtinNetworks.json
+    -- so the picker can merge the two lists.
+    CREATE TABLE IF NOT EXISTS instance_network (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      host TEXT NOT NULL,
+      port INTEGER NOT NULL DEFAULT 6697,
+      tls INTEGER NOT NULL DEFAULT 1,
+      sasl_likely_required INTEGER NOT NULL DEFAULT 0,
+      channels_json TEXT NOT NULL DEFAULT '[]',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 }

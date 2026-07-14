@@ -29,12 +29,19 @@
       @end="onDragEnd"
     >
       <template #item="{ element: net }">
-        <li class="network">
+        <li class="network" :class="{ blocked: net.blocked }">
           <span class="grip" aria-hidden="true">
             <i class="fa-solid fa-grip-vertical"></i>
           </span>
           <span class="name">{{ net.name }}</span>
           <span class="host">{{ net.host }}</span>
+          <!-- The admin restricted this instance to a list of networks and this
+               one isn't on it (#298). Nothing has been deleted — it simply can't
+               connect — so say so, rather than letting the user keep clicking
+               Connect on a network that will never come up. -->
+          <span v-if="net.blocked" class="blocked-tag" title="Not allowed by this server's admin">
+            blocked by admin
+          </span>
         </li>
       </template>
     </draggable>
@@ -119,6 +126,18 @@ async function onDragEnd() {
 }
 .host {
   color: var(--fg-muted);
+}
+/* A network the instance admin's network restriction has taken out of service
+   (#298). Dimmed to read as inert, but still draggable and still deletable — the
+   row is the user's, only the connection is refused. */
+.network.blocked .name,
+.network.blocked .host {
+  opacity: 0.55;
+}
+.blocked-tag {
+  margin-left: auto;
+  color: var(--warn);
+  white-space: nowrap;
 }
 .drag-ghost {
   opacity: 0.4;

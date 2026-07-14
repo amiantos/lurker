@@ -8,9 +8,8 @@
   on the right — mirroring Settings.vue but simpler (no search, no scroll-spy).
 
   The active tab comes from the route param (/admin/:tab) and falls back to the
-  first tab. Gated by LURKER_NEW_ADMIN_PANEL + admin role: the router guard
-  (router.ts) redirects anyone who shouldn't be here to /settings, so this shell
-  assumes it is only ever mounted for an admin on a flag-on instance.
+  first tab. Admin-gated by the router guard (router.ts), which redirects anyone
+  else to /settings, so this shell assumes it is only ever mounted for an admin.
 -->
 
 <template>
@@ -40,6 +39,7 @@ import AdminSidebar from '../components/AdminSidebar.vue';
 import UsersPane from '../components/admin-panes/UsersPane.vue';
 import InvitesPane from '../components/admin-panes/InvitesPane.vue';
 import UploadersPane from '../components/admin-panes/UploadersPane.vue';
+import NetworksPane from '../components/admin-panes/NetworksPane.vue';
 
 useSocket();
 
@@ -51,6 +51,7 @@ const PANES: Record<string, Component> = {
   users: UsersPane,
   invites: InvitesPane,
   uploaders: UploadersPane,
+  networks: NetworksPane,
 };
 
 const activeTabId = computed((): string => {

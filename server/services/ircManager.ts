@@ -15,6 +15,7 @@ import {
 import { reopenBuffer } from '../db/closedBuffers.js';
 import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
 import { findUserById } from '../db/users.js';
+import { isNetworkHostAllowed } from './networkPolicy.js';
 import { getUserAwayState, writeAwayMarker, writeBackMarker } from '../db/userAwayState.js';
 import { listPinnedForUser } from '../db/pinnedBuffers.js';
 import { listCollapsedForUser } from '../db/nicklistCollapsed.js';
@@ -195,6 +196,13 @@ class IrcManager extends EventEmitter {
     if (findUserById(userId)?.is_paused) return null;
     const network = getNetwork(networkId, userId);
     if (!network) return null;
+    // The instance network lockdown (#298), gated in the same place and for the
+    // same reason as the pause check above: every connect path funnels through
+    // here, so one check covers boot-time autoconnect, the connect/reconnect
+    // routes and restartNetwork. Gating only the create route would leave the
+    // lockdown trivially bypassable by anyone who already had the network — and
+    // would do nothing at all on the next restart, when initAll reconnects it.
+    if (!isNetworkHostAllowed(network.host)) return null;
     let conn = this.getConnection(userId, networkId);
     if (conn) return conn;
 

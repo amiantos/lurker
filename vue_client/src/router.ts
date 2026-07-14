@@ -21,9 +21,9 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
-    // Dedicated admin panel (Milestone 4). Gated by both LURKER_NEW_ADMIN_PANEL
-    // and the admin role via the guard below; the flag defaults off, so this
-    // route is a no-op for existing self-hosted installs.
+    // Dedicated admin panel (Milestone 4), gated on the admin role by the guard
+    // below. It is where all instance administration lives; there is no longer a
+    // Users category inside Settings.
     path: '/admin/:tab?',
     name: 'admin',
     component: () => import('./views/Admin.vue'),
@@ -41,14 +41,21 @@ router.beforeEach(async (to) => {
   if (!auth.checked) await auth.fetchMe();
   if (to.meta.requiresAuth && !auth.user) return { name: 'login', query: { next: to.fullPath } };
   if (to.name === 'login' && auth.user) return { name: 'chat' };
-  if (to.meta.requiresAdmin) {
-    // The admin panel needs the instance flag on AND an admin account. Either
-    // missing → bounce to Settings rather than render an empty/forbidden shell.
-    // Fetch config on demand so a deep-link/refresh to /admin still resolves it.
-    const config = useConfigStore();
-    if (!config.checked) await config.fetch();
-    if (!config.newAdminPanel || !auth.isAdmin) return { name: 'settings' };
-  }
+
+  // Self-heal a failed boot config fetch. The store deliberately leaves `checked`
+  // false on failure so a later caller can retry — but App.vue's boot fetch runs
+  // exactly once, so without a second caller a single transient /api/config
+  // failure would strand the session on the standalone defaults for good, and a
+  // hosted tenant would be shown the operator-only surfaces that edition hides.
+  // Fire-and-forget: the store coalesces concurrent calls and latches on success,
+  // so this is a no-op on every navigation after the first success, and it must
+  // not block navigation.
+  const config = useConfigStore();
+  if (!config.checked) void config.fetch().catch(() => {});
+
+  // Non-admins bounce to Settings rather than render a forbidden shell. Every
+  // admin API is requireAdmin-gated regardless — this only decides what renders.
+  if (to.meta.requiresAdmin && !auth.isAdmin) return { name: 'settings' };
 });
 
 export default router;

@@ -44,7 +44,12 @@
           <span>Real name (optional)</span>
           <input v-model="form.realname" />
         </label>
-        <p v-if="showSaslHint" class="sasl-hint">
+        <p v-if="showSaslHint && picked?.isInstance" class="sasl-hint">
+          <strong>{{ picked.name }}</strong> requires an account, so the SASL account and password
+          below are <strong>not optional</strong> — register your nick with the network first, then
+          enter it here.
+        </p>
+        <p v-else-if="showSaslHint" class="sasl-hint">
           <strong>{{ picked?.name }}</strong> blocks unauthenticated connections from hosted
           servers, so the SASL account and password below are <strong>not optional</strong> —
           register your nick with the network first, then enter it here.
@@ -106,8 +111,9 @@
             />
           </label>
           <label v-if="!isEdit">
-            <span>Default channel</span>
+            <span>Channels to join</span>
             <input v-model="form.default_channel" :placeholder="channelPlaceholder" />
+            <small>Comma-separated, e.g. #lurker, #libera</small>
           </label>
           <label>
             <span>Commands to run on connect</span>
@@ -169,7 +175,12 @@ import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore, type Network } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
-import { LURKER_TAG, type BuiltinNetwork } from '../utils/builtinNetworks.js';
+import {
+  FALLBACK_CHANNEL,
+  LURKER_CHANNEL,
+  suggestedChannels,
+  type NetworkPreset,
+} from '../utils/builtinNetworks.js';
 
 const props = withDefaults(
   defineProps<{
@@ -200,7 +211,7 @@ const form = reactive({
   server_password: '',
   sasl_account: (netRaw?.sasl_account as string | undefined) ?? '',
   sasl_password: '',
-  default_channel: '#lurker',
+  default_channel: LURKER_CHANNEL,
   autoconnect: netRaw ? !!netRaw.autoconnect : true,
   connect_commands: (netRaw?.connect_commands as string | undefined) ?? '',
 });
@@ -221,16 +232,19 @@ const showAdvanced = ref(
 // form. Picking a built-in prefills the connection fields so the user only has
 // to supply a nick.
 const step = ref<'pick' | 'form'>(isEdit.value ? 'form' : 'pick');
-const picked = ref<BuiltinNetwork | null>(null);
+const picked = ref<NetworkPreset | null>(null);
 
-function onPick(net: BuiltinNetwork): void {
+function onPick(net: NetworkPreset): void {
   form.name = net.name;
   form.host = net.host;
   form.port = net.port;
   form.tls = net.tls;
-  // Always land the user in a channel rather than an empty server buffer:
-  // #lurker for a lurker-tagged network, else #chat as a common-enough lobby.
-  form.default_channel = net.tags.includes(LURKER_TAG) ? '#lurker' : '#chat';
+  // Always land the user in a channel rather than an empty server buffer: the
+  // channels we can vouch for (#lurker, the network's own — #308), else #chat as
+  // a common-enough lobby. The server splits this on commas, so a network with
+  // both gets both.
+  const suggested = suggestedChannels(net);
+  form.default_channel = suggested.length ? suggested.join(', ') : FALLBACK_CHANNEL;
   picked.value = net;
   step.value = 'form';
 }
@@ -242,25 +256,33 @@ function onManual(): void {
   form.host = '';
   form.port = 6697;
   form.tls = true;
-  form.default_channel = '#lurker';
+  form.default_channel = LURKER_CHANNEL;
   step.value = 'form';
 }
 
 // Node (hosted-cell) clients connect from a datacenter IP, where some networks
 // (e.g. Libera) refuse unauthenticated connections — nudge the user to fill in
-// SASL. Self-hosted (standalone) connections don't hit this, so it's node-only.
-const showSaslHint = computed(
-  () => step.value === 'form' && config.isNode && !!picked.value?.saslLikelyRequired,
-);
+// SASL. Self-hosted (standalone) connections don't hit this, so for a builtin
+// it's node-only. An admin-defined instance preset (#298) is different: ticking
+// "requires an account" there is a statement about their own network, true on
+// every edition.
+const showSaslHint = computed(() => {
+  if (step.value !== 'form') return false;
+  const net = picked.value;
+  if (!net?.saslLikelyRequired) return false;
+  return net.isInstance === true || config.isNode;
+});
 
 // When SASL is effectively required (a hosted cell on a network that blocks
 // unauthenticated cloud IPs), drop the "(optional)" qualifier on the labels.
 const saslRequired = computed(() => showSaslHint.value);
 
 // Placeholder echoes the prefilled default if the user clears the field.
-const channelPlaceholder = computed(() =>
-  picked.value && !picked.value.tags.includes(LURKER_TAG) ? '#chat' : '#lurker',
-);
+const channelPlaceholder = computed(() => {
+  if (!picked.value) return LURKER_CHANNEL;
+  const suggested = suggestedChannels(picked.value);
+  return suggested.length ? suggested.join(', ') : FALLBACK_CHANNEL;
+});
 
 // Passwords are write-only as far as the client is concerned: the API returns
 // only has_password / has_sasl_password booleans, never the secret, so the

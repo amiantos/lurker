@@ -62,6 +62,12 @@ export const useNetworksStore = defineStore('networks', {
     networks: [] as Network[],
     states: {} as Record<number | string, NetworkState>,
     activeKey: null as string | null,
+    // False until the first fetchAll() resolves. Without this, an empty
+    // `networks` array is ambiguous — it means both "this user has no networks"
+    // and "we haven't asked yet" — and anything keying off "has no networks"
+    // (the first-run flow, #300) would fire for every user on every boot,
+    // during the window before /api/networks answers.
+    loaded: false,
   }),
   getters: {
     networkById: (state) => (id: number) => state.networks.find((n) => n.id === id) || null,
@@ -94,6 +100,7 @@ export const useNetworksStore = defineStore('networks', {
     async fetchAll() {
       const { networks } = await api('/api/networks');
       this.networks = networks;
+      this.loaded = true;
     },
     async create(payload: Partial<Network>) {
       const { network } = await api('/api/networks', { method: 'POST', body: payload });

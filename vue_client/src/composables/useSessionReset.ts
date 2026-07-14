@@ -12,9 +12,11 @@ import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
+import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
 import { resetScrollState } from './useScrollState.js';
+import { resetOnboarding } from './useOnboarding.js';
 import { clearAppBadgeNow } from './useAppBadge.js';
 
 // Wipe every session-scoped piece of client state so the next user (after
@@ -39,8 +41,15 @@ export function resetSession(): void {
   drafts.$reset();
   usePushSubscriptionsStore().$reset();
   usePinsStore().$reset();
+  // Instance policy is the same for everyone on the box, but the *fetched* flag
+  // isn't — leaving it loaded would hand the next user a picker built from a
+  // response fetched under someone else's session.
+  useNetworkPresetsStore().$reset();
   resetPresence();
   resetScrollState();
+  // Closing the first-run flow unmounts it, which is what drops the half-filled
+  // form (nick, SASL password) with it — the next user re-evaluates from scratch.
+  resetOnboarding();
   // Drop the PWA app-icon badge so a stale highlight count doesn't outlive the
   // session. buffers.$reset() above already zeroes the total, but clear
   // explicitly in case the Badging watcher isn't wired in this context.

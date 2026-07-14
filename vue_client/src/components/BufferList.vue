@@ -346,7 +346,6 @@ import { usePinsStore } from '../stores/pins.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
-import { useConfigStore } from '../stores/config.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
 import { useNetworkActions } from '../composables/useNetworkActions.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
@@ -365,7 +364,6 @@ const pins = usePinsStore();
 const ignores = useIgnoresStore();
 const settings = useSettingsStore();
 const auth = useAuthStore();
-const config = useConfigStore();
 const bufferActions = useBufferActions();
 const networkActions = useNetworkActions();
 const networkEditor = useNetworkEditor();
@@ -388,10 +386,9 @@ function openSettings(): void {
   router.push('/settings').catch((err) => console.error('[BufferList] open settings failed', err));
 }
 
-// The shield next to the gear opens the dedicated admin panel — admin-only, and
-// only when the instance enabled it (LURKER_NEW_ADMIN_PANEL). With the flag off,
-// admin controls stay in Settings and this button never renders.
-const showAdminEntry = computed(() => config.newAdminPanel && auth.isAdmin);
+// The shield next to the gear opens the dedicated admin panel. Admin-only: it's
+// the sole entry to instance administration, which no longer lives in Settings.
+const showAdminEntry = computed(() => auth.isAdmin);
 function openAdmin(): void {
   router.push('/admin').catch((err) => console.error('[BufferList] open admin failed', err));
 }
@@ -1144,29 +1141,33 @@ onBeforeUnmount(() => {
    absolute) so they sit beside the unread count without overlapping it (which is
    also why the count never has to step aside here). The container stays visible
    because the << collapse control is a persistent affordance — but the + (add
-   network) and gear (settings) reveal only on hover / selection / focus, like
-   the other headers' actions. */
+   network), shield (admin panel) and gear (settings) reveal only on hover /
+   selection / focus, like the other headers' actions. */
 .system-net .net-actions {
   position: static;
   transform: none;
   opacity: 1;
   pointer-events: auto;
 }
-/* On pointer (hover-capable) devices, declutter the header: hide the + and gear
-   until the row is hovered, selected, or focused. Touch devices have no hover to
-   reveal them (and display:none would make them unfocusable, so :focus-within
-   couldn't help either) — so there the whole block is skipped and they stay
-   visible. The collapse << is always visible on every device regardless. */
+/* On pointer (hover-capable) devices, declutter the header: hide the +, shield
+   and gear until the row is hovered, selected, or focused. Touch devices have no
+   hover to reveal them (and display:none would make them unfocusable, so
+   :focus-within couldn't help either) — so there the whole block is skipped and
+   they stay visible. The collapse << is always visible on every device. */
 @media (hover: hover) {
   .system-net .net-add,
+  .system-net .net-admin,
   .system-net .net-settings {
     display: none;
   }
   .system-net .net-head:hover .net-add,
+  .system-net .net-head:hover .net-admin,
   .system-net .net-head:hover .net-settings,
   .system-net .net-head.active .net-add,
+  .system-net .net-head.active .net-admin,
   .system-net .net-head.active .net-settings,
   .system-net .net-head:focus-within .net-add,
+  .system-net .net-head:focus-within .net-admin,
   .system-net .net-head:focus-within .net-settings {
     display: inline-flex;
   }

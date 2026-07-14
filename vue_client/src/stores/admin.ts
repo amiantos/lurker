@@ -24,6 +24,22 @@ export interface AdminInvite {
   usedByUsername?: string | null;
 }
 
+/** An admin-defined network preset (#298), as the admin API returns it. */
+export interface AdminNetworkPreset {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  tls: boolean;
+  saslLikelyRequired: boolean;
+  /** Recommended channels, pre-checked for users in the first-run flow. */
+  channels: string[];
+  enabled: boolean;
+  position: number;
+}
+
+export type AdminNetworkPresetInput = Omit<AdminNetworkPreset, 'id' | 'position'>;
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: [] as AdminUser[],
@@ -34,6 +50,12 @@ export const useAdminStore = defineStore('admin', {
     // Hosted: the uploader is env-managed by the control plane, so the whole
     // management surface is read-only (the routes 409 anyway).
     uploadersManaged: false,
+    // Instance network presets + the network lockdown (#298). Named distinctly
+    // from the uploader policy above — the two switches are independent, and
+    // conflating them would let a change to one silently move the other.
+    networkPresets: [] as AdminNetworkPreset[],
+    allowUserDefinedNetworks: true,
+    networksLoaded: false,
     usersLoaded: false,
     invitesLoaded: false,
     uploadersLoaded: false,
@@ -138,6 +160,42 @@ export const useAdminStore = defineStore('admin', {
         body: { allowUserDefined },
       });
       this.allowUserDefined = allowUserDefined;
+    },
+
+    // ─── instance network presets (#298) ─────────────────────────────────────
+    // Same refetch-on-mutate discipline as the uploaders above: the server
+    // refuses some combinations (you can't lock down with no presets, or delete
+    // the last one while locked down), so a local patch would drift from truth
+    // the first time a write is rejected.
+    async fetchNetworkPresets() {
+      this.error = '';
+      try {
+        const data = await api('/api/admin/networks');
+        this.networkPresets = data.presets || [];
+        this.allowUserDefinedNetworks = data.allowUserDefined !== false;
+        this.networksLoaded = true;
+      } catch (e: any) {
+        this.error = e.message || 'failed to load networks';
+        throw e;
+      }
+    },
+    async createNetworkPreset(body: AdminNetworkPresetInput) {
+      await api('/api/admin/networks', { method: 'POST', body });
+      await this.fetchNetworkPresets();
+    },
+    async updateNetworkPreset(id: number, body: Partial<AdminNetworkPresetInput>) {
+      await api(`/api/admin/networks/${id}`, { method: 'PATCH', body });
+      await this.fetchNetworkPresets();
+    },
+    async deleteNetworkPreset(id: number) {
+      await api(`/api/admin/networks/${id}`, { method: 'DELETE' });
+      await this.fetchNetworkPresets();
+    },
+    async setAllowUserDefinedNetworks(allowUserDefined: boolean) {
+      await api('/api/admin/networks/policy', { method: 'PUT', body: { allowUserDefined } });
+      // Refetch rather than assign: the server 409s this when no presets exist,
+      // and the throw must leave the checkbox showing the truth, not the attempt.
+      await this.fetchNetworkPresets();
     },
   },
 });
