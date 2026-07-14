@@ -274,7 +274,14 @@
     <ImageViewerModal
       v-if="imageModal.isOpen && imageModal.url !== null"
       :url="imageModal.url"
+      :filename="imageModal.current?.filename ?? null"
+      :index="imageModal.index"
+      :count="imageModal.count"
+      :has-prev="imageModal.hasPrev"
+      :has-next="imageModal.hasNext"
       @close="imageModal.close()"
+      @prev="imageModal.prev()"
+      @next="imageModal.next()"
     />
     <UserProfileModal
       v-if="whois.viewer.open && whois.viewer.networkId != null"

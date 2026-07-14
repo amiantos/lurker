@@ -57,13 +57,18 @@
           <div v-if="u.removed" class="art art-icon" title="removed by moderation">
             <i class="fa-solid fa-gavel fa-2x"></i>
           </div>
+          <!-- Still an <a href>, even though a left click opens the lightbox: that
+               keeps middle-click and ⌘/ctrl-click opening the file in a new tab, which
+               is what a thumbnail that looks like a link should do. Same modifier
+               check RenderSegments makes for images in messages. -->
           <a
             v-else
             :href="u.url"
             target="_blank"
             rel="noreferrer noopener"
             class="art-link"
-            :title="u.url"
+            :title="u.filename || u.url"
+            @click="onArtClick($event, u)"
           >
             <img v-if="u.thumbnail_url" :src="u.thumbnail_url" class="art" alt="" loading="lazy" />
             <div v-else class="art art-icon">
@@ -125,6 +130,7 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
+import { useImageModal } from '../composables/useImageModal.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { iconForMime } from '../utils/uploaders.js';
 
@@ -153,6 +159,9 @@ defineEmits<{
   close: [];
 }>();
 const uploads = useUploadsStore();
+// Raw (not reactive()-wrapped) because this component reads the refs in script rather
+// than the template — the two views that RENDER the viewer wrap it for unwrapping.
+const imageModal = useImageModal();
 const recentRows = computed(() => uploads.recent as UploadRow[]);
 const listEl = ref<HTMLDivElement | null>(null);
 const searchEl = ref<HTMLInputElement | null>(null);
@@ -216,6 +225,61 @@ function onKind(kind: UploadKind | null) {
     /* surfaced via store.listError */
   });
 }
+
+// ─── Lightbox ────────────────────────────────────────────────────────────────
+//
+// Clicking a thumbnail used to eject you into a new tab. It opens the viewer instead,
+// and the viewer is a GALLERY: left/right walks the images in the result set you are
+// currently looking at, at full size. Which means the search filters double as a way
+// to scope the gallery — filter to images, type "march", and you can flick through
+// exactly those.
+
+// Only images. The viewer renders an <img>, so a .txt or an .mp4 in the gallery would
+// be a step onto a blank screen. (Video joins it in #563; that's the card, not this
+// one.) They keep the plain new-tab link.
+const galleryItems = computed(() =>
+  recentRows.value
+    .filter((u) => !u.removed && (u.mime || '').startsWith('image/'))
+    .map((u) => ({ url: u.url, filename: u.filename })),
+);
+
+function isViewable(u: UploadRow): boolean {
+  return !u.removed && (u.mime || '').startsWith('image/');
+}
+
+function onArtClick(event: MouseEvent, u: UploadRow) {
+  // Let the browser have the ones it does better: a modified click means "new tab",
+  // and a non-image has nothing to show in an image viewer.
+  if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+    return;
+  if (!isViewable(u)) return;
+
+  const items = galleryItems.value;
+  const start = items.findIndex((i) => i.url === u.url);
+  if (start < 0) return;
+
+  event.preventDefault();
+  imageModal.openGallery(items, start);
+}
+
+// Arrowing toward the end of what's loaded pages more in — otherwise the gallery
+// silently stops at the last row the user happened to have scrolled to, which from
+// inside the viewer looks like the end of their uploads.
+watch(
+  () => imageModal.index.value,
+  (i) => {
+    if (!imageModal.isOpen.value) return;
+    if (i < galleryItems.value.length - 2) return;
+    if (!uploads.hasMore || uploads.loading) return;
+    void uploads.loadMore();
+  },
+);
+
+// New rows landed (from paging, or a fresh upload) while the viewer is open — extend
+// the gallery under it. setItems keeps the viewer on the image it is showing.
+watch(galleryItems, (items) => {
+  if (imageModal.isOpen.value) imageModal.setItems(items);
+});
 
 function onScroll() {
   const el = listEl.value;
@@ -355,9 +419,13 @@ function metaLine(u: UploadRow): string {
   margin: 0;
   padding: 0;
   display: grid;
-  /* auto-fill, not auto-fit: a search that returns two results should leave them at
+  /* 180px, not 128: the point of a gallery is recognising a picture at a glance, and
+     at 128 you squint — which is the complaint that started #547. The server thumb is
+     512px, so this stays crisp at 2x and has room to grow.
+
+     auto-fill, not auto-fit: a search that returns two results should leave them at
      tile size on the left, not stretch them across the whole modal. */
-  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: var(--space-6);
 }
 .tile {

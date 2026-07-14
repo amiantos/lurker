@@ -5,16 +5,19 @@ import fs from 'node:fs';
 import sharp, { type Metadata, type Sharp } from 'sharp';
 import { canScrubInPlace, scrubMetadata } from './metadataScrub.js';
 
-// 256, not 128: the uploads browser (#547) renders ~128px tiles, and a 128px source
-// in a 128px box is 1x — visibly soft on every retina display. Measured cost of the
-// bump on a real photo, as WebP: 2.3 KB → 4.5 KB. Two kilobytes per upload is not a
-// number worth designing around.
+// 512, not 128. The uploads browser (#547) is a gallery you browse BY thumbnail, and
+// at 128px that doesn't work — you squint. Its tiles are ~180px, which is 360 device
+// pixels on a 2x display, so the source has to be at least that to stay crisp; 512
+// covers it with headroom for 3x and for larger tiles later.
 //
-// ⚠ Only NEW uploads get it. Existing rows keep their 128px thumb and we can't
-// regenerate them — the originals live at the provider, not here — so the gallery is
-// mixed-sharpness until it churns. That's the accepted cost; the alternative was
-// designing the grid around the smaller of the two forever.
-const THUMB_SIZE = 256;
+// Measured on a real photo, as WebP: 128px = 2.3 KB, 256px = 4.5 KB, 512px = 9.3 KB.
+// Seven kilobytes per upload is not a number worth designing a UI around.
+//
+// ⚠ Only NEW uploads get it. Existing rows keep the thumb they were made with and we
+// can't regenerate them — the originals live at the provider, not here — so the
+// gallery is mixed-sharpness until it churns. That's the accepted cost; the
+// alternative was designing every tile around the smallest thumb we ever wrote.
+const THUMB_SIZE = 512;
 
 interface FormatInfo {
   mime: string;
