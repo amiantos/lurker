@@ -76,6 +76,17 @@
             </div>
           </a>
 
+          <div class="name" :title="u.filename || u.url">{{ u.filename || '(pasted)' }}</div>
+          <div class="sub" :title="metaLine(u)">
+            {{ u.removed ? 'Removed by moderation' : metaLine(u) }}
+          </div>
+
+          <!-- Last in the DOM on purpose. On a pointer device these are absolutely
+               positioned over the art and revealed on hover, and absolute positioning
+               doesn't care about source order — but on touch there IS no hover, so they
+               fall back into normal flow and land where they belong: a row beneath the
+               file, not two small chips sitting on top of the picture you're trying to
+               tap. See the @media rules below. -->
           <div class="actions">
             <!-- Delete destroys the stored file. Offered only where that's true
                  (can_delete) — there is no remove-the-record-only action. -->
@@ -102,11 +113,6 @@
             >
               <i :class="clipboard.isCopied(u.id) ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
             </button>
-          </div>
-
-          <div class="name" :title="u.filename || u.url">{{ u.filename || '(pasted)' }}</div>
-          <div class="sub" :title="metaLine(u)">
-            {{ u.removed ? 'Removed by moderation' : metaLine(u) }}
           </div>
         </li>
       </ul>
@@ -491,34 +497,62 @@ function metaLine(u: UploadRow): string {
    revealed on hover where hover exists, and always visible where it doesn't — the
    :hover here is auto-wrapped in @media (hover: hover) at build time (#115), so on a
    touch device the base rule stands and the buttons are simply always there. */
+/* ─── Tile actions ───────────────────────────────────────────────────────────
+   TOUCH IS THE BASE CASE, hover is the enhancement — which is the only way round
+   that works here. There is no hover on a phone, so an overlay revealed by hover
+   would either be permanently on top of the picture or unreachable; and a chip small
+   enough to sit unobtrusively on a thumbnail is far too small to tap.
+
+   So on touch the buttons live in normal flow, in a row under the file, with real
+   44px targets. On a pointer device they lift out of the flow onto the artwork and
+   fade in on hover, where a compact chip is exactly right and the vertical space is
+   worth reclaiming. */
 .actions {
-  position: absolute;
-  top: var(--space-2);
-  right: var(--space-2);
   display: flex;
-  gap: var(--space-1);
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 /* A solid themed chip, NOT a scrim: --scrim is a dark translucent, so in the light
-   theme a --fg icon on it would be dark-on-dark. The art behind is arbitrary user
-   imagery, so the button has to bring its own background either way. */
+   theme a --fg icon on it would be dark-on-dark. On a pointer device this sits on
+   arbitrary user imagery, so the button has to bring its own background either way. */
 .act {
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  padding: var(--space-2) var(--space-3);
   font-size: var(--icon-md);
   line-height: 1;
+  /* The iOS minimum. A 26px chip is hittable with a mouse and a coin toss with a
+     thumb — and the thing next to it deletes the file. */
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+
 @media (hover: hover) {
   .actions {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    margin-top: 0;
+    gap: var(--space-1);
     opacity: 0;
     transition: opacity 0.12s ease;
   }
+  /* focus-within, not just hover: these are the only way to reach copy/delete on a
+     pointer device, so they have to be reachable by keyboard too. */
   .tile:hover .actions,
   .tile:focus-within .actions {
     opacity: 1;
+  }
+  .act {
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-2) var(--space-3);
   }
 }
 .act:hover {
