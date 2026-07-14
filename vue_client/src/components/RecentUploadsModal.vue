@@ -81,12 +81,10 @@
             {{ u.removed ? 'Removed by moderation' : metaLine(u) }}
           </div>
 
-          <!-- Last in the DOM on purpose. On a pointer device these are absolutely
-               positioned over the art and revealed on hover, and absolute positioning
-               doesn't care about source order — but on touch there IS no hover, so they
-               fall back into normal flow and land where they belong: a row beneath the
-               file, not two small chips sitting on top of the picture you're trying to
-               tap. See the @media rules below. -->
+          <!-- Overlaid on the artwork (absolutely positioned, so source order is free)
+               and last in the DOM so keyboard focus reaches the image itself before its
+               controls. Revealed on hover with a pointer; always visible, and finger-
+               sized, on touch — see the @media rules. -->
           <div class="actions">
             <!-- Delete destroys the stored file. Offered only where that's true
                  (can_delete) — there is no remove-the-record-only action. -->
@@ -498,24 +496,23 @@ function metaLine(u: UploadRow): string {
    :hover here is auto-wrapped in @media (hover: hover) at build time (#115), so on a
    touch device the base rule stands and the buttons are simply always there. */
 /* ─── Tile actions ───────────────────────────────────────────────────────────
-   TOUCH IS THE BASE CASE, hover is the enhancement — which is the only way round
-   that works here. There is no hover on a phone, so an overlay revealed by hover
-   would either be permanently on top of the picture or unreachable; and a chip small
-   enough to sit unobtrusively on a thumbnail is far too small to tap.
+   Always ON the artwork — a row of buttons hanging below the file reads as orphaned,
+   and at tile density it costs more vertical space than the filename does.
 
-   So on touch the buttons live in normal flow, in a row under the file, with real
-   44px targets. On a pointer device they lift out of the flow onto the artwork and
-   fade in on hover, where a compact chip is exactly right and the vertical space is
-   worth reclaiming. */
+   What differs by input is REVEAL and SIZE, not position. With a pointer they fade in
+   on hover, compact, because you can aim: a 26px chip is a fine mouse target. On touch
+   there is no hover, so they are simply always there — and they have to be big enough
+   to hit deliberately, because the thing next to `copy` deletes the file. */
 .actions {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
   display: flex;
-  justify-content: flex-end;
   gap: var(--space-2);
-  margin-top: var(--space-2);
 }
 /* A solid themed chip, NOT a scrim: --scrim is a dark translucent, so in the light
-   theme a --fg icon on it would be dark-on-dark. On a pointer device this sits on
-   arbitrary user imagery, so the button has to bring its own background either way. */
+   theme a --fg icon on it would be dark-on-dark. It sits on arbitrary user imagery, so
+   the button has to bring its own background either way. */
 .act {
   background: var(--bg);
   border: 1px solid var(--border);
@@ -524,8 +521,8 @@ function metaLine(u: UploadRow): string {
   font: inherit;
   font-size: var(--icon-md);
   line-height: 1;
-  /* The iOS minimum. A 26px chip is hittable with a mouse and a coin toss with a
-     thumb — and the thing next to it deletes the file. */
+  /* The iOS minimum, and the touch default. A 26px chip is hittable with a mouse and a
+     coin toss with a thumb. */
   min-width: 44px;
   min-height: 44px;
   display: flex;
@@ -535,20 +532,18 @@ function metaLine(u: UploadRow): string {
 
 @media (hover: hover) {
   .actions {
-    position: absolute;
-    top: var(--space-2);
-    right: var(--space-2);
-    margin-top: 0;
     gap: var(--space-1);
     opacity: 0;
     transition: opacity 0.12s ease;
   }
-  /* focus-within, not just hover: these are the only way to reach copy/delete on a
-     pointer device, so they have to be reachable by keyboard too. */
+  /* focus-within, not just hover: hidden-until-hover is the ONLY way to reach copy and
+     delete with a pointer, so they have to be reachable by keyboard too. */
   .tile:hover .actions,
   .tile:focus-within .actions {
     opacity: 1;
   }
+  /* Compact, now that they only appear when you're already pointing at the tile — and
+     44px chips would cover half a thumbnail for no benefit to someone with a mouse. */
   .act {
     min-width: 0;
     min-height: 0;
