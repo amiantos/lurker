@@ -25,6 +25,26 @@ const THROTTLE_MS = 150;
 
 export type UploadPhase = 'processing' | 'sending';
 
+/**
+ * Percent sent, where **100 means sent** — not "rounds to sent".
+ *
+ * ⚠ The obvious `Math.round(sent / total * 100)` reports 100% at 99.6%, which on a
+ * 200 MB file is most of a megabyte still on the wire. Worse, it poisons the
+ * de-dupe: `lastPercent` becomes 100, so the REAL 100% that arrives with the final
+ * chunk is dropped as a duplicate, and the bar sits at a false 100 for the whole
+ * tail of the upload. That is exactly the "Uploading: 100% and then dead air" bug
+ * this module exists to kill, one layer down.
+ *
+ * So: floor (never flatter the number), clamp below 100, and let only `sent >= total`
+ * — which the streamed body guarantees on its last chunk — actually say 100.
+ */
+function percentSent(sentBytes: number, totalBytes: number): number {
+  // Nothing to send is, trivially, sent. (A multipart body always has boundaries, so
+  // this is the empty-PUT case, not a normal upload.)
+  if (totalBytes <= 0 || sentBytes >= totalBytes) return 100;
+  return Math.min(99, Math.max(0, Math.floor((sentBytes / totalBytes) * 100)));
+}
+
 export interface UploadProgress {
   /** The pipeline is working (sharp re-encode, or the in-place media scrub). No
    *  percentage: it's a one-shot native call with no seam to count. */
@@ -72,13 +92,19 @@ export function makeUploadProgress(
       emit('processing', null);
     },
     sending() {
-      emit('sending', 0);
+      // No number, not a zero. A percentage here would be a claim we cannot back:
+      // `local` never calls onBytes at all (it renames the temp file — no wire), so
+      // an initial 0% would freeze at "Sending to Local disk… 0%" for the whole send.
+      // An indeterminate label is honest about an unmeasurable phase; a stuck 0% is
+      // the same species of lie as the "Uploading: 100%" this all exists to kill.
+      // A real percentage appears iff onBytes actually reports one.
+      emit('sending', null);
+      // Prime the throttle clock (so the first byte frame doesn't land on top of this
+      // one) but NOT lastPercent: 0% is still a number worth sending if it's true.
       lastEmitAt = Date.now();
-      lastPercent = 0;
     },
     onBytes(sentBytes, totalBytes) {
-      const percent =
-        totalBytes > 0 ? Math.min(100, Math.round((sentBytes / totalBytes) * 100)) : 0;
+      const percent = percentSent(sentBytes, totalBytes);
       // Nothing new to say, or too soon to say it again. 100 always goes out
       // regardless of the throttle: it's the frame that ends the "sending" phase, and
       // dropping it would strand the bar just short of done — the same class of lie

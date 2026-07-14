@@ -48,7 +48,10 @@ describe('makeUploadProgress', () => {
         token: 'tok-1',
         phase: 'sending',
         destination: 'Catbox',
-        percent: 0,
+        // Indeterminate, NOT 0. `local` never reports a byte (it renames the temp
+        // file), so a 0 here would freeze at "Sending to Local disk… 0%" for the
+        // entire send — a number we cannot back is worse than no number.
+        percent: null,
       },
     ]);
   });
@@ -124,14 +127,44 @@ describe('makeUploadProgress', () => {
     expect(framesFor(7).map((f) => f.percent)).toEqual([50]);
   });
 
-  it('reports 0% rather than NaN for an empty body', () => {
+  // ⚠ The bug this module exists to kill, sneaking back in one layer down.
+  // Math.round(0.996 * 100) is 100 — so with most of a megabyte of a 200 MB file
+  // still on the wire, the client would read "Sending… 100%". And it would STAY
+  // there: lastPercent would already be 100, so the real 100% arriving with the final
+  // chunk gets dropped as a duplicate. A false 100 that then goes quiet is precisely
+  // "Uploading: 100%" wearing a different hat.
+  it('never says 100% until the last byte is actually gone', () => {
+    const p = makeUploadProgress(7, 'tok-1', 'Catbox');
+    p.sending();
+    fanOutToUser.mockClear();
+
+    vi.advanceTimersByTime(200);
+    p.onBytes(99_600, 100_000); // 99.6% — rounds to 100, floors to 99
+    expect(framesFor(7).at(-1)!.percent).toBe(99);
+
+    // And the genuine 100 still gets through afterwards; it was not eaten as a dupe.
+    p.onBytes(100_000, 100_000);
+    expect(framesFor(7).at(-1)!.percent).toBe(100);
+  });
+
+  it('never flatters the number on the way up', () => {
+    const p = makeUploadProgress(7, 'tok-1', 'Catbox');
+    p.sending();
+    fanOutToUser.mockClear();
+
+    vi.advanceTimersByTime(200);
+    p.onBytes(1990, 10_000); // 19.9% — round() would call this 20
+    expect(framesFor(7).at(-1)!.percent).toBe(19);
+  });
+
+  it('reports a finite percent for an empty body', () => {
     const p = makeUploadProgress(7, 'tok-1', 'Local disk');
     p.sending();
     fanOutToUser.mockClear();
     vi.advanceTimersByTime(200);
+    // 0/0 would be NaN, which renders as "Sending… NaN%". Nothing to send is sent.
     p.onBytes(0, 0);
-    // 0/0 would be NaN, which renders as "Sending… NaN%".
-    expect(framesFor(7).every((f) => f.percent === null || Number.isFinite(f.percent))).toBe(true);
+    expect(framesFor(7).at(-1)!.percent).toBe(100);
   });
 
   it('scopes frames to the uploading user', () => {

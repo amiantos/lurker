@@ -386,7 +386,9 @@ describe('POST /api/uploads — progress narration', () => {
       expect(seen.every((f) => f.token === 'tok-abc')).toBe(true);
       expect(seen.map((f) => `${f.phase}:${f.percent}`)).toEqual([
         'processing:null',
-        'sending:0',
+        // Indeterminate until a byte is actually counted — a driver that reports none
+        // (local) must not sit at a frozen "0%".
+        'sending:null',
         // The 50% frame is swallowed by the throttle (both callbacks land in the same
         // millisecond here); 100 always survives it, because a bar stranded at 99%
         // would be the same lie in a new outfit.
