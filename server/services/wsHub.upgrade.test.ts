@@ -11,7 +11,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'http';
 import { WebSocket } from 'ws';
-import type { AddressInfo } from 'net';
 import { setupTestDb, TEST_SESSION_SECRET } from '../test-utils/testApp.js';
 import { sign as signCookie } from 'cookie-signature';
 
@@ -30,9 +29,17 @@ beforeAll(async () => {
   userId = createUser('nativeuser').id;
   server = http.createServer();
   attachWsHub(server, TEST_SESSION_SECRET);
+  // listen(0) binds synchronously with no host argument, so address() is live on
+  // return (same reasoning as test-utils/testApp.ts). If it ever isn't, say so —
+  // casting the null away would build a `ws://127.0.0.1:undefined/ws` URL and
+  // surface a bind failure as an inscrutable connection error in every test below.
   server.listen(0);
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    throw new Error('test server did not bind synchronously to a TCP port');
+  }
   server.unref();
-  url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/ws`;
+  url = `ws://127.0.0.1:${address.port}/ws`;
 });
 
 afterAll(() => {
