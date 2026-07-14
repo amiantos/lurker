@@ -95,12 +95,12 @@
             <button
               v-if="!u.removed"
               class="act copy"
-              :class="{ copied: copiedId === u.id }"
+              :class="{ copied: clipboard.isCopied(u.id) }"
               @click="onCopy(u)"
-              :title="copiedId === u.id ? 'copied' : 'copy URL'"
-              :aria-label="copiedId === u.id ? 'copied' : 'copy URL'"
+              :title="clipboard.isCopied(u.id) ? 'copied' : 'copy link'"
+              :aria-label="clipboard.isCopied(u.id) ? 'copied' : 'copy link'"
             >
-              <i :class="copiedId === u.id ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
+              <i :class="clipboard.isCopied(u.id) ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
             </button>
           </div>
 
@@ -131,6 +131,7 @@ import AppModal from './AppModal.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
 import { useImageModal } from '../composables/useImageModal.js';
+import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { iconForMime } from '../utils/uploaders.js';
 
@@ -165,7 +166,7 @@ const imageModal = useImageModal();
 const recentRows = computed(() => uploads.recent as UploadRow[]);
 const listEl = ref<HTMLDivElement | null>(null);
 const searchEl = ref<HTMLInputElement | null>(null);
-const copiedId = ref<number | null>(null);
+const clipboard = useCopyFeedback();
 const deletingId = ref<number | null>(null);
 const deleteError = ref('');
 
@@ -289,17 +290,10 @@ function onScroll() {
   }
 }
 
-async function onCopy(u: UploadRow) {
-  try {
-    await navigator.clipboard.writeText(u.url);
-    copiedId.value = u.id;
-    setTimeout(() => {
-      if (copiedId.value === u.id) copiedId.value = null;
-    }, 1500);
-  } catch (_) {
-    // Clipboard API can fail without a user-gesture context on Firefox/Safari;
-    // the user can fall back to opening the file and copying the address.
-  }
+// The `key` is why useCopyFeedback takes one: one instance serves the whole grid, and
+// only the tile that was copied ticks.
+function onCopy(u: UploadRow) {
+  void clipboard.copy(u.url, u.id);
 }
 
 async function onDelete(u: UploadRow) {

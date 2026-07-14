@@ -34,6 +34,19 @@
         >
           <i :class="zoomIconClass"></i>
         </button>
+        <!-- Copying the link is what you usually want from an image someone posted —
+             to reply with it, or to send it on. It was previously only reachable by
+             closing the viewer and finding the URL again. -->
+        <button
+          class="control"
+          type="button"
+          :class="{ copied: clipboard.isCopied() }"
+          :title="clipboard.isCopied() ? 'copied' : 'copy link'"
+          :aria-label="clipboard.isCopied() ? 'copied' : 'copy link'"
+          @click="onCopyLink"
+        >
+          <i :class="clipboard.isCopied() ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
+        </button>
         <button
           class="control"
           type="button"
@@ -119,6 +132,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 
 const LOAD_TIMEOUT_MS = 20_000;
 const MIN_ZOOM = 1;
@@ -145,6 +159,8 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{ close: []; prev: []; next: [] }>();
+
+const clipboard = useCopyFeedback();
 
 const loading = ref(true);
 const failed = ref(false);
@@ -203,7 +219,12 @@ const imageStyle = computed(() => ({
 
 watch(
   () => props.url,
-  (nextUrl) => startLoading(nextUrl),
+  (nextUrl) => {
+    startLoading(nextUrl);
+    // Arrowing to the next image while the tick is still showing would leave a green
+    // check sitting over a link the user has NOT copied.
+    clipboard.reset();
+  },
 );
 
 function onLoad(): void {
@@ -247,6 +268,13 @@ function onLoadTimeout(): void {
 function openInBrowser(): void {
   window.open(props.url, '_blank', 'noopener,noreferrer');
   emit('close');
+}
+
+// Deliberately does NOT close the viewer, unlike openInBrowser: copying a link is
+// something you do while still looking at the picture, and often while walking a
+// gallery. Closing would make copying two images in a row a chore.
+function onCopyLink(): void {
+  void clipboard.copy(props.url);
 }
 
 function toggleZoomFromCenter(): void {
@@ -703,6 +731,10 @@ onBeforeUnmount(() => {
      weight 900). */
   font-size: var(--icon-lg);
   padding: var(--space-2) var(--space-4);
+}
+.control.copied,
+.control.copied:hover:not(:disabled) {
+  color: var(--good);
 }
 .control:hover:not(:disabled) {
   color: var(--accent);
