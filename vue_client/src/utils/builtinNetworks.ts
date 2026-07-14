@@ -51,6 +51,13 @@ export interface NetworkPreset extends BuiltinNetwork {
   recommendedChannels?: string[];
   /** True for an admin-defined preset. They pin above the builtins and get a badge. */
   isInstance?: boolean;
+  /**
+   * The instance_network row id, on instance presets only. Carried purely so the
+   * picker has a stable, genuinely unique v-for key: nothing enforces host (or
+   * name) uniqueness on that table, and an admin may reasonably list the same
+   * server twice — two ports, or a TLS and a plaintext entry.
+   */
+  instanceId?: number;
 }
 
 // Sorted most-popular-first so the picker's default order is meaningful; entries

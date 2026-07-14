@@ -140,7 +140,13 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
     // the networks fetch the rest of bootstrap depends on; evaluate() reads the
     // stores' `loaded` flags and simply does nothing if either never landed.
     const settingsReady = settings.loaded ? Promise.resolve() : settings.fetchAll().catch(() => {});
-    await networks.fetchAll();
+    // Swallowed deliberately: an unguarded reject here would abort the whole
+    // onMounted, taking the presence reporter, the app badge and the service-worker
+    // registration down with it — a transient /api/networks blip must not cost the
+    // session all of that. The stores' `loaded` flags carry the failure instead, so
+    // evaluate() below simply declines to open (fail closed) rather than mistaking
+    // an errored fetch for "this user has no networks".
+    await networks.fetchAll().catch(() => {});
     void settingsReady.then(() => onboarding.evaluate());
     startPresenceReporter();
     reportNow();

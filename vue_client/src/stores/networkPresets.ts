@@ -26,6 +26,7 @@ export const useNetworkPresetsStore = defineStore('networkPresets', {
         const data = await api('/api/network-presets');
         this.presets = (data.presets ?? []).map(
           (p: Record<string, unknown>): NetworkPreset => ({
+            instanceId: Number(p.id),
             name: String(p.name),
             host: String(p.host),
             port: Number(p.port),

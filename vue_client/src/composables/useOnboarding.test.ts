@@ -7,6 +7,7 @@ import { useOnboarding, resetOnboarding, ONBOARDING_SETTING } from './useOnboard
 import { useSettingsStore } from '../stores/settings.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import type { Network } from '../stores/networks.js';
 
 // The gate's whole job is deciding *not* to fire, so the stores are driven
@@ -15,6 +16,7 @@ import type { Network } from '../stores/networks.js';
 function setup(opts: {
   settingsLoaded?: boolean;
   networksLoaded?: boolean;
+  configChecked?: boolean;
   networks?: number;
   completed?: boolean;
   paused?: boolean;
@@ -22,7 +24,9 @@ function setup(opts: {
   const settings = useSettingsStore();
   const networks = useNetworksStore();
   const auth = useAuthStore();
+  const config = useConfigStore();
 
+  config.checked = opts.configChecked ?? true;
   settings.loaded = opts.settingsLoaded ?? true;
   if (opts.completed) settings.values[ONBOARDING_SETTING] = true;
   networks.loaded = opts.networksLoaded ?? true;
@@ -65,9 +69,34 @@ describe('useOnboarding.evaluate', () => {
     expect(onboarding.isOpen.value).toBe(false);
   });
 
+  // The edition decides whether the flow asks for SASL credentials (a hosted cell
+  // connects from a datacenter IP, which some networks refuse unauthenticated).
+  // The config store DEFAULTS to 'standalone', so opening before it has answered
+  // would hide the SASL fields on a hosted cell and hand a brand-new user a first
+  // connection that fails.
+  it('does not open before the edition is known', () => {
+    const { onboarding } = setup({ configChecked: false });
+    onboarding.evaluate();
+    expect(onboarding.isOpen.value).toBe(false);
+  });
+
   it('does not open once the flow has been completed or skipped', () => {
     const { onboarding } = setup({ completed: true });
     onboarding.evaluate();
+    expect(onboarding.isOpen.value).toBe(false);
+  });
+
+  // "Already completed" is a DURABLE verdict, unlike the still-loading cases: it
+  // latches, so the Desktop<->Mobile remount doesn't re-run the whole check (and
+  // re-read the settings store) on every viewport swap.
+  it('latches on the completed verdict so a viewport swap re-check is a no-op', () => {
+    const { onboarding } = setup({ completed: true });
+    onboarding.evaluate();
+
+    // Wipe the durable flag: if the latch is working, evaluate() never looks.
+    useSettingsStore().values = {};
+    onboarding.evaluate();
+
     expect(onboarding.isOpen.value).toBe(false);
   });
 

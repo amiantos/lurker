@@ -8,6 +8,7 @@ import { ref } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 
 export const ONBOARDING_SETTING = 'onboarding.completed';
 
@@ -56,10 +57,23 @@ export function useOnboarding() {
     if (decided) return;
     const settings = useSettingsStore();
     const networks = useNetworksStore();
+    const config = useConfigStore();
     // Not a verdict — we simply don't know yet. Leave `decided` alone so a later
     // call (or a later mount) can still reach one.
-    if (!settings.loaded || !networks.loaded) return;
-    if (settings.effective(ONBOARDING_SETTING) === true) return;
+    //
+    // `config` is in here for a non-obvious reason: the flow's SASL step keys off
+    // config.isNode, because a hosted cell connects from a datacenter IP and some
+    // networks refuse unauthenticated connections from one. The store defaults to
+    // 'standalone', so opening before the edition is known would hide the SASL
+    // fields on a hosted cell and hand the user a first connection that fails.
+    // The config fetch is fire-and-forget, so wait for it to actually answer.
+    if (!settings.loaded || !networks.loaded || !config.checked) return;
+    if (settings.effective(ONBOARDING_SETTING) === true) {
+      // A durable verdict, unlike the not-loaded-yet cases above: latch it so a
+      // Desktop<->Mobile swap doesn't re-run this whole check on every remount.
+      decided = true;
+      return;
+    }
 
     // A paused account is read-only — blockWritesWhenPaused would 403 the
     // create at the end of the flow. Walking someone through onboarding only to

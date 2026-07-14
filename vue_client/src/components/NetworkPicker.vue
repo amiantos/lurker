@@ -53,7 +53,11 @@
     </div>
 
     <ul class="list">
-      <li v-for="net in filtered" :key="net.isInstance ? `i:${net.host}` : net.name">
+      <!-- Instance presets key on their row id, not their host: nothing enforces
+           host uniqueness on instance_network, and an admin may reasonably list
+           the same server twice (two ports, or TLS and plaintext). Builtins key
+           on name, which the catalogue does keep unique. -->
+      <li v-for="net in filtered" :key="net.isInstance ? `i:${net.instanceId}` : net.name">
         <button type="button" class="net-card" @click="$emit('select', net)">
           <span class="net-head">
             <span class="net-name">{{ net.name }}</span>
