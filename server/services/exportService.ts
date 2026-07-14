@@ -22,6 +22,7 @@ import { Readable } from 'stream';
 import type { Database } from 'better-sqlite3';
 import { ZipArchive } from 'archiver';
 import { EXPORT_TABLES, EXPORT_FORMAT_VERSION } from '../db/exportSchema.js';
+import { thumbnailFormat } from './thumbnailFormat.js';
 import { decryptSecret } from '../utils/secretCrypto.js';
 
 interface ExportTableDefWithScope {
@@ -249,11 +250,16 @@ export async function buildExportZip(
     data[table] = rows.map((row) => projectRow(row, d));
     counts[table] = rows.length;
 
-    // Thumbnails — emit each blob as a separate zip entry.
+    // Thumbnails — emit each blob as a separate zip entry. The extension is
+    // sniffed from the bytes, not assumed: thumbnails are WebP since #560 but a
+    // long-lived account still has JPEG ones from before, so a single archive can
+    // legitimately hold both.
     if (d.blobColumns?.includes('thumbnail')) {
       for (const row of rows) {
         if (row.thumbnail != null) {
-          archive.append(row.thumbnail as Buffer, { name: `thumbnails/${row.id as number}.jpg` });
+          const blob = row.thumbnail as Buffer;
+          const { ext } = thumbnailFormat(blob);
+          archive.append(blob, { name: `thumbnails/${row.id as number}.${ext}` });
         }
       }
     }

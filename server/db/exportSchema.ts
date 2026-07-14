@@ -293,8 +293,10 @@ export const EXPORT_TABLES = Object.freeze({
     // them) have no map entry by design. Nulling the column keeps the upload in
     // the user's history, just without a link to an uploader that isn't theirs.
     fkRekeyNullable: ['uploader_config_id'],
-    // thumbnail BLOB is written to thumbnails/<id>.jpg in the zip rather than
-    // base64-inlined; the row carries a hasThumbnail boolean in data.json.
+    // thumbnail BLOB is written to thumbnails/<id>.<ext> in the zip rather than
+    // base64-inlined; the row carries a hasThumbnail boolean in data.json. The ext
+    // is sniffed from the bytes (services/thumbnailFormat.ts) — webp since #560,
+    // jpg for everything stored before it, and one archive can hold both.
     // thumbnail_url (node edition) is a plain string column carried as-is.
     blobColumns: ['thumbnail'],
     columns: [

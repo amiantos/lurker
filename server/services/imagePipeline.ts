@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import fs from 'node:fs';
-import sharp, { type Metadata } from 'sharp';
+import sharp, { type Metadata, type Sharp } from 'sharp';
 import { canScrubInPlace, scrubMetadata } from './metadataScrub.js';
 
 const THUMB_SIZE = 128;
@@ -26,6 +26,11 @@ const FORMAT_INFO: Record<string, FormatInfo> = {
   svg: { mime: 'image/svg+xml', ext: 'svg' },
 };
 
+// The formats the static path will ENCODE to (a subset of the formats it can
+// read). webp is the default; jpeg is the escape hatch for an ancient client or
+// an upload host that mangles webp (`uploads.image.format`, #560).
+export type OutputFormat = 'webp' | 'jpeg';
+
 export interface OptimizeResult {
   buffer: Buffer;
   mime: string;
@@ -41,7 +46,15 @@ export function extensionFor(mime: string, fallback = 'bin'): string {
   return entry?.ext || fallback;
 }
 
-// Optimize a static image (resize longest edge to maxDim, re-encode JPEG).
+// `quality` is a single 0–100 perceptual scale handed to whichever encoder the
+// format selects. The two scales are NOT identical — libwebp's 85 is not
+// mozjpeg's 85 — but both mean "higher = better and bigger", which is what the
+// setting promises, and one slider beats two knobs nobody touches.
+function encode(pipeline: Sharp, format: OutputFormat, quality: number): Sharp {
+  return format === 'jpeg' ? pipeline.jpeg({ quality, mozjpeg: true }) : pipeline.webp({ quality });
+}
+
+// Optimize a static image (resize longest edge to maxDim, re-encode to `format`).
 // Animated images (sharp.metadata.pages > 1) bypass the resize/re-encode and
 // are returned verbatim, which is a hard requirement so reaction GIFs / animated
 // WebP / APNG don't lose animation on the way through Lurker.
@@ -54,8 +67,9 @@ export async function optimize(
   {
     maxDim,
     quality,
+    format = 'webp',
     rasterOnly = false,
-  }: { maxDim: number; quality: number; rasterOnly?: boolean },
+  }: { maxDim: number; quality: number; format?: OutputFormat; rasterOnly?: boolean },
 ): Promise<OptimizeResult> {
   // Only the passthrough/scrub branches need the bytes in memory; the resize path
   // hands the path straight to sharp. Read lazily so an ordinary image upload
@@ -120,7 +134,7 @@ export async function optimize(
       };
     } catch {
       // Codec can't re-encode animated — fall through to the static path, which
-      // flattens to a metadata-free JPEG first frame. Degraded but never leaks.
+      // flattens to a metadata-free first frame. Degraded but never leaks.
     }
   }
 
@@ -149,21 +163,25 @@ export async function optimize(
     };
   }
 
-  const out = await sharp(input)
-    .rotate()
-    .resize({
+  // ⚠ The output format, mime and ext MUST agree — they used to be three
+  // hardcoded jpeg constants that could drift. Pick the format once and derive
+  // the other two from FORMAT_INFO.
+  const outFmt = FORMAT_INFO[format];
+  const out = await encode(
+    sharp(input).rotate().resize({
       width: maxDim,
       height: maxDim,
       fit: 'inside',
       withoutEnlargement: true,
-    })
-    .jpeg({ quality, mozjpeg: true })
-    .toBuffer({ resolveWithObject: true });
+    }),
+    format,
+    quality,
+  ).toBuffer({ resolveWithObject: true });
 
   return {
     buffer: out.data,
-    mime: 'image/jpeg',
-    ext: 'jpg',
+    mime: outFmt.mime,
+    ext: outFmt.ext,
     width: out.info.width,
     height: out.info.height,
     byteSize: out.data.length,
@@ -171,11 +189,18 @@ export async function optimize(
   };
 }
 
-export async function thumbnail(input: Buffer | string): Promise<Buffer> {
-  // Force first frame for animated inputs; cover-crop to a square JPEG.
-  return sharp(input, { animated: false })
-    .rotate()
-    .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
-    .jpeg({ quality: 80 })
-    .toBuffer();
+export async function thumbnail(
+  input: Buffer | string,
+  { format = 'webp', quality = 80 }: { format?: OutputFormat; quality?: number } = {},
+): Promise<Buffer> {
+  // Force first frame for animated inputs; cover-crop to a square. Follows the
+  // same format as the full image: a jpeg thumbnail of a transparent PNG is
+  // black-backgrounded, which is the most visible face of the alpha bug.
+  return encode(
+    sharp(input, { animated: false })
+      .rotate()
+      .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' }),
+    format,
+    quality,
+  ).toBuffer();
 }

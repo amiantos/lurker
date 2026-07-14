@@ -1006,6 +1006,25 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   // db/uploaderConfigSeed.ts#reconcileLegacyUploadSettings. What remains here is
   // the part that genuinely is a per-user preference: the processing pipeline.
   {
+    key: 'uploads.image.format',
+    label: 'Static image format',
+    category: 'uploads',
+    group: 'pipeline',
+    type: 'enum',
+    choices: ['webp', 'jpeg'],
+    default: 'webp',
+    // Deliberately NOT selfHostedOnly, unlike every other key in this group.
+    // Those are cost/abuse levers the operator owns in hosted edition; this is a
+    // compatibility preference the user owns, and the hosted dropper accepts
+    // both formats, so there is nothing for the operator to protect.
+    description:
+      'Format static images are re-encoded to. "webp" (default) is smaller and — ' +
+      'unlike JPEG — has an alpha channel, so transparent PNGs survive the ' +
+      're-encode instead of being flattened onto black. "jpeg" is the escape ' +
+      'hatch for a client or upload host that mangles WebP. Animated GIF/WebP/' +
+      'APNG bypass this entirely and are uploaded verbatim.',
+  },
+  {
     key: 'uploads.image.max_dimension',
     label: 'Max image dimension (longest edge)',
     category: 'uploads',
@@ -1018,12 +1037,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // server-side in A8), not a tenant knob.
     selfHostedOnly: true,
     description:
-      'Longest-edge limit for static images before they are re-encoded as JPEG. ' +
+      'Longest-edge limit for static images before they are re-encoded. ' +
       'Animated GIF/WebP/APNG bypass this and are uploaded verbatim.',
   },
   {
     key: 'uploads.image.quality',
-    label: 'JPEG re-encode quality',
+    label: 'Image re-encode quality',
     category: 'uploads',
     group: 'pipeline',
     type: 'int',
@@ -1031,7 +1050,11 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 100,
     default: 85,
     selfHostedOnly: true,
-    description: 'JPEG quality for the re-encode pass on static images (30–100).',
+    description:
+      'Quality (30–100) for the re-encode pass on static images, handed to ' +
+      'whichever encoder uploads.image.format selects. Higher is better-looking ' +
+      'and bigger in both, but the scales are not identical — WebP at 85 is not ' +
+      'the same picture as JPEG at 85.',
   },
   {
     key: 'uploads.image.max_upload_mb',

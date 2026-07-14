@@ -426,11 +426,14 @@ export async function importFromZipFile(
         )
       : null;
 
-    // ---- thumbnails (small JPEGs) — read up front so phase C can apply them
-    // inside a synchronous transaction. ----
+    // ---- thumbnails — read up front so phase C can apply them inside a
+    // synchronous transaction. Accepts .webp (since #560) and .jpg (everything
+    // exported before it, which must keep importing). The extension only locates
+    // the entry; the bytes go into the BLOB as-is and the serving route sniffs
+    // their type, so a mismatch here can't corrupt anything. ----
     const thumbs = new Map<number, Buffer>();
     for (const [name, entry] of entries) {
-      const m = name.match(/^thumbnails\/(\d+)\.jpg$/);
+      const m = name.match(/^thumbnails\/(\d+)\.(?:jpg|webp)$/);
       if (m) thumbs.set(parseInt(m[1], 10), await readEntryBuffer(zip, entry));
     }
 
