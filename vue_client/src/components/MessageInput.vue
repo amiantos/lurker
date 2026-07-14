@@ -162,6 +162,7 @@ import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightR
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
 import { highlightRuleDetailParts } from '../utils/highlightFormat.js';
+import { joinMeta } from '../utils/metaLine.js';
 import { ACCEPTED_FILE_TYPES, isUploadableType } from '../utils/uploaders.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
@@ -2065,7 +2066,7 @@ function formatIgnoreEntry(entry: IgnoreEntry, idx: number, global = false): str
   return `  ${idx}. ${summarizeIgnoreEntry(entry, global)}`;
 }
 
-// "QUACK! · whole word · #chan" — a highlight rule's dimensions, no index. The
+// "QUACK! • whole word • #chan" — a highlight rule's dimensions, no index. The
 // subject (mask/pattern) and scope are framed here; the secondary descriptors
 // come from the shared formatter the settings pane also uses.
 function summarizeHighlightEntry(entry: HighlightRule, global = false): string {
@@ -2073,7 +2074,7 @@ function summarizeHighlightEntry(entry: HighlightRule, global = false): string {
   const parts = [subject];
   if (global) parts.push('global');
   parts.push(...highlightRuleDetailParts(entry));
-  return parts.join(' · ');
+  return joinMeta(parts);
 }
 
 // One indexed line for the /highlight listing.

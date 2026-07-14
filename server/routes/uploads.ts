@@ -34,6 +34,7 @@ import type { UploadListRow } from '../db/uploadHistory.js';
 import {
   insertUpload,
   listUploads,
+  isUploadKind,
   getThumbnail,
   getUploadForReap,
   deleteUpload,
@@ -528,7 +529,16 @@ function configDeletableCheck(): (configId: number | null) => boolean {
 router.get('/', (req: Request, res: Response) => {
   const before = req.query.before ? Number(req.query.before) : null;
   const limit = req.query.limit ? Number(req.query.limit) : 50;
-  const rows: UploadListRow[] = listUploads(req.user!.id, { before, limit });
+  // Search has to happen HERE, not in the client (#547): the client only holds the
+  // pages it has scrolled through, and the whole point is finding one it hasn't. This
+  // is the exception to the filters-are-client-side default, and the reason is
+  // delivery, not preference.
+  const rawQ = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const q = rawQ ? rawQ.slice(0, 200) : null;
+  // An unknown kind is ignored rather than 400'd: it can only come from a client we
+  // shipped, and silently showing everything beats erroring out of a browse.
+  const kind = isUploadKind(req.query.kind) ? req.query.kind : null;
+  const rows: UploadListRow[] = listUploads(req.user!.id, { before, limit, q, kind });
   const configDeletable = configDeletableCheck();
   res.json({
     items: rows.map((r) => {

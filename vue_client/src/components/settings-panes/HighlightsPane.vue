@@ -189,6 +189,7 @@ import type { HighlightRule } from '../../stores/highlightRules.js';
 import IconButton from '../IconButton.vue';
 import { parseChannelList } from '../../../../shared/channels.js';
 import { highlightRuleDetailParts } from '../../utils/highlightFormat.js';
+import { joinMeta } from '../../utils/metaLine.js';
 
 type RuleKind = 'substr' | 'full' | 'glob' | 'regex';
 
@@ -215,9 +216,10 @@ interface HighlightGroup {
 
 // One-line summary of a rule's secondary dimensions for the list (the mask or
 // pattern is the main label rendered separately). Shared with the /highlight
-// command listing so the two never drift.
+// command listing so the two never drift — including the separator, which is why
+// both go through joinMeta rather than each picking a glyph.
 function describe(entry: HighlightRule): string {
-  return highlightRuleDetailParts(entry).join(' · ');
+  return joinMeta(highlightRuleDetailParts(entry));
 }
 
 // Global group first (no network scope), then per-network groups sorted by name.

@@ -423,6 +423,58 @@ describe('POST /api/uploads — progress narration', () => {
   // as a second upload.
 });
 
+// #547. The WHERE clauses are exercised in db/uploadHistory.test.ts; this is about the
+// route actually plumbing the query params into them, and refusing to be steered by a
+// kind it doesn't recognize.
+describe('GET /api/uploads — search params', () => {
+  const upload = async (filename: string, contentType: string, body: Buffer) =>
+    agent.post('/api/uploads').attach('image', body, { filename, contentType });
+
+  beforeAll(async () => {
+    await upload('needle-in-haystack.png', 'image/png', smallPng);
+    await upload('unrelated.png', 'image/png', smallPng);
+    await upload('needle.txt', 'text/plain', Buffer.from('hay'));
+  });
+
+  it('filters by filename substring', async () => {
+    const res = await agent.get('/api/uploads?q=needle');
+    expect(res.status).toBe(200);
+    expect(res.body.items.map((i: { filename: string }) => i.filename).toSorted()).toEqual([
+      'needle-in-haystack.png',
+      'needle.txt',
+    ]);
+  });
+
+  it('filters by kind, and combines it with the search', async () => {
+    const res = await agent.get('/api/uploads?q=needle&kind=text');
+    expect(res.body.items.map((i: { filename: string }) => i.filename)).toEqual(['needle.txt']);
+  });
+
+  // Arbitrary user text arrives here. A term with a URL metacharacter has to survive
+  // the trip, and one with a LIKE metacharacter must not become a wildcard.
+  it('handles a search term with special characters', async () => {
+    await upload('100% & done.png', 'image/png', smallPng);
+    const res = await agent.get(`/api/uploads?q=${encodeURIComponent('100% & done')}`);
+    expect(res.body.items.map((i: { filename: string }) => i.filename)).toEqual([
+      '100% & done.png',
+    ]);
+  });
+
+  // A kind we never shipped can only come from a hand-typed URL. Showing everything
+  // beats erroring out of a browse.
+  it('ignores an unknown kind rather than failing', async () => {
+    const res = await agent.get('/api/uploads?kind=malware');
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBeGreaterThan(0);
+  });
+
+  it('returns an empty list, not an error, when nothing matches', async () => {
+    const res = await agent.get('/api/uploads?q=zzzz-no-such-file');
+    expect(res.status).toBe(200);
+    expect(res.body.items).toEqual([]);
+  });
+});
+
 describe('GET /api/uploads/:id/thumb', () => {
   it('serves thumbnail bytes', async () => {
     const upload = await agent

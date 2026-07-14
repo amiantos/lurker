@@ -13,8 +13,16 @@
     aria-label="Image viewer"
     @click.self="$emit('close')"
     @keydown.esc="$emit('close')"
+    @keydown.left.prevent="$emit('prev')"
+    @keydown.right.prevent="$emit('next')"
   >
     <div class="topbar">
+      <!-- What you're looking at, and where you are in the set. Only meaningful for a
+           gallery; a single image is a gallery of one and shows neither. -->
+      <div class="caption">
+        <span v-if="filename" class="caption-name" :title="filename">{{ filename }}</span>
+        <span v-if="count > 1" class="caption-count">{{ index + 1 }} / {{ count }}</span>
+      </div>
       <div class="controls">
         <button
           class="control"
@@ -25,6 +33,19 @@
           @click="toggleZoomFromCenter"
         >
           <i :class="zoomIconClass"></i>
+        </button>
+        <!-- Copying the link is what you usually want from an image someone posted —
+             to reply with it, or to send it on. It was previously only reachable by
+             closing the viewer and finding the URL again. -->
+        <button
+          class="control"
+          type="button"
+          :class="{ copied: clipboard.isCopied() }"
+          :title="clipboard.isCopied() ? 'copied' : 'copy link'"
+          :aria-label="clipboard.isCopied() ? 'copied' : 'copy link'"
+          @click="onCopyLink"
+        >
+          <i :class="clipboard.isCopied() ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
         </button>
         <button
           class="control"
@@ -46,6 +67,30 @@
         </button>
       </div>
     </div>
+
+    <!-- Siblings of the stage, not children of it: the stage owns pan/zoom pointer
+         handling, and an arrow inside it would have to fight that for its own clicks.
+         Rendered only when there is somewhere to go, so a gallery of one shows none. -->
+    <button
+      v-if="hasPrev"
+      class="nav nav-prev"
+      type="button"
+      title="previous"
+      aria-label="previous image"
+      @click.stop="$emit('prev')"
+    >
+      <i class="fa-solid fa-chevron-left"></i>
+    </button>
+    <button
+      v-if="hasNext"
+      class="nav nav-next"
+      type="button"
+      title="next"
+      aria-label="next image"
+      @click.stop="$emit('next')"
+    >
+      <i class="fa-solid fa-chevron-right"></i>
+    </button>
 
     <div ref="stageEl" class="stage" @click.self="$emit('close')">
       <div v-if="failed" class="failed-card">
@@ -87,6 +132,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 
 const LOAD_TIMEOUT_MS = 20_000;
 const MIN_ZOOM = 1;
@@ -98,11 +144,23 @@ const FILL_FALLBACK_ZOOM = 2;
 const DOUBLE_TAP_MS = 300;
 const DOUBLE_TAP_SLOP_PX = 32;
 
-const props = defineProps<{
-  url: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    url: string;
+    // Gallery context (#547). All optional: a lone image opened from a message is a
+    // gallery of one, and every one of these falls away to its single-image default.
+    filename?: string | null;
+    index?: number;
+    count?: number;
+    hasPrev?: boolean;
+    hasNext?: boolean;
+  }>(),
+  { filename: null, index: 0, count: 1, hasPrev: false, hasNext: false },
+);
 
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; prev: []; next: [] }>();
+
+const clipboard = useCopyFeedback();
 
 const loading = ref(true);
 const failed = ref(false);
@@ -161,7 +219,12 @@ const imageStyle = computed(() => ({
 
 watch(
   () => props.url,
-  (nextUrl) => startLoading(nextUrl),
+  (nextUrl) => {
+    startLoading(nextUrl);
+    // Arrowing to the next image while the tick is still showing would leave a green
+    // check sitting over a link the user has NOT copied.
+    clipboard.reset();
+  },
 );
 
 function onLoad(): void {
@@ -205,6 +268,13 @@ function onLoadTimeout(): void {
 function openInBrowser(): void {
   window.open(props.url, '_blank', 'noopener,noreferrer');
   emit('close');
+}
+
+// Deliberately does NOT close the viewer, unlike openInBrowser: copying a link is
+// something you do while still looking at the picture, and often while walking a
+// gallery. Closing would make copying two images in a row a chore.
+function onCopyLink(): void {
+  void clipboard.copy(props.url);
 }
 
 function toggleZoomFromCenter(): void {
@@ -595,6 +665,57 @@ onBeforeUnmount(() => {
   padding-right: env(safe-area-inset-right);
   z-index: 1;
 }
+
+/* margin-right:auto rather than space-between on .topbar: with no caption (the
+   single-image case) the controls must stay hard right, and space-between with one
+   child already does that — but the moment a caption exists it would push the controls
+   without this, and the caption itself needs to be the thing that flexes. */
+.caption {
+  margin-right: auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  padding-left: var(--space-2);
+  color: var(--fg-muted);
+}
+.caption-name {
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.caption-count {
+  white-space: nowrap;
+}
+
+/* Vertically centred against the whole overlay, not the stage: the stage letterboxes
+   the image, so anchoring to it would move the arrows as the aspect ratio changed
+   from one photo to the next. */
+.nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  background: rgba(0, 0, 0, 0.45);
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--icon-lg);
+  /* A generous hit area — this is the control you use repeatedly, and on a phone it
+     has to be reachable with a thumb without covering the picture. */
+  padding: var(--space-6) var(--space-5);
+}
+.nav:hover {
+  color: var(--fg);
+}
+.nav-prev {
+  left: var(--space-4);
+}
+.nav-next {
+  right: var(--space-4);
+}
 .controls {
   display: flex;
   align-items: center;
@@ -610,6 +731,10 @@ onBeforeUnmount(() => {
      weight 900). */
   font-size: var(--icon-lg);
   padding: var(--space-2) var(--space-4);
+}
+.control.copied,
+.control.copied:hover:not(:disabled) {
+  color: var(--good);
 }
 .control:hover:not(:disabled) {
   color: var(--accent);
