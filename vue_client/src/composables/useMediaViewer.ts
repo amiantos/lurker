@@ -32,12 +32,12 @@ export function useMediaViewer() {
   const hasPrev = computed(() => index.value > 0);
   const hasNext = computed(() => index.value < items.value.length - 1);
 
-  /** Open a single image — a gallery of one. */
+  /** Open a single file — a gallery of one. */
   function open(nextUrl: string): void {
     openGallery([{ url: nextUrl }], 0);
   }
 
-  /** Open a list of images, starting at `startIndex` (the uploads browser). */
+  /** Open a list of files, starting at `startIndex` (the uploads browser). */
   function openGallery(next: GalleryItem[], startIndex = 0): void {
     if (!next.length) return;
     items.value = next;

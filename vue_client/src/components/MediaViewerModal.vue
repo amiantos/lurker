@@ -137,32 +137,31 @@
 
       <!-- VIDEO. `playsinline` is not optional: without it iOS Safari yanks the video
            into its own native fullscreen player and our viewer — gallery arrows, copy
-           link, the lot — is gone. `autoplay` is a request, not a promise: if the
-           browser's autoplay policy refuses it, the controls are right there. -->
+           link, the lot — is gone.
+
+           NO autoplay, here or on audio. Opening a file to look at it is not the same
+           as asking it to start making noise, and walking a gallery with the arrow keys
+           would fire off a new track on every keypress. Press play. -->
       <video
         v-else-if="kind === 'video'"
         v-show="!loading && !failed"
         class="video"
         :src="displayUrl"
         controls
-        autoplay
         playsinline
         preload="metadata"
         @loadeddata="onLoad"
         @error="onError"
       ></video>
 
-      <!-- AUDIO has nothing to show, so give it something to be: the filename and a
-           player, framed as a card rather than a bare <audio> element floating in a
-           black void. -->
+      <!-- AUDIO is just the player, in a box. There is nothing to look at, and dressing
+           the nothing up with a big music glyph was decoration standing in for content.
+           The filename lives in the caption above, same as every other kind. -->
       <div v-else-if="kind === 'audio'" v-show="!loading && !failed" class="audio-card">
-        <i class="fa-solid fa-music audio-art" aria-hidden="true"></i>
-        <p v-if="filename" class="audio-name">{{ filename }}</p>
         <audio
           class="audio"
           :src="displayUrl"
           controls
-          autoplay
           preload="metadata"
           @loadeddata="onLoad"
           @error="onError"
@@ -912,29 +911,16 @@ onBeforeUnmount(() => {
   background: #000;
 }
 
-/* Audio has nothing to look at, so the card IS the presentation. */
+/* Just the player, in a box — the box exists only to give the native control strip a
+   surface to sit on instead of floating in the black. */
 .audio-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-9);
+  padding: var(--space-6);
   width: min(480px, 92vw);
   background: var(--bg);
   border: 1px solid var(--border);
 }
-.audio-art {
-  font-size: 4em;
-  color: var(--fg-muted);
-}
-.audio-name {
-  margin: 0;
-  color: var(--fg);
-  max-width: 100%;
-  overflow-wrap: anywhere;
-  text-align: center;
-}
 .audio {
+  display: block;
   width: 100%;
 }
 
