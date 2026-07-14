@@ -334,13 +334,16 @@ function metaLine(u: UploadRow): string {
 </script>
 
 <style scoped>
+/* Matches .search-row in HighlightsModal / SearchModal: a margin, not a rule. Those
+   two are the house pattern for "a filter field above a scrolling list", and this
+   modal is the same shape — an extra border here just made it look like a different
+   app. */
 .filters {
   display: flex;
   gap: var(--space-4);
   align-items: center;
   flex-wrap: wrap;
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-6);
 }
 .search {
   position: relative;
@@ -363,12 +366,14 @@ function metaLine(u: UploadRow): string {
   width: 1em;
   text-align: center;
 }
+/* The same field as .filter in HighlightsModal / SearchModal — background, border and
+   padding all match. Only the LEFT padding differs, because ours has an icon in it. */
 .search-input {
   width: 100%;
   /* Left padding is derived, not picked: where the icon starts, plus the icon's own
      width, plus one character of breathing room. */
-  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--search-icon-inset) + 1em + 1ch);
-  background: var(--bg-soft);
+  padding: var(--space-4) var(--space-5) var(--space-4) calc(var(--search-icon-inset) + 1em + 1ch);
+  background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg);
   font: inherit;
@@ -411,9 +416,11 @@ function metaLine(u: UploadRow): string {
 
 .grid-wrap {
   /* Break out of card padding so the scrollbar sits against the card border;
-     padding keeps tile content visually aligned with the rest. */
+     padding keeps tile content visually aligned with the rest. Same as .match-list in
+     HighlightsModal — the gap above comes from the filter row's margin, not from a
+     padding here, so the two don't stack. */
   margin: 0 calc(-1 * var(--card-pad-x));
-  padding: var(--space-4) var(--card-pad-x) 0;
+  padding: 0 var(--card-pad-x);
   overflow-y: auto;
   flex: 1;
   min-height: 0;
