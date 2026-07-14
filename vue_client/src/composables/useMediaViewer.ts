@@ -1,13 +1,17 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// The lightbox's model. It is a GALLERY, and a single image is a gallery of one.
+// The media viewer's model. It is a GALLERY, and a single file is a gallery of one.
 //
-// That framing is the whole design. Clicking an image in a message (RenderSegments)
-// and clicking one in the uploads browser (#547) reach the same viewer; the only
-// difference is how many images came along with it. The single-image case therefore
-// needs no special path — `hasPrev`/`hasNext` are simply false and the arrows don't
-// render — which is why `open()` is just `openGallery()` with one item.
+// That framing is the whole design. Clicking a link in a message (RenderSegments) and
+// clicking a tile in the uploads browser (#547) reach the same viewer; the only
+// difference is how many files came along with it. The single-file case therefore needs
+// no special path — `hasPrev`/`hasNext` are simply false and the arrows don't render —
+// which is why `open()` is just `openGallery()` with one item.
+//
+// The model is deliberately blind to what KIND each item is (#563). The viewer derives
+// that from the URL when it renders, so this stays a list of things to look at, and
+// there is no second place that could disagree about what a `.mp4` is.
 
 import { computed, ref } from 'vue';
 
@@ -20,7 +24,7 @@ const isOpen = ref(false);
 const items = ref<GalleryItem[]>([]);
 const index = ref(0);
 
-export function useImageModal() {
+export function useMediaViewer() {
   const current = computed<GalleryItem | null>(() => items.value[index.value] ?? null);
   // The many call sites that only ever wanted "the image being viewed" keep working.
   const url = computed<string | null>(() => current.value?.url ?? null);

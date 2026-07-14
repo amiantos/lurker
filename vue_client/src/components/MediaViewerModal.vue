@@ -13,8 +13,8 @@
     aria-label="Image viewer"
     @click.self="$emit('close')"
     @keydown.esc="$emit('close')"
-    @keydown.left.prevent="$emit('prev')"
-    @keydown.right.prevent="$emit('next')"
+    @keydown.left="onArrowKey($event, 'prev')"
+    @keydown.right="onArrowKey($event, 'next')"
   >
     <div class="topbar">
       <!-- What you're looking at, and where you are in the set. Only meaningful for a
@@ -24,7 +24,11 @@
         <span v-if="count > 1" class="caption-count">{{ index + 1 }} / {{ count }}</span>
       </div>
       <div class="controls">
+        <!-- Images only. There is nothing to zoom into on an audio player, and a video
+             has its own controls; offering a dead button on three modes out of four
+             would be worse than offering none. -->
         <button
+          v-if="kind === 'image'"
           class="control"
           type="button"
           :title="zoomControlLabel"
@@ -34,7 +38,7 @@
         >
           <i :class="zoomIconClass"></i>
         </button>
-        <!-- Copying the link is what you usually want from an image someone posted —
+        <!-- Copying the link is what you usually want from something someone posted —
              to reply with it, or to send it on. It was previously only reachable by
              closing the viewer and finding the URL again. -->
         <button
@@ -95,14 +99,18 @@
     <div ref="stageEl" class="stage" @click.self="$emit('close')">
       <div v-if="failed" class="failed-card">
         <p class="empty">
-          Failed to load image.
+          {{ failureMessage }}
           <button class="link" type="button" @click="openInBrowser">Open in browser.</button>
         </p>
       </div>
-      <p v-else-if="loading" class="loading" aria-label="Loading image">
+      <p v-else-if="loading" class="loading" aria-label="Loading">
         <i class="fa-solid fa-circle-notch fa-spin"></i>
       </p>
+
+      <!-- IMAGE — the only mode with pan/zoom. A photo is the one thing here you want
+           to inspect closer than it fits. -->
       <img
+        v-if="kind === 'image'"
         ref="imageEl"
         v-show="!loading && !failed"
         class="image"
@@ -126,6 +134,49 @@
         @pointercancel="onImagePointerEnd"
         @lostpointercapture="onImagePointerEnd"
       />
+
+      <!-- VIDEO. `playsinline` is not optional: without it iOS Safari yanks the video
+           into its own native fullscreen player and our viewer — gallery arrows, copy
+           link, the lot — is gone. `autoplay` is a request, not a promise: if the
+           browser's autoplay policy refuses it, the controls are right there. -->
+      <video
+        v-else-if="kind === 'video'"
+        v-show="!loading && !failed"
+        class="video"
+        :src="displayUrl"
+        controls
+        autoplay
+        playsinline
+        preload="metadata"
+        @loadeddata="onLoad"
+        @error="onError"
+      ></video>
+
+      <!-- AUDIO has nothing to show, so give it something to be: the filename and a
+           player, framed as a card rather than a bare <audio> element floating in a
+           black void. -->
+      <div v-else-if="kind === 'audio'" v-show="!loading && !failed" class="audio-card">
+        <i class="fa-solid fa-music audio-art" aria-hidden="true"></i>
+        <p v-if="filename" class="audio-name">{{ filename }}</p>
+        <audio
+          class="audio"
+          :src="displayUrl"
+          controls
+          autoplay
+          preload="metadata"
+          @loadeddata="onLoad"
+          @error="onError"
+        ></audio>
+      </div>
+
+      <!-- TEXT is the one kind we have to FETCH rather than hand to an element, which
+           makes it the only one subject to CORS. Lurker's own long-message paste turns
+           into a .txt upload, so this is the mode that lets you read one without
+           leaving the app. When the provider won't allow the read, onError puts up the
+           same "open in browser" card as a dead image — see loadText(). -->
+      <pre v-else-if="kind === 'text'" v-show="!loading && !failed" class="text">{{
+        textContent
+      }}</pre>
     </div>
   </div>
 </template>
@@ -133,8 +184,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
+import { mediaKindForUrl, type MediaKind } from '../utils/uploadHostMatch.js';
 
 const LOAD_TIMEOUT_MS = 20_000;
+// A .txt upload is a pasted chat message, not a novel — but nothing stops someone
+// linking a 200 MB log, and a <pre> with 200 MB in it locks the tab. Show the head of
+// it and say so.
+const MAX_TEXT_CHARS = 200_000;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 4;
 const MOVE_SLOP_PX = 6;
@@ -165,6 +221,7 @@ const clipboard = useCopyFeedback();
 const loading = ref(true);
 const failed = ref(false);
 const displayUrl = ref(props.url);
+const textContent = ref('');
 const overlayEl = ref<HTMLElement | null>(null);
 const imageEl = ref<HTMLImageElement | null>(null);
 const stageEl = ref<HTMLElement | null>(null);
@@ -207,6 +264,23 @@ let pinchStart: PinchStart | null = null;
 let pinchOccurred = false;
 let lastTap: { time: number; x: number; y: number } | null = null;
 
+// What we're showing. Derived from the URL rather than passed in, so a link clicked in
+// a message and one clicked in the uploads grid classify identically — one rule, not
+// two that can disagree. An unrecognised URL falls back to `image`, which fails into
+// the "open in browser" card exactly as it did before this component knew about video.
+const kind = computed<MediaKind>(() => mediaKindForUrl(props.url) ?? 'image');
+
+const FAILURE_MESSAGES: Record<MediaKind, string> = {
+  image: 'Failed to load image.',
+  video: 'Failed to play video.',
+  audio: 'Failed to play audio.',
+  // The likeliest cause by far, and the one the user can do something about. Reading a
+  // .txt means fetching its bytes, which the host has to permit (CORS) — playing a
+  // video or showing an image never does.
+  text: 'Could not read this file — the host may not allow it.',
+};
+const failureMessage = computed(() => FAILURE_MESSAGES[kind.value]);
+
 const isZoomed = computed(() => scale.value > MIN_ZOOM);
 const zoomControlLabel = computed(() => (isZoomed.value ? 'zoom out' : 'zoom in'));
 const zoomIconClass = computed(() => [
@@ -246,8 +320,45 @@ function startLoading(nextUrl: string): void {
   displayUrl.value = nextUrl;
   loading.value = true;
   failed.value = false;
+  textContent.value = '';
   resetZoom();
   loadTimer.value = window.setTimeout(onLoadTimeout, LOAD_TIMEOUT_MS);
+  // <img>, <video> and <audio> fetch their own bytes and tell us via @load / @error.
+  // Text has no element that does that, so we do it by hand.
+  if (mediaKindForUrl(nextUrl) === 'text') void loadText(nextUrl);
+}
+
+/**
+ * Read a .txt so it can be shown in-app.
+ *
+ * ⚠ THE ONLY MODE SUBJECT TO CORS. An <img> or <video> renders a cross-origin file
+ * without the host's permission; READING one requires it. So this works on the `local`
+ * driver (same origin) and is at the mercy of the provider anywhere else — catbox, x0,
+ * a CDN. There is no way around that from the client: a proxy on our server would be an
+ * SSRF surface and would put every viewed file through our bandwidth.
+ *
+ * When it's refused, we land on the same "open in browser" card as a dead image, which
+ * is exactly today's behaviour. Nothing is lost by trying; a lot is gained when it
+ * works, because Lurker's own long-message paste becomes a .txt upload and this is what
+ * lets you read one without leaving the app.
+ */
+async function loadText(url: string): Promise<void> {
+  try {
+    const res = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
+    if (!res.ok) throw new Error(String(res.status));
+    const body = await res.text();
+    // The URL is still the one we started on — the user may have arrowed to the next
+    // item while this was in flight, and a stale body must not overwrite it.
+    if (displayUrl.value !== url) return;
+    textContent.value =
+      body.length > MAX_TEXT_CHARS
+        ? `${body.slice(0, MAX_TEXT_CHARS)}\n\n… truncated — open in browser for the rest.`
+        : body;
+    onLoad();
+  } catch {
+    if (displayUrl.value !== url) return;
+    onError();
+  }
 }
 
 function clearLoadTimer(): void {
@@ -263,6 +374,19 @@ function onLoadTimeout(): void {
   loading.value = false;
   failed.value = true;
   resetZoom();
+}
+
+// Left/right walks the gallery — EXCEPT when a media element has focus, where the
+// browser already gives those keys a better meaning: seek. Stealing them would make a
+// video impossible to scrub with the keyboard, and the user who has clicked into the
+// player is plainly not asking for the next file.
+function onArrowKey(event: KeyboardEvent, direction: 'prev' | 'next'): void {
+  const tag = (event.target as HTMLElement | null)?.tagName;
+  if (tag === 'VIDEO' || tag === 'AUDIO') return;
+  event.preventDefault();
+  // Branched rather than emit(direction): defineEmits' overloads don't narrow a union.
+  if (direction === 'prev') emit('prev');
+  else emit('next');
 }
 
 function openInBrowser(): void {
@@ -615,6 +739,10 @@ function releasePointer(pointerId: number): void {
 }
 
 function preventNativeTouchGesture(event: TouchEvent): void {
+  // Only the image mode pans and pinches. Swallowing touches in the others would fight
+  // the native <video>/<audio> controls for their own scrubbing gestures, and would
+  // stop a long <pre> from being scrolled with a finger.
+  if (kind.value !== 'image') return;
   if (event.touches.length > 1 || (isZoomed.value && event.touches.length > 0))
     event.preventDefault();
 }
@@ -773,6 +901,61 @@ onBeforeUnmount(() => {
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
 }
+/* Letterboxed like the image, but without the transform machinery — a video sizes to
+   the stage and its own controls do the rest. */
+.video {
+  display: block;
+  max-width: 92vw;
+  max-height: 100%;
+  /* A portrait phone clip in a landscape stage would otherwise be a sliver. */
+  min-width: min(320px, 92vw);
+  background: #000;
+}
+
+/* Audio has nothing to look at, so the card IS the presentation. */
+.audio-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-9);
+  width: min(480px, 92vw);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.audio-art {
+  font-size: 4em;
+  color: var(--fg-muted);
+}
+.audio-name {
+  margin: 0;
+  color: var(--fg);
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.audio {
+  width: 100%;
+}
+
+/* A .txt is usually a pasted chat message, so it wants to read like one: themed,
+   selectable, wrapped rather than scrolled sideways. */
+.text {
+  margin: 0;
+  padding: var(--space-7);
+  width: min(900px, 92vw);
+  max-height: 100%;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-mono, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  text-align: left;
+}
+
 .image--zoomed {
   cursor: zoom-out;
 }

@@ -60,9 +60,9 @@ import { segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useMircPalette } from '../composables/useNickColors.js';
-import { useImageModal } from '../composables/useImageModal.js';
+import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { socketSend } from '../composables/useSocket.js';
-import { isImageUrl } from '../utils/uploadHostMatch.js';
+import { mediaKindForUrl } from '../utils/uploadHostMatch.js';
 import SpoilerText from './SpoilerText.vue';
 
 // The single renderer for an array of RenderSegments (the output of
@@ -97,7 +97,7 @@ defineEmits<{
 
 const buffers = useBuffersStore();
 const settings = useSettingsStore();
-const imageModal = useImageModal();
+const viewer = useMediaViewer();
 const mircPalette = useMircPalette();
 
 function styleFor(seg: RenderSegment): CSSProperties {
@@ -107,10 +107,17 @@ function hasStyle(seg: RenderSegment): boolean {
   return segmentHasStyle(seg);
 }
 
-function isModalImageUrl(url: string): boolean {
+// Any kind the viewer can show, not just images (#563): a video, an audio file, or a
+// .txt now open in-app too, rather than throwing the user out to a new tab.
+//
+// The setting KEY still says `image_modal` — deliberately. Renaming it would orphan the
+// stored row of every user who has turned the viewer off, silently switching it back on
+// for exactly the people who said they didn't want it. The label they read says "Media
+// viewer"; the key is just an id.
+function isViewableUrl(url: string): boolean {
   if (settings.effective('chat.image_modal.enabled') !== true) return false;
 
-  return isImageUrl(url);
+  return mediaKindForUrl(url) !== null;
 }
 
 function onLinkClick(event: MouseEvent, url: string): void {
@@ -118,10 +125,10 @@ function onLinkClick(event: MouseEvent, url: string): void {
 
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
     return;
-  if (!isModalImageUrl(url)) return;
+  if (!isViewableUrl(url)) return;
 
   event.preventDefault();
-  imageModal.open(url);
+  viewer.open(url);
 }
 
 // Clicking a channel name mirrors IRCCloud. IRC channel names are

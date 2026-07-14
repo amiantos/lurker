@@ -843,17 +843,23 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'the JOIN line is revealed. 0 disables unmasking.',
   },
 
-  // ─── Inline image viewer ──────────────────────────────────────────────
+  // ─── Inline media viewer ──────────────────────────────────────────────
   {
+    // ⚠ The key still says `image_modal` even though the viewer now plays video and
+    // audio and reads text (#563). Renaming it is a MIGRATION, not a rename: the stored
+    // row lives under the old key, so a new key would orphan it — silently switching
+    // the viewer back on for exactly the people who went out of their way to turn it
+    // off. The label is what users read; the key is an id, and ids age.
     key: 'chat.image_modal.enabled',
-    label: 'Image viewer',
+    label: 'Media viewer',
     category: 'chat',
     group: 'viewing',
     type: 'bool',
     default: true,
     description:
-      'When enabled, clicking a URL to an image opens it in an in-app viewer instead ' +
-      'of a new browser tab. Cmd/Ctrl-click always opens in a new tab.',
+      'When enabled, clicking a link to an image, video, audio file, or .txt opens it ' +
+      'in an in-app viewer instead of a new browser tab. Cmd/Ctrl-click always opens ' +
+      'in a new tab.',
   },
 
   // ─── Connection ───────────────────────────────────────────────────────
