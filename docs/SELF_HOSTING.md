@@ -314,14 +314,14 @@ Confirm it with two `curl`s against the same URL, where the _only_ difference is
 ```bash
 # 1. No referer → 200, and Lurker serves the image
 curl -sS -o /dev/null -D - \
-  https://lurker.example.com/uploads/local/<key>.jpg \
+  https://lurker.example.com/uploads/local/<key>.webp \
   | grep -iE '^HTTP/|^content-type:'
 #   HTTP/2 200
-#   content-type: image/jpeg
+#   content-type: image/webp
 
 # 2. Cross-domain referer → 403, and your image never gets served
 curl -sS -o /dev/null -D - -H 'Referer: https://example.org/' \
-  https://lurker.example.com/uploads/local/<key>.jpg \
+  https://lurker.example.com/uploads/local/<key>.webp \
   | grep -iE '^HTTP/|^content-type:|^vary:'
 #   HTTP/2 403
 #   content-type: text/plain; charset=UTF-8

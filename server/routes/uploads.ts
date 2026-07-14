@@ -338,6 +338,13 @@ router.post(
         outExt = classified.ext;
         outByteSize = bytesOnDisk;
       } else {
+        // The output format is the user's, with no policy override: unlike maxDim/
+        // quality/maxMb it isn't a cost lever the operator needs to bake, and the
+        // hosted dropper accepts both webp and jpeg (#560).
+        const format: imagePipeline.OutputFormat =
+          settings['uploads.image.format'] === 'jpeg' ? 'jpeg' : 'webp';
+        const quality =
+          resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
         // imagePipeline is an untyped JS module — any is unavoidable here
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let optimized: any;
@@ -345,7 +352,8 @@ router.post(
           optimized = await imagePipeline.optimize(req.file.path, {
             maxDim:
               resolved.policy.maxDim ?? (Number(settings['uploads.image.max_dimension']) || 2048),
-            quality: resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85),
+            quality,
+            format,
             // SVG is rejected only where the resolved uploader's policy says so
             // (the hosted locked uploader serves raster + .txt). Self-host keeps
             // the SVG passthrough. Was: rasterOnly = isNodeMode().
@@ -359,7 +367,7 @@ router.post(
           }
           throw err;
         }
-        thumb = (await imagePipeline.thumbnail(req.file.path)) as Buffer | null;
+        thumb = (await imagePipeline.thumbnail(req.file.path, { format })) as Buffer | null;
         // The optimized image is small and bounded (resized + re-encoded), so it
         // stays a buffer — round-tripping it through another temp file would be
         // pointless I/O. The heap blowup this PR removes was the ORIGINAL bytes.
@@ -402,9 +410,18 @@ router.post(
       let thumbnailUrl: string | null = null;
       if (resolved.policy.hostsThumbnails && thumb) {
         try {
+          // Describe the bytes we actually produced, not the format thumbnails
+          // used to be: the dropper verifies the claimed mime against the magic
+          // bytes and 415s a webp announced as image/jpeg.
+          const thumbMime = imagePipeline.thumbnailMime(thumb);
           const tRes = await resolved.driver.upload(
             bufferSource(thumb),
-            { filename: 'thumb.jpg', mime: 'image/jpeg', contentClass: 'image', kind: 'thumb' },
+            {
+              filename: `thumb.${imagePipeline.extensionFor(thumbMime, 'jpg')}`,
+              mime: thumbMime,
+              contentClass: 'image',
+              kind: 'thumb',
+            },
             resolved.driverConfig,
           );
           if (tRes && typeof tRes.url === 'string') {
@@ -520,7 +537,9 @@ router.get('/:id/thumb', (req: Request, res: Response) => {
     res.status(404).json({ error: 'not found' });
     return;
   }
-  res.setHeader('Content-Type', 'image/jpeg');
+  // Sniffed, not named: thumbnails stored before #560 are jpeg and those rows
+  // outlive the format setting, so this route serves a mix forever.
+  res.setHeader('Content-Type', imagePipeline.thumbnailMime(row.thumbnail));
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
   res.send(row.thumbnail);
 });

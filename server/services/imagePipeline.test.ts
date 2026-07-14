@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { optimize, thumbnail } from './imagePipeline.js';
+import { optimize, thumbnail, thumbnailMime } from './imagePipeline.js';
 
 // All fixtures are synthesised on the fly so the test stays self-contained
 // and doesn't need committed binary blobs.
@@ -16,6 +16,28 @@ async function staticPng(
   return sharp({
     create: { width, height, channels: 3, background: color },
   })
+    .png()
+    .toBuffer();
+}
+
+// A PNG with a real alpha channel: opaque red square centred on a fully
+// transparent field — a logo/sticker/screenshot-with-rounded-corners in
+// miniature. The transparent border is what JPEG destroys.
+async function transparentPng(size = 64): Promise<Buffer> {
+  const square = await sharp({
+    create: {
+      width: size / 2,
+      height: size / 2,
+      channels: 4,
+      background: { r: 255, g: 0, b: 0, alpha: 1 },
+    },
+  })
+    .png()
+    .toBuffer();
+  return sharp({
+    create: { width: size, height: size, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+  })
+    .composite([{ input: square, left: size / 4, top: size / 4 }])
     .png()
     .toBuffer();
 }
@@ -33,18 +55,46 @@ function animatedGif(): Buffer {
 }
 
 describe('imagePipeline.optimize', () => {
-  it('resizes and re-encodes a static PNG to JPEG with the longest edge clamped', async () => {
+  it('resizes and re-encodes a static PNG to WebP with the longest edge clamped', async () => {
     const buf = await staticPng(4000, 2000);
     const out = await optimize(buf, { maxDim: 1024, quality: 80 });
-    expect(out.mime).toBe('image/jpeg');
-    expect(out.ext).toBe('jpg');
+    expect(out.mime).toBe('image/webp');
+    expect(out.ext).toBe('webp');
     expect(out.animated).toBe(false);
     expect(Math.max(out.width ?? 0, out.height ?? 0)).toBeLessThanOrEqual(1024);
     expect(out.byteSize).toBe(out.buffer.length);
-    // Re-encoded JPEG is smaller than the original raw PNG
+    // Re-encoded is smaller than the original raw PNG
     expect(out.byteSize).toBeLessThan(buf.length);
     const meta = await sharp(out.buffer).metadata();
+    expect(meta.format).toBe('webp');
+  });
+
+  // The bug #560 exists to fix. JPEG has no alpha channel, so the old
+  // unconditional .jpeg() composited every transparent pixel onto BLACK (verified
+  // against sharp — not white, black) and shipped that as the file the channel saw.
+  it('preserves the alpha channel of a transparent PNG', async () => {
+    const buf = await transparentPng(64);
+    const out = await optimize(buf, { maxDim: 1024, quality: 80 });
+
+    const meta = await sharp(out.buffer).metadata();
+    expect(meta.format).toBe('webp');
+    expect(meta.hasAlpha).toBe(true);
+
+    // The corner was transparent going in; it must still be transparent, not black.
+    const px = await sharp(out.buffer).ensureAlpha().raw().toBuffer();
+    expect(px[3]).toBe(0);
+  });
+
+  it('flattens alpha when the user opts into the jpeg escape hatch', async () => {
+    const buf = await transparentPng(64);
+    const out = await optimize(buf, { maxDim: 1024, quality: 80, format: 'jpeg' });
+    expect(out.mime).toBe('image/jpeg');
+    expect(out.ext).toBe('jpg');
+    const meta = await sharp(out.buffer).metadata();
     expect(meta.format).toBe('jpeg');
+    // Documenting the cost of the escape hatch, not endorsing it: JPEG cannot
+    // carry alpha, so choosing it is choosing this.
+    expect(meta.hasAlpha).toBe(false);
   });
 
   it("doesn't upscale smaller-than-maxDim images", async () => {
@@ -135,21 +185,54 @@ describe('imagePipeline.optimize', () => {
 });
 
 describe('imagePipeline.thumbnail', () => {
-  it('returns a 128x128 JPEG for static input', async () => {
+  it('returns a 128x128 WebP for static input', async () => {
     const buf = await staticPng(400, 200);
     const thumb = await thumbnail(buf);
     const meta = await sharp(thumb).metadata();
-    expect(meta.format).toBe('jpeg');
+    expect(meta.format).toBe('webp');
     expect(meta.width).toBe(128);
     expect(meta.height).toBe(128);
   });
 
-  it('returns a 128x128 JPEG for animated input (first frame)', async () => {
+  it('returns a 128x128 WebP for animated input (first frame)', async () => {
     const buf = animatedGif();
     const thumb = await thumbnail(buf);
     const meta = await sharp(thumb).metadata();
-    expect(meta.format).toBe('jpeg');
+    expect(meta.format).toBe('webp');
     expect(meta.width).toBe(128);
     expect(meta.height).toBe(128);
+  });
+
+  it('keeps alpha, so a transparent image thumbnails without a black backing', async () => {
+    const thumb = await thumbnail(await transparentPng(64));
+    const meta = await sharp(thumb).metadata();
+    expect(meta.hasAlpha).toBe(true);
+    const px = await sharp(thumb).ensureAlpha().raw().toBuffer();
+    expect(px[3]).toBe(0);
+  });
+
+  it('follows the jpeg escape hatch', async () => {
+    const thumb = await thumbnail(await staticPng(400, 200), { format: 'jpeg' });
+    const meta = await sharp(thumb).metadata();
+    expect(meta.format).toBe('jpeg');
+    expect(meta.width).toBe(128);
+  });
+});
+
+describe('imagePipeline.thumbnailMime', () => {
+  // The serving route has to keep telling the truth about thumbnails stored
+  // BEFORE #560, which are jpeg and will outlive the setting change.
+  it('recognizes a WebP thumbnail', async () => {
+    expect(thumbnailMime(await thumbnail(await staticPng(400, 200)))).toBe('image/webp');
+  });
+
+  it('still reports a legacy JPEG thumbnail as image/jpeg', async () => {
+    const legacy = await thumbnail(await staticPng(400, 200), { format: 'jpeg' });
+    expect(thumbnailMime(legacy)).toBe('image/jpeg');
+  });
+
+  it("doesn't read past the end of a short buffer", () => {
+    expect(thumbnailMime(Buffer.from('RIFF'))).toBe('image/jpeg');
+    expect(thumbnailMime(Buffer.alloc(0))).toBe('image/jpeg');
   });
 });

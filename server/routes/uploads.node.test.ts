@@ -77,18 +77,18 @@ vi.mock('../services/uploadProviders/index.js', () => ({
 // it (the real pipeline runs in uploads.test.ts). Lets us assert those come
 // from the operator env, not the tenant's settings.
 const pipelineCapture = {
-  opts: null as { maxDim: number; quality: number; rasterOnly?: boolean } | null,
+  opts: null as { maxDim: number; quality: number; format?: string; rasterOnly?: boolean } | null,
 };
 vi.mock('../services/imagePipeline.js', () => ({
   optimize: async (
     _buf: Buffer,
-    opts: { maxDim: number; quality: number; rasterOnly?: boolean },
+    opts: { maxDim: number; quality: number; format?: string; rasterOnly?: boolean },
   ) => {
     pipelineCapture.opts = opts;
     return {
       buffer: Buffer.from('x'),
-      mime: 'image/jpeg',
-      ext: 'jpg',
+      mime: 'image/webp',
+      ext: 'webp',
       byteSize: 1,
       width: 10,
       height: 10,
@@ -97,6 +97,16 @@ vi.mock('../services/imagePipeline.js', () => ({
   // A non-empty buffer so the route exercises the (node-edition) remote thumb
   // upload + BLOB-fallback paths.
   thumbnail: async () => Buffer.from('fake-jpeg-thumb-bytes'),
+  // Not stubs: the route derives the thumb's Content-Type and filename from the
+  // bytes, so mocking these away would hide a mismatch the dropper would 415 on.
+  thumbnailMime: (blob: Buffer) =>
+    blob.length >= 12 &&
+    blob.toString('latin1', 0, 4) === 'RIFF' &&
+    blob.toString('latin1', 8, 12) === 'WEBP'
+      ? 'image/webp'
+      : 'image/jpeg',
+  extensionFor: (mime: string, fallback = 'bin') =>
+    ({ 'image/webp': 'webp', 'image/jpeg': 'jpg' })[mime] || fallback,
 }));
 
 let app: Express;
@@ -204,7 +214,33 @@ describe('POST /api/uploads (node edition)', () => {
     expect(res.status).toBe(200);
     // Operator env (512 / 40), not the tenant's 8192 / 100. rasterOnly is on in
     // node edition (raster + .txt only; SVG rejected).
-    expect(pipelineCapture.opts).toEqual({ maxDim: 512, quality: 40, rasterOnly: true });
+    //
+    // `format` is the exception that proves the rule: the other three are cost/
+    // abuse levers the operator has to own in hosted, but the output format is a
+    // compatibility preference and stays the TENANT's even here (#560).
+    expect(pipelineCapture.opts).toEqual({
+      maxDim: 512,
+      quality: 40,
+      format: 'webp',
+      rasterOnly: true,
+    });
+  });
+
+  it('honors a tenant who forces jpeg, even in node edition', async () => {
+    // Imported here, not at module scope: db/settings.js has to load against the
+    // test DB beforeAll installs (same reason beforeAll does it).
+    const { setUserSetting } = await import('../db/settings.js');
+    setUserSetting(user.id, 'uploads.image.format', 'jpeg');
+    try {
+      pipelineCapture.opts = null;
+      const res = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'compat.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      expect(pipelineCapture.opts).toMatchObject({ format: 'jpeg' });
+    } finally {
+      setUserSetting(user.id, 'uploads.image.format', 'webp');
+    }
   });
 
   it('stores the thumbnail as a remote thumbs/ object, not an inline BLOB', async () => {

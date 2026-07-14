@@ -347,7 +347,7 @@ describe('GET /api/uploads/:id/thumb', () => {
       .attach('image', smallPng, { filename: 'thumby.png', contentType: 'image/png' });
     const res = await agent.get(`/api/uploads/${upload.body.id}/thumb`);
     expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toBe('image/jpeg');
+    expect(res.headers['content-type']).toBe('image/webp');
     expect(res.body.length).toBeGreaterThan(0);
   });
 
@@ -720,7 +720,7 @@ describe('media uploads (#515)', () => {
       .post('/api/uploads')
       .attach('image', smallPng, { filename: 'liar.mp4', contentType: 'video/mp4' });
     expect(res.status).toBe(200);
-    expect(res.body.mime).toBe('image/jpeg'); // ran through the pipeline regardless
+    expect(res.body.mime).toBe('image/webp'); // ran through the pipeline regardless
     expect(stub.capturedSource!.kind).toBe('buffer');
     await waitForNoTemps();
   });

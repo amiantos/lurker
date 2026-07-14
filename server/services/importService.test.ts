@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
+import sharp from 'sharp';
 import type { User } from '../db/users.js';
 import type { Network } from '../db/networks.js';
 
@@ -231,6 +232,42 @@ describe('importFromZipBuffer — roundtrip', () => {
     // that would fail the NOT NULL constraint (the old-archive import hazard).
     expect(bobUploads[0].synced_to_cp).toBe(0);
     expect(bobUploads[0].removed).toBe(0);
+  });
+
+  // The export names thumbnail entries from the blob's magic bytes and the import
+  // matches them by extension — two places that have to agree. Since #560 the
+  // bytes are WebP, so a jpg-only regex on either side silently drops thumbnails
+  // on restore. Round-trip a real WebP thumb to keep them honest.
+  it('round-trips a WebP thumbnail, not just a legacy JPEG one', async () => {
+    const { alice } = seedAlice();
+    const webpThumb = await sharp({
+      create: { width: 8, height: 8, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .webp()
+      .toBuffer();
+    insertUpload(alice.id, {
+      provider: 'hoarder',
+      url: 'https://example.com/new.webp',
+      filename: 'new.webp',
+      mime: 'image/webp',
+      byte_size: 99,
+      width: 8,
+      height: 8,
+      thumbnail: webpThumb,
+    });
+
+    const bob = createUser(`bob_webp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    const result = await importFromZipBuffer(
+      bob.id,
+      await exportToBuffer(alice.id, { includeMessages: false }),
+    );
+
+    // Both thumbnails came back: the seeded JPEG and the WebP one.
+    expect(result.thumbnailsAttached).toBe(2);
+    const restored = db
+      .prepare('SELECT thumbnail FROM upload_history WHERE user_id = ? AND mime = ?')
+      .get(bob.id, 'image/webp') as { thumbnail: Buffer };
+    expect(Buffer.compare(Buffer.from(restored.thumbnail), webpThumb)).toBe(0);
   });
 
   it('refuses to import into a non-empty account', async () => {

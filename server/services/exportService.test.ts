@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { PassThrough } from 'stream';
+import sharp from 'sharp';
 import yauzl from 'yauzl';
 import type { User } from '../db/users.js';
 import type { Network } from '../db/networks.js';
@@ -232,6 +233,31 @@ describe('buildExportZip', () => {
     expect(upload.hasThumbnail).toBe(true);
     expect(entries.has(`thumbnails/${upload.id}.jpg`)).toBe(true);
     expect(entries.get(`thumbnails/${upload.id}.jpg`)!.length).toBeGreaterThan(0);
+  });
+
+  // Thumbnails are WebP since #560, but rows predating it are JPEG and both can
+  // sit in one account — so the entry name is sniffed per blob, not assumed.
+  it('names a WebP thumbnail .webp while a legacy JPEG one stays .jpg', async () => {
+    const webpThumb = await sharp({
+      create: { width: 8, height: 8, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .webp()
+      .toBuffer();
+    const webpUpload = insertUpload(alice.id, {
+      provider: 'hoarder',
+      url: 'https://example.com/new.webp',
+      filename: 'new.webp',
+      mime: 'image/webp',
+      byte_size: 99,
+      width: 8,
+      height: 8,
+      thumbnail: webpThumb,
+    });
+
+    const entries = await readZipToMap(await runExport(alice.id, { includeMessages: false }));
+    expect(entries.has(`thumbnails/${webpUpload}.webp`)).toBe(true);
+    // The JPEG row seeded in beforeAll is untouched by the new default.
+    expect([...entries.keys()].some((k) => k.endsWith('.jpg'))).toBe(true);
   });
 
   it('scopes data per-user (bob does not see alice)', async () => {
