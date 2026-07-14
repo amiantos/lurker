@@ -346,10 +346,14 @@ function metaLine(u: UploadRow): string {
   position: relative;
   flex: 1;
   min-width: 200px;
+  /* One knob for both the glyph's inset and the text's. They have to move together —
+     the caret's position is DERIVED from where the icon ends, so a hardcoded value in
+     each would let them drift apart the next time either is nudged. */
+  --search-icon-inset: var(--space-5);
 }
 .search-icon {
   position: absolute;
-  left: var(--space-3);
+  left: var(--search-icon-inset);
   top: 50%;
   transform: translateY(-50%);
   color: var(--fg-muted);
@@ -362,9 +366,8 @@ function metaLine(u: UploadRow): string {
 .search-input {
   width: 100%;
   /* Left padding is derived, not picked: where the icon starts, plus the icon's own
-     width, plus one character of breathing room. A flat --space-8 (20px) landed the
-     text hard against the glyph. */
-  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 1em + 1ch);
+     width, plus one character of breathing room. */
+  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--search-icon-inset) + 1em + 1ch);
   background: var(--bg-soft);
   border: 1px solid var(--border);
   color: var(--fg);
