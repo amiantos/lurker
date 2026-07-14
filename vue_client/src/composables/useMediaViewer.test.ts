@@ -2,21 +2,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useImageModal } from './useImageModal.js';
+import { useMediaViewer } from './useMediaViewer.js';
 
 const item = (n: number) => ({ url: `https://x.test/${n}.webp`, filename: `${n}.png` });
 const items = (...ns: number[]) => ns.map(item);
 
 // The composable is a module-level singleton (one lightbox for the whole app), so each
 // test has to start from a closed one.
-beforeEach(() => useImageModal().close());
+beforeEach(() => useMediaViewer().close());
 
-describe('useImageModal — a single image is a gallery of one', () => {
-  // The framing the whole design rests on: an image clicked in a message and one
-  // clicked in the uploads browser reach the same viewer, and the single-image case
+describe('useMediaViewer — a single file is a gallery of one', () => {
+  // The framing the whole design rests on: a file clicked in a message and one  // clicked in the uploads browser reach the same viewer, and the single-image case
   // needs no special path — it just has nowhere to go.
   it('opens one image with no navigation', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.open('https://x.test/solo.webp');
 
     expect(m.isOpen.value).toBe(true);
@@ -27,7 +26,7 @@ describe('useImageModal — a single image is a gallery of one', () => {
   });
 
   it('next/prev are inert on a gallery of one', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.open('https://x.test/solo.webp');
     m.next();
     m.prev();
@@ -35,9 +34,9 @@ describe('useImageModal — a single image is a gallery of one', () => {
   });
 });
 
-describe('useImageModal — gallery navigation', () => {
+describe('useMediaViewer — gallery navigation', () => {
   it('opens at the image that was clicked, not at the start', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2, 3), 2);
     expect(m.url.value).toBe('https://x.test/3.webp');
     expect(m.index.value).toBe(2);
@@ -46,7 +45,7 @@ describe('useImageModal — gallery navigation', () => {
   });
 
   it('walks forward and back', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2, 3), 0);
     m.next();
     expect(m.url.value).toBe('https://x.test/2.webp');
@@ -57,7 +56,7 @@ describe('useImageModal — gallery navigation', () => {
   });
 
   it('stops at the ends instead of wrapping', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2), 0);
     m.prev();
     expect(m.index.value).toBe(0); // already at the first
@@ -67,23 +66,23 @@ describe('useImageModal — gallery navigation', () => {
   });
 
   it('clamps an out-of-range start index rather than showing nothing', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2), 99);
     expect(m.url.value).toBe('https://x.test/2.webp');
   });
 
   it('refuses to open an empty gallery', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery([], 0);
     expect(m.isOpen.value).toBe(false);
   });
 });
 
-describe('useImageModal — extending the gallery while it is open', () => {
+describe('useMediaViewer — extending the gallery while it is open', () => {
   // The uploads browser pages lazily, so arrowing toward the end of what's loaded has
   // to extend the list UNDER the viewer. The user must not be moved.
   it('keeps the viewer on its image when a page is appended', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2, 3), 2);
 
     m.setItems(items(1, 2, 3, 4, 5));
@@ -97,7 +96,7 @@ describe('useImageModal — extending the gallery while it is open', () => {
   // fresh upload lands at the top) doesn't silently teleport the user to a different
   // photo — which is a far worse bug than a redundant re-render.
   it('keeps the viewer on its image when a row is prepended', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2, 3), 0);
     expect(m.url.value).toBe('https://x.test/1.webp');
 
@@ -108,7 +107,7 @@ describe('useImageModal — extending the gallery while it is open', () => {
   });
 
   it('falls back to a valid index when the viewed image disappears', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2, 3), 2);
     // e.g. the user deleted it, or a filter changed under the gallery.
     m.setItems(items(1, 2));
@@ -117,9 +116,9 @@ describe('useImageModal — extending the gallery while it is open', () => {
   });
 });
 
-describe('useImageModal — close', () => {
+describe('useMediaViewer — close', () => {
   it('drops the gallery so the next open starts clean', () => {
-    const m = useImageModal();
+    const m = useMediaViewer();
     m.openGallery(items(1, 2, 3), 1);
     m.close();
 

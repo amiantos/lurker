@@ -134,11 +134,12 @@ import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
-import { useImageModal } from '../composables/useImageModal.js';
+import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { joinMeta } from '../utils/metaLine.js';
 import { iconForMime } from '../utils/uploaders.js';
+import { mediaKindForUrl } from '../utils/uploadHostMatch.js';
 
 // The server response can include extra metadata fields not tracked in the
 // store's base UploadItem shape (they come from the GET /api/uploads list).
@@ -167,7 +168,7 @@ defineEmits<{
 const uploads = useUploadsStore();
 // Raw (not reactive()-wrapped) because this component reads the refs in script rather
 // than the template — the two views that RENDER the viewer wrap it for unwrapping.
-const imageModal = useImageModal();
+const viewer = useMediaViewer();
 const recentRows = computed(() => uploads.recent as UploadRow[]);
 const listEl = ref<HTMLDivElement | null>(null);
 const searchEl = ref<HTMLInputElement | null>(null);
@@ -248,22 +249,23 @@ function onKind(kind: UploadKind | null) {
 // to scope the gallery — filter to images, type "march", and you can flick through
 // exactly those.
 
-// Only images. The viewer renders an <img>, so a .txt or an .mp4 in the gallery would
-// be a step onto a blank screen. (Video joins it in #563; that's the card, not this
-// one.) They keep the plain new-tab link.
+// EVERY kind the viewer can show, which since #563 is every kind we accept: images,
+// video, audio, and text. The gallery used to be images-only because the viewer was an
+// <img> and anything else was a step onto a blank screen. Now left/right walks the
+// whole result set — so the filters double as a way to scope it, and "Audio" + arrow
+// keys is a playlist.
+//
+// A moderated-away upload stays out: its bytes are gone, so there is nothing to view.
 const galleryItems = computed(() =>
-  recentRows.value
-    .filter((u) => !u.removed && (u.mime || '').startsWith('image/'))
-    .map((u) => ({ url: u.url, filename: u.filename })),
+  recentRows.value.filter(isViewable).map((u) => ({ url: u.url, filename: u.filename })),
 );
 
 function isViewable(u: UploadRow): boolean {
-  return !u.removed && (u.mime || '').startsWith('image/');
+  return !u.removed && mediaKindForUrl(u.url) !== null;
 }
 
 function onArtClick(event: MouseEvent, u: UploadRow) {
-  // Let the browser have the ones it does better: a modified click means "new tab",
-  // and a non-image has nothing to show in an image viewer.
+  // A modified click still means "new tab" — the browser does that better than we do.
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
     return;
   if (!isViewable(u)) return;
@@ -273,16 +275,16 @@ function onArtClick(event: MouseEvent, u: UploadRow) {
   if (start < 0) return;
 
   event.preventDefault();
-  imageModal.openGallery(items, start);
+  viewer.openGallery(items, start);
 }
 
 // Arrowing toward the end of what's loaded pages more in — otherwise the gallery
 // silently stops at the last row the user happened to have scrolled to, which from
 // inside the viewer looks like the end of their uploads.
 watch(
-  () => imageModal.index.value,
+  () => viewer.index.value,
   (i) => {
-    if (!imageModal.isOpen.value) return;
+    if (!viewer.isOpen.value) return;
     if (i < galleryItems.value.length - 2) return;
     if (!uploads.hasMore || uploads.loading) return;
     void uploads.loadMore();
@@ -292,7 +294,7 @@ watch(
 // New rows landed (from paging, or a fresh upload) while the viewer is open — extend
 // the gallery under it. setItems keeps the viewer on the image it is showing.
 watch(galleryItems, (items) => {
-  if (imageModal.isOpen.value) imageModal.setItems(items);
+  if (viewer.isOpen.value) viewer.setItems(items);
 });
 
 function onScroll() {

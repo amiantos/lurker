@@ -271,17 +271,17 @@
       @jump="onJumpToMessage"
     />
     <KeyboardHelpModal v-if="showKbdHelp" @close="showKbdHelp = false" />
-    <ImageViewerModal
-      v-if="imageModal.isOpen && imageModal.url !== null"
-      :url="imageModal.url"
-      :filename="imageModal.current?.filename ?? null"
-      :index="imageModal.index"
-      :count="imageModal.count"
-      :has-prev="imageModal.hasPrev"
-      :has-next="imageModal.hasNext"
-      @close="imageModal.close()"
-      @prev="imageModal.prev()"
-      @next="imageModal.next()"
+    <MediaViewerModal
+      v-if="viewer.isOpen && viewer.url !== null"
+      :url="viewer.url"
+      :filename="viewer.current?.filename ?? null"
+      :index="viewer.index"
+      :count="viewer.count"
+      :has-prev="viewer.hasPrev"
+      :has-next="viewer.hasNext"
+      @close="viewer.close()"
+      @prev="viewer.prev()"
+      @next="viewer.next()"
     />
     <UserProfileModal
       v-if="whois.viewer.open && whois.viewer.networkId != null"
@@ -334,7 +334,7 @@ import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
 import ConfigureFriendModal from '../components/ConfigureFriendModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
-import ImageViewerModal from '../components/ImageViewerModal.vue';
+import MediaViewerModal from '../components/MediaViewerModal.vue';
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts.js';
 import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
@@ -343,7 +343,7 @@ import { useDccStore } from '../stores/dcc.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
-import { useImageModal } from '../composables/useImageModal.js';
+import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
@@ -393,7 +393,7 @@ const whois = useWhoisStore();
 
 const channelListModal = reactive(useChannelListModal());
 const joinChannelModal = reactive(useJoinChannelModal());
-const imageModal = reactive(useImageModal());
+const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
 const navHistory = useNavHistoryStore();
 const showBookmarks = ref(false);
@@ -426,7 +426,7 @@ const anyModalOpen = computed(
     showTopic.value ||
     channelListModal.isOpen ||
     joinChannelModal.isOpen ||
-    imageModal.isOpen ||
+    viewer.isOpen ||
     showUploads.value ||
     dcc.panelOpen ||
     showSwitcher.value ||

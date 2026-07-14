@@ -108,7 +108,7 @@ export const useDccStore = defineStore('dcc', {
     listError: '',
     // Whether the Transfers modal is open. Lives in the store (not a view-local
     // ref) so `/dcc list` can open it from MessageInput, mirroring the
-    // composable-backed opens (useImageModal, useChannelListModal).
+    // composable-backed opens (useMediaViewer, useChannelListModal).
     panelOpen: false,
     // Per-transfer action in flight (disables that row's buttons).
     busy: {} as Record<number, boolean>,
