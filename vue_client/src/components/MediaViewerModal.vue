@@ -142,6 +142,12 @@
            NO autoplay, here or on audio. Opening a file to look at it is not the same
            as asking it to start making noise, and walking a gallery with the arrow keys
            would fire off a new track on every keypress. Press play. -->
+      <!-- ⚠ loadedmetadata, NOT loadeddata. `loadeddata` fires when the first FRAME is
+           buffered, which `preload="metadata"` deliberately never does — it was only
+           firing before because autoplay forced the data load. Take autoplay away and
+           the event never comes: the spinner spins forever and v-show keeps the player
+           hidden behind it. `loadedmetadata` is the one that fires when duration and
+           dimensions are known, which is exactly when there is a player worth showing. -->
       <video
         v-else-if="kind === 'video'"
         v-show="!loading && !failed"
@@ -150,7 +156,7 @@
         controls
         playsinline
         preload="metadata"
-        @loadeddata="onLoad"
+        @loadedmetadata="onLoad"
         @error="onError"
       ></video>
 
@@ -163,7 +169,7 @@
           :src="displayUrl"
           controls
           preload="metadata"
-          @loadeddata="onLoad"
+          @loadedmetadata="onLoad"
           @error="onError"
         ></audio>
       </div>
