@@ -204,18 +204,3 @@ export async function thumbnail(
     quality,
   ).toBuffer();
 }
-
-/**
- * Content-Type for a stored thumbnail BLOB, sniffed from its magic bytes.
- *
- * The thumb-serving route can't just name the CURRENT format: every thumbnail
- * stored before #560 is a jpeg, and those rows outlive the setting change. WebP
- * is a RIFF container — `RIFF....WEBP` — which is enough to tell the two apart.
- */
-export function thumbnailMime(blob: Buffer): string {
-  const isWebp =
-    blob.length >= 12 &&
-    blob.toString('latin1', 0, 4) === 'RIFF' &&
-    blob.toString('latin1', 8, 12) === 'WEBP';
-  return isWebp ? 'image/webp' : 'image/jpeg';
-}

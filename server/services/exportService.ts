@@ -22,7 +22,7 @@ import { Readable } from 'stream';
 import type { Database } from 'better-sqlite3';
 import { ZipArchive } from 'archiver';
 import { EXPORT_TABLES, EXPORT_FORMAT_VERSION } from '../db/exportSchema.js';
-import { extensionFor, thumbnailMime } from './imagePipeline.js';
+import { thumbnailFormat } from './thumbnailFormat.js';
 import { decryptSecret } from '../utils/secretCrypto.js';
 
 interface ExportTableDefWithScope {
@@ -258,7 +258,7 @@ export async function buildExportZip(
       for (const row of rows) {
         if (row.thumbnail != null) {
           const blob = row.thumbnail as Buffer;
-          const ext = extensionFor(thumbnailMime(blob), 'jpg');
+          const { ext } = thumbnailFormat(blob);
           archive.append(blob, { name: `thumbnails/${row.id as number}.${ext}` });
         }
       }

@@ -13,6 +13,7 @@ import { bufferSource, fileSource, type UploadSource } from '../services/uploadP
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from '../services/settingsRegistry.js';
 import * as imagePipeline from '../services/imagePipeline.js';
+import { thumbnailFormat } from '../services/thumbnailFormat.js';
 import { driverIds } from '../services/uploadProviders/index.js';
 import {
   classifyUpload,
@@ -345,9 +346,7 @@ router.post(
           settings['uploads.image.format'] === 'jpeg' ? 'jpeg' : 'webp';
         const quality =
           resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
-        // imagePipeline is an untyped JS module — any is unavoidable here
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        let optimized: any;
+        let optimized: imagePipeline.OptimizeResult;
         try {
           optimized = await imagePipeline.optimize(req.file.path, {
             maxDim:
@@ -367,16 +366,16 @@ router.post(
           }
           throw err;
         }
-        thumb = (await imagePipeline.thumbnail(req.file.path, { format })) as Buffer | null;
+        thumb = await imagePipeline.thumbnail(req.file.path, { format });
         // The optimized image is small and bounded (resized + re-encoded), so it
         // stays a buffer — round-tripping it through another temp file would be
         // pointless I/O. The heap blowup this PR removes was the ORIGINAL bytes.
-        outSource = bufferSource(optimized.buffer as Buffer);
-        outMime = optimized.mime as string;
-        outExt = optimized.ext as string;
-        outByteSize = optimized.byteSize as number;
-        outWidth = optimized.width as number | null;
-        outHeight = optimized.height as number | null;
+        outSource = bufferSource(optimized.buffer);
+        outMime = optimized.mime;
+        outExt = optimized.ext;
+        outByteSize = optimized.byteSize;
+        outWidth = optimized.width;
+        outHeight = optimized.height;
       }
 
       const originalName = req.file.originalname || '';
@@ -413,12 +412,12 @@ router.post(
           // Describe the bytes we actually produced, not the format thumbnails
           // used to be: the dropper verifies the claimed mime against the magic
           // bytes and 415s a webp announced as image/jpeg.
-          const thumbMime = imagePipeline.thumbnailMime(thumb);
+          const thumbFmt = thumbnailFormat(thumb);
           const tRes = await resolved.driver.upload(
             bufferSource(thumb),
             {
-              filename: `thumb.${imagePipeline.extensionFor(thumbMime, 'jpg')}`,
-              mime: thumbMime,
+              filename: `thumb.${thumbFmt.ext}`,
+              mime: thumbFmt.mime,
               contentClass: 'image',
               kind: 'thumb',
             },
@@ -539,7 +538,7 @@ router.get('/:id/thumb', (req: Request, res: Response) => {
   }
   // Sniffed, not named: thumbnails stored before #560 are jpeg and those rows
   // outlive the format setting, so this route serves a mix forever.
-  res.setHeader('Content-Type', imagePipeline.thumbnailMime(row.thumbnail));
+  res.setHeader('Content-Type', thumbnailFormat(row.thumbnail).mime);
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
   res.send(row.thumbnail);
 });

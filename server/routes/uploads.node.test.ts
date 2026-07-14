@@ -47,6 +47,11 @@ const stub = {
   // full image, 'thumb' for the thumbnail) so we can prove the thumb is sent
   // as its own object flagged kind=thumb.
   lastKinds: [] as (string | undefined)[],
+  // The meta of the thumb call. The real dropper 415s when the claimed mime
+  // disagrees with the magic bytes, and the route's catch swallows that into a
+  // silent BLOB fallback — so the claim has to be asserted here or a wrong one
+  // is invisible until it's bloating the cell DB in production.
+  lastThumbMeta: null as { filename: string; mime: string } | null,
   async upload(
     _buffer: Buffer,
     meta: { filename: string; mime: string; kind?: string },
@@ -54,6 +59,7 @@ const stub = {
   ) {
     stub.capturedSecrets = config ?? null;
     stub.lastKinds.push(meta.kind);
+    if (meta.kind === 'thumb') stub.lastThumbMeta = { filename: meta.filename, mime: meta.mime };
     if (meta.kind === 'thumb') {
       if (stub.thumbShouldThrow) {
         throw Object.assign(new Error('thumb store down'), { code: 'PROVIDER_ERROR' });
@@ -94,19 +100,20 @@ vi.mock('../services/imagePipeline.js', () => ({
       height: 10,
     };
   },
-  // A non-empty buffer so the route exercises the (node-edition) remote thumb
-  // upload + BLOB-fallback paths.
-  thumbnail: async () => Buffer.from('fake-jpeg-thumb-bytes'),
-  // Not stubs: the route derives the thumb's Content-Type and filename from the
-  // bytes, so mocking these away would hide a mismatch the dropper would 415 on.
-  thumbnailMime: (blob: Buffer) =>
-    blob.length >= 12 &&
-    blob.toString('latin1', 0, 4) === 'RIFF' &&
-    blob.toString('latin1', 8, 12) === 'WEBP'
-      ? 'image/webp'
-      : 'image/jpeg',
-  extensionFor: (mime: string, fallback = 'bin') =>
-    ({ 'image/webp': 'webp', 'image/jpeg': 'jpg' })[mime] || fallback,
+  // REAL WebP bytes, not a placeholder string: the hosted dropper magic-byte
+  // verifies the mime we claim against the bytes we send and 415s a mismatch, so
+  // a thumb fixture that isn't actually a WebP would leave the one path that can
+  // 415 in production (thumbs are WebP since #560) untested. thumbnailFormat() is
+  // NOT mocked, so the route sniffs these for real. sharp is imported inside the
+  // factory rather than closed over — vi.mock is hoisted above the imports.
+  thumbnail: async () => {
+    const { default: sharpFn } = await import('sharp');
+    return sharpFn({
+      create: { width: 8, height: 8, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .webp()
+      .toBuffer();
+  },
 }));
 
 let app: Express;
@@ -246,6 +253,7 @@ describe('POST /api/uploads (node edition)', () => {
   it('stores the thumbnail as a remote thumbs/ object, not an inline BLOB', async () => {
     stub.thumbShouldThrow = false;
     stub.lastKinds = [];
+    stub.lastThumbMeta = null;
     const res = await agent
       .post('/api/uploads')
       .attach('image', smallPng, { filename: 'thumbed.png', contentType: 'image/png' });
@@ -255,6 +263,10 @@ describe('POST /api/uploads (node edition)', () => {
     expect(res.body.thumbnail_url).toMatch(/^https:\/\/stub\.example\/thumbs\//);
     // The thumb went up as its own object flagged kind=thumb.
     expect(stub.lastKinds).toContain('thumb');
+    // …and it was ANNOUNCED as what it actually is. The real dropper sniffs the
+    // bytes and 415s a WebP claiming to be image/jpeg; the route swallows that
+    // into a silent inline-BLOB fallback, so nothing else would catch it.
+    expect(stub.lastThumbMeta).toEqual({ filename: 'thumb.webp', mime: 'image/webp' });
 
     const list = await agent.get('/api/uploads');
     const row = list.body.items.find((r: { id: number }) => r.id === res.body.id);
@@ -282,6 +294,9 @@ describe('POST /api/uploads (node edition)', () => {
     expect(row.thumbnail_url).toBe(`/api/uploads/${res.body.id}/thumb`);
     const thumbRes = await agent.get(`/api/uploads/${res.body.id}/thumb`);
     expect(thumbRes.status).toBe(200);
-    expect(thumbRes.headers['content-type']).toBe('image/jpeg');
+    // The fallback BLOB is served as what it is. This read image/jpeg while the
+    // fixture was a placeholder string that happened to sniff as JPEG — the stale
+    // assertion was itself the proof that this path had never seen a real WebP.
+    expect(thumbRes.headers['content-type']).toBe('image/webp');
   });
 });

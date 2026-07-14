@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { optimize, thumbnail, thumbnailMime } from './imagePipeline.js';
+import { optimize, thumbnail } from './imagePipeline.js';
 
 // All fixtures are synthesised on the fly so the test stays self-contained
 // and doesn't need committed binary blobs.
@@ -83,6 +83,30 @@ describe('imagePipeline.optimize', () => {
     // The corner was transparent going in; it must still be transparent, not black.
     const px = await sharp(out.buffer).ensureAlpha().raw().toBuffer();
     expect(px[3]).toBe(0);
+  });
+
+  // The reason optimize() re-encodes static images at all (#516): the re-encode is
+  // what drops EXIF, and a phone photo's EXIF carries GPS. That guarantee is a
+  // property of the ENCODER, and #560 swapped it — so assert it for both, or the
+  // next format change (AVIF) can silently reopen the leak with a green suite.
+  it.each(['webp', 'jpeg'] as const)('strips EXIF/GPS when re-encoding to %s', async (format) => {
+    const withExif = await sharp({
+      create: { width: 800, height: 600, channels: 3, background: { r: 10, g: 120, b: 200 } },
+    })
+      .withExif({
+        IFD0: { Make: 'SECRET-CAMERA', Model: 'SECRET-MODEL' },
+        IFD3: { GPSLatitude: '40/1 44/1 5595/100', GPSLongitude: '73/1 59/1 5100/100' },
+      })
+      .jpeg()
+      .toBuffer();
+    // The fixture really does carry it, or the assertions below prove nothing.
+    expect((await sharp(withExif).metadata()).exif).toBeTruthy();
+
+    const out = await optimize(withExif, { maxDim: 2048, quality: 85, format });
+    expect((await sharp(out.buffer).metadata()).exif).toBeFalsy();
+    const raw = out.buffer.toString('latin1');
+    expect(raw).not.toContain('SECRET-CAMERA');
+    expect(raw).not.toContain('SECRET-MODEL');
   });
 
   it('flattens alpha when the user opts into the jpeg escape hatch', async () => {
@@ -219,20 +243,6 @@ describe('imagePipeline.thumbnail', () => {
   });
 });
 
-describe('imagePipeline.thumbnailMime', () => {
-  // The serving route has to keep telling the truth about thumbnails stored
-  // BEFORE #560, which are jpeg and will outlive the setting change.
-  it('recognizes a WebP thumbnail', async () => {
-    expect(thumbnailMime(await thumbnail(await staticPng(400, 200)))).toBe('image/webp');
-  });
-
-  it('still reports a legacy JPEG thumbnail as image/jpeg', async () => {
-    const legacy = await thumbnail(await staticPng(400, 200), { format: 'jpeg' });
-    expect(thumbnailMime(legacy)).toBe('image/jpeg');
-  });
-
-  it("doesn't read past the end of a short buffer", () => {
-    expect(thumbnailMime(Buffer.from('RIFF'))).toBe('image/jpeg');
-    expect(thumbnailMime(Buffer.alloc(0))).toBe('image/jpeg');
-  });
-});
+// thumbnailFormat() has its own suite (thumbnailFormat.test.ts). Its fixtures come
+// from thumbnail() here, so the two stay honest about each other: the sniff is
+// tested against bytes this pipeline really produces, not a hand-rolled header.
