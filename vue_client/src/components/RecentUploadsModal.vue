@@ -133,6 +133,7 @@ import type { UploadItem, UploadKind } from '../stores/uploads.js';
 import { useImageModal } from '../composables/useImageModal.js';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { formatRelative } from '../utils/timestamp.js';
+import { joinMeta } from '../utils/metaLine.js';
 import { iconForMime } from '../utils/uploaders.js';
 
 // The server response can include extra metadata fields not tracked in the
@@ -320,17 +321,15 @@ function formatBytes(n: number) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-// Built in JS so the " · " separators keep their spaces — Vue's whitespace condensing
-// strips the gaps between adjacent inline spans.
-//
 // Deliberately does NOT name the uploader. Which backend a file happened to land on is
 // the app's business, not the user's: it doesn't help you recognise a picture, and it
 // isn't actionable from here. When it matters — the file is gone, or can't be deleted
 // — that surfaces as its own state, not as a label on every tile.
 function metaLine(u: UploadRow): string {
-  return [u.created_at && formatRelative(u.created_at), u.byte_size && formatBytes(u.byte_size)]
-    .filter(Boolean)
-    .join(' · ');
+  return joinMeta([
+    u.created_at && formatRelative(u.created_at),
+    u.byte_size && formatBytes(u.byte_size),
+  ]);
 }
 </script>
 

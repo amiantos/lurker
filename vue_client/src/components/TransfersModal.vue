@@ -79,6 +79,7 @@ import {
 } from '../stores/dcc.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { formatRelative } from '../utils/timestamp.js';
+import { joinMeta } from '../utils/metaLine.js';
 
 defineEmits<{ close: [] }>();
 
@@ -144,11 +145,14 @@ function isErrorState(s: DccState): boolean {
   return s === 'failed' || s === 'stalled';
 }
 
-// "alice · libera · receiving · 2m ago"
+// "alice • libera • receiving • 2m ago"
 function subLine(t: DccTransfer): string {
-  return [t.peer_nick, networkName(t.network_id), stateLabel(t.state), formatRelative(t.updated_at)]
-    .filter(Boolean)
-    .join(' · ');
+  return joinMeta([
+    t.peer_nick,
+    networkName(t.network_id),
+    stateLabel(t.state),
+    formatRelative(t.updated_at),
+  ]);
 }
 
 // Only show the progress bar once a download has actually started — a

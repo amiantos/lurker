@@ -17,6 +17,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { viewedBuffer } from './useViewedBuffer.js';
+import { META_SEPARATOR } from '../utils/metaLine.js';
 
 export interface NotifyEvent {
   self?: boolean;
@@ -147,7 +148,9 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
 
   const netName = (networks.networkById(event.networkId!) as any)?.name || `net:${event.networkId}`;
   const where =
-    event.target && !event.target.startsWith(':server:') ? `${netName} · ${event.target}` : netName;
+    event.target && !event.target.startsWith(':server:')
+      ? `${netName} ${META_SEPARATOR} ${event.target}`
+      : netName;
   toasts.push({
     kind: kindKey,
     title: `${event.nick || '?'} in ${where}`,
