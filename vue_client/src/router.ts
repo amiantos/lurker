@@ -3,6 +3,7 @@
 
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from './stores/auth.js';
+import { useConfigStore } from './stores/config.js';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('./views/Login.vue') },
@@ -40,6 +41,18 @@ router.beforeEach(async (to) => {
   if (!auth.checked) await auth.fetchMe();
   if (to.meta.requiresAuth && !auth.user) return { name: 'login', query: { next: to.fullPath } };
   if (to.name === 'login' && auth.user) return { name: 'chat' };
+
+  // Self-heal a failed boot config fetch. The store deliberately leaves `checked`
+  // false on failure so a later caller can retry — but App.vue's boot fetch runs
+  // exactly once, so without a second caller a single transient /api/config
+  // failure would strand the session on the standalone defaults for good, and a
+  // hosted tenant would be shown the operator-only surfaces that edition hides.
+  // Fire-and-forget: the store coalesces concurrent calls and latches on success,
+  // so this is a no-op on every navigation after the first success, and it must
+  // not block navigation.
+  const config = useConfigStore();
+  if (!config.checked) void config.fetch().catch(() => {});
+
   // Non-admins bounce to Settings rather than render a forbidden shell. Every
   // admin API is requireAdmin-gated regardless — this only decides what renders.
   if (to.meta.requiresAdmin && !auth.isAdmin) return { name: 'settings' };

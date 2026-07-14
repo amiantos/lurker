@@ -37,7 +37,10 @@ export const useConfigStore = defineStore('config', {
           this.edition = data.edition === 'node' ? 'node' : 'standalone';
           // Latch `checked` ONLY on success. A transient failure must not wedge
           // the session on the safe defaults — leaving it false lets the next
-          // caller (a later /admin navigation, or App.vue) retry and self-heal.
+          // caller retry and self-heal. That second caller is the router guard,
+          // which re-attempts on every navigation while `checked` is false;
+          // App.vue's boot fetch fires only once, so on its own it would be a
+          // single point of failure.
           this.checked = true;
         } catch (_err) {
           this.edition = 'standalone';

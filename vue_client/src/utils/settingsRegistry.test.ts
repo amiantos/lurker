@@ -18,6 +18,17 @@ describe('categoryVisible', () => {
     expect(CATEGORIES.some((c) => c.id === 'users')).toBe(false);
   });
 
+  // The behavioural half of the above: role is no longer an input at all, so on a
+  // standalone box every category is visible to everyone. Asserted through the
+  // function (not just the data) so re-introducing a role gate inside
+  // categoryVisible would fail here rather than pass quietly.
+  it('shows every non-node-restricted category regardless of role', () => {
+    const hidden = CATEGORIES.filter(
+      (c) => !c.selfHostedOnly && !categoryVisible(c, standalone),
+    ).map((c) => c.id);
+    expect(hidden).toStrictEqual([]);
+  });
+
   it('hides selfHostedOnly categories in node edition only', () => {
     expect(categoryVisible(cat('api-tokens'), standalone)).toBe(true);
     expect(categoryVisible(cat('api-tokens'), node)).toBe(false);

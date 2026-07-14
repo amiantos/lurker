@@ -129,8 +129,15 @@ const appearanceSubsections = computed<SettingsSubsection[]>(() => {
 // category so the URL always names the visible pane. Mirrors the macOS-Settings
 // behavior: closing and re-opening lands you somewhere concrete, not on a
 // blank screen.
+// `config.checked` has to be a SOURCE, not just a guard. The callback bails
+// until the edition is known, and on a standalone box the edition never
+// *changes* when it resolves (it was already the default), so neither
+// visibleCategories nor activeCategoryId recomputes — nothing would re-trigger
+// the watch and the bare /settings URL would never be canonicalized. `auth` needs
+// no such source: the router guard awaits fetchMe() before this view mounts, so
+// auth.checked is always true here.
 watch(
-  [() => route.params.category, activeCategoryId, () => auth.checked],
+  [() => route.params.category, activeCategoryId, () => config.checked],
   ([param, active], _old, onCleanup) => {
     // Wait until both the user and the edition are known, so we never redirect
     // based on a category set that's about to change (e.g. a node tenant before

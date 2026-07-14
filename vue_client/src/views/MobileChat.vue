@@ -269,13 +269,11 @@ import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useVisualViewport } from '../composables/useVisualViewport.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
-import { useConfigStore } from '../stores/config.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const auth = useAuthStore();
-const config = useConfigStore();
 
 // Admin panel entry in the mobile top bar.
 const showAdminEntry = computed(() => auth.isAdmin);
