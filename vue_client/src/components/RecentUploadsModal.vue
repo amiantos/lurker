@@ -29,7 +29,7 @@
           class="search-input"
           placeholder="Search filenames…"
           aria-label="Search uploads by filename"
-          @keydown.esc.stop="onEscape"
+          @keydown.esc="onEscape"
         />
       </div>
       <div class="kinds" role="group" aria-label="Filter by type">
@@ -190,10 +190,17 @@ const filterDescription = computed(() => {
 
 watch(query, (next) => {
   if (debounce) clearTimeout(debounce);
+  // Trim here rather than in the input: leading/trailing spaces are almost always an
+  // accident of typing, and a search for " " should not be a search.
+  const trimmed = next.trim();
+  // Nothing the SERVER would answer differently — the user added a trailing space, or
+  // typed their way back to the term we already have results for. Also covers the open:
+  // onMounted resets the store's filters and then clears this field, which would
+  // otherwise schedule a second, identical request 250ms behind the first and supersede
+  // it mid-flight.
+  if (trimmed === uploads.query) return;
   debounce = setTimeout(() => {
-    // Trim here rather than in the input: leading/trailing spaces are almost always
-    // an accident of typing, and a search for " " should not be a search.
-    void uploads.setFilters({ query: next.trim() }).catch(() => {
+    void uploads.setFilters({ query: trimmed }).catch(() => {
       /* surfaced via store.listError */
     });
   }, SEARCH_DEBOUNCE_MS);
@@ -214,14 +221,15 @@ onBeforeUnmount(() => {
 });
 
 // Escape clears a non-empty search instead of closing the modal — the same convention
-// as a browser find bar. With the field already empty it falls through to the modal's
-// own close handler, so Escape still means "get me out of here" when there's nothing
-// to clear.
+// as a browser find bar. With the field already empty there is nothing to clear, so it
+// bubbles to AppModal's own @keydown.esc and Escape still means "get me out of here".
+//
+// ⚠ The propagation stop has to be CONDITIONAL. A blanket `.stop` on the template
+// severs the bubble in both cases, so Escape on an empty field just blurred the input
+// and the modal never closed — exactly the behaviour this comment used to claim it had.
 function onEscape(event: KeyboardEvent) {
-  if (!query.value) {
-    (event.target as HTMLElement).blur();
-    return;
-  }
+  if (!query.value) return; // nothing to clear → let AppModal have it
+  event.stopPropagation();
   query.value = '';
 }
 
