@@ -37,7 +37,7 @@ import {
   deleteById as deleteCredentialById,
 } from '../db/webauthnCredentials.js';
 import { createSession, deleteSession } from '../db/sessions.js';
-import { SESSION_COOKIE, getCookieOptions, requireAuth } from '../middleware/auth.js';
+import { SESSION_COOKIE, getCookieOptions, requireAuth, bearerToken } from '../middleware/auth.js';
 import { rpConfig, saveChallenge, consumeChallenge, userIdToHandle } from '../services/webauthn.js';
 import {
   hashPassword,
@@ -523,6 +523,43 @@ router.post('/login/password', (req: Request, res: Response) => {
   res.json({ user: { id: user.id, username: user.username, role: user.role } });
 });
 
+// Password → session token, for clients that have no browser to hold a cookie.
+// This is the native-app front door (iOS/Android): same credentials and same
+// `sessions` row as POST /login/password above, but the token is returned in the
+// body instead of a Set-Cookie, and the app then presents it as
+// `Authorization: Bearer <token>` on both REST calls and the /ws upgrade.
+//
+// Deliberately NOT a new kind of credential: a native session is an ordinary
+// session row, so expiry, lookup, and revocation all work exactly as they do
+// for the web client.
+//
+// SECURITY: this is a public, unauthenticated, password-in / long-lived-token-out
+// endpoint and it is NOT rate-limited — because nothing in Lurker is yet (#568).
+// It is no weaker than /login/password, which is equally public and equally
+// unthrottled, and it shares that route's constant-time miss behavior via
+// DUMMY_PASSWORD_HASH. #568 must cover both before this is advertised to users.
+router.post('/login/token', (req: Request, res: Response) => {
+  const username = (req.body?.username || '').trim();
+  const password: unknown = req.body?.password;
+  if (!isValidUsername(username) || typeof password !== 'string' || password.length === 0) {
+    res.status(400).json({ error: 'username and password required' });
+    return;
+  }
+  const user = findUserByUsername(username);
+  const stored = user ? getPasswordHash(user.id) : null;
+  const ok = verifyPassword(password, stored || DUMMY_PASSWORD_HASH);
+  if (!user || !stored || !ok) {
+    res.status(401).json({ error: 'invalid username or password' });
+    return;
+  }
+  const { token, expiresAt } = createSession(user.id);
+  res.json({
+    token,
+    expiresAt,
+    user: { id: user.id, username: user.username, role: user.role },
+  });
+});
+
 // Public probe so the login UI can decide which sign-in buttons to surface.
 // Currently just reports whether any passkey exists anywhere — discoverable
 // passkey login doesn't need a username, so a single global flag is enough.
@@ -533,7 +570,10 @@ router.get('/auth-methods', (_req: Request, res: Response) => {
 // ---------- session ----------
 
 router.post('/logout', (req: Request, res: Response) => {
-  const token = req.signedCookies?.[SESSION_COOKIE];
+  // Cookie for web, bearer for native — a native client has no cookie to clear,
+  // so without the bearer branch its "log out" would leave a live session row
+  // behind and the token on the device would keep working.
+  const token = req.signedCookies?.[SESSION_COOKIE] ?? bearerToken(req.headers.authorization);
   if (token) deleteSession(token);
   res.clearCookie(SESSION_COOKIE, { ...getCookieOptions(), maxAge: undefined });
   res.json({ ok: true });

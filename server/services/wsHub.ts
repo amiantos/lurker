@@ -79,7 +79,7 @@ import { upsertChannel, ownsNetwork, listNetworksForUser } from '../db/networks.
 import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from './settingsRegistry.js';
-import { SESSION_COOKIE } from '../middleware/auth.js';
+import { SESSION_COOKIE, loadBearerSession } from '../middleware/auth.js';
 import { callVerb } from './verbRegistry.js';
 
 // WebSocket extended with per-socket bookkeeping fields.
@@ -1031,6 +1031,38 @@ export function startChanlistRefresh(networkId: number): void {
   chanlistDb.setMeta(networkId, { inProgress: true, totalCount: 0, fetchedAt: null });
 }
 
+// Authenticate a `/ws` upgrade. Two accepted credentials, in order:
+//
+//   1. the signed `lurker_session` cookie — every browser client, unchanged;
+//   2. `Authorization: Bearer <session token>` — native clients, which unlike
+//      browsers can set arbitrary headers on the upgrade request.
+//
+// Both resolve to the same `sessions` row, so everything downstream of the
+// upgrade (and every WS verb) is identical regardless of how the client
+// authenticated. Lives at module scope rather than inside attachWsHub so it is
+// reachable from tests without standing up a real WebSocket server.
+export function authenticateUpgrade(req: IncomingMessage, sessionSecret: string): User | null {
+  const header = req.headers.cookie;
+  if (header) {
+    const cookies = cookie.parse(header);
+    const raw = cookies[SESSION_COOKIE];
+    if (raw) {
+      const token = raw.startsWith('s:') ? cookieParser.signedCookie(raw, sessionSecret) : false;
+      if (token) {
+        const session = findSession(token);
+        // A present-but-dead cookie falls through to the bearer check rather
+        // than short-circuiting to 401 — a native client sends no cookie at
+        // all, so in practice only one credential is ever on the request.
+        if (session) {
+          const user = findUserById(session.user_id);
+          if (user) return user;
+        }
+      }
+    }
+  }
+  return loadBearerSession(req.headers.authorization)?.user ?? null;
+}
+
 export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   const wss = new WebSocketServer({ noServer: true });
   // Per-user pending auto-away timers. Set when a user goes from 1→0 sockets;
@@ -1470,22 +1502,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     fanOut(userId, { kind: 'account-state', paused: false });
   });
 
-  function authenticateRequest(req: IncomingMessage): User | null | undefined {
-    const header = req.headers.cookie;
-    if (!header) return null;
-    const cookies = cookie.parse(header);
-    const raw = cookies[SESSION_COOKIE];
-    if (!raw) return null;
-    const token = raw.startsWith('s:') ? cookieParser.signedCookie(raw, sessionSecret) : false;
-    if (!token) return null;
-    const session = findSession(token);
-    if (!session) return null;
-    return findUserById(session.user_id);
-  }
-
   httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
     if (!req.url || !req.url.startsWith('/ws')) return;
-    const user = authenticateRequest(req);
+    const user = authenticateUpgrade(req, sessionSecret);
     if (!user) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();

@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { setupTestDb } from '../test-utils/testApp.js';
+import { setupTestDb, TEST_SESSION_SECRET } from '../test-utils/testApp.js';
+import { sign as signCookie } from 'cookie-signature';
+import type { IncomingMessage } from 'http';
 
 // setupTestDb sets DATABASE_PATH before any dynamic import touches db/index.js,
 // so it must run at module top level.
@@ -96,6 +98,11 @@ function mockWs() {
   const ws = { OPEN: 1, readyState: 1, send: (s: string) => frames.push(JSON.parse(s)) };
   return { ws: ws as unknown as Parameters<typeof handleOpenBuffer>[0], frames };
 }
+
+// authenticateUpgrade only reads headers, so a bare object stands in for a real
+// upgrade request.
+const upgrade = (headers: Record<string, string>): IncomingMessage =>
+  ({ headers }) as unknown as IncomingMessage;
 
 describe('buildBufferBacklog', () => {
   it('builds a backlog frame from a buffer’s persisted history', () => {
@@ -808,5 +815,70 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
     // The closed buffer is absent and the server pseudo-buffer is present in both.
     expect(standalone.some((s) => s.startsWith('#closed|'))).toBe(false);
     expect(standalone.some((s) => s.startsWith(`:server:${net}|`))).toBe(true);
+  });
+});
+
+// The /ws upgrade accepts two credentials: the signed session cookie (browsers)
+// and a bearer session token (native clients, which can set headers on the
+// upgrade where browsers cannot). Both must land on the same user.
+describe('authenticateUpgrade', () => {
+  let authenticateUpgrade: typeof import('./wsHub.js').authenticateUpgrade;
+  let createSession: typeof import('../db/sessions.js').createSession;
+
+  beforeAll(async () => {
+    ({ authenticateUpgrade } = await import('./wsHub.js'));
+    ({ createSession } = await import('../db/sessions.js'));
+  });
+
+  it('authenticates a browser via the signed session cookie', () => {
+    const { token } = createSession(userId);
+    const signed = encodeURIComponent('s:' + signCookie(token, TEST_SESSION_SECRET));
+    const user = authenticateUpgrade(
+      upgrade({ cookie: `lurker_session=${signed}` }),
+      TEST_SESSION_SECRET,
+    );
+    expect(user?.id).toBe(userId);
+  });
+
+  it('authenticates a native client via a bearer session token', () => {
+    const { token } = createSession(userId);
+    const user = authenticateUpgrade(
+      upgrade({ authorization: `Bearer ${token}` }),
+      TEST_SESSION_SECRET,
+    );
+    expect(user?.id).toBe(userId);
+  });
+
+  it('rejects an upgrade with no credentials at all', () => {
+    expect(authenticateUpgrade(upgrade({}), TEST_SESSION_SECRET)).toBeNull();
+  });
+
+  it('rejects an unknown bearer token', () => {
+    const user = authenticateUpgrade(
+      upgrade({ authorization: 'Bearer not-a-real-token' }),
+      TEST_SESSION_SECRET,
+    );
+    expect(user).toBeNull();
+  });
+
+  it('rejects a raw (unsigned) session token in the cookie', () => {
+    // The cookie path requires the 's:' signature prefix — a bearer token pasted
+    // into the cookie must not authenticate.
+    const { token } = createSession(userId);
+    const user = authenticateUpgrade(
+      upgrade({ cookie: `lurker_session=${token}` }),
+      TEST_SESSION_SECRET,
+    );
+    expect(user).toBeNull();
+  });
+
+  it('rejects a cookie signed with a different secret', () => {
+    const { token } = createSession(userId);
+    const signed = encodeURIComponent('s:' + signCookie(token, 'some-other-secret'));
+    const user = authenticateUpgrade(
+      upgrade({ cookie: `lurker_session=${signed}` }),
+      TEST_SESSION_SECRET,
+    );
+    expect(user).toBeNull();
   });
 });

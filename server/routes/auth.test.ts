@@ -277,3 +277,92 @@ describe('POST /api/auth/invite/:token/password', () => {
     expect(reuse.status).toBe(404);
   });
 });
+
+// The native-app front door: password in, session token out, no browser needed.
+//
+// Owns its user rather than reusing `firstadmin`, whose password the
+// password-management suite above rotates mid-file — these tests must not care
+// what order they run in.
+describe('POST /api/auth/login/token', () => {
+  const USERNAME = 'nativeclient';
+  const PASSWORD = 'nativepassword';
+
+  beforeAll(async () => {
+    const { createUser, setPasswordHash } = await import('../db/users.js');
+    const { hashPassword } = await import('../services/password.js');
+    const user = createUser(USERNAME);
+    setPasswordHash(user.id, hashPassword(PASSWORD));
+  });
+
+  const mint = () =>
+    testRequest(app).post('/api/auth/login/token').send({ username: USERNAME, password: PASSWORD });
+
+  it('rejects a request with no credentials', async () => {
+    const res = await testRequest(app).post('/api/auth/login/token').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a wrong password', async () => {
+    const res = await testRequest(app).post('/api/auth/login/token').send({
+      username: USERNAME,
+      password: 'notthepassword',
+    });
+    expect(res.status).toBe(401);
+    expect(res.body.token).toBeUndefined();
+  });
+
+  it('rejects an unknown user', async () => {
+    const res = await testRequest(app).post('/api/auth/login/token').send({
+      username: 'ghost',
+      password: PASSWORD,
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('mints a token in the body and sets no cookie', async () => {
+    const res = await mint();
+    expect(res.status).toBe(200);
+    expect(typeof res.body.token).toBe('string');
+    expect(res.body.token.length).toBeGreaterThan(20);
+    expect(new Date(res.body.expiresAt).getTime()).toBeGreaterThan(Date.now());
+    expect(res.body.user.username).toBe(USERNAME);
+    // A native client has no cookie jar; handing it a Set-Cookie would be noise.
+    expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('mints a real session row — the token authenticates as a bearer', async () => {
+    const res = await mint();
+    const me = await testRequest(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${res.body.token}`);
+    expect(me.status).toBe(200);
+    expect(me.body.user.username).toBe(USERNAME);
+  });
+
+  it('logout revokes the bearer session, so the token stops working', async () => {
+    const token: string = (await mint()).body.token;
+
+    const out = await testRequest(app)
+      .post('/api/auth/logout')
+      .set('Authorization', `Bearer ${token}`);
+    expect(out.status).toBe(200);
+
+    const after = await testRequest(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${token}`);
+    expect(after.status).toBe(401);
+  });
+
+  it('revoking one device leaves the others signed in', async () => {
+    const phone: string = (await mint()).body.token;
+    const laptop: string = (await mint()).body.token;
+    expect(phone).not.toBe(laptop);
+
+    await testRequest(app).post('/api/auth/logout').set('Authorization', `Bearer ${phone}`);
+
+    const survivor = await testRequest(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${laptop}`);
+    expect(survivor.status).toBe(200);
+  });
+});
