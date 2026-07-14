@@ -213,8 +213,20 @@ const splitClass = computed(() => {
   return 'warn';
 });
 
+// Narrate the leg the upload is ACTUALLY on (#545). A percentage appears only where
+// one is real — the browser leg, and the provider send when the driver can count
+// bytes. Everywhere else the label is indeterminate on purpose: "Processing…" tells
+// the truth about an unmeasurable phase, where "100%" told a comfortable lie.
 const uploadLabel = computed(() => {
-  if (uploads.current) return `Uploading: ${uploads.current.progress}%`;
+  const cur = uploads.current;
+  if (cur) {
+    if (cur.phase === 'uploading') return `Uploading: ${cur.progress}%`;
+    if (cur.phase === 'sending') {
+      const where = cur.destination ? `Sending to ${cur.destination}` : 'Sending';
+      return cur.sentPercent == null ? `${where}…` : `${where}… ${cur.sentPercent}%`;
+    }
+    return 'Processing…';
+  }
   if (uploads.failedAt) {
     return uploads.failedMessage ? `Upload failed — ${uploads.failedMessage}` : 'Upload failed';
   }

@@ -49,9 +49,14 @@ const stub = {
   // leaves the building is scrubbed, since the temp file is unlinked afterwards.
   capturedBytes: null as Buffer | null,
   capturedMeta: null as { filename: string; mime: string } | null,
+  // Set to simulate a driver that streams its body, so the route's progress wiring
+  // (#545) can be driven end to end: the real byte counting lives in multipart.ts and
+  // is tested against a real socket there, but ONLY a driver call proves the route
+  // actually handed its callback down.
+  emitBytes: null as { total: number } | null,
   async upload(
     source: UploadSource,
-    meta: { filename: string; mime: string },
+    meta: { filename: string; mime: string; onProgress?: (s: number, t: number) => void },
     config?: Record<string, string>,
   ) {
     stub.capturedConfig = config ?? null;
@@ -59,6 +64,11 @@ const stub = {
     stub.capturedMeta = meta;
     stub.capturedBytes =
       source.kind === 'file' ? fs.readFileSync(source.path) : Buffer.from(source.data);
+    if (stub.emitBytes && meta.onProgress) {
+      const { total } = stub.emitBytes;
+      meta.onProgress(Math.floor(total / 2), total);
+      meta.onProgress(total, total);
+    }
     if (stub.shouldThrow) throw stub.shouldThrow;
     if (stub.nextResult) return stub.nextResult;
     return { url: `https://stub.example/${meta.filename}` };
@@ -67,6 +77,15 @@ const stub = {
     stub.capturedDeleteRef = ref;
   },
 };
+
+// Capture the WS frames the upload route fans out (#545) while leaving the rest of
+// wsHub real — createTestApp wires the actual hub, so replacing the whole module
+// would take attachWsHub with it.
+const fanOutSpy = vi.fn<(userId: number, payload: unknown) => void>();
+vi.mock('../services/wsHub.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wsHub.js')>()),
+  fanOutToUser: (userId: number, payload: unknown) => fanOutSpy(userId, payload),
+}));
 
 // Mock the registry so getDriver returns the stub for whatever driver the
 // resolved uploader names. splitConfigBySchema is provided because
@@ -338,6 +357,68 @@ describe('local-style (storesRemotely:false) uploads', () => {
       stub.nextResult = null;
     }
   });
+});
+
+// #545. The pieces are unit-tested (multipart.ts counts real socket bytes;
+// uploadProgress.ts throttles), but only the route proves they were wired together:
+// that it announces the phases the browser can't see, and that it actually hands its
+// byte callback DOWN to the driver.
+describe('POST /api/uploads — progress narration', () => {
+  const frames = () =>
+    fanOutSpy.mock.calls
+      .map((c) => c[1] as { kind: string; phase: string; percent: number | null; token: string })
+      .filter((f) => f.kind === 'upload-progress');
+
+  it('narrates processing → sending, with the provider byte count', async () => {
+    fanOutSpy.mockClear();
+    stub.emitBytes = { total: 1000 };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .field('progressToken', 'tok-abc')
+        .attach('image', smallPng, { filename: 'p.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+
+      // The driver really was given the callback — the wiring this test exists for.
+      expect(typeof (stub.capturedMeta as any).onProgress).toBe('function');
+
+      const seen = frames();
+      expect(seen.every((f) => f.token === 'tok-abc')).toBe(true);
+      expect(seen.map((f) => `${f.phase}:${f.percent}`)).toEqual([
+        'processing:null',
+        'sending:0',
+        // The 50% frame is swallowed by the throttle (both callbacks land in the same
+        // millisecond here); 100 always survives it, because a bar stranded at 99%
+        // would be the same lie in a new outfit.
+        'sending:100',
+      ]);
+    } finally {
+      stub.emitBytes = null;
+    }
+  });
+
+  // Progress is a courtesy, never a precondition. An older client that sends no token
+  // must upload exactly as before — and cost the server nothing.
+  it('stays silent when the client sends no token', async () => {
+    fanOutSpy.mockClear();
+    stub.emitBytes = { total: 1000 };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'q.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      expect(res.body.url).toBeTruthy();
+      expect(frames()).toEqual([]);
+    } finally {
+      stub.emitBytes = null;
+    }
+  });
+
+  // NOTE: "the thumbnail upload must not drive the bar" is asserted in
+  // uploads.node.test.ts, not here. Standalone keeps the thumb as an inline BLOB, so
+  // the driver is only ever called once and the test would pass without proving
+  // anything. It only bites where hostsThumbnails sends the thumb through the driver
+  // as a second upload.
 });
 
 describe('GET /api/uploads/:id/thumb', () => {

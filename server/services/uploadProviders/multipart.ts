@@ -60,6 +60,18 @@ export interface PostBufferResult {
 export interface RequestOptions {
   headers?: Record<string, string>;
   timeoutMs?: number;
+  // Called as the body drains, with the running byte count and the exact total.
+  //
+  // This is the ONLY place a driver-agnostic count of "bytes on the wire" exists —
+  // every remote driver's send funnels through sendStreamed — and it is meaningful
+  // only because the body is a generator the socket pulls from: it advances at the
+  // rate the socket drains, so a chunk that has been yielded and resumed is a chunk
+  // the socket has taken. Counting anywhere upstream would count bytes we merely
+  // intended to send, which is exactly the lie #545 is about.
+  //
+  // Called after each chunk lands, so it can fire often on a big file — throttle in
+  // the caller, not here (the caller knows what it's driving).
+  onProgress?: (sentBytes: number, totalBytes: number) => void;
 }
 
 /** fetch's `resp.ok`, for the node:http results these helpers return. */
@@ -128,8 +140,23 @@ function sendStreamed(
   urlString: string,
   contentLength: number,
   makeBody: () => AsyncIterable<Buffer>,
-  { headers = {}, timeoutMs = 60_000 }: RequestOptions = {},
+  { headers = {}, timeoutMs = 60_000, onProgress }: RequestOptions = {},
 ): Promise<PostBufferResult> {
+  // Count bytes as the socket takes them. The count happens AFTER `yield` resumes,
+  // not before it: resumption is the signal the consumer has accepted the chunk and
+  // backpressure has been honoured. Counting before the yield would report bytes
+  // that are still sitting in this generator.
+  const countedBody: () => AsyncIterable<Buffer> = onProgress
+    ? async function* () {
+        let sent = 0;
+        for await (const chunk of makeBody()) {
+          yield chunk;
+          sent += chunk.length;
+          onProgress(sent, contentLength);
+        }
+      }
+    : makeBody;
+
   return new Promise((resolve, reject) => {
     let url: URL;
     try {
@@ -247,7 +274,7 @@ function sendStreamed(
     // gets to finish talking to us now (see the keep-alive agent above), so this
     // path is for providers that cut us off regardless, not the common case.
     let writeError: Error | null = null;
-    const body = Readable.from(makeBody());
+    const body = Readable.from(countedBody());
     body.on('error', (err: Error) => {
       writeError = err;
       req.destroy();

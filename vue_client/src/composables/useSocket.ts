@@ -23,6 +23,8 @@ import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useDccStore } from '../stores/dcc.js';
+import { useUploadsStore } from '../stores/uploads.js';
+import { makeClientId } from '../utils/clientId.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { downloadTextFile } from '../utils/download.js';
 import { notifyForEvent, playSound } from './useHighlightNotifier.js';
@@ -701,6 +703,14 @@ function handleMessage(raw: string): void {
     useDataExportStore().apply(payload.job);
     return;
   }
+  if (payload.kind === 'upload-progress') {
+    // The server narrating the half of an upload the browser can't see: the
+    // pipeline, then the server→provider send (#545). The store drops frames whose
+    // token isn't the upload THIS tab is running — these fan out to every socket the
+    // user has open, so a second tab's upload must not drive this one's bar.
+    useUploadsStore().applyProgress(payload);
+    return;
+  }
 }
 
 function open() {
@@ -782,16 +792,6 @@ function failAllPendingAcks(error: string): void {
   const entries = Array.from(pendingAcks.values());
   pendingAcks.clear();
   for (const resolver of entries) resolver({ ok: false, error });
-}
-
-// Generate a clientId for an ACK-tracked send. Uses crypto.randomUUID where
-// available and falls back to a random-base36 string otherwise (older Safari
-// in non-secure contexts won't expose randomUUID).
-function makeClientId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 // Send a payload that expects a `send-result` ACK from the server. Returns

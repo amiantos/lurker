@@ -52,7 +52,7 @@ export const configSchema: ConfigField[] = [
 
 export async function upload(
   source: UploadSource,
-  { filename, mime }: UploadMeta,
+  { filename, mime, onProgress }: UploadMeta,
   config: { userhash?: string } = {},
 ): Promise<UploadResult> {
   const parts: StreamPart[] = [{ name: 'reqtype', value: 'fileupload' }];
@@ -76,6 +76,7 @@ export async function upload(
         Accept: '*/*',
       },
       timeoutMs: TIMEOUT_MS,
+      onProgress,
     });
   } catch (cause) {
     const c = cause as NodeJS.ErrnoException; // eslint-disable-line @typescript-eslint/no-explicit-any

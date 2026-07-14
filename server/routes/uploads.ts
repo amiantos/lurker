@@ -14,6 +14,7 @@ import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from '../services/settingsRegistry.js';
 import * as imagePipeline from '../services/imagePipeline.js';
 import { thumbnailFormat } from '../services/thumbnailFormat.js';
+import { makeUploadProgress } from '../services/uploadProgress.js';
 import { driverIds } from '../services/uploadProviders/index.js';
 import {
   classifyUpload,
@@ -265,6 +266,17 @@ router.post(
         throw err;
       }
 
+      // Correlation token for the progress events (#545). The client's own random
+      // string, arriving as a multipart text field like uploaderId does. Absent →
+      // makeUploadProgress returns a no-op and the client falls back to an
+      // indeterminate label; progress must never be a precondition for uploading.
+      const tokenRaw = (req.body as { progressToken?: unknown } | undefined)?.progressToken;
+      const progress = makeUploadProgress(
+        req.user!.id,
+        typeof tokenRaw === 'string' && tokenRaw ? tokenRaw.slice(0, 64) : null,
+        resolved.driver.label,
+      );
+
       const settings = effectiveSettings(req.user!.id);
       // Size cap: operator-baked policy (hosted locked uploader) wins; otherwise
       // the user's own setting. A tenant can't lift a policy cap because the
@@ -309,6 +321,11 @@ router.post(
       let outWidth: number | null = null;
       let outHeight: number | null = null;
       let thumb: Buffer | null = null;
+
+      // Everything from here to the driver call is the pipeline: the sharp re-encode
+      // for images, the in-place metadata scrub for media. Both are native one-shots
+      // with no seam to count, so this phase is announced but not measured.
+      progress.processing();
 
       if (contentClass === 'text' || contentClass === 'media') {
         // Passthrough: the bytes go out of the temp file exactly as they came in.
@@ -382,13 +399,18 @@ router.post(
       const baseName = originalName.replace(/\.[^.]+$/, '') || `upload-${Date.now()}`;
       const filename = `${baseName}.${outExt}`;
 
+      // The slow half on a home uplink, and the half the browser is blind to. Announce
+      // it before the first byte so the user learns which leg they're waiting on even
+      // for a driver that reports none (`local` renames the file — no wire to count).
+      progress.sending();
+
       // provider.upload is from an untyped JS module boundary
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let result: any;
       try {
         result = await resolved.driver.upload(
           outSource,
-          { filename, mime: outMime, contentClass },
+          { filename, mime: outMime, contentClass, onProgress: progress.onBytes },
           resolved.driverConfig,
         );
       } catch (err) {
