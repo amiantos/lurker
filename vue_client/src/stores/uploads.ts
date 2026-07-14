@@ -89,7 +89,6 @@ export interface UploadProgressFrame {
 
 export interface UploadItem {
   id: number;
-  provider?: string;
   url: string;
   filename: string | null;
   mime: string | null;
@@ -179,7 +178,6 @@ export const useUploadsStore = defineStore('uploads', {
             result.thumbnail_url || (isImage ? `/api/uploads/${result.id}/thumb` : undefined);
           const row: UploadItem = {
             id: result.id,
-            provider: undefined, // server-only field; recent-uploads modal will re-fetch if it cares
             url: result.url,
             // `name`, not `filename`: the server stores req.file.originalname, which IS
             // `name` (it's what we appended to the FormData). The optimistic row used

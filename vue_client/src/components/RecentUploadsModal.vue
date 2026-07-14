@@ -322,12 +322,13 @@ function formatBytes(n: number) {
 
 // Built in JS so the " · " separators keep their spaces — Vue's whitespace condensing
 // strips the gaps between adjacent inline spans.
+//
+// Deliberately does NOT name the uploader. Which backend a file happened to land on is
+// the app's business, not the user's: it doesn't help you recognise a picture, and it
+// isn't actionable from here. When it matters — the file is gone, or can't be deleted
+// — that surfaces as its own state, not as a label on every tile.
 function metaLine(u: UploadRow): string {
-  return [
-    u.created_at && formatRelative(u.created_at),
-    u.byte_size && formatBytes(u.byte_size),
-    u.provider,
-  ]
+  return [u.created_at && formatRelative(u.created_at), u.byte_size && formatBytes(u.byte_size)]
     .filter(Boolean)
     .join(' · ');
 }
