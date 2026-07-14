@@ -237,7 +237,7 @@ function requireField(config: Record<string, string>, field: string): string {
 
 export async function upload(
   source: UploadSource,
-  { filename, mime, kind }: UploadMeta,
+  { filename, mime, kind, onProgress }: UploadMeta,
   config: Record<string, string> = {},
 ): Promise<UploadResult> {
   const endpoint = requireField(config, 'endpoint');
@@ -266,7 +266,9 @@ export async function upload(
     secretAccessKey,
   });
 
-  const resp = await putSource(signed.url, source, { headers: signed.headers });
+  // onProgress goes on the SEND pass only. The hash pass above reads the same bytes
+  // end to end, so counting both would run the bar 0→100 twice on every s3 upload.
+  const resp = await putSource(signed.url, source, { headers: signed.headers, onProgress });
 
   if (!isOk(resp)) {
     const text = resp.text.slice(0, 200);

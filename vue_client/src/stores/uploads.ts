@@ -3,6 +3,7 @@
 
 import { defineStore } from 'pinia';
 import { api, apiMultipart } from '../api.js';
+import { makeClientId } from '../utils/clientId.js';
 
 // "Insert URL into MessageInput" needs to reach across the component tree.
 // A tiny event bus pattern (Set of callbacks) keeps the modal independent of
@@ -24,9 +25,43 @@ function emitInsert(url: string) {
 
 const FAILURE_VISIBLE_MS = 10_000;
 
+// The three legs of an upload, in the order they happen. Only the first is visible
+// to the browser (#545):
+//
+//   uploading  — browser → server. Measured by xhr.upload; the ONLY thing the old
+//                bar ever showed, which is why it read 100% and then sat there.
+//   processing — the server's pipeline (sharp re-encode / metadata scrub). A native
+//                one-shot with no seam to count, so it has no percentage.
+//   sending    — server → provider. The long one on a home uplink. Has a percentage
+//                when the driver can report bytes, and none when it can't (`local`
+//                renames the temp file; there is no wire).
+//
+// `processing` is also the FALLBACK state: the store enters it the moment the
+// browser leg finishes, without waiting for the server to say so. That alone kills
+// the "Uploading: 100%" lie even if no WS frame ever arrives (an old server, a
+// dropped socket) — the server's frames then refine it rather than enable it.
+export type UploadPhase = 'uploading' | 'processing' | 'sending';
+
 export interface UploadCurrent {
+  // Correlates the server's progress frames with THIS upload. They fan out to every
+  // socket the user has open, so a frame for anything else gets dropped.
+  token: string;
+  phase: UploadPhase;
+  // 0-100, the browser→server leg.
   progress: number;
+  // 0-100 for the server→provider leg, or null when the driver can't report bytes.
+  sentPercent: number | null;
+  // Human label of the uploader the server resolved ("Catbox", "Local disk"), so the
+  // status bar can name where the file is going. Null until the server says.
+  destination: string | null;
   filename: string | null;
+}
+
+export interface UploadProgressFrame {
+  token: string;
+  phase: 'processing' | 'sending';
+  percent: number | null;
+  destination: string | null;
 }
 
 export interface UploadItem {
@@ -62,11 +97,20 @@ export const useUploadsStore = defineStore('uploads', {
   actions: {
     async upload(file: File | Blob, filename: string | null = null) {
       if (this.current) return; // Single concurrent upload — keeps the status bar coherent.
+      const token = makeClientId();
       const fd = new FormData();
       const name = filename || (file instanceof File ? file.name : null) || 'upload';
+      // Before the file, not after: multer populates req.body as fields stream past,
+      // so a token appended behind a 200 MB file would not exist yet when the route
+      // reads it.
+      fd.append('progressToken', token);
       fd.append('image', file, name);
       this.current = {
+        token,
+        phase: 'uploading',
         progress: 0,
+        sentPercent: null,
+        destination: null,
         filename: filename || (file instanceof File ? file.name : null) || null,
       };
       this.failedAt = null;
@@ -74,7 +118,14 @@ export const useUploadsStore = defineStore('uploads', {
       try {
         const result = await apiMultipart('/api/uploads', fd, {
           onProgress: (pct) => {
-            if (this.current) this.current.progress = pct;
+            if (!this.current) return;
+            this.current.progress = pct;
+            // The moment the browser leg is done, stop claiming to be uploading. This
+            // is the whole of "tier 1": it needs no server cooperation, so the bar
+            // stops lying even when the WS frames never come.
+            if (pct >= 100 && this.current.phase === 'uploading') {
+              this.current.phase = 'processing';
+            }
           },
         });
         emitInsert(result.url);
@@ -115,6 +166,28 @@ export const useUploadsStore = defineStore('uploads', {
       } finally {
         this.current = null;
       }
+    },
+
+    /**
+     * A server progress frame (#545). Fans out to every socket the user has open, so
+     * most of the guarding here is about frames that aren't ours:
+     *
+     *  - no active upload → another tab's, or one that already finished. Drop it.
+     *  - token mismatch → another tab/device is uploading too. Drop it, or its bytes
+     *    would drive this tab's bar.
+     *  - phase went backwards → a delayed 'processing' frame arriving after 'sending'
+     *    has begun would rewind the bar to indeterminate. WS ordering makes this
+     *    unlikely, not impossible, and the cost of being wrong is a visibly jumping
+     *    UI, so it's cheaper to enforce monotonicity than to trust the wire.
+     */
+    applyProgress(frame: UploadProgressFrame) {
+      const cur = this.current;
+      if (!cur || !frame?.token || frame.token !== cur.token) return;
+      if (cur.phase === 'sending' && frame.phase === 'processing') return;
+
+      cur.phase = frame.phase;
+      if (frame.destination) cur.destination = frame.destination;
+      cur.sentPercent = frame.phase === 'sending' ? (frame.percent ?? null) : null;
     },
 
     async uploadText(content: string, filename = 'message.txt') {

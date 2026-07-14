@@ -46,7 +46,7 @@ export const configSchema: ConfigField[] = [
 
 export async function upload(
   source: UploadSource,
-  { filename, mime }: UploadMeta,
+  { filename, mime, onProgress }: UploadMeta,
   config: { url?: string; api_key?: string } = {},
 ): Promise<UploadResult> {
   if (!config.url) {
@@ -64,7 +64,7 @@ export async function upload(
   const resp = await postMultipart(
     `${base}/api/upload`,
     [{ name: 'file[]', filename, contentType: mime, source }],
-    { headers: { 'x-api-key': config.api_key, 'User-Agent': USER_AGENT } },
+    { headers: { 'x-api-key': config.api_key, 'User-Agent': USER_AGENT }, onProgress },
   );
 
   if (!isOk(resp)) {

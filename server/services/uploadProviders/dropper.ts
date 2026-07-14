@@ -53,7 +53,7 @@ export const configSchema: ConfigField[] = [
 
 export async function upload(
   source: UploadSource,
-  { filename, mime, kind }: UploadMeta,
+  { filename, mime, kind, onProgress }: UploadMeta,
   config: { url?: string; api_key?: string } = {},
 ): Promise<UploadResult> {
   if (!config.url) {
@@ -78,6 +78,7 @@ export async function upload(
       Authorization: `Bearer ${config.api_key}`,
       'User-Agent': USER_AGENT,
     },
+    onProgress,
   });
 
   if (!isOk(resp)) {

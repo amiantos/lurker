@@ -129,6 +129,46 @@ describe('postMultipart', () => {
     expect(last.body.includes(bytes)).toBe(true);
   });
 
+  // #545: the byte count that drives the client's "Sending… NN%" for the slow half of
+  // an upload. Asserted against a REAL socket (this suite's http server), because the
+  // whole claim is that a yielded-and-resumed chunk is a chunk the socket took — that
+  // is a property of the transport, not of the generator, and a fake would assume it.
+  it('reports send progress that ends at exactly Content-Length', async () => {
+    const bytes = Buffer.alloc(300_000, 0xcd);
+    const f = writeTemp('prog.bin', bytes);
+    respondWith = { status: 200, text: 'ok' };
+
+    const seen: Array<{ sent: number; total: number }> = [];
+    const resp = await postMultipart(
+      base,
+      [
+        {
+          name: 'file',
+          filename: 'prog.bin',
+          contentType: 'image/png',
+          source: fileSource(f.path, f.size),
+        },
+      ],
+      { onProgress: (sent, total) => seen.push({ sent, total }) },
+    );
+    expect(isOk(resp)).toBe(true);
+
+    // It actually streamed — a single 0→100 jump would mean the body was buffered
+    // whole, which is the memory blowup #543 removed.
+    expect(seen.length).toBeGreaterThan(1);
+    // Monotonic, and it lands on the exact total the server received. A count that
+    // overshoots or stops short is a bar that ends at 103% or stalls at 98%.
+    for (let i = 1; i < seen.length; i++) {
+      expect(seen[i].sent).toBeGreaterThan(seen[i - 1].sent);
+    }
+    const total = seen[0].total;
+    expect(seen.at(-1)!.sent).toBe(total);
+    expect(total).toBe(Number(last.contentLength));
+    // Every part of the body counts, not just the file: Content-Length covers the
+    // headers and boundaries too, so counting only file bytes would never reach 100%.
+    expect(total).toBeGreaterThan(bytes.length);
+  });
+
   it('sends a buffer source identically (the optimized-image path)', async () => {
     const bytes = Buffer.from('hello buffer source');
     respondWith = { status: 200, text: 'ok' };

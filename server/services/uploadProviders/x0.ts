@@ -23,12 +23,12 @@ export const configSchema: ConfigField[] = [];
 
 export async function upload(
   source: UploadSource,
-  { filename, mime }: UploadMeta,
+  { filename, mime, onProgress }: UploadMeta,
 ): Promise<UploadResult> {
   const resp = await postMultipart(
     ENDPOINT,
     [{ name: 'file', filename, contentType: mime, source }],
-    { headers: { 'User-Agent': USER_AGENT } },
+    { headers: { 'User-Agent': USER_AGENT }, onProgress },
   );
   const text = resp.text.trim();
   if (resp.status < 200 || resp.status >= 300) {

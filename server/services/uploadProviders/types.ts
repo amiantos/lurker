@@ -68,6 +68,16 @@ export interface UploadMeta {
   // Hint forwarded to the in-house dropper so a thumbnail lands under a
   // `thumbs/` prefix. Hosts that don't understand it ignore the extra field.
   kind?: 'thumb';
+  // Byte-level progress for the server→provider leg — the slow half of a big
+  // upload, and the half the client is blind to (#545). A driver forwards this
+  // straight into its RequestOptions; multipart.ts does the counting.
+  //
+  // OPTIONAL ON PURPOSE, in both directions. A driver that doesn't forward it, or
+  // one with no wire to count (`local` renames the temp file — zero copies, so
+  // there is nothing to stream), simply reports no percentage and the client falls
+  // back to the indeterminate phase label. Progress is a courtesy, never a
+  // precondition: an upload must not fail because nobody was watching.
+  onProgress?: (sentBytes: number, totalBytes: number) => void;
 }
 
 export interface UploadResult {

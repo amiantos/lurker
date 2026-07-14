@@ -52,13 +52,23 @@ const stub = {
   // silent BLOB fallback — so the claim has to be asserted here or a wrong one
   // is invisible until it's bloating the cell DB in production.
   lastThumbMeta: null as { filename: string; mime: string } | null,
+  // Whether each upload call in a request was handed a progress callback (#545). The
+  // thumbnail is its own driver.upload; if it inherited the callback, a 128px thumb
+  // would yank the bar back to 0 and re-fill it right after the real file landed.
+  lastHadProgress: [] as boolean[],
   async upload(
     _buffer: Buffer,
-    meta: { filename: string; mime: string; kind?: string },
+    meta: {
+      filename: string;
+      mime: string;
+      kind?: string;
+      onProgress?: (s: number, t: number) => void;
+    },
     config?: Record<string, string>,
   ) {
     stub.capturedSecrets = config ?? null;
     stub.lastKinds.push(meta.kind);
+    stub.lastHadProgress.push(typeof meta.onProgress === 'function');
     if (meta.kind === 'thumb') stub.lastThumbMeta = { filename: meta.filename, mime: meta.mime };
     if (meta.kind === 'thumb') {
       if (stub.thumbShouldThrow) {
@@ -248,6 +258,25 @@ describe('POST /api/uploads (node edition)', () => {
     } finally {
       setUserSetting(user.id, 'uploads.image.format', 'webp');
     }
+  });
+
+  // Node edition is the only place this can be tested: hostsThumbnails sends the thumb
+  // through the driver as a SECOND upload, where standalone keeps it as an inline BLOB
+  // and never calls the driver twice at all.
+  it('gives the progress callback to the file, never to the thumbnail (#545)', async () => {
+    stub.thumbShouldThrow = false;
+    stub.lastKinds = [];
+    stub.lastHadProgress = [];
+    const res = await agent
+      .post('/api/uploads')
+      .field('progressToken', 'tok-node')
+      .attach('image', smallPng, { filename: 'prog.png', contentType: 'image/png' });
+    expect(res.status).toBe(200);
+
+    // Two uploads went out: the image, then its thumb.
+    expect(stub.lastKinds).toEqual([undefined, 'thumb']);
+    // Only the first was allowed to move the bar.
+    expect(stub.lastHadProgress).toEqual([true, false]);
   });
 
   it('stores the thumbnail as a remote thumbs/ object, not an inline BLOB', async () => {
