@@ -91,28 +91,70 @@ export function insertUpload(userId: number, row: InsertUploadFields): number {
   return Number(info.lastInsertRowid);
 }
 
+// The kinds the uploads browser filters by (#547), and the mime prefix each one
+// means. Derived from `mime` rather than stored: the mime is already the magic-byte
+// truth (contentClass.ts sniffs it), so a separate column would be a second source
+// of it that could disagree.
+export const UPLOAD_KINDS = ['image', 'video', 'audio', 'text'] as const;
+export type UploadKind = (typeof UPLOAD_KINDS)[number];
+
+export function isUploadKind(value: unknown): value is UploadKind {
+  return typeof value === 'string' && (UPLOAD_KINDS as readonly string[]).includes(value);
+}
+
+/**
+ * Escape a user's search term for a SQL LIKE pattern.
+ *
+ * ⚠ Without this, `%` and `_` typed by the user are WILDCARDS, not characters: a
+ * search for "100%" matches every filename containing "100", and a lone "_" matches
+ * everything. `\` must go first, or it would escape the escapes we just added.
+ */
+function likeTerm(term: string): string {
+  return `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
 export function listUploads(
   userId: number,
-  { before = null, limit = 50 }: { before?: number | null; limit?: number } = {},
+  {
+    before = null,
+    limit = 50,
+    q = null,
+    kind = null,
+  }: {
+    before?: number | null;
+    limit?: number;
+    // Substring match on filename. Not ranked retrieval — this is "find the file I
+    // named", so LIKE beats reaching for FTS5 at a few thousand rows per user.
+    q?: string | null;
+    kind?: UploadKind | null;
+  } = {},
 ): UploadListRow[] {
   const lim = Math.max(1, Math.min(200, Number(limit) || 50));
+
+  // Composed rather than branched: before × q × kind is 8 combinations, and the
+  // previous copy-paste of the whole SELECT for one optional cursor was already the
+  // start of that. Keyset pagination survives every filter — the cursor is still
+  // `id < before` with a DESC scan, never OFFSET.
+  const where = ['user_id = ?'];
+  const params: (string | number)[] = [userId];
+
+  if (before) {
+    where.push('id < ?');
+    params.push(Number(before));
+  }
+  if (q) {
+    where.push("filename LIKE ? ESCAPE '\\'");
+    params.push(likeTerm(q));
+  }
+  if (kind) {
+    where.push('mime LIKE ?');
+    // No ESCAPE needed: `kind` is validated against UPLOAD_KINDS, so it can't carry
+    // a wildcard. The trailing % is ours and deliberate.
+    params.push(`${kind}/%`);
+  }
+
   // `has_thumbnail` lets the API decide whether to advertise a thumbnail_url
   // without ever shipping the (potentially large) blob in the list response.
-  if (before) {
-    return db
-      .prepare(
-        `
-      SELECT id, provider, url, filename, mime, byte_size, width, height, created_at,
-             thumbnail_url, removed, uploader_config_id,
-             (thumbnail IS NOT NULL) AS has_thumbnail, (ref IS NOT NULL) AS has_ref
-      FROM upload_history
-      WHERE user_id = ? AND id < ?
-      ORDER BY id DESC
-      LIMIT ?
-    `,
-      )
-      .all(userId, Number(before), lim) as UploadListRow[];
-  }
   return db
     .prepare(
       `
@@ -120,12 +162,12 @@ export function listUploads(
            thumbnail_url, removed, uploader_config_id,
            (thumbnail IS NOT NULL) AS has_thumbnail, (ref IS NOT NULL) AS has_ref
     FROM upload_history
-    WHERE user_id = ?
+    WHERE ${where.join(' AND ')}
     ORDER BY id DESC
     LIMIT ?
   `,
     )
-    .all(userId, lim) as UploadListRow[];
+    .all(...params, lim) as UploadListRow[];
 }
 
 export function getThumbnail(userId: number, id: number): { thumbnail: Buffer | null } | undefined {

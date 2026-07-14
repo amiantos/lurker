@@ -24,6 +24,29 @@ function emitInsert(url: string) {
 }
 
 const FAILURE_VISIBLE_MS = 10_000;
+const PAGE_SIZE = 50;
+
+/** The kinds the uploads browser filters by. Mirrors UPLOAD_KINDS on the server, which
+ *  derives each one from the mime prefix. */
+export type UploadKind = 'image' | 'video' | 'audio' | 'text';
+
+function uploadsUrl({
+  q,
+  kind,
+  before,
+}: {
+  q?: string;
+  kind?: UploadKind | null;
+  before?: number | null;
+}): string {
+  // URLSearchParams, not template concatenation: a filename search is arbitrary user
+  // text and will contain `&`, `#`, `+` and spaces.
+  const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+  if (before != null) params.set('before', String(before));
+  if (q) params.set('q', q);
+  if (kind) params.set('kind', kind);
+  return `/api/uploads?${params}`;
+}
 
 // The three legs of an upload, in the order they happen. Only the first is visible
 // to the browser (#545):
@@ -93,6 +116,18 @@ export const useUploadsStore = defineStore('uploads', {
     loaded: false,
     loading: false,
     listError: '',
+
+    // The uploads browser's filters (#547). Server-side, unlike almost every other
+    // filter in Lurker: the client only holds the pages it has scrolled through, and
+    // the whole point is finding one it hasn't. `recent` therefore holds the RESULTS
+    // of these filters, not the whole history — every consumer of it sees a filtered
+    // view once a filter is set.
+    query: '',
+    kind: null as UploadKind | null,
+    // Bumped on every filter change. A page that comes back from a superseded request
+    // carries a stale generation and is dropped — otherwise a slow "scree" response
+    // lands after the faster "screenshot" one and overwrites it.
+    generation: 0,
   }),
   actions: {
     async upload(file: File | Blob, filename: string | null = null) {
@@ -142,15 +177,26 @@ export const useUploadsStore = defineStore('uploads', {
           const isImage = typeof mime === 'string' && mime.startsWith('image/');
           const thumbnail_url =
             result.thumbnail_url || (isImage ? `/api/uploads/${result.id}/thumb` : undefined);
-          this.recent.unshift({
+          const row: UploadItem = {
             id: result.id,
             provider: undefined, // server-only field; recent-uploads modal will re-fetch if it cares
             url: result.url,
-            filename,
+            // `name`, not `filename`: the server stores req.file.originalname, which IS
+            // `name` (it's what we appended to the FormData). The optimistic row used
+            // the nullable `filename` param, so a pasted image read "(pasted)" until a
+            // reload turned it into "image.png". Harmless before; now that search
+            // matches on this field, the optimistic row has to agree with the stored one.
+            filename: filename || name,
             mime,
             can_delete: !!result.can_delete,
             ...(thumbnail_url ? { thumbnail_url } : {}),
-          });
+          };
+          // ⚠ `recent` holds the results of the browser's FILTERS now, not the whole
+          // history (#547). Prepending unconditionally would put a row the user's
+          // current search excludes at the top of their search results — and it would
+          // vanish on the next reload, which reads like a bug. Only optimistically
+          // insert what the active filter would actually have returned.
+          if (this.matchesFilters(row)) this.recent.unshift(row);
         }
         return result;
       } catch (err: any) {
@@ -198,40 +244,75 @@ export const useUploadsStore = defineStore('uploads', {
       return this.upload(blob, filename);
     },
 
+    /**
+     * Would the active filters have returned this row? Mirrors the server's WHERE
+     * clause — substring on filename, mime prefix on kind — so an optimistically
+     * inserted upload appears if and only if a refetch would have shown it.
+     */
+    matchesFilters(row: UploadItem): boolean {
+      if (this.kind && !(row.mime || '').startsWith(`${this.kind}/`)) return false;
+      if (!this.query) return true;
+      return (row.filename || '').toLowerCase().includes(this.query.toLowerCase());
+    },
+
+    /** Apply the browser's filters and reload from the top (#547). */
+    async setFilters({ query, kind }: { query?: string; kind?: UploadKind | null }) {
+      if (query !== undefined) this.query = query;
+      if (kind !== undefined) this.kind = kind;
+      // A filtered result set is a different list, not a continuation of this one: the
+      // old cursor points into the unfiltered sequence and would page the wrong rows.
+      this.cursor = null;
+      this.hasMore = true;
+      await this.loadRecent();
+    },
+
     async loadRecent() {
-      if (this.loading) return;
+      // Deliberately does NOT bail while a load is in flight. A filter change must
+      // SUPERSEDE the request it replaces — bailing would drop the newest keystroke's
+      // results and leave the list showing the previous term's.
+      const gen = ++this.generation;
       this.loading = true;
       this.listError = '';
       try {
-        const { items } = await api('/api/uploads?limit=50');
+        const { items } = await api(uploadsUrl({ q: this.query, kind: this.kind }));
+        if (gen !== this.generation) return; // superseded by a newer filter
         this.recent = items || [];
         this.cursor = this.recent.length ? this.recent[this.recent.length - 1].id : null;
-        this.hasMore = this.recent.length === 50;
+        this.hasMore = this.recent.length === PAGE_SIZE;
         this.loaded = true;
       } catch (e: any) {
+        if (gen !== this.generation) return;
         this.listError = e.message || 'failed to load uploads';
         throw e;
       } finally {
-        this.loading = false;
+        // Only the request that is still the current one owns the spinner.
+        if (gen === this.generation) this.loading = false;
       }
     },
 
     async loadMore() {
       if (this.loading || !this.hasMore || this.cursor == null) return;
+      const gen = this.generation;
       this.loading = true;
       try {
-        const { items } = await api(`/api/uploads?before=${this.cursor}&limit=50`);
+        const { items } = await api(
+          uploadsUrl({ q: this.query, kind: this.kind, before: this.cursor }),
+        );
+        // The filters changed while this page was in flight — these rows belong to a
+        // list that no longer exists. Appending them would mix two result sets.
+        if (gen !== this.generation) return;
         this.recent.push(...(items || []));
         if (items && items.length) {
           this.cursor = items[items.length - 1].id;
-          this.hasMore = items.length === 50;
+          this.hasMore = items.length === PAGE_SIZE;
         } else {
           this.hasMore = false;
         }
       } catch (e: any) {
+        if (gen !== this.generation) return;
         this.listError = e.message || 'failed to load more';
       } finally {
-        this.loading = false;
+        if (gen === this.generation) this.loading = false;
       }
     },
 

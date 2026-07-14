@@ -74,6 +74,114 @@ describe('insertUpload / listUploads', () => {
   });
 });
 
+// #547. Its own user, seeded once: the suites above share alice/bob and keep adding
+// rows to them, so exact-count assertions there would break every time someone adds a
+// test above this line.
+describe('listUploads — search + kind filter (#547)', () => {
+  let carol: ReturnType<typeof import('./users.js').createUser>;
+  const names = (rows: Array<{ filename: string | null }>) => rows.map((r) => r.filename);
+
+  // Written oldest-first, so `id DESC` returns this list reversed.
+  const SEEDED: Array<[string, string]> = [
+    ['vacation.png', 'image/webp'],
+    ['screenshot-march.png', 'image/webp'],
+    ['notes.txt', 'text/plain'],
+    ['clip.mp4', 'video/mp4'],
+    ['song.mp3', 'audio/mpeg'],
+    ['SCREAMING-SHOT.PNG', 'image/webp'],
+    // Filenames that are made of LIKE metacharacters. These are the entire reason
+    // likeTerm() exists.
+    ['100%-zoom.png', 'image/webp'],
+    ['snap_shot.png', 'image/webp'],
+  ];
+
+  beforeAll(() => {
+    carol = createUser('uh-carol');
+    for (const [filename, mime] of SEEDED) {
+      insert(carol.id, { filename, mime, url: `https://x0.at/${filename}` });
+    }
+  });
+
+  it('matches a filename substring, newest first', () => {
+    // Substring, not prefix: "sho" is inside screen-SHO-t too.
+    expect(names(mod.listUploads(carol.id, { q: 'sho' }))).toEqual([
+      'snap_shot.png',
+      'SCREAMING-SHOT.PNG',
+      'screenshot-march.png',
+    ]);
+  });
+
+  // SQLite's LIKE is case-insensitive for ASCII, and someone typing "shot" plainly
+  // means to find "SHOT.PNG" as well.
+  it('is case-insensitive', () => {
+    expect(names(mod.listUploads(carol.id, { q: 'SCREAMING' }))).toEqual(['SCREAMING-SHOT.PNG']);
+  });
+
+  // ⚠ The bug likeTerm() exists to prevent. Unescaped, `%` and `_` are LIKE WILDCARDS
+  // rather than characters — searching "100%" would match every filename containing
+  // "100", and a lone "%" would match the entire history. A search box that silently
+  // honours wildcards is a search box that lies about what it found.
+  it('treats % as a literal, not a wildcard', () => {
+    expect(names(mod.listUploads(carol.id, { q: '100%' }))).toEqual(['100%-zoom.png']);
+    // A bare "%" finds the one file with a literal % in its name — NOT the whole
+    // history, which is what an unescaped wildcard would have returned.
+    expect(names(mod.listUploads(carol.id, { q: '%' }))).toEqual(['100%-zoom.png']);
+  });
+
+  it('treats _ as a literal, not a single-character wildcard', () => {
+    expect(names(mod.listUploads(carol.id, { q: 'snap_shot' }))).toEqual(['snap_shot.png']);
+    // Unescaped, `_` would match every filename with at least one character.
+    expect(names(mod.listUploads(carol.id, { q: '_' }))).toEqual(['snap_shot.png']);
+  });
+
+  it('finds nothing for a term that matches nothing', () => {
+    expect(mod.listUploads(carol.id, { q: 'nonexistent' })).toEqual([]);
+  });
+
+  it.each([
+    ['image', 5],
+    ['video', 1],
+    ['audio', 1],
+    ['text', 1],
+  ] as const)('filters to kind=%s', (kind, count) => {
+    const rows = mod.listUploads(carol.id, { kind });
+    expect(rows.length).toBe(count);
+    expect(rows.every((r) => (r.mime || '').startsWith(`${kind}/`))).toBe(true);
+  });
+
+  it('ANDs the search term with the kind', () => {
+    expect(names(mod.listUploads(carol.id, { q: 'clip', kind: 'video' }))).toEqual(['clip.mp4']);
+    // Same term, wrong kind → nothing. If the clauses OR'd, this would return the mp4.
+    expect(mod.listUploads(carol.id, { q: 'clip', kind: 'image' })).toEqual([]);
+  });
+
+  // Keyset pagination has to keep working once a WHERE clause joins it: a cursor that
+  // ignored the filter would page through the UNFILTERED sequence and silently skip
+  // matches.
+  it('pages a filtered result set with the id cursor', () => {
+    const all = mod.listUploads(carol.id, { kind: 'image' });
+    expect(all.length).toBe(5);
+
+    const page1 = mod.listUploads(carol.id, { kind: 'image', limit: 2 });
+    expect(names(page1)).toEqual(names(all.slice(0, 2)));
+
+    const page2 = mod.listUploads(carol.id, {
+      kind: 'image',
+      limit: 2,
+      before: page1[page1.length - 1].id,
+    });
+    expect(names(page2)).toEqual(names(all.slice(2, 4)));
+  });
+
+  it('scopes a filtered query to the asking user', () => {
+    insert(bob.id, { filename: 'vacation.png', mime: 'image/webp' });
+    // Both own a 'vacation.png'; neither sees the other's.
+    expect(mod.listUploads(carol.id, { q: 'vacation' }).length).toBe(1);
+    expect(mod.listUploads(bob.id, { q: 'vacation' }).length).toBe(1);
+    expect(mod.listUploads(bob.id, { q: 'SCREAMING' })).toEqual([]);
+  });
+});
+
 describe('getThumbnail / deleteUpload', () => {
   it('returns thumbnail bytes only for owned rows', () => {
     const id = insert(alice.id);

@@ -5,7 +5,16 @@ import fs from 'node:fs';
 import sharp, { type Metadata, type Sharp } from 'sharp';
 import { canScrubInPlace, scrubMetadata } from './metadataScrub.js';
 
-const THUMB_SIZE = 128;
+// 256, not 128: the uploads browser (#547) renders ~128px tiles, and a 128px source
+// in a 128px box is 1x — visibly soft on every retina display. Measured cost of the
+// bump on a real photo, as WebP: 2.3 KB → 4.5 KB. Two kilobytes per upload is not a
+// number worth designing around.
+//
+// ⚠ Only NEW uploads get it. Existing rows keep their 128px thumb and we can't
+// regenerate them — the originals live at the provider, not here — so the gallery is
+// mixed-sharpness until it churns. That's the accepted cost; the alternative was
+// designing the grid around the smaller of the two forever.
+const THUMB_SIZE = 256;
 
 interface FormatInfo {
   mime: string;

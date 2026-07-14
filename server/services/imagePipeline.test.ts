@@ -209,22 +209,22 @@ describe('imagePipeline.optimize', () => {
 });
 
 describe('imagePipeline.thumbnail', () => {
-  it('returns a 128x128 WebP for static input', async () => {
+  it('returns a 256x256 WebP for static input', async () => {
     const buf = await staticPng(400, 200);
     const thumb = await thumbnail(buf);
     const meta = await sharp(thumb).metadata();
     expect(meta.format).toBe('webp');
-    expect(meta.width).toBe(128);
-    expect(meta.height).toBe(128);
+    expect(meta.width).toBe(256);
+    expect(meta.height).toBe(256);
   });
 
-  it('returns a 128x128 WebP for animated input (first frame)', async () => {
+  it('returns a 256x256 WebP for animated input (first frame)', async () => {
     const buf = animatedGif();
     const thumb = await thumbnail(buf);
     const meta = await sharp(thumb).metadata();
     expect(meta.format).toBe('webp');
-    expect(meta.width).toBe(128);
-    expect(meta.height).toBe(128);
+    expect(meta.width).toBe(256);
+    expect(meta.height).toBe(256);
   });
 
   it('keeps alpha, so a transparent image thumbnails without a black backing', async () => {
@@ -239,7 +239,7 @@ describe('imagePipeline.thumbnail', () => {
     const thumb = await thumbnail(await staticPng(400, 200), { format: 'jpeg' });
     const meta = await sharp(thumb).metadata();
     expect(meta.format).toBe('jpeg');
-    expect(meta.width).toBe(128);
+    expect(meta.width).toBe(256);
   });
 });
 

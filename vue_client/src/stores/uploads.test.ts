@@ -9,8 +9,9 @@ import { setActivePinia, createPinia } from 'pinia';
 type MultipartOpts = { onProgress(pct: number): void };
 const apiMultipart =
   vi.fn<(url: string, fd: FormData, opts: MultipartOpts) => Promise<Record<string, unknown>>>();
+const api = vi.fn<(url: string, opts?: unknown) => Promise<any>>();
 vi.mock('../api.js', () => ({
-  api: vi.fn<() => Promise<unknown>>(async () => ({ items: [] })),
+  api: (url: string, opts?: unknown) => api(url, opts),
   apiMultipart: (url: string, fd: FormData, opts: MultipartOpts) => apiMultipart(url, fd, opts),
 }));
 
@@ -32,6 +33,8 @@ function current(over: Partial<UploadCurrent> = {}): UploadCurrent {
 beforeEach(() => {
   setActivePinia(createPinia());
   apiMultipart.mockReset();
+  api.mockReset();
+  api.mockResolvedValue({ items: [] });
 });
 
 // TIER 1 — the part that needs no server cooperation, and the reason #545 is a bug
@@ -160,5 +163,106 @@ describe('uploads.applyProgress', () => {
     expect(uploads.current!.phase).toBe('sending');
     expect(uploads.current!.sentPercent).toBeNull();
     expect(uploads.current!.destination).toBe('Local disk');
+  });
+});
+
+// #547. The uploads browser's filters are SERVER-side — unlike almost every other
+// filter in Lurker — because the client only holds the pages it has scrolled through
+// and the whole point is finding one it hasn't. So the store's job is to build the
+// right query and, crucially, to not get confused by its own in-flight requests.
+describe('uploads — browser filters', () => {
+  const row = (id: number, filename: string, mime: string) => ({
+    id,
+    url: `https://x.test/${filename}`,
+    filename,
+    mime,
+  });
+
+  it('sends the search term and kind as query params', async () => {
+    const uploads = useUploadsStore();
+    await uploads.setFilters({ query: 'march shot', kind: 'image' });
+
+    const url = api.mock.calls.at(-1)![0];
+    const params = new URL(url, 'https://x.test').searchParams;
+    expect(params.get('q')).toBe('march shot');
+    expect(params.get('kind')).toBe('image');
+    expect(params.get('before')).toBeNull(); // a new filter starts a new list
+  });
+
+  it('drops the cursor when the filters change', async () => {
+    const uploads = useUploadsStore();
+    uploads.cursor = 999;
+    await uploads.setFilters({ query: 'x' });
+    // The old cursor points into the UNFILTERED sequence; paging with it would walk
+    // the wrong rows and silently skip matches.
+    expect(api.mock.calls.at(-1)![0]).not.toContain('before=');
+  });
+
+  it('carries the filters into the next page', async () => {
+    const uploads = useUploadsStore();
+    api.mockResolvedValueOnce({ items: [row(7, 'a.png', 'image/webp')] });
+    await uploads.setFilters({ query: 'a', kind: 'image' });
+    uploads.hasMore = true; // one short page would otherwise end pagination
+
+    await uploads.loadMore();
+    const params = new URL(api.mock.calls.at(-1)![0], 'https://x.test').searchParams;
+    expect(params.get('before')).toBe('7');
+    expect(params.get('q')).toBe('a');
+    expect(params.get('kind')).toBe('image');
+  });
+
+  // The race that makes typed search feel broken: "scree" is sent, then "screenshot",
+  // and the slower FIRST response lands last and overwrites the results of the term
+  // the user actually finished typing.
+  it('ignores a response that a newer filter has superseded', async () => {
+    const uploads = useUploadsStore();
+    let releaseStale: (v: unknown) => void = () => {};
+    const stale = new Promise((r) => {
+      releaseStale = r;
+    });
+
+    api.mockReturnValueOnce(stale.then(() => ({ items: [row(1, 'STALE.png', 'image/webp')] })));
+    const first = uploads.setFilters({ query: 'scree' });
+
+    api.mockResolvedValueOnce({ items: [row(2, 'FRESH.png', 'image/webp')] });
+    await uploads.setFilters({ query: 'screenshot' });
+
+    // Now let the superseded request finish — after the newer one already landed.
+    releaseStale(null);
+    await first;
+
+    expect(uploads.recent.map((u) => u.filename)).toEqual(['FRESH.png']);
+    expect(uploads.query).toBe('screenshot');
+    // The stale request must not leave the spinner running either.
+    expect(uploads.loading).toBe(false);
+  });
+
+  // `recent` holds the results of a FILTER now, not the whole history. An optimistic
+  // insert that the active filter excludes would sit at the top of the user's search
+  // results and then vanish on the next reload — which reads as a bug.
+  it('optimistically inserts a new upload only when it matches the filters', async () => {
+    const uploads = useUploadsStore();
+    await uploads.setFilters({ query: '', kind: 'image' });
+
+    apiMultipart.mockResolvedValue({ id: 9, url: 'https://x.test/n.txt', mime: 'text/plain' });
+    await uploads.upload(new Blob(['x']), 'notes.txt');
+    expect(uploads.recent).toEqual([]); // a text upload, while filtered to images
+
+    apiMultipart.mockResolvedValue({ id: 10, url: 'https://x.test/s.webp', mime: 'image/webp' });
+    await uploads.upload(new Blob(['x']), 'shot.png');
+    expect(uploads.recent.map((u) => u.filename)).toEqual(['shot.png']);
+  });
+
+  it('respects the search term when optimistically inserting', async () => {
+    const uploads = useUploadsStore();
+    await uploads.setFilters({ query: 'holiday' });
+
+    apiMultipart.mockResolvedValue({ id: 11, url: 'https://x.test/s.webp', mime: 'image/webp' });
+    await uploads.upload(new Blob(['x']), 'work-thing.png');
+    expect(uploads.recent).toEqual([]);
+
+    apiMultipart.mockResolvedValue({ id: 12, url: 'https://x.test/h.webp', mime: 'image/webp' });
+    await uploads.upload(new Blob(['x']), 'holiday-snap.png');
+    expect(uploads.recent.map((u) => u.filename)).toEqual(['holiday-snap.png']);
   });
 });
