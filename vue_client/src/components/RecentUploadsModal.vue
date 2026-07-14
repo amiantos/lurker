@@ -354,10 +354,17 @@ function metaLine(u: UploadRow): string {
   transform: translateY(-50%);
   color: var(--fg-muted);
   pointer-events: none;
+  /* Pin the glyph to a known box. Font Awesome glyph widths vary per icon, so without
+     this the input's padding below would be guessing at where the icon ends. */
+  width: 1em;
+  text-align: center;
 }
 .search-input {
   width: 100%;
-  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-8);
+  /* Left padding is derived, not picked: where the icon starts, plus the icon's own
+     width, plus one character of breathing room. A flat --space-8 (20px) landed the
+     text hard against the glyph. */
+  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 1em + 1ch);
   background: var(--bg-soft);
   border: 1px solid var(--border);
   color: var(--fg);
