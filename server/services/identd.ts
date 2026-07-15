@@ -553,7 +553,9 @@ const OIDENTD_HEADER =
 // the host daemon answers exactly the connections we vouch for and no :113 scan
 // can enumerate idents by port alone — the same enumeration defense as the
 // in-process lookupIdent 4-tuple match. Addresses are already normalized in the
-// map (v4-mapped IPv6 collapsed).
+// map (v4-mapped IPv6 collapsed); IPv6 is emitted BARE (no brackets) because
+// that is what oidentd's user-config grammar expects for `to`/`from` — the same
+// form The Lounge writes in production.
 export function formatOidentdConfig(entries: Iterable<IdentEntry>): string {
   let file = OIDENTD_HEADER;
   for (const e of entries) {
@@ -566,34 +568,66 @@ export function formatOidentdConfig(entries: Iterable<IdentEntry>): string {
   return file;
 }
 
-// Coalesced, atomic writer. register/unregister mark the file dirty and schedule
-// a single write on the next setImmediate, so a reconnect storm (a deploy
-// re-lighting many networks at once) collapses to ONE O(N) full-file rewrite
-// instead of O(N²) per-event writes. setImmediate (not a timer) keeps a lone
-// connect's write in the same tick — unlike the in-process identd, oidentd
-// answers the :113 callback itself, so there's no grace window on the answer
-// side and write-speed is our only defense against the callback beating the file.
-let oidentdRefreshScheduled = false;
+// Serialized, coalesced, atomic writer. register/unregister mark the file dirty
+// and (if no drain is already running) start a single drain loop: write, then
+// re-check the dirty flag and write again. This coalesces a burst AND guarantees
+// no two writeFile+rename pairs ever overlap on the shared `${file}.tmp` path —
+// an earlier design fired a fresh async write per event, so during a reconnect
+// storm (registrations arrive across many ticks) a second write could re-truncate
+// tmp mid-rename of the first, or a rename could hit ENOENT and the catch's unlink
+// remove a third write's tmp. The leading setImmediate keeps a lone connect
+// same-tick while letting a synchronous burst pile into one pass — unlike the
+// in-process identd, oidentd answers the :113 callback itself, so there's no
+// grace window and write-speed is our only defense against the callback beating
+// the file.
+let oidentdDirty = false;
+let oidentdWriting = false;
+// Set once at shutdown so nothing renames stale mappings back over the truncated
+// file afterward: scheduleOidentdRefresh stops starting drains (the disconnect-
+// driven unregisters during shutdown won't schedule writes), the drain loop
+// exits, and any in-flight write skips its rename. Cleared by initOidentdFile —
+// a fresh boot re-enables the writer.
+let oidentdStopped = false;
 let lastOidentdWriteErrorAt = 0;
-// Tracks the in-flight async write so tests can await a fully-settled flush
-// (the setImmediate fires the write, but writeFile+rename resolve later).
-// Production never awaits it — the refresh is deliberately fire-and-forget.
+// Tracks the in-flight drain so tests can await a fully-settled flush. Production
+// otherwise treats the refresh as fire-and-forget.
 let oidentdWriteInFlight: Promise<void> = Promise.resolve();
 
 function scheduleOidentdRefresh(): void {
-  if (!isOidentdFileEnabled() || oidentdRefreshScheduled) return;
-  oidentdRefreshScheduled = true;
-  setImmediate(() => {
-    oidentdRefreshScheduled = false;
-    oidentdWriteInFlight = writeOidentdFile();
-  });
+  if (!isOidentdFileEnabled() || oidentdStopped) return;
+  oidentdDirty = true;
+  if (oidentdWriting) return; // a drain is already running; its loop will pick up the new dirty state
+  oidentdWriting = true;
+  oidentdWriteInFlight = drainOidentdWrites();
 }
 
-// Test-only: resolve once any scheduled refresh has fired AND its async write
-// has settled. The leading setImmediate lets an already-scheduled refresh's
-// callback (queued earlier, so ahead of this one in FIFO order) run first.
+async function drainOidentdWrites(): Promise<void> {
+  // Yield once so a synchronous burst of (un)registrations coalesces into the
+  // first pass instead of writing per event.
+  await new Promise<void>((r) => setImmediate(r));
+  while (oidentdDirty && !oidentdStopped) {
+    oidentdDirty = false;
+    await writeOidentdFile();
+  }
+  // No await between the final dirty check above and here, so a registration
+  // that arrives after this sees oidentdWriting=false and starts a fresh drain —
+  // no lost update.
+  oidentdWriting = false;
+}
+
+// Test-only: resolve once the current drain (if any) has fully settled.
 export function whenOidentdSettled(): Promise<void> {
-  return new Promise<void>((r) => setImmediate(r)).then(() => oidentdWriteInFlight);
+  return oidentdWriteInFlight;
+}
+
+// Test-only: clear module state between cases. Production drives this through
+// initOidentdFile (boot) / stopOidentdFile (shutdown).
+export function resetOidentdStateForTest(): void {
+  oidentdDirty = false;
+  oidentdWriting = false;
+  oidentdStopped = false;
+  lastOidentdWriteErrorAt = 0;
+  oidentdWriteInFlight = Promise.resolve();
 }
 
 async function writeOidentdFile(): Promise<void> {
@@ -605,6 +639,12 @@ async function writeOidentdFile(): Promise<void> {
     // Write a sibling temp file then rename: rename is atomic within a
     // filesystem, so the host oidentd never reads a half-written config.
     await fs.promises.writeFile(tmp, content, 'utf8');
+    // A shutdown may have truncated the file while this write was in flight;
+    // don't rename our now-stale snapshot back over it.
+    if (oidentdStopped) {
+      await fs.promises.unlink(tmp).catch(() => {});
+      return;
+    }
     await fs.promises.rename(tmp, file);
   } catch (err) {
     // A write failure must never take down the server; throttle the warning so a
@@ -626,19 +666,32 @@ async function writeOidentdFile(): Promise<void> {
 export function initOidentdFile(): void {
   const file = oidentdFilePath();
   if (!file) return;
+  // A fresh boot re-enables the writer after any prior stopOidentdFile.
+  oidentdStopped = false;
   try {
+    // Create the parent directory when the operator points at a not-yet-existing
+    // path, so the mode doesn't silently no-op on every write (each writeOidentdFile
+    // would otherwise throw ENOENT and only log, throttled).
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, formatOidentdConfig(idents.values()), 'utf8');
     console.log(
       `[oidentd] maintaining ${file} for a host oidentd (Lurker will NOT bind :113 for this) — ensure the host daemon reads this path and its :113 reaches your IRC servers`,
     );
   } catch (err) {
-    console.error(`[oidentd] failed to initialize ${file}: ${(err as Error).message}`);
+    console.error(
+      `[oidentd] failed to initialize ${file}: ${(err as Error).message} — oidentd file mode will not work until this path is writable`,
+    );
   }
 }
 
 // Truncate the file on shutdown so dead 4-tuple mappings don't linger for a
 // local port the OS later reuses for an unrelated process.
 export function stopOidentdFile(): void {
+  // Block further writes FIRST: in-flight drains skip their rename, and the
+  // disconnect-driven unregisters that ircManager.shutdown() fires next won't
+  // schedule new writes — otherwise one of them would rename stale mappings
+  // straight back over the header we're about to write.
+  oidentdStopped = true;
   const file = oidentdFilePath();
   if (!file) return;
   try {

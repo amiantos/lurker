@@ -14,6 +14,7 @@ import {
   initOidentdFile,
   stopOidentdFile,
   whenOidentdSettled,
+  resetOidentdStateForTest,
   type IdentEntry,
 } from './identd.js';
 
@@ -76,6 +77,16 @@ describe('formatOidentdConfig', () => {
     const out = formatOidentdConfig([entry({ ident: 'a"b\\c' })]);
     expect(out).toContain('{ reply "a\\"b\\\\c" }');
   });
+
+  it('emits IPv6 addresses bare, without brackets (oidentd grammar / The Lounge parity)', () => {
+    const out = formatOidentdConfig([
+      entry({ remoteAddress: '2001:db8::1', localAddress: '2001:db8::2' }),
+    ]);
+    expect(out).toContain(
+      'to 2001:db8::1 fport 6697 from 2001:db8::2 lport 40000 { reply "alice" }',
+    );
+    expect(out).not.toContain('[');
+  });
 });
 
 describe('oidentd file writer', () => {
@@ -84,6 +95,9 @@ describe('oidentd file writer', () => {
   const registered: number[] = [];
 
   beforeEach(() => {
+    // Clear the writer's stopped/dirty/in-flight state so a prior case (e.g. the
+    // shutdown test, which latches oidentdStopped) can't disable this one.
+    resetOidentdStateForTest();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-oidentd-'));
@@ -138,6 +152,31 @@ describe('oidentd file writer', () => {
     expect(fs.existsSync(`${file}.tmp`)).toBe(false);
   });
 
+  it('serializes writes — never two in flight at once, even across ticks', async () => {
+    // The bug this guards: writes triggered while a prior writeFile+rename is
+    // still in flight must NOT overlap on the shared `${file}.tmp` path. Make
+    // each write slow and register across separate ticks so a naive per-event
+    // writer would run two concurrently.
+    let active = 0;
+    let maxActive = 0;
+    vi.spyOn(fs.promises, 'writeFile').mockImplementation(async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+    });
+    vi.spyOn(fs.promises, 'rename').mockResolvedValue(undefined);
+
+    registered.push(registerIdent(entry({ localPort: 41000 })));
+    await new Promise((r) => setImmediate(r));
+    registered.push(registerIdent(entry({ localPort: 41001 })));
+    await new Promise((r) => setImmediate(r));
+    registered.push(registerIdent(entry({ localPort: 41002 })));
+    await flush();
+
+    expect(maxActive).toBe(1);
+  });
+
   it('does not schedule a write when the mode is disabled', async () => {
     delete process.env.LURKER_OIDENTD_FILE;
     const writeSpy = vi.spyOn(fs.promises, 'writeFile');
@@ -155,11 +194,39 @@ describe('oidentd file writer', () => {
     );
   });
 
+  it('initOidentdFile creates a missing parent directory instead of silently failing', () => {
+    const nested = path.join(dir, 'sub', 'deeper', '.oidentd.conf');
+    process.env.LURKER_OIDENTD_FILE = nested;
+    initOidentdFile();
+    expect(fs.existsSync(nested)).toBe(true);
+  });
+
+  it('re-enables the writer after a prior stopOidentdFile (initOidentdFile clears stopped)', async () => {
+    stopOidentdFile();
+    initOidentdFile();
+    registered.push(registerIdent(entry({ ident: 'erin' })));
+    await flush();
+    expect(fs.readFileSync(file, 'utf8')).toContain('erin');
+  });
+
   it('stopOidentdFile truncates lingering mappings to the header', async () => {
     registered.push(registerIdent(entry({ ident: 'dave' })));
     await flush();
     expect(fs.readFileSync(file, 'utf8')).toContain('dave');
     stopOidentdFile();
     expect(fs.readFileSync(file, 'utf8')).not.toContain('dave');
+  });
+
+  it('does not let a refresh after stopOidentdFile repopulate the truncated file', async () => {
+    registered.push(registerIdent(entry({ ident: 'frank' })));
+    await flush();
+    stopOidentdFile();
+    // Mirrors shutdown: ircManager.shutdown() runs AFTER stopOidentdFile and
+    // churns the ident map; none of that may rewrite the truncated file.
+    registered.push(registerIdent(entry({ ident: 'grace' })));
+    await flush();
+    const contents = fs.readFileSync(file, 'utf8');
+    expect(contents).not.toContain('frank');
+    expect(contents).not.toContain('grace');
   });
 });
