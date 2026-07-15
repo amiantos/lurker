@@ -882,3 +882,100 @@ describe('authenticateUpgrade', () => {
     expect(user).toBeNull();
   });
 });
+
+// #574: the /ws upgrade only accepts a same-origin or allowlisted browser
+// upgrade; a native client (no Origin header) always passes.
+describe('isAllowedUpgradeOrigin', () => {
+  let isAllowedUpgradeOrigin: typeof import('./wsHub.js').isAllowedUpgradeOrigin;
+  const savedCors = process.env.CORS_ORIGIN;
+
+  beforeAll(async () => {
+    ({ isAllowedUpgradeOrigin } = await import('./wsHub.js'));
+  });
+  afterAll(() => {
+    if (savedCors === undefined) delete process.env.CORS_ORIGIN;
+    else process.env.CORS_ORIGIN = savedCors;
+  });
+
+  it('allows an upgrade with no Origin header (native client)', () => {
+    expect(isAllowedUpgradeOrigin(upgrade({ host: 'app.lurker.chat' }))).toBe(true);
+  });
+
+  it('allows a same-origin browser upgrade regardless of CORS_ORIGIN', () => {
+    process.env.CORS_ORIGIN = 'https://something-else.example';
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'app.lurker.chat', origin: 'https://app.lurker.chat' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('allows a cross-origin upgrade that is on the CORS allowlist', () => {
+    process.env.CORS_ORIGIN = 'https://client.example, https://other.example';
+    expect(
+      isAllowedUpgradeOrigin(upgrade({ host: 'api.internal', origin: 'https://client.example' })),
+    ).toBe(true);
+  });
+
+  it('rejects a cross-site browser upgrade that is neither same-origin nor allowlisted', () => {
+    process.env.CORS_ORIGIN = 'https://app.lurker.chat';
+    expect(
+      isAllowedUpgradeOrigin(upgrade({ host: 'app.lurker.chat', origin: 'https://evil.example' })),
+    ).toBe(false);
+  });
+
+  it('rejects a malformed Origin header from a browser', () => {
+    expect(isAllowedUpgradeOrigin(upgrade({ host: 'app.lurker.chat', origin: 'not-a-url' }))).toBe(
+      false,
+    );
+  });
+});
+
+// #569: the client announces its protocol version via ?v= on the upgrade URL.
+describe('parseProtocolParam', () => {
+  let parseProtocolParam: typeof import('./wsHub.js').parseProtocolParam;
+  beforeAll(async () => {
+    ({ parseProtocolParam } = await import('./wsHub.js'));
+  });
+
+  it('returns null when ?v is absent', () => {
+    expect(parseProtocolParam('/ws')).toBeNull();
+    expect(parseProtocolParam('/ws?since=5')).toBeNull();
+  });
+
+  it('parses a positive integer version', () => {
+    expect(parseProtocolParam('/ws?v=1')).toBe(1);
+    expect(parseProtocolParam('/ws?v=3&since=5')).toBe(3);
+  });
+
+  it('returns null for a non-positive or non-numeric version', () => {
+    expect(parseProtocolParam('/ws?v=0')).toBeNull();
+    expect(parseProtocolParam('/ws?v=-2')).toBeNull();
+    expect(parseProtocolParam('/ws?v=abc')).toBeNull();
+  });
+});
+
+// #574: per-socket inbound flood control. The bucket starts full, drains one
+// token per message, and refills over time.
+describe('allowInboundMessage', () => {
+  let allowInboundMessage: typeof import('./wsHub.js').allowInboundMessage;
+  beforeAll(async () => {
+    ({ allowInboundMessage } = await import('./wsHub.js'));
+  });
+
+  it('passes a normal message rate and eventually throttles a sustained flood', () => {
+    const ws = {} as Parameters<typeof allowInboundMessage>[0];
+    // A full bucket admits a burst; a tight loop with no time to refill must hit
+    // the floor and start rejecting.
+    let allowed = 0;
+    let rejected = 0;
+    for (let i = 0; i < 10_000; i++) {
+      if (allowInboundMessage(ws)) allowed++;
+      else rejected++;
+    }
+    expect(allowed).toBeGreaterThan(0); // the initial burst got through
+    expect(rejected).toBeGreaterThan(0); // the flood was throttled
+    // Nowhere near all 10k were admitted — the cap held.
+    expect(allowed).toBeLessThan(1_000);
+  });
+});

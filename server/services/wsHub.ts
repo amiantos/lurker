@@ -80,6 +80,7 @@ import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from './settingsRegistry.js';
 import { SESSION_COOKIE, loadBearerSession } from '../middleware/auth.js';
+import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
 import { callVerb } from './verbRegistry.js';
 
 // WebSocket extended with per-socket bookkeeping fields.
@@ -101,6 +102,94 @@ interface LurkerWebSocket extends WebSocket {
   // needs a per-message DB read. (Named accountPaused, not isPaused, to avoid
   // colliding with the ws library's own WebSocket.isPaused.)
   accountPaused?: boolean;
+  // Protocol version the client announced via `?v=` on the upgrade (#569), or
+  // PROTOCOL_VERSION when it announced none (web client / legacy native build).
+  protocolVersion?: number;
+  // Per-socket inbound flood-control token bucket (#574). Lazily initialized on
+  // the first message; see allowInboundMessage.
+  floodTokens?: number;
+  floodRefilledAt?: number;
+}
+
+// #574: cap a single inbound WS frame. The library default is 100 MB; client→
+// server frames are IRC-shaped (a line of text plus a little JSON), so a low cap
+// is safe and stops one frame from allocating a huge buffer. Uploads and imports
+// go over REST, never the socket.
+const MAX_WS_MESSAGE_BYTES = 256 * 1024;
+
+// #574: per-socket inbound message-rate limiter. A token bucket sized well above
+// any legitimate client — a human, plus the burst of open-buffer verbs a client
+// fires right after connect, never approaches this — that caps an authenticated
+// client trying to flood verbs. Checked BEFORE JSON.parse so a flood can't even
+// pay parse cost.
+const WS_MSG_BUCKET_CAPACITY = 120;
+const WS_MSG_BUCKET_REFILL_PER_SEC = 40;
+
+// Refill by elapsed time, spend one token. Returns false when the bucket is dry
+// — the caller then closes the socket, since a client hitting this rate is
+// misbehaving, not racing.
+export function allowInboundMessage(ws: LurkerWebSocket): boolean {
+  const now = Date.now();
+  const last = ws.floodRefilledAt ?? now;
+  const refilled = Math.min(
+    WS_MSG_BUCKET_CAPACITY,
+    (ws.floodTokens ?? WS_MSG_BUCKET_CAPACITY) +
+      ((now - last) / 1000) * WS_MSG_BUCKET_REFILL_PER_SEC,
+  );
+  ws.floodRefilledAt = now;
+  if (refilled < 1) {
+    ws.floodTokens = refilled;
+    return false;
+  }
+  ws.floodTokens = refilled - 1;
+  return true;
+}
+
+// The origins allowed to open a WebSocket, mirroring the same CORS_ORIGIN the
+// HTTP API already trusts for credentialed requests (app.ts). Comma-separated so
+// an operator can list several; defaults to the dev origin, matching app.ts.
+function corsAllowlist(): Set<string> {
+  const raw = process.env.CORS_ORIGIN || 'https://irc.local.bradroot.me:5173';
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+// #574: same-origin / allowlisted Origin check for the WS upgrade. Browsers
+// always send Origin on a WS handshake; native clients send none. We reject only
+// a *browser* upgrade whose Origin is neither same-origin as the request Host nor
+// on the CORS allowlist — i.e. a cross-site attempt. Absent Origin (native) and
+// same-origin (the normal web case, hosted or self-host, independent of whether
+// CORS_ORIGIN was configured) always pass, so this can't wedge a working
+// deployment. On the hosted proxy the browser's Origin and Host both arrive as
+// the public app origin (http-proxy forwards them unchanged), so they match here.
+export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  if (req.headers.host && originHost === req.headers.host) return true;
+  return corsAllowlist().has(origin);
+}
+
+// The protocol version a client announces via `?v=<n>` on the /ws upgrade (#569),
+// or null when absent. Mirrors parseSinceParam.
+export function parseProtocolParam(rawUrl: string): number | null {
+  try {
+    const raw = new URL(rawUrl, 'http://localhost').searchParams.get('v');
+    if (!raw) return null;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // Generic payload for outgoing WS messages.
@@ -1064,7 +1153,7 @@ export function authenticateUpgrade(req: IncomingMessage, sessionSecret: string)
 }
 
 export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_MESSAGE_BYTES });
   // Per-user pending auto-away timers. Set when a user goes from 1→0 sockets;
   // cleared on 0→1 or when the timer fires.
   const autoAwayTimers = new Map();
@@ -1504,6 +1593,23 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
 
   httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
     if (!req.url || !req.url.startsWith('/ws')) return;
+    // #574: reject a cross-site browser upgrade before we touch auth or the DB.
+    // Native clients send no Origin and pass; same-origin/allowlisted pass.
+    if (!isAllowedUpgradeOrigin(req)) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    // #569: a client too old for this server is told to update (426) rather than
+    // handed a snapshot it would mis-render. A client that announces no version
+    // (?v absent) is treated as current — the web client ships in lockstep and
+    // any native build predating the handshake speaks today's protocol.
+    const clientVersion = parseProtocolParam(req.url);
+    if (clientVersion !== null && clientVersion < MIN_PROTOCOL_VERSION) {
+      socket.write('HTTP/1.1 426 Upgrade Required\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const user = authenticateUpgrade(req, sessionSecret);
     if (!user) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
@@ -1521,6 +1627,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       const lurkerWs = ws as LurkerWebSocket;
       lurkerWs.userId = user.id;
       lurkerWs.sinceId = initialSinceId;
+      lurkerWs.protocolVersion = clientVersion ?? PROTOCOL_VERSION;
       lurkerWs.presence = { visible: false };
       lurkerWs.isAlive = true;
       lurkerWs.accountPaused = user.is_paused === 1;
@@ -1533,6 +1640,20 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     sendSnapshot(ws, user.id);
 
     ws.on('message', (raw) => {
+      // #574: per-socket flood control, checked before JSON.parse so a flood
+      // pays no parse cost. Exhausting the bucket closes the socket (1008 policy
+      // violation) rather than dropping silently — a client at this rate is
+      // misbehaving, and closing makes it stop.
+      if (!allowInboundMessage(ws)) {
+        console.warn(`[wsHub] user ${user.id} exceeded WS message rate; closing socket`);
+        try {
+          send(ws, { kind: 'error', text: 'message rate exceeded' });
+        } catch (_err) {
+          /* socket may already be unwritable */
+        }
+        ws.close(1008, 'message rate exceeded');
+        return;
+      }
       let msg: WsPayload;
       try {
         msg = JSON.parse(raw.toString()) as WsPayload;
@@ -1623,6 +1744,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // so they ride alongside the per-network snapshot as their own field (#350).
     send(ws, {
       kind: 'snapshot',
+      // #569: the server's protocol version rides the snapshot so a client that
+      // connected without pre-checking GET /api/config still learns what the
+      // server speaks and can degrade knowingly.
+      protocolVersion: PROTOCOL_VERSION,
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),
