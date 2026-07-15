@@ -3,7 +3,7 @@
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { requireAuth, blockWritesWhenPaused } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import type { Network } from '../db/networks.js';
 import {
   listNetworksForUser,
@@ -21,10 +21,9 @@ import { fanOutToUser } from '../services/wsHub.js';
 
 const router = Router();
 router.use(requireAuth);
-// Paused accounts are read-only: every connect/reconnect/join/part and all
-// network-config mutation here is blocked, while GET listing still works so the
-// sidebar renders. See blockWritesWhenPaused.
-router.use(blockWritesWhenPaused);
+// Paused accounts are read-only (every connect/reconnect/join/part and all
+// network-config mutation here is blocked while GET listing still renders the
+// sidebar). The write block lives centrally in requireAuth — see #573.
 
 // `default_channel` is a comma-separated channel list, matching IRC's own JOIN
 // syntax ("JOIN #a,#b") — the onboarding flow and `/network add -channel` both
