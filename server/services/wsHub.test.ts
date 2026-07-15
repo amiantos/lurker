@@ -910,8 +910,9 @@ describe('isAllowedUpgradeOrigin', () => {
     ).toBe(true);
   });
 
-  it('allows a cross-origin upgrade that is on the CORS allowlist', () => {
-    process.env.CORS_ORIGIN = 'https://client.example, https://other.example';
+  it('allows a cross-origin upgrade that matches the configured CORS_ORIGIN', () => {
+    // Matches app.ts's single-string CORS semantics exactly (not a comma list).
+    process.env.CORS_ORIGIN = 'https://client.example';
     expect(
       isAllowedUpgradeOrigin(upgrade({ host: 'api.internal', origin: 'https://client.example' })),
     ).toBe(true);

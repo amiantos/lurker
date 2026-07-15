@@ -145,25 +145,21 @@ export function allowInboundMessage(ws: LurkerWebSocket): boolean {
   return true;
 }
 
-// The origins allowed to open a WebSocket, mirroring the same CORS_ORIGIN the
-// HTTP API already trusts for credentialed requests (app.ts). Comma-separated so
-// an operator can list several; defaults to the dev origin, matching app.ts.
-function corsAllowlist(): Set<string> {
-  const raw = process.env.CORS_ORIGIN || 'https://irc.local.bradroot.me:5173';
-  return new Set(
-    raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+// The single browser origin the HTTP CORS layer trusts. app.ts passes CORS_ORIGIN
+// straight to cors({ origin }), which matches it as one exact string — so we do
+// the same here (NOT a comma-split allowlist) to keep the WS and HTTP layers in
+// exact agreement about what's allowed. Defaults to the dev origin, matching
+// app.ts.
+function allowedBrowserOrigin(): string {
+  return process.env.CORS_ORIGIN || 'https://irc.local.bradroot.me:5173';
 }
 
-// #574: same-origin / allowlisted Origin check for the WS upgrade. Browsers
-// always send Origin on a WS handshake; native clients send none. We reject only
-// a *browser* upgrade whose Origin is neither same-origin as the request Host nor
-// on the CORS allowlist — i.e. a cross-site attempt. Absent Origin (native) and
-// same-origin (the normal web case, hosted or self-host, independent of whether
-// CORS_ORIGIN was configured) always pass, so this can't wedge a working
+// #574: same-origin / allowed-origin check for the WS upgrade. Browsers always
+// send Origin on a WS handshake; native clients send none. We reject only a
+// *browser* upgrade whose Origin is neither same-origin as the request Host nor
+// the CORS-configured origin — i.e. a cross-site attempt. Absent Origin (native)
+// and same-origin (the normal web case, hosted or self-host, independent of
+// whether CORS_ORIGIN was configured) always pass, so this can't wedge a working
 // deployment. On the hosted proxy the browser's Origin and Host both arrive as
 // the public app origin (http-proxy forwards them unchanged), so they match here.
 export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
@@ -176,11 +172,19 @@ export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
     return false;
   }
   if (req.headers.host && originHost === req.headers.host) return true;
-  return corsAllowlist().has(origin);
+  return origin === allowedBrowserOrigin();
 }
 
-// The protocol version a client announces via `?v=<n>` on the /ws upgrade (#569),
-// or null when absent. Mirrors parseSinceParam.
+// The protocol version a client announces via `?v=<n>` on the /ws upgrade (#569).
+// Returns null when the param is absent OR present-but-unparseable, and the
+// caller treats null as "current" (no version gate). Conflating the two is
+// deliberate and consistent: a client that omits `?v` and one that sends garbage
+// have both failed to announce a valid version, so both are treated identically.
+// This is not a security bypass of MIN_PROTOCOL_VERSION — omitting `?v` is itself
+// the sanctioned "treat me as current" path, so there is nothing a malformed
+// value could bypass that an absent one couldn't. The gate is a compatibility
+// courtesy (tell a well-behaved old client to update), not an auth control.
+// Mirrors parseSinceParam.
 export function parseProtocolParam(rawUrl: string): number | null {
   try {
     const raw = new URL(rawUrl, 'http://localhost').searchParams.get('v');
