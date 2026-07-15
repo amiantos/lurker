@@ -23,6 +23,9 @@ import {
   isIdentdEnabled,
   identdPort,
   identdBindHost,
+  isOidentdFileEnabled,
+  initOidentdFile,
+  stopOidentdFile,
 } from './services/identd.js';
 import {
   startBouncer,
@@ -61,9 +64,9 @@ if (isNodeMode() && !nodeUploadConfigured()) {
     '[lurker] node edition is active but LURKER_NODE_UPLOAD_URL / LURKER_NODE_UPLOAD_API_KEY are unset — image and text uploads will fail (400) until they are configured',
   );
 }
-if (isNodeMode() && !isIdentdEnabled()) {
+if (isNodeMode() && !isIdentdEnabled() && !isOidentdFileEnabled()) {
   console.warn(
-    '[lurker] node edition is active but LURKER_IDENTD_ENABLED is unset — IRC networks cannot attribute individual users; they will appear with an unverified ~ident behind the cell IP',
+    '[lurker] node edition is active but neither LURKER_IDENTD_ENABLED nor LURKER_OIDENTD_FILE is set — IRC networks cannot attribute individual users; they will appear with an unverified ~ident behind the cell IP',
   );
 }
 
@@ -86,6 +89,20 @@ startEventLoopMonitor();
 // it before connections register their idents.
 if (isIdentdEnabled()) {
   startIdentd(identdPort(), identdBindHost());
+}
+
+// Alternative ident delivery: instead of binding :113 ourselves, maintain an
+// oidentd config file for a host-installed ident daemon (opt-in via
+// LURKER_OIDENTD_FILE). Write the initial (empty) file before initAll connects
+// networks, so a stale file from a prior run can't serve dead mappings. The two
+// modes are independent; running both is usually a misconfiguration, so warn.
+if (isOidentdFileEnabled()) {
+  if (isIdentdEnabled()) {
+    console.warn(
+      '[lurker] both LURKER_IDENTD_ENABLED and LURKER_OIDENTD_FILE are set — Lurker will bind :113 AND maintain the oidentd file; running both is usually unintended, pick one',
+    );
+  }
+  initOidentdFile();
 }
 
 // Wrap any plaintext secret columns at rest now that the DB schema is ready and
@@ -145,6 +162,7 @@ function shutdown(signal: string): void {
   stopOrchestratorClient();
   stopModerationReporter();
   stopIdentd();
+  stopOidentdFile();
   stopBouncer();
   shutdownExportJobs();
   stopIgnoreSweeper();

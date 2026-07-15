@@ -30,7 +30,7 @@ import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
 import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../utils/ident.js';
-import { registerIdent, unregisterIdent, isIdentdEnabled } from './identd.js';
+import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
 import { MESSAGE_MAX_BYTES, partitionMultiline, reassembleMultiline } from './messageSplit.js';
 import type { MultilineLimits } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
@@ -1137,7 +1137,10 @@ export class IrcConnection {
         remoteAddress?: string;
         remotePort?: number;
       }) => {
-        if (!isIdentdEnabled()) return;
+        // Register whenever EITHER ident mode is active: the in-process identd
+        // answers :113 from this map, and the oidentd shared-daemon mode renders
+        // the same map to a config file. Skip only when neither is on.
+        if (!isIdentdEnabled() && !isOidentdFileEnabled()) return;
         // The full 4-tuple identifies the connection to the identd server; the
         // ports alone are ambiguous (see identd.ts). Both addresses and ports
         // are already populated at TCP connect.
