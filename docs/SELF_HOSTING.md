@@ -199,6 +199,19 @@ environment:
   - COOKIE_SECURE=true
 ```
 
+### Auth rate limiting behind a proxy
+
+Lurker throttles repeated failed logins per client IP (a per-IP backoff on the login, token, and password-change endpoints, plus a coarse request cap on the auth surface). By default it uses the connection's socket address, which is correct when Lurker faces the internet directly.
+
+If you run Lurker behind a reverse proxy or tunnel (Caddy, nginx, Cloudflare), the socket address is the _proxy_, so every visitor would share one bucket. Set this **only** when a proxy you control populates `X-Forwarded-For`, so Lurker keys on the real client:
+
+```yaml
+environment:
+  - LURKER_TRUST_PROXY=true
+```
+
+Do **not** set it on a directly-exposed instance — `X-Forwarded-For` is then attacker-spoofable and an attacker can dodge the limit by rotating a fake value.
+
 ### Custom session secret
 
 By default Lurker generates a random 64-byte secret on first boot and writes it to `data/session-secret.key` (mode `0600`). All session cookies are signed with it. If you'd rather supply your own (e.g. pulled from a secrets manager), set:
