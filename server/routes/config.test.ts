@@ -29,4 +29,14 @@ describe('GET /api/config', () => {
     expect(res.status).toBe(200);
     expect(res.body.edition).toBe('node');
   });
+
+  // #569: a native client reads these to check compatibility before opening the
+  // WebSocket, so they must be present and unauthenticated.
+  it('advertises the protocol version and minimum supported version', async () => {
+    const { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } = await import('../protocol.js');
+    const res = await createAnonAgent(app).get('/api/config');
+    expect(res.status).toBe(200);
+    expect(res.body.protocolVersion).toBe(PROTOCOL_VERSION);
+    expect(res.body.minProtocolVersion).toBe(MIN_PROTOCOL_VERSION);
+  });
 });
