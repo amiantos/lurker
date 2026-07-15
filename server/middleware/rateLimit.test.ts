@@ -136,6 +136,7 @@ describe('POST /api/auth/login/password rate limiting', () => {
   it('keys per client IP so one attacker cannot lock out another user', async () => {
     // Standalone honors X-Forwarded-For only under LURKER_TRUST_PROXY — opt in so
     // the two simulated clients get distinct keys instead of sharing 127.0.0.1.
+    const prevTrustProxy = process.env.LURKER_TRUST_PROXY;
     process.env.LURKER_TRUST_PROXY = 'true';
     try {
       for (let i = 0; i < LOGIN_FAILURE_MAX; i++) {
@@ -156,7 +157,8 @@ describe('POST /api/auth/login/password rate limiting', () => {
         .send({ username: 'admin', password: 'wrong' });
       expect(other.status).toBe(401);
     } finally {
-      delete process.env.LURKER_TRUST_PROXY;
+      if (prevTrustProxy === undefined) delete process.env.LURKER_TRUST_PROXY;
+      else process.env.LURKER_TRUST_PROXY = prevTrustProxy;
     }
   });
 });
