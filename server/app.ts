@@ -34,6 +34,7 @@ import nodeRouter from './routes/node.js';
 import mcpRouter from './services/mcpServer.js';
 import { requireApiAuth } from './middleware/apiAuth.js';
 import { isNodeMode } from './utils/edition.js';
+import { allowedBrowserOrigins } from './utils/corsOrigins.js';
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   console.error('[lurker] error:', err);
@@ -50,8 +51,10 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
 export function buildApp(sessionSecret: string): Express {
   const app = express();
 
-  const corsOrigin = process.env.CORS_ORIGIN || 'https://irc.local.bradroot.me:5173';
-  app.use(cors({ origin: corsOrigin, credentials: true }));
+  // CORS_ORIGIN is a comma-separated allowlist, normalized to URL origins (see
+  // utils/corsOrigins). The WS upgrade origin check reads the same source, so the
+  // HTTP and WebSocket layers agree exactly on what's allowed.
+  app.use(cors({ origin: allowedBrowserOrigins(), credentials: true }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser(sessionSecret));
 

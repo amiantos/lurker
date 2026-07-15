@@ -116,7 +116,29 @@ Lurker is a single-user-per-account always-on IRC client — most operators want
 
 ### Alternative: any reverse proxy
 
-If you already run Caddy, Traefik, nginx, or another reverse proxy with an automatic-TLS story, point it at `http://localhost:8015` (or attach Lurker to your proxy network) and you're done. Lurker behaves like any other HTTP service — it doesn't need to know it's behind a proxy. The only thing it cares about for passkeys / push is that the public origin matches `WEBAUTHN_ORIGIN`.
+If you already run Caddy, Traefik, nginx, or another reverse proxy with an automatic-TLS story, point it at `http://localhost:8015` (or attach Lurker to your proxy network). For passkeys / push, the public origin must match `WEBAUTHN_ORIGIN`.
+
+Two things the proxy **must** get right, because Lurker's live connection is a WebSocket:
+
+1. **Forward the WebSocket upgrade.** The `/ws` endpoint needs the `Upgrade` and `Connection` headers passed through. Caddy and Traefik do this automatically. For nginx you have to add it explicitly (see below).
+2. **Forward the browser's host** — either preserve the original `Host` header, or send `X-Forwarded-Host`. Lurker's WebSocket does a same-origin check on the upgrade (a CSRF protection against cross-site socket hijacking), comparing the browser's `Origin` against the host it sees. A proxy that rewrites `Host` to the upstream address (`127.0.0.1:8015`) breaks that match, and the socket is rejected with a `403`. Caddy and Traefik send `X-Forwarded-Host` by default; for nginx, set `Host` (shown below).
+
+A minimal nginx `location` that satisfies both:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8015;
+    proxy_set_header Host $host;              # same-origin WS check
+    proxy_set_header Upgrade $http_upgrade;   # WebSocket upgrade
+    proxy_set_header Connection "upgrade";
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+If you'd rather not (or can't) fix the forwarded host, set `CORS_ORIGIN` to your public origin as an explicit allowlist instead — e.g. `CORS_ORIGIN=https://irc.example.com`. It accepts a comma-separated list, and a trailing slash is tolerated, but the scheme, host, and port must otherwise match the address you load Lurker at exactly.
+
+> **Upgraded to 1.1.1 and the connection stopped working?** This same-origin check is new in 1.1.1. If your reverse proxy rewrites `Host` and you don't set `CORS_ORIGIN`, the WebSocket now `403`s where it used to connect. Add `proxy_set_header Host $host;` (or `X-Forwarded-Host`), or set `CORS_ORIGIN`, per above.
 
 ---
 
@@ -315,6 +337,8 @@ Now Lurker is reachable on `http://localhost:9999`.
 ### Reverse-proxy / CORS errors
 
 If you're seeing browser console errors about CORS, your browser is hitting a different origin than what Lurker expects. The bundled image serves both the API and the UI from the same port, so the default no-`CORS_ORIGIN` config is correct for almost everyone. Only set `CORS_ORIGIN` if you're running the Vue dev server (`npm run dev`) against a containerized API, or doing something similarly unusual.
+
+A related failure mode is a **WebSocket that `403`s while the page itself loads fine** — the UI appears but never connects, and this typically shows up right after upgrading to 1.1.1. That's the same-origin check on the `/ws` upgrade, not a browser CORS error. It means your reverse proxy isn't forwarding the browser's host to Lurker. Fix it at the proxy (`proxy_set_header Host $host;` on nginx, or `X-Forwarded-Host`), or set `CORS_ORIGIN` to your public origin. See [Alternative: any reverse proxy](#alternative-any-reverse-proxy) for the full `location` block. When you do set `CORS_ORIGIN`, it must match the address you load Lurker at exactly on scheme, host, and port — a trailing slash is fine and a comma-separated list is allowed, but `http` vs `https` or a stray port will not match.
 
 ### Uploaded images are broken for other people (403)
 
