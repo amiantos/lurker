@@ -106,6 +106,19 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
   req.user = ctx.user;
   req.session = ctx.session;
+  // Paused accounts are read-only, enforced HERE (centrally) rather than per
+  // router (#573): requireAuth guards every authed router, so folding the write
+  // block in means no current or future router can forget it. GET/HEAD reads
+  // fall through; any mutation gets a clean 403. Two paths deliberately bypass
+  // this because they don't use requireAuth: POST /logout (a paused user must
+  // still be able to sign out) and the CP-driven /api/node pause/resume routes
+  // (fleet-secret authed — the orchestrator must still flip the flag). Live IRC
+  // writes are separately gated in the WS layer + the ircManager startNetwork
+  // gate, so this covers only the HTTP write surface.
+  if (isPausedWrite(req)) {
+    res.status(403).json({ error: 'account paused' });
+    return;
+  }
   touchUserLastSeen(ctx.user.id);
   next();
 }
@@ -125,15 +138,12 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   next();
 }
 
-// Read-only gate for paused accounts. Stack on top of requireAuth. GET/HEAD
-// reads fall through so a paused user can still browse their history; any
-// mutating method gets a clean 403. The authoritative block on IRC traffic is
-// the startNetwork gate in ircManager — this just turns what would be a silent
-// no-op into a clear error and stops a paused user from mutating network config.
-export function blockWritesWhenPaused(req: Request, res: Response, next: NextFunction): void {
-  if (req.user?.is_paused && req.method !== 'GET' && req.method !== 'HEAD') {
-    res.status(403).json({ error: 'account paused' });
-    return;
-  }
-  next();
+// Read-only gate for paused accounts: a paused account may read but not mutate.
+// GET/HEAD reads fall through so a paused user can still browse their history;
+// any mutating method is a write. Enforced centrally in requireAuth above (#573)
+// rather than mounted per router. The authoritative block on IRC traffic is the
+// startNetwork gate in ircManager — this just turns what would be a silent no-op
+// into a clear error on the HTTP surface.
+function isPausedWrite(req: Request): boolean {
+  return !!req.user?.is_paused && req.method !== 'GET' && req.method !== 'HEAD';
 }

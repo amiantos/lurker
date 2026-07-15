@@ -8,7 +8,7 @@
 
 import { Router, type Request, type Response } from 'express';
 
-import { requireAuth, blockWritesWhenPaused } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import ircManager from '../services/ircManager.js';
 import { dccEnabledForUser } from '../services/dccConfig.js';
 import { getDccTransfer, listDccTransfers } from '../db/dccTransfers.js';
@@ -42,8 +42,8 @@ router.get('/', (req: Request, res: Response) => {
   res.json({ transfers: listDccTransfers(req.user!.id, { limit }) });
 });
 
-// Acting on a transfer is a write — blocked for paused accounts (the list isn't).
-router.use(blockWritesWhenPaused);
+// Acting on a transfer is a write — blocked for paused accounts (the list isn't)
+// by the central requireAuth gate (#573); the GET list above stays available.
 
 /** POST /api/dcc/:id/accept — accept a pending offer and start the download. */
 router.post('/:id/accept', (req: Request, res: Response) => {
