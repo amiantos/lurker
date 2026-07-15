@@ -46,8 +46,40 @@ export function loadSession(req: Request): { session: Session; user: User } | nu
   return { session, user };
 }
 
+// Native clients (iOS/Android) authenticate with `Authorization: Bearer <token>`
+// instead of a cookie — they can set headers on a WebSocket upgrade, which
+// browsers cannot, and that is exactly why the web client stays cookie-bound.
+//
+// The bearer here IS a session token: the same opaque `sessions.token` the
+// cookie carries, just handed to the app in a response body rather than wrapped
+// in a Set-Cookie (see POST /api/auth/login/token). So this resolves through the
+// unmodified findSession path and a native session is a real session row —
+// revoking one is deleting a row, and expiry works as it always has.
+//
+// This does NOT collide with the API-token bearer (middleware/apiAuth.ts): that
+// one is mounted only on /mcp, so the two bearer namespaces never meet on the
+// same route.
+export function bearerToken(authorization: string | undefined): string | null {
+  const match = /^Bearer\s+(\S+)$/.exec(authorization ?? '');
+  return match ? match[1] : null;
+}
+
+export function loadBearerSession(
+  authorization: string | undefined,
+): { session: Session; user: User } | null {
+  const token = bearerToken(authorization);
+  if (!token) return null;
+  const session = findSession(token);
+  if (!session) return null;
+  const user = findUserById(session.user_id);
+  if (!user) return null;
+  return { session, user };
+}
+
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const ctx = loadSession(req);
+  // Cookie first (every web request), bearer second (native only) — so the hot
+  // path is unchanged and a native request costs one extra header regex.
+  const ctx = loadSession(req) ?? loadBearerSession(req.headers.authorization);
   if (!ctx) {
     // If the request carried a lurker_session we can't honor — a stale cookie
     // whose signature no longer verifies (cell SESSION_SECRET rotated on a
