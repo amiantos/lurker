@@ -59,12 +59,19 @@ const WRITES: Array<[string, string]> = [
 const READS: string[] = ['/api/settings/bootstrap', '/api/api-tokens/', '/api/push/subscriptions'];
 
 describe('paused accounts are read-only across every authed router (#573)', () => {
-  it('serves reads while active and after pause', async () => {
+  it('serves reads with 200 both while active and while paused', async () => {
     const { setUserPaused } = await import('../db/users.js');
+    // Active: reads work normally.
+    setUserPaused(userId, false);
+    for (const path of READS) {
+      const res = await agent.get(path);
+      expect(res.status, `GET ${path} should be 200 while active`).toBe(200);
+    }
+    // Paused: the same reads still return 200 (only writes are blocked).
     setUserPaused(userId, true);
     for (const path of READS) {
       const res = await agent.get(path);
-      expect(res.status, `GET ${path} should read while paused`).not.toBe(403);
+      expect(res.status, `GET ${path} should still be 200 while paused`).toBe(200);
     }
     setUserPaused(userId, false);
   });
@@ -88,10 +95,15 @@ describe('paused accounts are read-only across every authed router (#573)', () =
 
   it('restores write access once un-paused', async () => {
     const { setUserPaused } = await import('../db/users.js');
+    // While paused the write is blocked...
+    setUserPaused(userId, true);
+    const blocked = await agent.patch('/api/settings').send({ changes: { 'look.font.size': 18 } });
+    expect(blocked.status).toBe(403);
+    // ...and once un-paused the same valid write actually lands (200), proving
+    // the gate released rather than merely stopped returning the pause 403.
     setUserPaused(userId, false);
-    // A valid settings write now lands instead of 403 account-paused.
-    const res = await agent.patch('/api/settings/').send({ 'appearance.theme': 'dark' });
-    expect(res.status).not.toBe(403);
-    expect(res.body?.error).not.toBe('account paused');
+    const ok = await agent.patch('/api/settings').send({ changes: { 'look.font.size': 18 } });
+    expect(ok.status).toBe(200);
+    expect(ok.body.values['look.font.size']).toBe(18);
   });
 });
