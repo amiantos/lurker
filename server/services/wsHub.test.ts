@@ -911,17 +911,139 @@ describe('isAllowedUpgradeOrigin', () => {
   });
 
   it('allows a cross-origin upgrade that matches the configured CORS_ORIGIN', () => {
-    // Matches app.ts's single-string CORS semantics exactly (not a comma list).
     process.env.CORS_ORIGIN = 'https://client.example';
     expect(
       isAllowedUpgradeOrigin(upgrade({ host: 'api.internal', origin: 'https://client.example' })),
     ).toBe(true);
   });
 
+  // Regression for the 1.1.1 reverse-proxy break: a proxy that rewrites Host to
+  // the upstream address makes the browser Origin host differ from req Host, so
+  // the same-origin path can only fire off the public host the proxy advertises
+  // in X-Forwarded-Host. Without this, every proxied request fell through to the
+  // (brittle) CORS_ORIGIN string match and 403'd.
+  it('allows a same-origin upgrade via X-Forwarded-Host when the proxy rewrote Host', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({
+          host: '127.0.0.1:8015',
+          'x-forwarded-host': 'irc.example.com',
+          origin: 'https://irc.example.com',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  // A same-origin match on Host must still pass even when X-Forwarded-Host is an
+  // unrelated value (e.g. an outer proxy hop that rewrites XFH to an internal
+  // name). Matching on EITHER candidate avoids 403'ing a legitimate upgrade.
+  it('accepts a same-origin match on Host even when X-Forwarded-Host is unrelated', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({
+          host: 'irc.example.com',
+          'x-forwarded-host': 'internal-name.local',
+          origin: 'https://irc.example.com',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  // A browser omits the default port in Origin, but a proxy may append it to the
+  // forwarded host (e.g. the nginx `$host:$server_port` idiom on 443). Normalizing
+  // both through the URL parser treats these as the same origin instead of falling
+  // through to the allowlist and 403'ing a genuinely same-origin request.
+  it('treats an explicit default port on the forwarded host as same-origin', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'irc.example.com:443', origin: 'https://irc.example.com' }),
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'irc.example.com:80', origin: 'http://irc.example.com' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('matches the forwarded host case-insensitively', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'IRC.Example.COM', origin: 'https://irc.example.com' }),
+      ),
+    ).toBe(true);
+  });
+
+  // The default-port normalization must not blur a *different* explicit port into
+  // a match — a cross-port Origin is still cross-origin. CORS_ORIGIN is set to an
+  // unrelated value so the allowlist can't rescue it and mask the same-origin path.
+  it('does not treat a non-default explicit port as same-origin', () => {
+    process.env.CORS_ORIGIN = 'https://something-else.example';
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'irc.example.com', origin: 'https://irc.example.com:8443' }),
+      ),
+    ).toBe(false);
+  });
+
+  it('uses only the first host in an X-Forwarded-Host proxy chain', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({
+          host: '127.0.0.1:8015',
+          'x-forwarded-host': 'irc.example.com, inner-proxy.internal',
+          origin: 'https://irc.example.com',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  // The CORS_ORIGIN allowlist path now normalizes both sides, so the two most
+  // common self-host footguns — a trailing slash, and a comma-separated list read
+  // as one literal string — match instead of silently 403'ing.
+  it('tolerates a trailing slash on the configured CORS_ORIGIN', () => {
+    process.env.CORS_ORIGIN = 'https://client.example/';
+    expect(
+      isAllowedUpgradeOrigin(upgrade({ host: 'api.internal', origin: 'https://client.example' })),
+    ).toBe(true);
+  });
+
+  it('treats CORS_ORIGIN as a comma-separated allowlist', () => {
+    process.env.CORS_ORIGIN = 'https://a.example, https://b.example';
+    expect(
+      isAllowedUpgradeOrigin(upgrade({ host: 'api.internal', origin: 'https://b.example' })),
+    ).toBe(true);
+    expect(
+      isAllowedUpgradeOrigin(upgrade({ host: 'api.internal', origin: 'https://c.example' })),
+    ).toBe(false);
+  });
+
   it('rejects a cross-site browser upgrade that is neither same-origin nor allowlisted', () => {
     process.env.CORS_ORIGIN = 'https://app.lurker.chat';
     expect(
       isAllowedUpgradeOrigin(upgrade({ host: 'app.lurker.chat', origin: 'https://evil.example' })),
+    ).toBe(false);
+  });
+
+  // A cross-site attacker forging X-Forwarded-Host to match its own Origin still
+  // fails the same-origin path, because the compared host is the *forwarded* one,
+  // not the attacker's Origin. (In a real browser the attacker can't set this
+  // header at all — this just proves the logic doesn't hand them a bypass.)
+  it('rejects a cross-site upgrade even if X-Forwarded-Host is forged to another host', () => {
+    process.env.CORS_ORIGIN = 'https://app.lurker.chat';
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({
+          host: 'app.lurker.chat',
+          'x-forwarded-host': 'app.lurker.chat',
+          origin: 'https://evil.example',
+        }),
+      ),
     ).toBe(false);
   });
 

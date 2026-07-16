@@ -81,6 +81,7 @@ import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from './settingsRegistry.js';
 import { SESSION_COOKIE, loadBearerSession } from '../middleware/auth.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
+import { isAllowedBrowserOrigin } from '../utils/corsOrigins.js';
 import { callVerb } from './verbRegistry.js';
 
 // WebSocket extended with per-socket bookkeeping fields.
@@ -145,34 +146,66 @@ export function allowInboundMessage(ws: LurkerWebSocket): boolean {
   return true;
 }
 
-// The single browser origin the HTTP CORS layer trusts. app.ts passes CORS_ORIGIN
-// straight to cors({ origin }), which matches it as one exact string — so we do
-// the same here (NOT a comma-split allowlist) to keep the WS and HTTP layers in
-// exact agreement about what's allowed. Defaults to the dev origin, matching
-// app.ts.
-function allowedBrowserOrigin(): string {
-  return process.env.CORS_ORIGIN || 'https://irc.local.bradroot.me:5173';
+// X-Forwarded-Host may carry a comma list when the request passed through a proxy
+// chain; the first value is the original client-facing host. Node joins repeated
+// headers into one comma-separated string (and hands back an array only in edge
+// cases), so handle both.
+function firstForwardedHost(raw: string | string[] | undefined): string | undefined {
+  if (!raw) return undefined;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const first = value?.split(',')[0]?.trim();
+  return first || undefined;
+}
+
+// Same-origin when the Origin and the request's public host resolve to the same
+// URL origin. Both sides are run through the URL parser under the Origin's own
+// scheme, so the comparison is case-insensitive on the host and treats a default
+// port that one side spells out and the other omits as equal — a browser omits
+// `:443`/`:80` in Origin, but a proxy (e.g. the `$host:$server_port` idiom) may
+// append it to Host. A raw string compare would let those cosmetic differences
+// spuriously fall through to the allowlist and reintroduce a 403.
+function isSameOriginHost(originUrl: URL, effectiveHost: string): boolean {
+  try {
+    return new URL(`${originUrl.protocol}//${effectiveHost}`).origin === originUrl.origin;
+  } catch {
+    return false;
+  }
 }
 
 // #574: same-origin / allowed-origin check for the WS upgrade. Browsers always
 // send Origin on a WS handshake; native clients send none. We reject only a
-// *browser* upgrade whose Origin is neither same-origin as the request Host nor
-// the CORS-configured origin — i.e. a cross-site attempt. Absent Origin (native)
-// and same-origin (the normal web case, hosted or self-host, independent of
-// whether CORS_ORIGIN was configured) always pass, so this can't wedge a working
-// deployment. On the hosted proxy the browser's Origin and Host both arrive as
-// the public app origin (http-proxy forwards them unchanged), so they match here.
+// *browser* upgrade whose Origin is neither same-origin as the request's public
+// host nor an explicitly allowlisted origin (CORS_ORIGIN) — i.e. a cross-site
+// attempt. Absent Origin (native) and same-origin always pass, so this can't
+// wedge a working deployment.
+//
+// "Public host" is the subtle part behind a reverse proxy. The socket's own Host
+// header is whatever the proxy forwarded, and a great many proxies rewrite it to
+// the upstream address (e.g. `127.0.0.1:8015`) unless explicitly told to preserve
+// it. That would never equal the browser's Origin host, pushing every legitimate
+// request onto the CORS_ORIGIN allowlist path — exactly the regression 1.1.1 hit.
+// So we accept a same-origin match on EITHER the proxy-advertised public host
+// (X-Forwarded-Host) OR the socket's own Host — a match on either is proof of
+// same-origin, and requiring one specific header would 403 a legitimate upgrade
+// whenever a proxy forwards an unexpected value in the other (e.g. an outer hop
+// sets X-Forwarded-Host to an internal name while Host is still the public host).
+// This is safe against the cross-site WS hijack this check defends against: a
+// browser cannot set X-Forwarded-Host on a WebSocket handshake (the WS API forbids
+// custom request headers) and cannot forge Host either, so neither candidate is
+// attacker-controlled in a browser; and a non-browser client sends no Origin and
+// is already allowed, so it gains nothing by forging one.
 export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   if (!origin) return true;
-  let originHost: string;
+  let originUrl: URL;
   try {
-    originHost = new URL(origin).host;
+    originUrl = new URL(origin);
   } catch {
     return false;
   }
-  if (req.headers.host && originHost === req.headers.host) return true;
-  return origin === allowedBrowserOrigin();
+  const candidateHosts = [firstForwardedHost(req.headers['x-forwarded-host']), req.headers.host];
+  if (candidateHosts.some((host) => host && isSameOriginHost(originUrl, host))) return true;
+  return isAllowedBrowserOrigin(origin);
 }
 
 // The protocol version a client announces via `?v=<n>` on the /ws upgrade (#569).
