@@ -935,6 +935,45 @@ describe('isAllowedUpgradeOrigin', () => {
     ).toBe(true);
   });
 
+  // A browser omits the default port in Origin, but a proxy may append it to the
+  // forwarded host (e.g. the nginx `$host:$server_port` idiom on 443). Normalizing
+  // both through the URL parser treats these as the same origin instead of falling
+  // through to the allowlist and 403'ing a genuinely same-origin request.
+  it('treats an explicit default port on the forwarded host as same-origin', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'irc.example.com:443', origin: 'https://irc.example.com' }),
+      ),
+    ).toBe(true);
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'irc.example.com:80', origin: 'http://irc.example.com' }),
+      ),
+    ).toBe(true);
+  });
+
+  it('matches the forwarded host case-insensitively', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'IRC.Example.COM', origin: 'https://irc.example.com' }),
+      ),
+    ).toBe(true);
+  });
+
+  // The default-port normalization must not blur a *different* explicit port into
+  // a match — a cross-port Origin is still cross-origin. CORS_ORIGIN is set to an
+  // unrelated value so the allowlist can't rescue it and mask the same-origin path.
+  it('does not treat a non-default explicit port as same-origin', () => {
+    process.env.CORS_ORIGIN = 'https://something-else.example';
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({ host: 'irc.example.com', origin: 'https://irc.example.com:8443' }),
+      ),
+    ).toBe(false);
+  });
+
   it('uses only the first host in an X-Forwarded-Host proxy chain', () => {
     delete process.env.CORS_ORIGIN;
     expect(

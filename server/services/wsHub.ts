@@ -157,6 +157,21 @@ function firstForwardedHost(raw: string | string[] | undefined): string | undefi
   return first || undefined;
 }
 
+// Same-origin when the Origin and the request's public host resolve to the same
+// URL origin. Both sides are run through the URL parser under the Origin's own
+// scheme, so the comparison is case-insensitive on the host and treats a default
+// port that one side spells out and the other omits as equal — a browser omits
+// `:443`/`:80` in Origin, but a proxy (e.g. the `$host:$server_port` idiom) may
+// append it to Host. A raw string compare would let those cosmetic differences
+// spuriously fall through to the allowlist and reintroduce a 403.
+function isSameOriginHost(originUrl: URL, effectiveHost: string): boolean {
+  try {
+    return new URL(`${originUrl.protocol}//${effectiveHost}`).origin === originUrl.origin;
+  } catch {
+    return false;
+  }
+}
+
 // #574: same-origin / allowed-origin check for the WS upgrade. Browsers always
 // send Origin on a WS handshake; native clients send none. We reject only a
 // *browser* upgrade whose Origin is neither same-origin as the request's public
@@ -178,14 +193,14 @@ function firstForwardedHost(raw: string | string[] | undefined): string | undefi
 export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   if (!origin) return true;
-  let originHost: string;
+  let originUrl: URL;
   try {
-    originHost = new URL(origin).host;
+    originUrl = new URL(origin);
   } catch {
     return false;
   }
   const effectiveHost = firstForwardedHost(req.headers['x-forwarded-host']) ?? req.headers.host;
-  if (effectiveHost && originHost === effectiveHost) return true;
+  if (effectiveHost && isSameOriginHost(originUrl, effectiveHost)) return true;
   return isAllowedBrowserOrigin(origin);
 }
 
