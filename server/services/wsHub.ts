@@ -184,12 +184,16 @@ function isSameOriginHost(originUrl: URL, effectiveHost: string): boolean {
 // the upstream address (e.g. `127.0.0.1:8015`) unless explicitly told to preserve
 // it. That would never equal the browser's Origin host, pushing every legitimate
 // request onto the CORS_ORIGIN allowlist path — exactly the regression 1.1.1 hit.
-// So we prefer X-Forwarded-Host (the public host a well-behaved proxy advertises)
-// and fall back to Host. This is safe against the cross-site WS hijack this check
-// defends against: a browser cannot set X-Forwarded-Host on a WebSocket handshake
-// (the WS API forbids custom request headers), so an attacker page can't forge a
-// same-origin match; and a non-browser client sends no Origin and is already
-// allowed, so it gains nothing by forging one.
+// So we accept a same-origin match on EITHER the proxy-advertised public host
+// (X-Forwarded-Host) OR the socket's own Host — a match on either is proof of
+// same-origin, and requiring one specific header would 403 a legitimate upgrade
+// whenever a proxy forwards an unexpected value in the other (e.g. an outer hop
+// sets X-Forwarded-Host to an internal name while Host is still the public host).
+// This is safe against the cross-site WS hijack this check defends against: a
+// browser cannot set X-Forwarded-Host on a WebSocket handshake (the WS API forbids
+// custom request headers) and cannot forge Host either, so neither candidate is
+// attacker-controlled in a browser; and a non-browser client sends no Origin and
+// is already allowed, so it gains nothing by forging one.
 export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   if (!origin) return true;
@@ -199,8 +203,8 @@ export function isAllowedUpgradeOrigin(req: IncomingMessage): boolean {
   } catch {
     return false;
   }
-  const effectiveHost = firstForwardedHost(req.headers['x-forwarded-host']) ?? req.headers.host;
-  if (effectiveHost && isSameOriginHost(originUrl, effectiveHost)) return true;
+  const candidateHosts = [firstForwardedHost(req.headers['x-forwarded-host']), req.headers.host];
+  if (candidateHosts.some((host) => host && isSameOriginHost(originUrl, host))) return true;
   return isAllowedBrowserOrigin(origin);
 }
 

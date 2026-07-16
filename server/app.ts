@@ -54,7 +54,16 @@ export function buildApp(sessionSecret: string): Express {
   // CORS_ORIGIN is a comma-separated allowlist, normalized to URL origins (see
   // utils/corsOrigins). The WS upgrade origin check reads the same source, so the
   // HTTP and WebSocket layers agree exactly on what's allowed.
-  app.use(cors({ origin: allowedBrowserOrigins(), credentials: true }));
+  const corsOrigins = allowedBrowserOrigins();
+  // A set-but-unparseable CORS_ORIGIN (e.g. a bare host with no scheme) normalizes
+  // to nothing, silently rejecting every cross-origin request. Surface it once at
+  // startup rather than leaving the operator to debug a mystery 403/CORS failure.
+  if (process.env.CORS_ORIGIN && corsOrigins.length === 0) {
+    console.warn(
+      `[lurker] CORS_ORIGIN is set ("${process.env.CORS_ORIGIN}") but no valid origin parsed from it — cross-origin requests will be rejected. Each entry needs a scheme, e.g. https://irc.example.com`,
+    );
+  }
+  app.use(cors({ origin: corsOrigins, credentials: true }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser(sessionSecret));
 

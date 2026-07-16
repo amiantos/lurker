@@ -935,6 +935,22 @@ describe('isAllowedUpgradeOrigin', () => {
     ).toBe(true);
   });
 
+  // A same-origin match on Host must still pass even when X-Forwarded-Host is an
+  // unrelated value (e.g. an outer proxy hop that rewrites XFH to an internal
+  // name). Matching on EITHER candidate avoids 403'ing a legitimate upgrade.
+  it('accepts a same-origin match on Host even when X-Forwarded-Host is unrelated', () => {
+    delete process.env.CORS_ORIGIN;
+    expect(
+      isAllowedUpgradeOrigin(
+        upgrade({
+          host: 'irc.example.com',
+          'x-forwarded-host': 'internal-name.local',
+          origin: 'https://irc.example.com',
+        }),
+      ),
+    ).toBe(true);
+  });
+
   // A browser omits the default port in Origin, but a proxy may append it to the
   // forwarded host (e.g. the nginx `$host:$server_port` idiom on 443). Normalizing
   // both through the URL parser treats these as the same origin instead of falling
