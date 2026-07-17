@@ -40,6 +40,18 @@ let alice: User;
 let bob: User;
 let pushDb: typeof import('../db/pushSubscriptions.js');
 
+// Real-shaped tokens. The route validates shape now, because an unvalidated
+// token reaches the APNs request path. So a made-up fixture is not merely ugly:
+// it is a token the route correctly refuses, and a test built on one proves
+// nothing about the path a real device takes.
+const apnsToken = (seed: string): string =>
+  seed
+    .padEnd(64, '0')
+    .slice(0, 64)
+    .replace(/[^0-9a-f]/g, 'a');
+const fcmToken = (seed: string): string =>
+  `${seed.replace(/[^A-Za-z0-9_-]/g, '_')}:APA91b${'Ab_-9'.repeat(20)}`;
+
 beforeAll(async () => {
   const { createUser } = await import('../db/users.js');
   pushDb = await import('../db/pushSubscriptions.js');
@@ -74,10 +86,10 @@ describe('POST /api/push/devices', () => {
   it('registers an APNs device', async () => {
     const res = await aliceAgent
       .post('/api/push/devices')
-      .send({ token: 'apns-token-1', transport: 'apns' });
+      .send({ token: apnsToken('a1'), transport: 'apns' });
     expect(res.status).toBe(201);
     expect(res.body.device).toMatchObject({ transport: 'apns' });
-    expect(pushDb.getByEndpoint('apns-token-1')).toMatchObject({
+    expect(pushDb.getByEndpoint(apnsToken('a1'))).toMatchObject({
       user_id: alice.id,
       transport: 'apns',
       p256dh: null,
@@ -88,17 +100,17 @@ describe('POST /api/push/devices', () => {
   it('registers an FCM device', async () => {
     const res = await aliceAgent
       .post('/api/push/devices')
-      .send({ token: 'fcm-token-1', transport: 'fcm' });
+      .send({ token: fcmToken('fcm1'), transport: 'fcm' });
     expect(res.status).toBe(201);
-    expect(pushDb.getByEndpoint('fcm-token-1')?.transport).toBe('fcm');
+    expect(pushDb.getByEndpoint(fcmToken('fcm1'))?.transport).toBe('fcm');
   });
 
   it('records the user agent so a device list can name the phone', async () => {
     await aliceAgent
       .post('/api/push/devices')
       .set('user-agent', 'Lurker/1.0 (iPhone; iOS 26.0)')
-      .send({ token: 'apns-token-ua', transport: 'apns' });
-    expect(pushDb.getByEndpoint('apns-token-ua')?.user_agent).toBe('Lurker/1.0 (iPhone; iOS 26.0)');
+      .send({ token: apnsToken('ua'), transport: 'apns' });
+    expect(pushDb.getByEndpoint(apnsToken('ua'))?.user_agent).toBe('Lurker/1.0 (iPhone; iOS 26.0)');
   });
 
   it('rejects a missing token', async () => {
@@ -111,6 +123,55 @@ describe('POST /api/push/devices', () => {
       .post('/api/push/devices')
       .send({ token: 'x'.repeat(5000), transport: 'apns' });
     expect(res.status).toBe(400);
+  });
+
+  it('rejects a token that is not the shape APNs issues', async () => {
+    // A token was previously anything under 4096 chars, and it goes STRAIGHT
+    // into the APNs request path as `/3/device/${token}`. Node's http2 does not
+    // validate or encode :path — verified: '/3/device/../../1/apps/other?x=1' is
+    // transmitted verbatim — so an authenticated user could steer our requests,
+    // carrying our valid provider JWT, at arbitrary paths on Apple's gateway.
+    for (const bad of [
+      '../../1/apps/other?x=1',
+      'abc/def',
+      'token with spaces',
+      'tok\r\nX-Injected: 1',
+      'zzzz', // right charset-ish, far too short
+      '#{}',
+    ]) {
+      const res = await aliceAgent
+        .post('/api/push/devices')
+        .send({ token: bad, transport: 'apns' });
+      expect(res.status, `should reject APNs token ${JSON.stringify(bad)}`).toBe(400);
+    }
+  });
+
+  it('accepts a real-shaped APNs token', async () => {
+    const real = 'a'.repeat(64);
+    const res = await aliceAgent.post('/api/push/devices').send({ token: real, transport: 'apns' });
+    expect(res.status).toBe(201);
+  });
+
+  it('accepts a longer APNs token, since Apple has room to grow them', async () => {
+    const res = await aliceAgent
+      .post('/api/push/devices')
+      .send({ token: 'b'.repeat(160), transport: 'apns' });
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects an FCM token outside the registration-token charset', async () => {
+    for (const bad of ['../../evil', 'has spaces', 'x'.repeat(10)]) {
+      const res = await aliceAgent.post('/api/push/devices').send({ token: bad, transport: 'fcm' });
+      expect(res.status, `should reject FCM token ${JSON.stringify(bad)}`).toBe(400);
+    }
+  });
+
+  it('accepts a real-shaped FCM registration token', async () => {
+    // FCM tokens look like `<instance-id>:<APA91b…>` — colons, hyphens and
+    // underscores are all legitimate.
+    const real = `cXY-Z_1234567890:APA91b${'A_-x'.repeat(30)}`;
+    const res = await aliceAgent.post('/api/push/devices').send({ token: real, transport: 'fcm' });
+    expect(res.status).toBe(201);
   });
 
   it('rejects an unknown transport', async () => {
@@ -137,16 +198,20 @@ describe('POST /api/push/devices', () => {
     configured.apns = false;
     const res = await aliceAgent
       .post('/api/push/devices')
-      .send({ token: 'apns-token-2', transport: 'apns' });
+      .send({ token: apnsToken('a2'), transport: 'apns' });
     expect(res.status).toBe(503);
     expect(res.body.transport).toBe('apns');
-    expect(pushDb.getByEndpoint('apns-token-2')).toBeNull();
+    expect(pushDb.getByEndpoint(apnsToken('a2'))).toBeNull();
   });
 
   it('is idempotent — re-registering the same token does not duplicate it', async () => {
     // iOS hands back the same token on every launch.
-    await aliceAgent.post('/api/push/devices').send({ token: 'apns-same', transport: 'apns' });
-    await aliceAgent.post('/api/push/devices').send({ token: 'apns-same', transport: 'apns' });
+    await aliceAgent
+      .post('/api/push/devices')
+      .send({ token: apnsToken('5a3e'), transport: 'apns' });
+    await aliceAgent
+      .post('/api/push/devices')
+      .send({ token: apnsToken('5a3e'), transport: 'apns' });
     expect(pushDb.listAllForUser(alice.id)).toHaveLength(1);
   });
 
@@ -154,12 +219,14 @@ describe('POST /api/push/devices', () => {
     // Alice signs out (without deregistering — crash, no network), Bob signs in
     // on the same phone and APNs hands back the same token. Refusing would leave
     // Bob permanently unpushable with no UI anywhere to release it.
-    await aliceAgent.post('/api/push/devices').send({ token: 'apns-phone', transport: 'apns' });
+    await aliceAgent
+      .post('/api/push/devices')
+      .send({ token: apnsToken('9b0e'), transport: 'apns' });
     const res = await bobAgent
       .post('/api/push/devices')
-      .send({ token: 'apns-phone', transport: 'apns' });
+      .send({ token: apnsToken('9b0e'), transport: 'apns' });
     expect(res.status).toBe(201);
-    expect(pushDb.getByEndpoint('apns-phone')?.user_id).toBe(bob.id);
+    expect(pushDb.getByEndpoint(apnsToken('9b0e'))?.user_id).toBe(bob.id);
     expect(pushDb.listAllForUser(alice.id)).toHaveLength(0);
   });
 
@@ -181,20 +248,22 @@ describe('POST /api/push/devices', () => {
 
 describe('DELETE /api/push/devices', () => {
   it('deregisters on sign-out', async () => {
-    await aliceAgent.post('/api/push/devices').send({ token: 'apns-bye', transport: 'apns' });
-    const res = await aliceAgent.delete('/api/push/devices').send({ token: 'apns-bye' });
+    await aliceAgent.post('/api/push/devices').send({ token: apnsToken('bbe'), transport: 'apns' });
+    const res = await aliceAgent.delete('/api/push/devices').send({ token: apnsToken('bbe') });
     expect(res.status).toBe(200);
-    expect(pushDb.getByEndpoint('apns-bye')).toBeNull();
+    expect(pushDb.getByEndpoint(apnsToken('bbe'))).toBeNull();
   });
 
   it('cannot deregister another user device', async () => {
-    await aliceAgent.post('/api/push/devices').send({ token: 'apns-alice', transport: 'apns' });
-    const res = await bobAgent.delete('/api/push/devices').send({ token: 'apns-alice' });
+    await aliceAgent
+      .post('/api/push/devices')
+      .send({ token: apnsToken('a11ce'), transport: 'apns' });
+    const res = await bobAgent.delete('/api/push/devices').send({ token: apnsToken('a11ce') });
     // Reports ok — there is nothing of Bob's by that token — but Alice's device
     // survives. A 404 here would confirm the token exists to someone who
     // shouldn't know.
     expect(res.status).toBe(200);
-    expect(pushDb.getByEndpoint('apns-alice')?.user_id).toBe(alice.id);
+    expect(pushDb.getByEndpoint(apnsToken('a11ce'))?.user_id).toBe(alice.id);
   });
 
   it('rejects a missing token', async () => {
@@ -233,7 +302,9 @@ describe('GET /api/push/config', () => {
 
 describe('GET /api/push/subscriptions', () => {
   it('lists a phone and a browser together, without leaking keys', async () => {
-    await aliceAgent.post('/api/push/devices').send({ token: 'apns-list', transport: 'apns' });
+    await aliceAgent
+      .post('/api/push/devices')
+      .send({ token: apnsToken('115d'), transport: 'apns' });
     await aliceAgent
       .post('/api/push/subscriptions')
       .send({ endpoint: 'https://push.test/list', keys: { p256dh: 'k', auth: 'a' } });

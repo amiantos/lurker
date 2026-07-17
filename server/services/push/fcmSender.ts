@@ -19,7 +19,7 @@
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
 import type { NotificationContent, PushPayload } from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
-import { fcmCredentials } from './credentials.js';
+import { configuredFcm } from './credentials.js';
 import { signJwt, TokenCache } from './jwt.js';
 
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -41,7 +41,7 @@ export class FcmError extends Error {
 }
 
 const accessToken = new TokenCache(async () => {
-  const creds = fcmCredentials();
+  const creds = configuredFcm();
   if (!creds) throw new Error('FCM is not configured');
   const now = Math.floor(Date.now() / 1000);
   const assertion = signJwt(
@@ -80,9 +80,10 @@ const accessToken = new TokenCache(async () => {
   return { token: json.access_token, lifetimeSeconds: json.expires_in ?? 3600 };
 });
 
-/** Test-only: drop the cached access token. */
-export function resetFcmState(): void {
-  accessToken.reset();
+// Google rejecting OUR service account rather than the device. Shared by
+// classify() and onFailure() so the verdict and the reaction agree.
+function isCredentialRejection(status: number | null, reason: string | null): boolean {
+  return status === 401 || status === 403 || reason === 'OAUTH_FAILED';
 }
 
 /**
@@ -123,7 +124,7 @@ export const fcmSender: PushSender = {
   transport: 'fcm',
 
   isConfigured(): boolean {
-    return fcmCredentials() !== null;
+    return configuredFcm() !== null;
   },
 
   configHint(): string {
@@ -135,7 +136,7 @@ export const fcmSender: PushSender = {
     payload: PushPayload,
     content: NotificationContent,
   ): Promise<void> {
-    const creds = fcmCredentials();
+    const creds = configuredFcm();
     if (!creds) throw new Error('FCM is not configured');
     const token = await accessToken.get();
 
@@ -181,14 +182,18 @@ export const fcmSender: PushSender = {
     // OUR service account is broken, not this device — same reasoning as APNs'
     // 403: it fails identically for every device, so a strike would disable the
     // whole fleet for an operator's misconfiguration.
-    if (status === 401 || status === 403 || reason === 'OAUTH_FAILED') {
-      accessToken.reset();
-      return 'transient';
-    }
+    if (isCredentialRejection(status, reason)) return 'transient';
 
     // Google throttling us (QUOTA_EXCEEDED/429), or FCM being down.
     if (status == null || status === 429 || status >= 500) return 'transient';
     return 'strike';
+  },
+
+  onFailure(err: unknown): void {
+    // Drop the access token so the next push re-runs the OAuth2 exchange rather
+    // than replaying one Google has already rejected.
+    const e = err as Partial<FcmError>;
+    if (isCredentialRejection(e?.status ?? null, e?.reason ?? null)) accessToken.reset();
   },
 
   describe(err: unknown): string {

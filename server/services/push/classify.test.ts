@@ -114,6 +114,51 @@ describe('fcm classify', () => {
   });
 });
 
+// classify() must be a pure verdict — deliver() calls it for control flow, and a
+// caller may reasonably call it again to log. The reset that used to live inside
+// it now lives in onFailure(), which fires exactly once per failed delivery.
+describe('classify is pure', () => {
+  it('returns the same verdict however many times it is asked', () => {
+    const err = new ApnsError(403, 'ExpiredProviderToken', 'test');
+    expect(apnsSender.classify(err)).toBe('transient');
+    expect(apnsSender.classify(err)).toBe('transient');
+    expect(apnsSender.classify(err)).toBe('transient');
+  });
+
+  it('exposes the credential reaction as an explicit hook, not a hidden effect', () => {
+    expect(typeof apnsSender.onFailure).toBe('function');
+    expect(typeof fcmSender.onFailure).toBe('function');
+    // Web Push has no cached credential to invalidate, so it declines the hook
+    // rather than implementing an empty one.
+    expect(webpushSender.onFailure).toBeUndefined();
+  });
+});
+
+describe('onFailure', () => {
+  it('does not re-mint on TooManyProviderTokenUpdates', () => {
+    // Apple returns this (429) when we mint too often. Re-minting in response is
+    // the one move guaranteed to keep it true — a self-reinforcing failure that
+    // never recovers. The reaction must be to back off, i.e. do nothing.
+    const err = new ApnsError(429, 'TooManyProviderTokenUpdates', 'test');
+    expect(apnsSender.classify(err)).toBe('transient');
+    expect(() => apnsSender.onFailure?.(err, 'transient')).not.toThrow();
+  });
+
+  it('is safe to call for a failure with no credential involvement', () => {
+    // deliver() calls onFailure for EVERY failure, not just credential ones.
+    for (const err of [
+      new ApnsError(410, 'Unregistered', 'gone'),
+      new ApnsError(null, null, 'timeout'),
+      new ApnsError(500, 'InternalServerError', 'apple down'),
+    ]) {
+      expect(() => apnsSender.onFailure?.(err, apnsSender.classify(err))).not.toThrow();
+    }
+    for (const err of [new FcmError(404, 'UNREGISTERED', 'gone'), new FcmError(null, null, 't')]) {
+      expect(() => fcmSender.onFailure?.(err, fcmSender.classify(err))).not.toThrow();
+    }
+  });
+});
+
 describe('classification ordering', () => {
   it('reads SENDER_ID_MISMATCH as permanent even though it arrives as a 403', () => {
     // 403 is also the "our credentials are broken" signal, so the reason has to

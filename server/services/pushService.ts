@@ -117,6 +117,10 @@ export async function deliver(
     dropped += 1;
     const sender = senderFor(sub.transport);
     const verdict = sender.classify(r.reason);
+    // Anything the failure should CHANGE (invalidate a cached provider token,
+    // drop a poisoned connection) happens here, not inside classify() — which is
+    // a pure verdict and is called for logging as well as for control flow.
+    sender.onFailure?.(r.reason, verdict);
     if (verdict === 'permanent') {
       // The provider says this device is gone for good — drop it.
       deleteById(sub.id, sub.user_id);

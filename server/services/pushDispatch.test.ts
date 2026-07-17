@@ -24,9 +24,11 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 // so each test can rewire behavior without re-importing.
 type SendFn = (sub: unknown, payload: unknown, content: unknown) => Promise<void>;
 type ClassifyFn = (err: unknown) => string;
+type OnFailureFn = (err: unknown, verdict: string) => void;
 type Stub = {
   send: Mock<SendFn>;
   classify: Mock<ClassifyFn>;
+  onFailure: Mock<OnFailureFn>;
   configured: boolean;
 };
 const stubs: Record<string, Stub> = {};
@@ -35,6 +37,7 @@ function freshStub(): Stub {
   return {
     send: vi.fn<SendFn>(async () => {}),
     classify: vi.fn<ClassifyFn>(() => 'strike'),
+    onFailure: vi.fn<OnFailureFn>(() => {}),
     configured: true,
   };
 }
@@ -48,6 +51,7 @@ vi.mock('./push/index.js', () => ({
       send: (sub: unknown, payload: unknown, content: unknown) =>
         stubs[transport].send(sub, payload, content),
       classify: (err: unknown) => stubs[transport].classify(err),
+      onFailure: (err: unknown, verdict: string) => stubs[transport].onFailure(err, verdict),
       describe: () => 'described',
     }) as unknown as PushSender,
   warnUnconfiguredOnce: () => {},
@@ -160,6 +164,43 @@ describe('deliver skips unconfigured transports', () => {
     const result = await pushService.deliver(user.id, payload);
     expect(stubs.webpush.send).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ sent: 1, dropped: 0 });
+  });
+});
+
+describe('deliver drives the sender failure hook', () => {
+  it('calls onFailure once per failed delivery, with the verdict', async () => {
+    // The hook exists because the credential reset used to hide inside
+    // classify() — invisible at the seam, fired per failing device, and gone in
+    // any test that stubbed the sender. Which is to say: exactly here.
+    addNative(user.id, 'apns', `apns-${user.id}`);
+    const boom = new Error('nope');
+    stubs.apns.send = vi.fn<SendFn>(async () => {
+      throw boom;
+    });
+    stubs.apns.classify = vi.fn<ClassifyFn>(() => 'transient');
+
+    await pushService.deliver(user.id, payload);
+    expect(stubs.apns.onFailure).toHaveBeenCalledTimes(1);
+    expect(stubs.apns.onFailure).toHaveBeenCalledWith(boom, 'transient');
+  });
+
+  it('does not call onFailure for a delivery that succeeded', async () => {
+    addNative(user.id, 'apns', `apns-${user.id}`);
+    await pushService.deliver(user.id, payload);
+    expect(stubs.apns.onFailure).not.toHaveBeenCalled();
+  });
+
+  it('calls only the failing transport hook', async () => {
+    addWebpush(user.id, `https://push.test/${user.id}`);
+    addNative(user.id, 'apns', `apns-${user.id}`);
+    stubs.apns.send = vi.fn<SendFn>(async () => {
+      throw new Error('nope');
+    });
+    stubs.apns.classify = vi.fn<ClassifyFn>(() => 'transient');
+
+    await pushService.deliver(user.id, payload);
+    expect(stubs.apns.onFailure).toHaveBeenCalledTimes(1);
+    expect(stubs.webpush.onFailure).not.toHaveBeenCalled();
   });
 });
 

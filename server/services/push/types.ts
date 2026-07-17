@@ -55,7 +55,25 @@ export interface PushSender {
   /** Deliver, or throw. Throwing is what feeds classify(). */
   send(sub: PushSubscription, payload: PushPayload, content: NotificationContent): Promise<void>;
 
+  /**
+   * Read-only verdict on a failure. Pure: callers may classify the same error
+   * more than once (to log it and to act on it), and must get the same answer
+   * with no side effects. Anything a failure should CHANGE belongs in
+   * onFailure() below.
+   */
   classify(err: unknown): FailureClass;
+
+  /**
+   * React to a failure — invalidate a cached credential, drop a poisoned
+   * connection. Called once per failed delivery, after classify(). Optional:
+   * Web Push has nothing to react to.
+   *
+   * Separate from classify() because a predicate that mutates module state is a
+   * trap: the reset was invisible to anyone reading the seam, fired once per
+   * failing device instead of once per failure, and vanished entirely in any
+   * test that stubbed the sender (review of #490).
+   */
+  onFailure?(err: unknown, verdict: FailureClass): void;
 
   /** One-line diagnostic for the disable/failure logs. */
   describe(err: unknown): string;

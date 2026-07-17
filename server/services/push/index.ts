@@ -32,8 +32,3 @@ export function warnUnconfiguredOnce(sender: PushSender): void {
       `${sender.configHint()}`,
   );
 }
-
-/** Test-only: forget which transports have already been warned about. */
-export function resetUnconfiguredWarnings(): void {
-  warned.clear();
-}

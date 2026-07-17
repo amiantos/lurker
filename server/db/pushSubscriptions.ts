@@ -10,16 +10,27 @@ import db from './index.js';
  * `fcm` are opaque per-install device tokens with no keypair at all — which is
  * why the crypto columns are nullable and why this discriminator exists rather
  * than the code sniffing at the endpoint's shape.
+ *
+ * These arrays are the ONE list of transports; the type is derived from them and
+ * every consumer reads them rather than restating the members. Adding a fourth
+ * transport should be a compile error at each place that must handle it (the
+ * sender registry is a Record over this type), not a silent omission — the
+ * previous shape spelled the list out in six places, only one of which the
+ * compiler checked.
  */
-export type PushTransport = 'webpush' | 'apns' | 'fcm';
+export const PUSH_TRANSPORTS = ['webpush', 'apns', 'fcm'] as const;
+export type PushTransport = (typeof PUSH_TRANSPORTS)[number];
 
-export const NATIVE_TRANSPORTS: ReadonlySet<PushTransport> = new Set<PushTransport>([
-  'apns',
-  'fcm',
-]);
+/** The transports that deliver to an app install rather than a browser. */
+export const NATIVE_TRANSPORTS = ['apns', 'fcm'] as const satisfies readonly PushTransport[];
+export type NativeTransport = (typeof NATIVE_TRANSPORTS)[number];
 
 export function isPushTransport(value: unknown): value is PushTransport {
-  return value === 'webpush' || value === 'apns' || value === 'fcm';
+  return PUSH_TRANSPORTS.includes(value as PushTransport);
+}
+
+export function isNativeTransport(value: unknown): value is NativeTransport {
+  return NATIVE_TRANSPORTS.includes(value as NativeTransport);
 }
 
 /** A row from the `push_subscriptions` table. */
@@ -160,6 +171,13 @@ export type SubscriptionInput =
 //   the token owned by the old account and the new user permanently unpushable,
 //   with no UI anywhere to release it.
 //
+// Which means the rebind is only safe when BOTH sides are native, and the test
+// has to be on the STORED row — never on what the caller declares itself to be,
+// or claiming `transport: 'apns'` while presenting someone else's push URL walks
+// straight past the refusal and takes their subscription (review of #490). A
+// native token and a push-service URL can't legitimately be equal anyway, so the
+// mixed cases are refused rather than reasoned about.
+//
 // Returns { ok, sub } on success or { ok: false, error } on a refused collision.
 export function upsertSubscription(
   userId: number,
@@ -170,8 +188,9 @@ export function upsertSubscription(
   const auth = transport === 'webpush' ? input.auth : null;
 
   const existing = getByEndpoint(endpoint);
-  if (existing && existing.user_id !== userId && transport === 'webpush') {
-    return { ok: false, error: 'endpoint_owned_by_other_user' };
+  if (existing && existing.user_id !== userId) {
+    const bothNative = existing.transport !== 'webpush' && transport !== 'webpush';
+    if (!bothNative) return { ok: false, error: 'endpoint_owned_by_other_user' };
   }
   if (existing) {
     // user_id is reassigned on a native rebind; for webpush it's a no-op write of

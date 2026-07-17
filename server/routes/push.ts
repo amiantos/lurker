@@ -11,23 +11,31 @@ import {
   deleteByEndpoint,
   listAllForUser,
   heartbeatByEndpoint,
-  type PushTransport,
+  isNativeTransport,
+  NATIVE_TRANSPORTS,
+  PUSH_TRANSPORTS,
+  type NativeTransport,
 } from '../db/pushSubscriptions.js';
 
 const router = Router();
 router.use(requireAuth);
 
-// A device token is opaque and provider-issued; anything much longer than APNs'
-// 64 hex chars or an FCM registration token is not one. A bound at all matters
-// because the value goes straight into a URL path (APNs) and a JSON body.
-const MAX_DEVICE_TOKEN_LENGTH = 4096;
-
-const NATIVE_TRANSPORTS = ['apns', 'fcm'] as const;
-type NativeTransport = (typeof NATIVE_TRANSPORTS)[number];
-
-function isNativeTransport(value: unknown): value is NativeTransport {
-  return NATIVE_TRANSPORTS.includes(value as NativeTransport);
-}
+// A device token is provider-issued and has a known shape, so validate it as one
+// rather than accepting any bounded string. It is untrusted input that reaches
+// the APNs request path (`/3/device/${token}`), and Node's http2 neither
+// validates nor encodes `:path` — an unchecked token is a request-path injection
+// against Apple's gateway carrying our own provider JWT (review of #490).
+//
+// Deliberately a little loose on length: an APNs token is 32 bytes / 64 hex
+// today, but Apple has said it may grow, and rejecting a longer one would break
+// push on a future iOS with no way for an operator to tell why.
+const TOKEN_SHAPES: Record<NativeTransport, RegExp> = {
+  // Hex, and only hex.
+  apns: /^[0-9a-fA-F]{64,200}$/,
+  // An FCM registration token is `<instance-id>:<APA91b…>` — base64url plus the
+  // colon separator and dots seen in older tokens.
+  fcm: /^[A-Za-z0-9_:.-]{64,4096}$/,
+};
 
 router.get('/config', (_req: Request, res: Response) => {
   // `transports` tells a client what this server can ACTUALLY deliver on, which
@@ -35,9 +43,7 @@ router.get('/config', (_req: Request, res: Response) => {
   // no Apple key and reports ['webpush'] — so the iOS app can say so plainly
   // instead of asking for notification permission and then silently never
   // delivering. publicKey stays for Web Push and is meaningless to native.
-  const transports: PushTransport[] = (['webpush', 'apns', 'fcm'] as const).filter((t) =>
-    senderFor(t).isConfigured(),
-  );
+  const transports = PUSH_TRANSPORTS.filter((t) => senderFor(t).isConfigured());
   res.json({ publicKey: getPublicKey(), transports });
 });
 
@@ -50,15 +56,15 @@ router.post('/devices', (req: Request, res: Response) => {
     res.status(400).json({ error: 'token is required' });
     return;
   }
-  if (token.length > MAX_DEVICE_TOKEN_LENGTH) {
-    res.status(400).json({ error: 'token is not a device token' });
-    return;
-  }
   // 'webpush' is deliberately not accepted here. It would file a Web Push row
   // with no keypair, which is undeliverable AND unrepresentable — every later
   // read would skip it, so push would silently never arrive.
   if (!isNativeTransport(transport)) {
     res.status(400).json({ error: `transport must be one of: ${NATIVE_TRANSPORTS.join(', ')}` });
+    return;
+  }
+  if (!TOKEN_SHAPES[transport].test(token)) {
+    res.status(400).json({ error: `token is not a valid ${transport} device token` });
     return;
   }
   // Registering against a server that can't deliver is a real case, not an edge

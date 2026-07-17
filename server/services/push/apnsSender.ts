@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
 import type { NotificationContent, PushPayload } from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
-import { apnsCredentials, type ApnsCredentials } from './credentials.js';
+import { configuredApns, type ApnsCredentials } from './credentials.js';
 import { signJwt, TokenCache } from './jwt.js';
 
 const PROD_HOST = 'https://api.push.apple.com';
@@ -45,7 +45,7 @@ export class ApnsError extends Error {
 const TOKEN_LIFETIME_SECONDS = 3600;
 
 const providerToken = new TokenCache(async () => {
-  const creds = apnsCredentials();
+  const creds = configuredApns();
   if (!creds) throw new Error('APNs is not configured');
   const token = signJwt(
     'ES256',
@@ -62,9 +62,16 @@ const providerToken = new TokenCache(async () => {
 // to do. Lazily (re)created: a session that errored or was closed by Apple is
 // discarded and the next send opens a fresh one.
 let session: http2.ClientHttp2Session | null = null;
+let sessionHost: string | null = null;
 
 function getSession(host: string): http2.ClientHttp2Session {
-  if (session && !session.closed && !session.destroyed) return session;
+  // The host is part of the cache key, not just an argument to the first call
+  // that happens to open the session. Ignoring it would hand back a production
+  // session for a sandbox request, where every token is invalid and classify()
+  // reads BadDeviceToken as permanent — silently DELETING every real device
+  // (review of #490).
+  if (session && sessionHost === host && !session.closed && !session.destroyed) return session;
+  if (session && !session.destroyed) session.destroy();
   const next = http2.connect(host);
   // Without a handler, an async session error (Apple closing an idle connection,
   // a network drop) is an unhandled 'error' event and takes the process down.
@@ -76,14 +83,8 @@ function getSession(host: string): http2.ClientHttp2Session {
   });
   next.unref();
   session = next;
+  sessionHost = host;
   return next;
-}
-
-/** Test-only: drop the cached session and provider token. */
-export function resetApnsState(): void {
-  if (session && !session.destroyed) session.destroy();
-  session = null;
-  providerToken.reset();
 }
 
 /**
@@ -104,7 +105,11 @@ export function buildApnsRequest(
   return {
     headers: {
       ':method': 'POST',
-      ':path': `/3/device/${sub.endpoint}`,
+      // Encoded even though the route already validates the token as hex: Node's
+      // http2 neither validates nor encodes `:path`, so this is the last line
+      // between an untrusted string and a request carrying our provider JWT. A
+      // no-op for a real token, which is the point (review of #490).
+      ':path': `/3/device/${encodeURIComponent(sub.endpoint)}`,
       authorization: `bearer ${jwt}`,
       'apns-topic': creds.bundleId,
       'apns-push-type': 'alert',
@@ -148,11 +153,23 @@ function collapseId(tag: string): string {
   return crypto.createHash('sha256').update(bytes).digest('base64url').slice(0, 43);
 }
 
+// Apple rejecting OUR provider token rather than the device. Shared by classify()
+// and onFailure() so the verdict and the reaction can never disagree about which
+// failures are the credential's fault.
+function isProviderTokenRejection(status: number | null, reason: string | null): boolean {
+  return (
+    reason === 'InvalidProviderToken' ||
+    reason === 'ExpiredProviderToken' ||
+    reason === 'MissingProviderToken' ||
+    status === 403
+  );
+}
+
 export const apnsSender: PushSender = {
   transport: 'apns',
 
   isConfigured(): boolean {
-    return apnsCredentials() !== null;
+    return configuredApns() !== null;
   },
 
   configHint(): string {
@@ -164,7 +181,7 @@ export const apnsSender: PushSender = {
     payload: PushPayload,
     content: NotificationContent,
   ): Promise<void> {
-    const creds = apnsCredentials();
+    const creds = configuredApns();
     if (!creds) throw new Error('APNs is not configured');
     const jwt = await providerToken.get();
     const { headers, body } = buildApnsRequest(sub, payload, content, creds, jwt);
@@ -223,21 +240,22 @@ export const apnsSender: PushSender = {
     // after five pushes and force each to re-register once the key was fixed.
     // Transient keeps them alive; the operator fixes the key and delivery
     // resumes on its own.
-    if (
-      reason === 'InvalidProviderToken' ||
-      reason === 'ExpiredProviderToken' ||
-      reason === 'MissingProviderToken' ||
-      status === 403
-    ) {
-      // The cached token may simply have aged out against a clock skew; drop it
-      // so the next attempt mints a fresh one rather than replaying a dead one.
-      providerToken.reset();
-      return 'transient';
-    }
+    if (isProviderTokenRejection(status, reason)) return 'transient';
 
     // Apple throttling us, Apple being down, or no response at all.
     if (status == null || status === 429 || status >= 500) return 'transient';
     return 'strike';
+  },
+
+  onFailure(err: unknown): void {
+    const e = err as Partial<ApnsError>;
+    // The cached token may simply have aged out against a clock skew, so drop it
+    // and let the next attempt mint a fresh one rather than replay a dead one.
+    //
+    // Deliberately NOT on a bare 429: TooManyProviderTokenUpdates is Apple
+    // telling us we are minting too often, and re-minting in response is the one
+    // move guaranteed to keep it true.
+    if (isProviderTokenRejection(e?.status ?? null, e?.reason ?? null)) providerToken.reset();
   },
 
   describe(err: unknown): string {

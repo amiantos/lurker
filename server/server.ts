@@ -13,6 +13,7 @@ import { nodeUploadConfigured } from './services/uploadProviders/nodeUpload.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
 import { backfillEncryptColumns } from './db/secretBackfill.js';
+import { assertPushCredentials } from './services/push/credentials.js';
 import { resolveSessionSecret } from './utils/sessionSecret.js';
 import { getEdition, isNodeMode } from './utils/edition.js';
 import { startOrchestratorClient, stopOrchestratorClient } from './services/orchestratorClient.js';
@@ -104,6 +105,13 @@ if (isOidentdFileEnabled()) {
   }
   initOidentdFile();
 }
+
+// Parse any native push credentials now, so a misconfiguration is a failed boot
+// with a name attached rather than a silent non-delivery. Unset is normal and
+// passes: a self-hosted server holds no Apple/Google key and uses Web Push.
+// Deliberately loud — at delivery time the same error is swallowed as a failed
+// push and nobody ever sees it (#490).
+assertPushCredentials();
 
 // Wrap any plaintext secret columns at rest now that the DB schema is ready and
 // before IRC connects — network secrets, +k channel keys, and the RPE2E keyring

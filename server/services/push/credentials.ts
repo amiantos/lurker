@@ -11,8 +11,16 @@
 //
 // Unset is NORMAL, not an error: a self-hosted server has no reason to hold the
 // first-party app's signing key, and Web Push still works for it. Set-but-broken
-// is an error, and fails loud at boot rather than as a mystery 403 on the first
-// push six hours later.
+// IS an error, and the two demands it makes pull in opposite directions:
+//
+//  - Loud. assertPushCredentials() runs at boot (server.ts) and throws, naming
+//    the missing piece. Without it a misconfigured server starts clean and the
+//    error surfaces on the first push, where it is swallowed as a delivery
+//    failure and nobody ever sees it.
+//  - Contained. configuredApns()/configuredFcm() NEVER throw, so one broken
+//    transport can't take down the transports that are fine. deliver() consults
+//    them inside a filter, and a throwing predicate aborts Array.filter outright
+//    — which is how a half-typed APNs config silenced a user's browser too.
 //
 // Why a self-hoster cannot simply supply their own: an APNs key only signs for
 // the bundle ID it was issued to, and an FCM token is scoped to the Firebase
@@ -28,19 +36,16 @@
 function decodeMaybeBase64(raw: string, rawPrefix: string, envName: string): string {
   const trimmed = raw.trim();
   if (trimmed.startsWith(rawPrefix)) return trimmed;
-  let decoded: string;
-  try {
-    decoded = Buffer.from(trimmed, 'base64').toString('utf8');
-  } catch {
-    throw new Error(`${envName} is neither valid base64 nor a value starting with ${rawPrefix}`);
-  }
-  if (!decoded.trim().startsWith(rawPrefix)) {
+  // No try/catch around this: Buffer.from is LENIENT about base64 and never
+  // throws — it returns garbage bytes for garbage input. So the only usable
+  // check is whether the decoded value looks like what we asked for.
+  const decoded = Buffer.from(trimmed, 'base64').toString('utf8').trim();
+  if (!decoded.startsWith(rawPrefix)) {
     throw new Error(
-      `${envName} must be a value starting with ${rawPrefix}, or that value base64-encoded ` +
-        `(decoded to something starting with ${JSON.stringify(decoded.slice(0, 12))})`,
+      `${envName} must be a value starting with ${rawPrefix}, or that value base64-encoded`,
     );
   }
-  return decoded.trim();
+  return decoded;
 }
 
 export interface ApnsCredentials {
@@ -69,6 +74,7 @@ let fcmCache: FcmCredentials | null | undefined;
 export function resetCredentialCache(): void {
   apnsCache = undefined;
   fcmCache = undefined;
+  warnedBroken.clear();
 }
 
 /** Parsed APNs credentials, or null when unconfigured. Throws when misconfigured. */
@@ -142,4 +148,52 @@ export function fcmCredentials(): FcmCredentials | null {
     privateKeyPem: privateKey.replace(/\\n/g, '\n'),
   };
   return fcmCache;
+}
+
+// The non-throwing accessors the delivery path uses. A misconfiguration is
+// reported as "not configured" here rather than raised, because by the time a
+// push is being delivered it is far too late to be useful and the throw would
+// take healthy transports down with it. assertPushCredentials() below is what
+// makes sure an operator hears about it, at boot, when they can act on it.
+//
+// The warn-once is a backstop for the case boot validation can't cover (a cell
+// whose env changed under it, or a caller that skipped the boot check): without
+// it, a misconfigured transport would be silently indistinguishable from an
+// unconfigured one.
+const warnedBroken = new Set<string>();
+
+function configuredOrNull<T>(name: string, read: () => T | null): T | null {
+  try {
+    return read();
+  } catch (err) {
+    if (!warnedBroken.has(name)) {
+      warnedBroken.add(name);
+      console.error(
+        `[push] ${name} push is configured but unusable, so it is disabled: ${(err as Error).message}`,
+      );
+    }
+    return null;
+  }
+}
+
+export function configuredApns(): ApnsCredentials | null {
+  return configuredOrNull('apns', apnsCredentials);
+}
+
+export function configuredFcm(): FcmCredentials | null {
+  return configuredOrNull('fcm', fcmCredentials);
+}
+
+/**
+ * Boot-time validation. Parses every native credential that is set, letting a
+ * misconfiguration throw so the server refuses to start with a name for what's
+ * wrong — the same bargain LURKER_SECRET_KEY makes in secretCrypto, and for the
+ * same reason: a silent downgrade is worse than a failed boot.
+ *
+ * Unset stays unset: a self-hosted server holding no Apple key is the normal
+ * case and must boot cleanly.
+ */
+export function assertPushCredentials(): void {
+  apnsCredentials();
+  fcmCredentials();
 }

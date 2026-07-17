@@ -20,6 +20,26 @@ interface WebPushErrorish {
   body?: string;
 }
 
+// The body is identical for every one of a user's browsers, but send() is called
+// once per subscription — so serializing inside it would rebuild the same string
+// per device, where the pre-seam code hoisted one `const json` above the fan-out.
+//
+// deliver() composes `content` exactly once per push and hands that same object
+// to every subscription, so keying on its identity collapses the work back to
+// one serialization. A WeakMap because the entry should die with the push, not
+// accumulate one string per notification ever sent.
+const bodyCache = new WeakMap<NotificationContent, string>();
+
+function webpushBody(payload: PushPayload, content: NotificationContent): string {
+  const cached = bodyCache.get(content);
+  if (cached !== undefined) return cached;
+  // Composed fields ride ALONGSIDE the semantic ones so a service worker cached
+  // before #490 phase 2 can still compose locally. See sw.js.
+  const body = JSON.stringify({ ...payload, ...content });
+  bodyCache.set(content, body);
+  return body;
+}
+
 export const webpushSender: PushSender = {
   transport: 'webpush',
 
@@ -39,11 +59,9 @@ export const webpushSender: PushSender = {
       // so p256dh/auth are known present, and states the invariant out loud.
       throw new Error(`webpushSender received a ${sub.transport} subscription`);
     }
-    // Composed fields ride ALONGSIDE the semantic ones so a service worker
-    // cached before #490 phase 2 can still compose locally. See sw.js.
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-      JSON.stringify({ ...payload, ...content }),
+      webpushBody(payload, content),
     );
   },
 
