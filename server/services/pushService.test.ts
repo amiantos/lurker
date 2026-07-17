@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type { User } from '../db/users.js';
+import type { PushPayload } from './notificationContent.js';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-test-push-service-'));
 process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
@@ -71,19 +72,41 @@ describe('hasSubscriptions', () => {
   });
 });
 
+const samplePayload = (): PushPayload => ({
+  kind: 'dm',
+  networkId: 3,
+  networkName: 'Libera',
+  target: 'bob',
+  nick: 'bob',
+  text: 'hi',
+});
+
 describe('deliver', () => {
   it('returns {sent:0, dropped:0} when the user has no subscriptions', async () => {
-    const result = await pushService.deliver(bob.id, { title: 'hi' });
+    const result = await pushService.deliver(bob.id, samplePayload());
     expect(result).toEqual({ sent: 0, dropped: 0 });
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
   it('fans out to every enabled subscription and counts successes', async () => {
     sendNotification.mockResolvedValue({ statusCode: 201 });
-    const result = await pushService.deliver(alice.id, { title: 'hi' });
+    const result = await pushService.deliver(alice.id, samplePayload());
     expect(sendNotification).toHaveBeenCalledTimes(2);
     expect(result.sent).toBe(2);
     expect(result.dropped).toBe(0);
+  });
+
+  it('sends composed title/body/tag alongside the semantic fields (#490 phase 2)', async () => {
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    await pushService.deliver(alice.id, samplePayload());
+    const body = JSON.parse(sendNotification.mock.calls[0][1] as string);
+    // Composed here rather than in the service worker, because APNs/FCM have no
+    // worker to compose for them.
+    expect(body).toMatchObject({ title: 'bob (Libera)', body: 'hi', tag: '3::bob' });
+    // ...and the semantic fields still ride along, which is what lets a service
+    // worker cached before this change keep composing locally instead of
+    // rendering an empty notification.
+    expect(body).toMatchObject({ kind: 'dm', nick: 'bob', text: 'hi', networkId: 3 });
   });
 
   // 410/transient/strike rejection paths exist in pushService but vitest's

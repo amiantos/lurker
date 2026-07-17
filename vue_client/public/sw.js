@@ -30,10 +30,18 @@ function syncAppBadge(data) {
   return op.catch(() => {});
 }
 
-// "Amiantos came online (as nostimo · Libera)". The nick (data.target) is
-// shown only when it differs from the display name — for a friend watched under
-// several nicks it says which identity signed on; the network disambiguates a
-// friend watched across networks.
+// LEGACY composition, kept only as a fallback (#490 phase 2).
+//
+// The server composes title/body/tag itself now — it has to, because APNs and FCM
+// have no service worker to do it for them — and sends them on the payload. This
+// worker prefers those. But a worker cached before that change is still out there
+// receiving pushes from a server that already composes, and a server mid-rollback
+// may still send a payload without them, so both directions have to keep working.
+//
+// These functions are a byte-for-byte twin of server/services/notificationContent.ts.
+// They become dead code once every client has cycled onto a worker that reads the
+// server's fields, at which point both these and the semantic fields on the wire
+// can go. Until then: change one, change the other.
 function friendOnlineTitle(data) {
   const name = data.displayName || 'A friend';
   const parts = [];
@@ -44,6 +52,14 @@ function friendOnlineTitle(data) {
   return `${name} came online${parts.length ? ` (${parts.join(' · ')})` : ''}`;
 }
 
+function legacyTitle(data) {
+  return data.kind === 'dm'
+    ? `${data.nick || 'someone'}${data.networkName ? ' (' + data.networkName + ')' : ''}`
+    : data.kind === 'friend_online'
+      ? friendOnlineTitle(data)
+      : `${data.nick || 'someone'} in ${data.target || ''}`;
+}
+
 self.addEventListener('push', (event) => {
   if (!event.data) return;
   let data;
@@ -52,17 +68,17 @@ self.addEventListener('push', (event) => {
   } catch {
     data = { kind: 'unknown', text: event.data.text() };
   }
-  const title =
-    data.kind === 'dm'
-      ? `${data.nick || 'someone'}${data.networkName ? ' (' + data.networkName + ')' : ''}`
-      : data.kind === 'friend_online'
-        ? friendOnlineTitle(data)
-        : `${data.nick || 'someone'} in ${data.target || ''}`;
+  // `||` not `??`: an empty title from the server is as useless as a missing one,
+  // so fall back on both. Body genuinely may be '' (friend_online has no text),
+  // but the legacy expression yields '' there too, so the two agree either way.
+  const title = data.title || legacyTitle(data);
+  const body = data.body || data.text || '';
+  const tag = data.tag || `${data.networkId || 0}::${data.target || ''}`;
   event.waitUntil(
     Promise.all([
       self.registration.showNotification(title, {
-        body: data.text || '',
-        tag: `${data.networkId || 0}::${data.target || ''}`,
+        body,
+        tag,
         data,
         icon: '/lurker-icon-192.png',
         badge: '/lurker-icon-192.png',

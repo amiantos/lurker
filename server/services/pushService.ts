@@ -3,6 +3,7 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
+import { composeNotification, type PushPayload } from './notificationContent.js';
 
 /** The Web Push arm of the union — the only one this sender can speak. */
 type WebPushSubscription = Extract<PushSubscription, { transport: 'webpush' }>;
@@ -59,7 +60,7 @@ export function hasSubscriptions(userId: number): boolean {
 
 export async function deliver(
   userId: number,
-  payload: unknown,
+  payload: PushPayload,
 ): Promise<{ sent: number; dropped: number }> {
   ensureVapid();
   // Native transports (APNs/FCM) get their own senders behind a transport seam
@@ -70,7 +71,12 @@ export async function deliver(
     (s): s is WebPushSubscription => s.transport === 'webpush',
   );
   if (!subs.length) return { sent: 0, dropped: 0 };
-  const json = JSON.stringify(payload);
+  // Composed title/body/tag ride ALONGSIDE the semantic fields rather than
+  // replacing them (#490 phase 2). A service worker cached before this change
+  // ignores the new keys and composes the same strings locally, so it can't
+  // break; a current one prefers what's here. Once every client has cycled, the
+  // worker's copy is dead and the semantic fields can stop being sent.
+  const json = JSON.stringify({ ...payload, ...composeNotification(payload) });
   const results = await Promise.allSettled(
     subs.map((sub) =>
       webpush.sendNotification(
