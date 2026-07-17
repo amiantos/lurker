@@ -3,6 +3,8 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
+import { composeNotification, type PushPayload } from './notificationContent.js';
+import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import {
   listEnabledForUser,
   hasEnabledForUser,
@@ -54,26 +56,55 @@ export function hasSubscriptions(userId: number): boolean {
   return hasEnabledForUser(userId);
 }
 
+// Identify a subscription in a log line without printing the endpoint whole. For
+// Web Push the host is the useful part — it says WHICH push service is failing.
+// A device token has no structure to extract, and is enough of a credential that
+// a log file is the wrong place for it, so it gets a prefix.
+function describeSub(sub: PushSubscription): string {
+  if (sub.transport === 'webpush') {
+    try {
+      return new URL(sub.endpoint).host;
+    } catch {
+      return 'invalid-endpoint';
+    }
+  }
+  return `${sub.endpoint.slice(0, 8)}…`;
+}
+
 export async function deliver(
   userId: number,
-  payload: unknown,
+  payload: PushPayload,
 ): Promise<{ sent: number; dropped: number }> {
+  // VAPID is Web Push's business, but it's cheap and idempotent, and hoisting it
+  // here keeps the "which transports does this user have?" question out of it.
   ensureVapid();
-  const subs: PushSubscription[] = listEnabledForUser(userId);
+  const subs = listEnabledForUser(userId);
   if (!subs.length) return { sent: 0, dropped: 0 };
-  const json = JSON.stringify(payload);
+
+  // Composition is transport-neutral and identical for every device, so it
+  // happens once rather than per sub. Each sender renders it its own way — JSON
+  // for a service worker, an `aps` dict for APNs, a `notification` for FCM.
+  const content = composeNotification(payload);
+
+  // Skip transports with no credentials rather than attempting them. A
+  // self-hosted server holds no APNs key and that's normal operation; without
+  // this, every push to a native device would throw and count as a failure,
+  // eventually disabling the device for a reason that isn't the device's fault.
+  const deliverable = subs.filter((sub) => {
+    const sender = senderFor(sub.transport);
+    if (sender.isConfigured()) return true;
+    warnUnconfiguredOnce(sender);
+    return false;
+  });
+  if (!deliverable.length) return { sent: 0, dropped: 0 };
+
   const results = await Promise.allSettled(
-    subs.map((sub) =>
-      webpush.sendNotification(
-        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-        json,
-      ),
-    ),
+    deliverable.map((sub) => senderFor(sub.transport).send(sub, payload, content)),
   );
   let sent = 0;
   let dropped = 0;
   results.forEach((r, i) => {
-    const sub = subs[i];
+    const sub = deliverable[i];
     if (r.status === 'fulfilled') {
       sent += 1;
       try {
@@ -83,51 +114,42 @@ export async function deliver(
       }
       return;
     }
-    const err = r.reason as webpush.WebPushError & { statusCode?: number };
-    const status = err?.statusCode;
-    if (status === 404 || status === 410) {
-      // The push service says this endpoint is gone for good — drop it.
+    dropped += 1;
+    const sender = senderFor(sub.transport);
+    const verdict = sender.classify(r.reason);
+    // Anything the failure should CHANGE (invalidate a cached provider token,
+    // drop a poisoned connection) happens here, not inside classify() — which is
+    // a pure verdict and is called for logging as well as for control flow.
+    sender.onFailure?.(r.reason, verdict);
+    if (verdict === 'permanent') {
+      // The provider says this device is gone for good — drop it.
       deleteById(sub.id, sub.user_id);
-      dropped += 1;
       return;
     }
-    let host = '';
-    try {
-      host = new URL(sub.endpoint).host;
-    } catch (_) {
-      /* ignore */
-    }
-    // Don't count a failure toward the disable threshold unless the push
-    // service actually rejected the subscription with an HTTP status. Rate
-    // limits (429), server errors (5xx), and transport-level errors with no
-    // statusCode (DNS/connect blips, timeouts) are the network or the service
-    // having a bad moment — not a dead subscription. The subscription lives and
-    // we simply didn't deliver this time; otherwise a short outage during a
-    // burst of notifications could disable a perfectly healthy endpoint.
-    if (status == null || status === 429 || status >= 500) {
-      dropped += 1;
+    if (verdict === 'transient') {
+      // The network or the provider is having a bad moment (or, for native, OUR
+      // credentials are broken — which fails identically for every device and so
+      // must never be charged to one). The subscription lives; we simply didn't
+      // deliver this time. Silent by design: a rate limit or a 5xx during a
+      // burst would otherwise write a line per device per push.
       return;
     }
-    // A concrete 4xx rejection (auth rejects, malformed requests, gone-but-not-
-    // 404/410) is a strike against this subscription. After enough consecutive
-    // strikes we disable it so it stops erroring on every notification; a
-    // re-subscribe re-enables it. This also bounds the console noise to a
-    // handful of lines per broken endpoint instead of one on every push (#441).
+    // A concrete rejection of THIS subscription. After enough consecutive
+    // strikes, disable it so it stops erroring on every notification; a
+    // re-subscribe re-enables it. Bounds console noise to a handful of lines per
+    // broken endpoint instead of one on every push (#441).
     const failures = recordFailure(sub.id);
-    const body = typeof err?.body === 'string' ? err.body.slice(0, 500) : '';
     if (failures >= MAX_CONSECUTIVE_FAILURES) {
       disableSubscription(sub.id);
-      dropped += 1;
       console.warn(
-        `[push] disabled sub ${sub.id} (${host}) after ${failures} consecutive failures: ` +
-          `status=${status ?? '?'} message=${err?.message || String(err)} body=${body}`,
+        `[push] disabled ${sub.transport} sub ${sub.id} (${describeSub(sub)}) after ` +
+          `${failures} consecutive failures: ${sender.describe(r.reason)}`,
       );
       return;
     }
-    dropped += 1;
     console.warn(
-      `[push] delivery failed for sub ${sub.id} (${host}) [${failures}/${MAX_CONSECUTIVE_FAILURES}]: ` +
-        `status=${status ?? '?'} message=${err?.message || String(err)} body=${body}`,
+      `[push] delivery failed for ${sub.transport} sub ${sub.id} (${describeSub(sub)}) ` +
+        `[${failures}/${MAX_CONSECUTIVE_FAILURES}]: ${sender.describe(r.reason)}`,
     );
   });
   return { sent, dropped };

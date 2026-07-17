@@ -26,6 +26,7 @@ afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 describe('upsertSubscription', () => {
   it('inserts a new subscription and surfaces it via listAllForUser', () => {
     const out = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/a',
       p256dh: 'k1',
       auth: 'a1',
@@ -38,6 +39,7 @@ describe('upsertSubscription', () => {
 
   it('refuses to rebind a foreign-owned endpoint', () => {
     const conflict = mod.upsertSubscription(bob.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/a',
       p256dh: 'k2',
       auth: 'a2',
@@ -50,6 +52,7 @@ describe('upsertSubscription', () => {
 
   it('updates p256dh/auth for the same owner', () => {
     const out = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/a',
       p256dh: 'k1-new',
       auth: 'a1-new',
@@ -86,11 +89,13 @@ describe('listEnabledForUser', () => {
   it('filters by enabled=1', async () => {
     const db = (await import('./index.js')).default;
     mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/on',
       p256dh: 'k',
       auth: 'a',
     });
     const off = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/off',
       p256dh: 'k',
       auth: 'a',
@@ -104,9 +109,73 @@ describe('listEnabledForUser', () => {
   });
 });
 
+describe('cross-user collision is decided by the STORED row (#490 review)', () => {
+  it('refuses to let a native registration claim another user webpush endpoint', () => {
+    // The bug: the guard tested the INCOMING transport, so declaring 'apns'
+    // walked straight past the webpush refusal and rebound Alice's browser
+    // subscription to Bob — nulling her keys and silently ending her push, with
+    // no UI anywhere showing why. What a caller CLAIMS to be cannot be what
+    // decides whether it may take someone else's row.
+    mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
+      endpoint: 'https://push.test/alice-owned',
+      p256dh: 'k',
+      auth: 'a',
+    });
+    const out = mod.upsertSubscription(bob.id, {
+      transport: 'apns',
+      endpoint: 'https://push.test/alice-owned',
+    });
+    expect(out).toEqual({ ok: false, error: 'endpoint_owned_by_other_user' });
+    const sub = mod.getByEndpoint('https://push.test/alice-owned');
+    expect(sub).toMatchObject({ user_id: alice.id, transport: 'webpush', p256dh: 'k' });
+  });
+
+  it('refuses to let a webpush registration claim another user device token', () => {
+    mod.upsertSubscription(alice.id, { transport: 'apns', endpoint: 'alice-device-token' });
+    const out = mod.upsertSubscription(bob.id, {
+      transport: 'webpush',
+      endpoint: 'alice-device-token',
+      p256dh: 'k',
+      auth: 'a',
+    });
+    expect(out).toEqual({ ok: false, error: 'endpoint_owned_by_other_user' });
+    expect(mod.getByEndpoint('alice-device-token')?.user_id).toBe(alice.id);
+  });
+
+  it('still rebinds native→native, which is a phone changing hands', () => {
+    mod.upsertSubscription(alice.id, { transport: 'apns', endpoint: 'shared-phone-token' });
+    const out = mod.upsertSubscription(bob.id, {
+      transport: 'apns',
+      endpoint: 'shared-phone-token',
+    });
+    expect(out.ok).toBe(true);
+    expect(mod.getByEndpoint('shared-phone-token')?.user_id).toBe(bob.id);
+  });
+
+  it('lets the SAME user change a subscription transport on their own row', () => {
+    // Not a collision at all — no ownership question to answer.
+    mod.upsertSubscription(alice.id, { transport: 'apns', endpoint: 'alice-retransport' });
+    const out = mod.upsertSubscription(alice.id, {
+      transport: 'fcm',
+      endpoint: 'alice-retransport',
+    });
+    expect(out.ok).toBe(true);
+    expect(mod.getByEndpoint('alice-retransport')).toMatchObject({
+      user_id: alice.id,
+      transport: 'fcm',
+    });
+  });
+});
+
 describe('failure tracking (#441)', () => {
   function freshSub(endpoint: string) {
-    const out = mod.upsertSubscription(alice.id, { endpoint, p256dh: 'k', auth: 'a' });
+    const out = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
+      endpoint,
+      p256dh: 'k',
+      auth: 'a',
+    });
     return (out as Extract<typeof out, { ok: true }>).sub!;
   }
 

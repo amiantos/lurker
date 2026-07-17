@@ -3,13 +3,44 @@
 
 import db from './index.js';
 
+/**
+ * How a subscription is delivered to (#490).
+ *
+ * `webpush` is a push-service URL plus an ECDH keypair (RFC 8291). `apns` and
+ * `fcm` are opaque per-install device tokens with no keypair at all — which is
+ * why the crypto columns are nullable and why this discriminator exists rather
+ * than the code sniffing at the endpoint's shape.
+ *
+ * These arrays are the ONE list of transports; the type is derived from them and
+ * every consumer reads them rather than restating the members. Adding a fourth
+ * transport should be a compile error at each place that must handle it (the
+ * sender registry is a Record over this type), not a silent omission — the
+ * previous shape spelled the list out in six places, only one of which the
+ * compiler checked.
+ */
+export const PUSH_TRANSPORTS = ['webpush', 'apns', 'fcm'] as const;
+export type PushTransport = (typeof PUSH_TRANSPORTS)[number];
+
+/** The transports that deliver to an app install rather than a browser. */
+export const NATIVE_TRANSPORTS = ['apns', 'fcm'] as const satisfies readonly PushTransport[];
+export type NativeTransport = (typeof NATIVE_TRANSPORTS)[number];
+
+export function isPushTransport(value: unknown): value is PushTransport {
+  return PUSH_TRANSPORTS.includes(value as PushTransport);
+}
+
+export function isNativeTransport(value: unknown): value is NativeTransport {
+  return NATIVE_TRANSPORTS.includes(value as NativeTransport);
+}
+
 /** A row from the `push_subscriptions` table. */
 export interface PushSubscriptionRow {
   id: number;
   user_id: number;
   endpoint: string;
-  p256dh: string;
-  auth: string;
+  transport: string;
+  p256dh: string | null;
+  auth: string | null;
   user_agent: string | null;
   enabled: number;
   created_at: string;
@@ -17,13 +48,10 @@ export interface PushSubscriptionRow {
   fail_count: number;
 }
 
-/** Projected push subscription with boolean `enabled`. */
-export interface PushSubscription {
+interface PushSubscriptionBase {
   id: number;
   user_id: number;
   endpoint: string;
-  p256dh: string;
-  auth: string;
   user_agent: string | null;
   enabled: boolean;
   created_at: string;
@@ -31,20 +59,48 @@ export interface PushSubscription {
   fail_count: number;
 }
 
+/**
+ * Projected push subscription, discriminated on transport so the credential
+ * shape follows from it. A `webpush` sub always has its keys and a native one
+ * never does — the union is what lets deliver() narrow to a transport and reach
+ * for `p256dh` without a non-null assertion, and what makes "native sub with
+ * Web Push keys" unrepresentable rather than merely unlikely.
+ */
+export type PushSubscription =
+  | (PushSubscriptionBase & { transport: 'webpush'; p256dh: string; auth: string })
+  | (PushSubscriptionBase & { transport: 'apns' | 'fcm'; p256dh: null; auth: null });
+
 function rowToSub(row: PushSubscriptionRow | undefined): PushSubscription | null {
   if (!row) return null;
-  return {
+  const base: PushSubscriptionBase = {
     id: row.id,
     user_id: row.user_id,
     endpoint: row.endpoint,
-    p256dh: row.p256dh,
-    auth: row.auth,
     user_agent: row.user_agent,
     enabled: !!row.enabled,
     created_at: row.created_at,
     last_seen_at: row.last_seen_at,
     fail_count: row.fail_count ?? 0,
   };
+  if (!isPushTransport(row.transport)) {
+    // A transport this build doesn't know — e.g. a row written by a NEWER server
+    // after a downgrade. Skipping it is the safe read: we cannot deliver to a
+    // transport we can't speak, and guessing would mean handing an opaque token
+    // to the Web Push sender. The row survives for the newer build to use again.
+    console.warn(`[push] ignoring subscription ${row.id}: unknown transport ${row.transport}`);
+    return null;
+  }
+  if (row.transport === 'webpush') {
+    if (row.p256dh == null || row.auth == null) {
+      // Web Push without a keypair can't be encrypted, so it can't be sent. Only
+      // reachable via direct DB surgery, but skip rather than crash the fan-out
+      // for every other device the user owns.
+      console.warn(`[push] ignoring webpush subscription ${row.id}: missing keys`);
+      return null;
+    }
+    return { ...base, transport: 'webpush', p256dh: row.p256dh, auth: row.auth };
+  }
+  return { ...base, transport: row.transport, p256dh: null, auth: null };
 }
 
 export function listEnabledForUser(userId: number): PushSubscription[] {
@@ -85,47 +141,81 @@ export function getByEndpoint(endpoint: string): PushSubscription | null {
   );
 }
 
-// Push endpoint URLs persist per browser/PushManager — when two users log
-// into the same browser, the same endpoint comes back from subscribe(). A
-// blind UPDATE would silently rebind it to whichever user enabled most
-// recently, stealing the other user's notifications. Refuse instead; the
-// previous owner must disable push on their session before a new user can
-// claim it. Returns { ok, sub? } on success or { ok: false, error } on a
-// cross-user collision.
+/**
+ * What to register. The union means a Web Push subscription cannot be filed
+ * without its keypair, and a native one cannot smuggle keys it doesn't have.
+ */
+export type SubscriptionInput =
+  | {
+      transport: 'webpush';
+      endpoint: string;
+      p256dh: string;
+      auth: string;
+      userAgent?: string | null;
+    }
+  | { transport: 'apns' | 'fcm'; endpoint: string; userAgent?: string | null };
+
+// Ownership on a cross-user collision is decided by transport, because the two
+// cases mean opposite things (#490):
+//
+// - webpush: endpoint URLs persist per browser/PushManager, so when two users
+//   log into the same browser, subscribe() hands back the SAME endpoint for
+//   both — concurrently. A blind rebind would silently steal the other user's
+//   notifications, so refuse; the previous owner disables push first.
+//
+// - apns/fcm: the token identifies an app INSTALL, and an install has exactly
+//   one signed-in user at a time. The same token coming back under a different
+//   user means the phone changed hands (sign out → sign in), so rebind — that
+//   is the truth, not a collision. Refusing here would be an outright bug: a
+//   sign-out that failed to deregister (crash, offline, force-quit) would leave
+//   the token owned by the old account and the new user permanently unpushable,
+//   with no UI anywhere to release it.
+//
+// Which means the rebind is only safe when BOTH sides are native, and the test
+// has to be on the STORED row — never on what the caller declares itself to be,
+// or claiming `transport: 'apns'` while presenting someone else's push URL walks
+// straight past the refusal and takes their subscription (review of #490). A
+// native token and a push-service URL can't legitimately be equal anyway, so the
+// mixed cases are refused rather than reasoned about.
+//
+// Returns { ok, sub } on success or { ok: false, error } on a refused collision.
 export function upsertSubscription(
   userId: number,
-  {
-    endpoint,
-    p256dh,
-    auth,
-    userAgent,
-  }: { endpoint: string; p256dh: string; auth: string; userAgent?: string | null },
+  input: SubscriptionInput,
 ): { ok: true; sub: PushSubscription | null } | { ok: false; error: string } {
+  const { transport, endpoint, userAgent } = input;
+  const p256dh = transport === 'webpush' ? input.p256dh : null;
+  const auth = transport === 'webpush' ? input.auth : null;
+
   const existing = getByEndpoint(endpoint);
   if (existing && existing.user_id !== userId) {
-    return { ok: false, error: 'endpoint_owned_by_other_user' };
+    const bothNative = existing.transport !== 'webpush' && transport !== 'webpush';
+    if (!bothNative) return { ok: false, error: 'endpoint_owned_by_other_user' };
   }
   if (existing) {
+    // user_id is reassigned on a native rebind; for webpush it's a no-op write of
+    // the value it already held, since a cross-user webpush row returned above.
     db.prepare(
       `
       UPDATE push_subscriptions
-      SET p256dh = ?, auth = ?, user_agent = COALESCE(?, user_agent),
+      SET user_id = ?, transport = ?, p256dh = ?, auth = ?,
+          user_agent = COALESCE(?, user_agent),
           enabled = 1, fail_count = 0,
           last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE endpoint = ?
     `,
-    ).run(p256dh, auth, userAgent || null, endpoint);
+    ).run(userId, transport, p256dh, auth, userAgent || null, endpoint);
     return { ok: true, sub: getByEndpoint(endpoint) };
   }
   db.prepare(
     `
     INSERT INTO push_subscriptions
-      (user_id, endpoint, p256dh, auth, user_agent, created_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?,
+      (user_id, endpoint, transport, p256dh, auth, user_agent, created_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?,
       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `,
-  ).run(userId, endpoint, p256dh, auth, userAgent || null);
+  ).run(userId, endpoint, transport, p256dh, auth, userAgent || null);
   return { ok: true, sub: getByEndpoint(endpoint) };
 }
 

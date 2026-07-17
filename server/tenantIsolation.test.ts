@@ -185,7 +185,12 @@ beforeAll(async () => {
   drafts.upsertDraft(userAId, netAId, SECRET_TARGET, 'A-draft');
 
   // A push subscription owned by A — B must not be able to delete or hijack it.
-  push.upsertSubscription(userAId, { endpoint: PUSH_ENDPOINT_A, p256dh: 'pA', auth: 'aA' });
+  push.upsertSubscription(userAId, {
+    transport: 'webpush',
+    endpoint: PUSH_ENDPOINT_A,
+    p256dh: 'pA',
+    auth: 'aA',
+  });
 
   // A pending export job — the enumerable :id/download is the classic
   // "fetch-by-job-id-without-owner-check" IDOR surface.
