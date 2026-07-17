@@ -78,6 +78,33 @@ describe('assertPushCredentials', () => {
     expect(() => assertPushCredentials()).not.toThrow();
   });
 
+  it('treats EMPTY vars as unconfigured, not as a partial config', () => {
+    // The shape a hosted cell actually boots with. cell-cloud-init.sh renders every var
+    // unconditionally, so a fleet without push keys gets `LURKER_APNS_KEY=` — present but
+    // empty — rather than the var being absent. If empty read as "set", every cell on a
+    // push-less fleet would see a partial config and crash-loop on boot.
+    process.env.LURKER_APNS_KEY = '';
+    process.env.LURKER_APNS_KEY_ID = '';
+    process.env.LURKER_APNS_TEAM_ID = '';
+    process.env.LURKER_APNS_BUNDLE_ID = '';
+    process.env.LURKER_FCM_SERVICE_ACCOUNT = '';
+    resetCredentialCache();
+    expect(() => assertPushCredentials()).not.toThrow();
+    expect(apnsSender.isConfigured()).toBe(false);
+    expect(fcmSender.isConfigured()).toBe(false);
+  });
+
+  it('still catches a partial config when the OTHER vars are empty rather than absent', () => {
+    // The counterpart: one var filled in on a cell whose others render empty is exactly
+    // the typo this is meant to catch, and it must not be mistaken for "unconfigured".
+    process.env.LURKER_APNS_KEY = P8_PEM;
+    process.env.LURKER_APNS_KEY_ID = '';
+    process.env.LURKER_APNS_TEAM_ID = '';
+    process.env.LURKER_APNS_BUNDLE_ID = '';
+    resetCredentialCache();
+    expect(() => assertPushCredentials()).toThrow(/LURKER_APNS_KEY_ID/);
+  });
+
   it('passes on a complete APNs config', () => {
     process.env.LURKER_APNS_KEY = P8_PEM;
     process.env.LURKER_APNS_KEY_ID = 'KEYID';
