@@ -20,10 +20,12 @@ router.get('/config', (_req: Request, res: Response) => {
 });
 
 router.get('/subscriptions', (req: Request, res: Response) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const subs = listAllForUser(req.user!.id).map((s: any) => ({
+  // Keys are deliberately never projected. `transport` is, so a client can tell
+  // a browser subscription from a phone when listing devices.
+  const subs = listAllForUser(req.user!.id).map((s) => ({
     id: s.id,
     endpoint: s.endpoint,
+    transport: s.transport,
     user_agent: s.user_agent,
     enabled: s.enabled,
     created_at: s.created_at,
@@ -32,6 +34,9 @@ router.get('/subscriptions', (req: Request, res: Response) => {
   res.json({ subscriptions: subs });
 });
 
+// Web Push registration. Native (APNs/FCM) device registration is its own route
+// (#490 phase 4) rather than an overload of this one: it has no `keys`, and its
+// cross-user collision rule is the opposite of this one's.
 router.post('/subscriptions', (req: Request, res: Response) => {
   const { endpoint, keys, userAgent } = req.body || {};
   if (!endpoint || !keys?.p256dh || !keys?.auth) {
@@ -39,6 +44,7 @@ router.post('/subscriptions', (req: Request, res: Response) => {
     return;
   }
   const result = upsertSubscription(req.user!.id, {
+    transport: 'webpush',
     endpoint,
     p256dh: keys.p256dh,
     auth: keys.auth,
@@ -51,9 +57,13 @@ router.post('/subscriptions', (req: Request, res: Response) => {
     });
     return;
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sub = (result as any).sub;
-  res.status(201).json({ subscription: { id: sub.id, endpoint: sub.endpoint } });
+  if (!result.sub) {
+    // The row was written and immediately failed to read back — corrupt enough
+    // that reporting success would be a lie.
+    res.status(500).json({ error: 'subscription could not be stored' });
+    return;
+  }
+  res.status(201).json({ subscription: { id: result.sub.id, endpoint: result.sub.endpoint } });
 });
 
 router.delete('/subscriptions', (req: Request, res: Response) => {

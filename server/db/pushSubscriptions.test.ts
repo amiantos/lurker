@@ -26,6 +26,7 @@ afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 describe('upsertSubscription', () => {
   it('inserts a new subscription and surfaces it via listAllForUser', () => {
     const out = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/a',
       p256dh: 'k1',
       auth: 'a1',
@@ -38,6 +39,7 @@ describe('upsertSubscription', () => {
 
   it('refuses to rebind a foreign-owned endpoint', () => {
     const conflict = mod.upsertSubscription(bob.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/a',
       p256dh: 'k2',
       auth: 'a2',
@@ -50,6 +52,7 @@ describe('upsertSubscription', () => {
 
   it('updates p256dh/auth for the same owner', () => {
     const out = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/a',
       p256dh: 'k1-new',
       auth: 'a1-new',
@@ -86,11 +89,13 @@ describe('listEnabledForUser', () => {
   it('filters by enabled=1', async () => {
     const db = (await import('./index.js')).default;
     mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/on',
       p256dh: 'k',
       auth: 'a',
     });
     const off = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/off',
       p256dh: 'k',
       auth: 'a',
@@ -106,7 +111,12 @@ describe('listEnabledForUser', () => {
 
 describe('failure tracking (#441)', () => {
   function freshSub(endpoint: string) {
-    const out = mod.upsertSubscription(alice.id, { endpoint, p256dh: 'k', auth: 'a' });
+    const out = mod.upsertSubscription(alice.id, {
+      transport: 'webpush',
+      endpoint,
+      p256dh: 'k',
+      auth: 'a',
+    });
     return (out as Extract<typeof out, { ok: true }>).sub!;
   }
 

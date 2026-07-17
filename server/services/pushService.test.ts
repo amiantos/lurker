@@ -34,11 +34,13 @@ beforeAll(async () => {
   alice = createUser('push-alice');
   bob = createUser('push-bob');
   pushDb.upsertSubscription(alice.id, {
+    transport: 'webpush',
     endpoint: 'https://example.test/alice',
     p256dh: 'k',
     auth: 'a',
   });
   pushDb.upsertSubscription(alice.id, {
+    transport: 'webpush',
     endpoint: 'https://example.test/alice2',
     p256dh: 'k',
     auth: 'a',
@@ -60,6 +62,7 @@ describe('hasSubscriptions', () => {
     const u = createUser('push-has-sub');
     expect(pushService.hasSubscriptions(u.id)).toBe(false);
     pushDb.upsertSubscription(u.id, {
+      transport: 'webpush',
       endpoint: 'https://example.test/hassub',
       p256dh: 'k',
       auth: 'a',

@@ -1016,6 +1016,12 @@ ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
 // so it stops erroring on every notification.
 ensureColumn('push_subscriptions', 'fail_count', 'INTEGER NOT NULL DEFAULT 0');
 
+// #490: native push. A row now says which transport it speaks, because APNs and
+// FCM deliver to an opaque device token rather than a Web Push service URL and
+// carry no ECDH keypair. Every pre-existing row is Web Push by definition, which
+// is also why the default is safe to rely on rather than backfill.
+ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'");
+
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
@@ -1502,6 +1508,62 @@ try {
   }
 }
 
+// Issue #490 native push: p256dh/auth must be nullable. They are Web Push ECDH
+// crypto (RFC 8291) and an APNs/FCM device token has no equivalent — a native row
+// has nothing truthful to put there, and '' would be a lie the type system would
+// then have to believe. SQLite can't drop a NOT NULL in place, so rebuild.
+// Shape-gated on p256dh's notnull flag — idempotent, self-heals a half-migrated
+// DB, and won't touch a DB already on the new shape. Placed after the
+// ensureColumn block above so `transport` and `fail_count` exist to copy.
+//
+// `endpoint` keeps its global UNIQUE rather than moving to UNIQUE(transport,
+// endpoint): a device token and a push-service URL cannot collide in practice, so
+// the composite would buy nothing while forcing `transport` through every
+// endpoint-keyed call site (get/delete/heartbeat) and the routes above them.
+{
+  const p256Col = (
+    db.prepare(`PRAGMA table_info(push_subscriptions)`).all() as TableInfoRow[]
+  ).find((c) => c.name === 'p256dh');
+  if (p256Col && p256Col.notnull === 1) {
+    const rebuild = db.transaction(() => {
+      db.exec(`DROP INDEX IF EXISTS idx_push_subs_user`);
+      db.exec(`
+        CREATE TABLE push_subscriptions_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          endpoint TEXT NOT NULL UNIQUE,
+          transport TEXT NOT NULL DEFAULT 'webpush',
+          p256dh TEXT,
+          auth TEXT,
+          user_agent TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+          fail_count INTEGER NOT NULL DEFAULT 0,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      `);
+      db.exec(`
+        INSERT INTO push_subscriptions_new
+          (id, user_id, endpoint, transport, p256dh, auth, user_agent, enabled,
+           created_at, last_seen_at, fail_count)
+        SELECT id, user_id, endpoint, transport, p256dh, auth, user_agent, enabled,
+           created_at, last_seen_at, fail_count
+        FROM push_subscriptions
+      `);
+      db.exec(`DROP TABLE push_subscriptions`);
+      db.exec(`ALTER TABLE push_subscriptions_new RENAME TO push_subscriptions`);
+    });
+    const prevFk = db.pragma('foreign_keys', { simple: true });
+    db.pragma('foreign_keys = OFF');
+    try {
+      rebuild();
+    } finally {
+      db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
+    }
+  }
+}
+
 // Issue #349 highlight overhaul: `pattern` must be nullable so a pure -mask
 // rule (highlight everyone matching a nick!user@host) can carry no keyword, and
 // the table gains `mask` + `channels` scope columns. SQLite can't drop a NOT
@@ -1650,5 +1712,10 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_ignored_masks_user_net
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_buffer_reads_key
          ON buffer_reads(user_id, IFNULL(network_id, 0), target)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_buffer_reads_user ON buffer_reads(user_id)`);
+
+// #490: the push_subscriptions rebuild drops this with the table, and migrate()'s
+// CREATE already ran before it — so recreate here for both fresh and rebuilt
+// paths. hasEnabledForUser hits it on the push hot path.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id)`);
 
 export default db;

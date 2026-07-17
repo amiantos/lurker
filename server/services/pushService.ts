@@ -3,6 +3,9 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
+
+/** The Web Push arm of the union — the only one this sender can speak. */
+type WebPushSubscription = Extract<PushSubscription, { transport: 'webpush' }>;
 import {
   listEnabledForUser,
   hasEnabledForUser,
@@ -59,7 +62,13 @@ export async function deliver(
   payload: unknown,
 ): Promise<{ sent: number; dropped: number }> {
   ensureVapid();
-  const subs: PushSubscription[] = listEnabledForUser(userId);
+  // Native transports (APNs/FCM) get their own senders behind a transport seam
+  // in #490 phase 3. Until then no route can create a native row, so this
+  // partition can't silently drop a real device — it exists to prove to the type
+  // system that every sub below carries the ECDH keypair sendNotification needs.
+  const subs: WebPushSubscription[] = listEnabledForUser(userId).filter(
+    (s): s is WebPushSubscription => s.transport === 'webpush',
+  );
   if (!subs.length) return { sent: 0, dropped: 0 };
   const json = JSON.stringify(payload);
   const results = await Promise.allSettled(
