@@ -180,6 +180,19 @@ Lurker supports background push notifications for highlights and DMs, delivered 
 
 If you change `VAPID_SUBJECT` later, existing subscriptions continue to work — the subject only affects new push JWTs, not the keypair.
 
+### Push and the mobile apps
+
+**Short version: install Lurker as a home-screen PWA and use Web Push above. That is the supported path for a self-hosted server, and it works on iOS 16.4+ and Android with no developer account and no extra configuration.**
+
+The first-party Lurker mobile apps use native push (APNs on iOS, FCM on Android), and a self-hosted server **cannot** deliver to them. This isn't a missing feature — it's how the platforms work:
+
+- An APNs signing key only signs for the bundle id Apple issued it to.
+- An FCM token is scoped to the Firebase project compiled into the APK; a token from a different project is rejected outright (`MismatchSenderId`).
+
+So only the publisher of a build can push to that build. Supplying your own Apple or Google credentials to `LURKER_APNS_*` / `LURKER_FCM_SERVICE_ACCOUNT` will not make your server able to push to the App Store or Play Store app — those variables exist for whoever publishes the app, and for anyone running **their own build** of it signed with their own credentials.
+
+You can check what a given server can actually deliver on: `GET /api/push/config` returns a `transports` list. A self-hosted server reports `["webpush"]`, and the apps use that to tell you push isn't available rather than asking for notification permission and then silently never delivering.
+
 ### File uploads on your own disk
 
 By default, images you paste or drop into the message box are uploaded to a third-party host (x0.at). If you'd rather keep them on your own server, pick **local** in **Settings → Uploads**. Lurker then writes the file to disk and serves it back from your own instance, and the link it pastes into IRC points at you — no third party involved.
