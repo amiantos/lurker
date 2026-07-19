@@ -1632,11 +1632,14 @@ export class IrcConnection {
     // We are not on `from` and never will be, but joinChannel already wrote its
     // channels row optimistically, and since no channel-joined ever arrives for
     // that name nothing else clears it. Left alone the row is replayed as a
-    // JOIN on every reconnect (silently re-forwarding each time), and its stale
-    // joined=1 lets join-precedence in the buffer snapshot override the user's
-    // closed flag — which is what made the forwarded buffer impossible to
-    // close. The forward itself is still logged to the server buffer verbatim
-    // by the 'raw' handler; this only cleans up the phantom join state.
+    // JOIN on every reconnect, silently re-forwarding each time.
+    //
+    // Note the row does NOT drive buffer visibility: join-precedence
+    // (isHiddenClosedBuffer) reads the in-memory conn.channels set, not this
+    // column. What made the forwarded buffer un-closable was joinChannel
+    // clearing the closed flag on the request; this handler fixes the quieter
+    // half, the reconnect replay. The forward itself is still logged to the
+    // server buffer verbatim by the 'raw' handler.
     c.on('channel_redirect', (event: Record<string, unknown>) => {
       const from = event?.from as string | undefined;
       if (!from) return;
@@ -2693,11 +2696,13 @@ export class IrcConnection {
   // joined set, corrects the persisted row, and announces the part so the
   // buffer stops rendering as joined.
   //
-  // The DB write is deliberately NOT gated on the channel being in this.channels
-  // — a stale joined=1 row can outlive the in-memory entry (e.g. across a
-  // restart, where the auto-JOIN was forwarded away), and that row is exactly
-  // what auto-rejoins and outranks the user's closed flag. `forget` deletes the
-  // row instead of clearing joined, for a channel we were never in at all.
+  // The DB write is deliberately NOT gated on the channel being in
+  // this.channels — a stale joined=1 row can outlive the in-memory entry (e.g.
+  // across a restart, where the auto-JOIN was forwarded away), and that row is
+  // what auto-rejoins on every reconnect. The two states are corrected
+  // independently because they answer different questions: this.channels drives
+  // buffer visibility (join-precedence), the row drives autojoin. `forget`
+  // deletes the row instead of clearing joined, for a channel we were never in.
   private evictChannel(name: string, { forget = false }: { forget?: boolean } = {}): void {
     const canonical = canonicalChannelTarget(name, this.channels) ?? name;
     this.channels.delete(name.toLowerCase());
