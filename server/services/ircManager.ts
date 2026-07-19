@@ -10,6 +10,7 @@ import {
   getNetwork,
   listChannels,
   upsertChannel,
+  markChannelParted,
   deleteChannel,
 } from '../db/networks.js';
 import { reopenBuffer } from '../db/closedBuffers.js';
@@ -333,7 +334,11 @@ class IrcManager extends EventEmitter {
   partChannel(userId: number, networkId: number, name: string, reason?: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
-    upsertChannel(networkId, name, false);
+    // Mark, don't upsert: /part takes an arbitrary argument and is not gated on
+    // membership (wsHub 'part'), so parting a channel we have no row for must
+    // not create one. There is nothing to stop auto-rejoining in that case —
+    // planChannelRejoins reads rows, and a row that doesn't exist can't rejoin.
+    markChannelParted(networkId, name);
     // Don't touch closed_buffers here. The /close flow runs closeBuffer +
     // partChannel back to back, so reopening the buffer inside partChannel
     // would silently undo the close. Stale closed entries from the old

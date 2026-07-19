@@ -451,6 +451,46 @@ describe('planChannelRejoins', () => {
     expect(planChannelRejoins(joined)).toContainEqual({ channels: '#secret', keys: 'hunter2' });
   });
 
+  it('partChannel does not create a row for a channel we have none for', () => {
+    // /part takes an arbitrary argument and is not gated on membership, so it
+    // must not conjure a channels row for a channel we were never in.
+    const user = createUser('irc-part-phantom');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.part = vi.fn<(channel: string, reason?: string) => void>();
+
+    ircManager.partChannel(user.id, net.id, '#never-heard-of');
+
+    expect(listChannels(net.id)).toHaveLength(0);
+    expect(conn.client.part).toHaveBeenCalledWith('#never-heard-of', undefined);
+  });
+
+  it('partChannel still clears joined on a channel we do have a row for', () => {
+    const user = createUser('irc-part-clears');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.part = vi.fn<(channel: string, reason?: string) => void>();
+
+    ircManager.joinChannel(user.id, net.id, '#real');
+    expect(listChannels(net.id).find((c) => c.name === '#real')?.joined).toBe(1);
+
+    ircManager.partChannel(user.id, net.id, '#real');
+    expect(listChannels(net.id).find((c) => c.name === '#real')?.joined).toBe(0);
+  });
+
   it('joinChannel reopens a closed buffer only for a channel we are already in', () => {
     // A join we're waiting on is cleared by the channel-joined echo, so that a
     // forwarded join (470) can't un-close the buffer for a channel we'll never
