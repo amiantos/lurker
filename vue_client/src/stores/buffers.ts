@@ -312,8 +312,12 @@ export const useBuffersStore = defineStore('buffers', {
       (networkId: number | string, nick: string): string | null | undefined => {
         if (!nick) return undefined;
         const lc = nick.toLowerCase();
+        // Coerce before comparing: buffers store networkId as a number, but the
+        // signature accepts a string, and `'3' !== 3` would silently match
+        // nothing rather than fail loudly. Same guard resolveExistingKey uses.
+        const nid = Number(networkId);
         for (const b of Object.values(state.buffers)) {
-          if (b.networkId !== networkId) continue;
+          if (b.networkId !== nid) continue;
           const m = b.members?.find(
             (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
           );
