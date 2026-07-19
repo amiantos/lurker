@@ -49,7 +49,7 @@ import { verifyPassword, hashPassword } from './password.js';
 import { hashToken, findActiveByHash, touchLastUsed } from '../db/apiTokens.js';
 import { listNetworksForUser } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { closedKeySetForUser } from '../db/closedBuffers.js';
+import { listForNetwork as listBufferRowsForNetwork, foldTarget } from '../db/buffers.js';
 import {
   listMessages,
   listBuffersForNetwork,
@@ -462,6 +462,17 @@ type ChatBound = { star: true } | { iso: string };
 
 function isChannelName(target: string): boolean {
   return target.startsWith('#') || target.startsWith('&');
+}
+
+// Folded targets of this network's closed buffers, from the registry. Shared by
+// the playback burst and CHATHISTORY TARGETS so the two can't disagree about
+// what the user has closed.
+function closedTargetSetForNetwork(networkId: number): Set<string> {
+  const set = new Set<string>();
+  for (const row of listBufferRowsForNetwork(networkId)) {
+    if (row.state === 'closed') set.add(foldTarget(row.target));
+  }
+  return set;
 }
 
 // Network-services pseudo-users (NickServ/ChanServ/…). Playback replays their
@@ -1319,7 +1330,13 @@ class BouncerSession {
     if (isoB === null) return;
     const limit = this.parseChatHistoryLimit('TARGETS', msg.params[3] ?? '');
     if (limit === null) return;
-    const targets = listActiveTargetsInWindow(this.networkId, isoA, isoB, limit);
+    // Closed buffers are excluded, matching the playback burst — before the
+    // buffers registry this path enumerated straight from messages and offered
+    // conversations the user had closed everywhere else.
+    const closed = closedTargetSetForNetwork(this.networkId);
+    const targets = listActiveTargetsInWindow(this.networkId, isoA, isoB, limit).filter(
+      (t) => !closed.has(t.target.toLowerCase()),
+    );
     this.withBatch('draft/chathistory-targets', [], (ref) => {
       const tag = ref ? `@batch=${ref} ` : '';
       for (const t of targets) {
@@ -1461,14 +1478,15 @@ class BouncerSession {
     const targets: Array<{ target: string; isChannel: boolean }> = [];
     for (const ch of conn.channels.values()) targets.push({ target: ch.name, isChannel: true });
     const joined = new Set(Array.from(conn.channels.keys()));
-    // One query for the whole closed-buffer set instead of one per candidate
-    // buffer; listBuffersForNetwork is already ORDER BY lastMessageAt DESC, so
-    // no re-sort is needed before taking the most-recent DMs.
-    const closed = closedKeySetForUser(this.userId);
+    // One registry query for the whole closed set instead of one per candidate
+    // buffer; listBuffersForNetwork (messages-derived) is already ORDER BY
+    // lastMessageAt DESC, so it stays the recency source — the registry decides
+    // closed-ness.
+    const closed = closedTargetSetForNetwork(this.networkId);
     const dms = listBuffersForNetwork(this.networkId)
       .filter((b) => !isChannelName(b.target) && !b.target.startsWith(':server:'))
       .filter((b) => !joined.has(b.target.toLowerCase()))
-      .filter((b) => !closed.has(`${this.networkId}::${b.target.toLowerCase()}`))
+      .filter((b) => !closed.has(b.target.toLowerCase()))
       .slice(0, PLAYBACK_MAX_DM_BUFFERS);
     for (const b of dms) targets.push({ target: b.target, isChannel: false });
 

@@ -20,8 +20,7 @@ let db: typeof import('../db/index.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
 let getNetwork: typeof import('../db/networks.js').getNetwork;
-let upsertChannel: typeof import('../db/networks.js').upsertChannel;
-let listChannels: typeof import('../db/networks.js').listChannels;
+let buffers: typeof import('../db/buffers.js');
 let isEncrypted: typeof import('../utils/secretCrypto.js').isEncrypted;
 let buildExportZip: typeof import('./exportService.js').buildExportZip;
 let importFromZipBuffer: typeof import('./importService.js').importFromZipBuffer;
@@ -37,7 +36,8 @@ const SECRET_COLS = Object.keys(SECRETS) as (keyof typeof SECRETS)[];
 beforeAll(async () => {
   db = (await import('../db/index.js')).default;
   ({ createUser } = await import('../db/users.js'));
-  ({ createNetwork, getNetwork, upsertChannel, listChannels } = await import('../db/networks.js'));
+  ({ createNetwork, getNetwork } = await import('../db/networks.js'));
+  buffers = await import('../db/buffers.js');
   ({ isEncrypted } = await import('../utils/secretCrypto.js'));
   ({ buildExportZip } = await import('./exportService.js'));
   ({ importFromZipBuffer } = await import('./importService.js'));
@@ -129,21 +129,25 @@ describe('network secret export/import round-trip (key configured)', () => {
       tls: true,
       nick: 'carol',
     })!;
-    upsertChannel(net.id, '#secret', true, 'chankey');
+    buffers.ensureOpen(carol.id, net.id, '#secret', {
+      kind: 'channel',
+      autojoin: true,
+      key: 'chankey',
+    });
 
     // Stored encrypted at rest; decrypted on read.
     const raw = db
-      .prepare('SELECT key FROM channels WHERE network_id = ? AND name = ?')
+      .prepare('SELECT key FROM buffers WHERE network_id = ? AND target = ?')
       .get(net.id, '#secret') as { key: string | null };
     expect(isEncrypted(raw.key)).toBe(true);
-    expect(listChannels(net.id).find((c) => c.name === '#secret')!.key).toBe('chankey');
+    expect(buffers.getBuffer(carol.id, net.id, '#secret')!.key).toBe('chankey');
 
     // Export carries the key as portable plaintext.
     const buf = await exportToBuffer(carol.id);
     const data = JSON.parse(await readZipEntry(buf, 'data.json')) as {
-      channels: Record<string, string>[];
+      buffers: Record<string, string>[];
     };
-    expect(data.channels.find((c) => c.name === '#secret')!.key).toBe('chankey');
+    expect(data.buffers.find((c) => c.target === '#secret')!.key).toBe('chankey');
 
     // Import onto a fresh keyed account re-encrypts at rest and reads back plain.
     const dave = createUser('dave');
@@ -152,9 +156,9 @@ describe('network secret export/import round-trip (key configured)', () => {
       id: number;
     };
     const daveRaw = db
-      .prepare('SELECT key FROM channels WHERE network_id = ? AND name = ?')
+      .prepare('SELECT key FROM buffers WHERE network_id = ? AND target = ?')
       .get(daveNet.id, '#secret') as { key: string | null };
     expect(isEncrypted(daveRaw.key)).toBe(true);
-    expect(listChannels(daveNet.id).find((c) => c.name === '#secret')!.key).toBe('chankey');
+    expect(buffers.getBuffer(dave.id, daveNet.id, '#secret')!.key).toBe('chankey');
   });
 });

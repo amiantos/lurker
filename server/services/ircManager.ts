@@ -5,15 +5,15 @@ import { EventEmitter } from 'events';
 import { IrcConnection } from './ircConnection.js';
 import * as systemLog from './systemLog.js';
 import connectScheduler from './connectScheduler.js';
+import { listNetworksForUser, getNetwork } from '../db/networks.js';
 import {
-  listNetworksForUser,
-  getNetwork,
-  listChannels,
-  upsertChannel,
-  markChannelParted,
-  deleteChannel,
-} from '../db/networks.js';
-import { reopenBuffer } from '../db/closedBuffers.js';
+  ensureOpen as ensureOpenBuffer,
+  setAutojoin as setBufferAutojoin,
+  setChannelKey as setBufferChannelKey,
+  deleteBuffer,
+  listAutojoinChannels,
+} from '../db/buffers.js';
+import { hasMessageForTarget } from '../db/messages.js';
 import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
 import { findUserById } from '../db/users.js';
 import { isNetworkHostAllowed } from './networkPolicy.js';
@@ -244,7 +244,13 @@ class IrcManager extends EventEmitter {
       launch();
     }
     conn.client.on('registered', () => {
-      const joined = listChannels(networkId).filter((c) => c.joined);
+      // The rejoin list is where the user actually WAS (autojoin is written on
+      // the join echo, never the request), so a forwarded/failed join can't
+      // replay itself here.
+      const joined = listAutojoinChannels(networkId).map((b) => ({
+        name: b.target,
+        key: b.key,
+      }));
       const names = joined.map((c) => c.name);
       if (names.length > 0) {
         systemLog.log({
@@ -305,28 +311,31 @@ class IrcManager extends EventEmitter {
     if (!conn) return false;
     // Coerce the key to a safe string-or-undefined once, up front. The ws/HTTP
     // join payloads are unvalidated, so a non-string (e.g. a number) can reach
-    // here — it must not flow into upsertChannel → encryptSecret (which throws
-    // on a non-string and, on the unguarded ws path, would take down the shared
-    // cell process). An empty string coerces to undefined too, so a keyless
-    // re-join preserves a stored key instead of wiping it (soju does the same);
-    // a key that no longer applies is cleared by the MODE -k handler, not here.
+    // here — it must not flow into encryptSecret (which throws on a non-string
+    // and, on the unguarded ws path, would take down the shared cell process).
+    // An empty string coerces to undefined too, so a keyless re-join preserves
+    // a stored key instead of wiping it (soju does the same); a key that no
+    // longer applies is cleared by the MODE -k handler, not here.
     const safeKey = typeof key === 'string' && key !== '' ? key : undefined;
-    // Persist the key (encrypted at rest) so the channel auto-rejoins keyed
-    // after a reconnect/restart.
-    upsertChannel(networkId, name, true, safeKey);
-    // The closed flag is otherwise cleared by the channel-joined echo (wsHub),
-    // NOT here. Clearing it on the request assumes the join lands on the
-    // channel we asked for, which a forwarding server (470) breaks: the buffer
-    // for the requested name gets un-closed while the join actually goes
-    // somewhere else, so a channel you can never be in becomes a buffer you can
-    // never close.
+    // Nothing is persisted on the REQUEST: the buffers row (state=open,
+    // autojoin=1, key) is written by the join echo, which is the only signal
+    // the join actually landed on the channel we asked for. A forwarding
+    // server (470) or a ban therefore leaves no row, no rejoin entry, and no
+    // un-closable buffer behind. The key rides along in-memory until the echo.
+    if (safeKey !== undefined) conn.stashJoinKey(name, safeKey);
     //
     // The exception is a channel we're demonstrably already in: the server
     // sends no JOIN echo for those, so waiting for one would hang forever and
     // /join on a closed-but-still-joined buffer would appear to do nothing.
     // Being in the channel is the same definitive signal the echo carries, so
-    // reopen directly.
-    if (conn.channels.has(name.toLowerCase())) reopenBuffer(userId, networkId, name);
+    // write the row directly.
+    if (conn.channels.has(name.toLowerCase())) {
+      ensureOpenBuffer(userId, networkId, name, {
+        kind: 'channel',
+        autojoin: true,
+        ...(safeKey !== undefined ? { key: safeKey } : {}),
+      });
+    }
     conn.join(name, safeKey);
     return true;
   }
@@ -334,22 +343,28 @@ class IrcManager extends EventEmitter {
   partChannel(userId: number, networkId: number, name: string, reason?: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
-    // Mark, don't upsert: /part takes an arbitrary argument and is not gated on
+    // Update-only: /part takes an arbitrary argument and is not gated on
     // membership (wsHub 'part'), so parting a channel we have no row for must
-    // not create one. There is nothing to stop auto-rejoining in that case —
-    // planChannelRejoins reads rows, and a row that doesn't exist can't rejoin.
-    markChannelParted(networkId, name);
-    // Don't touch closed_buffers here. The /close flow runs closeBuffer +
+    // not create one — setAutojoin no-ops on an absent row.
+    setBufferAutojoin(userId, networkId, name, false);
+    // Don't touch the open/closed state here. The /close flow runs close +
     // partChannel back to back, so reopening the buffer inside partChannel
-    // would silently undo the close. Stale closed entries from the old
-    // /part-as-close-buffer code path are cleared by a successful rejoin, when
-    // the channel-joined echo reaches wsHub.
+    // would silently undo the close; a rejoin's channel-joined echo is what
+    // reopens a closed buffer.
     conn.part(name, reason);
     return true;
   }
 
   forgetChannel(userId: number, networkId: number, name: string): void {
-    deleteChannel(networkId, name);
+    // With history the buffer (and its messages) must survive — just stop the
+    // auto-rejoin and drop the stored key. Without history there is nothing
+    // left to show, so the row itself goes.
+    if (hasMessageForTarget(networkId, name)) {
+      setBufferAutojoin(userId, networkId, name, false);
+      setBufferChannelKey(userId, networkId, name, null);
+    } else {
+      deleteBuffer(userId, networkId, name);
+    }
   }
 
   // DCC transfer actions (#270 phase 2). Each loads the user-scoped row, finds the

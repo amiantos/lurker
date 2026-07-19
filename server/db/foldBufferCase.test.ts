@@ -19,8 +19,6 @@ let createNetwork: typeof import('./networks.js').createNetwork;
 let insertMessage: typeof import('./messages.js').insertMessage;
 let setReadState: typeof import('./bufferReads.js').setReadState;
 let foldBufferCase: typeof import('./foldBufferCase.js').foldBufferCase;
-let upsertChannel: typeof import('./networks.js').upsertChannel;
-let listChannels: typeof import('./networks.js').listChannels;
 let userId: number;
 
 const T = '2026-06-01T00:00:00.000Z';
@@ -28,12 +26,49 @@ const T = '2026-06-01T00:00:00.000Z';
 beforeAll(async () => {
   db = (await import('./index.js')).default;
   ({ createUser } = await import('./users.js'));
-  ({ createNetwork, upsertChannel, listChannels } = await import('./networks.js'));
+  ({ createNetwork } = await import('./networks.js'));
   ({ insertMessage } = await import('./messages.js'));
   ({ setReadState } = await import('./bufferReads.js'));
   ({ foldBufferCase } = await import('./foldBufferCase.js'));
+  // The fold only ever runs against pre-registry DBs (the v9 migration block,
+  // or the operator script whose FOLD_VALIDATED_SCHEMA_VERSION gate pins it to
+  // exactly v9) — worlds where the legacy channels/closed_buffers tables still
+  // exist. The live schema no longer creates them, so recreate them here as
+  // the fixture environment the fold operates in.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS channels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      network_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      joined INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      key TEXT,
+      UNIQUE (network_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS closed_buffers (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      target TEXT NOT NULL,
+      closed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, network_id, target)
+    );
+  `);
   userId = createUser('fold-alice').id;
 });
+
+// Legacy-table fixture helpers (the modules that wrapped these are gone).
+function upsertChannel(networkId: number, name: string, joined: boolean, key?: string): void {
+  db.prepare(
+    `INSERT INTO channels (network_id, name, joined, key) VALUES (?, ?, ?, ?)
+     ON CONFLICT (network_id, name) DO UPDATE SET joined = excluded.joined,
+       key = COALESCE(excluded.key, channels.key)`,
+  ).run(networkId, name, joined ? 1 : 0, key ?? null);
+}
+function listChannels(networkId: number): Array<{ name: string; key: string | null }> {
+  return db
+    .prepare(`SELECT name, key FROM channels WHERE network_id = ? ORDER BY name`)
+    .all(networkId) as Array<{ name: string; key: string | null }>;
+}
 
 afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 

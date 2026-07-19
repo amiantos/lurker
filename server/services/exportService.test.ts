@@ -17,7 +17,7 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 let db: typeof import('../db/index.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
-let upsertChannel: typeof import('../db/networks.js').upsertChannel;
+let buffers: typeof import('../db/buffers.js');
 let insertMessage: typeof import('../db/messages.js').insertMessage;
 let setUserSetting: typeof import('../db/settings.js').setUserSetting;
 let createRule: typeof import('../db/highlightRules.js').createRule;
@@ -50,7 +50,8 @@ let EXPORT_FORMAT_VERSION: typeof import('../db/exportSchema.js').EXPORT_FORMAT_
 beforeAll(async () => {
   db = (await import('../db/index.js')).default;
   ({ createUser } = await import('../db/users.js'));
-  ({ createNetwork, upsertChannel } = await import('../db/networks.js'));
+  ({ createNetwork } = await import('../db/networks.js'));
+  buffers = await import('../db/buffers.js');
   ({ insertMessage } = await import('../db/messages.js'));
   ({ insertUpload } = await import('../db/uploadHistory.js'));
   ({ setUserSetting } = await import('../db/settings.js'));
@@ -118,7 +119,7 @@ describe('buildExportZip', () => {
       tls: true,
       nick: 'alice',
     }) as Network;
-    upsertChannel(aliceNetA.id, '#general', true);
+    buffers.ensureOpen(alice.id, aliceNetA.id, '#general', { kind: 'channel', autojoin: true });
 
     aliceMsg1 = insertMessage({
       networkId: aliceNetA.id,
@@ -205,18 +206,18 @@ describe('buildExportZip', () => {
     expect(manifest.counts.messages).toBe(2);
   });
 
-  it('writes data.json with networks, channels, and other per-user rows', async () => {
+  it('writes data.json with networks, buffers, and other per-user rows', async () => {
     const buf = await runExport(alice.id, { includeMessages: false });
     const entries = await readZipToMap(buf);
     const data = JSON.parse(entries.get('data.json')!.toString('utf8')) as {
       networks: Array<{ name: string }>;
-      channels: Array<{ name: string }>;
+      buffers: Array<{ target: string }>;
       users: Array<{ username: string }>;
     };
     expect(data.networks.length).toBe(1);
     expect(data.networks[0].name).toBe('libera');
-    expect(data.channels.length).toBe(1);
-    expect(data.channels[0].name).toBe('#general');
+    expect(data.buffers.length).toBe(1);
+    expect(data.buffers[0].target).toBe('#general');
     expect(data.users.length).toBe(1);
     expect(data.users[0].username).toBe('alice');
   });

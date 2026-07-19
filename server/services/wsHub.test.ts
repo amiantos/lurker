@@ -12,10 +12,9 @@ const testDb = setupTestDb('wshub');
 
 let createUser: typeof import('../db/users.js').createUser;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
+let dbHandle: typeof import('../db/index.js').default;
 let insertMessage: typeof import('../db/messages.js').insertMessage;
-let closeBuffer: typeof import('../db/closedBuffers.js').closeBuffer;
-let reopenBuffer: typeof import('../db/closedBuffers.js').reopenBuffer;
-let isClosed: typeof import('../db/closedBuffers.js').isClosed;
+let buffers: typeof import('../db/buffers.js');
 let setClearedState: typeof import('../db/bufferReads.js').setClearedState;
 let setReadState: typeof import('../db/bufferReads.js').setReadState;
 let computeTotalHighlights: typeof import('./wsHub.js').computeTotalHighlights;
@@ -43,8 +42,9 @@ let networkId: number;
 beforeAll(async () => {
   ({ createUser } = await import('../db/users.js'));
   ({ createNetwork } = await import('../db/networks.js'));
+  dbHandle = (await import('../db/index.js')).default;
   ({ insertMessage, maxMessageId } = await import('../db/messages.js'));
-  ({ closeBuffer, reopenBuffer, isClosed } = await import('../db/closedBuffers.js'));
+  buffers = await import('../db/buffers.js');
   ({ setClearedState, setReadState } = await import('../db/bufferReads.js'));
   ircManager = (await import('./ircManager.js')).default;
   ({
@@ -80,6 +80,9 @@ beforeAll(async () => {
 afterAll(() => testDb.cleanup());
 
 function seed(target: string, text: string): number {
+  // In production a persisted event mints the registry row (the live filter's
+  // ensureExists); tests write history directly, so mirror that here.
+  buffers.ensureExists(userId, networkId, target);
   return Number(
     insertMessage({
       networkId,
@@ -91,6 +94,19 @@ function seed(target: string, text: string): number {
       self: false,
     }).id,
   );
+}
+
+// Registry shims mirroring production: a buffer you can close necessarily has
+// a row (the live filter minted it), and close/reopen are update-only flips.
+function closeBuffer(uid: number, nid: number, target: string): void {
+  buffers.ensureOpen(uid, nid, target);
+  buffers.close(uid, nid, target);
+}
+function isClosed(uid: number, nid: number, target: string): boolean {
+  return buffers.isClosed(uid, nid, target);
+}
+function reopenBuffer(uid: number, nid: number, target: string): boolean {
+  return buffers.reopen(uid, nid, target);
 }
 
 // A WebSocket stand-in that records the frames send() writes. send() gates on
@@ -290,6 +306,8 @@ describe('buildOfflineBacklogFrames', () => {
     });
     const offId = net!.id;
     const seedOff = (target: string, text: string): void => {
+      // Mirror the live filter's row-minting — except :server:, never a row.
+      if (!target.startsWith(':')) buffers.ensureExists(userId, offId, target);
       insertMessage({
         networkId: offId,
         target,
@@ -345,6 +363,7 @@ describe('buildOfflineBacklogFrames', () => {
       nick: 'alice',
     });
     const offId = net!.id;
+    buffers.ensureExists(userId, offId, '#hidden');
     insertMessage({
       networkId: offId,
       target: '#hidden',
@@ -636,8 +655,9 @@ describe('computeTotalHighlights', () => {
       tls: true,
       nick: 'badger',
     })!.id;
-    const ins = (target: string, text: string) =>
-      Number(
+    const ins = (target: string, text: string) => {
+      buffers.ensureExists(u, net, target); // the live filter's row-minting
+      return Number(
         insertMessage({
           networkId: net,
           target,
@@ -648,6 +668,7 @@ describe('computeTotalHighlights', () => {
           self: false,
         }).id,
       );
+    };
 
     // The system-buffer term is constant for this user across the test (we never
     // add notable system lines), so assert deltas against this baseline rather
@@ -714,8 +735,13 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
 
   const netFor = (uid: number, name: string) =>
     createNetwork(uid, { name, host: 'h', port: 6697, tls: true, nick: 'x' })!.id;
-  const ins = (net: number, target: string, text: string, matchedRuleId: number | null = null) =>
-    Number(
+  const ins = (net: number, target: string, text: string, matchedRuleId: number | null = null) => {
+    // The live filter's row-minting; the network row knows its owner.
+    const owner = dbHandle.prepare('SELECT user_id AS uid FROM networks WHERE id = ?').get(net) as {
+      uid: number;
+    };
+    buffers.ensureExists(owner.uid, net, target);
+    return Number(
       insertMessage({
         networkId: net,
         target,
@@ -727,6 +753,7 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
         matchedRuleId,
       }).id,
     );
+  };
 
   it('counts a closed-but-currently-joined channel — a live join beats a stale closed flag (finding #3)', () => {
     const u = createUser('racer').id;

@@ -16,7 +16,7 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 let db: typeof import('../db/index.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
-let upsertChannel: typeof import('../db/networks.js').upsertChannel;
+let buffers: typeof import('../db/buffers.js');
 let insertMessage: typeof import('../db/messages.js').insertMessage;
 let setUserSetting: typeof import('../db/settings.js').setUserSetting;
 let createRule: typeof import('../db/highlightRules.js').createRule;
@@ -47,7 +47,6 @@ let insertUpload: typeof import('../db/uploadHistory.js').insertUpload;
 let setNicklistCollapsed: typeof import('../db/nicklistCollapsed.js').setNicklistCollapsed;
 let setChannelNotifyAlways: typeof import('../db/channelNotify.js').setChannelNotifyAlways;
 let upsertDraft: typeof import('../db/drafts.js').upsertDraft;
-let closeBuffer: typeof import('../db/closedBuffers.js').closeBuffer;
 let writeAwayMarker: typeof import('../db/userAwayState.js').writeAwayMarker;
 let addInputHistory: typeof import('../db/inputHistory.js').addEntry;
 let EXPORT_TABLES: typeof import('../db/exportSchema.js').EXPORT_TABLES;
@@ -59,7 +58,8 @@ let EXPORT_FORMAT_VERSION: typeof import('../db/exportSchema.js').EXPORT_FORMAT_
 beforeAll(async () => {
   db = (await import('../db/index.js')).default;
   ({ createUser } = await import('../db/users.js'));
-  ({ createNetwork, upsertChannel } = await import('../db/networks.js'));
+  ({ createNetwork } = await import('../db/networks.js'));
+  buffers = await import('../db/buffers.js');
   ({ insertMessage } = await import('../db/messages.js'));
   ({ insertUpload } = await import('../db/uploadHistory.js'));
   ({ setUserSetting } = await import('../db/settings.js'));
@@ -72,7 +72,6 @@ beforeAll(async () => {
   ({ setNicklistCollapsed } = await import('../db/nicklistCollapsed.js'));
   ({ setChannelNotifyAlways } = await import('../db/channelNotify.js'));
   ({ upsertDraft } = await import('../db/drafts.js'));
-  ({ closeBuffer } = await import('../db/closedBuffers.js'));
   ({ writeAwayMarker } = await import('../db/userAwayState.js'));
   const ih = await import('../db/inputHistory.js');
   addInputHistory = ih.addEntry;
@@ -102,8 +101,8 @@ function seedAlice(): { alice: User; net: Network; ruleId: number } {
     tls: true,
     nick: 'alice',
   }) as Network;
-  upsertChannel(net.id, '#general', true);
-  upsertChannel(net.id, '#dev', false);
+  buffers.ensureOpen(alice.id, net.id, '#general', { kind: 'channel', autojoin: true });
+  buffers.ensureOpen(alice.id, net.id, '#dev', { kind: 'channel' });
   const m1 = insertMessage({
     networkId: net.id,
     target: '#general',
@@ -161,9 +160,10 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(bobNets[0].name).toBe('libera');
 
     const bobChannels = db
-      .prepare('SELECT * FROM channels WHERE network_id = ?')
-      .all(bobNets[0].id) as Array<{ name: string }>;
-    expect(bobChannels.map((c) => c.name).toSorted()).toEqual(['#dev', '#general']);
+      .prepare(`SELECT * FROM buffers WHERE network_id = ? AND kind = 'channel'`)
+      .all(bobNets[0].id) as Array<{ target: string; autojoin: number }>;
+    expect(bobChannels.map((c) => c.target).toSorted()).toEqual(['#dev', '#general']);
+    expect(bobChannels.find((c) => c.target === '#general')!.autojoin).toBe(1);
 
     const bobMessages = db
       .prepare('SELECT * FROM messages WHERE network_id = ? ORDER BY id ASC')
@@ -691,6 +691,110 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(rows.every((r) => r.notable === 1)).toBe(true);
   });
 
+  it('converts a legacy archive (channels + closed_buffers, no buffers table) into registry rows', async () => {
+    // A backup taken before the buffers registry: existence lived in messages,
+    // autojoin/key in `channels`, hide flags in `closed_buffers`. Simulate one
+    // by rewriting a modern export's data.json to the old shape.
+    const { alice, net } = seedAlice();
+    // A DM with history that the legacy archive marks closed (a tombstone).
+    insertMessage({
+      networkId: net.id,
+      target: 'Mallory',
+      time: '2026-05-17T10:05:00Z',
+      type: 'message',
+      nick: 'Mallory',
+      text: 'psst',
+      self: false,
+    });
+    const buf = await exportToBuffer(alice.id, { includeMessages: true });
+    const yauzl = await import('yauzl');
+    const { ZipArchive } = await import('archiver');
+
+    const entries = await new Promise<Map<string, Buffer>>((resolve, reject) => {
+      yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zip) => {
+        if (err) return reject(err);
+        const out = new Map<string, Buffer>();
+        zip.readEntry();
+        zip.on('entry', (entry) => {
+          if (entry.fileName.endsWith('/')) {
+            zip.readEntry();
+            return;
+          }
+          zip.openReadStream(entry, (e2, stream) => {
+            if (e2) return reject(e2);
+            const chunks: Buffer[] = [];
+            stream.on('data', (c: Buffer) => chunks.push(c));
+            stream.on('end', () => {
+              out.set(entry.fileName, Buffer.concat(chunks));
+              zip.readEntry();
+            });
+            stream.on('error', reject);
+          });
+        });
+        zip.on('end', () => resolve(out));
+        zip.on('error', reject);
+      });
+    });
+
+    const data = JSON.parse(entries.get('data.json')!.toString('utf8'));
+    delete data.buffers;
+    data.channels = [
+      // joined=1 + key, has history → open, autojoin, key carried.
+      {
+        id: 1,
+        network_id: net.id,
+        name: '#general',
+        joined: 1,
+        created_at: '2026-01-01',
+        key: 'legacykey',
+      },
+      // joined=0, no history → an un-surfaced config row ('closed', NULL closed_at).
+      { id: 2, network_id: net.id, name: '#dusty', joined: 0, created_at: '2026-01-01', key: null },
+    ];
+    data.closed_buffers = [
+      {
+        user_id: alice.id,
+        network_id: net.id,
+        target: 'mallory',
+        closed_at: '2026-05-18T00:00:00Z',
+      },
+    ];
+    entries.set('data.json', Buffer.from(JSON.stringify(data)));
+
+    const archive = new ZipArchive();
+    const rebuiltChunks: Buffer[] = [];
+    archive.on('data', (c: Buffer) => rebuiltChunks.push(c));
+    for (const [name, content] of entries) archive.append(content, { name });
+    await archive.finalize();
+    const rebuilt = Buffer.concat(rebuiltChunks);
+
+    const pat = createUser(`pat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    const result = await importFromZipBuffer(pat.id, rebuilt);
+    expect(result.counts.buffers).toBeGreaterThan(0);
+    const patNet = (
+      db.prepare('SELECT id FROM networks WHERE user_id = ?').get(pat.id) as { id: number }
+    ).id;
+
+    const general = buffers.getBuffer(pat.id, patNet, '#general')!;
+    expect(general.state).toBe('open');
+    expect(general.autojoin).toBe(true);
+    expect(general.key).toBe('legacykey');
+
+    const dusty = buffers.getBuffer(pat.id, patNet, '#dusty')!;
+    expect(dusty.state).toBe('closed');
+    expect(dusty.closedAt).toBeNull(); // never surfaced, not user-closed
+    expect(dusty.autojoin).toBe(false); // joined=0 in the archive
+
+    // The closed tombstone wins over the message-derived open row, folded.
+    const mallory = buffers.getBuffer(pat.id, patNet, 'MALLORY')!;
+    expect(mallory.state).toBe('closed');
+    expect(mallory.closedAt).toBe('2026-05-18T00:00:00Z');
+
+    // A history-less channel absent from the legacy tables gets no row at all
+    // — legacy existence WAS message history.
+    expect(buffers.getBuffer(pat.id, patNet, '#dev')).toBeUndefined();
+  });
+
   it('rejects an archive without a manifest', async () => {
     createUser(`eve_${Date.now()}`);
     // A zip with only an unrelated file.
@@ -818,9 +922,9 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
       tls: true,
       nick: 'alice',
     }) as Network;
-    upsertChannel(net1.id, '#general', true);
-    upsertChannel(net1.id, '#dev', false);
-    upsertChannel(net2.id, '#support', true);
+    buffers.ensureOpen(user.id, net1.id, '#general', { kind: 'channel', autojoin: true });
+    buffers.ensureOpen(user.id, net1.id, '#dev', { kind: 'channel' });
+    buffers.ensureOpen(user.id, net2.id, '#support', { kind: 'channel', autojoin: true });
 
     const m1 = insertMessage({
       networkId: net1.id,
@@ -870,7 +974,8 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
     setNicklistCollapsed(user.id, net1.id, '#dev', true);
     setChannelNotifyAlways(user.id, net1.id, '#general', true);
     upsertDraft(user.id, net1.id, '#dev', 'half-typed thought');
-    closeBuffer(user.id, net1.id, '#oldchan');
+    buffers.ensureOpen(user.id, net1.id, '#oldchan', { kind: 'channel' });
+    buffers.close(user.id, net1.id, '#oldchan');
     addBookmark(user.id, m1.id as number);
     addBookmark(user.id, m2.id as number);
     setReadState(user.id, net1.id, '#general', m2.id as number);

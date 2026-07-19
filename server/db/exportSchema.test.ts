@@ -216,7 +216,7 @@ describe('at-rest encryptedColumns', () => {
       new Set(tablesWithEncryptedColumns().map(([t]) => t)),
     );
     expect(map.networks).toBeDefined();
-    expect(map.channels).toEqual(['key']);
+    expect(map.buffers).toEqual(['key']);
     expect(map.e2e_identity).toEqual(['privkey']);
   });
 

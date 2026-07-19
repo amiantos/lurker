@@ -19,7 +19,18 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
-import { closeBuffer, reopenBuffer } from '../db/closedBuffers.js';
+import {
+  ensureOpen as ensureBufferOpen,
+  close as closeBufferRow,
+  reopen as reopenBufferRow,
+} from '../db/buffers.js';
+
+// A buffer you can close necessarily has a registry row — mirror that here.
+function closeBuffer(userId: number, networkId: number, target: string): void {
+  ensureBufferOpen(userId, networkId, target);
+  closeBufferRow(userId, networkId, target);
+}
+const reopenBuffer = reopenBufferRow;
 import { insertMessage } from '../db/messages.js';
 
 beforeAll(() => {
@@ -73,6 +84,9 @@ function harness() {
 // Seed a real persisted message so DB-backed routing (casing fold, presence
 // gate) sees history. Returns nothing — callers query via the connection.
 function seed(target: string, nick: string, text: string, type = 'message'): void {
+  // In production a persisted event mints the registry row (wsHub's live
+  // filter); tests bypass that path, so mirror it here.
+  ensureBufferOpen(1, 1, target);
   insertMessage({
     networkId: 1,
     target,

@@ -31,6 +31,8 @@ import type { Statement, RunResult } from 'better-sqlite3';
 import db from '../db/index.js';
 import { EXPORT_TABLES, EXPORT_FORMAT_VERSION, IMPORT_ORDER } from '../db/exportSchema.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
+import { importRow as importBufferRow } from '../db/buffers.js';
+import { listBufferTargets, hasMessageForTarget } from '../db/messages.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import type { IgnorePatternKind } from '../db/ignoredMasks.js';
 
@@ -200,6 +202,13 @@ function insertTable(
       row.trusted_certificates = 1;
     }
 
+    // target_folded is derived state (the registry's one folded lookup key);
+    // recompute rather than trusting the archive so a hand-edited or corrupted
+    // file can't plant a row the folded lookups will never find.
+    if (table === 'buffers') {
+      row.target_folded = String(row.target ?? '').toLowerCase();
+    }
+
     // Export carries at-rest secrets (network passwords, +k channel keys) as
     // plaintext; re-encrypt them when importing onto a keyed (hosted) cell.
     // No-op without a key. Which columns is declared per-table via
@@ -272,6 +281,72 @@ function insertTable(
     inserted += 1;
   }
   counts[table] = inserted;
+}
+
+// Legacy-archive conversion: build buffers-registry rows for an export that
+// predates the registry (no `buffers` table; existence derived from messages,
+// autojoin/key in `channels`, hide flags in `closed_buffers`). Mirrors the
+// schema-16 backfill: message targets → open rows; channels rows → autojoin/key
+// carriers ('closed' + NULL closed_at when history-less, i.e. never surfaced);
+// closed_buffers → closed (flag wins, archive closed_at preserved). Folding
+// dedupe happens inside importBufferRow's folded conflict handling; canonical
+// casing = first-seen (listBufferTargets is target ASC), which is deterministic
+// — the operator fold tool can re-canonicalize a pre-v9 archive's forks.
+function convertLegacyBuffers(
+  data: Record<string, Record<string, unknown>[]>,
+  idMaps: Record<string, Map<unknown, unknown>>,
+  counts: Record<string, number>,
+  targetUserId: number,
+): void {
+  if ((data.buffers?.length ?? 0) > 0) return;
+  const legacyChannels = data.channels || [];
+  const legacyClosed = data.closed_buffers || [];
+  const networkMap = idMaps.networks;
+  if (!networkMap || (!legacyChannels.length && !legacyClosed.length && !networkMap.size)) return;
+
+  let converted = 0;
+  // A: every imported message target becomes an open row.
+  for (const newNetworkId of networkMap.values()) {
+    for (const target of listBufferTargets(newNetworkId as number)) {
+      if (target.startsWith(':')) continue; // virtual buffers are never rows
+      importBufferRow({
+        userId: targetUserId,
+        networkId: newNetworkId as number,
+        target,
+        state: 'open',
+      });
+      converted += 1;
+    }
+  }
+  // B: channels rows carry autojoin + key; history decides surfaced-ness.
+  for (const ch of legacyChannels) {
+    const networkId = networkMap.get(ch.network_id);
+    if (networkId === undefined || typeof ch.name !== 'string' || !ch.name) continue;
+    importBufferRow({
+      userId: targetUserId,
+      networkId: networkId as number,
+      target: ch.name,
+      kind: 'channel',
+      state: hasMessageForTarget(networkId as number, ch.name) ? 'open' : 'closed',
+      autojoin: ch.joined === 1 || ch.joined === true,
+      key: typeof ch.key === 'string' ? ch.key : null,
+    });
+    converted += 1;
+  }
+  // C: closed flags win last.
+  for (const cb of legacyClosed) {
+    const networkId = networkMap.get(cb.network_id);
+    if (networkId === undefined || typeof cb.target !== 'string' || !cb.target) continue;
+    importBufferRow({
+      userId: targetUserId,
+      networkId: networkId as number,
+      target: cb.target,
+      state: 'closed',
+      closedAt: typeof cb.closed_at === 'string' ? cb.closed_at : null,
+    });
+    converted += 1;
+  }
+  if (converted > 0) counts.buffers = (counts.buffers ?? 0) + converted;
 }
 
 // Stream messages.ndjson line-by-line and insert in batched transactions,
@@ -501,6 +576,14 @@ export async function importFromZipFile(
             thumbnailsAttached += 1;
           }
         }
+
+        // Legacy archives (pre-buffers-registry) carry channels + closed_buffers
+        // instead of a buffers table; synthesize the registry the same way the
+        // schema-16 migration backfills a live DB. Runs after the messages
+        // stream because buffer existence in those archives IS the message
+        // history. Modern archives skip this (their buffers table imported in
+        // Phase A).
+        convertLegacyBuffers(data, idMaps, counts, targetUserId);
       })();
     } catch (err) {
       resetImportedData(targetUserId);

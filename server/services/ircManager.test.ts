@@ -16,12 +16,10 @@ let systemLog: typeof import('./systemLog.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let setUserPaused: typeof import('../db/users.js').setUserPaused;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
-let listChannels: typeof import('../db/networks.js').listChannels;
+let buffers: typeof import('../db/buffers.js');
 let insertDccTransfer: typeof import('../db/dccTransfers.js').insertDccTransfer;
 let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
 let planChannelRejoins: typeof import('./ircManager.js').planChannelRejoins;
-let closeBuffer: typeof import('../db/closedBuffers.js').closeBuffer;
-let isClosed: typeof import('../db/closedBuffers.js').isClosed;
 
 beforeAll(async () => {
   ircManager = (await import('./ircManager.js')).default;
@@ -29,8 +27,8 @@ beforeAll(async () => {
   connectScheduler = (await import('./connectScheduler.js')).default;
   systemLog = (await import('./systemLog.js')).default;
   ({ createUser, setUserPaused } = await import('../db/users.js'));
-  ({ createNetwork, listChannels } = await import('../db/networks.js'));
-  ({ closeBuffer, isClosed } = await import('../db/closedBuffers.js'));
+  ({ createNetwork } = await import('../db/networks.js'));
+  buffers = await import('../db/buffers.js');
   ({ insertDccTransfer, updateDccTransferState } = await import('../db/dccTransfers.js'));
 });
 
@@ -430,7 +428,7 @@ describe('planChannelRejoins', () => {
     expect(planChannelRejoins([])).toEqual([]);
   });
 
-  it('joinChannel persists the key end-to-end so the rejoin plan carries it', () => {
+  it('joinChannel persists the key end-to-end (via the echo) so the rejoin plan carries it', () => {
     const user = createUser('irc-join-e2e');
     const net = createNetwork(user.id, {
       name: 'n',
@@ -446,8 +444,15 @@ describe('planChannelRejoins', () => {
 
     ircManager.joinChannel(user.id, net.id, '#secret', 'hunter2');
 
-    // The key made it to the DB and comes back out in the rejoin plan.
-    const joined = listChannels(net.id).filter((c) => c.joined);
+    // The request persists NOTHING — the registry row (and its key) is written
+    // by the join echo, the only proof the join landed where we asked.
+    expect(buffers.getBuffer(user.id, net.id, '#secret')).toBeUndefined();
+    conn.client.user.nick = 'a';
+    conn.client.emit('join', { channel: '#secret', nick: 'a' });
+
+    const joined = buffers
+      .listAutojoinChannels(net.id)
+      .map((b) => ({ name: b.target, key: b.key }));
     expect(planChannelRejoins(joined)).toContainEqual({ channels: '#secret', keys: 'hunter2' });
   });
 
@@ -467,7 +472,7 @@ describe('planChannelRejoins', () => {
 
     ircManager.partChannel(user.id, net.id, '#never-heard-of');
 
-    expect(listChannels(net.id)).toHaveLength(0);
+    expect(buffers.listForNetwork(net.id)).toHaveLength(0);
     expect(conn.client.part).toHaveBeenCalledWith('#never-heard-of', undefined);
   });
 
@@ -485,10 +490,12 @@ describe('planChannelRejoins', () => {
     conn.client.part = vi.fn<(channel: string, reason?: string) => void>();
 
     ircManager.joinChannel(user.id, net.id, '#real');
-    expect(listChannels(net.id).find((c) => c.name === '#real')?.joined).toBe(1);
+    conn.client.user.nick = 'a';
+    conn.client.emit('join', { channel: '#real', nick: 'a' }); // the echo lands
+    expect(buffers.getBuffer(user.id, net.id, '#real')?.autojoin).toBe(true);
 
     ircManager.partChannel(user.id, net.id, '#real');
-    expect(listChannels(net.id).find((c) => c.name === '#real')?.joined).toBe(0);
+    expect(buffers.getBuffer(user.id, net.id, '#real')?.autojoin).toBe(false);
   });
 
   it('joinChannel reopens a closed buffer only for a channel we are already in', () => {
@@ -507,16 +514,18 @@ describe('planChannelRejoins', () => {
     const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
     conn.client.join = vi.fn<(channel: string, key?: string) => void>();
 
-    // Not in the channel yet: the request must NOT clear the flag on its own.
-    closeBuffer(user.id, net.id, '#pending');
+    // Not in the channel yet: the request must NOT reopen on its own.
+    buffers.ensureOpen(user.id, net.id, '#pending', { kind: 'channel' });
+    buffers.close(user.id, net.id, '#pending');
     ircManager.joinChannel(user.id, net.id, '#pending');
-    expect(isClosed(user.id, net.id, '#pending')).toBe(true);
+    expect(buffers.isClosed(user.id, net.id, '#pending')).toBe(true);
 
     // Already in it: no echo is coming, so reopen right away.
-    closeBuffer(user.id, net.id, '#here');
+    buffers.ensureOpen(user.id, net.id, '#here', { kind: 'channel' });
+    buffers.close(user.id, net.id, '#here');
     conn.upsertChannel('#here');
     ircManager.joinChannel(user.id, net.id, '#here');
-    expect(isClosed(user.id, net.id, '#here')).toBe(false);
+    expect(buffers.isClosed(user.id, net.id, '#here')).toBe(false);
   });
 
   it('joinChannel drops a non-string key from an untrusted payload without throwing', () => {
@@ -537,7 +546,10 @@ describe('planChannelRejoins', () => {
     expect(() =>
       ircManager.joinChannel(user.id, net.id, '#x', 123 as unknown as string),
     ).not.toThrow();
-    expect(listChannels(net.id).find((c) => c.name === '#x')!.key).toBeNull(); // dropped
+    // The bogus key was never stashed, so the echo mints a keyless row.
+    conn.client.user.nick = 'a';
+    conn.client.emit('join', { channel: '#x', nick: 'a' });
+    expect(buffers.getBuffer(user.id, net.id, '#x')!.key).toBeNull(); // dropped
     expect(conn.client.join).toHaveBeenCalledWith('#x', undefined);
   });
 });

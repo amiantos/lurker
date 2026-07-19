@@ -29,7 +29,7 @@ import {
   listMessagesAround,
   hasOlderRow,
   hasNewerRow,
-  listBufferTargets,
+  hasMessageForTarget,
   listSpeakers,
   countNewer,
   countServerBufferUnread,
@@ -58,7 +58,17 @@ import {
   addEntry as addInputHistory,
   listRecent as listRecentInputHistory,
 } from '../db/inputHistory.js';
-import { closeBuffer, reopenBuffer, isClosed, closedKeySetForUser } from '../db/closedBuffers.js';
+import {
+  getBuffer,
+  ensureExists as ensureBufferExists,
+  ensureOpen as ensureBufferOpen,
+  reopen as reopenBufferRow,
+  close as closeBufferRow,
+  setAutojoin as setBufferAutojoin,
+  listForUser as listBuffersForUser,
+  foldTarget,
+} from '../db/buffers.js';
+import type { BufferRecord } from '../db/buffers.js';
 import {
   pinBuffer,
   unpinBuffer,
@@ -75,7 +85,7 @@ import {
 } from '../db/channelNotify.js';
 import { getUserAwayState } from '../db/userAwayState.js';
 import { findNotifyContactForTarget } from '../db/contacts.js';
-import { upsertChannel, ownsNetwork, listNetworksForUser } from '../db/networks.js';
+import { ownsNetwork, listNetworksForUser } from '../db/networks.js';
 import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject } from './settingsRegistry.js';
@@ -494,12 +504,6 @@ function computeUnreadFor(
   };
 }
 
-// A joined-set stand-in for buffers with no join concept (offline networks, the
-// system buffer): nothing is ever "currently joined", so isHiddenClosedBuffer
-// falls back to a plain closed-flag check. Shared so we don't allocate one per
-// network in the enumerator.
-const NONE_JOINED: { has(name: string): boolean } = { has: () => false };
-
 // One yield per buffer.
 export interface UserBufferTarget {
   networkId: number | null; // null == the app-scoped system buffer
@@ -513,45 +517,47 @@ export interface UserBufferTarget {
 // this walk and re-derive the system / :server: / closed-vs-joined carve-outs
 // slightly differently, which let the PWA app-icon badge total drift from the
 // in-app count (#454). Now they all iterate this generator, so the set can't
-// diverge. The app-scoped system buffer (networkId null, uncloseable) is yielded
-// first; then, for every network the user owns (live OR offline), the buffers
-// under it — in no particular order — its :server: pseudo-buffer (uncloseable),
-// every target with persisted history (listBufferTargets), and, for a live
-// connection, its currently-joined channels even before they have history
-// (matching what the snapshot ships). Consumers key frames by network+target and
-// sum per buffer, so intra-network yield order doesn't matter.
-// Closed buffers are dropped with the SAME join-precedence the snapshot uses
-// (isHiddenClosedBuffer): a closed flag hides a buffer only when it isn't
-// currently joined, so an autorejoin/reconnect race where a channel is both
-// closed and joined can't make the badge total omit highlights the snapshot
-// actually shipped (finding #3). `conn` is the live connection or null so callers
-// can choose shell-vs-backlog and thread per-connection state without re-deriving
-// liveness. Keys off buffer history, not buffer_reads rows, so a never-opened
-// buffer (no read pointer) is still enumerated — the client counts it from
+// diverge.
+//
+// The set is the buffers registry: the app-scoped system buffer (networkId
+// null, uncloseable) first, then per network its :server: pseudo-buffer
+// (uncloseable, synthesized — no row) followed by that network's open buffer
+// rows. A closed row hides its buffer unless the channel is currently joined
+// (join-precedence, matching the live filter's channel-joined reopen: in the
+// close→PART-echo window the buffer is still materially there). A live-joined
+// channel with no row at all (its row was forgotten mid-session) is yielded
+// defensively so the sidebar can never lose a channel the user is actually in.
+// `conn` is the live connection or null so callers can choose shell-vs-backlog
+// without re-deriving liveness. Rows exist independently of history, so a
+// never-spoken empty buffer is still enumerated — the client counts it from
 // lastReadId 0, and callers use getReadState (defaults to 0) the same way.
-export function* eachUserBufferTarget(
-  userId: number,
-  closed: Set<string> = closedKeySetForUser(userId),
-): Generator<UserBufferTarget> {
+export function* eachUserBufferTarget(userId: number): Generator<UserBufferTarget> {
   // System buffer first — app-scoped (networkId null), uncloseable.
   yield { networkId: null, target: SYSTEM_TARGET, conn: null };
   const liveById = new Map<number, IrcConnection>(
     ircManager.listConnections(userId).map((c) => [c.network.id, c]),
   );
+  const rowsByNetwork = new Map<number, BufferRecord[]>();
+  for (const row of listBuffersForUser(userId)) {
+    if (row.networkId == null) continue; // app-scoped rows are synthesized above
+    let list = rowsByNetwork.get(row.networkId);
+    if (!list) rowsByNetwork.set(row.networkId, (list = []));
+    list.push(row);
+  }
   for (const net of listNetworksForUser(userId)) {
     const conn = liveById.get(net.id) ?? null;
-    const targets = new Set(listBufferTargets(net.id));
-    targets.add(`:server:${net.id}`);
-    // Live: currently-joined channels are shown even before they have history,
-    // and take precedence over a stale closed flag.
-    if (conn) for (const ch of conn.channels.values()) targets.add(ch.name);
-    const joined = conn?.channels ?? NONE_JOINED;
-    for (const target of targets) {
-      // :server: is uncloseable; every other target honors the closed flag, but
-      // a currently-joined channel beats a stale closed flag (join-precedence).
-      if (!target.startsWith(':server:') && isHiddenClosedBuffer(closed, joined, net.id, target))
-        continue;
-      yield { networkId: net.id, target, conn };
+    yield { networkId: net.id, target: `:server:${net.id}`, conn };
+    const seen = new Set<string>();
+    for (const row of rowsByNetwork.get(net.id) ?? []) {
+      const folded = foldTarget(row.target);
+      seen.add(folded);
+      if (row.state === 'closed' && !conn?.channels.has(folded)) continue;
+      yield { networkId: net.id, target: row.target, conn };
+    }
+    if (conn) {
+      for (const ch of conn.channels.values()) {
+        if (!seen.has(ch.name.toLowerCase())) yield { networkId: net.id, target: ch.name, conn };
+      }
     }
   }
 }
@@ -959,9 +965,9 @@ function buildOfflineFrame(userId: number, networkId: number, target: string): W
 
 // `targets` lets the snapshot hand in the enumeration it already materialized for
 // the live loop, so a connect snapshot walks eachUserBufferTarget — and its
-// per-network listBufferTargets/listNetworksForUser DB reads — exactly ONCE
-// instead of once here and once in the live loop. Standalone callers (tests) omit
-// it and get a fresh walk (which computes its own closed set).
+// listBuffersForUser/listNetworksForUser DB reads — exactly ONCE instead of
+// once here and once in the live loop. Standalone callers (tests) omit it and
+// get a fresh walk.
 export function buildOfflineBacklogFrames(
   userId: number,
   targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId),
@@ -979,12 +985,11 @@ export function buildOfflineBacklogFrames(
 }
 
 // A buffer the user closed and isn't currently joined to is hidden from the
-// sidebar; broadcasting or seeding a frame for it would resurrect it (#319).
-// Centralizes the live-loop carve-out shared by the snapshot and mark-all-read
-// so the two sites can't drift. The closed set is case-folded
-// (closedKeySetForUser), so fold the target here too — servers hand us
-// inconsistently-cased names (#289). A currently-joined channel always beats a
-// stale closed flag (defensive against autorejoin/state races).
+// sidebar; broadcasting a read-state frame for it would resurrect it (#319).
+// The closed set is folded `${networkId}::${folded}` keys built from the
+// buffers registry (closedBufferKeySet); fold the target here too — servers
+// hand us inconsistently-cased names (#289). A currently-joined channel always
+// beats a stale closed flag (defensive against autorejoin/state races).
 function isHiddenClosedBuffer(
   closed: Set<string>,
   joined: { has(name: string): boolean },
@@ -995,14 +1000,28 @@ function isHiddenClosedBuffer(
   return closed.has(`${networkId}::${lower}`) && !joined.has(lower);
 }
 
+// The folded closed-buffer key set for isHiddenClosedBuffer, from the registry.
+function closedBufferKeySet(userId: number): Set<string> {
+  const set = new Set<string>();
+  for (const row of listBuffersForUser(userId)) {
+    if (row.state === 'closed' && row.networkId != null) {
+      set.add(`${row.networkId}::${foldTarget(row.target)}`);
+    }
+  }
+  return set;
+}
+
 // Handles a client `open-buffer` request (a clicked channel name). Resolves
-// the requested target against buffers that already have persisted history —
-// case-insensitively, since IRC channel names are case-insensitive but
-// message rows store one canonical casing. A match (even a since-/closed
-// buffer) is reopened and re-seeded without a re-JOIN; a channel with no
-// history anywhere is one we've never visited, so it gets joined. Either way
-// the requesting socket is told the canonical target to focus, so it never
-// has to guess the casing.
+// the requested target against the buffers registry — folded, since IRC names
+// are case-insensitive but rows store one canonical casing. A row with
+// persisted history (even a closed one) is reopened and re-seeded without a
+// re-JOIN; a channel with no history is one we've never sat in — a bare
+// registry row can exist for it (a config-seeded autojoin entry), but there is
+// nothing to show, so it gets joined and surfaces on the echo. A bare nick
+// becomes a real (possibly empty) DM row — under the registry an empty DM can
+// exist and survive a reload, which the derived model couldn't express.
+// Either way the requesting socket is told the canonical target to focus, so
+// it never has to guess the casing.
 export function handleOpenBuffer(
   ws: LurkerWebSocket,
   userId: number,
@@ -1010,16 +1029,18 @@ export function handleOpenBuffer(
   requested: string,
 ): void {
   if (!networkId || !requested || requested.startsWith(':server:')) return;
-  const canonical = listBufferTargets(networkId).find(
-    (t) => t.toLowerCase() === requested.toLowerCase(),
-  );
-  if (canonical) {
-    reopenBuffer(userId, networkId, canonical);
-    send(ws, buildBufferBacklog(userId, networkId, canonical));
-    send(ws, { kind: 'buffer-opened', networkId, target: canonical });
+  const row = getBuffer(userId, networkId, requested);
+  if (row && hasMessageForTarget(networkId, row.target)) {
+    reopenBufferRow(userId, networkId, row.target);
+    send(ws, buildBufferBacklog(userId, networkId, row.target));
+    send(ws, { kind: 'buffer-opened', networkId, target: row.target });
   } else if (requested.startsWith('#')) {
     ircManager.joinChannel(userId, networkId, requested);
     send(ws, { kind: 'buffer-opened', networkId, target: requested });
+  } else {
+    const { record } = ensureBufferOpen(userId, networkId, requested);
+    send(ws, buildBufferBacklog(userId, networkId, record.target));
+    send(ws, { kind: 'buffer-opened', networkId, target: record.target });
   }
 }
 
@@ -1465,28 +1486,35 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     }
     const decorated = decorateMessage(eventUserId, event);
     const target = decorated.target;
-    if (
-      target &&
-      !target.startsWith(':server:') &&
-      isClosed(eventUserId, decorated.networkId, target)
-    ) {
-      // See reopensClosedBuffer for which events outrank a closed flag; anything
-      // else is dropped on the floor rather than resurrecting the buffer.
-      const selfJoin = decorated.type === 'channel-joined';
-      const reopens = reopensClosedBuffer(decorated.type, decorated.id);
-      // Ignored senders cannot resurrect a closed DM either. Otherwise an
-      // ignored user can force the buffer back into the sidebar simply by
-      // sending — a soft harassment vector the client-side render filter
-      // doesn't close, since the reopen happens server-side. A self-join has no
-      // sender to ignore — it's our own action — so it skips this gate.
-      const senderIgnored = reopens && !selfJoin && senderHidden(eventUserId, decorated);
-      if (!reopens || senderIgnored) return;
-      reopenBuffer(eventUserId, decorated.networkId, target);
-      fanOut(eventUserId, {
-        kind: 'buffer-reopened',
-        networkId: decorated.networkId,
-        target,
-      });
+    if (target && decorated.networkId != null && !target.startsWith(':server:')) {
+      const row = getBuffer(eventUserId, decorated.networkId, target);
+      if (row?.state === 'closed') {
+        // See reopensClosedBuffer for which events outrank a closed flag; anything
+        // else is dropped on the floor rather than resurrecting the buffer.
+        const selfJoin = decorated.type === 'channel-joined';
+        const reopens = reopensClosedBuffer(decorated.type, decorated.id);
+        // Ignored senders cannot resurrect a closed DM either. Otherwise an
+        // ignored user can force the buffer back into the sidebar simply by
+        // sending — a soft harassment vector the client-side render filter
+        // doesn't close, since the reopen happens server-side. A self-join has no
+        // sender to ignore — it's our own action — so it skips this gate.
+        const senderIgnored = reopens && !selfJoin && senderHidden(eventUserId, decorated);
+        if (!reopens || senderIgnored) return;
+        reopenBufferRow(eventUserId, decorated.networkId, target);
+        fanOut(eventUserId, {
+          kind: 'buffer-reopened',
+          networkId: decorated.networkId,
+          target,
+        });
+      } else if (!row && decorated.id != null) {
+        // A persisted event for a target with no registry row mints one — this
+        // replaces the old derived-existence-from-messages. Covers first-contact
+        // DMs (message OR notice: a NOTICE may create a buffer, #439, it just
+        // can't reopen a closed one — that's the branch above) and any stray
+        // persisted channel traffic. The event itself flows on unchanged; the
+        // client materializes the buffer from it exactly as it always has.
+        ensureBufferExists(eventUserId, decorated.networkId, target);
+      }
     }
     fanOut(eventUserId, { ...decorated, kind: 'irc' });
     maybePush(eventUserId, decorated);
@@ -1829,19 +1857,18 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     send(ws, { kind: 'contacts-snapshot', contacts: ircManager.listContacts(userId) });
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);
-    const closed = closedKeySetForUser(userId);
     // Walk the shared enumerator ONCE per snapshot and reuse it for both the live
-    // loop and the offline backlog. Each walk runs a listBufferTargets DB query
-    // (recursive CTE) per network plus listNetworksForUser (SELECT * + decryptRow),
-    // so materializing here — rather than iterating the generator separately in the
-    // live loop and again in buildOfflineBacklogFrames — keeps those per-network
-    // reads at 1× on this ping-timeout-sensitive path (#454/#460). The array holds
-    // buffer references (incl. live conns), which stay valid for the rest of this
-    // synchronous snapshot. The system buffer / :server: / closed-joined precedence
-    // and joined-channel-even-without-history rules all live in the enumerator.
-    // Counted in seedsMs (it's a bulk pre-loop read like readState/clearedState),
-    // so onlineMs/offlineMs stay pure per-buffer frame-build time.
-    const allTargets = [...eachUserBufferTarget(userId, closed)];
+    // loop and the offline backlog. Each walk runs one listBuffersForUser query
+    // plus listNetworksForUser (SELECT * + decryptRow), so materializing here —
+    // rather than iterating the generator separately in the live loop and again
+    // in buildOfflineBacklogFrames — keeps those reads at 1× on this
+    // ping-timeout-sensitive path (#454/#460). The array holds buffer references
+    // (incl. live conns), which stay valid for the rest of this synchronous
+    // snapshot. The system buffer / :server: / closed-joined precedence rules
+    // all live in the enumerator. Counted in seedsMs (it's a bulk pre-loop read
+    // like readState/clearedState), so onlineMs/offlineMs stay pure per-buffer
+    // frame-build time.
+    const allTargets = [...eachUserBufferTarget(userId)];
     const seedsMs = Date.now() - tSeeds;
     const tOnline = Date.now();
     let maxSentId = ws.sinceId || 0;
@@ -2225,27 +2252,28 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const target = typeof msg.target === 'string' ? msg.target : '';
         // Server pseudo-buffer can't be closed (it's the per-network log).
         if (!networkId || !target || target.startsWith(':server:')) break;
-        closeBuffer(userId, networkId, target);
+        closeBufferRow(userId, networkId, target);
         // The client renders the pinned section by intersecting pins with open
         // buffers, so a pin on a now-closed buffer is invisible — and leaving
         // the row would diverge the client's pin set from ours (issue #112).
-        // Close implies unpin. Match case-insensitively: the snapshot hides
-        // closed buffers case-folded (closedKeySetForUser lowercases), so a
-        // differently-cased close would otherwise hide the buffer while leaving
-        // the exact-cased pin row stranded — an invisible orphan (issue #405).
+        // Close implies unpin. Match case-insensitively: the registry hides
+        // closed buffers folded, so a differently-cased close would otherwise
+        // hide the buffer while leaving the exact-cased pin row stranded — an
+        // invisible orphan (issue #405).
         const pinned = unpinBufferCaseInsensitive(userId, networkId, target);
         if (pinned) {
           fanOut(userId, { kind: 'pins-changed', networkId, pinned });
         }
         if (target.startsWith('#')) {
-          // Send PART if connected; partChannel also flips channels.joined=0.
-          // If disconnected, partChannel is a no-op, so explicitly mark the
-          // channel as not-joined here to keep it from auto-rejoining the
-          // next time the network connects.
+          // Send PART if connected; partChannel also lowers autojoin. If
+          // disconnected, partChannel is a no-op, so lower autojoin here to
+          // keep the channel from auto-rejoining the next time the network
+          // connects. Update-only — closing a buffer that has no row must not
+          // conjure one (the last of the old upsertChannel conjure sites).
           if (
             !ircManager.partChannel(userId, networkId, target, msg.reason as string | undefined)
           ) {
-            upsertChannel(networkId, target, false);
+            setBufferAutojoin(userId, networkId, target, false);
           }
         } else {
           // Closing a DM means we stop tracking this peer. Drop them from
@@ -2427,7 +2455,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // read-state for one that's closed-and-not-joined: the client would
         // re-materialize it and pop it back into the sidebar (#319). So clamp
         // first, then skip only the broadcast.
-        const closed = closedKeySetForUser(userId);
+        const closed = closedBufferKeySet(userId);
         for (const conn of ircManager.listConnections(userId)) {
           const networkId = conn.network.id;
           for (const row of maxIdByBuffer(networkId)) {
