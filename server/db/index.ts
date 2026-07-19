@@ -1655,31 +1655,32 @@ if (schemaVersion < 16 && tableExists('channels')) {
   // (its ensureColumn used to run unconditionally; it's gone now that fresh
   // installs have no channels table).
   ensureColumn('channels', 'key', 'TEXT');
-  // Capture the closed set (folded, latest closed_at per fork) BEFORE the
-  // fold below runs: foldBufferCase DELETES stray-cased closed_buffers rows
-  // (in its v9 context those marked a junk fork-variant), but ever since the
-  // live paths went folded, a closed row whose casing merely differs from the
-  // message-majority casing is genuine user intent — the folded snapshot
-  // honored it — and must survive into backfill pass C.
-  db.exec(`DROP TABLE IF EXISTS _bf_closed`);
-  db.exec(`
-    CREATE TEMP TABLE _bf_closed AS
-    SELECT user_id, network_id, lower(target) AS lkey,
-           MIN(target) AS any_target, MAX(closed_at) AS closed_at
-    FROM closed_buffers
-    GROUP BY user_id, network_id, lower(target)
-  `);
-  // Re-run the case-fold repair (the v9 one-shot, for forks that appeared
-  // since). The backfill below picks ONE canonical casing per buffer for the
-  // registry row, and every read path keys messages/buffer_reads by exact
-  // target — so any satellite row still sitting on a fork's other casing
-  // would detach: read pointers stop resolving (every snapshot then
-  // COUNT-scans the buffer's whole history as unread) and backlog reads see
-  // only the majority variant's messages. Folding here guarantees messages,
-  // buffer_reads, pins, drafts, and the channels rows all agree with the
-  // casing the backfill is about to canonicalize on. No-op when no forks.
-  foldBufferCase(db, { scope: 'all', report: false });
   const cutover = db.transaction(() => {
+    // Capture the closed set (folded, latest closed_at per fork) BEFORE the
+    // fold below runs: foldBufferCase DELETES stray-cased closed_buffers rows
+    // (in its v9 context those marked a junk fork-variant), but ever since the
+    // live paths went folded, a closed row whose casing merely differs from
+    // the message-majority casing is genuine user intent — the folded snapshot
+    // honored it — and must survive into backfill pass C.
+    db.exec(`DROP TABLE IF EXISTS _bf_closed`);
+    db.exec(`
+      CREATE TEMP TABLE _bf_closed AS
+      SELECT user_id, network_id, lower(target) AS lkey,
+             MIN(target) AS any_target, MAX(closed_at) AS closed_at
+      FROM closed_buffers
+      GROUP BY user_id, network_id, lower(target)
+    `);
+    // Re-run the case-fold repair (the v9 one-shot, for forks that appeared
+    // since). The backfill below picks ONE canonical casing per buffer for the
+    // registry row, and every read path keys messages/buffer_reads by exact
+    // target — so any satellite row still sitting on a fork's other casing
+    // would detach: read pointers stop resolving (every snapshot then
+    // COUNT-scans the buffer's whole history as unread) and backlog reads see
+    // only the majority variant's messages. Folding here guarantees messages,
+    // buffer_reads, pins, drafts, and the channels rows all agree with the
+    // casing the backfill is about to canonicalize on. No-op when no forks.
+    // Its internal db.transaction nests as a savepoint under this one.
+    foldBufferCase(db, { scope: 'all', report: false });
     db.exec(`DROP TABLE IF EXISTS _bf_canon`);
     db.exec(`
       CREATE TEMP TABLE _bf_canon AS
@@ -1753,7 +1754,16 @@ if (schemaVersion < 16 && tableExists('channels')) {
     db.exec(`DROP TABLE IF EXISTS closed_buffers`);
     db.exec(`DROP TABLE channels`);
   });
-  cutover();
+  // BEGIN IMMEDIATE, not deferred: the transaction opens with a long READ
+  // (the fold's and _bf_canon's full-messages scans) before its first write.
+  // Under a deferred BEGIN that read establishes a snapshot, and on a hosted
+  // cell Litestream's once-a-second sync writes its own bookkeeping in that
+  // window — staling the snapshot so the first write dies with
+  // SQLITE_BUSY_SNAPSHOT (non-retryable) and the cell crash-loops on the one
+  // boot that migrates (2026-07-19 roswell incident). Taking the write lock
+  // up front makes Litestream's checkpoints wait/retry (their normal, harmless
+  // behavior) instead of invalidating us.
+  cutover.immediate();
 }
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +
