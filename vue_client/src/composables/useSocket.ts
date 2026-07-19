@@ -233,8 +233,20 @@ function applyEvent(event: any): void {
       // Keep the buffer around so the user can still scroll history; just
       // mark it un-joined so it renders dimmed in the buffer list. /close
       // (or the server's buffer-closed broadcast) is what actually drops it.
-      buffers.setJoined(event.networkId, event.target, false);
-      buffers.setMembers(event.networkId, event.target, []);
+      //
+      // Resolve, never materialize: a 470-forward evicts a channel we never
+      // had open (evictChannel announces the part for the forwarded-from
+      // name), and setMembers' ensureBuffer would otherwise conjure a dead,
+      // empty buffer for a channel we were never in.
+      if (buffers.findByTarget(event.networkId, event.target)) {
+        buffers.setJoined(event.networkId, event.target, false);
+        buffers.setMembers(event.networkId, event.target, []);
+      }
+      // Whether or not a buffer exists, this part is definitive: no join is
+      // landing under this name (the forward case) — stop the pending-join
+      // timer so its "no response" toast can't fire for a join that WAS
+      // answered, just under a different name.
+      buffers.cancelPendingJoin(event.networkId, event.target);
       break;
     case 'typing':
       buffers.setTyping(
