@@ -44,6 +44,34 @@ export const configSchema: ConfigField[] = [
   },
 ];
 
+/** Rewrite Zipline's `/u/<name>` view URL to the `/raw/<name>` byte URL (#589).
+ *
+ *  `/u/` serves an HTML viewer page wrapping the file, which is wrong wherever
+ *  the link is treated as the file itself: Lurker's media viewer classifies by
+ *  extension, so a `/u/notes.txt` link opens the text pane and renders Zipline's
+ *  HTML at the reader. `/raw/` serves the bytes for every content type, so the
+ *  rewrite is unconditional rather than text-only — images and video resolve
+ *  identically either way.
+ *
+ *  Anchored to the first path segment: a blind replace would mangle a Zipline
+ *  hosted under a `/u/` subdirectory, or any hostname containing `/u/`. A URL
+ *  that doesn't have the expected shape (custom route, unparseable) is returned
+ *  untouched — a working view link beats a broken raw one. */
+export function toRawUrl(url: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return url;
+  }
+  const segments = parsed.pathname.split('/');
+  // ['', 'u', 'name'] — leading empty from the root slash.
+  if (segments[1] !== 'u') return url;
+  segments[1] = 'raw';
+  parsed.pathname = segments.join('/');
+  return parsed.toString();
+}
+
 export async function upload(
   source: UploadSource,
   { filename, mime, onProgress }: UploadMeta,
@@ -82,7 +110,7 @@ export async function upload(
   // v4 responses carry the file id — the delete handle. v3 responses are bare
   // URL strings with no id, so a v3 upload is simply not deletable (no ref).
   const ref = typeof first === 'object' && typeof first?.id === 'string' ? first.id : undefined;
-  return { url, ...(ref ? { ref } : {}) };
+  return { url: toRawUrl(url), ...(ref ? { ref } : {}) };
 }
 
 /** Delete a file by the id upload() captured. Zipline v4's delete route accepts

@@ -20,14 +20,16 @@ const prevEnv = process.env.LOCAL_UPLOADS_DIR;
 // Write a buffer through the real driver and return the served path.
 async function put(buffer: Buffer, filename: string, mime: string): Promise<string> {
   const res = await local.upload(bufferSource(buffer), { filename, mime }, {});
-  return res.url; // /uploads/local/<key>
+  return res.url; // /uploads/<key>
 }
 
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-localserve-'));
   process.env.LOCAL_UPLOADS_DIR = dir;
   const router = (await import('./localUploads.js')).default;
-  app = createTestApp({ '/uploads/local': router });
+  // Both mounts, mirroring app.ts: the current path plus the legacy alias that
+  // keeps pre-#582 links alive.
+  app = createTestApp({ '/uploads': router, '/uploads/local': router });
   agent = createAnonAgent(app);
 });
 
@@ -37,7 +39,7 @@ afterAll(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('GET /uploads/local/:key', () => {
+describe('GET /uploads/:key', () => {
   it('serves a recognized image inline with hardened headers', async () => {
     const png = await sharp({
       create: { width: 8, height: 8, channels: 3, background: { r: 0, g: 128, b: 255 } },
@@ -121,13 +123,32 @@ describe('GET /uploads/local/:key', () => {
   it('404s an invalid key without touching the filesystem', async () => {
     const bad = ['../../etc/passwd', 'not-a-key', 'a1b2c3d4e5f6', 'ABCDEF012345.png'];
     for (const k of bad) {
-      const res = await agent.get(`/uploads/local/${encodeURIComponent(k)}`);
+      const res = await agent.get(`/uploads/${encodeURIComponent(k)}`);
       expect(res.status).toBe(404);
     }
   });
 
   it('404s a well-formed key with no file on disk', async () => {
-    const res = await agent.get('/uploads/local/0123456789ab.png');
+    const res = await agent.get('/uploads/0123456789ab.png');
     expect(res.status).toBe(404);
+  });
+
+  // #582 shortened the minted path, but upload_history stores absolutized URLs
+  // that nothing rewrites — so every link shared before the change must still
+  // resolve, including ones pasted into IRC and read by other clients.
+  it('still serves the same file through the legacy /uploads/local alias', async () => {
+    const png = await sharp({
+      create: { width: 8, height: 8, channels: 3, background: { r: 9, g: 9, b: 9 } },
+    })
+      .png()
+      .toBuffer();
+    const url = await put(png, 'legacy.png', 'image/png');
+    expect(url.startsWith('/uploads/')).toBe(true);
+    expect(url.startsWith('/uploads/local/')).toBe(false);
+
+    const key = url.slice('/uploads/'.length);
+    const res = await agent.get(`/uploads/local/${key}`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('image/png');
   });
 });

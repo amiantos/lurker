@@ -392,7 +392,8 @@ describe('zipline provider', () => {
     expect(cap.headers!.authorization).toBe('ziptok');
     expect(cap.headers!['User-Agent']).toMatch(/^Lurker\//);
     expect(filePart(cap, 'file').filename).toBe('x.png');
-    expect(result.url).toBe('https://zl.test/u/x.png');
+    // The upstream /u/ view path is rewritten to /raw/ on the way out (#589).
+    expect(result.url).toBe('https://zl.test/raw/x.png');
   });
 
   it('accepts the v3 response shape (files as URL strings)', async () => {
@@ -407,7 +408,7 @@ describe('zipline provider', () => {
       { filename: 'y.png', mime: 'image/png' },
       { url: 'https://zl.test/', token: 't' },
     );
-    expect(result.url).toBe('https://zl.test/u/y.png');
+    expect(result.url).toBe('https://zl.test/raw/y.png');
   });
 
   it('rejects with PROVIDER_CONFIG when url or token is missing', async () => {
@@ -472,6 +473,47 @@ describe('zipline provider', () => {
       { url: 'https://zl.test', token: 't' },
     );
     expect(v3.ref).toBeUndefined();
+  });
+
+  // #589: /u/ serves an HTML viewer page wrapping the file. Lurker's media
+  // viewer classifies by extension, so a /u/*.txt link fetched into the text
+  // pane renders Zipline's HTML at the reader; /raw/ serves the bytes.
+  it('rewrites the /u/ view path to /raw/ on both response shapes', async () => {
+    capturePost();
+    postResponse = {
+      status: 200,
+      headers: {},
+      text: JSON.stringify({ files: [{ id: 'clxyz123', url: 'https://zl.test/u/notes.txt' }] }),
+    };
+    const v4 = await zipline.upload(
+      src([1]),
+      { filename: 'notes.txt', mime: 'text/plain' },
+      { url: 'https://zl.test', token: 't' },
+    );
+    expect(v4.url).toBe('https://zl.test/raw/notes.txt');
+
+    postResponse = {
+      status: 200,
+      headers: {},
+      text: JSON.stringify({ files: ['https://zl.test/u/pic.png'] }),
+    };
+    const v3 = await zipline.upload(
+      src([1]),
+      { filename: 'pic.png', mime: 'image/png' },
+      { url: 'https://zl.test', token: 't' },
+    );
+    expect(v3.url).toBe('https://zl.test/raw/pic.png');
+  });
+
+  it('only rewrites the leading path segment, and leaves other shapes alone', async () => {
+    // A substring replace would corrupt each of these.
+    expect(zipline.toRawUrl('https://zl.test/u/u/x.txt')).toBe('https://zl.test/raw/u/x.txt');
+    expect(zipline.toRawUrl('https://u.test/u/x.txt')).toBe('https://u.test/raw/x.txt');
+    expect(zipline.toRawUrl('https://zl.test/files/u/x.txt')).toBe('https://zl.test/files/u/x.txt');
+    // Already raw, an unrecognized route, and an unparseable value all pass through.
+    expect(zipline.toRawUrl('https://zl.test/raw/x.txt')).toBe('https://zl.test/raw/x.txt');
+    expect(zipline.toRawUrl('https://zl.test/view/x.txt')).toBe('https://zl.test/view/x.txt');
+    expect(zipline.toRawUrl('not a url')).toBe('not a url');
   });
 
   it('delete DELETEs /api/user/files/{ref} with the raw token; 404 = already gone', async () => {

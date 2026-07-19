@@ -237,7 +237,7 @@ describe('POST /api/uploads', () => {
 describe('local-style (storesRemotely:false) uploads', () => {
   it('absolutizes a relative driver URL against the request origin', async () => {
     stub.capabilities.storesRemotely = false;
-    stub.nextResult = { url: '/uploads/local/abcdef012345.png', ref: 'abcdef012345.png' };
+    stub.nextResult = { url: '/uploads/abcdef012345.png', ref: 'abcdef012345.png' };
     try {
       const res = await agent
         .post('/api/uploads')
@@ -245,12 +245,12 @@ describe('local-style (storesRemotely:false) uploads', () => {
         .set('X-Forwarded-Host', 'irc.example.com')
         .attach('image', smallPng, { filename: 'local.png', contentType: 'image/png' });
       expect(res.status).toBe(200);
-      expect(res.body.url).toBe('https://irc.example.com/uploads/local/abcdef012345.png');
+      expect(res.body.url).toBe('https://irc.example.com/uploads/abcdef012345.png');
 
       // The absolutized URL — not the relative one — is what gets persisted.
       const list = await agent.get('/api/uploads');
       const row = list.body.items.find((r: { id: number }) => r.id === res.body.id);
-      expect(row.url).toBe('https://irc.example.com/uploads/local/abcdef012345.png');
+      expect(row.url).toBe('https://irc.example.com/uploads/abcdef012345.png');
     } finally {
       stub.capabilities.storesRemotely = true;
       stub.nextResult = null;
@@ -259,7 +259,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
 
   it('ignores a spoofed non-http(s) X-Forwarded-Proto', async () => {
     stub.capabilities.storesRemotely = false;
-    stub.nextResult = { url: '/uploads/local/ccddeeff0011.png', ref: 'ccddeeff0011.png' };
+    stub.nextResult = { url: '/uploads/ccddeeff0011.png', ref: 'ccddeeff0011.png' };
     try {
       const res = await agent
         .post('/api/uploads')
@@ -268,7 +268,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
         .attach('image', smallPng, { filename: 'x.png', contentType: 'image/png' });
       expect(res.status).toBe(200);
       // The bogus scheme is dropped; never javascript://.
-      expect(res.body.url).toBe('https://irc.example.com/uploads/local/ccddeeff0011.png');
+      expect(res.body.url).toBe('https://irc.example.com/uploads/ccddeeff0011.png');
     } finally {
       stub.capabilities.storesRemotely = true;
       stub.nextResult = null;
@@ -277,7 +277,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
 
   it('leaves the URL relative when the forwarded host is malformed', async () => {
     stub.capabilities.storesRemotely = false;
-    stub.nextResult = { url: '/uploads/local/223344556677.png', ref: '223344556677.png' };
+    stub.nextResult = { url: '/uploads/223344556677.png', ref: '223344556677.png' };
     try {
       const res = await agent
         .post('/api/uploads')
@@ -285,7 +285,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
         .attach('image', smallPng, { filename: 'x.png', contentType: 'image/png' });
       expect(res.status).toBe(200);
       // A host with authority-breaking chars is rejected → no base is prefixed.
-      expect(res.body.url).toBe('/uploads/local/223344556677.png');
+      expect(res.body.url).toBe('/uploads/223344556677.png');
     } finally {
       stub.capabilities.storesRemotely = true;
       stub.nextResult = null;
@@ -294,7 +294,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
 
   it('prefers PUBLIC_BASE_URL over the request origin when set', async () => {
     stub.capabilities.storesRemotely = false;
-    stub.nextResult = { url: '/uploads/local/aabbccddeeff.png', ref: 'aabbccddeeff.png' };
+    stub.nextResult = { url: '/uploads/aabbccddeeff.png', ref: 'aabbccddeeff.png' };
     process.env.PUBLIC_BASE_URL = 'https://cdn.example.org/';
     try {
       const res = await agent
@@ -303,7 +303,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
         .attach('image', smallPng, { filename: 'local2.png', contentType: 'image/png' });
       expect(res.status).toBe(200);
       // Trailing slash on the base is trimmed; the request host is ignored.
-      expect(res.body.url).toBe('https://cdn.example.org/uploads/local/aabbccddeeff.png');
+      expect(res.body.url).toBe('https://cdn.example.org/uploads/aabbccddeeff.png');
     } finally {
       delete process.env.PUBLIC_BASE_URL;
       stub.capabilities.storesRemotely = true;
@@ -314,7 +314,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
   it('destroys the bytes via driver.delete before removing a deletable upload', async () => {
     stub.capabilities.storesRemotely = false;
     stub.capabilities.supportsDelete = true;
-    stub.nextResult = { url: '/uploads/local/112233445566.png', ref: '112233445566.png' };
+    stub.nextResult = { url: '/uploads/112233445566.png', ref: '112233445566.png' };
     stub.capturedDeleteRef = null;
     try {
       const up = await agent
@@ -340,7 +340,7 @@ describe('local-style (storesRemotely:false) uploads', () => {
     // A ref is present, but supportsDelete is false → there is no "remove the
     // record but leave the file up" path; the request is refused and the row stays.
     stub.capabilities.storesRemotely = false;
-    stub.nextResult = { url: '/uploads/local/778899aabbcc.png', ref: '778899aabbcc.png' };
+    stub.nextResult = { url: '/uploads/778899aabbcc.png', ref: '778899aabbcc.png' };
     stub.capturedDeleteRef = null;
     try {
       const up = await agent

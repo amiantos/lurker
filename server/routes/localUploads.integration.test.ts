@@ -45,7 +45,7 @@ beforeAll(async () => {
   if (!localRow) throw new Error('expected the seeded self-host local uploader row');
   setUserSetting(user.id, 'uploads.uploader_id', localRow.id);
 
-  app = createTestApp({ '/api/uploads': uploadsRouter, '/uploads/local': localRouter });
+  app = createTestApp({ '/api/uploads': uploadsRouter, '/uploads': localRouter });
   agent = await createAuthedAgent(app, user.id);
 
   smallPng = await sharp({
@@ -73,12 +73,12 @@ describe('local uploader — full round trip', () => {
     expect(up.status).toBe(200);
     // Absolutized against the forwarded origin, pointing at our serve route.
     expect(up.body.url).toMatch(
-      /^https:\/\/irc\.example\.com\/uploads\/local\/[0-9a-f]{12}\.(png|jpe?g|webp)$/,
+      /^https:\/\/irc\.example\.com\/uploads\/[0-9a-f]{12}\.(png|jpe?g|webp)$/,
     );
 
     // The image was optimized to JPEG by the pipeline and written to disk (under
     // its shard subdir).
-    const servePath = new URL(up.body.url).pathname; // /uploads/local/<key>
+    const servePath = new URL(up.body.url).pathname; // /uploads/<key>
     const key = servePath.split('/').pop()!;
     expect(fs.existsSync(local.resolveDiskPath(key))).toBe(true);
 

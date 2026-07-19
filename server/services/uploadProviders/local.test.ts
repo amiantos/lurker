@@ -38,7 +38,7 @@ describe('local driver', () => {
       {},
     );
 
-    expect(res.url).toMatch(/^\/uploads\/local\/[0-9a-f]{12}\.txt$/);
+    expect(res.url).toMatch(/^\/uploads\/[0-9a-f]{12}\.txt$/);
     expect(res.ref).toMatch(/^[0-9a-f]{12}\.txt$/);
     expect(res.bytes).toBe(bytes.length);
 
