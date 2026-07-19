@@ -189,12 +189,12 @@ const auth = useAuthStore();
 const nickColors = useNickColors();
 const composing = useComposing();
 
-// SPLIT (warn) at 2 chunks, FLOOD (bad) at 3+. Lives just before the typing
-// indicator so heavy composers can see it without taking their eyes off the
-// input. Empty / single-chunk drafts render nothing. On a multiline network
-// `composing.chunks` is the batch (message) count: 1 → a neutral MULTILINE
-// chip (lands as one logical message), 2 → MULTILINE ×2 (warn), 3+ →
-// MULTILINE ×N (bad, where the upload-as-.txt gate kicks in). (#381)
+// SPLIT at 2 chunks, FLOOD (n) at 3+. Lives just before the typing indicator so
+// heavy composers can see it without taking their eyes off the input. Empty /
+// single-chunk drafts render nothing. On a multiline network `composing.chunks`
+// is the batch (message) count: 1 → MULTILINE (lands as one logical message),
+// 2+ → MULTILINE ×N. (#381) The label always states what will happen; see
+// splitClass below for when that's coloured as a warning.
 const splitLabel = computed(() => {
   if (composing.multiline) {
     return composing.chunks <= 1 ? 'MULTILINE' : `MULTILINE ×${composing.chunks}`;
@@ -203,14 +203,20 @@ const splitLabel = computed(() => {
   if (composing.isAction) return 'ACTION TOO LONG';
   return composing.chunks >= 3 ? `FLOOD (${composing.chunks})` : 'SPLIT';
 });
+// Severity is about whether the send will be INTERRUPTED, not about length. With
+// chat.allow_split_messages on, a split just goes out — so the chip stays as a
+// neutral count rather than crying wolf in warn/bad on every long message
+// (#578). An overlong /me is still bad: actions never split, they're refused.
 const splitClass = computed(() => {
   if (composing.multiline) {
-    if (composing.chunks >= 3) return 'bad';
-    return composing.chunks === 2 ? 'warn' : '';
+    if (composing.chunks <= 1) return '';
+    if (settings.effective('chat.allow_split_messages')) return '';
+    return composing.chunks >= 3 ? 'bad' : 'warn';
   }
   if (composing.chunks <= 1) return '';
-  if (composing.isAction || composing.chunks >= 3) return 'bad';
-  return 'warn';
+  if (composing.isAction) return 'bad';
+  if (settings.effective('chat.allow_split_messages')) return '';
+  return composing.chunks >= 3 ? 'bad' : 'warn';
 });
 
 // Narrate the leg the upload is ACTUALLY on (#545). A percentage appears only where

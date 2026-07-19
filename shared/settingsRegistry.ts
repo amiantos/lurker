@@ -772,9 +772,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Allow long messages to send as multiple consecutive IRC lines without ' +
       'confirmation. When off (the default), trying to send a message that ' +
       "would split shows a SPLIT warning in the status bar and won't submit " +
-      'until you press Send a second time. Messages that would split into ' +
-      'three or more lines always require confirmation regardless of this ' +
-      'setting. /me actions never split — they are blocked outright.',
+      'until you press Send a second time; one that would split into three or ' +
+      'more offers to upload the text as a file instead. /me actions never ' +
+      'split — they are blocked outright regardless of this setting.',
   },
   {
     key: 'chat.send_typing_notifications',

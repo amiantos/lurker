@@ -99,6 +99,27 @@ export function chunkCountForAction(text: string | null | undefined): number {
   return chunksForLine(text, ACTION_MAX_BYTES);
 }
 
+// What the composer should do with a draft that spans more than one message.
+// 'send' goes straight out; 'confirm' shows the send-again toast; 'upload'
+// offers the upload-as-.txt modal. `confirmed` carries the second-press
+// override from a previous Send on the same draft.
+//
+// chat.allow_split_messages is honoured at EVERY size: a user who turned it on
+// asked for splits to go out silently, so gating the 3+ tier anyway made the
+// setting look broken (#578). With it off, 2 messages get the cheap toast and
+// 3+ get the modal, since uploading is only worth offering for a real flood.
+export type SplitGate = 'send' | 'confirm' | 'upload';
+
+export function splitGateFor(opts: {
+  count: number;
+  allowSplit: boolean;
+  confirmed: boolean;
+}): SplitGate {
+  const { count, allowSplit, confirmed } = opts;
+  if (count <= 1 || allowSplit || confirmed) return 'send';
+  return count >= 3 ? 'upload' : 'confirm';
+}
+
 export interface MultilineLimits {
   maxBytes: number;
   maxLines: number;
