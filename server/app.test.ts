@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import type { Express } from 'express';
 import { setupTestDb, testRequest, TEST_SESSION_SECRET } from './test-utils/testApp.js';
 
@@ -55,6 +57,41 @@ describe('buildApp route gating by edition', () => {
       // IS mounted — the point is it does not 404.
       const res = await testRequest(app).get('/api/node/status');
       expect(res.status).not.toBe(404);
+    });
+  });
+
+  describe('SPA fallback', () => {
+    it('404s a missing /assets file instead of serving index.html (#571)', async () => {
+      const app = await buildFor('standalone');
+      // A stale client asking for a hashed chunk that no longer exists must get
+      // a plain 404. Answering with index.html (200, text/html) turns a dead
+      // lazy route into a confusing module-type refusal the client can't
+      // classify — and the failed import is then memoized forever.
+      const res = await testRequest(app).get('/assets/Settings-deadbeef.js');
+      expect(res.status).toBe(404);
+      // Express's own 404 page is HTML, so content-type proves nothing here —
+      // what matters is that the body is not the SPA shell being passed off as
+      // a JS module.
+      expect(res.text ?? '').not.toContain('id="app"');
+    });
+
+    // Asserting the client route still works needs a built client, and CI runs
+    // the suite without one (.github/workflows/test.yml never builds vue_client).
+    // Skipping when dist/ is absent is honest; the alternative — accepting a 404
+    // as a pass so the test runs everywhere — passed even when the fallback was
+    // broken outright, which is worse than no test because it reads as coverage.
+    const hasBuiltClient = existsSync(
+      path.join(import.meta.dirname, '../vue_client/dist/index.html'),
+    );
+
+    it.skipIf(!hasBuiltClient)('still serves index.html for a real client route', async () => {
+      const app = await buildFor('standalone');
+      const res = await testRequest(app).get('/settings');
+      // Strict: /settings must reach the catch-all and get the SPA shell, not
+      // merely fail to be a hard 404.
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/html/);
+      expect(res.text).toContain('id="app"');
     });
   });
 
