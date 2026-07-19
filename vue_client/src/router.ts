@@ -5,7 +5,7 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from './stores/auth.js';
 import { useConfigStore } from './stores/config.js';
 import { useToastsStore } from './stores/toasts.js';
-import { isChunkLoadError, shouldReloadFor } from './lib/chunkReload.js';
+import { isChunkLoadError, safeSessionStorage, shouldReloadFor } from './lib/chunkReload.js';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('./views/Login.vue') },
@@ -68,7 +68,7 @@ router.onError((err, to) => {
   if (!isChunkLoadError(err)) return;
   const path = to?.fullPath;
   if (!path) return;
-  if (shouldReloadFor(path, Date.now(), window.sessionStorage)) {
+  if (shouldReloadFor(path, Date.now(), safeSessionStorage())) {
     window.location.assign(path);
     return;
   }

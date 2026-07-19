@@ -36,8 +36,24 @@ export const RELOAD_WINDOW_MS = 30_000;
 
 // sessionStorage (not local): the poisoned registry is per-document, and a
 // reload preserves the tab's session storage, which is exactly the scope we
-// need to detect "I already tried this". Access is wrapped because Safari
-// throws on storage access in some private/partitioned contexts.
+// need to detect "I already tried this".
+//
+// Reading `window.sessionStorage` AT ALL throws a SecurityError in Safari with
+// cookies blocked, and in some partitioned/private contexts — so the property
+// access itself has to be inside the try, not just the getItem/setItem calls.
+// Callers must take the handle from here rather than passing `window.
+// sessionStorage` in, or the throw happens at the call site where none of the
+// guarding below can catch it. That would strand this recovery on iOS Safari,
+// which is exactly where a PWA is most likely to lose a chunk in the first
+// place. Same pattern as api.ts's bounceToLoginOnAuthFailure.
+export function safeSessionStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 function readAttempt(storage: Storage): { path: string; at: number } | null {
   try {
     const raw = storage.getItem(RELOAD_KEY);
@@ -54,8 +70,12 @@ function readAttempt(storage: Storage): { path: string; at: number } | null {
  * Decide whether to hard-reload into `path`, recording the attempt when we do.
  * Returns false if we already tried this same path within RELOAD_WINDOW_MS —
  * the caller should then surface the failure to the user instead of looping.
+ *
+ * A null `storage` (unavailable — see safeSessionStorage) allows the reload:
+ * losing the loop guard is the lesser evil versus never recovering at all.
  */
-export function shouldReloadFor(path: string, now: number, storage: Storage): boolean {
+export function shouldReloadFor(path: string, now: number, storage: Storage | null): boolean {
+  if (!storage) return true;
   const prev = readAttempt(storage);
   if (prev && prev.path === path && now - prev.at < RELOAD_WINDOW_MS) return false;
   try {

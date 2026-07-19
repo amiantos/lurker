@@ -1,8 +1,13 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { isChunkLoadError, shouldReloadFor, RELOAD_WINDOW_MS } from './chunkReload.js';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  isChunkLoadError,
+  safeSessionStorage,
+  shouldReloadFor,
+  RELOAD_WINDOW_MS,
+} from './chunkReload.js';
 
 describe('isChunkLoadError', () => {
   // The real strings each engine produces. If a browser rewords one of these
@@ -78,5 +83,44 @@ describe('shouldReloadFor', () => {
   it('ignores a corrupt stored attempt', () => {
     storage.setItem('lurker:chunk-reload', 'not json');
     expect(shouldReloadFor('/settings', 1000, storage)).toBe(true);
+  });
+
+  it('allows the reload when storage is null', () => {
+    expect(shouldReloadFor('/settings', 1000, null)).toBe(true);
+  });
+});
+
+// This suite runs in the node project (no DOM by design — see
+// vue_client/vitest.config.ts), so `window` is stubbed per-case rather than
+// pulling in happy-dom for what is pure logic.
+describe('safeSessionStorage', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('returns the handle when storage is reachable', () => {
+    const handle = {} as Storage;
+    vi.stubGlobal('window', { sessionStorage: handle });
+    expect(safeSessionStorage()).toBe(handle);
+  });
+
+  it('returns null when merely READING window.sessionStorage throws', () => {
+    // Safari with cookies blocked throws a SecurityError on the property
+    // access itself, not on getItem/setItem. If the caller reaches for
+    // window.sessionStorage directly, the throw escapes the whole onError
+    // handler and NO recovery runs at all — on iOS Safari, which is where a
+    // PWA is most likely to lose a chunk to begin with. Regression guard for
+    // that call-site mistake (PR #600 review).
+    vi.stubGlobal('window', {
+      get sessionStorage(): Storage {
+        throw new DOMException('The operation is insecure.', 'SecurityError');
+      },
+    });
+    expect(safeSessionStorage()).toBeNull();
+    expect(() => shouldReloadFor('/settings', 1000, safeSessionStorage())).not.toThrow();
+    // ...and having swallowed it, we still recover rather than giving up.
+    expect(shouldReloadFor('/settings', 1000, safeSessionStorage())).toBe(true);
+  });
+
+  it('returns null when there is no window at all', () => {
+    expect(safeSessionStorage()).toBeNull();
   });
 });
