@@ -181,32 +181,67 @@ async function payload(): Promise<Record<string, unknown>> {
   return deliverMock.mock.calls[0][1] as Record<string, unknown>;
 }
 
-// Opens a real socket and reports presence, resolving once the server has
-// acknowledged by... nothing — the presence verb has no reply. Waiting for the
-// snapshot proves the socket is registered, and presence is sent after, so a
-// short settle covers the ordering. Returns a closer the test must call, or the
-// socket leaks into the next test's socketsByUser and silently suppresses push.
+// Resolve on the socket's next inbound frame, or reject on error/timeout.
+// Every exit path detaches both listeners and clears the timer — a `once` that
+// never fires stays attached, so resolving via 'message' would otherwise strand
+// the 'error' handler (and a timeout would strand both).
+function nextMessage(ws: WebSocket, what: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    function finish(err?: Error) {
+      clearTimeout(timer);
+      ws.off('message', onMessage);
+      ws.off('error', onError);
+      if (err) reject(err);
+      else resolve();
+    }
+    const onMessage = () => finish();
+    const onError = (err: Error) => finish(err);
+    timer = setTimeout(() => finish(new Error(`timed out waiting for ${what}`)), 5000);
+    ws.on('message', onMessage);
+    ws.on('error', onError);
+  });
+}
+
+// Opens a real socket and reports presence, resolving only once the server has
+// definitely applied it.
+//
+// The presence verb sends no reply, so there is nothing to await directly. This
+// used to `await settle()` — one macrotask turn — and hope that covered a real
+// WebSocket round trip: send over loopback, server receives, parses, mutates
+// ws.presence. Under full-suite CPU contention that tick can fire first, leaving
+// presence unset, so a DM pushes and the "does not push when a client is
+// visible" test sees true. That was a rare, load-dependent flake.
+//
+// Instead, follow presence with a verb that DOES reply. The socket processes
+// inbound frames in order, so the snapshot coming back proves the presence frame
+// ahead of it was already handled — an ordering guarantee rather than a timing
+// guess, and it can't be outrun by a slow machine.
+//
+// Returns a closer the test must call, or the socket leaks into the next test's
+// socketsByUser and silently suppresses push. That's also why the failure path
+// closes the socket itself: if setup throws, the caller never receives the
+// closer, so an un-closed socket would linger as a phantom VISIBLE client and
+// silently suppress push in every later test in this file — turning one real
+// failure into a cascade of misleading ones.
 async function connectWithPresence(visible: boolean): Promise<() => Promise<void>> {
   const { token } = createSession(userId);
   const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('timed out waiting for snapshot')), 5000);
-    ws.on('message', () => {
-      clearTimeout(timer);
-      resolve();
-    });
-    ws.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-  ws.send(JSON.stringify({ type: 'presence', visible }));
-  await settle();
-  return () =>
+  const close = () =>
     new Promise<void>((resolve) => {
       ws.on('close', () => resolve());
       ws.close();
     });
+  try {
+    await nextMessage(ws, 'the connect snapshot');
+    ws.send(JSON.stringify({ type: 'presence', visible }));
+    ws.send(JSON.stringify({ type: 'snapshot' }));
+    await nextMessage(ws, 'the snapshot barrier after presence');
+  } catch (err) {
+    await close();
+    throw err;
+  }
+  return close;
 }
 
 describe('maybePush gate chain', () => {
