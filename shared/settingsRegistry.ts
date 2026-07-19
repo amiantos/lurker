@@ -740,6 +740,21 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'individual lines only; events that collapse into the consolidation ' +
       'summary above stay host-less. Regular chat messages are unaffected.',
   },
+  {
+    key: 'chat.show_join_account',
+    label: 'Show services account on join lines',
+    category: 'chat',
+    group: 'consolidate',
+    type: 'bool',
+    default: false,
+    description:
+      'Show the joining user’s services (NickServ) account next to their nick ' +
+      'on JOIN lines (e.g. "alice [aliceacct] joined") — useful for channel ops ' +
+      'confirming who is identified. Requires the network to support the ' +
+      'extended-join extension; nothing is shown for users who are not logged ' +
+      'in, or on networks without it. Applies to individual lines only; events ' +
+      'that collapse into the consolidation summary above stay account-less.',
+  },
 
   // ─── Composing (outgoing message guardrails) ─────────────────────────
   // irc-framework splits anything past ~350 bytes into multiple PRIVMSGs on

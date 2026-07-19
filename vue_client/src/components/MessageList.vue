@@ -157,7 +157,7 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ eventHostSuffix(row.m) }} joined</template
+              />{{ joinAccountSuffix(row.m) }}{{ eventHostSuffix(row.m) }} joined</template
             >
             <template v-else-if="row.m?.type === 'part'"
               ><NickRef
@@ -355,6 +355,13 @@ interface ChatMessage {
   kicked?: string;
   invited?: string;
   userhost?: string;
+  // chghost (#591): the mask AFTER the change. `userhost` holds the old one,
+  // so a line can show both.
+  newIdent?: string;
+  newHost?: string;
+  // extended-join (#508): the joining user's services account, when the
+  // network supports the cap and they're identified.
+  account?: string | null;
   // System-buffer lines (#355): the network this line is about, when any. The
   // prefix column resolves the network's current name from it.
   originNetworkId?: number | null;
@@ -850,6 +857,7 @@ const consolidateMaxNames = computed(
 );
 
 const showEventHost = computed(() => !!settings.effective('chat.show_event_host'));
+const showJoinAccount = computed(() => !!settings.effective('chat.show_join_account'));
 
 const collapseAuthorsEnabled = computed(
   () => !!settings.effective('look.message.collapse_authors'),
@@ -1248,6 +1256,19 @@ function eventHostSuffix(m: ChatMessage | undefined): string {
   const { user, host } = parseUserHost(m?.userhost);
   if (!user || !host) return '';
   return ` (${user}@${host})`;
+}
+
+// The joining user's services account, from extended-join (#508). Rendered
+// between the nick and the host suffix, matching weechat's `[account]` shape
+// (irssi and thelounge put it in the same slot). Unlike the nicklist, this
+// surface needs no WHOX backfill to be consistent: a join line only exists for
+// a join event, and extended-join always carries the account for exactly that
+// event — so the value is either present or the network lacks the cap, never
+// silently stale. Only a known account renders; a logged-out user (the `*`
+// sentinel, stored as null) shows nothing, same as no data.
+function joinAccountSuffix(m: ChatMessage | undefined): string {
+  if (!showJoinAccount.value) return '';
+  return m?.account ? ` [${m.account}]` : '';
 }
 
 function prefixClass(m: ChatMessage | undefined) {

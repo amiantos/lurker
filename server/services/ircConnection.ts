@@ -238,6 +238,11 @@ function extractExtras(event: IrcEvent): Record<string, unknown> | null {
       // backlog, so the line reads "X changed host to @" after a reload.
       extras = { newIdent: event.newIdent, newHost: event.newHost };
       break;
+    case 'join':
+      // extended-join account, so the join line still shows it after a reload
+      // (#508). Absent on networks without the cap and for logged-out users.
+      if (event.account) extras = { account: event.account };
+      break;
   }
   // RPE2E: persist the lock flag for message/action/notice so the indicator
   // survives a reload and reaches late-attaching clients (round-trips through the
@@ -1583,11 +1588,16 @@ export class IrcConnection {
         // enabled, and omits the key when it isn't (#508).
         account: normalizeAccount(event.account),
       });
+      const joinAccount = normalizeAccount(event.account);
       this.publish({
         type: 'join',
         target: eventChannel,
         nick: eventNick,
         userhost: buildUserhost(event),
+        // Only when we actually know an account — a logged-out `null` renders
+        // as nothing anyway, and omitting it keeps the persisted `extra` JSON
+        // off every join row on networks without the cap.
+        ...(joinAccount ? { account: joinAccount } : {}),
       });
       if (eventNick !== c.user.nick) {
         // JOIN means they're online. If they were marked away and JOIN fires,

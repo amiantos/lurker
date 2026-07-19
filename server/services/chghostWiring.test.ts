@@ -170,6 +170,21 @@ describe('extended-join / account-notify (#508)', () => {
     expect(memberIn('#one', 'bob')?.account).toBe('bobaccount');
   });
 
+  it('puts the account on the join event so the join line can show it', () => {
+    const { of, join } = harness();
+    join('#one', 'bob', { account: 'bobaccount' });
+    expect(of('join')[0]).toMatchObject({ nick: 'bob', account: 'bobaccount' });
+  });
+
+  it('omits account from the join event when there is nothing to show', () => {
+    const { of, join } = harness();
+    join('#one', 'bob', { account: false }); // logged out
+    join('#two', 'carol'); // cap not enabled
+    // Renders as nothing either way, so keep it off the persisted `extra` JSON
+    // rather than writing a null onto every join row.
+    for (const e of of('join')) expect(e).not.toHaveProperty('account');
+  });
+
   it('distinguishes logged-out from never-learned', () => {
     const { memberIn, join } = harness();
     // irc-framework hands us `false` for the `*` sentinel...
