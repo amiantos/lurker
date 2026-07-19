@@ -170,8 +170,19 @@ function applyEvent(event: any): void {
     case 'away-state':
       networks.applyAwayState(event);
       break;
+    // Render only. The nicklist patch rides the `member-update` the server
+    // sends alongside this — patching here too would double the work and, since
+    // the raw event carries '' for a half the server chose to keep unchanged,
+    // would briefly write the wrong value before member-update corrected it.
+    case 'chghost':
+      buffers.pushMessage(event);
+      break;
     case 'names':
       buffers.setMembers(event.networkId, event.target, event.members);
+      break;
+    // Incremental nicklist patch — not persisted, so no pushMessage/dedupe.
+    case 'member-update':
+      buffers.updateMember(event.networkId, event.target, event.member?.nick, event.member);
       break;
     case 'channel-joined':
       buffers.ensure(event.networkId, event.target);

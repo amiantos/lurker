@@ -444,3 +444,82 @@ describe('joinOrActivate channel key', () => {
     });
   });
 });
+
+describe('member attribute patching (#591, #508)', () => {
+  const member = (nick: string, extra: Record<string, unknown> = {}) => ({
+    nick,
+    modes: [],
+    away: false,
+    ...extra,
+  });
+
+  it('patches a member in place, leaving unmentioned fields alone', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [member('bob', { user: 'ident', host: 'old.host' })]);
+
+    store.updateMember(1, '#chan', 'bob', { host: 'user/bob' });
+
+    const m = store.byKey('1::#chan')!.members[0];
+    expect(m.host).toBe('user/bob');
+    expect(m.user).toBe('ident'); // untouched
+  });
+
+  it('matches the nick case-insensitively', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [member('Bob', { host: 'old.host' })]);
+
+    // A CHGHOST/ACCOUNT echoes the nick as the server holds it, which needn't
+    // match the case NAMES gave us.
+    store.updateMember(1, '#chan', 'bob', { host: 'user/bob' });
+
+    expect(store.byKey('1::#chan')!.members[0].host).toBe('user/bob');
+    expect(store.byKey('1::#chan')!.members[0].nick).toBe('Bob'); // case preserved
+  });
+
+  it('never lets a patch overwrite the nick', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [member('bob')]);
+
+    store.updateMember(1, '#chan', 'bob', { nick: 'evil', host: 'user/bob' });
+
+    expect(store.byKey('1::#chan')!.members[0].nick).toBe('bob');
+  });
+
+  it('does not materialize a buffer for an unopened target', () => {
+    const store = useBuffersStore();
+    const before = netBuffers(store).length;
+
+    store.updateMember(1, '#never-opened', 'bob', { host: 'user/bob' });
+
+    // A pure attribute patch has no business creating a buffer — doing so
+    // would leave an empty one in the sidebar.
+    expect(netBuffers(store)).toHaveLength(before);
+    expect(store.isOpen(1, '#never-opened')).toBe(false);
+  });
+
+  it('finds an account from any shared channel on the network', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#one', [member('bob')]); // joined before us — no data
+    store.setMembers(1, '#two', [member('bob', { account: 'bobaccount' })]);
+
+    expect(store.accountFor(1, 'bob')).toBe('bobaccount');
+  });
+
+  it('tolerates a string network id', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#one', [member('bob', { account: 'bobaccount' })]);
+
+    // Buffers store networkId as a number; `'1' !== 1` would silently match
+    // nothing rather than fail loudly.
+    expect(store.accountFor('1', 'bob')).toBe('bobaccount');
+  });
+
+  it('distinguishes logged-out from never-learned', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#one', [member('bob', { account: null })]);
+    store.setMembers(1, '#two', [member('carol')]);
+
+    expect(store.accountFor(1, 'bob')).toBeNull(); // server said logged out
+    expect(store.accountFor(1, 'carol')).toBeUndefined(); // we never learned
+  });
+});

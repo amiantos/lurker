@@ -54,9 +54,9 @@
               <code>{{ actualHost }}</code>
             </dd>
           </template>
-          <template v-if="whois?.account">
+          <template v-if="account">
             <dt>Account</dt>
-            <dd>{{ whois.account }}</dd>
+            <dd>{{ account }}</dd>
           </template>
           <template v-if="whois?.server">
             <dt>Server</dt>
@@ -212,6 +212,18 @@ const awayMessage = computed(() => {
   const fromPresence = peer.value?.awayMessage || '';
   if (fromPresence) return fromPresence;
   return (whois.value?.away as string) || '';
+});
+
+// Prefer the WHOIS reply, fall back to what extended-join / account-notify
+// taught the nicklist (#508) — same precedence as awayMessage above, and for
+// the same reason: WHOIS is the richer, freshly-requested source, but it only
+// exists once the round-trip lands. The fallback means the row is populated the
+// instant the modal opens for anyone who joined while we were watching, and
+// account-notify keeps it honest afterwards.
+const account = computed(() => {
+  const fromWhois = (whois.value?.account as string) || '';
+  if (fromWhois) return fromWhois;
+  return buffers.accountFor(props.networkId, props.nick) || '';
 });
 
 const presenceClass = computed(() => {

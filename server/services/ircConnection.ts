@@ -113,6 +113,9 @@ const NON_PERSISTED_TYPES = new Set([
   // CTCP request/reply notices are transient status, surfaced via
   // publishEphemeral — never persisted (#263).
   'ctcp',
+  // Incremental nicklist patch (host/account). Like 'names' it describes
+  // current membership state, not history — a replayed one would be wrong.
+  'member-update',
 ]);
 
 // Diagnostic: a single synchronous IRC-event handler (NAMES/WHO member-list
@@ -147,6 +150,14 @@ interface ChannelMember {
   away: boolean;
   user: string | null;
   host: string | null;
+  // Services account, from extended-join / account-notify. Three states:
+  // a string = logged in as that account; null = server told us they're logged
+  // out (the `*` sentinel); undefined = we never learned (no cap, or they were
+  // already here when we joined — NAMES carries no account). Unknown and
+  // logged-out both render as nothing today, but keeping them distinct is what
+  // lets a future WHOX backfill (#508 follow-up) write a correct merge rule
+  // instead of clobbering fresher data — see irssi's nickrec->account guard.
+  account?: string | null;
 }
 
 interface ChannelState {
@@ -222,6 +233,16 @@ function extractExtras(event: IrcEvent): Record<string, unknown> | null {
     case 'mode':
       extras = { modes: event.modes };
       break;
+    case 'chghost':
+      // Without this the new mask survives the live fan-out but vanishes from
+      // backlog, so the line reads "X changed host to @" after a reload.
+      extras = { newIdent: event.newIdent, newHost: event.newHost };
+      break;
+    case 'join':
+      // extended-join account, so the join line still shows it after a reload
+      // (#508). Absent on networks without the cap and for logged-out users.
+      if (event.account) extras = { account: event.account };
+      break;
   }
   // RPE2E: persist the lock flag for message/action/notice so the indicator
   // survives a reload and reaches late-attaching clients (round-trips through the
@@ -275,7 +296,21 @@ function memberSnapshot(m: ChannelMember): ChannelMember {
     away: !!m.away,
     user: m.user || null,
     host: m.host || null,
+    account: m.account,
   };
+}
+
+// Normalize a services account off the wire into ChannelMember.account's
+// tristate. There are TWO logged-out sentinels: `*` on JOIN/ACCOUNT, and `0` on
+// a WHOX 354 reply — normalize both here, at the parse boundary, so exactly one
+// representation reaches the member map. irc-framework hands us `false` for `*`
+// on the events it parses, and omits the key entirely when the cap is off.
+function normalizeAccount(raw: unknown): string | null | undefined {
+  if (raw === undefined) return undefined; // cap not enabled — we know nothing
+  if (raw === false || raw === null) return null; // framework's `*` sentinel
+  const s = String(raw).trim();
+  if (!s || s === '*' || s === '0') return null;
+  return s;
 }
 
 // Why a nick is on the presence watch list: an active DM peer, a friend/contact
@@ -516,6 +551,15 @@ export class IrcConnection {
     const target = canonicalChannelTarget(event.target, this.channels);
     if (target === event.target) return event;
     return { ...event, target };
+  }
+
+  // Patch one member's attributes on the client's nicklist. The pre-existing
+  // way to push a member change was to republish the whole `names` array (see
+  // the WHO ident/host backfill), which is O(members) for a one-nick edit —
+  // fine once per join, wasteful for a chghost storm after a netsplit, and no
+  // use at all for the silent account-notify path.
+  private publishMemberUpdate(target: string, member: ChannelMember): void {
+    this.publish({ type: 'member-update', target, member: memberSnapshot(member) });
   }
 
   // Returns the enriched, persisted event so callers can read server-stamped
@@ -1175,26 +1219,79 @@ export class IrcConnection {
     // irc-framework fires 'user updated' for both CHGHOST (ident/host change)
     // and SETNAME (realname change). The cloaked-vhost case after SASL on
     // Libera arrives as a CHGHOST, but only when we've requested the chghost
-    // cap (see the client constructor). Surface self changes in the server
-    // buffer so users see "your host became X" the way other clients do.
+    // cap (see the client constructor).
+    //
+    // Requesting that cap makes the server STOP sending the fake QUIT/rejoin
+    // pair it uses to describe a host change to clients that lack it. So until
+    // #591 this handler's self-only guard meant third-party host changes
+    // rendered as literally nothing — strictly less than a client with no
+    // IRCv3 support at all. CHGHOST arrives once, globally; every reference
+    // client (weechat irc-protocol.c, irssi massjoin.c, halloy, thelounge)
+    // fans it out to each channel the user shares with you, updates the
+    // nicklist host there, and renders ONE native line. No client synthesizes
+    // the fake QUIT/rejoin — that's a server/bouncer compat shim (znc does it
+    // only when relaying to a downstream that didn't negotiate the cap).
     c.on('user updated', (event: Record<string, unknown>) => {
-      if (
-        !event ||
-        !c.user.nick ||
-        (event.nick as string | undefined)?.toLowerCase() !== c.user.nick.toLowerCase()
-      )
-        return;
-      if (event.new_hostname || event.new_ident) {
-        const ident = (event.new_ident as string) || (event.ident as string) || '';
-        const host = (event.new_hostname as string) || (event.hostname as string) || '';
-        const mask = ident ? `${ident}@${host}` : host;
-        if (mask) {
-          this.publish({
-            type: 'motd',
-            target: this.serverTarget(),
-            text: `Your hostmask: ${mask}`,
-          });
-        }
+      if (!event || !event.nick) return;
+      if (!event.new_hostname && !event.new_ident) return; // SETNAME — not ours
+      const eventNick = event.nick as string;
+      const lower = eventNick.toLowerCase();
+      const isSelf = !!c.user.nick && c.user.nick.toLowerCase() === lower;
+      // CHGHOST only carries the half that changed on some ircds; fall back to
+      // the previous value so the mask we store and show is always complete.
+      const newIdent = (event.new_ident as string) || (event.ident as string) || '';
+      const newHost = (event.new_hostname as string) || (event.hostname as string) || '';
+      const mask = newIdent ? `${newIdent}@${newHost}` : newHost;
+      if (!mask) return;
+
+      if (isSelf) {
+        // Keep the long-standing server-buffer line for your own host change —
+        // it's the SASL-cloak confirmation, and it belongs where you'll see it
+        // even when you share no channels yet.
+        this.publish({
+          type: 'motd',
+          target: this.serverTarget(),
+          text: `Your hostmask: ${mask}`,
+        });
+      }
+
+      const oldUserhost = buildUserhost(event);
+      for (const ch of this.channels.values()) {
+        const member = ch.members.get(lower);
+        if (!member) continue;
+        // Update the stored mask, not just the rendered line. thelounge is the
+        // cautionary case here: it prints the line but has no host field on its
+        // user model, so its nicklist stays stale — the exact complaint in #591.
+        member.user = newIdent || member.user;
+        member.host = newHost || member.host;
+        this.publish({
+          type: 'chghost',
+          target: ch.name,
+          nick: eventNick,
+          userhost: oldUserhost,
+          newIdent,
+          newHost,
+        });
+        this.publishMemberUpdate(ch.name, member);
+      }
+    });
+
+    // account-notify. Deliberately silent: no channel line, nicklist/hover
+    // only. On Libera (and most Atheme networks) identifying to services fires
+    // ACCOUNT and CHGHOST back to back, so rendering both would mean two lines
+    // per identify in every shared channel. chghost earns its line because it
+    // regressed against the no-cap baseline (#591); this never showed anything.
+    // halloy and gamja both treat ACCOUNT as a pure state update too.
+    c.on('account', (event: Record<string, unknown>) => {
+      if (!event || !event.nick) return;
+      const eventNick = event.nick as string;
+      const lower = eventNick.toLowerCase();
+      const account = normalizeAccount(event.account);
+      for (const ch of this.channels.values()) {
+        const member = ch.members.get(lower);
+        if (!member) continue;
+        member.account = account;
+        this.publishMemberUpdate(ch.name, member);
       }
     });
 
@@ -1481,18 +1578,26 @@ export class IrcConnection {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
       const ch = this.upsertChannel(eventChannel);
+      // extended-join: irc-framework parses the account param when the cap is
+      // enabled, and omits the key when it isn't (#508).
+      const joinAccount = normalizeAccount(event.account);
       ch.members.set(eventNick.toLowerCase(), {
         nick: eventNick,
         modes: [],
         away: false,
         user: (event.ident as string) || null,
         host: (event.hostname as string) || null,
+        account: joinAccount,
       });
       this.publish({
         type: 'join',
         target: eventChannel,
         nick: eventNick,
         userhost: buildUserhost(event),
+        // Only when we actually know an account — a logged-out `null` renders
+        // as nothing anyway, and omitting it keeps the persisted `extra` JSON
+        // off every join row on networks without the cap.
+        ...(joinAccount ? { account: joinAccount } : {}),
       });
       if (eventNick !== c.user.nick) {
         // JOIN means they're online. If they were marked away and JOIN fires,
@@ -1717,6 +1822,10 @@ export class IrcConnection {
             away: !!member.away,
             user: (event.ident as string) || member.user || null,
             host: (event.hostname as string) || member.host || null,
+            // A nick change doesn't log you out — carry the account across, or
+            // it's lost for good (account-notify only fires when the account
+            // itself changes, which it hasn't) (#508).
+            account: member.account,
           });
           this.publish({
             type: 'nick',
@@ -1889,9 +1998,17 @@ export class IrcConnection {
       // (e.g. on /NAMES or a fresh join). NAMES doesn't carry ident/host on
       // most ircds — the JOIN event and WHO reply do — so we hold onto
       // whatever we already learned.
-      const prev = new Map<string, { away: boolean; user: string | null; host: string | null }>();
+      const prev = new Map<
+        string,
+        { away: boolean; user: string | null; host: string | null; account?: string | null }
+      >();
       for (const [k, v] of ch.members)
-        prev.set(k, { away: !!v.away, user: v.user || null, host: v.host || null });
+        prev.set(k, {
+          away: !!v.away,
+          user: v.user || null,
+          host: v.host || null,
+          account: v.account,
+        });
       ch.members.clear();
       for (const u of eventUsers) {
         const nick = u.nick as string;
@@ -1903,6 +2020,9 @@ export class IrcConnection {
           away: carry.away || false,
           user: (u.ident as string) || carry.user || null,
           host: (u.hostname as string) || carry.host || null,
+          // NAMES never carries an account, so this is carry-forward only —
+          // same reasoning as user/host above (#508).
+          account: carry.account,
         });
       }
       this.publish({

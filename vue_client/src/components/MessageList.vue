@@ -157,7 +157,7 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ eventHostSuffix(row.m) }} joined</template
+              />{{ joinAccountSuffix(row.m) }}{{ eventHostSuffix(row.m) }} joined</template
             >
             <template v-else-if="row.m?.type === 'part'"
               ><NickRef
@@ -176,6 +176,13 @@
               />{{ eventHostSuffix(row.m) }} quit<template v-if="row.m.text">
                 (<LinkedText :text="row.m.text" />)</template
               ></template
+            >
+            <template v-else-if="row.m?.type === 'chghost'"
+              ><NickRef
+                :nick="row.m.nick ?? ''"
+                interactive
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+              />{{ eventHostSuffix(row.m) }} changed host to {{ chghostMask(row.m) }}</template
             >
             <template v-else-if="row.m?.type === 'kick'"
               ><NickRef
@@ -346,6 +353,13 @@ interface ChatMessage {
   kicked?: string;
   invited?: string;
   userhost?: string;
+  // chghost (#591): the mask AFTER the change. `userhost` holds the old one,
+  // so a line can show both.
+  newIdent?: string;
+  newHost?: string;
+  // extended-join (#508): the joining user's services account, when the
+  // network supports the cap and they're identified.
+  account?: string | null;
   // System-buffer lines (#355): the network this line is about, when any. The
   // prefix column resolves the network's current name from it.
   originNetworkId?: number | null;
@@ -841,6 +855,7 @@ const consolidateMaxNames = computed(
 );
 
 const showEventHost = computed(() => !!settings.effective('chat.show_event_host'));
+const showJoinAccount = computed(() => !!settings.effective('chat.show_join_account'));
 
 const collapseAuthorsEnabled = computed(
   () => !!settings.effective('look.message.collapse_authors'),
@@ -1025,7 +1040,12 @@ const renderRows = computed((): RenderRow[] => {
     if (filterOn && m.nick && !m.self) {
       const filterable =
         (m.type === 'join' && fJoin) ||
-        ((m.type === 'part' || m.type === 'quit') && fQuit) ||
+        // chghost rides the quit toggle rather than adding a fourth setting:
+        // it's the same churn from the same silent lurkers (identifying to
+        // services after a netsplit fires one per shared channel), which is
+        // exactly what smart filtering exists to absorb. weechat ships a
+        // dedicated smart_filter_chghost for the same reason (#591).
+        ((m.type === 'part' || m.type === 'quit' || m.type === 'chghost') && fQuit) ||
         (m.type === 'nick' && fNick);
       if (filterable && m.nick.toLowerCase() !== ownNickLc) {
         const lastSpoke = buf?.speakers[m.nick.toLowerCase()]?.lastTime;
@@ -1199,6 +1219,7 @@ function prefixText(m: ChatMessage | undefined): string {
     case 'topic':
     case 'motd':
     case 'invite':
+    case 'chghost':
       return '--';
     case 'system':
       // System-buffer log lines (#355). Tied to a network → that network's
@@ -1227,15 +1248,40 @@ function prefixText(m: ChatMessage | undefined): string {
 // absent — the server stores an empty ident/host when it lacks one
 // (`nick!@host` / `nick!ident@`), and a half-mask like `(@host)` reads worse
 // than nothing, so we only render when both pieces are present. The full
-// formatting (leading space + parens) lives here so the four presence-line
-// templates share one source of truth and each call it once (only the matching
-// branch renders per row); reuses parseUserHost so parsing matches the ignore
-// flow exactly.
+// formatting (leading space + parens) lives here so the presence-line templates
+// share one source of truth and each call it once (only the matching branch
+// renders per row); reuses parseUserHost so parsing matches the ignore flow
+// exactly. On a chghost line this renders the OLD mask — the new one is the
+// body of the message — which matches weechat's "nick (old) has changed host
+// to new" shape.
 function eventHostSuffix(m: ChatMessage | undefined): string {
   if (!showEventHost.value) return '';
   const { user, host } = parseUserHost(m?.userhost);
   if (!user || !host) return '';
   return ` (${user}@${host})`;
+}
+
+// The post-change mask on a chghost line (#591). Same rule eventHostSuffix
+// applies above: a half-mask like `@host` reads worse than the host alone, so
+// only join the two with an `@` when we actually have both halves. Mirrors the
+// server's own mask construction in the CHGHOST handler.
+function chghostMask(m: ChatMessage | undefined): string {
+  const ident = m?.newIdent || '';
+  const host = m?.newHost || '';
+  return ident && host ? `${ident}@${host}` : host || ident;
+}
+
+// The joining user's services account, from extended-join (#508). Rendered
+// between the nick and the host suffix, matching weechat's `[account]` shape
+// (irssi and thelounge put it in the same slot). Unlike the nicklist, this
+// surface needs no WHOX backfill to be consistent: a join line only exists for
+// a join event, and extended-join always carries the account for exactly that
+// event — so the value is either present or the network lacks the cap, never
+// silently stale. Only a known account renders; a logged-out user (the `*`
+// sentinel, stored as null) shows nothing, same as no data.
+function joinAccountSuffix(m: ChatMessage | undefined): string {
+  if (!showJoinAccount.value) return '';
+  return m?.account ? ` [${m.account}]` : '';
 }
 
 function prefixClass(m: ChatMessage | undefined) {

@@ -17,7 +17,11 @@ export const LEVEL_DEFS: Record<string, { types: string[]; dm?: boolean }> = {
   ACTIONS: { types: ['action'] },
   JOINS: { types: ['join'] },
   PARTS: { types: ['part'] },
-  QUITS: { types: ['quit'] },
+  // Host changes ride with QUITS rather than getting their own level: a
+  // chghost IS what a client without the cap would have shown you as a
+  // quit/rejoin pair, so someone who silenced a nick's quits already expects
+  // these gone too (#591).
+  QUITS: { types: ['quit', 'chghost'] },
   NICKS: { types: ['nick'] },
   KICKS: { types: ['kick'] },
   MODES: { types: ['mode'] },
@@ -38,6 +42,7 @@ export const ALL_TYPES = new Set([
   'kick',
   'mode',
   'topic',
+  'chghost',
 ]);
 
 export const HIGHLIGHTABLE = new Set(['message', 'action']);
