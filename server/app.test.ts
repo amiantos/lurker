@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import type { Express } from 'express';
 import { setupTestDb, testRequest, TEST_SESSION_SECRET } from './test-utils/testApp.js';
 
@@ -73,17 +75,23 @@ describe('buildApp route gating by edition', () => {
       expect(res.text ?? '').not.toContain('id="app"');
     });
 
-    it('still serves index.html for a real client route', async () => {
+    // Asserting the client route still works needs a built client, and CI runs
+    // the suite without one (.github/workflows/test.yml never builds vue_client).
+    // Skipping when dist/ is absent is honest; the alternative — accepting a 404
+    // as a pass so the test runs everywhere — passed even when the fallback was
+    // broken outright, which is worse than no test because it reads as coverage.
+    const hasBuiltClient = existsSync(
+      path.join(import.meta.dirname, '../vue_client/dist/index.html'),
+    );
+
+    it.skipIf(!hasBuiltClient)('still serves index.html for a real client route', async () => {
       const app = await buildFor('standalone');
       const res = await testRequest(app).get('/settings');
-      // The built client may be absent (no `npm run build` in this checkout), in
-      // which case sendFile's error arm calls next() and this 404s. Accept
-      // either shape so the test doesn't depend on dist/ — the point is only
-      // that /settings still reaches the catch-all rather than being excluded
-      // alongside /assets.
-      const servedSpa = res.status === 200 && /text\/html/.test(res.headers['content-type'] ?? '');
-      const distAbsent = res.status === 404;
-      expect(servedSpa || distAbsent).toBe(true);
+      // Strict: /settings must reach the catch-all and get the SPA shell, not
+      // merely fail to be a hard 404.
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/text\/html/);
+      expect(res.text).toContain('id="app"');
     });
   });
 

@@ -6,7 +6,8 @@ import {
   isChunkLoadError,
   safeSessionStorage,
   shouldReloadFor,
-  RELOAD_WINDOW_MS,
+  ATTEMPT_RESET_MS,
+  MAX_RELOAD_ATTEMPTS,
 } from './chunkReload.js';
 
 describe('isChunkLoadError', () => {
@@ -17,6 +18,10 @@ describe('isChunkLoadError', () => {
     'error loading dynamically imported module',
     'Importing a module script failed.',
     "Failed to load module script: Expected a JavaScript module script but the server responded with a MIME type of 'text/html'.",
+    // Vite's own, thrown from __vitePreload when a route's CSS dep 404s rather
+    // than its JS. Shares no wording with the browser strings above, so it
+    // needs its own alternate or half the failure modes go unrecovered.
+    'Unable to preload CSS for /assets/Settings-CbbeX7a5.css',
   ])('detects %s', (message) => {
     expect(isChunkLoadError(new Error(message))).toBe(true);
   });
@@ -52,20 +57,56 @@ describe('shouldReloadFor', () => {
     expect(shouldReloadFor('/settings', 1000, storage)).toBe(true);
   });
 
-  it('refuses a second attempt for the same path inside the window', () => {
-    expect(shouldReloadFor('/settings', 1000, storage)).toBe(true);
-    expect(shouldReloadFor('/settings', 1000 + RELOAD_WINDOW_MS - 1, storage)).toBe(false);
+  it('stops after MAX_RELOAD_ATTEMPTS for the same path', () => {
+    for (let i = 0; i < MAX_RELOAD_ATTEMPTS; i++) {
+      expect(shouldReloadFor('/settings', 1000 + i, storage)).toBe(true);
+    }
+    expect(shouldReloadFor('/settings', 1000 + MAX_RELOAD_ATTEMPTS, storage)).toBe(false);
   });
 
-  it('allows a retry once the window has passed', () => {
-    expect(shouldReloadFor('/settings', 1000, storage)).toBe(true);
-    expect(shouldReloadFor('/settings', 1000 + RELOAD_WINDOW_MS, storage)).toBe(true);
+  it('stays bounded through a slow fail→reload→fail cycle', () => {
+    // The regression this replaces: the guard used a 30s window, so a 45s reload
+    // cycle read every stamp as stale and reloaded forever. A slow connection is
+    // both the likeliest cause of the chunk failing AND the likeliest reason the
+    // cycle is slow, so the old guard was weakest exactly where it mattered.
+    //
+    // Counting attempts doesn't care how slow the cycle is. Note the bound is
+    // per episode, not for all time: a refusal deliberately does NOT refresh the
+    // stamp, so a client that goes quiet and returns much later gets a fresh
+    // budget — otherwise a tab could never recover once the deploy was fixed.
+    // This walks a realistic boot loop that stays inside one episode.
+    const slowCycleMs = 45_000;
+    let now = 1000;
+    let reloads = 0;
+    for (let i = 0; i < 10; i++) {
+      if (shouldReloadFor('/', now, storage)) reloads++;
+      now += slowCycleMs;
+    }
+    expect(now - 1000).toBeLessThan(ATTEMPT_RESET_MS); // still one episode
+    expect(reloads).toBe(MAX_RELOAD_ATTEMPTS);
+  });
+
+  it('starts a fresh episode once the stamp goes idle', () => {
+    for (let i = 0; i < MAX_RELOAD_ATTEMPTS; i++) shouldReloadFor('/settings', 1000, storage);
+    expect(shouldReloadFor('/settings', 1000, storage)).toBe(false);
+    expect(shouldReloadFor('/settings', 1000 + ATTEMPT_RESET_MS, storage)).toBe(true);
   });
 
   it('does not let one dead route block a different one', () => {
-    expect(shouldReloadFor('/settings', 1000, storage)).toBe(true);
+    for (let i = 0; i < MAX_RELOAD_ATTEMPTS; i++) shouldReloadFor('/settings', 1000, storage);
     expect(shouldReloadFor('/settings', 1500, storage)).toBe(false);
     expect(shouldReloadFor('/admin', 1600, storage)).toBe(true);
+  });
+
+  it('treats a pre-upgrade stamp with no attempts count as one attempt', () => {
+    // A tab that reloaded under the old window-based build carries a stamp with
+    // no `attempts` field. Reading it as 0 would hand that path a full fresh
+    // budget on top of the reload it already did.
+    storage.setItem('lurker:chunk-reload', JSON.stringify({ path: '/settings', at: 1000 }));
+    for (let i = 1; i < MAX_RELOAD_ATTEMPTS; i++) {
+      expect(shouldReloadFor('/settings', 1000 + i, storage)).toBe(true);
+    }
+    expect(shouldReloadFor('/settings', 1000 + MAX_RELOAD_ATTEMPTS, storage)).toBe(false);
   });
 
   it('allows the reload when storage is unavailable', () => {
