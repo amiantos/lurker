@@ -32,7 +32,7 @@
 
     <ul v-if="otherSubscriptions.length" class="device-list">
       <li v-for="sub in otherSubscriptions" :key="sub.id" class="device">
-        <span class="ua">{{ formatUA(sub.user_agent) }}</span>
+        <span class="ua">{{ deviceLabel(sub) }}</span>
         <span class="last-seen" :title="sub.last_seen_at"
           >last seen {{ formatRelative(sub.last_seen_at) }}</span
         >
@@ -259,6 +259,7 @@ import {
 // the template can display them without colliding with the browser API type.
 interface StoredPushSub extends PushSubscription {
   id: string;
+  transport: string;
   user_agent: string | null;
   last_seen_at: string;
 }
@@ -422,6 +423,15 @@ async function onRemoveOther(sub: StoredPushSub) {
   } finally {
     pushBusy.value = false;
   }
+}
+
+// A native app's UA is CFNetwork/OkHttp noise, but its transport says exactly
+// what it is — the server projects `transport` for precisely this. UA parsing
+// is the fallback for webpush rows, where the browser genuinely is the client.
+function deviceLabel(sub: StoredPushSub): string {
+  if (sub.transport === 'apns') return 'Lurker for iOS';
+  if (sub.transport === 'fcm') return 'Lurker for Android';
+  return formatUA(sub.user_agent);
 }
 
 function formatUA(ua: string | null | undefined): string {
