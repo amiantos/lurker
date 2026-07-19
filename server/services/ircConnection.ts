@@ -752,26 +752,6 @@ export class IrcConnection {
       // These numerics arrive as [nick, #channel, reason].
       const channel = typeof params[1] === 'string' ? params[1] : '';
       const reason = params[params.length - 1] || null;
-      // ERR_LINKCHANNEL (470): the server forwarded our JOIN elsewhere (Libera
-      // forwards #apple → ##apple). We are not on `channel` and never will be,
-      // but joinChannel already wrote its channels row optimistically — and
-      // since no channel-joined ever arrives for it, nothing else clears it.
-      // Left alone the row is replayed as a JOIN on every reconnect (silently
-      // re-forwarding each time), and its stale joined=1 lets join-precedence
-      // in the buffer snapshot override the user's closed flag, which is what
-      // made the forwarded buffer impossible to close.
-      if (command === '470' && channel) {
-        this.channels.delete(channel.toLowerCase());
-        try {
-          deleteChannel(this.network.id, channel);
-        } catch (_) {
-          /* ignore */
-        }
-        // The forward itself is already logged to the server buffer verbatim by
-        // the 'raw' handler; this only cleans up the phantom join state.
-        this.publish({ type: 'channel-parted', target: channel });
-        return;
-      }
       // ERR_NEEDREGGEDNICK (477) to a channel we're already in is a speak
       // rejection, not a join failure — surface it inline in that channel so
       // the user sees why their message didn't land, instead of a misleading
@@ -1645,6 +1625,26 @@ export class IrcConnection {
       }
     });
 
+    // ERR_LINKCHANNEL (470): the server forwarded our JOIN somewhere else
+    // (Libera forwards #apple → ##apple). irc-framework models this as its own
+    // event with from/to — it never reaches the 'unknown command' handler.
+    //
+    // We are not on `from` and never will be, but joinChannel already wrote its
+    // channels row optimistically, and since no channel-joined ever arrives for
+    // that name nothing else clears it. Left alone the row is replayed as a
+    // JOIN on every reconnect (silently re-forwarding each time), and its stale
+    // joined=1 lets join-precedence in the buffer snapshot override the user's
+    // closed flag — which is what made the forwarded buffer impossible to
+    // close. The forward itself is still logged to the server buffer verbatim
+    // by the 'raw' handler; this only cleans up the phantom join state.
+    c.on('channel_redirect', (event: Record<string, unknown>) => {
+      const from = event?.from as string | undefined;
+      if (!from) return;
+      // forget: drop the row outright rather than clearing joined. We were
+      // never in this channel and must not auto-rejoin it.
+      this.evictChannel(from, { forget: true });
+    });
+
     c.on('part', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
@@ -2272,15 +2272,7 @@ export class IrcConnection {
       // of the connection, and join-precedence (eachUserBufferTarget) lets that
       // stale entry outrank the user's closed flag — an un-closable buffer.
       if (tag === 'not_on_channel' && rejectChannel) {
-        const canonical = canonicalChannelTarget(rejectChannel, this.channels) ?? rejectChannel;
-        if (this.channels.delete(rejectChannel.toLowerCase())) {
-          try {
-            upsertChannel(this.network.id, canonical, false);
-          } catch (_) {
-            /* ignore */
-          }
-          this.publish({ type: 'channel-parted', target: canonical });
-        }
+        this.evictChannel(rejectChannel);
         // Falls through to the generic server-buffer line below: 442 is rare
         // and worth showing, and the eviction above is silent on its own.
       }
@@ -2694,6 +2686,28 @@ export class IrcConnection {
         members: Array.from(ch.members.values()).map(memberSnapshot),
       });
     }
+  }
+
+  // Forget a channel the server has told us we are not on, outside the normal
+  // PART echo: a forward (470) or a refused part (442). Drops it from the
+  // joined set, corrects the persisted row, and announces the part so the
+  // buffer stops rendering as joined.
+  //
+  // The DB write is deliberately NOT gated on the channel being in this.channels
+  // — a stale joined=1 row can outlive the in-memory entry (e.g. across a
+  // restart, where the auto-JOIN was forwarded away), and that row is exactly
+  // what auto-rejoins and outranks the user's closed flag. `forget` deletes the
+  // row instead of clearing joined, for a channel we were never in at all.
+  private evictChannel(name: string, { forget = false }: { forget?: boolean } = {}): void {
+    const canonical = canonicalChannelTarget(name, this.channels) ?? name;
+    this.channels.delete(name.toLowerCase());
+    try {
+      if (forget) deleteChannel(this.network.id, canonical);
+      else upsertChannel(this.network.id, canonical, false);
+    } catch (_) {
+      /* ignore */
+    }
+    this.publish({ type: 'channel-parted', target: canonical });
   }
 
   upsertChannel(name: string): ChannelState {

@@ -273,5 +273,14 @@ export function setChannelKey(networkId: number, name: string, key: string | nul
 }
 
 export function deleteChannel(networkId: number, name: string): void {
-  db.prepare('DELETE FROM channels WHERE network_id = ? AND name = ?').run(networkId, name);
+  // Folded, not case-exact: IRC channel names are case-insensitive, and the
+  // name we're asked to delete by often comes from the server (a 470 forward
+  // relays whatever case it likes) while the stored row carries the case the
+  // user typed at join. An exact match silently leaves the row behind — and a
+  // surviving channels row is what auto-rejoins on every reconnect. Folding
+  // also sweeps up any duplicate-cased rows for the same channel.
+  db.prepare('DELETE FROM channels WHERE network_id = ? AND lower(name) = lower(?)').run(
+    networkId,
+    name,
+  );
 }

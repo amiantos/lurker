@@ -20,6 +20,8 @@ let listChannels: typeof import('../db/networks.js').listChannels;
 let insertDccTransfer: typeof import('../db/dccTransfers.js').insertDccTransfer;
 let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
 let planChannelRejoins: typeof import('./ircManager.js').planChannelRejoins;
+let closeBuffer: typeof import('../db/closedBuffers.js').closeBuffer;
+let isClosed: typeof import('../db/closedBuffers.js').isClosed;
 
 beforeAll(async () => {
   ircManager = (await import('./ircManager.js')).default;
@@ -28,6 +30,7 @@ beforeAll(async () => {
   systemLog = (await import('./systemLog.js')).default;
   ({ createUser, setUserPaused } = await import('../db/users.js'));
   ({ createNetwork, listChannels } = await import('../db/networks.js'));
+  ({ closeBuffer, isClosed } = await import('../db/closedBuffers.js'));
   ({ insertDccTransfer, updateDccTransferState } = await import('../db/dccTransfers.js'));
 });
 
@@ -446,6 +449,34 @@ describe('planChannelRejoins', () => {
     // The key made it to the DB and comes back out in the rejoin plan.
     const joined = listChannels(net.id).filter((c) => c.joined);
     expect(planChannelRejoins(joined)).toContainEqual({ channels: '#secret', keys: 'hunter2' });
+  });
+
+  it('joinChannel reopens a closed buffer only for a channel we are already in', () => {
+    // A join we're waiting on is cleared by the channel-joined echo, so that a
+    // forwarded join (470) can't un-close the buffer for a channel we'll never
+    // be in. But a channel we're already in gets no echo at all, so /join on it
+    // would otherwise never reopen the buffer.
+    const user = createUser('irc-join-reopen');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.join = vi.fn<(channel: string, key?: string) => void>();
+
+    // Not in the channel yet: the request must NOT clear the flag on its own.
+    closeBuffer(user.id, net.id, '#pending');
+    ircManager.joinChannel(user.id, net.id, '#pending');
+    expect(isClosed(user.id, net.id, '#pending')).toBe(true);
+
+    // Already in it: no echo is coming, so reopen right away.
+    closeBuffer(user.id, net.id, '#here');
+    conn.upsertChannel('#here');
+    ircManager.joinChannel(user.id, net.id, '#here');
+    expect(isClosed(user.id, net.id, '#here')).toBe(false);
   });
 
   it('joinChannel drops a non-string key from an untrusted payload without throwing', () => {

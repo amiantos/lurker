@@ -1470,10 +1470,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       !target.startsWith(':server:') &&
       isClosed(eventUserId, decorated.networkId, target)
     ) {
-      // A persisted message with a real id (DM, message, action, notice, etc.)
-      // is a strong signal the buffer is wanted again — reopen it. Ephemeral
-      // events (typing, away markers fanned to this target, names) shouldn't
-      // resurrect a closed buffer, so we drop them on the floor.
+      // See reopensClosedBuffer for which events outrank a closed flag; anything
+      // else is dropped on the floor rather than resurrecting the buffer.
       const selfJoin = decorated.type === 'channel-joined';
       const reopens = reopensClosedBuffer(decorated.type, decorated.id);
       // Ignored senders cannot resurrect a closed DM either. Otherwise an

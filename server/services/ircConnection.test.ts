@@ -1997,20 +1997,20 @@ describe('forwarded joins (470) and un-partable channels (442)', () => {
     return new IrcConnection({ network, onEvent: () => {} });
   }
 
-  it('470 drops the phantom channels row for the channel we were forwarded off', () => {
+  it('470 drops the phantom channels row even when the server relays a different case', () => {
     const conn = makeConn('fwd-row');
     const netId = conn.network.id;
     // What joinChannel does on the request, before any server response.
-    upsertChannel(netId, '#apple', true);
-    expect(listChannels(netId).map((c) => c.name)).toContain('#apple');
+    // Stored with the case the user typed; the server relays its own.
+    upsertChannel(netId, '#Apple', true);
+    expect(listChannels(netId).map((c) => c.name)).toContain('#Apple');
 
-    conn.client.emit('unknown command', {
-      command: '470',
-      params: ['nick', '#apple', '##apple', 'Forwarding to another channel'],
-    });
+    // The shape irc-framework actually emits for ERR_LINKCHANNEL — it models
+    // 470 as its own event, so this never arrives as 'unknown command'.
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
 
     // Gone entirely — not merely joined=0 — so reconnect can't replay the JOIN.
-    expect(listChannels(netId).map((c) => c.name)).not.toContain('#apple');
+    expect(listChannels(netId)).toHaveLength(0);
   });
 
   it('470 evicts the forwarded-from channel from the joined set and announces the part', () => {
@@ -2019,10 +2019,9 @@ describe('forwarded joins (470) and un-partable channels (442)', () => {
     const publish = vi.fn<(event: unknown) => void>();
     conn.publish = publish;
 
-    conn.client.emit('unknown command', {
-      command: '470',
-      params: ['nick', '#apple', '##apple', 'Forwarding to another channel'],
-    });
+    // The shape irc-framework actually emits for ERR_LINKCHANNEL — it models
+    // 470 as its own event, so this never arrives as 'unknown command'.
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
 
     expect(conn.channels.has('#apple')).toBe(false);
     expect(publish).toHaveBeenCalledWith(
@@ -2035,10 +2034,9 @@ describe('forwarded joins (470) and un-partable channels (442)', () => {
     conn.upsertChannel('##apple');
     upsertChannel(conn.network.id, '##apple', true);
 
-    conn.client.emit('unknown command', {
-      command: '470',
-      params: ['nick', '#apple', '##apple', 'Forwarding to another channel'],
-    });
+    // The shape irc-framework actually emits for ERR_LINKCHANNEL — it models
+    // 470 as its own event, so this never arrives as 'unknown command'.
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
 
     expect(conn.channels.has('##apple')).toBe(true);
     expect(listChannels(conn.network.id).map((c) => c.name)).toContain('##apple');
@@ -2082,17 +2080,21 @@ describe('forwarded joins (470) and un-partable channels (442)', () => {
     );
   });
 
-  it('442 for a channel we never tracked is a no-op beyond the error line', () => {
-    const conn = makeConn('notonchan-unknown');
-    const publish = vi.fn<(event: unknown) => void>();
-    conn.publish = publish;
+  it('442 corrects a stale joined=1 row even when the channel is not in the joined set', () => {
+    // The in-memory set and the persisted row can disagree — after a restart
+    // the row survives while this.channels is empty. The row is what
+    // auto-rejoins and what outranks the closed flag, so it must be corrected
+    // regardless of whether we happened to be tracking the channel.
+    const conn = makeConn('notonchan-stale');
+    upsertChannel(conn.network.id, '#apple', true);
+    expect(conn.channels.has('#apple')).toBe(false);
 
     conn.client.emit('irc error', {
       error: 'not_on_channel',
-      channel: '#never',
+      channel: '#apple',
       reason: "You're not on that channel",
     });
 
-    expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'channel-parted' }));
+    expect(listChannels(conn.network.id).find((c) => c.name === '#apple')?.joined).toBe(0);
   });
 });

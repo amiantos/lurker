@@ -12,6 +12,7 @@ import {
   upsertChannel,
   deleteChannel,
 } from '../db/networks.js';
+import { reopenBuffer } from '../db/closedBuffers.js';
 import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
 import { findUserById } from '../db/users.js';
 import { isNetworkHostAllowed } from './networkPolicy.js';
@@ -312,11 +313,19 @@ class IrcManager extends EventEmitter {
     // Persist the key (encrypted at rest) so the channel auto-rejoins keyed
     // after a reconnect/restart.
     upsertChannel(networkId, name, true, safeKey);
-    // The closed flag is cleared by the channel-joined echo (wsHub), NOT here.
-    // Clearing it on the request assumes the join lands on the channel we asked
-    // for, which a forwarding server (470) breaks: the buffer for the requested
-    // name gets un-closed while the join actually goes somewhere else, so a
-    // channel you can never be in becomes a buffer you can never close.
+    // The closed flag is otherwise cleared by the channel-joined echo (wsHub),
+    // NOT here. Clearing it on the request assumes the join lands on the
+    // channel we asked for, which a forwarding server (470) breaks: the buffer
+    // for the requested name gets un-closed while the join actually goes
+    // somewhere else, so a channel you can never be in becomes a buffer you can
+    // never close.
+    //
+    // The exception is a channel we're demonstrably already in: the server
+    // sends no JOIN echo for those, so waiting for one would hang forever and
+    // /join on a closed-but-still-joined buffer would appear to do nothing.
+    // Being in the channel is the same definitive signal the echo carries, so
+    // reopen directly.
+    if (conn.channels.has(name.toLowerCase())) reopenBuffer(userId, networkId, name);
     conn.join(name, safeKey);
     return true;
   }
