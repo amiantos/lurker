@@ -80,7 +80,8 @@
             ><template v-if="g.kind === 'joined'"> joined</template
             ><template v-else-if="g.kind === 'left'"> left</template
             ><template v-else-if="g.kind === 'reconnected'"> reconnected</template
-            ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template></template
+            ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
+            ><template v-else-if="g.kind === 'rehosted'"> changed host</template></template
           >
         </span>
       </div>
@@ -1142,7 +1143,7 @@ const renderRows = computed((): RenderRow[] => {
   // the divider at the end so the user still sees an undo affordance.
   if (!clearedInserted) pushClearedDivider();
 
-  // Final pass: merge consecutive join/part/quit/nick rows into a single
+  // Final pass: merge consecutive join/part/quit/nick/chghost rows into a single
   // summary row when consolidation is enabled. Dividers break runs (we want
   // the away/back/unread markers to land between events, not get swallowed
   // by a multi-event group). Recent speakers come from the same `speakers`

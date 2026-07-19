@@ -700,13 +700,13 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   // ─── Join/part consolidation (IRCCloud-style summary line) ────────────
   {
     key: 'chat.consolidate_joins',
-    label: 'Consolidate join/part/quit/nick events',
+    label: 'Consolidate join/part/quit/nick/host-change events',
     category: 'chat',
     group: 'consolidate',
     type: 'bool',
     default: true,
     description:
-      'Merge consecutive join/part/quit/nick events into a single summary line ' +
+      'Merge consecutive join/part/quit/nick/host-change events into a single summary line ' +
       'per nick (e.g. "Alice and Bob joined; Dave left; Eve → Eve_afk"). ' +
       'Off shows every event individually. Composes with smart filter — events ' +
       'the smart filter hides are excluded from the summary.',
@@ -721,7 +721,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 50,
     default: 5,
     description:
-      'In each category (joined / left / reconnected / renamed) of a summary ' +
+      'In each category (joined / left / reconnected / renamed / changed host) of a summary ' +
       'line, show at most this many nicks before collapsing the rest into ' +
       '"and N others". Recent speakers (those tracked for nick completion) ' +
       'are preferred when picking which names to show.',

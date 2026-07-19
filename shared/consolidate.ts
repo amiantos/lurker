@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Consolidation of join/part/quit/nick "noise" events into a per-identity
+// Consolidation of join/part/quit/nick/chghost "noise" events into a per-identity
 // net effect, IRCCloud-style. Pure, side-effect-free, no DOM/Vue deps — safe
 // to import from the Vue renderer, the Node demo script, and tests.
 //
@@ -13,13 +13,21 @@
 //        'J' = join
 //        'L' = leave (part or quit)
 //        'R' = rename (this identity changed nick)
+//        'H' = rehost (chghost; ident and/or host changed)
 //      Renames transfer the identity to the new key so we follow the chain.
 //   3. Classify by the first/last J|L action:
 //        first=L, last=J → reconnected     (was present; left and came back)
 //        first=L, last=L → left            (was present; net result: gone)
 //        first=J, last=J → joined          (was absent; net result: present)
 //        first=J, last=L → joinedAndLeft   (was absent; net result: gone)
-//      Identities with only 'R' actions are categorized as renamed.
+//      Identities with no J|L action fall back to rename over rehost:
+//      any 'R' → renamed, else 'H' only → rehosted.
+//
+//      'H' is deliberately transparent to the J|L scan (#593). Post-netsplit
+//      each rejoining user emits JOIN then CHGHOST as they identify, so their
+//      sequence is [J, H]; that must read as a plain "joined" rather than
+//      splitting the summary into "N joined" plus "N changed host". The
+//      host change only earns its own category when nothing else happened.
 //   4. A run of exactly one event is passed through unchanged (so a lone
 //      "Alice joined" still renders with the familiar --> styling).
 
@@ -45,13 +53,22 @@ export interface MessageStreamRow {
   key: string | number;
 }
 
-/** Per-identity action within a run: join, leave (part/quit), or rename. */
-type EventAction = 'J' | 'L' | 'R';
+/**
+ * Per-identity action within a run: join, leave (part/quit), rename, or
+ * rehost (chghost).
+ */
+type EventAction = 'J' | 'L' | 'R' | 'H';
 
-/** The five ways a run's net effect on an identity can be classified. */
-export type ConsolidationKind = 'joined' | 'left' | 'reconnected' | 'joinedAndLeft' | 'renamed';
+/** The six ways a run's net effect on an identity can be classified. */
+export type ConsolidationKind =
+  | 'joined'
+  | 'left'
+  | 'reconnected'
+  | 'joinedAndLeft'
+  | 'renamed'
+  | 'rehosted';
 
-/** A nick that joined / left / reconnected within the run. */
+/** A nick that joined / left / reconnected / rehosted within the run. */
 export interface NickEntry {
   nick: string;
 }
@@ -69,7 +86,7 @@ export interface ConsolidationGroup {
   hidden: number;
 }
 
-/** Synthetic row that replaces a run of consolidated join/part/quit/nick rows. */
+/** Synthetic row that replaces a run of consolidated presence-noise rows. */
 export interface ConsolidationRow {
   consolidation: true;
   groups: ConsolidationGroup[];
@@ -101,11 +118,19 @@ interface RunOptions {
 
 // ─── Algorithm ─────────────────────────────────────────────────────────────
 
-const CONSOLIDATABLE_TYPES: ReadonlySet<string> = new Set(['join', 'part', 'quit', 'nick']);
+const CONSOLIDATABLE_TYPES: ReadonlySet<string> = new Set([
+  'join',
+  'part',
+  'quit',
+  'nick',
+  'chghost',
+]);
 
 function classify(actions: readonly EventAction[]): ConsolidationKind {
   const jl = actions.filter((a) => a === 'J' || a === 'L');
-  if (jl.length === 0) return 'renamed';
+  // No presence change: a rename outranks a rehost, since "alice → bob" says
+  // more than "alice changed host" for an identity that did both.
+  if (jl.length === 0) return actions.includes('R') ? 'renamed' : 'rehosted';
   const first = jl[0];
   const last = jl[jl.length - 1];
   const wasPresent = first === 'L';
@@ -195,6 +220,7 @@ function consolidateRun(
       }
       if (e.type === 'join') state.actions.push('J');
       else if (e.type === 'part' || e.type === 'quit') state.actions.push('L');
+      else if (e.type === 'chghost') state.actions.push('H');
     }
   }
 
@@ -206,6 +232,7 @@ function consolidateRun(
     reconnected: [],
     joinedAndLeft: [],
     renamed: [],
+    rehosted: [],
   };
   const sorted = Array.from(ids.values()).toSorted((a, b) => a.seenIndex - b.seenIndex);
   for (const id of sorted) {
@@ -225,6 +252,7 @@ function consolidateRun(
     'reconnected',
     'joinedAndLeft',
     'renamed',
+    'rehosted',
   ];
   const groups: ConsolidationGroup[] = [];
   for (const kind of groupOrder) {
