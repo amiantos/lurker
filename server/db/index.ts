@@ -1655,6 +1655,30 @@ if (schemaVersion < 16 && tableExists('channels')) {
   // (its ensureColumn used to run unconditionally; it's gone now that fresh
   // installs have no channels table).
   ensureColumn('channels', 'key', 'TEXT');
+  // Capture the closed set (folded, latest closed_at per fork) BEFORE the
+  // fold below runs: foldBufferCase DELETES stray-cased closed_buffers rows
+  // (in its v9 context those marked a junk fork-variant), but ever since the
+  // live paths went folded, a closed row whose casing merely differs from the
+  // message-majority casing is genuine user intent — the folded snapshot
+  // honored it — and must survive into backfill pass C.
+  db.exec(`DROP TABLE IF EXISTS _bf_closed`);
+  db.exec(`
+    CREATE TEMP TABLE _bf_closed AS
+    SELECT user_id, network_id, lower(target) AS lkey,
+           MIN(target) AS any_target, MAX(closed_at) AS closed_at
+    FROM closed_buffers
+    GROUP BY user_id, network_id, lower(target)
+  `);
+  // Re-run the case-fold repair (the v9 one-shot, for forks that appeared
+  // since). The backfill below picks ONE canonical casing per buffer for the
+  // registry row, and every read path keys messages/buffer_reads by exact
+  // target — so any satellite row still sitting on a fork's other casing
+  // would detach: read pointers stop resolving (every snapshot then
+  // COUNT-scans the buffer's whole history as unread) and backlog reads see
+  // only the majority variant's messages. Folding here guarantees messages,
+  // buffer_reads, pins, drafts, and the channels rows all agree with the
+  // casing the backfill is about to canonicalize on. No-op when no forks.
+  foldBufferCase(db, { scope: 'all', report: false });
   const cutover = db.transaction(() => {
     db.exec(`DROP TABLE IF EXISTS _bf_canon`);
     db.exec(`
@@ -1705,25 +1729,27 @@ if (schemaVersion < 16 && tableExists('channels')) {
         created_at = MIN(buffers.created_at, excluded.created_at)
     `);
 
-    // C: closed flags win over A/B state; latest closed_at survives a case fork.
+    // C: closed flags win over A/B state; latest closed_at survives a case
+    // fork. Reads the pre-fold _bf_closed capture, not the closed_buffers
+    // table — the fold above deletes stray-cased rows from the latter.
     db.exec(`
       INSERT INTO buffers
         (user_id, network_id, target, target_folded, kind, state, autojoin, closed_at)
       SELECT cb.user_id, cb.network_id,
-             COALESCE(c.canon, MIN(cb.target)),
-             lower(cb.target),
-             CASE WHEN substr(lower(cb.target), 1, 1) IN ('#', '&', '+', '!')
+             COALESCE(c.canon, cb.any_target),
+             cb.lkey,
+             CASE WHEN substr(cb.lkey, 1, 1) IN ('#', '&', '+', '!')
                   THEN 'channel' ELSE 'dm' END,
-             'closed', 0, MAX(cb.closed_at)
-      FROM closed_buffers cb
-      LEFT JOIN _bf_canon c ON c.network_id = cb.network_id AND c.lkey = lower(cb.target)
-      GROUP BY cb.user_id, cb.network_id, lower(cb.target)
+             'closed', 0, cb.closed_at
+      FROM _bf_closed cb
+      LEFT JOIN _bf_canon c ON c.network_id = cb.network_id AND c.lkey = cb.lkey
       ON CONFLICT(user_id, IFNULL(network_id, 0), target_folded) DO UPDATE SET
         state = 'closed',
         closed_at = excluded.closed_at
     `);
 
     db.exec(`DROP TABLE _bf_canon`);
+    db.exec(`DROP TABLE _bf_closed`);
     db.exec(`DROP TABLE IF EXISTS closed_buffers`);
     db.exec(`DROP TABLE channels`);
   });

@@ -743,6 +743,12 @@ interface SnapshotBreakdown {
   // lookups are NOT included (the loop passes precomputed values).
   unreadMs: number; // shell: buildBufferShell; resume: bufferStateFields
   sliceMs: number; // buildResumeSlice — message reads + decorate (resume path only)
+  // Offline split: :server: buffers ship a REAL backlog read (server), all
+  // other offline buffers ship shells whose cost is dominated by
+  // computeUnreadFor — a large shells number usually means unread COUNT scans
+  // (e.g. detached read pointers counting whole histories from lastReadId 0).
+  offlineServerMs: number;
+  offlineShellMs: number;
 }
 
 // Decide the slice a resume snapshot ships for ONE buffer.
@@ -971,6 +977,7 @@ function buildOfflineFrame(userId: number, networkId: number, target: string): W
 export function buildOfflineBacklogFrames(
   userId: number,
   targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId),
+  timings?: { serverMs: number; shellMs: number },
 ): WsPayload[] {
   const frames: WsPayload[] = [];
   for (const { networkId, target, conn } of targets) {
@@ -979,7 +986,13 @@ export function buildOfflineBacklogFrames(
     // has already applied the closed-flag carve-out (nothing is joined offline, so
     // there's no autorejoin race to defend against here — unlike the live loop).
     if (networkId == null || conn) continue;
+    const t0 = timings ? Date.now() : 0;
     frames.push(buildOfflineFrame(userId, networkId, target));
+    if (timings) {
+      const dt = Date.now() - t0;
+      if (target.startsWith(':server:')) timings.serverMs += dt;
+      else timings.shellMs += dt;
+    }
   }
   return frames;
 }
@@ -1780,6 +1793,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       offlineMs: 0,
       unreadMs: 0,
       sliceMs: 0,
+      offlineServerMs: 0,
+      offlineShellMs: 0,
     };
     let ok = false;
     try {
@@ -1800,7 +1815,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         `[wsHub] snapshot for user ${userId} took ${ms}ms across ${b.bufferCount} buffers ` +
           `(${b.fresh ? 'fresh/shells' : 'resume'}) — networks=${b.networksMs}ms seeds=${b.seedsMs}ms ` +
           `online=${b.onlineMs}ms offline=${b.offlineMs}ms [online split: unread=${b.unreadMs}ms ` +
-          `slice=${b.sliceMs}ms rest=${Math.max(0, b.onlineMs - b.unreadMs - b.sliceMs)}ms]. ` +
+          `slice=${b.sliceMs}ms rest=${Math.max(0, b.onlineMs - b.unreadMs - b.sliceMs)}ms] ` +
+          `[offline split: server=${b.offlineServerMs}ms shells=${b.offlineShellMs}ms]. ` +
           `Runs synchronously on the event loop; on slow storage or a large account this can starve ` +
           `IRC socket I/O and trip ping timeouts (see [event-loop] logs). networks=member-list blob; ` +
           `unread≈computeUnreadFor(+frame assembly), slice=buildResumeSlice reads, ` +
@@ -1974,6 +1990,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     }
     const onlineMs = Date.now() - tOnline;
     const tOffline = Date.now();
+    const offlineSplit = { serverMs: 0, shellMs: 0 };
     // Offline networks (no live connection) ship their buffers as lightweight
     // SHELLS (buffer row + unread/read state, no message rows) rather than the
     // full recent slice. The client hydrates a shell's history on first open via
@@ -1982,7 +1999,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // from reading recent backlog for every historical/offline buffer — the bulk
     // of the synchronous read burst on a long-lived account. Reuses the enumeration
     // materialized above so this doesn't re-run the per-network DB reads.
-    for (const frame of buildOfflineBacklogFrames(userId, allTargets)) {
+    for (const frame of buildOfflineBacklogFrames(userId, allTargets, offlineSplit)) {
       for (const e of frame.events as Array<{ id?: number | null }>) {
         if (e.id != null && e.id > maxSentId) maxSentId = e.id;
       }
@@ -2006,6 +2023,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       offlineMs,
       unreadMs,
       sliceMs,
+      offlineServerMs: offlineSplit.serverMs,
+      offlineShellMs: offlineSplit.shellMs,
     };
   }
 

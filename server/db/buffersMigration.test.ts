@@ -76,6 +76,16 @@ beforeAll(async () => {
       closed_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, network_id, target)
     );
+    CREATE TABLE buffer_reads (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER,
+      target TEXT NOT NULL,
+      last_read_message_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      cleared_before_message_id INTEGER,
+      cleared_at TEXT,
+      PRIMARY KEY (user_id, network_id, target)
+    );
     CREATE TABLE app_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -110,6 +120,12 @@ beforeAll(async () => {
     INSERT INTO closed_buffers (user_id, network_id, target, closed_at) VALUES
       (1, 10, 'ghost', '2026-02-01T00:00:00Z'),
       (1, 10, '#tomb', '2026-02-02T00:00:00Z');
+    -- Read pointer stranded on the STRAY casing of the #Chatty fork. The read
+    -- paths key buffer_reads by exact target, so without the v16 fold this row
+    -- would detach from the canonicalized registry row and every snapshot
+    -- would count the buffer's whole history as unread.
+    INSERT INTO buffer_reads (user_id, network_id, target, last_read_message_id)
+      VALUES (1, 10, '#chatty', 2);
   `);
   raw.close();
 
@@ -134,6 +150,23 @@ describe('schemaVersion 16 — buffers backfill', () => {
       value: string;
     };
     expect(Number(v.value)).toBeGreaterThanOrEqual(16);
+  });
+
+  it('folds the satellites onto the same canonical casing (read pointers stay attached)', async () => {
+    const db = (await import('./index.js')).default;
+    // The fold merged the messages fork onto '#Chatty'…
+    const msgTargets = db
+      .prepare(
+        `SELECT DISTINCT target FROM messages WHERE network_id = 10 AND lower(target) = '#chatty'`,
+      )
+      .all() as Array<{ target: string }>;
+    expect(msgTargets.map((r) => r.target)).toEqual(['#Chatty']);
+    // …and moved the stray-cased read pointer with it, so the exact-target
+    // read-state lookup still resolves against the registry's canonical name.
+    const reads = db
+      .prepare(`SELECT target, last_read_message_id AS lr FROM buffer_reads WHERE network_id = 10`)
+      .all() as Array<{ target: string; lr: number }>;
+    expect(reads).toEqual([{ target: '#Chatty', lr: 2 }]);
   });
 
   it('merges a case-forked channel onto the message-majority casing, carrying autojoin + key', () => {
