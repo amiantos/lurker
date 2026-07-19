@@ -582,14 +582,17 @@ const router = useRouter();
 // Collapsed-only footer affordance: the settings cog normally lives on the
 // LURKER sidebar row, but that whole list is unmounted when the sidebar is
 // collapsed (BufferList v-if), so the rail offers the cog here instead (#355).
+// The .catch matches BufferList's expanded-sidebar twin: router.onError does
+// the actual recovery, this just keeps an aborted navigation from surfacing as
+// an unhandled rejection.
 function openSettings() {
-  router.push('/settings');
+  router.push('/settings').catch((err) => console.error('[DesktopChat] open settings failed', err));
 }
 
 // Admin panel entry (collapsed-rail twin of the BufferList header shield).
 const showAdminEntry = computed(() => auth.isAdmin);
 function openAdmin() {
-  router.push('/admin');
+  router.push('/admin').catch((err) => console.error('[DesktopChat] open admin failed', err));
 }
 
 // Collapsed-rail add-network (the expanded affordance is the LURKER header's +,

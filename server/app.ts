@@ -125,9 +125,16 @@ export function buildApp(sessionSecret: string): Express {
   // so that in node edition — where /mcp isn't mounted — a stray GET /mcp 404s
   // instead of being served index.html; it's a disabled endpoint, not a page.
   // (In standalone the mounted /mcp middleware handles it before this anyway.)
+  //
+  // `assets` is excluded for a different reason: everything under it is a real
+  // hashed build artifact served by express.static above, never a client route.
+  // Without the exclusion a missing chunk falls through to here and gets
+  // index.html back with a 200 and Content-Type: text/html, so the browser
+  // reports a confusing module-type refusal instead of a plain 404 — and the
+  // client can't cleanly tell "chunk is gone" from "page is fine" (#571).
   const clientDist = path.join(import.meta.dirname, '../vue_client/dist');
   app.use(express.static(clientDist));
-  app.get(/^\/(?!api|ws|mcp).*/, (_req, res, next) => {
+  app.get(/^\/(?!api|ws|mcp|assets).*/, (_req, res, next) => {
     res.sendFile(path.join(clientDist, 'index.html'), (err) => {
       if (err) next();
     });

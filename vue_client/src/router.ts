@@ -4,6 +4,8 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from './stores/auth.js';
 import { useConfigStore } from './stores/config.js';
+import { useToastsStore } from './stores/toasts.js';
+import { isChunkLoadError, shouldReloadFor } from './lib/chunkReload.js';
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('./views/Login.vue') },
@@ -56,6 +58,30 @@ router.beforeEach(async (to) => {
   // Non-admins bounce to Settings rather than render a forbidden shell. Every
   // admin API is requireAdmin-gated regardless — this only decides what renders.
   if (to.meta.requiresAdmin && !auth.isAdmin) return { name: 'settings' };
+});
+
+// A lazy-route chunk that fails to load leaves the route permanently dead for
+// this document (see lib/chunkReload.ts). Recover by reloading into the target
+// so the user gets the page they asked for rather than a button that silently
+// does nothing forever (#571).
+router.onError((err, to) => {
+  if (!isChunkLoadError(err)) return;
+  const path = to?.fullPath;
+  if (!path) return;
+  if (shouldReloadFor(path, Date.now(), window.sessionStorage)) {
+    window.location.assign(path);
+    return;
+  }
+  // Already tried reloading for this path — the chunk is genuinely unavailable,
+  // so reloading again would boot-loop. Tell the user instead: Lurker runs as a
+  // PWA where there is no console to check, so a silent failure here is
+  // indistinguishable from the bug we're fixing.
+  useToastsStore().push({
+    title: "Couldn't open that page",
+    body: 'Part of the app failed to load. Reopening Lurker should fix it.',
+    kind: 'error',
+    ttlMs: 8000,
+  });
 });
 
 export default router;

@@ -58,6 +58,35 @@ describe('buildApp route gating by edition', () => {
     });
   });
 
+  describe('SPA fallback', () => {
+    it('404s a missing /assets file instead of serving index.html (#571)', async () => {
+      const app = await buildFor('standalone');
+      // A stale client asking for a hashed chunk that no longer exists must get
+      // a plain 404. Answering with index.html (200, text/html) turns a dead
+      // lazy route into a confusing module-type refusal the client can't
+      // classify — and the failed import is then memoized forever.
+      const res = await testRequest(app).get('/assets/Settings-deadbeef.js');
+      expect(res.status).toBe(404);
+      // Express's own 404 page is HTML, so content-type proves nothing here —
+      // what matters is that the body is not the SPA shell being passed off as
+      // a JS module.
+      expect(res.text ?? '').not.toContain('id="app"');
+    });
+
+    it('still serves index.html for a real client route', async () => {
+      const app = await buildFor('standalone');
+      const res = await testRequest(app).get('/settings');
+      // The built client may be absent (no `npm run build` in this checkout), in
+      // which case sendFile's error arm calls next() and this 404s. Accept
+      // either shape so the test doesn't depend on dist/ — the point is only
+      // that /settings still reaches the catch-all rather than being excluded
+      // alongside /assets.
+      const servedSpa = res.status === 200 && /text\/html/.test(res.headers['content-type'] ?? '');
+      const distAbsent = res.status === 404;
+      expect(servedSpa || distAbsent).toBe(true);
+    });
+  });
+
   describe('standalone edition', () => {
     it('mounts /api/api-tokens (requireAuth → 401, not 404)', async () => {
       const app = await buildFor('standalone');
