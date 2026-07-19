@@ -12,7 +12,6 @@ import {
   upsertChannel,
   deleteChannel,
 } from '../db/networks.js';
-import { reopenBuffer } from '../db/closedBuffers.js';
 import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
 import { findUserById } from '../db/users.js';
 import { isNetworkHostAllowed } from './networkPolicy.js';
@@ -313,10 +312,11 @@ class IrcManager extends EventEmitter {
     // Persist the key (encrypted at rest) so the channel auto-rejoins keyed
     // after a reconnect/restart.
     upsertChannel(networkId, name, true, safeKey);
-    // Joining is an explicit "I want this buffer back" — clear any stale
-    // closed flag from a prior close. The matching channel-joined event will
-    // recreate the buffer in clients via the normal flow.
-    reopenBuffer(userId, networkId, name);
+    // The closed flag is cleared by the channel-joined echo (wsHub), NOT here.
+    // Clearing it on the request assumes the join lands on the channel we asked
+    // for, which a forwarding server (470) breaks: the buffer for the requested
+    // name gets un-closed while the join actually goes somewhere else, so a
+    // channel you can never be in becomes a buffer you can never close.
     conn.join(name, safeKey);
     return true;
   }
@@ -328,8 +328,8 @@ class IrcManager extends EventEmitter {
     // Don't touch closed_buffers here. The /close flow runs closeBuffer +
     // partChannel back to back, so reopening the buffer inside partChannel
     // would silently undo the close. Stale closed entries from the old
-    // /part-as-close-buffer code path can still be cleared by /join (which
-    // calls reopenBuffer explicitly).
+    // /part-as-close-buffer code path are cleared by a successful rejoin, when
+    // the channel-joined echo reaches wsHub.
     conn.part(name, reason);
     return true;
   }

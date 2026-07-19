@@ -30,7 +30,7 @@ import {
 import { createIdentdServer, unregisterIdent } from './identd.js';
 import { getRecent } from './systemLog.js';
 import { createUser } from '../db/users.js';
-import { createNetwork } from '../db/networks.js';
+import { createNetwork, listChannels, upsertChannel } from '../db/networks.js';
 import { getPeerPresence } from '../db/peerPresence.js';
 import { setUserSetting, deleteUserSetting } from '../db/settings.js';
 
@@ -1966,5 +1966,133 @@ describe('join key forwarding', () => {
     conn.client.join = join;
     conn.join('#open');
     expect(join).toHaveBeenCalledWith('#open', undefined);
+  });
+});
+
+// A forwarding server (Libera answers JOIN #apple with 470 → ##apple) used to
+// leave a phantom channels row for the name we asked for: joinChannel writes it
+// optimistically, and no channel-joined ever arrives for that name to correct
+// it. The row was then replayed as a JOIN on every reconnect, and its stale
+// joined=1 let join-precedence in the buffer snapshot outrank the user's closed
+// flag — a buffer that could not be closed. 442 is the same trap by another
+// route: the server refuses the PART, so the echo that evicts the channel from
+// the joined set never comes.
+describe('forwarded joins (470) and un-partable channels (442)', () => {
+  function makeConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  it('470 drops the phantom channels row for the channel we were forwarded off', () => {
+    const conn = makeConn('fwd-row');
+    const netId = conn.network.id;
+    // What joinChannel does on the request, before any server response.
+    upsertChannel(netId, '#apple', true);
+    expect(listChannels(netId).map((c) => c.name)).toContain('#apple');
+
+    conn.client.emit('unknown command', {
+      command: '470',
+      params: ['nick', '#apple', '##apple', 'Forwarding to another channel'],
+    });
+
+    // Gone entirely — not merely joined=0 — so reconnect can't replay the JOIN.
+    expect(listChannels(netId).map((c) => c.name)).not.toContain('#apple');
+  });
+
+  it('470 evicts the forwarded-from channel from the joined set and announces the part', () => {
+    const conn = makeConn('fwd-evict');
+    conn.upsertChannel('#apple');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('unknown command', {
+      command: '470',
+      params: ['nick', '#apple', '##apple', 'Forwarding to another channel'],
+    });
+
+    expect(conn.channels.has('#apple')).toBe(false);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'channel-parted', target: '#apple' }),
+    );
+  });
+
+  it('470 leaves the channel we were actually forwarded TO alone', () => {
+    const conn = makeConn('fwd-target');
+    conn.upsertChannel('##apple');
+    upsertChannel(conn.network.id, '##apple', true);
+
+    conn.client.emit('unknown command', {
+      command: '470',
+      params: ['nick', '#apple', '##apple', 'Forwarding to another channel'],
+    });
+
+    expect(conn.channels.has('##apple')).toBe(true);
+    expect(listChannels(conn.network.id).map((c) => c.name)).toContain('##apple');
+  });
+
+  it('442 on a PART evicts the channel the server says we are not on', () => {
+    const conn = makeConn('notonchan');
+    conn.upsertChannel('#apple');
+    upsertChannel(conn.network.id, '#apple', true);
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#apple',
+      reason: "You're not on that channel",
+    });
+
+    // Without this the PART echo never lands and #apple stays "joined" forever.
+    expect(conn.channels.has('#apple')).toBe(false);
+    expect(listChannels(conn.network.id).find((c) => c.name === '#apple')?.joined).toBe(0);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'channel-parted', target: '#apple' }),
+    );
+  });
+
+  it('442 still surfaces the error in the server buffer', () => {
+    const conn = makeConn('notonchan-line');
+    conn.upsertChannel('#apple');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#apple',
+      reason: "You're not on that channel",
+    });
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', target: `:server:${conn.network.id}` }),
+    );
+  });
+
+  it('442 for a channel we never tracked is a no-op beyond the error line', () => {
+    const conn = makeConn('notonchan-unknown');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#never',
+      reason: "You're not on that channel",
+    });
+
+    expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'channel-parted' }));
   });
 });

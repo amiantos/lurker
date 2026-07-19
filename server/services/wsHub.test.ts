@@ -33,6 +33,7 @@ let systemLineToEvent: typeof import('./wsHub.js').systemLineToEvent;
 let buildSystemHistoryReply: typeof import('./wsHub.js').buildSystemHistoryReply;
 let startChanlistRefresh: typeof import('./wsHub.js').startChanlistRefresh;
 let DM_ELIGIBLE_TYPES: typeof import('./wsHub.js').DM_ELIGIBLE_TYPES;
+let reopensClosedBuffer: typeof import('./wsHub.js').reopensClosedBuffer;
 let chanlist: typeof import('../db/chanlist.js');
 let systemMessages: typeof import('../db/systemMessages.js').default;
 
@@ -60,6 +61,7 @@ beforeAll(async () => {
     buildSystemHistoryReply,
     startChanlistRefresh,
     DM_ELIGIBLE_TYPES,
+    reopensClosedBuffer,
   } = await import('./wsHub.js'));
   chanlist = await import('../db/chanlist.js');
   systemMessages = (await import('../db/systemMessages.js')).default;
@@ -370,6 +372,32 @@ describe('DM_ELIGIBLE_TYPES (#439)', () => {
     expect(DM_ELIGIBLE_TYPES.has('message')).toBe(true);
     expect(DM_ELIGIBLE_TYPES.has('action')).toBe(true);
     expect(DM_ELIGIBLE_TYPES.has('notice')).toBe(false);
+  });
+});
+
+describe('reopensClosedBuffer join-precedence', () => {
+  // The live event pipe and the snapshot walk (eachUserBufferTarget) must agree
+  // on which signals outrank a closed flag. They didn't: a self-join carries no
+  // id, so the live channel-joined was dropped while the snapshot showed the
+  // channel regardless — rejoining a closed channel looked like a no-op until
+  // the user reloaded and the buffer reappeared on its own.
+  it('reopens on a self-join, which carries no message id', () => {
+    expect(reopensClosedBuffer('channel-joined', null)).toBe(true);
+    expect(reopensClosedBuffer('channel-joined', undefined)).toBe(true);
+  });
+
+  it('reopens on a persisted DM-eligible message', () => {
+    expect(reopensClosedBuffer('message', 42)).toBe(true);
+    expect(reopensClosedBuffer('action', 42)).toBe(true);
+  });
+
+  it('stays closed for an unpersisted message or an ephemeral event', () => {
+    expect(reopensClosedBuffer('message', null)).toBe(false);
+    expect(reopensClosedBuffer('typing', null)).toBe(false);
+    expect(reopensClosedBuffer('names', null)).toBe(false);
+    expect(reopensClosedBuffer('notice', 42)).toBe(false);
+    // A part is not a join — leaving a channel must not resurrect its buffer.
+    expect(reopensClosedBuffer('channel-parted', null)).toBe(false);
   });
 });
 

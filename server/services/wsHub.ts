@@ -374,6 +374,23 @@ function isInQuietWindow(currentMin: number, startMin: number, endMin: number): 
 // instead) and a service notice (NickServ/ChanServ) must not fire a DM notification.
 export const DM_ELIGIBLE_TYPES = new Set(['message', 'action']);
 
+// Does this event outrank the user's closed flag and reopen the buffer?
+//
+// Two things qualify. A persisted message with a real id (DM, action) is a
+// strong signal the buffer is wanted again. And a self-join is definitive — we
+// ARE in that channel now — which is the same join-precedence the snapshot walk
+// applies (eachUserBufferTarget). The two paths used to disagree on the second
+// case: channel-joined carries no id, so the live event was dropped here while
+// the snapshot showed the channel anyway. Rejoining a closed channel therefore
+// did nothing visible until the user reloaded the client.
+//
+// Everything else — typing, away markers, names — stays out: ephemeral traffic
+// must not resurrect a buffer the user closed.
+export function reopensClosedBuffer(type: string, id: unknown): boolean {
+  if (type === 'channel-joined') return true;
+  return id != null && DM_ELIGIBLE_TYPES.has(type);
+}
+
 // Structural DM detection from a target string: ircConnection routes any direct
 // message into a buffer keyed by the *other* person's nick, so a target that's
 // not a channel (`#…`) and not a server pseudo-buffer (`:server:…`) is a direct
@@ -1457,12 +1474,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // is a strong signal the buffer is wanted again — reopen it. Ephemeral
       // events (typing, away markers fanned to this target, names) shouldn't
       // resurrect a closed buffer, so we drop them on the floor.
-      const reopens = decorated.id != null && DM_ELIGIBLE_TYPES.has(decorated.type);
+      const selfJoin = decorated.type === 'channel-joined';
+      const reopens = reopensClosedBuffer(decorated.type, decorated.id);
       // Ignored senders cannot resurrect a closed DM either. Otherwise an
       // ignored user can force the buffer back into the sidebar simply by
       // sending — a soft harassment vector the client-side render filter
-      // doesn't close, since the reopen happens server-side.
-      const senderIgnored = reopens && senderHidden(eventUserId, decorated);
+      // doesn't close, since the reopen happens server-side. A self-join has no
+      // sender to ignore — it's our own action — so it skips this gate.
+      const senderIgnored = reopens && !selfJoin && senderHidden(eventUserId, decorated);
       if (!reopens || senderIgnored) return;
       reopenBuffer(eventUserId, decorated.networkId, target);
       fanOut(eventUserId, {

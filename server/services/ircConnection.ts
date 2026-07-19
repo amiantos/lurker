@@ -10,7 +10,7 @@ import {
   listBufferTargets,
 } from '../db/messages.js';
 import type { Network } from '../db/networks.js';
-import { upsertChannel, setChannelKey } from '../db/networks.js';
+import { upsertChannel, setChannelKey, deleteChannel } from '../db/networks.js';
 import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
 import { listTargetsForNetwork as listFriendTargetsForNetwork } from '../db/contacts.js';
 import * as chanlistDb from '../db/chanlist.js';
@@ -752,6 +752,26 @@ export class IrcConnection {
       // These numerics arrive as [nick, #channel, reason].
       const channel = typeof params[1] === 'string' ? params[1] : '';
       const reason = params[params.length - 1] || null;
+      // ERR_LINKCHANNEL (470): the server forwarded our JOIN elsewhere (Libera
+      // forwards #apple → ##apple). We are not on `channel` and never will be,
+      // but joinChannel already wrote its channels row optimistically — and
+      // since no channel-joined ever arrives for it, nothing else clears it.
+      // Left alone the row is replayed as a JOIN on every reconnect (silently
+      // re-forwarding each time), and its stale joined=1 lets join-precedence
+      // in the buffer snapshot override the user's closed flag, which is what
+      // made the forwarded buffer impossible to close.
+      if (command === '470' && channel) {
+        this.channels.delete(channel.toLowerCase());
+        try {
+          deleteChannel(this.network.id, channel);
+        } catch (_) {
+          /* ignore */
+        }
+        // The forward itself is already logged to the server buffer verbatim by
+        // the 'raw' handler; this only cleans up the phantom join state.
+        this.publish({ type: 'channel-parted', target: channel });
+        return;
+      }
       // ERR_NEEDREGGEDNICK (477) to a channel we're already in is a speak
       // rejection, not a join failure — surface it inline in that channel so
       // the user sees why their message didn't land, instead of a misleading
@@ -2245,6 +2265,25 @@ export class IrcConnection {
       // client waits for channel-joined before opening the buffer, so on
       // failure there is no buffer to render into.
       const rejectChannel = event?.channel as string | undefined;
+      // ERR_NOTONCHANNEL (442) is authoritative: the server says we are not on
+      // that channel, so the PART echo that normally evicts it from
+      // this.channels is never coming. Evict here instead. Without this, any
+      // channel the server refuses to part stays in the joined set for the life
+      // of the connection, and join-precedence (eachUserBufferTarget) lets that
+      // stale entry outrank the user's closed flag — an un-closable buffer.
+      if (tag === 'not_on_channel' && rejectChannel) {
+        const canonical = canonicalChannelTarget(rejectChannel, this.channels) ?? rejectChannel;
+        if (this.channels.delete(rejectChannel.toLowerCase())) {
+          try {
+            upsertChannel(this.network.id, canonical, false);
+          } catch (_) {
+            /* ignore */
+          }
+          this.publish({ type: 'channel-parted', target: canonical });
+        }
+        // Falls through to the generic server-buffer line below: 442 is rare
+        // and worth showing, and the eviction above is silent on its own.
+      }
       const rejectMsg = rejectChannel ? joinRejectionMessageByTag(tag) : null;
       if (rejectChannel && rejectMsg) {
         this.publishEphemeral({
