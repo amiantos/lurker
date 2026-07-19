@@ -177,6 +177,15 @@
                 (<LinkedText :text="row.m.text" />)</template
               ></template
             >
+            <template v-else-if="row.m?.type === 'chghost'"
+              ><NickRef
+                :nick="row.m.nick ?? ''"
+                interactive
+                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+              />{{ eventHostSuffix(row.m) }} changed host to {{ row.m.newIdent }}@{{
+                row.m.newHost
+              }}</template
+            >
             <template v-else-if="row.m?.type === 'kick'"
               ><NickRef
                 :nick="row.m.kicked ?? ''"
@@ -1199,6 +1208,7 @@ function prefixText(m: ChatMessage | undefined): string {
     case 'topic':
     case 'motd':
     case 'invite':
+    case 'chghost':
       return '--';
     case 'system':
       // System-buffer log lines (#355). Tied to a network → that network's
@@ -1227,10 +1237,12 @@ function prefixText(m: ChatMessage | undefined): string {
 // absent — the server stores an empty ident/host when it lacks one
 // (`nick!@host` / `nick!ident@`), and a half-mask like `(@host)` reads worse
 // than nothing, so we only render when both pieces are present. The full
-// formatting (leading space + parens) lives here so the four presence-line
-// templates share one source of truth and each call it once (only the matching
-// branch renders per row); reuses parseUserHost so parsing matches the ignore
-// flow exactly.
+// formatting (leading space + parens) lives here so the presence-line templates
+// share one source of truth and each call it once (only the matching branch
+// renders per row); reuses parseUserHost so parsing matches the ignore flow
+// exactly. On a chghost line this renders the OLD mask — the new one is the
+// body of the message — which matches weechat's "nick (old) has changed host
+// to new" shape.
 function eventHostSuffix(m: ChatMessage | undefined): string {
   if (!showEventHost.value) return '';
   const { user, host } = parseUserHost(m?.userhost);

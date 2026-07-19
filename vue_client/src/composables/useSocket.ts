@@ -170,8 +170,19 @@ function applyEvent(event: any): void {
     case 'away-state':
       networks.applyAwayState(event);
       break;
+    case 'chghost':
+      if (!buffers.pushMessage(event)) break;
+      buffers.updateMember(event.networkId, event.target, event.nick, {
+        user: event.newIdent,
+        host: event.newHost,
+      });
+      break;
     case 'names':
       buffers.setMembers(event.networkId, event.target, event.members);
+      break;
+    // Incremental nicklist patch — not persisted, so no pushMessage/dedupe.
+    case 'member-update':
+      buffers.updateMember(event.networkId, event.target, event.member?.nick, event.member);
       break;
     case 'channel-joined':
       buffers.ensure(event.networkId, event.target);

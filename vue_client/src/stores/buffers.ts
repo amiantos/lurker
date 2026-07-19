@@ -94,6 +94,11 @@ export interface BufferMember {
   // because pre-upgrade backlog and bare JOIN-derived members may lack them.
   user?: string | null;
   host?: string | null;
+  // Services account (extended-join / account-notify, #508). A string means
+  // logged in; null means the server told us they're logged out; undefined
+  // means we never learned. Both falsy states render as nothing today — the
+  // distinction is kept so a later WHOX backfill can merge without clobbering.
+  account?: string | null;
 }
 
 export interface TypingEntry {
@@ -296,6 +301,26 @@ export const useBuffersStore = defineStore('buffers', {
       resolveExistingKey(state.buffers, networkId, target) !== null,
     forNetwork: (state) => (networkId: number | string) =>
       Object.values(state.buffers).filter((b) => b.networkId === networkId),
+    // The services account we've learned for a nick anywhere on this network,
+    // from extended-join / account-notify (#508). Account is per-network, not
+    // per-channel, so any channel we share is an equally good source — take the
+    // first that actually knows. Returns undefined when no shared channel has
+    // data (we joined after them, or the network lacks the caps), which is
+    // distinct from null ("server told us they're logged out").
+    accountFor:
+      (state) =>
+      (networkId: number | string, nick: string): string | null | undefined => {
+        if (!nick) return undefined;
+        const lc = nick.toLowerCase();
+        for (const b of Object.values(state.buffers)) {
+          if (b.networkId !== networkId) continue;
+          const m = b.members?.find(
+            (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
+          );
+          if (m && m.account !== undefined) return m.account;
+        }
+        return undefined;
+      },
     // The open DM buffer for a (network, nick), matched case-insensitively so we
     // resolve to whatever case is already open rather than forking a second
     // buffer that differs only by nick case. Channels and the flat virtual
@@ -746,6 +771,29 @@ export const useBuffersStore = defineStore('buffers', {
       const buf = ensureBuffer(this, networkId, target);
       const existing = buf.members.find((m) => (m.nick || m) === nick);
       if (!existing) buf.members.push({ nick, modes: [], away: false });
+    },
+    // Patch attributes on one member in place, leaving fields the caller didn't
+    // mention alone. Matched case-insensitively: a CHGHOST/ACCOUNT echoes the
+    // nick as the server holds it, which needn't match the case NAMES gave us.
+    updateMember(
+      networkId: number | string,
+      target: string,
+      nick: string | undefined,
+      patch: Partial<BufferMember> | undefined,
+    ) {
+      if (!nick || !patch) return;
+      const buf = ensureBuffer(this, networkId, target);
+      const lc = nick.toLowerCase();
+      const m = buf.members.find(
+        (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
+      );
+      if (!m) return;
+      // Never let a patch blank out a nick, and skip keys the sender omitted so
+      // a chghost carrying only the changed half can't wipe the other one.
+      for (const [k, v] of Object.entries(patch)) {
+        if (k === 'nick' || v === undefined) continue;
+        (m as unknown as Record<string, unknown>)[k] = v;
+      }
     },
     renameMember(networkId: number | string, target: string, oldNick: string, newNick: string) {
       const buf = ensureBuffer(this, networkId, target);
