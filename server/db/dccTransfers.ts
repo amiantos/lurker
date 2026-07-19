@@ -20,11 +20,18 @@ import db from './index.js';
 // failed / rejected / cancelled. Kept as a TS union + a TEXT column (matching the
 // repo's other enum columns, e.g. peer_presence_state.state) rather than a DB
 // CHECK, so the allowed values live in one documented place.
+// Outgoing sends (direction='send') add two states: `offering` (we sent the DCC
+// SEND CTCP and are waiting — for the peer to dial our listener, or for a
+// passive receiver's reverse reply) and `sending` (bytes flowing). They share
+// the terminal states with receives. received_bytes doubles as "bytes sent" and
+// destination_path as the source file path for a send.
 export type DccTransferState =
   | 'requested'
   | 'pending_approval'
+  | 'offering'
   | 'connecting'
   | 'receiving'
+  | 'sending'
   | 'stalled'
   | 'verifying'
   | 'completed'
@@ -39,8 +46,10 @@ export type DccTransferState =
 export const DCC_ACTIVE_STATES: ReadonlySet<DccTransferState> = new Set([
   'requested',
   'pending_approval',
+  'offering',
   'connecting',
   'receiving',
+  'sending',
   'stalled',
   'verifying',
 ]);
@@ -110,6 +119,43 @@ export function insertDccTransfer(userId: number, f: InsertDccTransferFields): n
     f.peer_port ?? null,
     f.trigger_text ?? null,
     f.crc_expected ?? null,
+  );
+  return Number(info.lastInsertRowid);
+}
+
+export interface InsertDccSendFields {
+  network_id: number;
+  peer_nick: string;
+  filename: string;
+  /** File size in bytes. */
+  advertised_size: number;
+  /** Absolute path of the local file being sent (reuses destination_path). */
+  source_path: string;
+  state: DccTransferState;
+  passive?: boolean;
+  token?: number | null;
+}
+
+const insertSendStmt = db.prepare(`
+  INSERT INTO dcc_transfers
+    (user_id, network_id, peer_nick, direction, filename, advertised_size,
+     destination_path, state, passive, token)
+  VALUES (?, ?, ?, 'send', ?, ?, ?, ?, ?, ?)
+`);
+
+/** Insert an OUTGOING send row (direction='send'). destination_path holds the
+ *  source file's path; received_bytes will track bytes sent. */
+export function insertDccSend(userId: number, f: InsertDccSendFields): number {
+  const info = insertSendStmt.run(
+    userId,
+    f.network_id,
+    f.peer_nick,
+    f.filename,
+    f.advertised_size,
+    f.source_path,
+    f.state,
+    f.passive ? 1 : 0,
+    f.token ?? null,
   );
   return Number(info.lastInsertRowid);
 }
