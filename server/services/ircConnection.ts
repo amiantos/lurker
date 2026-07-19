@@ -10,7 +10,7 @@ import {
   listBufferTargets,
 } from '../db/messages.js';
 import type { Network } from '../db/networks.js';
-import { upsertChannel, setChannelKey, deleteChannel } from '../db/networks.js';
+import { upsertChannel, setChannelKey, deleteChannel, markChannelParted } from '../db/networks.js';
 import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
 import { listTargetsForNetwork as listFriendTargetsForNetwork } from '../db/contacts.js';
 import * as chanlistDb from '../db/chanlist.js';
@@ -2708,7 +2708,7 @@ export class IrcConnection {
     this.channels.delete(name.toLowerCase());
     try {
       if (forget) deleteChannel(this.network.id, canonical);
-      else upsertChannel(this.network.id, canonical, false);
+      else markChannelParted(this.network.id, canonical);
     } catch (_) {
       /* ignore */
     }

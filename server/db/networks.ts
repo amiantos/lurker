@@ -272,6 +272,17 @@ export function setChannelKey(networkId: number, name: string, key: string | nul
   );
 }
 
+// Clear the joined flag on a row that already exists, without creating one.
+// upsertChannel would INSERT on a miss, which turns a 442 for a channel we were
+// never in (a typo'd /part) into a phantom row. Folded for the same reason
+// deleteChannel is: the name often arrives in the server's casing.
+export function markChannelParted(networkId: number, name: string): void {
+  db.prepare('UPDATE channels SET joined = 0 WHERE network_id = ? AND lower(name) = lower(?)').run(
+    networkId,
+    name,
+  );
+}
+
 export function deleteChannel(networkId: number, name: string): void {
   // Folded, not case-exact: IRC channel names are case-insensitive, and the
   // name we're asked to delete by often comes from the server (a 470 forward

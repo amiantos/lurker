@@ -2080,6 +2080,19 @@ describe('forwarded joins (470) and un-partable channels (442)', () => {
     );
   });
 
+  it('442 for a channel with no row does not conjure one', () => {
+    // Correcting the row must not CREATE it: a typo'd /part answered with 442
+    // would otherwise leave a phantom channels row behind, which is the same
+    // class of junk this branch exists to stop producing.
+    const conn = makeConn('notonchan-phantom');
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#never-joined',
+      reason: "You're not on that channel",
+    });
+    expect(listChannels(conn.network.id)).toHaveLength(0);
+  });
+
   it('442 corrects a stale joined=1 row even when the channel is not in the joined set', () => {
     // The in-memory set and the persisted row can disagree — after a restart
     // the row survives while this.channels is empty. The row is what
