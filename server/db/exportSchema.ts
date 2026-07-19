@@ -115,17 +115,35 @@ export const EXPORT_TABLES = Object.freeze({
     ],
   },
 
-  channels: {
+  // The buffer registry (replaced channels + closed_buffers; a legacy archive
+  // carrying those instead is converted by convertLegacyBuffers in
+  // importService). network_id is NULL for app-scoped rows — rekeyRow passes
+  // NULL through untouched, while a non-NULL id that isn't in the archive's
+  // network map correctly drops the row (NOT fkRekeyNullable, which would
+  // morph an orphaned network buffer into an app-scoped one).
+  buffers: {
     mode: 'export',
-    scope: 'via_network',
+    scope: 'user_id',
     section: 'data',
     pk: 'id',
     rekeyOnImport: true,
-    fkRekey: { network_id: 'networks' },
+    fkRekey: { user_id: 'users', network_id: 'networks' },
     // The +k channel key gates entry to the channel — same credential class as
     // the network secrets, so same at-rest treatment.
     encryptedColumns: ['key'],
-    columns: ['id', 'network_id', 'name', 'joined', 'created_at', 'key'],
+    columns: [
+      'id',
+      'user_id',
+      'network_id',
+      'target',
+      'target_folded',
+      'kind',
+      'state',
+      'autojoin',
+      'key',
+      'created_at',
+      'closed_at',
+    ],
   },
 
   // Friends/contacts. contacts is a rekey root (its id is referenced by
@@ -215,14 +233,6 @@ export const EXPORT_TABLES = Object.freeze({
     section: 'data',
     fkRekey: { user_id: 'users' },
     columns: ['user_id', 'away_datetime', 'back_datetime', 'away_message', 'auto_set'],
-  },
-
-  closed_buffers: {
-    mode: 'export',
-    scope: 'user_id',
-    section: 'data',
-    fkRekey: { user_id: 'users', network_id: 'networks' },
-    columns: ['user_id', 'network_id', 'target', 'closed_at'],
   },
 
   user_settings: {
@@ -621,7 +631,7 @@ export function encryptedColumnsByTable(): Record<string, string[]> {
 export const IMPORT_ORDER = Object.freeze([
   // FK-roots first.
   'networks',
-  'channels',
+  'buffers',
   'highlight_rules',
   'highlight_rule_networks',
   // Before user_settings (whose `uploads.uploader_id` value is rewritten through
@@ -635,7 +645,6 @@ export const IMPORT_ORDER = Object.freeze([
   'nicklist_collapsed',
   'channel_notify_settings',
   'user_drafts',
-  'closed_buffers',
   'user_away_state',
   'input_history',
   'upload_history',

@@ -31,6 +31,12 @@ import { createIdentdServer, unregisterIdent } from './identd.js';
 import { getRecent } from './systemLog.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import {
+  getBuffer,
+  ensureOpen as ensureBufferOpen,
+  seedAutojoinChannel,
+  listForNetwork as listBufferRowsForNetwork,
+} from '../db/buffers.js';
 import { getPeerPresence } from '../db/peerPresence.js';
 import { setUserSetting, deleteUserSetting } from '../db/settings.js';
 
@@ -1966,5 +1972,196 @@ describe('join key forwarding', () => {
     conn.client.join = join;
     conn.join('#open');
     expect(join).toHaveBeenCalledWith('#open', undefined);
+  });
+});
+
+// A forwarding server (Libera answers JOIN #apple with 470 → ##apple) used to
+// leave a phantom row for the name we asked for: the old joinChannel wrote it
+// optimistically on the request, and no channel-joined ever arrived for that
+// name to correct it. Under the buffers registry nothing is persisted until
+// the join ECHO, so the request can no longer plant anything — these tests
+// cover the echo write itself plus the two correction paths that remain: a
+// pre-existing row (config-seeded autojoin, or stale history) hit by a 470,
+// and a 442 whose PART echo never comes.
+describe('join echo, forwarded joins (470), and un-partable channels (442)', () => {
+  function makeConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  it('self-join echo mints the registry row with autojoin and the stashed key', () => {
+    const conn = makeConn('echo-mints');
+    conn.client.user.nick = 'me';
+    conn.stashJoinKey('#Secret', 'hunter2');
+
+    conn.client.emit('join', { channel: '#Secret', nick: 'me' });
+
+    const row = getBuffer(conn.network.user_id, conn.network.id, '#secret');
+    expect(row?.target).toBe('#Secret');
+    expect(row?.kind).toBe('channel');
+    expect(row?.state).toBe('open');
+    expect(row?.autojoin).toBe(true);
+    expect(row?.key).toBe('hunter2');
+  });
+
+  it("someone else's join mints nothing", () => {
+    const conn = makeConn('echo-other');
+    conn.client.user.nick = 'me';
+    conn.upsertChannel('#chan');
+
+    conn.client.emit('join', { channel: '#chan', nick: 'stranger' });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#chan')).toBeUndefined();
+  });
+
+  it('470 deletes a history-less pre-existing row even when the server relays a different case', () => {
+    const conn = makeConn('fwd-row');
+    const netId = conn.network.id;
+    // A config-seeded autojoin entry (default_channels) — the one remaining way
+    // a row can exist for a channel the server then forwards away from. Stored
+    // with the case the user typed; the server relays its own.
+    seedAutojoinChannel(conn.network.user_id, netId, '#Apple');
+    expect(getBuffer(conn.network.user_id, netId, '#apple')).toBeDefined();
+
+    // The shape irc-framework actually emits for ERR_LINKCHANNEL — it models
+    // 470 as its own event, so this never arrives as 'unknown command'.
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
+
+    // Gone entirely — no history means nothing to show, and a surviving row
+    // would replay the forwarded JOIN on every reconnect.
+    expect(getBuffer(conn.network.user_id, netId, '#apple')).toBeUndefined();
+  });
+
+  it('470 discards a stashed join key for the forwarded-from channel', () => {
+    const conn = makeConn('fwd-key');
+    conn.client.user.nick = 'me';
+    conn.stashJoinKey('#apple', 'sekrit');
+
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
+    // A later echo for that name (a genuine join) must not resurrect the key.
+    conn.client.emit('join', { channel: '#apple', nick: 'me' });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.key).toBeNull();
+  });
+
+  it('470 evicts the forwarded-from channel from the joined set and announces the part', () => {
+    const conn = makeConn('fwd-evict');
+    conn.upsertChannel('#apple');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    // The shape irc-framework actually emits for ERR_LINKCHANNEL — it models
+    // 470 as its own event, so this never arrives as 'unknown command'.
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
+
+    expect(conn.channels.has('#apple')).toBe(false);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'channel-parted', target: '#apple' }),
+    );
+  });
+
+  it('470 leaves the channel we were actually forwarded TO alone', () => {
+    const conn = makeConn('fwd-target');
+    conn.upsertChannel('##apple');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '##apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    // The shape irc-framework actually emits for ERR_LINKCHANNEL — it models
+    // 470 as its own event, so this never arrives as 'unknown command'.
+    conn.client.emit('channel_redirect', { from: '#apple', to: '##apple' });
+
+    expect(conn.channels.has('##apple')).toBe(true);
+    expect(getBuffer(conn.network.user_id, conn.network.id, '##apple')).toBeDefined();
+  });
+
+  it('442 on a PART evicts the channel the server says we are not on', () => {
+    const conn = makeConn('notonchan');
+    conn.upsertChannel('#apple');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#apple',
+      reason: "You're not on that channel",
+    });
+
+    // Without this the PART echo never lands and #apple stays "joined" forever.
+    expect(conn.channels.has('#apple')).toBe(false);
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'channel-parted', target: '#apple' }),
+    );
+  });
+
+  it('442 still surfaces the error in the server buffer', () => {
+    const conn = makeConn('notonchan-line');
+    conn.upsertChannel('#apple');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#apple',
+      reason: "You're not on that channel",
+    });
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', target: `:server:${conn.network.id}` }),
+    );
+  });
+
+  it('442 for a channel with no row does not conjure one', () => {
+    // Correcting state must not CREATE it: a typo'd /part answered with 442
+    // used to leave a phantom channels row behind. setAutojoin is update-only,
+    // so the registry stays empty.
+    const conn = makeConn('notonchan-phantom');
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#never-joined',
+      reason: "You're not on that channel",
+    });
+    expect(listBufferRowsForNetwork(conn.network.id)).toHaveLength(0);
+  });
+
+  it('442 corrects a stale autojoin row even when the channel is not in the joined set', () => {
+    // The in-memory set and the persisted row can disagree — after a restart
+    // the row survives while this.channels is empty. The row is what
+    // auto-rejoins, so it must be corrected regardless of whether we happened
+    // to be tracking the channel.
+    const conn = makeConn('notonchan-stale');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    expect(conn.channels.has('#apple')).toBe(false);
+
+    conn.client.emit('irc error', {
+      error: 'not_on_channel',
+      channel: '#apple',
+      reason: "You're not on that channel",
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
   });
 });

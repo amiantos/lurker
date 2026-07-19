@@ -3,15 +3,17 @@
 
 import IRC, { ircLineParser } from 'irc-framework';
 import type { Client as IrcClient } from 'irc-framework';
-import {
-  insertMessage,
-  hasMessageForTarget,
-  hasConversationForTarget,
-  listBufferTargets,
-} from '../db/messages.js';
+import { insertMessage, hasMessageForTarget, hasConversationForTarget } from '../db/messages.js';
 import type { Network } from '../db/networks.js';
-import { upsertChannel, setChannelKey } from '../db/networks.js';
-import { isClosed as isBufferClosed } from '../db/closedBuffers.js';
+import {
+  isClosed as isBufferClosed,
+  getBuffer,
+  ensureExists as ensureBufferExists,
+  setAutojoin as setBufferAutojoin,
+  setChannelKey as setBufferChannelKey,
+  deleteBuffer,
+  listOpenDms,
+} from '../db/buffers.js';
 import { listTargetsForNetwork as listFriendTargetsForNetwork } from '../db/contacts.js';
 import * as chanlistDb from '../db/chanlist.js';
 import type { PeerPresence, PeerState } from '../db/peerPresence.js';
@@ -331,6 +333,11 @@ export class IrcConnection {
   client: IrcClient;
   state: string;
   channels: Map<string, ChannelState>;
+  // Join keys awaiting their echo, keyed by lowercased channel. Nothing is
+  // persisted on a join REQUEST (the buffers row is echo-written), so the key
+  // rides here until the join lands; a forward (470) discards it. Lost on a
+  // process restart mid-join — the user just re-/joins with the key.
+  private pendingJoinKeys = new Map<string, string>();
   userModes: Set<string>;
   awayState: AwayState;
   // One presence watch list keyed by lowercased nick. Each entry records WHY
@@ -810,22 +817,18 @@ export class IrcConnection {
       this.currentNick = registeredNick;
       const fallbackUsed = this.nickAttempt > 0 && registeredNick !== this.network.nick;
       this.startLagPinger();
-      // Hydrate the DM-peer tracking set from open DM buffers — the union
-      // of (a) targets we have any persisted history with and (b) targets
-      // not in closed_buffers for this user. Closed DMs explicitly opted
-      // out, so we don't track them until the user reopens. Filtering here
-      // (not later) means we never write peer_presence_state rows for
-      // closed buffers in the first place.
+      // Hydrate the DM-peer tracking set from open DM buffer rows. Closed DMs
+      // explicitly opted out, so we don't track them until the user reopens.
+      // Filtering here (not later) means we never write peer_presence_state
+      // rows for closed buffers in the first place.
       this.trackedPeers.clear();
       try {
-        for (const target of listBufferTargets(this.network.id)) {
-          if (!isDmTargetName(target)) continue;
-          if (isBufferClosed(this.network.user_id, this.network.id, target)) continue;
+        for (const buf of listOpenDms(this.network.id)) {
           // A notice-only buffer (NickServ/ChanServ, #439) is not a real DM —
           // don't seed it into MONITOR or it consumes presence slots and shows a
           // bogus presence dot for a service. Track only actual conversations.
-          if (!hasConversationForTarget(this.network.id, target)) continue;
-          this.addPeerReason(target.toLowerCase(), 'dm', null);
+          if (!hasConversationForTarget(this.network.id, buf.target)) continue;
+          this.addPeerReason(buf.target.toLowerCase(), 'dm', null);
         }
       } catch (e) {
         console.warn('[presence] hydrate failed:', (e as Error)?.message || e);
@@ -1375,11 +1378,11 @@ export class IrcConnection {
           this.currentNick &&
           eventTarget.toLowerCase() === this.currentNick.toLowerCase()
         ) {
-          // Fold to an existing buffer's casing so a reply sourced as "ChanServ"
-          // doesn't fork history from a "chanserv" buffer the user started (#289).
-          const nickLower = (eventNick as string).toLowerCase();
+          // Fold to the existing buffer row's casing so a reply sourced as
+          // "ChanServ" doesn't fork history from a "chanserv" buffer the user
+          // started (#289).
           target =
-            listBufferTargets(this.network.id).find((t) => t.toLowerCase() === nickLower) ??
+            getBuffer(this.network.user_id, this.network.id, eventNick as string)?.target ??
             (eventNick as string);
         } else {
           target = `:server:${this.network.id}`;
@@ -1608,6 +1611,32 @@ export class IrcConnection {
         this.markPeerEvent(eventNick, 'online');
       }
       if (eventNick === c.user.nick) {
+        // The ECHO is the only signal the join actually landed on the channel
+        // we asked for, so this is where the buffers row is written: creation,
+        // autojoin, and the key stashed at request time. A forwarded (470) or
+        // refused join therefore leaves no row and no rejoin entry behind.
+        // The open/closed flip is deliberately NOT done here — wsHub's live
+        // filter owns it (reopensClosedBuffer) and fans out buffer-reopened;
+        // flipping state first would hide the reopen from it.
+        const stashedKey = this.takeStashedJoinKey(eventChannel);
+        try {
+          const { record } = ensureBufferExists(
+            this.network.user_id,
+            this.network.id,
+            eventChannel,
+            { kind: 'channel' },
+          );
+          // Skip the no-op UPDATE on the steady-state reconnect burst, where
+          // every rejoined channel already carries autojoin=1.
+          if (!record.autojoin) {
+            setBufferAutojoin(this.network.user_id, this.network.id, eventChannel, true);
+          }
+          if (stashedKey !== undefined) {
+            setBufferChannelKey(this.network.user_id, this.network.id, eventChannel, stashedKey);
+          }
+        } catch (_) {
+          /* ignore */
+        }
         this.publish({ type: 'channel-joined', target: eventChannel });
         // Re-joining is a clean "try again" gesture: drop any stale
         // can't-speak-here mark so typing notifications resume. If we still
@@ -1623,6 +1652,26 @@ export class IrcConnection {
           /* ignore */
         }
       }
+    });
+
+    // ERR_LINKCHANNEL (470): the server forwarded our JOIN somewhere else
+    // (Libera forwards #apple → ##apple). irc-framework models this as its own
+    // event with from/to — it never reaches the 'unknown command' handler.
+    //
+    // Under echo-written buffers the request persisted nothing, so there is
+    // usually nothing to undo — but a row for `from` can pre-exist (stale
+    // history, or a configured default channel the server now forwards), and
+    // its autojoin would replay the forwarded JOIN on every reconnect. Evict
+    // corrects that; the stashed join key is discarded since no echo for
+    // `from` will ever consume it. The forward itself is still logged to the
+    // server buffer verbatim by the 'raw' handler.
+    c.on('channel_redirect', (event: Record<string, unknown>) => {
+      const from = event?.from as string | undefined;
+      if (!from) return;
+      this.takeStashedJoinKey(from);
+      // forget: a channel we were never in must not keep an autojoin or a row
+      // with nothing to show.
+      this.evictChannel(from, { forget: true });
     });
 
     c.on('part', (event: Record<string, unknown>) => {
@@ -1672,11 +1721,12 @@ export class IrcConnection {
       });
       // Mirror the self-PART path when we ourselves are the one kicked, so
       // the buffer dims in the sidebar instead of staying styled as joined.
-      // Persisting joined=false here also prevents auto-rejoin on reconnect.
+      // Lowering autojoin also prevents the reconnect replay — rejoining a
+      // channel that just kicked you reads as ban evasion to ops.
       if (eventKicked && c.user.nick && eventKicked.toLowerCase() === c.user.nick.toLowerCase()) {
         this.channels.delete(eventChannel.toLowerCase());
         try {
-          upsertChannel(this.network.id, channel, false);
+          setBufferAutojoin(this.network.user_id, this.network.id, channel, false);
         } catch (_) {
           /* ignore */
         }
@@ -1942,7 +1992,9 @@ export class IrcConnection {
           // guards that stop an on-join mode burst from wiping the real key).
           if (letter === 'k') {
             const change = resolveKeyModeChange(sign, m.param);
-            if (change) setChannelKey(this.network.id, ch.name, change.key);
+            if (change) {
+              setBufferChannelKey(this.network.user_id, this.network.id, ch.name, change.key);
+            }
           }
         }
       }
@@ -2245,6 +2297,17 @@ export class IrcConnection {
       // client waits for channel-joined before opening the buffer, so on
       // failure there is no buffer to render into.
       const rejectChannel = event?.channel as string | undefined;
+      // ERR_NOTONCHANNEL (442) is authoritative: the server says we are not on
+      // that channel, so the PART echo that normally evicts it from
+      // this.channels is never coming. Evict here instead. Without this, any
+      // channel the server refuses to part stays in the joined set for the life
+      // of the connection, and join-precedence (eachUserBufferTarget) lets that
+      // stale entry outrank the user's closed flag — an un-closable buffer.
+      if (tag === 'not_on_channel' && rejectChannel) {
+        this.evictChannel(rejectChannel);
+        // Falls through to the generic server-buffer line below: 442 is rare
+        // and worth showing, and the eviction above is silent on its own.
+      }
       const rejectMsg = rejectChannel ? joinRejectionMessageByTag(tag) : null;
       if (rejectChannel && rejectMsg) {
         this.publishEphemeral({
@@ -2657,6 +2720,43 @@ export class IrcConnection {
     }
   }
 
+  // Forget a channel the server has told us we are not on, outside the normal
+  // PART echo: a forward (470) or a refused part (442). Drops it from the
+  // joined set, corrects the buffers row, and announces the part so the
+  // buffer stops rendering as joined.
+  //
+  // The DB write is deliberately NOT gated on the channel being in
+  // this.channels — a stale autojoin row can outlive the in-memory entry (e.g.
+  // across a restart, where the auto-JOIN was forwarded away), and that row is
+  // what auto-rejoins on every reconnect. The two states are corrected
+  // independently because they answer different questions: this.channels is
+  // live membership, the row's autojoin drives the reconnect rejoin.
+  //
+  // `forget` (the 470 forward): a channel we were never in. With history the
+  // buffer must survive (the user can read and now close it — the old
+  // un-closable-#apple case); it just loses autojoin and any stored key.
+  // Without history there is nothing to show, so any row (a configured
+  // default channel the server now forwards) goes entirely. All three writes
+  // are update-or-delete only — a 442 for a channel with no row conjures
+  // nothing.
+  private evictChannel(name: string, { forget = false }: { forget?: boolean } = {}): void {
+    const canonical = canonicalChannelTarget(name, this.channels) ?? name;
+    this.channels.delete(name.toLowerCase());
+    try {
+      if (forget && !hasMessageForTarget(this.network.id, canonical)) {
+        deleteBuffer(this.network.user_id, this.network.id, canonical);
+      } else {
+        setBufferAutojoin(this.network.user_id, this.network.id, canonical, false);
+        if (forget) {
+          setBufferChannelKey(this.network.user_id, this.network.id, canonical, null);
+        }
+      }
+    } catch (_) {
+      /* ignore */
+    }
+    this.publish({ type: 'channel-parted', target: canonical });
+  }
+
   upsertChannel(name: string): ChannelState {
     const key = name.toLowerCase();
     let ch = this.channels.get(key);
@@ -2666,6 +2766,19 @@ export class IrcConnection {
     }
     if (!ch.modes) ch.modes = new Set();
     return ch;
+  }
+
+  /** Hold a join key until its echo (see pendingJoinKeys). */
+  stashJoinKey(channel: string, key: string): void {
+    this.pendingJoinKeys.set(channel.toLowerCase(), key);
+  }
+
+  /** Consume the stashed key for a landed (or forwarded-away) join. */
+  takeStashedJoinKey(channel: string): string | undefined {
+    const lower = channel.toLowerCase();
+    const key = this.pendingJoinKeys.get(lower);
+    this.pendingJoinKeys.delete(lower);
+    return key;
   }
 
   publishChannelModes(ch: ChannelState): void {

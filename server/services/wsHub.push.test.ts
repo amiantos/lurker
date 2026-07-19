@@ -70,6 +70,7 @@ let writeBackMarker: typeof import('../db/userAwayState.js').writeBackMarker;
 let setChannelNotifyAlways: typeof import('../db/channelNotify.js').setChannelNotifyAlways;
 let createSession: typeof import('../db/sessions.js').createSession;
 let insertMessage: typeof import('../db/messages.js').insertMessage;
+let buffers: typeof import('../db/buffers.js');
 
 let server: http.Server;
 let url: string;
@@ -84,6 +85,7 @@ beforeAll(async () => {
   ({ setChannelNotifyAlways } = await import('../db/channelNotify.js'));
   ({ createSession } = await import('../db/sessions.js'));
   ({ insertMessage } = await import('../db/messages.js'));
+  buffers = await import('../db/buffers.js');
   ircManager = (await import('./ircManager.js')).default;
   ignoreRulesService = (await import('./ignoreRulesService.js')).default;
   const { attachWsHub } = await import('./wsHub.js');
@@ -462,6 +464,7 @@ describe('maybePush payload', () => {
   it('stamps the unread-highlight total as the app-icon badge', async () => {
     // The badge is the running total, not this message's count (#451), and it
     // includes the triggering message because it is persisted before the push.
+    buffers.ensureExists(userId, networkId, 'carol'); // the live filter's row-minting
     insertMessage({
       networkId,
       target: 'carol',

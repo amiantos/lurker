@@ -86,16 +86,37 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_networks_user ON networks(user_id);
 
-    CREATE TABLE IF NOT EXISTS channels (
+    -- First-class buffer registry: a buffer exists because a row exists, not
+    -- because messages exist (the old derived model). Replaces the retired
+    -- channels table (autojoin/key carrier) and closed_buffers (per-user hide
+    -- list) — see the schemaVersion 16 backfill. target keeps the canonical
+    -- display casing; target_folded (ASCII lower) is the ONLY lookup key,
+    -- enforced by idx_buffers_key (coalesced like idx_buffer_reads_key so a
+    -- NULL-network row dedupes). kind: channel | dm | server | system —
+    -- server/system rows are reserved for now (wsHub's walk synthesizes those
+    -- uncloseable buffers). state: open | closed; a 'closed' row with NULL
+    -- closed_at means "never surfaced" (a config-seeded autojoin channel
+    -- awaiting its first join echo), not "user closed it". autojoin is written
+    -- on the join ECHO, never the request, so a forwarded/failed join can't
+    -- plant a rejoin. key is the channel +k key, encrypted at rest.
+    CREATE TABLE IF NOT EXISTS buffers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      network_id INTEGER NOT NULL,
-      name TEXT NOT NULL,
-      joined INTEGER NOT NULL DEFAULT 0,
+      user_id INTEGER NOT NULL,
+      network_id INTEGER,
+      target TEXT NOT NULL,
+      target_folded TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'open',
+      autojoin INTEGER NOT NULL DEFAULT 0,
+      key TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE (network_id, name),
+      closed_at TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_channels_network ON channels(network_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_buffers_key
+      ON buffers(user_id, IFNULL(network_id, 0), target_folded);
+    CREATE INDEX IF NOT EXISTS idx_buffers_network ON buffers(network_id);
 
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -148,17 +169,6 @@ function migrate() {
       auto_set INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
-
-    CREATE TABLE IF NOT EXISTS closed_buffers (
-      user_id INTEGER NOT NULL,
-      network_id INTEGER NOT NULL,
-      target TEXT NOT NULL,
-      closed_at TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (user_id, network_id, target),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
-    );
-    CREATE INDEX IF NOT EXISTS idx_closed_buffers_user ON closed_buffers(user_id);
 
     CREATE TABLE IF NOT EXISTS user_settings (
       user_id INTEGER NOT NULL,
@@ -823,6 +833,10 @@ function columnExists(table: string, column: string): boolean {
   return !!cols.find((c) => c.name === column);
 }
 
+function tableExists(table: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table);
+}
+
 // Recovery for pre-role SELF-HOSTED installs: if no admin exists, promote the
 // earliest user so a single-user install that pre-dates the role column keeps
 // control. Deliberately SKIPPED in node edition — a cell is managed by the
@@ -879,10 +893,6 @@ ensureColumn('messages', 'extra', 'TEXT');
 ensureColumn('messages', 'userhost', 'TEXT');
 ensureColumn('networks', 'sasl_account', 'TEXT');
 ensureColumn('networks', 'sasl_password', 'TEXT');
-// The +k channel key, so a keyed channel can be auto-rejoined with its key
-// after a reconnect/restart (like soju/znc/thelounge). Stored encrypted at rest
-// on hosted cells (see secretCrypto), NULL for keyless channels.
-ensureColumn('channels', 'key', 'TEXT');
 ensureColumn('networks', 'trusted_certificates', 'INTEGER NOT NULL DEFAULT 1');
 // Newline-delimited raw IRC commands fired after RPL_WELCOME, IRCCloud-style.
 // Supports `WAIT <seconds>` lines that pause before the next command.
@@ -1025,7 +1035,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -1278,7 +1288,9 @@ if (schemaVersion < 6) {
   seed();
 }
 
-if (schemaVersion < 7) {
+// tableExists gate: fresh installs never create closed_buffers (retired by
+// schemaVersion 16) and have no pinned rows to repair — see the v9 gate below.
+if (schemaVersion < 7 && tableExists('closed_buffers')) {
   // Issue #112 backfill: before this version, close-buffer left the
   // pinned_buffers row intact. The client filters the pinned section by open
   // buffers, so the orphan was invisible — but it made the client's pin set
@@ -1314,7 +1326,12 @@ if (schemaVersion < 7) {
   `);
 }
 
-if (schemaVersion < 9) {
+// Gated on the legacy channels table: fresh installs no longer create the
+// channels/closed_buffers tables the fold repairs (retired by schemaVersion 16),
+// so a fresh DB — which starts at schemaVersion 0 and runs every block — must
+// skip this one. Any DB that actually needs the fold predates v16 and still has
+// the tables.
+if (schemaVersion < 9 && tableExists('channels')) {
   // Issue #268/#289/#327 repair: a server relaying a different case than we
   // joined/opened with (DALnet's registered #Christian vs the #christian we
   // joined; a DM peer presented as `bob` vs the `Bob` we /query'd) forked a
@@ -1615,6 +1632,128 @@ try {
       db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
     }
   }
+}
+
+// Retire the channels + closed_buffers tables in favor of the first-class
+// buffers registry (created in migrate() above). Gated on the legacy table:
+// fresh installs never create channels/closed_buffers, so they skip this; any
+// older DB still has both (they were created together since the beginning).
+//
+// Backfill = the union of the three places buffer state used to live, folded
+// with the same canonicalization foldBufferCase uses (canonical casing = the
+// message-majority variant, ties by target ASC):
+//   A. every distinct messages target        → open buffer (existence-with-history)
+//   B. every channels row                    → autojoin/key carrier; a row with
+//      no history gets state 'closed' + NULL closed_at ("never surfaced"), so
+//      the sidebar after this migration shows exactly what it showed before —
+//      config-seeded channels still appear only on their join echo
+//   C. every closed_buffers row              → state 'closed' (folded; a
+//      history-less tombstone still becomes a row so a NOTICE from that nick
+//      keeps NOT resurrecting the buffer, same as the old tombstone did)
+if (schemaVersion < 16 && tableExists('channels')) {
+  // Very old DBs that jump straight here may predate the channels.key column
+  // (its ensureColumn used to run unconditionally; it's gone now that fresh
+  // installs have no channels table).
+  ensureColumn('channels', 'key', 'TEXT');
+  // Capture the closed set (folded, latest closed_at per fork) BEFORE the
+  // fold below runs: foldBufferCase DELETES stray-cased closed_buffers rows
+  // (in its v9 context those marked a junk fork-variant), but ever since the
+  // live paths went folded, a closed row whose casing merely differs from the
+  // message-majority casing is genuine user intent — the folded snapshot
+  // honored it — and must survive into backfill pass C.
+  db.exec(`DROP TABLE IF EXISTS _bf_closed`);
+  db.exec(`
+    CREATE TEMP TABLE _bf_closed AS
+    SELECT user_id, network_id, lower(target) AS lkey,
+           MIN(target) AS any_target, MAX(closed_at) AS closed_at
+    FROM closed_buffers
+    GROUP BY user_id, network_id, lower(target)
+  `);
+  // Re-run the case-fold repair (the v9 one-shot, for forks that appeared
+  // since). The backfill below picks ONE canonical casing per buffer for the
+  // registry row, and every read path keys messages/buffer_reads by exact
+  // target — so any satellite row still sitting on a fork's other casing
+  // would detach: read pointers stop resolving (every snapshot then
+  // COUNT-scans the buffer's whole history as unread) and backlog reads see
+  // only the majority variant's messages. Folding here guarantees messages,
+  // buffer_reads, pins, drafts, and the channels rows all agree with the
+  // casing the backfill is about to canonicalize on. No-op when no forks.
+  foldBufferCase(db, { scope: 'all', report: false });
+  const cutover = db.transaction(() => {
+    db.exec(`DROP TABLE IF EXISTS _bf_canon`);
+    db.exec(`
+      CREATE TEMP TABLE _bf_canon AS
+      SELECT network_id, lower(target) AS lkey, target AS canon FROM (
+        SELECT network_id, target,
+               ROW_NUMBER() OVER (
+                 PARTITION BY network_id, lower(target)
+                 ORDER BY COUNT(*) DESC, target ASC
+               ) AS rn
+        FROM messages WHERE target NOT LIKE ':%'
+        GROUP BY network_id, target
+      ) WHERE rn = 1
+    `);
+
+    // A: history-derived buffers, open by default (C flips the closed ones).
+    db.exec(`
+      INSERT INTO buffers (user_id, network_id, target, target_folded, kind, state, autojoin)
+      SELECT n.user_id, c.network_id, c.canon, c.lkey,
+             CASE WHEN substr(c.lkey, 1, 1) IN ('#', '&', '+', '!')
+                  THEN 'channel' ELSE 'dm' END,
+             'open', 0
+      FROM _bf_canon c JOIN networks n ON n.id = c.network_id
+      ON CONFLICT(user_id, IFNULL(network_id, 0), target_folded) DO NOTHING
+    `);
+
+    // B: channels rows. GROUP BY folded name defends against a post-v9 case
+    // fork (joined=MAX, any key wins, earliest created_at). The encrypted key
+    // copies verbatim — buffers.key uses the same secretCrypto scheme.
+    db.exec(`
+      INSERT INTO buffers
+        (user_id, network_id, target, target_folded, kind, state, autojoin, key, created_at)
+      SELECT n.user_id, ch.network_id,
+             COALESCE(c.canon, ch.name),
+             lower(ch.name),
+             'channel',
+             CASE WHEN c.lkey IS NOT NULL THEN 'open' ELSE 'closed' END,
+             MAX(ch.joined),
+             MAX(ch.key),
+             MIN(ch.created_at)
+      FROM channels ch
+      JOIN networks n ON n.id = ch.network_id
+      LEFT JOIN _bf_canon c ON c.network_id = ch.network_id AND c.lkey = lower(ch.name)
+      GROUP BY ch.network_id, lower(ch.name)
+      ON CONFLICT(user_id, IFNULL(network_id, 0), target_folded) DO UPDATE SET
+        autojoin = MAX(buffers.autojoin, excluded.autojoin),
+        key = COALESCE(buffers.key, excluded.key),
+        created_at = MIN(buffers.created_at, excluded.created_at)
+    `);
+
+    // C: closed flags win over A/B state; latest closed_at survives a case
+    // fork. Reads the pre-fold _bf_closed capture, not the closed_buffers
+    // table — the fold above deletes stray-cased rows from the latter.
+    db.exec(`
+      INSERT INTO buffers
+        (user_id, network_id, target, target_folded, kind, state, autojoin, closed_at)
+      SELECT cb.user_id, cb.network_id,
+             COALESCE(c.canon, cb.any_target),
+             cb.lkey,
+             CASE WHEN substr(cb.lkey, 1, 1) IN ('#', '&', '+', '!')
+                  THEN 'channel' ELSE 'dm' END,
+             'closed', 0, cb.closed_at
+      FROM _bf_closed cb
+      LEFT JOIN _bf_canon c ON c.network_id = cb.network_id AND c.lkey = cb.lkey
+      ON CONFLICT(user_id, IFNULL(network_id, 0), target_folded) DO UPDATE SET
+        state = 'closed',
+        closed_at = excluded.closed_at
+    `);
+
+    db.exec(`DROP TABLE _bf_canon`);
+    db.exec(`DROP TABLE _bf_closed`);
+    db.exec(`DROP TABLE IF EXISTS closed_buffers`);
+    db.exec(`DROP TABLE channels`);
+  });
+  cutover();
 }
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +

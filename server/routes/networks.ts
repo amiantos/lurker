@@ -12,9 +12,8 @@ import {
   updateNetwork,
   deleteNetwork,
   reorderNetworks,
-  listChannels,
-  upsertChannel,
 } from '../db/networks.js';
+import { listChannelsForNetwork, seedAutojoinChannel } from '../db/buffers.js';
 import ircManager from '../services/ircManager.js';
 import { isNetworkHostAllowed, hostAllowedChecker } from '../services/networkPolicy.js';
 import { fanOutToUser } from '../services/wsHub.js';
@@ -61,7 +60,16 @@ function networkPayload(
     autoconnect: !!network.autoconnect,
     has_password: !!server_password,
     has_sasl_password: !!sasl_password,
-    channels: listChannels(network.id),
+    // Channel rows in the retired channels-table wire shape (`joined` is the
+    // autojoin flag), sourced from the buffers registry.
+    channels: listChannelsForNetwork(network.id).map((b) => ({
+      id: b.id,
+      network_id: network.id,
+      name: b.target,
+      joined: b.autojoin ? 1 : 0,
+      created_at: b.createdAt,
+      key: b.key,
+    })),
     // True when the admin has locked the instance down and this network's host
     // isn't on the list (#298). The row survives untouched — it just can't
     // connect — so the client needs this to say why, rather than leaving the user
@@ -122,7 +130,7 @@ router.post('/', (req: Request, res: Response) => {
     return;
   }
   for (const channel of parseChannelList(default_channel)) {
-    upsertChannel(network.id, channel, true);
+    seedAutojoinChannel(req.user!.id, network.id, channel);
   }
   // Creating a network is an explicit "Save & connect" action, so connect now
   // regardless of `autoconnect`. The `autoconnect` flag governs only whether a

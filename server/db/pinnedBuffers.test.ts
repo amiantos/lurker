@@ -11,7 +11,6 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 
 let createUser: typeof import('./users.js').createUser;
 let createNetwork: typeof import('./networks.js').createNetwork;
-let closeBuffer: typeof import('./closedBuffers.js').closeBuffer;
 let pinned: typeof import('./pinnedBuffers.js');
 let db: typeof import('./index.js').default;
 let user: ReturnType<typeof import('./users.js').createUser>;
@@ -21,7 +20,6 @@ let net2: ReturnType<typeof import('./networks.js').createNetwork>;
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
   ({ createNetwork } = await import('./networks.js'));
-  ({ closeBuffer } = await import('./closedBuffers.js'));
   pinned = await import('./pinnedBuffers.js');
   db = (await import('./index.js')).default;
   user = createUser('pin-alice');
@@ -171,6 +169,28 @@ describe('listPinnedForUser', () => {
 // Mirrors the schemaVersion < 7 cleanup in db/index.ts. Kept here as a string
 // so the test can replay it against orphan rows that the public API can no
 // longer create (close-buffer now implies unpin).
+// The v7 migration repair ran against the legacy closed_buffers table (the
+// registry didn't exist yet), and is now gated on that table existing. Its
+// replay here recreates the legacy world: fixture table + fixture close.
+function ensureLegacyClosedBuffers(): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS closed_buffers (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      target TEXT NOT NULL,
+      closed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, network_id, target)
+    )
+  `);
+}
+function closeBuffer(userId: number, networkId: number, target: string): void {
+  ensureLegacyClosedBuffers();
+  db.prepare(
+    `INSERT INTO closed_buffers (user_id, network_id, target) VALUES (?, ?, ?)
+     ON CONFLICT(user_id, network_id, target) DO UPDATE SET closed_at = datetime('now')`,
+  ).run(userId, networkId, target);
+}
+
 const PURGE_ORPHANS_SQL = `
   DELETE FROM pinned_buffers
   WHERE EXISTS (

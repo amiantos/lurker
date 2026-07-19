@@ -40,17 +40,6 @@ export interface Network {
   created_at: string;
 }
 
-/** A row from the `channels` table. */
-export interface Channel {
-  id: number;
-  network_id: number;
-  name: string;
-  joined: number;
-  created_at: string;
-  // The +k channel key (decrypted on read), or null for a keyless channel.
-  key: string | null;
-}
-
 /** Fields accepted when creating or updating a network. */
 export interface NetworkFields {
   name?: string;
@@ -214,64 +203,4 @@ export function reorderNetworks(userId: number, ids: unknown[]): number[] | null
   });
   tx();
   return [...numericIds];
-}
-
-// Decrypt the channel key in place. No-op for legacy plaintext / no key.
-function decryptChannel<T extends Channel | undefined>(row: T): T {
-  if (row) row.key = decryptSecret(row.key);
-  return row;
-}
-
-export function listChannels(networkId: number): Channel[] {
-  return (
-    db
-      .prepare('SELECT * FROM channels WHERE network_id = ? ORDER BY name')
-      .all(networkId) as Channel[]
-  ).map((row) => decryptChannel(row)!);
-}
-
-export function upsertChannel(
-  networkId: number,
-  name: string,
-  joined: boolean | number,
-  key?: string | null,
-): Channel | undefined {
-  // key === undefined means "don't touch the stored key" — most callers (NAMES,
-  // reopen, part/kick) don't know it and must not clobber a key set at join.
-  // A provided value (string or null) is written, so an explicit null clears it.
-  if (key === undefined) {
-    db.prepare(
-      `
-      INSERT INTO channels (network_id, name, joined) VALUES (?, ?, ?)
-      ON CONFLICT (network_id, name) DO UPDATE SET joined = excluded.joined
-    `,
-    ).run(networkId, name, joined ? 1 : 0);
-  } else {
-    db.prepare(
-      `
-      INSERT INTO channels (network_id, name, joined, key) VALUES (?, ?, ?, ?)
-      ON CONFLICT (network_id, name) DO UPDATE SET joined = excluded.joined, key = excluded.key
-    `,
-    ).run(networkId, name, joined ? 1 : 0, encryptSecret(key));
-  }
-  return decryptChannel(
-    db.prepare('SELECT * FROM channels WHERE network_id = ? AND name = ?').get(networkId, name) as
-      | Channel
-      | undefined,
-  );
-}
-
-// Update just the stored +k key for a channel (from a live MODE +k/-k), matched
-// case-insensitively since the MODE target case may differ from the joined name.
-// `null` clears it (on -k). No-op if the channel row doesn't exist.
-export function setChannelKey(networkId: number, name: string, key: string | null): void {
-  db.prepare('UPDATE channels SET key = ? WHERE network_id = ? AND name = ? COLLATE NOCASE').run(
-    encryptSecret(key),
-    networkId,
-    name,
-  );
-}
-
-export function deleteChannel(networkId: number, name: string): void {
-  db.prepare('DELETE FROM channels WHERE network_id = ? AND name = ?').run(networkId, name);
 }
