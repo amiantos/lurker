@@ -721,8 +721,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 50,
     default: 5,
     description:
-      'In each category (joined / left / reconnected / renamed / changed ' +
-      'hostname) of a summary ' +
+      'In each category (joined / left / reconnected / renamed / changed host) of a summary ' +
       'line, show at most this many nicks before collapsing the rest into ' +
       '"and N others". Recent speakers (those tracked for nick completion) ' +
       'are preferred when picking which names to show.',

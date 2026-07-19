@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CONSOLIDATABLE_TYPES,
@@ -13,7 +13,14 @@ import {
   type RenameEntry,
 } from './consolidate.js';
 
+// Ids and timestamps just need to be unique and ascending *within* a test —
+// nothing here asserts on their values. Reset per test so a case's fixtures
+// don't shift when one is added above it.
 let seq = 0;
+beforeEach(() => {
+  seq = 0;
+});
+
 function ev(type: string, nick: string, extra: Partial<ConsolidatableMessage> = {}) {
   seq += 1;
   return {

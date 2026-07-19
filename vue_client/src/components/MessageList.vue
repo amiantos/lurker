@@ -81,7 +81,7 @@
             ><template v-else-if="g.kind === 'left'"> left</template
             ><template v-else-if="g.kind === 'reconnected'"> reconnected</template
             ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
-            ><template v-else-if="g.kind === 'rehosted'"> changed hostname</template></template
+            ><template v-else-if="g.kind === 'rehosted'"> changed host</template></template
           >
         </span>
       </div>

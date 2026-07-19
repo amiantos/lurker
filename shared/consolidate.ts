@@ -26,7 +26,7 @@
 //      'H' is deliberately transparent to the J|L scan (#593). Post-netsplit
 //      each rejoining user emits JOIN then CHGHOST as they identify, so their
 //      sequence is [J, H]; that must read as a plain "joined" rather than
-//      splitting the summary into "N joined" plus "N changed hostname". The
+//      splitting the summary into "N joined" plus "N changed host". The
 //      host change only earns its own category when nothing else happened.
 //   4. A run of exactly one event is passed through unchanged (so a lone
 //      "Alice joined" still renders with the familiar --> styling).
@@ -129,7 +129,7 @@ const CONSOLIDATABLE_TYPES: ReadonlySet<string> = new Set([
 function classify(actions: readonly EventAction[]): ConsolidationKind {
   const jl = actions.filter((a) => a === 'J' || a === 'L');
   // No presence change: a rename outranks a rehost, since "alice → bob" says
-  // more than "alice changed hostname" for an identity that did both.
+  // more than "alice changed host" for an identity that did both.
   if (jl.length === 0) return actions.includes('R') ? 'renamed' : 'rehosted';
   const first = jl[0];
   const last = jl[jl.length - 1];
