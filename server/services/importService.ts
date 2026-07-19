@@ -298,7 +298,10 @@ function convertLegacyBuffers(
   counts: Record<string, number>,
   targetUserId: number,
 ): void {
-  if ((data.buffers?.length ?? 0) > 0) return;
+  // Legacy is detected by the presence of the legacy TABLES, not by
+  // data.buffers being empty — a modern archive from a user with zero buffer
+  // rows must not have registry rows synthesized from its message history.
+  if (!('channels' in data) && !('closed_buffers' in data)) return;
   const legacyChannels = data.channels || [];
   const legacyClosed = data.closed_buffers || [];
   const networkMap = idMaps.networks;
@@ -429,6 +432,11 @@ function resetImportedData(userId: number): void {
     // re-inserts every contact (accountIsEmpty only counts networks), leaving
     // duplicated, target-less friends.
     db.prepare('DELETE FROM contacts WHERE user_id = ?').run(userId);
+    // Network-scoped buffers cascade with networks above, but an app-scoped row
+    // (network_id NULL — the reserved system/server kinds) only cascades on
+    // user delete; without this a failed-then-retried import of an archive
+    // carrying one would hit the idx_buffers_key UNIQUE constraint on retry.
+    db.prepare('DELETE FROM buffers WHERE user_id = ?').run(userId);
     // Same class of problem as contacts: uploader_config only cascades on user
     // delete, so without this a failed-then-retried import would leave the user
     // with two copies of every personal uploader. Scoped to 'user' — the

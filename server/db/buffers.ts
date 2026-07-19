@@ -143,6 +143,12 @@ const listForNetworkStmt = db.prepare(`
   SELECT * FROM buffers WHERE network_id = ? ORDER BY target_folded
 `);
 
+const listChannelBuffersStmt = db.prepare(`
+  SELECT * FROM buffers
+  WHERE network_id = ? AND kind = 'channel'
+  ORDER BY target_folded
+`);
+
 const listAutojoinStmt = db.prepare(`
   SELECT * FROM buffers
   WHERE network_id = ? AND kind = 'channel' AND autojoin = 1
@@ -155,7 +161,8 @@ const listOpenDmsStmt = db.prepare(`
   ORDER BY target_folded
 `);
 
-/** Folded point lookup. */
+/** Folded point lookup. Materializes the full record (including key
+ *  decryption) — hot paths that only need existence/state use getState. */
 export function getBuffer(
   userId: number,
   networkId: number | null,
@@ -164,11 +171,76 @@ export function getBuffer(
   return toRecord(getStmt.get(userId, networkId, foldTarget(target)) as BufferRow | undefined);
 }
 
+// Decrypt-free projections for the hot paths. The live event filter runs one
+// of these per persisted IRC event and the snapshot walk per buffer; going
+// through getBuffer there would AES-decrypt every keyed channel's +k envelope
+// just to read `state` — and a key stored under a rotated/unknown key-id
+// would make decryptSecret THROW inside message fanout instead of on the one
+// join path that actually needs the key.
+const stateStmt = db.prepare(`
+  SELECT state FROM buffers
+  WHERE user_id = ? AND IFNULL(network_id, 0) = IFNULL(?, 0) AND target_folded = ?
+`);
+
+const listStatesForUserStmt = db.prepare(`
+  SELECT network_id, target, target_folded, state FROM buffers
+  WHERE user_id = ? ORDER BY network_id, target_folded
+`);
+
+const closedFoldedForNetworkStmt = db.prepare(`
+  SELECT target_folded FROM buffers WHERE network_id = ? AND state = 'closed'
+`);
+
+/** Folded state lookup without materializing the record: 'open', 'closed', or
+ *  undefined when no row exists. */
+export function getState(
+  userId: number,
+  networkId: number | null,
+  target: string,
+): BufferState | undefined {
+  return (
+    stateStmt.get(userId, networkId, foldTarget(target)) as { state: BufferState } | undefined
+  )?.state;
+}
+
+/** One sidebar-shaped row per buffer (no key, no decryption) — the walk's fuel. */
+export interface BufferStateRow {
+  networkId: number | null;
+  target: string;
+  targetFolded: string;
+  state: BufferState;
+}
+
+export function listStatesForUser(userId: number): BufferStateRow[] {
+  return (
+    listStatesForUserStmt.all(userId) as Array<{
+      network_id: number | null;
+      target: string;
+      target_folded: string;
+      state: BufferState;
+    }>
+  ).map((r) => ({
+    networkId: r.network_id,
+    target: r.target,
+    targetFolded: r.target_folded,
+    state: r.state,
+  }));
+}
+
+/** Folded targets of a network's closed buffers — one definition of "closed"
+ *  shared by the bouncer's playback burst and CHATHISTORY TARGETS. */
+export function closedFoldedSetForNetwork(networkId: number): Set<string> {
+  const set = new Set<string>();
+  for (const r of closedFoldedForNetworkStmt.all(networkId) as Array<{ target_folded: string }>) {
+    set.add(r.target_folded);
+  }
+  return set;
+}
+
 /** Folded closed check — replaces closed_buffers.isClosed, which was case-exact
  *  and could disagree with the folded snapshot filter about the same buffer. */
 export function isClosed(userId: number, networkId: number | null, target: string): boolean {
-  const row = getStmt.get(userId, networkId, foldTarget(target)) as BufferRow | undefined;
-  return row?.state === 'closed';
+  return getState(userId, networkId, target) === 'closed';
 }
 
 export interface EnsureResult {
@@ -359,7 +431,11 @@ export const importRow = db.transaction(
     if (row.key != null && existing.key == null) {
       setKeyStmt.run(encryptSecret(row.key), row.userId, row.networkId, folded);
     }
-    if (row.state === 'closed' && existing.state === 'open') {
+    // Closed wins and carries its timestamp — including onto a row that is
+    // ALREADY closed with no timestamp (a "never surfaced" channels-seed row
+    // that a real closed_buffers tombstone then lands on). Mirrors the
+    // schema-16 migration's unconditional `closed_at = excluded.closed_at`.
+    if (row.state === 'closed' && (existing.state === 'open' || row.closedAt != null)) {
       setClosedAtStmt.run(row.closedAt ?? null, row.userId, row.networkId, folded);
     }
   },
@@ -378,6 +454,11 @@ export function listForUser(userId: number): BufferRecord[] {
 
 export function listForNetwork(networkId: number): BufferRecord[] {
   return (listForNetworkStmt.all(networkId) as BufferRow[]).map((r) => toRecord(r));
+}
+
+/** Channel rows only (keys decrypted) — the network-config payload. */
+export function listChannelsForNetwork(networkId: number): BufferRecord[] {
+  return (listChannelBuffersStmt.all(networkId) as BufferRow[]).map((r) => toRecord(r));
 }
 
 /** The reconnect rejoin list — replaces channels.joined's single consumer. */

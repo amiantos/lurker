@@ -60,15 +60,16 @@ import {
 } from '../db/inputHistory.js';
 import {
   getBuffer,
+  getState as getBufferState,
   ensureExists as ensureBufferExists,
   ensureOpen as ensureBufferOpen,
   reopen as reopenBufferRow,
   close as closeBufferRow,
   setAutojoin as setBufferAutojoin,
-  listForUser as listBuffersForUser,
-  foldTarget,
+  listStatesForUser as listBufferStatesForUser,
+  kindForTarget,
 } from '../db/buffers.js';
-import type { BufferRecord } from '../db/buffers.js';
+import type { BufferStateRow } from '../db/buffers.js';
 import {
   pinBuffer,
   unpinBuffer,
@@ -537,8 +538,8 @@ export function* eachUserBufferTarget(userId: number): Generator<UserBufferTarge
   const liveById = new Map<number, IrcConnection>(
     ircManager.listConnections(userId).map((c) => [c.network.id, c]),
   );
-  const rowsByNetwork = new Map<number, BufferRecord[]>();
-  for (const row of listBuffersForUser(userId)) {
+  const rowsByNetwork = new Map<number, BufferStateRow[]>();
+  for (const row of listBufferStatesForUser(userId)) {
     if (row.networkId == null) continue; // app-scoped rows are synthesized above
     let list = rowsByNetwork.get(row.networkId);
     if (!list) rowsByNetwork.set(row.networkId, (list = []));
@@ -549,9 +550,8 @@ export function* eachUserBufferTarget(userId: number): Generator<UserBufferTarge
     yield { networkId: net.id, target: `:server:${net.id}`, conn };
     const seen = new Set<string>();
     for (const row of rowsByNetwork.get(net.id) ?? []) {
-      const folded = foldTarget(row.target);
-      seen.add(folded);
-      if (row.state === 'closed' && !conn?.channels.has(folded)) continue;
+      seen.add(row.targetFolded);
+      if (row.state === 'closed' && !conn?.channels.has(row.targetFolded)) continue;
       yield { networkId: net.id, target: row.target, conn };
     }
     if (conn) {
@@ -1003,9 +1003,9 @@ function isHiddenClosedBuffer(
 // The folded closed-buffer key set for isHiddenClosedBuffer, from the registry.
 function closedBufferKeySet(userId: number): Set<string> {
   const set = new Set<string>();
-  for (const row of listBuffersForUser(userId)) {
+  for (const row of listBufferStatesForUser(userId)) {
     if (row.state === 'closed' && row.networkId != null) {
-      set.add(`${row.networkId}::${foldTarget(row.target)}`);
+      set.add(`${row.networkId}::${row.targetFolded}`);
     }
   }
   return set;
@@ -1037,7 +1037,12 @@ export function handleOpenBuffer(
   } else if (requested.startsWith('#')) {
     ircManager.joinChannel(userId, networkId, requested);
     send(ws, { kind: 'buffer-opened', networkId, target: requested });
-  } else {
+  } else if (kindForTarget(requested) === 'dm') {
+    // A bare nick becomes a real (possibly empty) DM row that survives a
+    // reload. Gated on the DM classification, NOT "not '#'": a history-less
+    // '&'/'+'/'!' channel must not be minted as a permanently-dead channel
+    // buffer that never JOINs — those fall through as a no-op, exactly as the
+    // pre-registry code behaved.
     const { record } = ensureBufferOpen(userId, networkId, requested);
     send(ws, buildBufferBacklog(userId, networkId, record.target));
     send(ws, { kind: 'buffer-opened', networkId, target: record.target });
@@ -1487,8 +1492,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const decorated = decorateMessage(eventUserId, event);
     const target = decorated.target;
     if (target && decorated.networkId != null && !target.startsWith(':server:')) {
-      const row = getBuffer(eventUserId, decorated.networkId, target);
-      if (row?.state === 'closed') {
+      const state = getBufferState(eventUserId, decorated.networkId, target);
+      if (state === 'closed') {
         // See reopensClosedBuffer for which events outrank a closed flag; anything
         // else is dropped on the floor rather than resurrecting the buffer.
         const selfJoin = decorated.type === 'channel-joined';
@@ -1506,7 +1511,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           networkId: decorated.networkId,
           target,
         });
-      } else if (!row && decorated.id != null) {
+      } else if (state === undefined && decorated.id != null) {
         // A persisted event for a target with no registry row mints one — this
         // replaces the old derived-existence-from-messages. Covers first-contact
         // DMs (message OR notice: a NOTICE may create a buffer, #439, it just

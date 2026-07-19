@@ -13,7 +13,7 @@ import {
   deleteNetwork,
   reorderNetworks,
 } from '../db/networks.js';
-import { listForNetwork as listBuffersForNetwork, seedAutojoinChannel } from '../db/buffers.js';
+import { listChannelsForNetwork, seedAutojoinChannel } from '../db/buffers.js';
 import ircManager from '../services/ircManager.js';
 import { isNetworkHostAllowed, hostAllowedChecker } from '../services/networkPolicy.js';
 import { fanOutToUser } from '../services/wsHub.js';
@@ -62,16 +62,14 @@ function networkPayload(
     has_sasl_password: !!sasl_password,
     // Channel rows in the retired channels-table wire shape (`joined` is the
     // autojoin flag), sourced from the buffers registry.
-    channels: listBuffersForNetwork(network.id)
-      .filter((b) => b.kind === 'channel')
-      .map((b) => ({
-        id: b.id,
-        network_id: network.id,
-        name: b.target,
-        joined: b.autojoin ? 1 : 0,
-        created_at: b.createdAt,
-        key: b.key,
-      })),
+    channels: listChannelsForNetwork(network.id).map((b) => ({
+      id: b.id,
+      network_id: network.id,
+      name: b.target,
+      joined: b.autojoin ? 1 : 0,
+      created_at: b.createdAt,
+      key: b.key,
+    })),
     // True when the admin has locked the instance down and this network's host
     // isn't on the list (#298). The row survives untouched — it just can't
     // connect — so the client needs this to say why, rather than leaving the user

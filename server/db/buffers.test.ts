@@ -164,6 +164,35 @@ describe('list helpers', () => {
   });
 });
 
+describe('importRow closed_at merging', () => {
+  it('a tombstone timestamp lands on an already-closed never-surfaced row', () => {
+    // The legacy-conversion order: a channels-seed row imports as closed with
+    // NULL closed_at ("never surfaced"), then a closed_buffers tombstone for
+    // the same target carries the user's real close timestamp. Closed wins and
+    // carries its timestamp — matching the schema-16 migration's unconditional
+    // closed_at overwrite — even though the row was already closed.
+    buffers.importRow({
+      userId: user.id,
+      networkId: net!.id,
+      target: '#seed-then-tomb',
+      kind: 'channel',
+      state: 'closed',
+      autojoin: true,
+    });
+    expect(buffers.getBuffer(user.id, net!.id, '#seed-then-tomb')!.closedAt).toBeNull();
+    buffers.importRow({
+      userId: user.id,
+      networkId: net!.id,
+      target: '#Seed-Then-Tomb',
+      state: 'closed',
+      closedAt: '2026-03-01T00:00:00Z',
+    });
+    const row = buffers.getBuffer(user.id, net!.id, '#seed-then-tomb')!;
+    expect(row.closedAt).toBe('2026-03-01T00:00:00Z');
+    expect(row.autojoin).toBe(true); // merge kept the seed's autojoin
+  });
+});
+
 describe('app-scoped rows (NULL network_id)', () => {
   it('dedupe via the coalesced unique index', () => {
     const a = buffers.ensureOpen(user.id, null, ':system:', { kind: 'system' });

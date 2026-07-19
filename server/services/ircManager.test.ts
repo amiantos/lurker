@@ -528,6 +528,28 @@ describe('planChannelRejoins', () => {
     expect(buffers.isClosed(user.id, net.id, '#here')).toBe(false);
   });
 
+  it('joinChannel on an already-joined channel writes the key directly and stashes nothing', () => {
+    // No echo is coming for a channel we are already in, so a stashed key
+    // would sit orphaned until some LATER keyless rejoin's echo consumed it —
+    // re-applying a key that MODE -k may have since cleared.
+    const user = createUser('irc-join-nostash');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.join = vi.fn<(channel: string, key?: string) => void>();
+
+    conn.upsertChannel('#here');
+    ircManager.joinChannel(user.id, net.id, '#here', 'direct-key');
+
+    expect(buffers.getBuffer(user.id, net.id, '#here')!.key).toBe('direct-key');
+    expect(conn.takeStashedJoinKey('#here')).toBeUndefined();
+  });
+
   it('joinChannel drops a non-string key from an untrusted payload without throwing', () => {
     const user = createUser('irc-join-badkey');
     const net = createNetwork(user.id, {

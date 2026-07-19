@@ -49,7 +49,7 @@ import { verifyPassword, hashPassword } from './password.js';
 import { hashToken, findActiveByHash, touchLastUsed } from '../db/apiTokens.js';
 import { listNetworksForUser } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { listForNetwork as listBufferRowsForNetwork, foldTarget } from '../db/buffers.js';
+import { closedFoldedSetForNetwork } from '../db/buffers.js';
 import {
   listMessages,
   listBuffersForNetwork,
@@ -462,17 +462,6 @@ type ChatBound = { star: true } | { iso: string };
 
 function isChannelName(target: string): boolean {
   return target.startsWith('#') || target.startsWith('&');
-}
-
-// Folded targets of this network's closed buffers, from the registry. Shared by
-// the playback burst and CHATHISTORY TARGETS so the two can't disagree about
-// what the user has closed.
-function closedTargetSetForNetwork(networkId: number): Set<string> {
-  const set = new Set<string>();
-  for (const row of listBufferRowsForNetwork(networkId)) {
-    if (row.state === 'closed') set.add(foldTarget(row.target));
-  }
-  return set;
 }
 
 // Network-services pseudo-users (NickServ/ChanServ/…). Playback replays their
@@ -1333,7 +1322,7 @@ class BouncerSession {
     // Closed buffers are excluded, matching the playback burst — before the
     // buffers registry this path enumerated straight from messages and offered
     // conversations the user had closed everywhere else.
-    const closed = closedTargetSetForNetwork(this.networkId);
+    const closed = closedFoldedSetForNetwork(this.networkId);
     const targets = listActiveTargetsInWindow(this.networkId, isoA, isoB, limit).filter(
       (t) => !closed.has(t.target.toLowerCase()),
     );
@@ -1482,7 +1471,7 @@ class BouncerSession {
     // buffer; listBuffersForNetwork (messages-derived) is already ORDER BY
     // lastMessageAt DESC, so it stays the recency source — the registry decides
     // closed-ness.
-    const closed = closedTargetSetForNetwork(this.networkId);
+    const closed = closedFoldedSetForNetwork(this.networkId);
     const dms = listBuffersForNetwork(this.networkId)
       .filter((b) => !isChannelName(b.target) && !b.target.startsWith(':server:'))
       .filter((b) => !joined.has(b.target.toLowerCase()))

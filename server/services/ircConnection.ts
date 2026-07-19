@@ -1620,10 +1620,17 @@ export class IrcConnection {
         // flipping state first would hide the reopen from it.
         const stashedKey = this.takeStashedJoinKey(eventChannel);
         try {
-          ensureBufferExists(this.network.user_id, this.network.id, eventChannel, {
-            kind: 'channel',
-          });
-          setBufferAutojoin(this.network.user_id, this.network.id, eventChannel, true);
+          const { record } = ensureBufferExists(
+            this.network.user_id,
+            this.network.id,
+            eventChannel,
+            { kind: 'channel' },
+          );
+          // Skip the no-op UPDATE on the steady-state reconnect burst, where
+          // every rejoined channel already carries autojoin=1.
+          if (!record.autojoin) {
+            setBufferAutojoin(this.network.user_id, this.network.id, eventChannel, true);
+          }
           if (stashedKey !== undefined) {
             setBufferChannelKey(this.network.user_id, this.network.id, eventChannel, stashedKey);
           }

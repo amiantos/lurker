@@ -322,19 +322,22 @@ class IrcManager extends EventEmitter {
     // the join actually landed on the channel we asked for. A forwarding
     // server (470) or a ban therefore leaves no row, no rejoin entry, and no
     // un-closable buffer behind. The key rides along in-memory until the echo.
-    if (safeKey !== undefined) conn.stashJoinKey(name, safeKey);
     //
     // The exception is a channel we're demonstrably already in: the server
     // sends no JOIN echo for those, so waiting for one would hang forever and
     // /join on a closed-but-still-joined buffer would appear to do nothing.
     // Being in the channel is the same definitive signal the echo carries, so
-    // write the row directly.
+    // write the row (and any key) directly — and do NOT stash the key, since
+    // no echo will ever consume it and an orphaned stash would be misapplied
+    // by some later join's echo.
     if (conn.channels.has(name.toLowerCase())) {
       ensureOpenBuffer(userId, networkId, name, {
         kind: 'channel',
         autojoin: true,
         ...(safeKey !== undefined ? { key: safeKey } : {}),
       });
+    } else if (safeKey !== undefined) {
+      conn.stashJoinKey(name, safeKey);
     }
     conn.join(name, safeKey);
     return true;

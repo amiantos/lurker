@@ -421,6 +421,17 @@ describe('reopensClosedBuffer join-precedence', () => {
 });
 
 describe('handleOpenBuffer', () => {
+  it("does not mint a dead buffer for a history-less '&'/'+'/'!' channel (no JOIN path)", () => {
+    // Non-'#' channel prefixes have no join wiring here; before the registry
+    // this request was a silent no-op, and it must stay one — minting an open
+    // kind='channel' row would plant a permanently dead channel buffer that
+    // never receives a JOIN.
+    const { ws, frames } = mockWs();
+    handleOpenBuffer(ws, userId, networkId, '&local-unvisited');
+    expect(frames).toHaveLength(0);
+    expect(buffers.getBuffer(userId, networkId, '&local-unvisited')).toBeUndefined();
+  });
+
   it('reopens a since-closed channel without re-JOINing, resolving casing case-insensitively', () => {
     seed('#reopen', 'history line');
     closeBuffer(userId, networkId, '#reopen');
