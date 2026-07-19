@@ -44,7 +44,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "file-type": "^19.6.0",
+    "file-type": "^22.0.1",
     "irc-framework": "^4.13.1",
     "multer": "^2.2.0",
     "selfsigned": "^5.5.0",
