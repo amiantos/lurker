@@ -174,6 +174,7 @@ import {
   chunkCountForSay,
   chunkCountForAction,
   multilineMessageCount,
+  splitGateFor,
   type MultilineLimits,
 } from '../utils/messageSplit.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
@@ -1579,6 +1580,21 @@ function onHistorySelect(entry: string): void {
 }
 
 function onInput() {
+  // These two run AHEAD of the `cycling` guard: they're facts about the text
+  // itself, not about who wrote it, so they have to hold for programmatic
+  // rewrites (history recall, completion, emoji/URL insert) too.
+  //
+  // Any change to the body invalidates the "second press confirms" override —
+  // otherwise the user could be holding a flood-confirm token from an entirely
+  // different draft. That was live: setInputAndCaretEnd holds `cycling` across
+  // a microtask, so recalling a long line from history after a confirm-armed
+  // Send used to send it with no gate at all. Cheap to clear unconditionally.
+  pendingSplitConfirm = false;
+  // Republish composing state on every change so StatusBar's SPLIT/FLOOD
+  // indicator stays live — a recalled line has to re-estimate too. We do this
+  // even on :server: buffers and slash commands (computeChunks handles both —
+  // most return 0 chunks).
+  publishComposing(text.value);
   if (cycling) return;
   // User edited the recalled line — exit walk mode but keep what they typed.
   // Done before the sendable gate so this still fires on :server: buffers
@@ -1588,14 +1604,6 @@ function onInput() {
   // must fire before the sendable gate so it also closes on :server: buffers
   // (editable but not "sendable"), where the menu can be open over /raw history.
   closeHistoryPicker();
-  // Any edit invalidates the "second press confirms" override — otherwise the
-  // user could be holding a flood-confirm token from an entirely different
-  // draft. Cheap to clear unconditionally.
-  pendingSplitConfirm = false;
-  // Republish composing state on every keystroke so StatusBar's SPLIT/FLOOD
-  // indicator stays live. We do this even on :server: buffers and slash
-  // commands (computeChunks handles both — most return 0 chunks).
-  publishComposing(text.value);
   if (!sendable.value || !active.value) return;
   if (completion) resetCompletion();
   // Inline-convert a just-completed `:shortcode:`, then refresh the suggester
@@ -1934,12 +1942,11 @@ async function submit() {
     return;
   }
   if (count > 1) {
-    const flood = count >= 3;
     const allowSplit = !!settings.effective('chat.allow_split_messages');
-    const blocked = flood || !allowSplit;
-    if (blocked && !pendingSplitConfirm) {
+    const gate = splitGateFor({ count, allowSplit, confirmed: pendingSplitConfirm });
+    if (gate !== 'send') {
       pendingSplitConfirm = true;
-      if (flood) {
+      if (gate === 'upload') {
         // 3+ messages: offer the upload-as-.txt modal. If they cancel, the
         // already-set pendingSplitConfirm makes the next Send press the
         // override (matching the prior send-again-to-confirm behavior).
@@ -1948,14 +1955,13 @@ async function submit() {
         longMessageMultiline.value = multiline;
         longMessageModalOpen.value = true;
       } else {
-        // 2 messages with chat.allow_split_messages=off: keep the existing
-        // toast confirmation — uploading would be overkill for a two-message
-        // send.
+        // 2 messages: the cheap toast confirmation — uploading would be
+        // overkill for a two-message send.
         toasts.push({
           title: multiline
             ? `Will send as ${count} messages — Send again to confirm`
             : `Will split into ${count} lines — Send again to confirm`,
-          body: 'Enable "Allow auto-split messages" in Settings to send splits without confirming.',
+          body: 'Enable "Allow long messages to split" in Settings to send splits without confirming.',
           kind: 'warn',
           ttlMs: 7000,
         });

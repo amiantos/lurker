@@ -6,6 +6,7 @@ import {
   chunkCountForSay,
   chunkCountForAction,
   multilineMessageCount,
+  splitGateFor,
   MESSAGE_MAX_BYTES,
   ACTION_MAX_BYTES,
 } from './messageSplit.js';
@@ -82,6 +83,37 @@ describe('chunkCountForAction', () => {
 
   it('returns 0 for empty', () => {
     expect(chunkCountForAction('')).toBe(0);
+  });
+});
+
+describe('splitGateFor', () => {
+  const gate = (count: number, allowSplit: boolean, confirmed = false) =>
+    splitGateFor({ count, allowSplit, confirmed });
+
+  it('sends anything that fits one message', () => {
+    for (const count of [0, 1]) {
+      expect(gate(count, false)).toBe('send');
+      expect(gate(count, true)).toBe('send');
+    }
+  });
+
+  it('confirms 2 and offers upload at 3+ when splitting is off', () => {
+    expect(gate(2, false)).toBe('confirm');
+    expect(gate(3, false)).toBe('upload');
+    expect(gate(50, false)).toBe('upload');
+  });
+
+  // The #578 regression: `flood || !allowSplit` short-circuited, so the modal
+  // opened at 3+ no matter what the user had set.
+  it('sends at every size when splitting is allowed', () => {
+    expect(gate(2, true)).toBe('send');
+    expect(gate(3, true)).toBe('send');
+    expect(gate(50, true)).toBe('send');
+  });
+
+  it('lets a prior confirmation override the gate', () => {
+    expect(gate(2, false, true)).toBe('send');
+    expect(gate(50, false, true)).toBe('send');
   });
 });
 
