@@ -971,9 +971,9 @@ function buildOfflineFrame(userId: number, networkId: number, target: string): W
 
 // `targets` lets the snapshot hand in the enumeration it already materialized for
 // the live loop, so a connect snapshot walks eachUserBufferTarget — and its
-// listBuffersForUser/listNetworksForUser DB reads — exactly ONCE instead of
-// once here and once in the live loop. Standalone callers (tests) omit it and
-// get a fresh walk.
+// listBufferStatesForUser/listNetworksForUser DB reads — exactly ONCE instead
+// of once here and once in the live loop. Standalone callers (tests) omit it
+// and get a fresh walk.
 export function buildOfflineBacklogFrames(
   userId: number,
   targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId),
@@ -1879,7 +1879,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);
     // Walk the shared enumerator ONCE per snapshot and reuse it for both the live
-    // loop and the offline backlog. Each walk runs one listBuffersForUser query
+    // loop and the offline backlog. Each walk runs one listBufferStatesForUser query
     // plus listNetworksForUser (SELECT * + decryptRow), so materializing here —
     // rather than iterating the generator separately in the live loop and again
     // in buildOfflineBacklogFrames — keeps those reads at 1× on this
