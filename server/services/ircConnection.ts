@@ -1578,17 +1578,17 @@ export class IrcConnection {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
       const ch = this.upsertChannel(eventChannel);
+      // extended-join: irc-framework parses the account param when the cap is
+      // enabled, and omits the key when it isn't (#508).
+      const joinAccount = normalizeAccount(event.account);
       ch.members.set(eventNick.toLowerCase(), {
         nick: eventNick,
         modes: [],
         away: false,
         user: (event.ident as string) || null,
         host: (event.hostname as string) || null,
-        // extended-join: irc-framework parses the account param when the cap is
-        // enabled, and omits the key when it isn't (#508).
-        account: normalizeAccount(event.account),
+        account: joinAccount,
       });
-      const joinAccount = normalizeAccount(event.account);
       this.publish({
         type: 'join',
         target: eventChannel,
@@ -1822,6 +1822,10 @@ export class IrcConnection {
             away: !!member.away,
             user: (event.ident as string) || member.user || null,
             host: (event.hostname as string) || member.host || null,
+            // A nick change doesn't log you out — carry the account across, or
+            // it's lost for good (account-notify only fires when the account
+            // itself changes, which it hasn't) (#508).
+            account: member.account,
           });
           this.publish({
             type: 'nick',

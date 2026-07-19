@@ -182,9 +182,7 @@
                 :nick="row.m.nick ?? ''"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ eventHostSuffix(row.m) }} changed host to {{ row.m.newIdent }}@{{
-                row.m.newHost
-              }}</template
+              />{{ eventHostSuffix(row.m) }} changed host to {{ chghostMask(row.m) }}</template
             >
             <template v-else-if="row.m?.type === 'kick'"
               ><NickRef
@@ -1042,7 +1040,12 @@ const renderRows = computed((): RenderRow[] => {
     if (filterOn && m.nick && !m.self) {
       const filterable =
         (m.type === 'join' && fJoin) ||
-        ((m.type === 'part' || m.type === 'quit') && fQuit) ||
+        // chghost rides the quit toggle rather than adding a fourth setting:
+        // it's the same churn from the same silent lurkers (identifying to
+        // services after a netsplit fires one per shared channel), which is
+        // exactly what smart filtering exists to absorb. weechat ships a
+        // dedicated smart_filter_chghost for the same reason (#591).
+        ((m.type === 'part' || m.type === 'quit' || m.type === 'chghost') && fQuit) ||
         (m.type === 'nick' && fNick);
       if (filterable && m.nick.toLowerCase() !== ownNickLc) {
         const lastSpoke = buf?.speakers[m.nick.toLowerCase()]?.lastTime;
@@ -1256,6 +1259,16 @@ function eventHostSuffix(m: ChatMessage | undefined): string {
   const { user, host } = parseUserHost(m?.userhost);
   if (!user || !host) return '';
   return ` (${user}@${host})`;
+}
+
+// The post-change mask on a chghost line (#591). Same rule eventHostSuffix
+// applies above: a half-mask like `@host` reads worse than the host alone, so
+// only join the two with an `@` when we actually have both halves. Mirrors the
+// server's own mask construction in the CHGHOST handler.
+function chghostMask(m: ChatMessage | undefined): string {
+  const ident = m?.newIdent || '';
+  const host = m?.newHost || '';
+  return ident && host ? `${ident}@${host}` : host || ident;
 }
 
 // The joining user's services account, from extended-join (#508). Rendered

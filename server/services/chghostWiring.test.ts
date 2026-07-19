@@ -153,6 +153,21 @@ describe('chghost fan-out (#591)', () => {
     expect(of('chghost').map((e) => e.target)).toEqual(['#one']);
   });
 
+  it('keeps the old half of the mask rather than publishing an empty one', () => {
+    const { conn, of, memberIn } = harness();
+    // A member whose ident we never learned (NAMES-derived, no JOIN observed),
+    // then a host-only CHGHOST. Neither side should end up with a bare '@host'.
+    conn.client.emit('userlist', { channel: '#one', users: [{ nick: 'bob', modes: [] }] });
+    conn.client.emit('user updated', {
+      nick: 'bob',
+      hostname: '',
+      new_hostname: 'user/bob',
+    });
+    expect(of('chghost')[0]).toMatchObject({ newIdent: '', newHost: 'user/bob' });
+    // The stored mask keeps whatever it had rather than being blanked.
+    expect(memberIn('#one', 'bob')?.host).toBe('user/bob');
+  });
+
   it('ignores SETNAME, which rides the same event', () => {
     const { conn, of, join } = harness();
     join('#one', 'bob');
@@ -220,6 +235,16 @@ describe('extended-join / account-notify (#508)', () => {
     join('#one', 'bob', { account: 'bobaccount' });
     conn.client.emit('account', { nick: 'bob', account: false });
     expect(memberIn('#one', 'bob')?.account).toBeNull();
+  });
+
+  it('preserves a known account across a nick change', () => {
+    const { conn, memberIn, join } = harness();
+    join('#one', 'bob', { account: 'bobaccount' });
+    // A nick change doesn't log you out, and nothing would re-teach us the
+    // account afterwards — account-notify only fires when the account itself
+    // changes, which it hasn't.
+    conn.client.emit('nick', { nick: 'bob', new_nick: 'bob_' });
+    expect(memberIn('#one', 'bob_')?.account).toBe('bobaccount');
   });
 
   it('preserves a known account across a NAMES rebuild', () => {

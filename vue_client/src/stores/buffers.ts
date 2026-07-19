@@ -782,7 +782,13 @@ export const useBuffersStore = defineStore('buffers', {
       patch: Partial<BufferMember> | undefined,
     ) {
       if (!nick || !patch) return;
-      const buf = ensureBuffer(this, networkId, target);
+      // Resolve, never create. Unlike addMember/removeMember — which ride a
+      // join/part that legitimately implies the buffer should exist — a pure
+      // attribute patch has no business materializing a buffer, and doing so
+      // would leave an empty one in the sidebar when the target isn't open.
+      const bufKey = resolveExistingKey(this.buffers, networkId, target);
+      if (!bufKey) return;
+      const buf = this.buffers[bufKey];
       const lc = nick.toLowerCase();
       const m = buf.members.find(
         (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
