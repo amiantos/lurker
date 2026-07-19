@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // The `local` driver — writes upload bytes to the server's own disk and serves
-// them back over the public GET /uploads/local/:key route (routes/localUploads.ts).
+// them back over the public GET /uploads/:key route (routes/localUploads.ts).
 // Self-host only: hosted cells are ephemeral (Litestream'd SQLite, no durable
 // blob disk), so this driver is never offered on the fleet.
 //
 // This is the one driver where `storesRemotely` is false: upload() returns a
-// RELATIVE url (/uploads/local/<key>) plus the on-disk `ref`; the upload route
+// RELATIVE url (/uploads/<key>) plus the on-disk `ref`; the upload route
 // absolutizes it against PUBLIC_BASE_URL (or the request origin) so the link is
 // clickable from IRC. The real security boundary is SERVE-time, not here — see
 // routes/localUploads.ts for the sniff / disposition / header recipe.
@@ -93,7 +93,7 @@ export async function upload(
       code: 'PROVIDER_ERROR',
     });
   }
-  return { url: `/uploads/local/${key}`, ref: key, bytes };
+  return { url: `/uploads/${key}`, ref: key, bytes };
 }
 
 /** Orphan reap: unlink the on-disk file when its history row is deleted. Missing

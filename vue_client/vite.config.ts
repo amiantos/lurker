@@ -52,7 +52,8 @@ export default defineConfig(({ mode }) => {
           target: apiBase,
           changeOrigin: true,
         },
-        // The local-disk uploader serves files from the backend at /uploads/local.
+        // The local-disk uploader serves files from the backend at /uploads
+        // (and the legacy /uploads/local alias, which this prefix also covers).
         // Proxy it so a PUBLIC_BASE_URL pointed at the dev origin (5173) resolves
         // pasted upload links through here instead of hitting the SPA fallback.
         '/uploads': {

@@ -216,8 +216,10 @@ If you expose Lurker through Cloudflare (including a [Cloudflare Tunnel](#exposi
 
 Fix it in the Cloudflare dashboard under **Scrape Shield → Hotlink Protection → Off**. If you want to keep it on for the rest of your site, leave it enabled and add a **Configuration Rule** that turns it off just for your uploads:
 
-- **When incoming requests match:** `URI Path` `starts with` `/uploads/local/`
+- **When incoming requests match:** `URI Path` `starts with` `/uploads/`
 - **Then the settings are:** `Hotlink Protection` → `Off`
+
+If you set this rule up before Lurker 1.0 it will say `/uploads/local/`. Uploads now live directly under `/uploads/`, so widen it — the shorter prefix still matches the old links, which keep working.
 
 See [Uploaded images are broken for other people](#uploaded-images-are-broken-for-other-people-403) if you've already hit this.
 :::
@@ -366,14 +368,14 @@ Confirm it with two `curl`s against the same URL, where the _only_ difference is
 ```bash
 # 1. No referer → 200, and Lurker serves the image
 curl -sS -o /dev/null -D - \
-  https://lurker.example.com/uploads/local/<key>.<ext> \
+  https://lurker.example.com/uploads/<key>.<ext> \
   | grep -iE '^HTTP/|^content-type:'
 #   HTTP/2 200
 #   content-type: image/webp     ← or image/jpeg, depending on the upload
 
 # 2. Cross-domain referer → 403, and your image never gets served
 curl -sS -o /dev/null -D - -H 'Referer: https://example.org/' \
-  https://lurker.example.com/uploads/local/<key>.<ext> \
+  https://lurker.example.com/uploads/<key>.<ext> \
   | grep -iE '^HTTP/|^content-type:|^vary:'
 #   HTTP/2 403
 #   content-type: text/plain; charset=UTF-8
@@ -384,7 +386,7 @@ If adding a `Referer` is all it takes to flip a `200` into a `403`, that's Hotli
 
 > Don't try to tell the two apart by looking for `server: cloudflare` — Cloudflare proxies the _successful_ response too, so that header is on both. The status flip is the signal.
 
-Turn Hotlink Protection off (or scope it around `/uploads/local/`) — see [File uploads on your own disk](#file-uploads-on-your-own-disk).
+Turn Hotlink Protection off (or scope it around `/uploads/`) — see [File uploads on your own disk](#file-uploads-on-your-own-disk).
 
 ### Container logs
 

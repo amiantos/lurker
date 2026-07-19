@@ -84,7 +84,14 @@ export function buildApp(sessionSecret: string): Express {
   // Self-host only — the `local` driver isn't offered on the (ephemeral) hosted
   // fleet, so the route would only ever 404 there; don't expose it at all.
   if (!isNodeMode()) {
+    // /uploads/local was the original mount (#582 dropped the redundant segment).
+    // It stays mounted forever as an alias: upload_history.url stores the fully
+    // absolutized link and nothing reparses it, so every link already pasted into
+    // IRC — including ones read by other clients we can't rewrite — still resolves.
+    // The two-segment path can't match the new mount's single-segment '/:key', so
+    // order between them doesn't matter.
     app.use('/uploads/local', localUploadsRouter);
+    app.use('/uploads', localUploadsRouter);
   }
   app.use('/api/dcc', dccRouter);
   app.use('/api/drafts', draftsRouter);
