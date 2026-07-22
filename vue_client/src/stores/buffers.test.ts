@@ -574,6 +574,32 @@ describe('hydration lifecycle (blank-buffer fix)', () => {
       expect(bufferNeedsHydration(buf)).toBe(false);
     });
 
+    it('treats an all-filtered latest reply as terminal (no refetch loop)', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      const buf = store.byKey('1::#a')!;
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.reattachToLive(1, '#a');
+
+      // Legacy away/back rows at the tail: the server ships them (it doesn't
+      // filter by type) with hasMoreOlder=true, the client filters them ALL
+      // out. Without the terminal clamp this left messages empty +
+      // hasMoreOlder true — permanently "needy", spinning the reconciler on a
+      // refetch every throttle window while the pane claimed settled-empty.
+      store.applyLatestReplace(1, '#a', {
+        token: buf.pendingHistoryToken,
+        events: [
+          { networkId: 1, target: '#a', id: 4001, type: 'away', nick: 'bob' },
+          { networkId: 1, target: '#a', id: 4002, type: 'back', nick: 'bob' },
+        ],
+        hasMoreOlder: true,
+      });
+
+      expect(buf.messages.length).toBe(0);
+      expect(buf.hasMoreOlder).toBe(false); // clamped: hydration is terminal
+      expect(bufferNeedsHydration(buf)).toBe(false);
+    });
+
     it('is true when the slice was wiped on switch-away-from-detached (pendingRefetch)', () => {
       const store = useBuffersStore();
       shellFrame(store, '#a');

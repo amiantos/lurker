@@ -743,7 +743,16 @@ export const useBuffersStore = defineStore('buffers', {
       buf.messages = filtered.slice(-MAX_PER_BUFFER);
       buf.oldestId = buf.messages[0]?.id ?? null;
       buf.newestId = buf.messages[buf.messages.length - 1]?.id ?? null;
-      buf.hasMoreOlder = !!payload.hasMoreOlder;
+      // A token-matched latest reply is TERMINAL hydration even when every row
+      // filtered out client-side (a legacy away/back tail can blank the whole
+      // slice). Honoring the server's hasMoreOlder on an empty slice would
+      // leave `messages.length === 0 && hasMoreOlder` standing forever —
+      // bufferNeedsHydration true, the reconciler refetching the same empty
+      // slice every throttle window, and the pane claiming a settled "No
+      // messages yet." between attempts. Clamping to false costs nothing: an
+      // empty buffer has no anchor row, so the upward pager can't page it
+      // anyway.
+      buf.hasMoreOlder = filtered.length > 0 ? !!payload.hasMoreOlder : false;
       buf.hasMoreNewer = false;
       buf.detached = false;
       buf.liveDuringDetach = 0;
