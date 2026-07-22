@@ -453,7 +453,14 @@ class IrcManager extends EventEmitter {
         return false;
       }
       if (outcome.kind === 'encrypted') {
-        for (const line of outcome.lines) conn.say(target, line);
+        for (const line of outcome.lines) {
+          conn.say(target, line);
+          // Registered so the message handler can recognize (and drop) the
+          // echo-message reflection of our own ciphertext by content — see
+          // consumeSentCiphertext. Unconditional: echoActive() can flip
+          // between here and the echo's arrival.
+          conn.noteSentCiphertext(line);
+        }
         conn.publish({
           type: 'message',
           target,
@@ -548,6 +555,8 @@ class IrcManager extends EventEmitter {
         target,
         nick: conn.client.user?.nick,
         text: chunk,
+        // Shape parity with the adopted echo, which stamps kind:'action'.
+        kind: 'action',
         self: true,
       });
     }

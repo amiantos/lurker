@@ -94,6 +94,13 @@ declare module 'irc-framework' {
     /** The local user's state (nick, username, etc.). */
     user: UserInfo;
 
+    /**
+     * True while the TCP/TLS socket is up (client.js proxies
+     * connection.connected). NOT reset caps/registration state — cap.enabled
+     * survives a socket drop until the next 'connecting' event.
+     */
+    readonly connected: boolean;
+
     /** Request an IRCv3 capability during CAP negotiation. */
     requestCap(cap: string): void;
 

@@ -67,13 +67,23 @@ function makeConn(onEvent: (event: unknown) => void = () => {}): IrcConnection {
   return conn;
 }
 
-// Flip the negotiated cap set the way a registered server would.
+// Flip the negotiated cap set the way a registered server would, and mark the
+// socket live — echoActive() requires BOTH (a stale ACKed cap on a dead socket
+// must fall back to the optimistic publish).
 function enableEcho(conn: IrcConnection): void {
   (
     conn.client as unknown as {
       network: { cap: { enabled: string[]; available: Map<string, string> } };
+      connection: { connected: boolean };
     }
   ).network = { cap: { enabled: ['echo-message'], available: new Map() } };
+  (conn.client as unknown as { connection: { connected: boolean } }).connection = {
+    connected: true,
+  };
+}
+
+function setSocketConnected(conn: IrcConnection, connected: boolean): void {
+  (conn.client as unknown as { connection: { connected: boolean } }).connection = { connected };
 }
 
 function makeReceiver(): { conn: IrcConnection; publish: ReturnType<typeof vi.fn> } {
@@ -89,6 +99,17 @@ describe('echoActive()', () => {
     expect(conn.echoActive()).toBe(false);
     enableEcho(conn);
     expect(conn.echoActive()).toBe(true);
+  });
+
+  it('goes false when the socket drops, even though the ACKed cap survives', () => {
+    // irc-framework clears cap.enabled only on the NEXT 'connecting', and its
+    // write() silently discards lines on a dead socket — without this gate, a
+    // send in the disconnect/backoff window would skip the optimistic publish
+    // AND never get an echo: silently lost while send() returns true.
+    const conn = makeConn();
+    enableEcho(conn);
+    setSocketConnected(conn, false);
+    expect(conn.echoActive()).toBe(false);
   });
 });
 
@@ -153,10 +174,10 @@ describe('self-echo adoption in the message handler', () => {
     expect(publish.mock.calls[1][0]).toMatchObject({ type: 'action', kind: 'action', self: true });
   });
 
-  it('drops our own E2E ciphertext echo (the plaintext row was published at send time)', () => {
-    e2eManager.setChannelConfig(userId, networkId, '#enc', true, 'normal');
+  it('drops the echo of ciphertext we sent (the plaintext row was published at send time)', () => {
     const { conn, publish } = makeReceiver();
     enableEcho(conn);
+    conn.noteSentCiphertext('+RPE2E01 deadbeef');
     conn.client.emit('message', {
       nick: 'me',
       target: '#enc',
@@ -166,7 +187,25 @@ describe('self-echo adoption in the message handler', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it('adopts a literal +RPE2E01 body on a NON-E2E channel as ordinary cleartext', () => {
+  it('drops sent ciphertext even after E2E was disabled in the send→echo window', () => {
+    // The gate matches by CONTENT, not channel state — /e2e off between the
+    // wire write and the echo must not turn our own ciphertext into an
+    // adopted cleartext row.
+    e2eManager.setChannelConfig(userId, networkId, '#racechan', true, 'normal');
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    conn.noteSentCiphertext('+RPE2E01 racebytes');
+    e2eManager.setChannelConfig(userId, networkId, '#racechan', false, 'normal');
+    conn.client.emit('message', {
+      nick: 'me',
+      target: '#racechan',
+      type: 'privmsg',
+      message: '+RPE2E01 racebytes',
+    });
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('adopts a literal +RPE2E01 body we never sent as ciphertext (any channel)', () => {
     const { conn, publish } = makeReceiver();
     enableEcho(conn);
     conn.client.emit('message', {
@@ -179,6 +218,20 @@ describe('self-echo adoption in the message handler', () => {
       text: '+RPE2E01 not actually ciphertext',
       self: true,
     });
+  });
+
+  it('adopts a self-DM exactly once — the delivery copy and echo copy share a msgid', () => {
+    // /msg <own nick>: ergo and solanum both send the delivery line AND the
+    // echo line, same msgid, both prefixed with our nick.
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    const selfDm = { nick: 'me', target: 'me', type: 'privmsg', message: 'note to self' };
+    conn.client.emit('message', { ...selfDm, tags: { msgid: 'twin-1' } });
+    conn.client.emit('message', { ...selfDm, tags: { msgid: 'twin-1' } });
+    expect(publish).toHaveBeenCalledTimes(1);
+    // A genuinely new message (fresh msgid) still adopts.
+    conn.client.emit('message', { ...selfDm, message: 'second note', tags: { msgid: 'twin-2' } });
+    expect(publish).toHaveBeenCalledTimes(2);
   });
 
   it('adopts a multiline echo as ONE row with the first fragment tags/time', () => {
@@ -205,6 +258,36 @@ describe('self-echo adoption in the message handler', () => {
       self: true,
       time: 1750000000000,
       msgid: 'mm',
+    });
+  });
+
+  it('grafts msgid/@time from the BATCH start line onto a multiline message', () => {
+    // Per the draft/multiline spec the logical message's tags ride the
+    // `BATCH +ref` line — which irc-framework reduces to {id,type,params},
+    // discarding the tags. The raw-line stash must recover them; inner
+    // fragments carry only the batch ref.
+    const { conn, publish } = makeReceiver();
+    conn.client.emit('raw', {
+      from_server: true,
+      line: '@msgid=batch-mm;time=2025-01-01T00:00:00.000Z :alice!u@h BATCH +bt1 draft/multiline #chan',
+    });
+    const fragment = (message: string) => ({
+      nick: 'alice',
+      target: '#chan',
+      type: 'privmsg',
+      message,
+      batch: { id: 'bt1', type: 'draft/multiline' },
+    });
+    conn.client.emit('message', fragment('part one'));
+    conn.client.emit('message', fragment('part two'));
+    conn.client.emit('batch end draft/multiline', { id: 'bt1' });
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      text: 'part one\npart two',
+      msgid: 'batch-mm',
+      // The raw tag value is an ISO string; normalizeEventTime canonicalizes
+      // strings, so the graft passes it through untouched.
+      time: '2025-01-01T00:00:00.000Z',
     });
   });
 
@@ -347,6 +430,7 @@ describe('ircManager optimistic-publish gating', () => {
       client: { user: { nick: 'me' } },
       supportsMultiline: () => false,
       echoActive: () => true,
+      noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
       ...overrides,
     } as unknown as IrcConnection;

@@ -70,6 +70,7 @@ describe('outbound encrypt (ircManager.send)', () => {
       client: { user: { nick: 'alice' } },
       supportsMultiline: () => false,
       echoActive: () => false,
+      noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
     } as unknown as IrcConnection;
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(fakeConn);
@@ -108,6 +109,7 @@ describe('outbound encrypt (ircManager.send)', () => {
       client: { user: { nick: 'alice' } },
       supportsMultiline: () => false,
       echoActive: () => false,
+      noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
     } as unknown as IrcConnection;
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(fakeConn);

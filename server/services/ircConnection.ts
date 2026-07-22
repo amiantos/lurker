@@ -230,6 +230,12 @@ function isDmTargetName(target: string | undefined | null): boolean {
 // as-is; the clamp is a deliberate Lurker deviation and degrades gracefully
 // (a wholly-skewed server just gets receive time, i.e. pre-#450 behavior).
 const MAX_FUTURE_TIME_SKEW_MS = 2 * 60_000;
+
+// Echo-correlation bounds for sentCiphertext (see noteSentCiphertext): 30s
+// mirrors the bouncer's pendingEcho prune window — an echo slower than that
+// is pathological — and the cap bounds a hostile/broken flood.
+const SENT_CIPHERTEXT_TTL_MS = 30_000;
+const SENT_CIPHERTEXT_MAX = 500;
 function normalizeEventTime(t: unknown): string {
   let ms: number | undefined;
   if (typeof t === 'number' && Number.isFinite(t)) ms = t;
@@ -441,6 +447,24 @@ export class IrcConnection {
   // so far; flushed as one reassembled message on 'batch end draft/multiline'
   // and cleared on socket close so a never-closed batch can't leak. (#381)
   multilineBatches: Map<string, { event: Record<string, unknown>; text: string }>;
+  // Tags from a `draft/multiline` BATCH *start* line, keyed by batch reference.
+  // The spec puts the logical message's msgid/@time on the BATCH +ref line, but
+  // irc-framework reduces the batch to {id,type,params} and DISCARDS the start
+  // line's tags — so the raw handler stashes them here and accumulateMultiline
+  // grafts them onto the first fragment. Consumed on first fragment; cleared on
+  // socket close with multilineBatches so an unopened batch can't leak.
+  multilineBatchTags: Map<string, { time?: string; msgid?: string }>;
+  // Exact ciphertext lines we recently put on the wire for E2E sends, so the
+  // echo-message reflection of our OWN ciphertext is recognized by content —
+  // not by re-checking channel E2E state at echo time, which races /e2e off
+  // (state can flip in the send→echo RTT window and the optimistic plaintext
+  // row already exists either way). TTL-pruned; consumed on match.
+  sentCiphertext: Array<{ line: string; at: number }>;
+  // Consecutive-adoption dedupe for our own msgid: a PRIVMSG to your OWN nick
+  // arrives twice under echo-message (delivery copy + echo copy — ergo and
+  // solanum both send both, with the same msgid), and both pass the self
+  // check. The msgid index is deliberately non-unique, so dedupe here.
+  lastAdoptedSelfMsgid: string | null;
   // Per-peer rate limiter for inbound CTCP (requests AND replies). Being
   // per-peer, one flooding peer can't make the cell spew NOTICEs, spam the
   // buffer, OR suppress CTCP from everyone else — it only exhausts its own
@@ -534,6 +558,9 @@ export class IrcConnection {
     this.lastUserSendAt = new Map();
     this.autoWhoTargets = new Set();
     this.multilineBatches = new Map();
+    this.multilineBatchTags = new Map();
+    this.sentCiphertext = [];
+    this.lastAdoptedSelfMsgid = null;
     this.ctcpLimiter = new RateLimiter();
     this.ctcpOutstanding = new Map();
     this.registrationLines = [];
@@ -749,6 +776,22 @@ export class IrcConnection {
         return;
       }
       const rawCommand = (msg?.command || '').toString();
+      // draft/multiline BATCH start: the logical message's msgid/@time ride
+      // THIS line per the spec, and irc-framework drops them when it reduces
+      // the batch to {id,type,params} — stash them for accumulateMultiline.
+      // Bounded: consumed by the first fragment, cleared on socket close, and
+      // capped so a server opening batches it never populates can't grow it.
+      if (rawCommand === 'BATCH' && msg?.params?.[0]?.startsWith('+')) {
+        if (msg.params[1] === 'draft/multiline') {
+          const tags = (msg.tags ?? {}) as Record<string, string>;
+          const time = tags.time || undefined;
+          const msgid = tags.msgid || tags['draft/msgid'] || undefined;
+          if (time || msgid) {
+            if (this.multilineBatchTags.size >= 100) this.multilineBatchTags.clear();
+            this.multilineBatchTags.set(msg.params[0].slice(1), { time, msgid });
+          }
+        }
+      }
       // Capture the registration burst for bouncer attach-time replay. 001
       // starts a fresh burst (each (re)registration replaces the last), and
       // the follow-on 002–005 lines are only appended once a burst has begun
@@ -941,6 +984,11 @@ export class IrcConnection {
       this.userModes.clear();
       this.autoWhoTargets.clear();
       this.multilineBatches.clear();
+      this.multilineBatchTags.clear();
+      // Echo-correlation state is per-socket: no echo can arrive for a line
+      // sent on the dead socket.
+      this.sentCiphertext.length = 0;
+      this.lastAdoptedSelfMsgid = null;
       // CTCP routing/limit state is per-socket: a stale outstanding entry would
       // mis-route a same-type reply on the new socket, and a drained limiter
       // would drop the new socket's first probes. Reset both (#263).
@@ -1381,30 +1429,27 @@ export class IrcConnection {
       // msgid, #450).
       if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
         if (!this.echoActive()) return;
+        if (!eventTarget || typeof eventMessage !== 'string') return;
         // Our own E2E ciphertext coming back: the optimistic PLAINTEXT row
-        // (self, e2e) was already published at send time. Mirror the inbound
-        // decrypt gate below exactly, so a literal "+RPE2E01…" typed on a
-        // non-E2E channel still adopts as ordinary cleartext.
-        if (
-          typeof eventMessage === 'string' &&
-          eventMessage.startsWith(WIRE_PREFIX) &&
-          isChannelContext(eventTarget ?? '') &&
-          e2eManager.isChannelEnabled(
-            this.network.user_id,
-            this.network.id,
-            contextKey(eventTarget as string, ''),
-          )
-        ) {
+        // (self, e2e) was already published at send time. Recognized by
+        // CONTENT (the exact lines ircManager's E2E branch registered when it
+        // wired them), not by re-checking channel E2E state — which races
+        // /e2e off inside the send→echo RTT window. A literal "+RPE2E01…" the
+        // user actually typed was never registered, so it still adopts as
+        // ordinary cleartext.
+        if (eventMessage.startsWith(WIRE_PREFIX) && this.consumeSentCiphertext(eventMessage)) {
           return;
         }
-        if (!eventTarget || typeof eventMessage !== 'string') return;
+        // A PRIVMSG to your OWN nick arrives twice under echo-message (the
+        // delivery copy AND the echo — ergo and solanum both send both, same
+        // msgid). Adopt the first copy, drop the twin.
+        if (msgid && msgid === this.lastAdoptedSelfMsgid) return;
+        if (msgid) this.lastAdoptedSelfMsgid = msgid;
         // Route by RECIPIENT (event.target), never nick — the echo's nick is
         // us, and keying off it would file every DM under our own nick. DMs
         // fold to the existing buffer row's casing (#289); channel case is
         // normalized inside publish().
-        const selfTarget = targetIsChannel
-          ? eventTarget
-          : (getBuffer(this.network.user_id, this.network.id, eventTarget)?.target ?? eventTarget);
+        const selfTarget = targetIsChannel ? eventTarget : this.canonicalDmTarget(eventTarget);
         this.publish({
           type,
           target: selfTarget,
@@ -1414,7 +1459,7 @@ export class IrcConnection {
           self: true,
           userhost: buildUserhost(event),
           time: event.time,
-          ...(msgid ? { msgid } : {}),
+          msgid,
         });
         // Parity with the optimistic path it replaces: no closed-buffer notice
         // mirror, no trackDmPeer/markPeerEvent for ourselves.
@@ -1453,12 +1498,7 @@ export class IrcConnection {
           this.currentNick &&
           eventTarget.toLowerCase() === this.currentNick.toLowerCase()
         ) {
-          // Fold to the existing buffer row's casing so a reply sourced as
-          // "ChanServ" doesn't fork history from a "chanserv" buffer the user
-          // started (#289).
-          target =
-            getBuffer(this.network.user_id, this.network.id, eventNick as string)?.target ??
-            (eventNick as string);
+          target = this.canonicalDmTarget(eventNick as string);
         } else {
           target = `:server:${this.network.id}`;
         }
@@ -1539,7 +1579,7 @@ export class IrcConnection {
         self: false,
         userhost: buildUserhost(event),
         time: event.time,
-        ...(msgid ? { msgid } : {}),
+        msgid,
         ...(e2eFlag ? { e2e: true } : {}),
       }) as EnrichedEvent | undefined;
       // If a notice's home buffer is one the user has closed, the wsHub fan-out
@@ -4163,9 +4203,49 @@ export class IrcConnection {
   // the reflection as the persisted self row (real msgid + server time, #450).
   // When false, ircManager keeps the optimistic local publish and reflections
   // stay deduped — the pre-echo-message behavior.
+  //
+  // The socket-liveness check is load-bearing: irc-framework clears cap.enabled
+  // only on the NEXT 'connecting' event, not on socket close, and its write()
+  // silently discards lines on a dead socket. Without the check, a send during
+  // the disconnect/backoff window would skip the optimistic publish AND never
+  // get an echo — silently lost while send() returns true. Disconnected falls
+  // back to the optimistic publish, matching pre-echo behavior.
   echoActive(): boolean {
+    if (!this.client.connected) return false;
     const cap = this.client.network?.cap as { enabled?: string[] } | undefined;
     return !!cap?.enabled?.includes('echo-message');
+  }
+
+  // Register an E2E ciphertext line just written to the wire, so the message
+  // handler can recognize its echo BY CONTENT. Matching on content instead of
+  // re-checking channel E2E state at echo time closes the /e2e-off race: state
+  // can flip inside the send→echo RTT window, but the set of lines we sent
+  // cannot. TTL matches the bouncer's pendingEcho window; cap is a flood
+  // backstop (oldest dropped — worst case a stale echo is adopted as text,
+  // never lost).
+  noteSentCiphertext(line: string): void {
+    const now = Date.now();
+    const keep = this.sentCiphertext.filter((e) => now - e.at <= SENT_CIPHERTEXT_TTL_MS);
+    keep.push({ line, at: now });
+    if (keep.length > SENT_CIPHERTEXT_MAX) keep.splice(0, keep.length - SENT_CIPHERTEXT_MAX);
+    this.sentCiphertext = keep;
+  }
+
+  // True (and consumes the entry) iff `line` is a ciphertext line we recently
+  // sent. Consuming keeps a repeated identical ciphertext (can't happen — the
+  // wire format nonces every chunk — but cheap insurance) from matching twice.
+  consumeSentCiphertext(line: string): boolean {
+    const idx = this.sentCiphertext.findIndex((e) => e.line === line);
+    if (idx === -1) return false;
+    this.sentCiphertext.splice(idx, 1);
+    return true;
+  }
+
+  // Fold a DM name to the existing buffer row's casing so an echo/notice
+  // sourced as "ChanServ" doesn't fork history from a "chanserv" buffer the
+  // user started (#289). Falls back to the given casing for first contact.
+  canonicalDmTarget(name: string): string {
+    return getBuffer(this.network.user_id, this.network.id, name)?.target ?? name;
   }
 
   // Send `text` as one-or-more draft/multiline batches: each is BATCH +ref …
@@ -4208,6 +4288,24 @@ export class IrcConnection {
     const line = (event.message as string | undefined) ?? '';
     const existing = this.multilineBatches.get(id);
     if (!existing) {
+      // Graft the BATCH start line's msgid/@time (stashed by the raw handler)
+      // onto the retained first fragment: inner fragments carry only the batch
+      // ref, so without this every multiline row loses its msgid and falls
+      // back to receive time. Fragment-level tags win if a server sets both.
+      const batchTags = this.multilineBatchTags.get(id);
+      if (batchTags) {
+        this.multilineBatchTags.delete(id);
+        const tags = event.tags as Record<string, string> | undefined;
+        event = {
+          ...event,
+          // normalizeEventTime accepts the raw ISO tag string.
+          time: event.time ?? batchTags.time,
+          tags:
+            batchTags.msgid && !tags?.msgid && !tags?.['draft/msgid']
+              ? { ...tags, msgid: batchTags.msgid }
+              : tags,
+        };
+      }
       this.multilineBatches.set(id, { event, text: line });
       return;
     }

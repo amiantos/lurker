@@ -95,6 +95,22 @@ describe('collapseDisplay — author collapsing', () => {
     expect(rows[1].continuationAuthor).toBeUndefined();
   });
 
+  it('breaks the run when time goes BACKWARD (bouncer replay of an old line)', () => {
+    // Rows carry server-time: a chained-bouncer replay can append a row whose
+    // time is older than the previous row's. A negative delta must not read
+    // as "within the window" and collapse the replayed line under the fresh
+    // message.
+    const rows = [
+      msg({ id: 1, nick: 'alice', time: '2026-05-16T10:00:00Z' }),
+      msg({ id: 2, nick: 'alice', time: '2026-05-16T08:00:00Z' }),
+    ];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows[1].continuationAuthor).toBeUndefined();
+  });
+
   it('does not collapse action / notice rows even from the same nick', () => {
     const rows = [
       msg({ id: 1, nick: 'alice', time: '2026-05-16T10:00:00Z', type: 'action' }),
