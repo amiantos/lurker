@@ -488,10 +488,16 @@ useChatBootstrap({ onJump: onJumpToMessage });
 /* Single-column flex stack sized to 100dvh. On current iOS Safari the
    dynamic-viewport unit shrinks with the soft keyboard, so the shell
    contracts and the input bar (last flex child) rides up flush against
-   the keyboard with no extra plumbing. We deliberately do NOT use
-   position: fixed or a JS-tracked --kb-bottom here — those approaches
-   fight iOS auto-scroll, env() shifts, and a known iOS 26 visualViewport
-   regression (returns phantom positive values after keyboard dismiss).
+   the keyboard with no extra plumbing. Chrome Android needs one assist
+   to follow the same model: interactive-widget=resizes-content in the
+   viewport meta (index.html, #581) — without it Chrome overlays the
+   keyboard instead of shrinking the layout viewport, and its focused-
+   input reveal scrolls the document our shell forbids from scrolling,
+   stranding the input bar off-screen after dismiss. We deliberately do
+   NOT use position: fixed or a JS-tracked --kb-bottom here — those
+   approaches fight iOS auto-scroll, env() shifts, and a known iOS 26
+   visualViewport regression (returns phantom positive values after
+   keyboard dismiss).
    The body-level `touch-action: none` (see main.css) is what stops iOS
    from drag-scrolling the document despite overflow:hidden. Safe-area
    home-indicator clearance lives on .composer-host (below) — wrapping

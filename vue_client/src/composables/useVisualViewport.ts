@@ -84,6 +84,21 @@ export function installVisualViewport(): void {
     keyboardOpen.value = open;
     if (open) root.setAttribute('data-keyboard-open', 'true');
     else root.removeAttribute('data-keyboard-open');
+    // Document-scroll watchdog (#581). The shell never scrolls the document
+    // (html/body are overflow:hidden), but a browser's keyboard-reveal logic
+    // can scroll it anyway — Chrome Android under resizes-visual scrolled the
+    // layout viewport to expose the focused composer and sometimes never
+    // scrolled back after dismiss, leaving the input bar off-screen until a
+    // full refresh (touch-action:none + user-scalable=no block manual
+    // recovery). The resizes-content viewport meta removes the cause; this
+    // heals any residue: with the keyboard down, a scrolled document is
+    // always a bug state, so snap it home. Runs on every update() — vv
+    // resize/scroll, focusout, orientationchange — so a stuck offset
+    // self-corrects on the next signal.
+    if (!open) {
+      const se = document.scrollingElement;
+      if (se && se.scrollTop > 0) se.scrollTop = 0;
+    }
   };
 
   update();
