@@ -79,6 +79,13 @@ describe('composeNotification', () => {
     ).toBe('A friend came online (Libera)');
   });
 
+  it('strips mIRC formatting codes from the body (#606)', () => {
+    // A native alert renders body as plain text, so \x03 colors and \x02 bold
+    // would otherwise land as literal control chars on the lock screen.
+    const out = composeNotification(payload({ text: '\x0304red\x03 and \x02bold\x02 text' }));
+    expect(out.body).toBe('red and bold text');
+  });
+
   it('tags by buffer so a burst in one channel collapses', () => {
     const a = composeNotification(payload({ kind: 'highlight', target: '#lurker', text: 'one' }));
     const b = composeNotification(payload({ kind: 'highlight', target: '#lurker', text: 'two' }));
