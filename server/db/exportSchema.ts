@@ -193,6 +193,7 @@ export const EXPORT_TABLES = Object.freeze({
       'from_ignored',
       'mirrored',
       'notable',
+      'msgid',
     ],
   },
 

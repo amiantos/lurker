@@ -111,6 +111,7 @@ function seedAlice(): { alice: User; net: Network; ruleId: number } {
     nick: 'alice',
     text: 'hello',
     self: true,
+    msgid: 'seed-msgid-1',
   });
   insertMessage({
     networkId: net.id,
@@ -167,9 +168,11 @@ describe('importFromZipBuffer — roundtrip', () => {
 
     const bobMessages = db
       .prepare('SELECT * FROM messages WHERE network_id = ? ORDER BY id ASC')
-      .all(bobNets[0].id) as Array<{ text: string }>;
+      .all(bobNets[0].id) as Array<{ text: string; msgid: string | null }>;
     expect(bobMessages.length).toBe(2);
     expect(bobMessages.map((m) => m.text)).toEqual(['hello', 'hi alice']);
+    // The IRCv3 msgid column (#450) round-trips losslessly.
+    expect(bobMessages.map((m) => m.msgid)).toEqual(['seed-msgid-1', null]);
 
     const bobBookmarks = db
       .prepare('SELECT * FROM user_bookmarks WHERE user_id = ?')

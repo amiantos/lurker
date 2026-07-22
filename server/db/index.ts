@@ -931,6 +931,17 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_matched
 // styled with .line.alt. See schemaVersion < 2 backfill below.
 ensureColumn('messages', 'alt', 'INTEGER NOT NULL DEFAULT 0');
 
+// IRCv3 server-assigned message id (#450), captured from the msgid tag on
+// message-tags networks (own sends learn theirs via echo-message). Foundation
+// for react/reply, which reference a target message by msgid. Deliberately
+// NON-unique: the closed-buffer NOTICE mirror and a replaying upstream may
+// legitimately produce duplicates, and a constraint failure inside publish()
+// would drop the message. Partial index — untagged rows stay out of it.
+ensureColumn('messages', 'msgid', 'TEXT');
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_msgid
+         ON messages(network_id, msgid)
+         WHERE msgid IS NOT NULL`);
+
 // Sender matched the network owner's ignore list at insert time. Stamped on
 // the row so countNewer/countHighlightsNewer can exclude ignored senders
 // without doing a JS-side mask scan over every unread row — the client's

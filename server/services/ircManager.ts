@@ -476,16 +476,28 @@ class IrcManager extends EventEmitter {
     // (not a bare newline) so "hello\n" stays a single-line send — splitMultiline
     // trims edge blanks, and the client's multilineMessageCount gates the same
     // way, so the two stay in sync. (#381)
+    // With upstream echo-message ACKed, the server reflects our sends back and
+    // the ircConnection message handler adopts that echo as the persisted self
+    // row (real msgid + server time, #450) — so the optimistic publish below is
+    // skipped or it would duplicate. Wire writes still happen unconditionally
+    // (say/sendMultiline own the noteUserSend/trackDmPeer side effects). The
+    // E2E branch above is exempt: its echo is ciphertext, so the plaintext self
+    // row can only come from here.
+    const adoptEcho = conn.echoActive();
     if (hasInteriorNewline(text) && conn.supportsMultiline()) {
       const nick = conn.client.user?.nick;
-      for (const echo of conn.sendMultiline(target, text)) {
-        conn.publish({ type: 'message', target, nick, text: echo, kind: 'privmsg', self: true });
+      const echoes = conn.sendMultiline(target, text);
+      if (!adoptEcho) {
+        for (const echo of echoes) {
+          conn.publish({ type: 'message', target, nick, text: echo, kind: 'privmsg', self: true });
+        }
       }
       return true;
     }
     const chunks = splitSay(text);
     for (const chunk of chunks) {
       conn.say(target, chunk);
+      if (adoptEcho) continue;
       conn.publish({
         type: 'message',
         target,
@@ -525,9 +537,12 @@ class IrcManager extends EventEmitter {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'action')) return true;
+    // Same echo-adoption gating as send() — see the comment there.
+    const adoptEcho = conn.echoActive();
     const chunks = splitAction(text);
     for (const chunk of chunks) {
       conn.action(target, chunk);
+      if (adoptEcho) continue;
       conn.publish({
         type: 'action',
         target,
@@ -539,17 +554,20 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
-  // IRC servers don't echo your own NOTICE back (and Lurker doesn't request the
-  // echo-message cap), so — exactly like send/action — we publish a self copy
-  // locally per wire chunk. splitSay applies because NOTICE shares PRIVMSG's
-  // length budget.
+  // NOTICE shares send()'s echo model: echo-message servers DO reflect your
+  // own NOTICEs (the cap covers PRIVMSG/NOTICE/TAGMSG alike), so the local
+  // self copy is published only where the cap is absent — exactly like
+  // send/action. splitSay applies because NOTICE shares PRIVMSG's length
+  // budget.
   notice(userId: number, networkId: number, target: string, text: string): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'notice')) return true;
+    const adoptEcho = conn.echoActive();
     const chunks = splitSay(text);
     for (const chunk of chunks) {
       conn.notice(target, chunk);
+      if (adoptEcho) continue;
       conn.publish({
         type: 'notice',
         target,

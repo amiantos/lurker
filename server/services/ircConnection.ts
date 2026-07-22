@@ -218,6 +218,31 @@ function isDmTargetName(target: string | undefined | null): boolean {
   return !target.startsWith('#') && !target.startsWith(':server:');
 }
 
+// Persisted timestamps prefer IRCv3 server-time (#450): irc-framework parses
+// the @time= tag into an epoch-ms NUMBER on the raw event; handlers thread it
+// through as `time` and this normalizes to canonical ISO-Z. Only that form may
+// ever be stored — loadHistoryWindow / listBuffersForNetwork compare the TEXT
+// column lexicographically, so a raw number (or an offset-timezone string)
+// would corrupt window selection and buffer ordering. Missing/unparseable
+// falls back to receive time. Far-FUTURE stamps also fall back (a skewed
+// server must not pin MAX(time) buffer ordering); far-past stamps are kept —
+// that's legitimate bouncer/ZNC replay. References mostly trust the tag
+// as-is; the clamp is a deliberate Lurker deviation and degrades gracefully
+// (a wholly-skewed server just gets receive time, i.e. pre-#450 behavior).
+const MAX_FUTURE_TIME_SKEW_MS = 2 * 60_000;
+function normalizeEventTime(t: unknown): string {
+  let ms: number | undefined;
+  if (typeof t === 'number' && Number.isFinite(t)) ms = t;
+  else if (typeof t === 'string' && t) {
+    const parsed = Date.parse(t);
+    if (Number.isFinite(parsed)) ms = parsed;
+  }
+  if (ms === undefined || ms - Date.now() > MAX_FUTURE_TIME_SKEW_MS) {
+    return new Date().toISOString();
+  }
+  return new Date(ms).toISOString();
+}
+
 function extractExtras(event: IrcEvent): Record<string, unknown> | null {
   let extras: Record<string, unknown> | null = null;
   switch (event.type) {
@@ -576,7 +601,7 @@ export class IrcConnection {
   publish(event: IrcEvent): EnrichedEvent | void {
     if (this.disposed) return;
     event = this.normalizeChannelTarget(event);
-    const time = (event.time as string | undefined) || new Date().toISOString();
+    const time = normalizeEventTime(event.time);
     const enriched: EnrichedEvent = {
       ...event,
       userId: this.network.user_id,
@@ -628,6 +653,7 @@ export class IrcConnection {
         fromIgnored,
         mirrored: event.mirrored as boolean | undefined,
         notable: event.notable as boolean | undefined,
+        msgid: event.msgid as string | undefined,
       });
       enriched.id = id;
       enriched.alt = alt;
@@ -647,7 +673,7 @@ export class IrcConnection {
       ...event,
       userId: this.network.user_id,
       networkId: this.network.id,
-      time: (event.time as string | undefined) || new Date().toISOString(),
+      time: normalizeEventTime(event.time),
     });
   }
 
@@ -1274,6 +1300,7 @@ export class IrcConnection {
           userhost: oldUserhost,
           newIdent,
           newHost,
+          time: event.time,
         });
         this.publishMemberUpdate(ch.name, member);
       }
@@ -1337,15 +1364,63 @@ export class IrcConnection {
       const eventHostname = event.hostname as string | undefined;
       const eventMessage = event.message as string | undefined;
       const eventType = event.type as string | undefined;
-      // Skip self-echoes. ircManager.send/.action already publishes a local
-      // copy of every outgoing PRIVMSG/ACTION, so when the IRC server reflects
-      // it back to us (echo-message cap, ergo's always-on relay, some
-      // bouncers) the second copy would land in the database with a fresh id
-      // and surface as a duplicate in the buffer. The local publish is the
-      // source of truth for anything this backend sent.
-      if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) return;
-      const isServer = !eventNick;
+      const tags = event.tags as Record<string, string> | undefined;
+      // IRCv3 server message id (#450) — the future react/reply anchor. Tag
+      // keys arrive lowercased; draft/msgid covers pre-ratification servers.
+      const msgid = tags?.msgid || tags?.['draft/msgid'] || undefined;
       const targetIsChannel = eventTarget && eventTarget.startsWith('#');
+      const type =
+        eventType === 'action' ? 'action' : eventType === 'notice' ? 'notice' : 'message';
+
+      // Self-echoes. Without echo-message, ircManager.send/.action already
+      // published the local copy, so a reflection (ergo's always-on relay, some
+      // bouncers) would land as a duplicate — drop it, as ever. With the cap
+      // ACKed the roles flip: the send path SKIPPED its optimistic publish and
+      // this echo IS the message — adopt it as the persisted self row, carrying
+      // the server's msgid + @time (the only way our own sends learn their
+      // msgid, #450).
+      if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
+        if (!this.echoActive()) return;
+        // Our own E2E ciphertext coming back: the optimistic PLAINTEXT row
+        // (self, e2e) was already published at send time. Mirror the inbound
+        // decrypt gate below exactly, so a literal "+RPE2E01…" typed on a
+        // non-E2E channel still adopts as ordinary cleartext.
+        if (
+          typeof eventMessage === 'string' &&
+          eventMessage.startsWith(WIRE_PREFIX) &&
+          isChannelContext(eventTarget ?? '') &&
+          e2eManager.isChannelEnabled(
+            this.network.user_id,
+            this.network.id,
+            contextKey(eventTarget as string, ''),
+          )
+        ) {
+          return;
+        }
+        if (!eventTarget || typeof eventMessage !== 'string') return;
+        // Route by RECIPIENT (event.target), never nick — the echo's nick is
+        // us, and keying off it would file every DM under our own nick. DMs
+        // fold to the existing buffer row's casing (#289); channel case is
+        // normalized inside publish().
+        const selfTarget = targetIsChannel
+          ? eventTarget
+          : (getBuffer(this.network.user_id, this.network.id, eventTarget)?.target ?? eventTarget);
+        this.publish({
+          type,
+          target: selfTarget,
+          nick: eventNick,
+          text: eventMessage,
+          kind: eventType,
+          self: true,
+          userhost: buildUserhost(event),
+          time: event.time,
+          ...(msgid ? { msgid } : {}),
+        });
+        // Parity with the optimistic path it replaces: no closed-buffer notice
+        // mirror, no trackDmPeer/markPeerEvent for ourselves.
+        return;
+      }
+      const isServer = !eventNick;
       const isNotice = eventType === 'notice';
 
       let target: string;
@@ -1389,8 +1464,6 @@ export class IrcConnection {
         }
       } else target = eventNick as string;
 
-      const type =
-        eventType === 'action' ? 'action' : eventType === 'notice' ? 'notice' : 'message';
       const nick = eventNick || eventHostname || 'server';
 
       // RPE2E: a `+RPE2E01` chunk on an encryption channel is decrypted to its
@@ -1465,6 +1538,8 @@ export class IrcConnection {
         kind: eventType,
         self: false,
         userhost: buildUserhost(event),
+        time: event.time,
+        ...(msgid ? { msgid } : {}),
         ...(e2eFlag ? { e2e: true } : {}),
       }) as EnrichedEvent | undefined;
       // If a notice's home buffer is one the user has closed, the wsHub fan-out
@@ -1493,6 +1568,9 @@ export class IrcConnection {
           kind: eventType,
           self: false,
           mirrored: true,
+          // Server time yes, msgid no — the msgid names the REAL copy in the
+          // home buffer; a react/reply lookup must never resolve to the mirror.
+          time: event.time,
         });
       }
       // An incoming PRIVMSG (not NOTICE) is the moment this nick becomes a
@@ -1522,6 +1600,12 @@ export class IrcConnection {
     // RPEE2E and hand the body to the manager, which returns the bodies to NOTICE
     // straight back to the sender's nick (re-framed) plus an optional user notice.
     c.on('ctcp response', (event: Record<string, unknown>) => {
+      // Under echo-message the server reflects our own CTCP-framed NOTICEs
+      // (RPE2E handshake replies, standard CTCP answers) back to us — without
+      // this guard our own KEYREQ/KEYRSP would re-enter handleHandshakeBody
+      // under our own handle. handleInboundCtcpReply has its own self guard,
+      // but the RPE2E branch below ran unguarded.
+      if (this.isSelfNick(event.nick as string | undefined)) return;
       e2eDbg(
         () =>
           `ctcp-response from ${event.nick}!${event.ident}@${event.hostname} type=${event.type} body=${String(event.message).slice(0, 140)}`,
@@ -1597,6 +1681,7 @@ export class IrcConnection {
         target: eventChannel,
         nick: eventNick,
         userhost: buildUserhost(event),
+        time: event.time,
         // Only when we actually know an account — a logged-out `null` renders
         // as nothing anyway, and omitting it keeps the persisted `extra` JSON
         // off every join row on networks without the cap.
@@ -1690,6 +1775,7 @@ export class IrcConnection {
         nick: eventNick,
         text: event.message as string | undefined,
         userhost: buildUserhost(event),
+        time: event.time,
       });
       if (eventNick === c.user.nick) {
         this.channels.delete(eventChannel.toLowerCase());
@@ -1718,6 +1804,7 @@ export class IrcConnection {
         kicked: eventKicked,
         text: event.message as string | undefined,
         userhost: buildUserhost(event),
+        time: event.time,
       });
       // Mirror the self-PART path when we ourselves are the one kicked, so
       // the buffer dims in the sidebar instead of staying styled as joined.
@@ -1769,7 +1856,7 @@ export class IrcConnection {
 
       // (3) invite-notify op-visibility: a third party invited someone to a
       // channel we're in → persisted channel line "inviter invited invited".
-      this.publish({ type: 'invite', target: channel, nick: inviter, invited });
+      this.publish({ type: 'invite', target: channel, nick: inviter, invited, time: event.time });
     });
 
     c.on('invited', (event: Record<string, unknown>) => {
@@ -1783,13 +1870,14 @@ export class IrcConnection {
       const me = c.user?.nick;
       if (!invited || !rawChannel || !me) return;
       const channel = canonicalChannelTarget(rawChannel, this.channels) ?? rawChannel;
-      this.publish({ type: 'invite', target: channel, nick: me, invited });
+      this.publish({ type: 'invite', target: channel, nick: me, invited, time: event.time });
     });
 
     c.on('quit', (event: Record<string, unknown>) => {
       const eventNick = event.nick as string;
       const lower = eventNick.toLowerCase();
       const userhost = buildUserhost(event);
+      const time = event.time;
       for (const ch of this.channels.values()) {
         if (ch.members.delete(lower)) {
           this.publish({
@@ -1798,6 +1886,7 @@ export class IrcConnection {
             nick: eventNick,
             text: event.message as string | undefined,
             userhost,
+            time,
           });
         }
       }
@@ -1883,6 +1972,7 @@ export class IrcConnection {
             nick: eventNick,
             newNick: eventNewNick,
             userhost,
+            time: event.time,
           });
         }
       }
@@ -1907,6 +1997,7 @@ export class IrcConnection {
           target: eventChannel,
           nick: event.nick as string,
           text: eventTopic,
+          time: event.time,
         });
       } else {
         // RPL_TOPIC on join — sync the topic bar without printing a row, so
@@ -2005,6 +2096,7 @@ export class IrcConnection {
         nick: eventNick,
         text,
         modes: eventModes,
+        time: event.time,
       });
       if (memberModesChanged && ch) {
         this.publish({
@@ -2363,7 +2455,10 @@ export class IrcConnection {
     c.on('tagmsg', (event: Record<string, unknown>) => {
       const me = c.user?.nick;
       const eventNick = event.nick as string | undefined;
-      const isSelf = !!eventNick && eventNick === me;
+      // Case-folded, matching the message handler's self check — under
+      // echo-message our own TAGMSGs reflect back, and a server relaying a
+      // case-variant nick must not show us our own typing indicator.
+      const isSelf = !!eventNick && !!me && eventNick.toLowerCase() === me.toLowerCase();
       if (isSelf) return;
       const tags = event.tags as Record<string, string> | undefined;
       const typing = tags && tags['+typing'];
@@ -2884,6 +2979,13 @@ export class IrcConnection {
       // — irc-framework overwrites client.options with this dict, so passing
       // it to the constructor doesn't survive. See client.js:202.
       enable_chghost: true,
+      // Request echo-message (#450): the server reflects our own sends back
+      // with their msgid + @time, and the message handler adopts that echo as
+      // the persisted self row (see echoActive). Same connect()-dict rule as
+      // enable_chghost. Harmless where unsupported — irc-framework only CAP
+      // REQs caps the server advertises, and the send path keeps the
+      // optimistic publish until the cap is actually ACKed.
+      enable_echomessage: true,
       // Source-bind outbound IRC when LURKER_OUTGOING_ADDR is set, so the
       // network's RFC 1413 callback lands on the built-in identd rather than the
       // host's (outgoingAddr → irc-framework outgoing_addr → socket localAddress).
@@ -4054,6 +4156,16 @@ export class IrcConnection {
   // raw splitting, they just span multiple batches (see sendMultiline).
   supportsMultiline(): boolean {
     return this.multilineLimits() != null;
+  }
+
+  // echo-message ACKed: the server reflects our own PRIVMSG/NOTICE/TAGMSG back,
+  // the send path skips its optimistic publish, and the message handler adopts
+  // the reflection as the persisted self row (real msgid + server time, #450).
+  // When false, ircManager keeps the optimistic local publish and reflections
+  // stay deduped — the pre-echo-message behavior.
+  echoActive(): boolean {
+    const cap = this.client.network?.cap as { enabled?: string[] } | undefined;
+    return !!cap?.enabled?.includes('echo-message');
   }
 
   // Send `text` as one-or-more draft/multiline batches: each is BATCH +ref …
