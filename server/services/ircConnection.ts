@@ -25,6 +25,7 @@ import {
 } from '../db/peerPresence.js';
 import highlightRulesService from './highlightRulesService.js';
 import ignoreRulesService from './ignoreRulesService.js';
+import connectScheduler from './connectScheduler.js';
 import { decideStamp } from './insertDecisions.js';
 import * as systemLog from './systemLog.js';
 import { effectiveSetting, effectiveSettings } from './settingsService.js';
@@ -141,6 +142,71 @@ const CTCP_OUTSTANDING_MAX_KEYS = 200;
 // Beyond this window the bounce is treated as an automated TAGMSG/typing reply
 // and swallowed. Generous — IRC error numerics come back in well under a second.
 const SEND_REJECTION_ATTRIBUTION_MS = 15000;
+
+// ---------------------------------------------------------------------------
+// Auto-reconnect policy (see IrcConnection.scheduleReconnectIfWarranted)
+// ---------------------------------------------------------------------------
+// We own the reconnect policy rather than irc-framework's built-in, which only
+// retries a connection that was healthy for >5s AND died cleanly, ~3 times —
+// so an initial-connect failure, a registration timeout, or a sustained outage
+// each got zero or near-zero retries and left the user silently offline until a
+// manual reconnect (#236's connectScheduler comment flagged exactly this gap).
+// The policy here: retry indefinitely with exponential backoff for ANY drop,
+// EXCEPT a confidently-classified terminal reason (a detected ban or a hard SASL
+// auth failure), where retrying can't help and hammering an actively-rejecting
+// server is antisocial — those stop and require a manual reconnect.
+
+function reconnectEnvInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+// First-retry delay; each subsequent attempt doubles up to the cap.
+const RECONNECT_BASE_MS = reconnectEnvInt('LURKER_RECONNECT_BASE_MS', 2000);
+// Ceiling on the backoff interval — a long outage keeps retrying at this cadence
+// forever rather than giving up (5 min mirrors irc-framework's own max_wait).
+const RECONNECT_MAX_MS = reconnectEnvInt('LURKER_RECONNECT_MAX_MS', 300_000);
+// Random extra wait added to each backoff so a fleet-wide outage recovery doesn't
+// reconverge every connection on the same instant (the connectScheduler spaces
+// same-host launches on top of this, but the jitter de-syncs the herd first).
+const RECONNECT_JITTER_MS = reconnectEnvInt('LURKER_RECONNECT_JITTER_MS', 3000);
+
+// Exponential backoff for the Nth reconnect attempt (0-indexed): base·2^n,
+// capped, plus jitter. attempt is clamped so 2^n can't overflow on a very long
+// outage — past the cap the doubling is moot anyway.
+function reconnectBackoffMs(attempt: number): number {
+  const capped = Math.min(attempt, 20);
+  const grown = RECONNECT_BASE_MS * Math.pow(2, capped);
+  const jitter = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
+  return Math.min(grown, RECONNECT_MAX_MS) + jitter;
+}
+
+// Conservative, high-confidence match for a server disconnect that won't heal on
+// retry: an oper/server ban (K/G/Z/D-line) or an explicit "you are banned". Kept
+// narrow on purpose — anything NOT matched here (timeouts, refused, TLS blips,
+// netsplits, generic drops) is treated as transient and retried forever. The
+// text is the trailing param of a server ERROR / "Closing Link" line. Channel-
+// scoped bans (474 ERR_BANNEDFROMCHAN) never reach this — they carry a channel
+// and are routed inline, not treated as a connection-terminal event.
+function classifyServerBan(reason: string | undefined): string | null {
+  if (!reason) return null;
+  if (/\b[kgzd][-\s]?lined?\b/i.test(reason)) return reason;
+  if (/\byou(?:'re| are)\s+banned\b/i.test(reason)) return reason;
+  if (/\bbanned\s+from\s+(?:this\s+)?(?:server|network)\b/i.test(reason)) return reason;
+  return null;
+}
+
+// SASL failure reasons that mean the credentials themselves are wrong or the
+// account is locked — a retry with the same stored password is pointless. Other
+// SASL reasons (unsupported_mechanism, capability_missing) are server/config
+// mismatches that also won't self-heal, so they're terminal too; only a clean
+// abort is left to the normal transient path. irc-framework's reasons:
+// fail | nick_locked | unsupported_mechanism | capability_missing | too_long | aborted.
+function isTerminalSaslFailure(reason: string | undefined): boolean {
+  return reason != null && reason !== 'aborted';
+}
 
 // ---------------------------------------------------------------------------
 // Internal shapes
@@ -481,6 +547,21 @@ export class IrcConnection {
   // (nick-rewritten) to IRC clients that attach mid-session, so they see the
   // network's real ISUPPORT tokens instead of a synthesized approximation.
   registrationLines: string[];
+  // Auto-reconnect controller (we own the policy; irc-framework's auto_reconnect
+  // is disabled in connect()). See scheduleReconnectIfWarranted.
+  //
+  // reconnectTimer: pending backoff timer, cleared on connect/dispose/intentional
+  //   stop so we never re-open a socket the caller just tore down.
+  // reconnectAttempt: monotonic backoff counter, reset to 0 on 'registered'.
+  // intentionalDisconnect: the user/system asked us to disconnect (stopNetwork,
+  //   dispose, pause) — the 'close' handler must NOT reconnect over their intent.
+  // terminalDisconnect: a classified give-up reason (detected ban / hard SASL
+  //   auth failure). Non-null = stop retrying and require a manual reconnect; the
+  //   string is the human-readable cause shown in the "not reconnecting" notice.
+  private reconnectTimer: ReturnType<typeof setTimeout> | null;
+  private reconnectAttempt: number;
+  private intentionalDisconnect: boolean;
+  private terminalDisconnect: string | null;
 
   constructor({ network, onEvent }: { network: Network; onEvent: (event: EnrichedEvent) => void }) {
     this.network = network;
@@ -564,6 +645,10 @@ export class IrcConnection {
     this.ctcpLimiter = new RateLimiter();
     this.ctcpOutstanding = new Map();
     this.registrationLines = [];
+    this.reconnectTimer = null;
+    this.reconnectAttempt = 0;
+    this.intentionalDisconnect = false;
+    this.terminalDisconnect = null;
     this.bind();
   }
 
@@ -864,9 +949,35 @@ export class IrcConnection {
       this.unsendableTargets.clear();
     });
 
+    // SASL authentication failed (ERR_SASLFAIL 904 / 905, or a mechanism/account
+    // problem). The stored credentials won't start working on their own, and a
+    // network that requires SASL then drops the connection — so classify this as
+    // terminal (unless it's a clean abort). The flag is CONSUMED at 'close':
+    // whether it actually causes a disconnect is up to the server, but if the
+    // socket does die we must not reconnect-loop into the same rejection (which
+    // on a server that requires auth is a fast failed-login hammer). We don't
+    // publish here — the server's own error/ERROR line surfaces the cause.
+    c.on('sasl failed', (event: Record<string, unknown>) => {
+      const reason = (event?.reason as string | undefined) || undefined;
+      if (isTerminalSaslFailure(reason)) {
+        this.terminalDisconnect = `SASL authentication failed${
+          reason && reason !== 'fail' ? ` (${reason})` : ''
+        } — check the network's account credentials`;
+      }
+    });
+
     c.on('registered', (event: Record<string, unknown>) => {
       this.userModes.clear();
       this.lagMs = null;
+      // A full, registered connection is the only signal that the network is
+      // genuinely reachable again — reset the backoff so a later drop starts a
+      // fresh, fast retry ladder instead of inheriting a long prior interval.
+      this.reconnectAttempt = 0;
+      // Clear any terminal classification too: if a SASL failure or a ban-looking
+      // error was flagged but we registered anyway (e.g. the server didn't drop
+      // us for it), it clearly wasn't fatal — a later transient drop must still
+      // auto-reconnect rather than inherit a stale give-up flag.
+      this.terminalDisconnect = null;
       // Fresh registration means a new socket — forget per-connection send
       // state so speak permission is re-probed and stale attribution can't leak
       // across the reconnect (#283).
@@ -1020,6 +1131,11 @@ export class IrcConnection {
       // call is a no-op.
       this.markAllPeersOffline();
       this.setState('disconnected');
+      // 'close' is now the single terminal socket-death event (irc-framework's
+      // auto_reconnect is disabled, so it no longer retries internally): decide
+      // here whether to schedule our own backoff retry. Runs after the state/
+      // presence cleanup above so a reconnect starts from a swept slate.
+      this.scheduleReconnectIfWarranted();
     });
 
     // ERR_NICKNAMEINUSE while we're still racing to register. Climb the
@@ -1165,15 +1281,15 @@ export class IrcConnection {
       // the fix for the "stuck online" gap on networks without MONITOR: if a
       // peer quit while we were disconnected we never saw their QUIT, but our own
       // disconnect is a discontinuity we DO observe, so we stop asserting a stale
-      // 'online'. 'socket close' (not 'close') is the hook: irc-framework
-      // auto-reconnects a blip internally and emits only 'socket close' +
-      // 'reconnecting' — it reserves 'close' for a terminal give-up/dispose
-      // (connection.js:111 always fires 'socket close'; :141 fires 'close' only
-      // when it won't retry), so sweeping in 'close' alone would miss the common
-      // reconnect. On reconnect the peers we can still observe are re-lit
-      // (MONITOR re-seed + WHO-on-join); the rest stay honestly offline. No
-      // came-online suppression — a reconnect re-firing "came online" for peers
-      // still around is the honest signal, and toasts are already rate-limited.
+      // 'online'. 'socket close' is the hook because it fires first and carries
+      // the socket-level error. (Historically it also mattered that 'socket
+      // close' fired on auto-reconnect blips while 'close' was terminal; now that
+      // Lurker owns reconnect and irc-framework's auto_reconnect is off, BOTH
+      // fire on every drop — but 'socket close' remains the right sweep point.)
+      // On reconnect the peers we can still observe are re-lit (MONITOR re-seed +
+      // WHO-on-join); the rest stay honestly offline. No came-online suppression
+      // — a reconnect re-firing "came online" for peers still around is the honest
+      // signal, and toasts are already rate-limited.
       this.markAllPeersOffline();
       // Release this socket's identd mapping (a reconnect re-registers via the
       // 'raw socket connected' handler above and gets a fresh handle).
@@ -1194,29 +1310,16 @@ export class IrcConnection {
         this.logNet(text, 'error');
       }
     });
-    c.on('reconnecting', (event: Record<string, unknown>) => {
-      this.setState('reconnecting');
-      const wait =
-        event && event.wait ? Math.max(1, Math.round((event.wait as number) / 1000)) : null;
-      const attempt = event && event.attempt;
-      const text =
-        wait != null && attempt
-          ? `Reconnecting in ${wait}s (attempt ${attempt})…`
-          : 'Reconnecting…';
-      this.publish({
-        type: 'notice',
-        target: this.serverTarget(),
-        nick: 'lurker',
-        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
-        text,
-      });
-    });
+    // The 'reconnecting' state + notice are now emitted by our own controller
+    // (scheduleReconnectIfWarranted), not the library: irc-framework's
+    // auto_reconnect is disabled, so it never fires a 'reconnecting' event.
     c.on('connecting', () => this.setState('connecting'));
 
     // Diagnostic: irc-framework fires 'ping timeout' when it hasn't seen data
     // from the server for `ping_timeout` seconds (120s default) — then it QUITs
-    // and auto-reconnects with NO socket error, so the disconnect otherwise
-    // surfaces as a bare "Disconnected" with no cause. A ping timeout on a
+    // (ending the socket with NO socket error, so the disconnect otherwise
+    // surfaces as a bare "Disconnected" with no cause) and our controller
+    // schedules the reconnect from 'close'. A ping timeout on a
     // healthy network usually means WE stopped reading the socket, i.e. the
     // event loop was starved by synchronous work (see eventLoopMonitor); when
     // every network times out together on a client connect, that's the tell.
@@ -2406,6 +2509,16 @@ export class IrcConnection {
       const tag = (event?.error as string) || 'irc error';
       const reason = event?.reason as string | undefined;
       const eventNick = event?.nick as string | undefined;
+      // Classify an oper/server ban (K/G/Z/D-line) so the auto-reconnect
+      // controller stops instead of hammering a server that's actively refusing
+      // us. Only server-scoped bans qualify: a channel-scoped ban (474) carries a
+      // channel param and is routed inline below, so gate on its absence. The flag
+      // is consumed at 'close'; setting it here is harmless if the socket lives.
+      const banChannel = event?.channel as string | undefined;
+      if (!banChannel) {
+        const banned = classifyServerBan(reason);
+        if (banned) this.terminalDisconnect = `banned by the server (${banned})`;
+      }
       const isDmMiss = tag === 'no_such_nick' && eventNick && isDmTargetName(eventNick);
       // For ERR_NOSUCHNICK against a nick the user has any DM history with,
       // route the error into that DM buffer so the failure surfaces where
@@ -2984,18 +3097,32 @@ export class IrcConnection {
   }
 
   connect(): void {
+    // A deliberate (re)connect: cancel any pending backoff and clear the flags
+    // that would suppress a future auto-reconnect. This runs for both the initial
+    // connect and each backoff-driven retry, so a socket that opens starts from a
+    // clean slate; the attempt counter is NOT reset here (only a successful
+    // 'registered' resets it) so backoff keeps growing across failed retries.
+    this.clearReconnectTimer();
+    this.intentionalDisconnect = false;
+    this.terminalDisconnect = null;
     const { sasl_password, sasl_account, nick } = this.network;
     const account = sasl_password
       ? { account: sasl_account || nick, password: sasl_password }
       : undefined;
     const proto = this.network.tls ? ' (TLS)' : '';
-    this.publish({
+    const connectingNotice: IrcEvent = {
       type: 'notice',
       target: this.serverTarget(),
       nick: 'lurker',
       notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
       text: `Connecting to ${this.network.host}:${this.network.port}${proto}…`,
-    });
+    };
+    // On an auto-reconnect attempt (reconnectAttempt has advanced past 0), don't
+    // persist this per-attempt status line — a long outage would otherwise write
+    // one row per retry forever (see scheduleReconnectIfWarranted). The initial
+    // and manual connects (attempt 0) still persist their one "Connecting…" line.
+    if (this.reconnectAttempt > 0) this.publishEphemeral(connectingNotice);
+    else this.publish(connectingNotice);
     this.client.connect({
       host: this.network.host,
       port: this.network.port,
@@ -3006,8 +3133,15 @@ export class IrcConnection {
       gecos: this.network.realname || nick,
       password: this.network.server_password || undefined,
       account,
-      auto_reconnect: true,
-      auto_reconnect_max_retries: 0,
+      // Lurker owns the reconnect policy (scheduleReconnectIfWarranted), so
+      // irc-framework's built-in is disabled outright. Its heuristic only retries
+      // a connection that was healthy for >5s and died cleanly, ~3 times — which
+      // never retries an initial-connect failure or a registration timeout and
+      // gives up on a sustained outage. (Note its default is auto_reconnect:true /
+      // max_retries:3; passing 0 for max_retries is a no-op — `options.x || 3`
+      // coerces 0 back to 3 — which is the bug this replaces.) With this off,
+      // every socket death funnels to our 'close' handler, which decides.
+      auto_reconnect: false,
       // Disable irc-framework's built-in CTCP VERSION auto-reply so our own
       // handler owns VERSION (#263). Like enable_chghost below, this MUST ride
       // the connect() dict — connect() overwrites client.options, so a
@@ -4444,7 +4578,81 @@ export class IrcConnection {
   }
 
   disconnect(reason?: string): void {
+    // The user/system asked to disconnect — record intent BEFORE quit() so the
+    // 'close' handler doesn't fight them by auto-reconnecting, and drop any
+    // pending backoff so an earlier drop's retry can't resurrect the connection.
+    this.intentionalDisconnect = true;
+    // If we're mid-reconnect (waiting out the backoff, or with a launch already
+    // queued in connectScheduler) there is NO live socket, so quit() won't emit a
+    // 'close' event and nothing else would move us off 'reconnecting'. Capture
+    // that before clearing the timer.
+    const noLiveSocketToClose = this.reconnectTimer != null || this.state === 'reconnecting';
+    this.clearReconnectTimer();
     this.client.quit(reason ?? this.defaultQuitMessage());
+    // Assert the terminal state directly in that case. When a live socket IS
+    // closed, its 'close' handler sets 'disconnected' too — setState is
+    // change-guarded, so the double-call is a harmless no-op.
+    if (noLiveSocketToClose) this.setState('disconnected');
+  }
+
+  // Cancel a pending backoff retry. Idempotent.
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer != null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  // Called from the terminal 'close' handler. Decides whether this socket death
+  // warrants an auto-reconnect and, if so, schedules one with exponential
+  // backoff (routed through connectScheduler so a fleet-wide outage recovery
+  // doesn't flood one host). Retries indefinitely for any transient drop; stops
+  // only for a disposed connection, a user/system-requested disconnect, or a
+  // classified-terminal reason (detected ban / hard SASL auth failure).
+  private scheduleReconnectIfWarranted(): void {
+    if (this.disposed || this.intentionalDisconnect) return;
+    if (this.reconnectTimer != null) return; // a retry is already pending
+    if (this.terminalDisconnect) {
+      // Won't self-heal — surface why and stop. A manual reconnect (which
+      // rebuilds the connection from scratch) clears this and tries again.
+      this.publish({
+        type: 'error',
+        target: this.serverTarget(),
+        text: `Not reconnecting automatically: ${this.terminalDisconnect}. Fix the issue and reconnect manually.`,
+      });
+      this.logNet(`Auto-reconnect stopped: ${this.terminalDisconnect}`, 'error');
+      return;
+    }
+    const attempt = this.reconnectAttempt;
+    const delay = reconnectBackoffMs(attempt);
+    this.reconnectAttempt = attempt + 1;
+    const seconds = Math.max(1, Math.round(delay / 1000));
+    this.setState('reconnecting');
+    const reconnectNotice: IrcEvent = {
+      type: 'notice',
+      target: this.serverTarget(),
+      nick: 'lurker',
+      notable: false, // #470: status line — not counted as unread
+      text: `Reconnecting in ${seconds}s (attempt ${attempt + 1})…`,
+    };
+    // Persist only the FIRST status line of an outage; a network down for hours
+    // would otherwise write a row every backoff tick forever — the same write
+    // amplification the 'ping timeout' handler avoids. Later ticks are live-only:
+    // the 'state' dot and that first persisted line already anchor history.
+    if (attempt === 0) this.publish(reconnectNotice);
+    else this.publishEphemeral(reconnectNotice);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      // Re-check intent/disposal: the user may have stopped the network, or it
+      // may have been disposed, during the backoff wait.
+      if (this.disposed || this.intentionalDisconnect) return;
+      // Stagger the actual launch per destination host (issue #236) so many
+      // connections whose backoffs elapse together don't flood one IRC server.
+      connectScheduler.schedule(this.network.host, () => {
+        if (this.disposed || this.intentionalDisconnect) return;
+        this.connect();
+      });
+    }, delay);
   }
 
   // The QUIT reason for a clean disconnect when the caller gave none (the bare
@@ -4460,6 +4668,7 @@ export class IrcConnection {
 
   dispose(reason: string = 'network removed'): void {
     this.disposed = true;
+    this.clearReconnectTimer();
     this.stopLagPinger();
     this.cancelPendingConnectCommands();
     // Abort any in-flight DCC downloads (their sockets are independent of the IRC
