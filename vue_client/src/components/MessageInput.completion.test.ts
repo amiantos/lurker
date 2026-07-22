@@ -28,6 +28,9 @@ vi.mock('../composables/useSocket.js', () => ({
   onSocketOpen: vi.fn<() => () => void>(() => () => {}),
 }));
 
+// The mocked socketSend, so the command-dispatch tests can assert the wire payload.
+import { socketSend } from '../composables/useSocket.js';
+
 const CHANNELS = ['#apple', '#mango', '#zebra'];
 // `mallory` exists so the self-exclusion test has a positive control: without a
 // second m-nick, "your own nick isn't offered" and "completion did nothing at
@@ -254,6 +257,76 @@ describe('MessageInput Tab-completion', () => {
       await tab(el);
 
       expect(el.value).toBe('#zebra ');
+    });
+  });
+});
+
+// The command dispatcher (handleCommand) had no coverage; this locks the /part
+// parsing the PR changed. `/part [reason]` must leave the CURRENT channel with
+// that reason (not read the first word as a channel), and a leading #chan must
+// still retarget.
+describe('MessageInput command dispatch', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(socketSend).mockClear();
+    // sendOrToast reads the return value to decide whether to toast a failure; a
+    // real open socket returns true, so make the mock say the send landed.
+    vi.mocked(socketSend).mockReturnValue(true as never);
+  });
+
+  afterEach(() => {
+    for (const wrapper of mounted) wrapper.unmount();
+    mounted = [];
+  });
+
+  // Press Enter to submit, then let submit()'s async body reach socketSend.
+  async function enter(el: HTMLTextAreaElement) {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await flush();
+  }
+
+  it('/part [reason] leaves the current channel with that reason', async () => {
+    seedStores('#zebra');
+    const { el } = await mountComposer();
+
+    await type(el, '/part heading out');
+    await enter(el);
+
+    expect(socketSend).toHaveBeenCalledWith({
+      type: 'part',
+      networkId: 1,
+      channel: '#zebra',
+      reason: 'heading out',
+    });
+  });
+
+  it('/part <#chan> [reason] retargets the named channel', async () => {
+    seedStores('#zebra');
+    const { el } = await mountComposer();
+
+    await type(el, '/part #mango cya');
+    await enter(el);
+
+    expect(socketSend).toHaveBeenCalledWith({
+      type: 'part',
+      networkId: 1,
+      channel: '#mango',
+      reason: 'cya',
+    });
+  });
+
+  it('a bare /part leaves the current channel with no reason', async () => {
+    seedStores('#zebra');
+    const { el } = await mountComposer();
+
+    await type(el, '/part');
+    await enter(el);
+
+    expect(socketSend).toHaveBeenCalledWith({
+      type: 'part',
+      networkId: 1,
+      channel: '#zebra',
+      reason: '',
     });
   });
 });
