@@ -173,14 +173,21 @@ const RECONNECT_MAX_MS = reconnectEnvInt('LURKER_RECONNECT_MAX_MS', 300_000);
 // same-host launches on top of this, but the jitter de-syncs the herd first).
 const RECONNECT_JITTER_MS = reconnectEnvInt('LURKER_RECONNECT_JITTER_MS', 3000);
 
+// Floor for the computed backoff. reconnectEnvInt accepts 0 (a legit "disable
+// jitter" value), so a misconfigured base of 0 with jitter off would otherwise
+// yield a 0ms delay — a tight reconnect loop that hammers the server and spins
+// the event loop. 1s is also the smallest interval the "Reconnecting in Ns"
+// notice can honestly display (it rounds to whole seconds, min 1).
+const RECONNECT_MIN_MS = 1000;
+
 // Exponential backoff for the Nth reconnect attempt (0-indexed): base·2^n,
-// capped, plus jitter. attempt is clamped so 2^n can't overflow on a very long
-// outage — past the cap the doubling is moot anyway.
+// capped, plus jitter, then floored. attempt is clamped so 2^n can't overflow on
+// a very long outage — past the cap the doubling is moot anyway.
 function reconnectBackoffMs(attempt: number): number {
   const capped = Math.min(attempt, 20);
   const grown = RECONNECT_BASE_MS * Math.pow(2, capped);
   const jitter = RECONNECT_JITTER_MS > 0 ? Math.floor(Math.random() * RECONNECT_JITTER_MS) : 0;
-  return Math.min(grown, RECONNECT_MAX_MS) + jitter;
+  return Math.max(RECONNECT_MIN_MS, Math.min(grown, RECONNECT_MAX_MS) + jitter);
 }
 
 // Conservative, high-confidence match for a server disconnect that won't heal on
