@@ -417,16 +417,46 @@ function isDirect(event: MessageEvent): boolean {
   return isDmTarget(event.target || '');
 }
 
+// The user's ignore verdict for an event, off the cached compiled rule set (no
+// DB scan per event). Shared by decorateMessage's notify fold, the push gate,
+// and the closed-buffer reopen guard. Evaluates even for a nick-less event so a
+// scope mute (mask null — a muted channel/network) still vetoes it; a
+// sender-specific rule simply won't match a null nick.
+function ignoreVerdictForEvent(
+  userId: number,
+  networkId: number,
+  ev: {
+    nick?: string | null;
+    userhost?: string | null;
+    target: string;
+    text?: string | null;
+    type: string;
+    isDm: boolean;
+  },
+): IgnoreVerdict {
+  const compiled = ignoreRulesService.getCompiled(userId, networkId);
+  if (!compiled.length) return { hide: false, nohilight: false, nonotify: false };
+  return evaluateIgnores(compiled, {
+    nick: ev.nick ?? null,
+    userhost: ev.userhost ?? null,
+    target: ev.target,
+    text: ev.text ?? '',
+    type: ev.type,
+    isDm: ev.isDm,
+  });
+}
+
 // Match state is persisted on each message at insert time (see
 // ircConnection.publish), so events already arrive with matched/matchedRuleId
 // populated — either from the live IRC pipeline or from rowToEvent for
 // backlog reads. This decoration adds the per-broadcast `dm` and
 // `notifyAlways` content signals and the derived `notify` delivery decision,
 // and normalizes the match fields so non-persisted events (typing, names,
-// etc.) don't surface as undefined. Content signals stay separate on the
-// wire so clients can route toast/sound per signal type; `notify` is the
-// union and is the single gate consulted by push delivery and the in-client
-// notifier.
+// etc.) don't surface as undefined. The raw content signals stay separate on
+// the wire so clients can route toast/sound per signal type; `notify` is the
+// authoritative delivery gate — the union of those signals WITH the ignore/mute
+// veto folded in (see below), consulted by push delivery and by every live
+// client (web toast, native buzz).
 export function decorateMessage(userId: number, event: MessageEvent): DecoratedEvent {
   const matched = !!event.matched;
   const matchedRuleId = event.matchedRuleId ?? null;
@@ -442,7 +472,32 @@ export function decorateMessage(userId: number, event: MessageEvent): DecoratedE
     isChannel &&
     !event.self &&
     getChannelNotifyAlways(userId, event.networkId, target);
-  const notify = !isStatus && (matched || dm || notifyAlways);
+  // Content says this line is notification-worthy: a highlight, a DM, or a
+  // notify-always channel.
+  const contentNotify = !isStatus && (matched || dm || notifyAlways);
+  // Fold the ignore/mute veto into `notify` so it is the single authoritative
+  // "alert the user" gate every consumer can trust — push, the web toast, and
+  // native clients all read this one flag instead of each re-deriving the
+  // verdict (a per-channel mute leaked through to native clients that trusted
+  // `notify`; issue #359). The predicate mirrors the push path exactly: a
+  // hide-level or NONOTIFY rule suppresses; a NOHIGHLIGHT rule does NOT — it's
+  // display-only (decideStamp already nulled `matched`, and the message stays
+  // visible and counted). Recomputed per serve off the cached compiled rules,
+  // so /unignore reveals reactively. Only pay for the verdict when the content
+  // is otherwise notify-worthy — most backlog rows aren't, so history serves
+  // stay cheap.
+  let notify = contentNotify;
+  if (contentNotify) {
+    const verdict = ignoreVerdictForEvent(userId, event.networkId, {
+      nick: event.nick,
+      userhost: event.userhost,
+      target,
+      text: event.text,
+      type: event.type,
+      isDm: dm,
+    });
+    if (verdict.hide || verdict.nonotify) notify = false;
+  }
   return {
     ...event,
     matched,
@@ -1386,22 +1441,16 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     return false;
   }
 
-  // The user's ignore verdict for an event, off the cached compiled rule set (no
-  // DB scan per event). senderHidden reads .hide for the render/reopen path;
-  // maybePush additionally honors .nonotify (issue #359 — a NONOTIFY mute rule
-  // freezes push without hiding the message).
+  // The user's ignore verdict for a decorated event. Thin wrapper over the
+  // module-level ignoreVerdictForEvent; senderHidden reads .hide for the
+  // render/reopen path (the .nonotify veto is already folded into `notify` by
+  // decorateMessage, so the push gate no longer needs this).
   function ignoreVerdictFor(userId: number, decorated: DecoratedEvent): IgnoreVerdict {
-    const compiled = ignoreRulesService.getCompiled(userId, decorated.networkId);
-    if (!compiled.length) return { hide: false, nohilight: false, nonotify: false };
-    // Evaluate even for a nick-less event: a scope mute (mask null — a muted
-    // channel/network) must still veto its notification, so a nick-less line
-    // (e.g. a server notice in a notify_always channel) doesn't slip past. A
-    // sender-specific rule simply won't match a null nick.
-    return evaluateIgnores(compiled, {
-      nick: decorated.nick ?? null,
-      userhost: decorated.userhost ?? null,
+    return ignoreVerdictForEvent(userId, decorated.networkId, {
+      nick: decorated.nick,
+      userhost: decorated.userhost,
       target: decorated.target,
-      text: decorated.text ?? '',
+      text: decorated.text,
       type: decorated.type,
       isDm: !!decorated.dm,
     });
@@ -1422,15 +1471,16 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // the badge total below (it's an O(buffers) scan). deliver() would no-op on
     // an empty subscription set anyway — bail before the work (#451 review).
     if (!pushService.hasSubscriptions(userId)) return;
-    // Suppress push for events the user's ignore rules would hide OR mute
-    // (NONOTIFY, e.g. a muted channel/network — issue #359). This is the one
-    // piece of the ignore/mute feature that has to live server-side: push fires
-    // while no client is open, so a client-side filter can't intercept. The
-    // unread badge and render filter stay reactive client-side, so /unignore
-    // still reveals; only push delivery is frozen here. A NOHIGHLIGHT rule does
-    // NOT freeze push — the message is still visible, it just doesn't highlight.
-    const pushVerdict = ignoreVerdictFor(userId, decorated);
-    if (pushVerdict.hide || pushVerdict.nonotify) return;
+    // The ignore/mute veto — a hide-level or NONOTIFY rule (a muted
+    // channel/network/sender — issue #359) — is already folded into
+    // `decorated.notify` by decorateMessage, so the `notify` gate above has
+    // suppressed those before we reach here; no separate verdict check needed.
+    // This decision must live server-side (push fires while no client is open,
+    // so a client-side filter can't intercept), and folding it into `notify` is
+    // what lets every live client trust the one flag too. The unread badge and
+    // render filter stay reactive client-side, so /unignore still reveals. A
+    // NOHIGHLIGHT rule deliberately does NOT freeze push — the message is still
+    // visible, it just doesn't highlight.
     // Signal kind in priority order: DM beats matched beats always_notify.
     // The `kind` doubles as the settings-key namespace, so picking a single
     // priority winner here means a DM that also matched a rule still

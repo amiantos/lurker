@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Drives in-client notifications: a toast in the corner and an optional sound.
-// Called from useSocket whenever an IRC message arrives. The event carries
-// independent content signals (matched, dm, notifyAlways) set by the server;
-// each signal type has its own master `enabled` toggle and sound sub-toggle in
-// settings, so toast/sound delivery is fully decoupled from how the signal
-// was generated. Settings are read live so quick-toggles take effect at once.
+// Called from useSocket whenever an IRC message arrives. The server sets the
+// authoritative `notify` flag — the highlight/DM/notify-always union with the
+// ignore/mute veto already folded in (wsHub.decorateMessage) — so we gate on
+// that one flag rather than re-deriving the ignore verdict here. The raw
+// content signals (matched, dm, notifyAlways) still ride alongside it and pick
+// the toast kind: each kind has its own master `enabled` toggle and sound
+// sub-toggle, so toast/sound delivery is decoupled from how the signal was
+// generated. Settings are read live so quick-toggles take effect at once.
 //
 // The in-app toast + sound fire only for a visible tab when the event's
 // buffer isn't the one on screen — see shouldNotifyInApp for the three cases
@@ -15,12 +18,15 @@
 import { useToastsStore, type ToastKind } from '../stores/toasts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useNetworksStore } from '../stores/networks.js';
-import { useIgnoresStore } from '../stores/ignores.js';
 import { viewedBuffer } from './useViewedBuffer.js';
 import { META_SEPARATOR } from '../utils/metaLine.js';
 
 export interface NotifyEvent {
   self?: boolean;
+  // Server's authoritative "alert the user" verdict: the content-signal union
+  // (matched/dm/notifyAlways) with the ignore/mute veto (hide + NONOTIFY)
+  // already applied. A NOHIGHLIGHT rule is display-only and does NOT clear it.
+  notify?: boolean;
   dm?: boolean;
   matched?: boolean;
   notifyAlways?: boolean;
@@ -108,6 +114,13 @@ function shouldNotifyInApp(event: NotifyEvent): boolean {
 
 export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   if (!event || event.self) return;
+  // Trust the server's `notify` verdict — the ignore/mute veto (a hidden
+  // sender or a NONOTIFY-muted channel/network/DM — issue #359) is already
+  // folded in, so a muted buffer never toasts, and we don't re-run ignore
+  // matching here. A NOHIGHLIGHT rule is display-only and does NOT clear
+  // `notify`, so it still toasts — matching the server push path. Push is
+  // gated the same way server-side (it fires while no client is open).
+  if (!event.notify) return;
   const kindKey = pickKindKey(event);
   if (!kindKey) return;
 
@@ -115,27 +128,6 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   // the one on screen — a hidden tab is the push path's job, and the viewed
   // buffer is already in plain view. See shouldNotifyInApp.
   if (!shouldNotifyInApp(event)) return;
-
-  // Ignored sender → no toast, no sound. Full-context evaluate so a scoped rule
-  // (/ignore x PUBLIC, a #chan or -pattern rule) suppresses the toast for a
-  // message it also hides; a NOHIGHLIGHT rule suppresses the highlight
-  // toast/sound while leaving the message visible; and a NONOTIFY rule (a muted
-  // channel/network/DM — issue #359) suppresses the toast/sound outright. We
-  // evaluate even for a nick-less event so a scope mute (mask null) still vetoes
-  // it; a sender-specific rule just won't match a null nick. Push is gated
-  // server-side in wsHub.maybePush (push fires while no client is open).
-  const ignores = useIgnoresStore();
-  if (event.networkId && event.target) {
-    const verdict = ignores.evaluate(event.networkId, {
-      nick: event.nick ?? null,
-      userhost: event.userhost ?? null,
-      target: event.target,
-      text: event.text ?? '',
-      type: event.type ?? 'message',
-      isDm: !!event.dm,
-    });
-    if (verdict.hide || verdict.nohilight || verdict.nonotify) return;
-  }
 
   const settings = useSettingsStore();
   if (!settings.effective(`notifications.${kindKey}.enabled`)) return;
