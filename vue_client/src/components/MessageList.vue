@@ -16,7 +16,15 @@
          throwing off the prepend anchor math or (with browser anchoring)
          leaving scrollTop near the top so maybeRequestHistory cascades. -->
     <div v-if="!buffer?.hasMoreOlder && messages.length" class="notice">— start of history —</div>
-    <p v-if="!messages.length" class="notice empty">No messages yet.</p>
+    <!-- Exactly one of these renders when there are no message rows, so the
+         pane is never silently blank: a fetch in flight (or pending — an
+         unhydrated shell awaiting the reconciler) says so, a hydrated-but-
+         empty buffer says so, and the degenerate every-row-filtered-out case
+         (e.g. an inconsistent /clear marker) gets a fallback instead of an
+         empty scroller that looks broken. -->
+    <p v-if="initialLoading" class="notice empty">Loading messages…</p>
+    <p v-else-if="!messages.length" class="notice empty">No messages yet.</p>
+    <p v-else-if="!renderRows.length" class="notice empty">No messages to show.</p>
     <template v-for="row in renderRows" :key="row.key">
       <div v-if="row.divider === 'unread'" :ref="setUnreadDividerEl" class="notice unread-divider">
         <span class="notice-label">unread</span>
@@ -553,6 +561,19 @@ function setUnreadDividerEl(el: Element | ComponentPublicInstance | null): void 
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const messages = computed(() => buffer.value?.messages || []);
+
+// "Loading messages…" vs "No messages yet.": an empty list whose buffer is
+// unhydrated (fresh-connect shell / wiped detach slice) or mid-fetch is
+// LOADING — content exists server-side and a fetch is in flight or will fire
+// as soon as the socket allows (useBufferHydration). Only a hydrated empty
+// buffer is genuinely "no messages". Empty-list-only on purpose: loadingHistory
+// is also true during scrollback paging, where injecting a notice above the
+// viewport would shift scrollTop (see the comment atop the template).
+const initialLoading = computed(() => {
+  const b = buffer.value;
+  if (!b || b.networkId == null || messages.value.length) return false;
+  return b.loadingHistory || b.unseeded || b.pendingRefetch;
+});
 
 const selfLower = computed(() => {
   const b = buffer.value;

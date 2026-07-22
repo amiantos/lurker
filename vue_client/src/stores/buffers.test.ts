@@ -25,9 +25,11 @@ vi.mock('./networks.js', () => ({
   }),
 }));
 vi.mock('./toasts.js', () => ({ useToastsStore: () => ({ push: vi.fn<() => void>() }) }));
-vi.mock('../composables/useSocket.js', () => ({ socketSend: vi.fn<(payload: unknown) => void>() }));
+vi.mock('../composables/useSocket.js', () => ({
+  socketSend: vi.fn<(payload: unknown) => boolean>(),
+}));
 
-import { useBuffersStore } from './buffers.js';
+import { useBuffersStore, bufferNeedsHydration } from './buffers.js';
 import { socketSend } from '../composables/useSocket.js';
 
 // The store always seeds the app-scoped system buffer (#355). These tests assert
@@ -521,5 +523,162 @@ describe('member attribute patching (#591, #508)', () => {
 
     expect(store.accountFor(1, 'bob')).toBeNull(); // server said logged out
     expect(store.accountFor(1, 'carol')).toBeUndefined(); // we never learned
+  });
+});
+
+describe('hydration lifecycle (blank-buffer fix)', () => {
+  const shellFrame = (store: ReturnType<typeof useBuffersStore>, target: string) =>
+    store.replaceBacklog(
+      1,
+      target,
+      [],
+      undefined,
+      { lastReadId: 1000, unread: 5, highlights: 0 },
+      true,
+      { hasMoreOlder: true },
+    );
+
+  describe('bufferNeedsHydration', () => {
+    it('is true for a fresh-connect shell and false once hydrated', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      const buf = store.byKey('1::#a')!;
+      expect(bufferNeedsHydration(buf)).toBe(true);
+
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.reattachToLive(1, '#a');
+      // In flight: not "in need" — the pending fetch will resolve or be failed.
+      expect(bufferNeedsHydration(buf)).toBe(false);
+      store.applyLatestReplace(1, '#a', {
+        token: buf.pendingHistoryToken,
+        events: [{ networkId: 1, target: '#a', id: 5000, type: 'message', nick: 'bob', body: 'x' }],
+        hasMoreOlder: true,
+      });
+      expect(bufferNeedsHydration(buf)).toBe(false);
+    });
+
+    it('is false for a genuinely-empty buffer (empty latest reply cleared hasMoreOlder)', () => {
+      const store = useBuffersStore();
+      store.ensure(1, 'newnick'); // brand-new DM, no history server-side
+      const buf = store.byKey('1::newnick')!;
+      expect(bufferNeedsHydration(buf)).toBe(true); // empty + default hasMoreOlder
+
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.reattachToLive(1, 'newnick');
+      store.applyLatestReplace(1, 'newnick', {
+        token: buf.pendingHistoryToken,
+        events: [],
+        hasMoreOlder: false,
+      });
+      // No refetch loop: hydrated-and-empty is a terminal state.
+      expect(bufferNeedsHydration(buf)).toBe(false);
+    });
+
+    it('is true when the slice was wiped on switch-away-from-detached (pendingRefetch)', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      const buf = store.byKey('1::#a')!;
+      buf.detached = true;
+      store.clearDetached(1, '#a', { wipeMessages: true });
+      expect(buf.pendingRefetch).toBe(true);
+      expect(bufferNeedsHydration(buf)).toBe(true);
+    });
+
+    it('excludes the system buffer and detached buffers', () => {
+      const store = useBuffersStore();
+      expect(bufferNeedsHydration(store.byKey(':system:')!)).toBe(false);
+      shellFrame(store, '#a');
+      const buf = store.byKey('1::#a')!;
+      buf.detached = true;
+      expect(bufferNeedsHydration(buf)).toBe(false);
+    });
+  });
+
+  describe('ensureHydrated', () => {
+    it('fires a latest fetch for an unhydrated shell', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      vi.mocked(socketSend).mockClear().mockReturnValue(true);
+
+      store.ensureHydrated(1, '#a');
+
+      expect(socketSend).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'history', mode: 'latest', networkId: 1, target: '#a' }),
+      );
+    });
+
+    it('preserves pendingRefetch when the send fails, consumes it when the send succeeds', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      const buf = store.byKey('1::#a')!;
+      buf.detached = true;
+      store.clearDetached(1, '#a', { wipeMessages: true });
+      expect(buf.pendingRefetch).toBe(true);
+
+      // Socket closed: socketSend reports false. The intent flag must survive
+      // so the reconciler's reconnect attempt still knows to refetch.
+      vi.mocked(socketSend).mockReturnValue(false);
+      store.ensureHydrated(1, '#a');
+      expect(buf.pendingRefetch).toBe(true);
+      expect(buf.loadingHistory).toBe(false); // rolled back, not wedged
+
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.ensureHydrated(1, '#a');
+      expect(buf.pendingRefetch).toBe(false);
+      expect(buf.loadingHistory).toBe(true); // fetch in flight
+    });
+
+    it('no-ops while a fetch is already in flight', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.ensureHydrated(1, '#a');
+      vi.mocked(socketSend).mockClear();
+
+      store.ensureHydrated(1, '#a');
+
+      expect(socketSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('failInFlightHistory', () => {
+    it('clears loadingHistory and pendingHistoryToken on every buffer', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      shellFrame(store, '#b');
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.reattachToLive(1, '#a');
+      store.reattachToLive(1, '#b');
+      expect(store.byKey('1::#a')!.loadingHistory).toBe(true);
+      expect(store.byKey('1::#b')!.loadingHistory).toBe(true);
+
+      store.failInFlightHistory();
+
+      for (const key of ['1::#a', '1::#b']) {
+        expect(store.byKey(key)!.loadingHistory).toBe(false);
+        expect(store.byKey(key)!.pendingHistoryToken).toBe(null);
+      }
+    });
+
+    it('unwedges a buffer whose reply was lost, so the next hydration attempt can fetch', () => {
+      const store = useBuffersStore();
+      shellFrame(store, '#a');
+      vi.mocked(socketSend).mockReturnValue(true);
+      store.reattachToLive(1, '#a');
+      const buf = store.byKey('1::#a')!;
+
+      // Socket died mid-flight: the reply never arrives. Historically this
+      // wedged the buffer forever (every fetch guard early-returns on
+      // loadingHistory). The close handler now sweeps the flags…
+      store.failInFlightHistory();
+      expect(bufferNeedsHydration(buf)).toBe(true);
+
+      // …so the reconciler's post-reconnect attempt goes through.
+      vi.mocked(socketSend).mockClear().mockReturnValue(true);
+      store.ensureHydrated(1, '#a');
+      expect(socketSend).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'history', mode: 'latest', target: '#a' }),
+      );
+    });
   });
 });

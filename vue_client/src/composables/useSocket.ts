@@ -77,6 +77,18 @@ const HIDDEN_RESNAPSHOT_MS = 30_000;
 let hiddenSince: number | null = null;
 let visibilityWired = false;
 
+// Zombie-socket detection for the resume path. iOS routinely kills a
+// backgrounded WebSocket's TCP connection without telling the page — on
+// return, readyState still claims OPEN, so refreshSnapshot()'s send goes into
+// the void and the user sits on stale (or shell-blank) buffers until the OS
+// gets around to erroring the socket, if it ever does. The snapshot request IS
+// a liveness probe: a live server always replies, so if nothing at all arrives
+// within the window, the link is dead — force-close it, which trips the normal
+// 'close' arm (fail pending ACKs + in-flight history, schedule reconnect).
+const SNAPSHOT_PROBE_TIMEOUT_MS = 5000;
+let snapshotProbeTimer: ReturnType<typeof setTimeout> | null = null;
+let lastMessageAt = 0;
+
 function wsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = `${proto}://${window.location.host}/ws`;
@@ -776,7 +788,14 @@ function open() {
     },
     opts,
   );
-  socket.addEventListener('message', (ev) => handleMessage(ev.data), opts);
+  socket.addEventListener(
+    'message',
+    (ev) => {
+      lastMessageAt = Date.now();
+      handleMessage(ev.data);
+    },
+    opts,
+  );
   socket.addEventListener(
     'close',
     () => {
@@ -786,6 +805,16 @@ function open() {
       // pending ACK as a disconnect so callers can surface the failure now
       // instead of waiting out the timeout.
       failAllPendingAcks('disconnected');
+      // Same for in-flight history fetches: their responses died with the
+      // socket, and the per-buffer loadingHistory guards would otherwise wedge
+      // every future fetch for those buffers (a permanently blank,
+      // un-refetchable message list). Clearing here also makes the buffers
+      // eligible again for the hydration reconciler's reconnect refetch.
+      try {
+        useBuffersStore().failInFlightHistory();
+      } catch (_) {
+        /* store not yet initialized; nothing in flight */
+      }
       const auth = useAuthStore();
       if (auth.user) {
         reconnectTimer = setTimeout(open, 2000);
@@ -860,6 +889,10 @@ export function resetSocket(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  if (snapshotProbeTimer) {
+    clearTimeout(snapshotProbeTimer);
+    snapshotProbeTimer = null;
+  }
   if (socket) {
     // Detach every listener at once so the 'close' reconnect arm can't fire.
     socketListeners?.abort();
@@ -879,7 +912,19 @@ export function resetSocket(): void {
 
 function refreshSnapshot() {
   if (socket && socket.readyState === WebSocket.OPEN) {
+    const sentAt = Date.now();
     send({ type: 'snapshot' });
+    // The socket may be a zombie (see SNAPSHOT_PROBE_TIMEOUT_MS). Any inbound
+    // message counts as liveness — the snapshot reply is guaranteed traffic,
+    // so silence for the whole window means the link is dead. close() trips
+    // the 'close' arm, which cleans up and schedules the reconnect.
+    if (snapshotProbeTimer) clearTimeout(snapshotProbeTimer);
+    snapshotProbeTimer = setTimeout(() => {
+      snapshotProbeTimer = null;
+      if (socket && socket.readyState === WebSocket.OPEN && lastMessageAt < sentAt) {
+        socket.close();
+      }
+    }, SNAPSHOT_PROBE_TIMEOUT_MS);
     return;
   }
   // Socket isn't open — pull the reconnect forward instead of waiting on the

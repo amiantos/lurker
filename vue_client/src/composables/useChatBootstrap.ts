@@ -12,6 +12,7 @@ import { registerSW, onSWPushMessage } from './usePush.js';
 import { onJumpIntent } from './useJumpIntent.js';
 import { connected } from './useSocket.js';
 import { startAppBadge } from './useAppBadge.js';
+import { startBufferHydration } from './useBufferHydration.js';
 import type { JumpTarget } from './useJumpToMessage.js';
 
 // How long to wait for the app to become able to honor a cold-start deep link
@@ -150,6 +151,10 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
     void settingsReady.then(() => onboarding.evaluate());
     startPresenceReporter();
     reportNow();
+    // Keep the active buffer's message list hydrated across reconnects and
+    // send failures (idempotent module singleton, like the presence reporter —
+    // survives the Desktop<->Mobile shell swap without double-registering).
+    startBufferHydration();
     // Mirror the unread-highlight total onto the PWA app icon (#451). Idempotent
     // and feature-detected — a no-op where the Badging API is unavailable.
     startAppBadge();
