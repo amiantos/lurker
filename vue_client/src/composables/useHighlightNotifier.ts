@@ -20,6 +20,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { viewedBuffer } from './useViewedBuffer.js';
 import { META_SEPARATOR } from '../utils/metaLine.js';
+import { stripFormatting } from '../../../shared/textMatch.js';
 
 export interface NotifyEvent {
   self?: boolean;
@@ -146,7 +147,10 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   toasts.push({
     kind: kindKey,
     title: `${event.nick || '?'} in ${where}`,
-    body: event.text || '',
+    // The toast renders body as plain text, so mIRC formatting codes (\x03
+    // colors, \x02 bold, …) would show up as literal control chars. Strip them
+    // — a toast is a glanceable summary, not the message view (#606).
+    body: stripFormatting(event.text || ''),
     networkId: event.networkId,
     target: event.target,
     messageId: event.id,

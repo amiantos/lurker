@@ -71,14 +71,14 @@ const adminBusy = ref(false);
 const lastCreatedInviteUrl = ref('');
 
 onMounted(() => {
-  // Fetch once per session — the admin panel route-swaps panes, so an
-  // unconditional fetch would re-hit /api/admin/invites on every tab switch.
-  // The store keeps the list current for local mutations (create/revoke).
-  if (!adminStore.invitesLoaded) {
-    adminStore.fetchInvites().catch((e: any) => {
-      adminError.value = e.message;
-    });
-  }
+  // Refetch on every pane activation. The store cache stays correct for THIS
+  // session's own mutations (create/revoke), but an invite accepted elsewhere —
+  // or another admin's change — leaves it stale until a full browser reload. The
+  // admin panel route-swaps panes, so re-mount is the natural place to re-sync;
+  // the request is cheap and keeps the screen honest (#613).
+  adminStore.fetchInvites().catch((e: any) => {
+    adminError.value = e.message;
+  });
 });
 
 async function onCreateInvite() {

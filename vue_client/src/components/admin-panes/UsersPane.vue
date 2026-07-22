@@ -80,14 +80,14 @@ const adminError = ref('');
 const adminBusy = ref(false);
 
 onMounted(() => {
-  // Fetch once per session — the admin panel route-swaps panes, so an
-  // unconditional fetch would re-hit /api/admin/users on every tab switch. The
-  // store keeps the list current for local mutations (delete/pause/resume).
-  if (!adminStore.usersLoaded) {
-    adminStore.fetchUsers().catch((e: any) => {
-      adminError.value = e.message;
-    });
-  }
+  // Refetch on every pane activation. The store cache stays correct for THIS
+  // session's own mutations (delete/pause/resume), but an invite accepted
+  // elsewhere — or another admin's change — leaves it stale until a full browser
+  // reload. The admin panel route-swaps panes, so re-mount is the natural place
+  // to re-sync; the request is cheap and keeps the screen honest (#613).
+  adminStore.fetchUsers().catch((e: any) => {
+    adminError.value = e.message;
+  });
 });
 
 async function onDeleteUser(user: AdminUser) {

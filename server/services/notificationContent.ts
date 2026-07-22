@@ -19,6 +19,8 @@
 // when the server starts sending them. Once every client has cycled, the worker's
 // copy is dead code and goes.
 
+import { stripFormatting } from './textMatch.js';
+
 export type PushPayloadKind = 'dm' | 'highlight' | 'always_notify' | 'friend_online';
 
 /**
@@ -82,7 +84,10 @@ export function composeNotification(payload: PushPayload): NotificationContent {
   return {
     title: title(payload),
     // friend_online carries no text, so its body is empty — the title says it all.
-    body: payload.text || '',
+    // Strip mIRC formatting codes (\x03 colors, \x02 bold, …): a native alert
+    // renders body as plain text, so the codes would otherwise arrive as literal
+    // control chars on the lock screen (#606).
+    body: stripFormatting(payload.text || ''),
     tag: `${payload.networkId || 0}::${payload.target || ''}`,
   };
 }
