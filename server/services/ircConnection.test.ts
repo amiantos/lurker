@@ -6,7 +6,7 @@
 // at module-load time). Without this, the IrcConnections built in these tests
 // write straight into the real data/lurker.db.
 import '../test-utils/isolateDb.js';
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import net from 'net';
 import { ircLineParser } from 'irc-framework';
 import type { ConnectOptions } from 'irc-framework';
@@ -28,6 +28,7 @@ import {
   resolveKeyModeChange,
 } from './ircConnection.js';
 import { createIdentdServer, unregisterIdent } from './identd.js';
+import connectScheduler from './connectScheduler.js';
 import { getRecent } from './systemLog.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
@@ -1284,6 +1285,176 @@ describe('disconnect-offline sweep + WHO re-light (no-MONITOR presence)', () => 
     // A later WHO with the away flag cleared must move away → back (renders online).
     conn.client.emit('wholist', { target: '#room', users: [{ nick: 'awaychan', away: false }] });
     expect(getPeerPresence(conn.network.id, 'awaychan')?.state).toBe('back');
+  });
+});
+
+// Lurker owns the reconnect policy now (irc-framework's auto_reconnect is off).
+// The controller retries any transient drop indefinitely with exponential
+// backoff, but stops for an intentional disconnect or a classified-terminal
+// reason (detected ban / hard SASL auth failure). Timers are faked; the actual
+// socket open (conn.connect) is stubbed so no real connection is attempted.
+describe('auto-reconnect controller', () => {
+  function makeConn(name: string): { conn: IrcConnection; events: Record<string, unknown>[] } {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    const events: Record<string, unknown>[] = [];
+    const conn = new IrcConnection({
+      network,
+      onEvent: (e) => events.push(e as Record<string, unknown>),
+    });
+    // Never open a real socket when the backoff fires.
+    vi.spyOn(conn, 'connect').mockImplementation(() => {});
+    return { conn, events };
+  }
+
+  // The connectScheduler is a process-wide singleton; clear its per-host gate
+  // state before each test so a prior run's timestamps can't delay this launch.
+  beforeEach(() => connectScheduler.reset());
+  afterEach(() => {
+    connectScheduler.reset();
+    vi.useRealTimers();
+  });
+
+  it('schedules a backoff reconnect after an unexpected socket close', () => {
+    vi.useFakeTimers();
+    const { conn } = makeConn('rc-basic');
+    conn.client.emit('close', false);
+    expect(conn.state).toBe('reconnecting');
+    expect(conn.connect).not.toHaveBeenCalled(); // still waiting out the backoff
+    vi.runAllTimers();
+    expect(conn.connect).toHaveBeenCalledTimes(1);
+  });
+
+  // The core gap this overhaul fixes: irc-framework only retried a connection
+  // that had been healthy for >5s, so an initial-connect failure (DNS/refused/
+  // registration timeout — never 'registered') got ZERO retries. It must now
+  // reconnect like any other transient drop.
+  it('reconnects after a never-registered initial-connect failure', () => {
+    vi.useFakeTimers();
+    const { conn } = makeConn('rc-initial');
+    conn.client.emit('socket close', { code: 'ECONNREFUSED' });
+    conn.client.emit('close', true);
+    vi.runAllTimers();
+    expect(conn.connect).toHaveBeenCalledTimes(1);
+  });
+
+  // A user who hits Disconnect while the network is mid-backoff has no live
+  // socket to close, so quit() emits no 'close' — disconnect() must assert the
+  // terminal 'disconnected' state itself or the UI stays stuck on 'Reconnecting'.
+  it('settles to disconnected when the user disconnects mid-reconnect', () => {
+    vi.useFakeTimers();
+    const { conn } = makeConn('rc-mid');
+    conn.client.emit('close', false); // drop → enters reconnecting/backoff
+    expect(conn.state).toBe('reconnecting');
+    conn.disconnect(); // user stops it while the backoff is still pending
+    expect(conn.state).toBe('disconnected');
+    vi.runAllTimers();
+    expect(conn.connect).not.toHaveBeenCalled();
+  });
+
+  it('does not reconnect after an intentional disconnect', () => {
+    vi.useFakeTimers();
+    const { conn } = makeConn('rc-intentional');
+    conn.disconnect(); // records intent; quit() is a no-op with no live socket
+    conn.client.emit('close', false);
+    vi.runAllTimers();
+    expect(conn.connect).not.toHaveBeenCalled();
+    expect(conn.state).toBe('disconnected');
+  });
+
+  it('stops (no reconnect) and surfaces a notice on a detected server ban', () => {
+    vi.useFakeTimers();
+    const { conn, events } = makeConn('rc-ban');
+    conn.client.emit('irc error', { error: 'irc', reason: 'Closing Link: nick[u@h] (G-Lined)' });
+    conn.client.emit('close', true);
+    vi.runAllTimers();
+    expect(conn.connect).not.toHaveBeenCalled();
+    expect(conn.state).toBe('disconnected');
+    expect(
+      events.some(
+        (e) => e.type === 'error' && /Not reconnecting automatically/i.test(String(e.text)),
+      ),
+    ).toBe(true);
+  });
+
+  it('stops (no reconnect) on a hard SASL authentication failure', () => {
+    vi.useFakeTimers();
+    const { conn, events } = makeConn('rc-sasl');
+    conn.client.emit('sasl failed', { reason: 'fail' });
+    conn.client.emit('close', true);
+    vi.runAllTimers();
+    expect(conn.connect).not.toHaveBeenCalled();
+    expect(
+      events.some((e) => e.type === 'error' && /SASL authentication failed/i.test(String(e.text))),
+    ).toBe(true);
+  });
+
+  // A clean SASL abort is transient (server hiccup), not a credential problem —
+  // it must still reconnect.
+  it('still reconnects after a clean SASL abort', () => {
+    vi.useFakeTimers();
+    const { conn } = makeConn('rc-sasl-abort');
+    conn.client.emit('sasl failed', { reason: 'aborted' });
+    conn.client.emit('close', true);
+    vi.runAllTimers();
+    expect(conn.connect).toHaveBeenCalledTimes(1);
+  });
+
+  // A SASL failure the server DIDN'T drop us for (we registered unauthenticated)
+  // must not leave a stale terminal flag that blocks a later transient reconnect.
+  it('clears the terminal flag when registration succeeds despite a SASL failure', () => {
+    vi.useFakeTimers();
+    const { conn } = makeConn('rc-sasl-recovered');
+    conn.client.emit('sasl failed', { reason: 'fail' });
+    (conn.client as unknown as { options: unknown }).options = {
+      ping_interval: 0,
+      ping_timeout: 0,
+    };
+    conn.client.emit('registered', { nick: 'nick' }); // server let us in anyway
+    conn.client.emit('close', false); // a later, unrelated drop
+    vi.runAllTimers();
+    expect(conn.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('resets the backoff ladder after a successful registration', () => {
+    vi.useFakeTimers();
+    const { conn, events } = makeConn('rc-reset');
+    const attemptOf = (): number | null => {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const m = /attempt (\d+)/.exec(String(events[i].text ?? ''));
+        if (m) return Number(m[1]);
+      }
+      return null;
+    };
+    // First drop → attempt 1.
+    conn.client.emit('close', false);
+    expect(attemptOf()).toBe(1);
+    vi.runAllTimers();
+    // A full registration proves the network is reachable again → ladder resets.
+    // (connect() is stubbed here, so the library's own 'registered' listener has
+    // no live connection.options; pin harmless ping settings so its
+    // startPeriodicPing early-returns instead of dereferencing null.)
+    (conn.client as unknown as { options: unknown }).options = {
+      ping_interval: 0,
+      ping_timeout: 0,
+    };
+    conn.client.emit('registered', { nick: 'nick' });
+    // Next drop starts back at attempt 1, not 2.
+    conn.client.emit('close', false);
+    expect(attemptOf()).toBe(1);
   });
 });
 
