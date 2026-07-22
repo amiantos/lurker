@@ -106,4 +106,13 @@ describe('notifyForEvent notify gate', () => {
     notifyForEvent(dm());
     expect(push).not.toHaveBeenCalled();
   });
+
+  it('strips mIRC formatting codes from the toast body (#606)', async () => {
+    // The toast renders body as plain text, so \x03 colors / \x02 bold would
+    // otherwise surface as literal control chars.
+    const { notifyForEvent } = await load();
+    notifyForEvent(dm({ text: '\x0304red\x03 and \x02bold\x02 text' }));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect((push.mock.calls[0][0] as { body: string }).body).toBe('red and bold text');
+  });
 });

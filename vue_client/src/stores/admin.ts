@@ -59,42 +59,62 @@ export const useAdminStore = defineStore('admin', {
     usersLoaded: false,
     invitesLoaded: false,
     uploadersLoaded: false,
+    // Monotonic per-resource fetch generation. The admin panes refetch on every
+    // mount (#613), so a slow GET can still be in flight when a local mutation
+    // (delete/pause/create/revoke) patches the list. Each fetch captures the seq
+    // and drops its payload if a newer fetch OR a mutation bumped it meanwhile —
+    // otherwise the stale GET would resurrect a just-deleted row.
+    usersFetchSeq: 0,
+    invitesFetchSeq: 0,
     loading: false,
     error: '',
   }),
   actions: {
     async fetchUsers() {
+      const seq = ++this.usersFetchSeq;
       this.error = '';
       try {
         const { users } = await api('/api/admin/users');
+        // A newer fetch or a local mutation superseded this GET while it was in
+        // flight — its payload is stale, so drop it rather than clobber the
+        // fresher state.
+        if (seq !== this.usersFetchSeq) return;
         this.users = users || [];
         this.usersLoaded = true;
       } catch (e: any) {
+        if (seq !== this.usersFetchSeq) return;
         this.error = e.message || 'failed to load users';
         throw e;
       }
     },
     async deleteUser(id: number) {
       await api(`/api/admin/users/${id}`, { method: 'DELETE' });
+      // Invalidate any in-flight GET so it can't resurrect the deleted row.
+      this.usersFetchSeq++;
       this.users = this.users.filter((u) => u.id !== id);
     },
     async pauseUser(id: number) {
       await api(`/api/admin/users/${id}/pause`, { method: 'POST' });
+      this.usersFetchSeq++;
       const u = this.users.find((x) => x.id === id);
       if (u) u.isPaused = true;
     },
     async resumeUser(id: number) {
       await api(`/api/admin/users/${id}/resume`, { method: 'POST' });
+      this.usersFetchSeq++;
       const u = this.users.find((x) => x.id === id);
       if (u) u.isPaused = false;
     },
     async fetchInvites() {
+      const seq = ++this.invitesFetchSeq;
       this.error = '';
       try {
         const { invites } = await api('/api/admin/invites');
+        if (seq !== this.invitesFetchSeq) return;
         this.invites = invites || [];
         this.invitesLoaded = true;
       } catch (e: any) {
+        if (seq !== this.invitesFetchSeq) return;
         this.error = e.message || 'failed to load invites';
         throw e;
       }
@@ -104,11 +124,13 @@ export const useAdminStore = defineStore('admin', {
         method: 'POST',
         body: expiresInDays ? { expiresInDays } : {},
       });
+      this.invitesFetchSeq++;
       this.invites = [invite, ...this.invites];
       return invite as AdminInvite;
     },
     async deleteInvite(token: string) {
       await api(`/api/admin/invites/${encodeURIComponent(token)}`, { method: 'DELETE' });
+      this.invitesFetchSeq++;
       this.invites = this.invites.filter((i) => i.token !== token);
     },
 
