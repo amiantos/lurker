@@ -47,6 +47,12 @@ export default defineConfig({
           items: [
             { text: 'Self-Hosting Lurker', link: '/SELF_HOSTING' },
             { text: 'Deploy on DigitalOcean', link: '/digitalocean' },
+          ],
+        },
+        {
+          text: 'Developers',
+          items: [
+            { text: 'Client Protocol & API', link: '/CLIENT_PROTOCOL' },
             { text: 'MCP & HTTP API', link: '/MCP' },
           ],
         },
