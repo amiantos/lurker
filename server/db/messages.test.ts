@@ -847,6 +847,64 @@ describe('messages.alt parity (insert result)', () => {
   });
 });
 
+describe('messages.msgid (#450)', () => {
+  it('round-trips through insertMessage → listMessages; absent when the row has none', () => {
+    const user = createUser('msgid-roundtrip');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'msgid-roundtrip',
+    });
+    insertMessage({
+      networkId: net!.id,
+      target: '#m',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'alice',
+      text: 'tagged',
+      self: false,
+      msgid: 'abc-123',
+    });
+    insertMessage({
+      networkId: net!.id,
+      target: '#m',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'bob',
+      text: 'untagged',
+      self: false,
+    });
+    const [tagged, untagged] = listMessages(net!.id, '#m');
+    expect(tagged.msgid).toBe('abc-123');
+    // Absent, not null — untagged backlogs must not grow a msgid field.
+    expect(untagged).not.toHaveProperty('msgid');
+  });
+
+  it('coerces an empty-string msgid to NULL so it is never stored or indexed', () => {
+    const user = createUser('msgid-empty');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'msgid-empty',
+    });
+    insertMessage({
+      networkId: net!.id,
+      target: '#m',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'alice',
+      text: 'empty tag',
+      self: false,
+      msgid: '',
+    });
+    expect(listMessages(net!.id, '#m')[0]).not.toHaveProperty('msgid');
+  });
+});
+
 describe('from_ignored excludes ignored senders from unread/highlight counts', () => {
   function chatWith(
     networkId: number,

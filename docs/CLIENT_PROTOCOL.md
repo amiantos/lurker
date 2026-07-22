@@ -305,17 +305,29 @@ Common fields on every **persisted** event (`db/messages.ts:31` +
 `decorateMessage`, `wsHub.ts:430`):
 
 ```
-{ id, networkId, target, time,        // ISO 8601
+{ id, networkId, target, time,        // ISO 8601 — see the note below
   type,                               // see §7.2
   nick, text, kind,                   // kind = raw IRC command; see the ⚠ below
   self,                               // you sent it (any of your clients)
   userhost, alt, mirrored, dm,
   matched, matchedRuleId,             // highlight decoration
-  fromIgnored, notifyAlways, notify }
+  fromIgnored, notifyAlways, notify,
+  msgid? }                            // IRCv3 server message id, when supplied
 ```
 
 plus type-specific extras (`newNick`, `kicked`, `modes`, `members`, …).
 **Ephemeral** event types (§7.2) carry no `id`.
+
+**`time` is IRCv3 server-time** where the network offers it (the `@time=` tag),
+receive time otherwise. Far-future stamps (> ~2 min ahead) fall back to receive
+time. Rows persisted before this existed carry receive time. Because a bouncer
+upstream can replay old messages live, `time` is **not** guaranteed monotonic
+with respect to `id` — order and dedupe by `id`, always (§9.3).
+
+**`msgid`** is the server-assigned IRCv3 message id (`message-tags` networks;
+own sends learn theirs via `echo-message`). Absent — not null — on rows from
+untagged networks and on optimistic self echoes. It is the future anchor for
+react/reply; today it is informational only.
 
 > ⚠ **Live-frame `kind` clobber.** When an event arrives live it is wrapped as
 > `{...event, kind:'irc'}` — the event's own `kind` field is overwritten by the
@@ -353,7 +365,10 @@ paused. Dispatch: `handleClientMessage`, `wsHub.ts:2031`.
 `notice` and the server replies `{kind:'send-result', clientId, ok, error?}`.
 This confirms acceptance only — the message itself comes back as a normal `irc`
 echo with `self:true` and its real id (§9.3). The web client times acks out
-after 8 s (client policy).
+after 8 s (client policy). On networks that ACK `echo-message` upstream, that
+`self:true` frame arrives only after the IRC server reflects the send back (one
+upstream round trip, carrying the real `msgid` + server `time`); elsewhere it
+is emitted immediately from the server's optimistic local copy.
 
 ### Channels & buffers ⏸
 

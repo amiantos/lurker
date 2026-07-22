@@ -82,11 +82,12 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
       // so a self message after a non-self message from the same nick must
       // not collapse — even though that's a deeply unusual case.
       const key = `${row.m.self ? '1' : '0'}:${row.m.nick || ''}`;
-      if (
-        prevAuthorKey === key &&
-        prevAuthorTimeMs != null &&
-        timeMs - prevAuthorTimeMs <= authorWindowMs
-      ) {
+      // The delta must be non-negative: rows carry server-time, which a
+      // bouncer replay can stamp OLDER than the preceding row's. A negative
+      // delta would trivially pass the window check and collapse a replayed
+      // old line under a fresh message it doesn't belong to.
+      const deltaMs = prevAuthorTimeMs != null ? timeMs - prevAuthorTimeMs : -1;
+      if (prevAuthorKey === key && deltaMs >= 0 && deltaMs <= authorWindowMs) {
         row.continuationAuthor = true;
       }
       prevAuthorKey = key;

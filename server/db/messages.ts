@@ -20,6 +20,7 @@ interface MessageRow {
   matched_rule_id: number | null;
   from_ignored: number;
   mirrored: number;
+  msgid: string | null;
 }
 
 /** A raw message row joined with network_name. */
@@ -46,6 +47,9 @@ export interface MessageEvent {
   // A duplicate of a closed-buffer NOTICE surfaced in the server buffer (#439).
   // Excluded from search/highlights so it doesn't double up its real copy.
   mirrored: boolean;
+  // IRCv3 server-assigned message id (#450). Only set when the network supplied
+  // one — absent (not null) otherwise, so untagged backlogs don't grow a field.
+  msgid?: string;
   [key: string]: unknown;
 }
 
@@ -70,6 +74,7 @@ export interface MessageInput {
   userhost?: string | null;
   fromIgnored?: boolean;
   mirrored?: boolean;
+  msgid?: string | null;
   // Server-buffer notability (#470). Defaults to notable (true); pass false for
   // Lurker's own connection-status notices so they render in the server buffer
   // but don't mark it unread. Read by countServerBufferUnread (the :server: unread
@@ -95,9 +100,9 @@ export interface MaxIdByBufferRow {
 // Non-striped types pass through with alt=0; the value is meaningless for them
 // and the client never reads it.
 const insertStmt = db.prepare(`
-  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, notable, alt)
+  INSERT INTO messages (network_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, notable, msgid, alt)
   VALUES (
-    @networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored, @notable,
+    @networkId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored, @notable, @msgid,
     CASE WHEN @type IN ('message', 'action', 'notice')
          THEN 1 - COALESCE(
            (SELECT alt FROM messages
@@ -129,6 +134,9 @@ export function insertMessage(row: MessageInput): { id: number | bigint; alt: bo
     mirrored: row.mirrored ? 1 : 0,
     // Default notable=1; only an explicit `false` (Lurker's status notices) is 0.
     notable: row.notable === false ? 0 : 1,
+    // `||` not `??`: an empty-string msgid would be stored and indexed
+    // (msgid IS NOT NULL) yet never surfaced — rowToEvent reads truthily.
+    msgid: row.msgid || null,
   });
   const id = result.lastInsertRowid;
   const altRow = altByIdStmt.get(id) as { alt: number } | undefined;
@@ -153,6 +161,7 @@ function rowToEvent(row: MessageRow): MessageEvent {
     fromIgnored: row.from_ignored === 1,
     mirrored: row.mirrored === 1,
   };
+  if (row.msgid) event.msgid = row.msgid;
   if (row.extra) {
     try {
       Object.assign(event, JSON.parse(row.extra));
