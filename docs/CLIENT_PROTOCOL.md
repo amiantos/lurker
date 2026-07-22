@@ -332,11 +332,14 @@ react/reply; today it is informational only.
 **`notify` is the server's delivery decision — the one flag to gate a live
 alert (toast, sound, native buzz) on.** It is the union of the content signals
 (`matched`, `dm`, `notifyAlways`) with the user's ignore/mute verdict **already
-applied**: a hide-level or **NONOTIFY** rule — a muted channel, network, DM, or
-sender (§6 `add-ignore`) — forces `notify:false`, even though the message is
-still delivered and still counts toward unread. So a muted-channel highlight
-arrives as `matched:true, notify:false` — style it as a highlight in history,
-but do **not** raise a notification for it. **Do not re-implement ignore
+applied**. A **NONOTIFY** rule — a muted channel, network, DM, or sender (§6
+`add-ignore`) — forces `notify:false` while the message is still delivered and
+still counts toward unread; only the alert is suppressed. A hide-level ignore
+also forces `notify:false`, but that message is _additionally_ excluded from
+unread/highlight counts server-side (the `from_ignored` stamp) and hidden by
+your render filter — so don't count it. So a muted-channel highlight arrives as
+`matched:true, notify:false` — style it as a highlight in history, but do
+**not** raise a notification for it. **Do not re-implement ignore
 matching client-side for this decision** — the server owns it (it must: push
 fires when no client is attached, so the veto can't live only in a client).
 The raw signals stay on the wire beside `notify` so you can still pick the
