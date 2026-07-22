@@ -134,7 +134,9 @@ export function insertMessage(row: MessageInput): { id: number | bigint; alt: bo
     mirrored: row.mirrored ? 1 : 0,
     // Default notable=1; only an explicit `false` (Lurker's status notices) is 0.
     notable: row.notable === false ? 0 : 1,
-    msgid: row.msgid ?? null,
+    // `||` not `??`: an empty-string msgid would be stored and indexed
+    // (msgid IS NOT NULL) yet never surfaced — rowToEvent reads truthily.
+    msgid: row.msgid || null,
   });
   const id = result.lastInsertRowid;
   const altRow = altByIdStmt.get(id) as { alt: number } | undefined;
