@@ -2832,8 +2832,29 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // /part leaves the channel but KEEPS the buffer so the user can scroll
       // history and rejoin later. The buffer just renders dimmed in the
       // sidebar. Use /close to actually drop a buffer.
-      const channel = rest[0] || target;
-      const reason = rest.slice(1).join(' ');
+      //
+      // /part [reason]        — leave the CURRENT channel with that reason
+      // /part <#chan> [reason] — leave a named channel (same shape as /kick,
+      // /topic). Reading the first word as a channel unconditionally meant
+      // `/part heading out` tried to part a channel named "heading" and
+      // silently stayed put; a leading # now distinguishes the two.
+      let channel;
+      let reason;
+      if (rest[0] && rest[0].startsWith('#')) {
+        channel = rest[0];
+        reason = line
+          .slice(1 + cmd.length)
+          .trim()
+          .slice(channel.length)
+          .trim();
+      } else {
+        channel = isChannelTarget(target) ? target : null;
+        reason = argLine;
+      }
+      if (!channel) {
+        localInfo(networkId, target, 'usage: /part [#chan] [reason] — no channel context');
+        return true;
+      }
       return sendOrToast({ type: 'part', networkId, channel, reason }, line);
     }
     case 'close':
