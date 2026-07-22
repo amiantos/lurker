@@ -13,9 +13,20 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="theme-color" content="#0b0b0b" />
+    <!-- interactive-widget=resizes-content (#581): Chrome Android 108+ defaults
+         to resizes-visual — the soft keyboard OVERLAYS the page, 100dvh stays
+         full-height, and Chrome reveals the focused composer by scrolling the
+         document. Our shell forbids document scrolling (html/body
+         overflow:hidden + touch-action:none), so when that scroll isn't undone
+         on keyboard dismiss the layout is left shifted with the input bar
+         permanently off-screen (unrecoverable by touch or pinch — full refresh
+         only). resizes-content restores the model the 100dvh shell was built
+         for: the keyboard shrinks the layout viewport, the composer rides up
+         above it, and no document scroll ever happens. Safari doesn't support
+         the property and ignores it, so iOS behavior is unchanged. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <title>Lurker</title>
   </head>

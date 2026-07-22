@@ -77,6 +77,48 @@ const HIDDEN_RESNAPSHOT_MS = 30_000;
 let hiddenSince: number | null = null;
 let visibilityWired = false;
 
+// Zombie-socket liveness probe. Mobile OSes routinely kill a backgrounded (or
+// flaky-network) WebSocket's TCP connection without telling the page —
+// readyState still claims OPEN, so sends go into the void and the user sits on
+// stale or wedged-loading buffers until the OS TCP timeout errors the socket,
+// minutes later. Any request with a guaranteed reply (the resume snapshot,
+// every 'history' fetch) doubles as a probe: a live server always produces
+// SOME inbound traffic after it, so total silence for the whole window means
+// the link is dead — force-close it, which trips the normal 'close' arm (fail
+// pending ACKs + in-flight history, schedule reconnect, and the hydration
+// reconciler refetches on the reconnect edge).
+//
+// 10s, not lower: the probe fires only on TOTAL inbound silence since the
+// send (any frame counts), so the window's only job is to out-wait worst-case
+// link latency on a quiet connection. A false positive costs one spurious
+// reconnect cycle (self-healing — the reconnect path arms no probe and the
+// server re-sends a snapshot on connect), but there's no reason to shave
+// seconds off a detector whose true-positive alternative is a minutes-long
+// TCP timeout.
+const LIVENESS_PROBE_TIMEOUT_MS = 10_000;
+let livenessProbeTimer: ReturnType<typeof setTimeout> | null = null;
+let lastMessageAt = 0;
+
+// Arm (or re-arm) the probe against the CURRENT socket. The callback captures
+// the socket instance it measured and re-checks identity before acting: a
+// probe armed against socket A must never close A's healthy replacement B
+// when A dies mid-window and the 2s reconnect brings B up before the timer
+// fires (B can be OPEN with its first snapshot frame still in flight). The
+// close handler also clears the timer outright, so identity is a second
+// fence, not the only one.
+function armLivenessProbe(): void {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const probed = socket;
+  const sentAt = Date.now();
+  if (livenessProbeTimer) clearTimeout(livenessProbeTimer);
+  livenessProbeTimer = setTimeout(() => {
+    livenessProbeTimer = null;
+    if (socket === probed && socket.readyState === WebSocket.OPEN && lastMessageAt < sentAt) {
+      socket.close();
+    }
+  }, LIVENESS_PROBE_TIMEOUT_MS);
+}
+
 function wsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = `${proto}://${window.location.host}/ws`;
@@ -776,16 +818,40 @@ function open() {
     },
     opts,
   );
-  socket.addEventListener('message', (ev) => handleMessage(ev.data), opts);
+  socket.addEventListener(
+    'message',
+    (ev) => {
+      lastMessageAt = Date.now();
+      handleMessage(ev.data);
+    },
+    opts,
+  );
   socket.addEventListener(
     'close',
     () => {
       connected.value = false;
       socket = null;
+      // A probe armed against the socket that just died must not survive into
+      // the replacement's lifetime (its identity check would make firing a
+      // no-op, but a dead timer serves nobody).
+      if (livenessProbeTimer) {
+        clearTimeout(livenessProbeTimer);
+        livenessProbeTimer = null;
+      }
       // Anything we were waiting on is gone with the socket. Settle every
       // pending ACK as a disconnect so callers can surface the failure now
       // instead of waiting out the timeout.
       failAllPendingAcks('disconnected');
+      // Same for in-flight history fetches: their responses died with the
+      // socket, and the per-buffer loadingHistory guards would otherwise wedge
+      // every future fetch for those buffers (a permanently blank,
+      // un-refetchable message list). Clearing here also makes the buffers
+      // eligible again for the hydration reconciler's reconnect refetch.
+      try {
+        useBuffersStore().failInFlightHistory();
+      } catch (_) {
+        /* store not yet initialized; nothing in flight */
+      }
       const auth = useAuthStore();
       if (auth.user) {
         reconnectTimer = setTimeout(open, 2000);
@@ -860,6 +926,10 @@ export function resetSocket(): void {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  if (livenessProbeTimer) {
+    clearTimeout(livenessProbeTimer);
+    livenessProbeTimer = null;
+  }
   if (socket) {
     // Detach every listener at once so the 'close' reconnect arm can't fire.
     socketListeners?.abort();
@@ -880,6 +950,9 @@ export function resetSocket(): void {
 function refreshSnapshot() {
   if (socket && socket.readyState === WebSocket.OPEN) {
     send({ type: 'snapshot' });
+    // The socket may be a zombie after a long background stint — the snapshot
+    // reply is guaranteed traffic, so treat the request as a liveness probe.
+    armLivenessProbe();
     return;
   }
   // Socket isn't open — pull the reconnect forward instead of waiting on the
@@ -918,5 +991,15 @@ export function useSocket(): SocketAPI {
 }
 
 export function socketSend(payload: Record<string, unknown>): boolean {
-  return send(payload);
+  const sent = send(payload);
+  // Every 'history' request has a guaranteed reply, so each successful send is
+  // also a liveness expectation. Without this, a fetch swallowed by a
+  // half-open socket while the tab stays FOREGROUNDED wedges that buffer's
+  // loadingHistory until the OS TCP timeout finally fires 'close' (minutes):
+  // the close-handler sweep can't run without a close, and the resume-path
+  // probe only arms after a ≥30s-hidden visibilitychange. Arming here closes
+  // that gap — silence for the probe window forces the close, the sweep
+  // clears the flags, and the hydration reconciler refetches on reconnect.
+  if (sent && payload.type === 'history') armLivenessProbe();
+  return sent;
 }

@@ -253,6 +253,24 @@ function makeBuffer(networkId: number | string | null, target: string): Buffer {
   };
 }
 
+// Does this buffer need a `history latest` fetch before it can render real
+// content? One predicate shared by activate() (the click path) and the
+// hydration reconciler (useBufferHydration — the reconnect/retry path) so the
+// two can never disagree about what "unhydrated" means. True for: a buffer
+// whose slice was wiped on switch-away-from-detached (pendingRefetch), a
+// fresh-connect SHELL (unseeded), and a locally-materialized empty buffer
+// (brand-new DM, channel-joined pre-backlog). `hasMoreOlder` gates the empty
+// case so a genuinely-empty buffer (empty latest reply flipped it false)
+// doesn't refetch forever. Detached and in-flight buffers are never "in need"
+// — the jump slice is deliberate, and a pending fetch will resolve or be
+// failed by failInFlightHistory on socket close.
+export function bufferNeedsHydration(buf: Buffer): boolean {
+  if (buf.networkId == null) return false;
+  if (buf.detached || buf.loadingHistory) return false;
+  if (buf.pendingRefetch) return true;
+  return (buf.messages.length === 0 || buf.unseeded) && buf.hasMoreOlder;
+}
+
 function ensureBuffer(
   state: { buffers: Record<string, Buffer> },
   networkId: number | string | null,
@@ -653,13 +671,17 @@ export const useBuffersStore = defineStore('buffers', {
     // button. Same token discipline as loadAround — detached stays true
     // until the response lands, so any fanOut between request and response
     // continues to be dropped by pushMessage.
-    reattachToLive(networkId: number | string, target: string, limit = 200) {
+    // Returns true when the request actually went out over the socket, so
+    // callers (ensureHydrated) can decide whether to consume one-shot intent
+    // flags like pendingRefetch — a failed send must leave them armed for the
+    // next attempt.
+    reattachToLive(networkId: number | string, target: string, limit = 200): boolean {
       const buf = ensureBuffer(this, networkId, target);
       // No detached guard: this is also called by activate() to refetch
       // the live tail after a switch-away from a detached buffer wiped
       // the slice. In that case detached is already false. The applyLatestReplace
       // handler is idempotent (re-clearing already-clear flags is a no-op).
-      if (buf.loadingHistory) return;
+      if (buf.loadingHistory) return false;
       const token = nextHistoryToken();
       buf.pendingHistoryToken = token;
       buf.loadingHistory = true;
@@ -672,15 +694,44 @@ export const useBuffersStore = defineStore('buffers', {
         limit,
       });
       // socketSend returns false when the socket isn't open. No response will
-      // arrive to clear loadingHistory, and there's no reconnect handler that
-      // resets it per-buffer — so without this rollback the buffer would be
-      // permanently stranded "loading" and every subsequent fetch guard
-      // (this function's early-return, MessageList's requestMoreHistory) would
-      // block forever. Relevant when activate fires before the socket has
-      // (re)connected, e.g. push-notification deep-link into a cold PWA.
+      // arrive to clear loadingHistory — so without this rollback the buffer
+      // would be stranded "loading" until the socket-close sweep
+      // (failInFlightHistory) ran, and every fetch guard (this function's
+      // early-return, MessageList's requestMoreHistory) would block until then.
+      // Relevant when activate fires before the socket has (re)connected, e.g.
+      // push-notification deep-link into a cold PWA.
       if (!sent) {
         buf.loadingHistory = false;
         buf.pendingHistoryToken = null;
+        return false;
+      }
+      return true;
+    },
+    // Fire the initial `latest` fetch for the active-path buffer if (and only
+    // if) it still needs one — see bufferNeedsHydration. Safe to call
+    // repeatedly: it no-ops once a fetch is in flight or the buffer is
+    // hydrated. pendingRefetch is consumed only when the request really went
+    // out; a send into a closed socket leaves it armed so the hydration
+    // reconciler retries on reconnect instead of silently downgrading the
+    // wiped-slice case to "maybe the empty-arm catches it".
+    ensureHydrated(networkId: number | string | null, target: string) {
+      const buf = this.findByTarget(networkId, target);
+      if (!buf || buf.networkId == null || !bufferNeedsHydration(buf)) return;
+      const sent = this.reattachToLive(buf.networkId, buf.target);
+      if (sent && buf.pendingRefetch) buf.pendingRefetch = false;
+    },
+    // Socket died. Any in-flight history request (latest/around/before/after)
+    // will never get a response, and every fetch path early-returns while
+    // loadingHistory is set — historically a permanently wedged, blank,
+    // un-refetchable buffer. Called from the socket 'close' handler (the same
+    // seam that fails pending ACKs) so the flags are clean before the
+    // reconnect's snapshot and the hydration reconciler's refetch arrive.
+    failInFlightHistory() {
+      for (const buf of Object.values(this.buffers)) {
+        if (buf.loadingHistory || buf.pendingHistoryToken != null) {
+          buf.loadingHistory = false;
+          buf.pendingHistoryToken = null;
+        }
       }
     },
     applyLatestReplace(networkId: number | string, target: string, payload: any) {
@@ -692,7 +743,16 @@ export const useBuffersStore = defineStore('buffers', {
       buf.messages = filtered.slice(-MAX_PER_BUFFER);
       buf.oldestId = buf.messages[0]?.id ?? null;
       buf.newestId = buf.messages[buf.messages.length - 1]?.id ?? null;
-      buf.hasMoreOlder = !!payload.hasMoreOlder;
+      // A token-matched latest reply is TERMINAL hydration even when every row
+      // filtered out client-side (a legacy away/back tail can blank the whole
+      // slice). Honoring the server's hasMoreOlder on an empty slice would
+      // leave `messages.length === 0 && hasMoreOlder` standing forever —
+      // bufferNeedsHydration true, the reconciler refetching the same empty
+      // slice every throttle window, and the pane claiming a settled "No
+      // messages yet." between attempts. Clamping to false costs nothing: an
+      // empty buffer has no anchor row, so the upward pager can't page it
+      // anyway.
+      buf.hasMoreOlder = filtered.length > 0 ? !!payload.hasMoreOlder : false;
       buf.hasMoreNewer = false;
       buf.detached = false;
       buf.liveDuringDetach = 0;
@@ -1119,42 +1179,16 @@ export const useBuffersStore = defineStore('buffers', {
           });
         }
       }
-      // Re-entry after the slice was wiped on switch-away-from-detached.
-      // Fire a fresh latest fetch so the user lands on live tail content
-      // instead of an empty buffer. The applyLatestReplace response will
-      // do its own mark-read against the new tail.
-      // Network-buffer only: the system buffer is seeded by its connect backlog
-      // and never detaches (its lines aren't searchable/jumpable), so it doesn't
-      // need the activate-refetch; the guard also excludes the FRIENDS overview.
-      if (networkId != null && buf.pendingRefetch) {
-        buf.pendingRefetch = false;
-        this.reattachToLive(networkId, canonTarget);
-      } else if (
-        networkId != null &&
-        (buf.messages.length === 0 || buf.unseeded) &&
-        buf.hasMoreOlder &&
-        !buf.detached &&
-        !buf.loadingHistory
-      ) {
-        // First-load fetch. The buffer shell exists but has no messages —
-        // either it's brand new (profile-modal "Send DM" to a nick we've
-        // never DM'd before) or it was pre-created by a side channel
-        // (the channel-joined handler calls ensure() before any backlog
-        // arrives) and the initial backlog snapshot only covers
-        // buffers that were already open at socket-connect. Push-notification
-        // deep-links land here too, since isOpen() is satisfied by any shell
-        // in the store regardless of message contents. Kick a latest fetch
-        // here so every entry path is uniformly seeded — the MessageList
-        // lifecycle's ensureViewportFilled() goes back to being a safety
-        // net rather than the load-bearing initial-fetch trigger.
-        //
-        // hasMoreOlder gates against the truly-empty case: a brand-new
-        // DM/channel with no server history returns an empty latest slice
-        // that leaves messages.length=0 but flips hasMoreOlder to false —
-        // without this guard we'd refire the same empty fetch on every
-        // re-activate.
-        this.reattachToLive(networkId, canonTarget);
-      }
+      // Fire the initial fetch if the buffer still needs one: a slice wiped on
+      // switch-away-from-detached (pendingRefetch), a fresh-connect SHELL
+      // (unseeded), or a locally-materialized empty buffer — profile-modal
+      // "Send DM" to a never-DM'd nick, the channel-joined handler's ensure()
+      // racing its backlog, a push-notification deep-link onto a shell. The
+      // decision (and its guards) lives in bufferNeedsHydration so this click
+      // path and the hydration reconciler (useBufferHydration — which retries
+      // when THIS send loses the race with a closed/half-dead socket) can
+      // never disagree about what "needs a fetch" means.
+      this.ensureHydrated(networkId, canonTarget);
       // For DMs, ask the server to WHOIS-probe the peer so the banner/sidebar
       // dim reflect current state rather than a possibly-stale cached value.
       // The probe is silent (no /whois reply in the server buffer); only the

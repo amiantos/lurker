@@ -131,9 +131,23 @@ export function useJumpToMessage({ pendingScrollId, afterActivate }: JumpToMessa
       (pending) => {
         if (pending === token) return; // our request still in flight
         stop();
-        if (pending == null && buf?.messages?.some((m: any) => m.id === messageId)) {
+        if (pending != null) return; // superseded by a newer jump — it owns the UI now
+        if (buf?.messages?.some((m: any) => m.id === messageId)) {
           armScroll(pendingScrollId, messageId);
+          return;
         }
+        // Token nulled but our row never arrived. Two ways here: the socket
+        // dropped mid-flight and the close sweep (failInFlightHistory) failed
+        // the request, or the slice landed without the anchor row (message no
+        // longer exists server-side). Either way the user's jump silently
+        // evaporates onto the live tail — mirror the feedback the
+        // socket-already-closed branch above gives.
+        toasts.push({
+          kind: 'warn',
+          title: 'Couldn’t load that message',
+          body: 'The connection dropped, or the message is no longer available.',
+          ttlMs: 5000,
+        });
       },
     );
   };
