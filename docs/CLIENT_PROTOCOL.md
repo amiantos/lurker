@@ -51,7 +51,8 @@ GET /api/config            (no auth)
 
 Node edition disables `/api/api-tokens`, `/mcp`, and `/uploads/*` static serving;
 standalone has no `/api/node/*`. The WS protocol itself is identical in both.
-Health check: `GET /api/health` → `{status:'ok', time}` (no auth, no version).
+Health check: `GET /api/health` → `{"status":"ok","time":"<ISO 8601>"}` (no
+auth, no version).
 
 ---
 
@@ -294,9 +295,9 @@ it.)
 
 **Case folding:** IRC targets are case-insensitive and servers echo
 inconsistently-cased names. Fold with **ASCII `toLowerCase`** for identity;
-keep the first/canonical casing for display. RFC 1459 casemapping (`[]\``
-vs `{}|^`) is deliberately **not** implemented anywhere in Lurker — match that,
-don't "fix" it unilaterally.
+keep the first/canonical casing for display. RFC 1459 casemapping (treating
+`{}|^` as the lowercase of `[]\~`) is deliberately **not** implemented anywhere
+in Lurker — match that, don't "fix" it unilaterally.
 
 ### 5.3 Messages (`MessageEvent`)
 
