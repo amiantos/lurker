@@ -591,7 +591,7 @@ interface CompletionState {
 let completion: CompletionState | null = null;
 let cycling = false; // true while we're programmatically rewriting `text`
 
-// ─── IME composition: the model can lag the textarea ────────────────────────
+// ─── IME composition ────────────────────────────────────────────────────────
 //
 // Vue's `v-model` deliberately stops tracking the input while an IME
 // composition is in flight — vModelText's input listener opens with
@@ -601,55 +601,36 @@ let cycling = false; // true while we're programmatically rewriting `text`
 // space. Firefox on Android composes the most aggressively of the mobile
 // engines, which is where this surfaced (a user's `@ami` suggester froze at
 // the unfiltered list until they dismissed the keyboard, which committed the
-// composition and let the whole word arrive at once).
+// composition and delivered the whole word at once).
 //
-// So for the duration of a word being typed on a phone:
-//   - `text.value` holds the *pre-composition* draft,
-//   - `inputEl.value.value` holds what the user actually sees,
-//   - and a write to `text.value` never reaches the DOM at all.
+// The composer cannot live with that. `text` is not just what's on screen —
+// every derived signal hangs off it: the Send button's enabled state, what
+// submit() puts on the wire, the SPLIT/FLOOD estimate, the typing indicator,
+// the cross-device draft sync, the textarea's own auto-grow. Freezing the
+// model for the length of every word freezes all of it, so onComposingInput
+// below keeps the model tracking the textarea itself.
 //
-// The split below follows from that. Anything that *locates a token* reads the
-// DOM (liveText/liveCaret) so its offsets describe what's on screen; anything
-// that *rewrites* the draft still writes the model — that's the draft store's
-// source of truth — and then calls syncComposerDom() to force the write out to
-// a textarea v-model has stopped patching.
-
-/** The composer's on-screen text. See the note above — NOT `text.value`. */
-function liveText(): string {
-  return inputEl.value?.value ?? text.value;
-}
-
-/** Caret offset into `liveText()`, defaulting to the end. */
-function liveCaret(value: string): number {
-  return inputEl.value?.selectionStart ?? value.length;
-}
+// Doing that is safe *because* of the guard that causes the problem: since
+// beforeUpdate bails on `el.composing` before it would write, a model update
+// during a composition can never push text back into the textarea and
+// clobber what the IME is holding. The data flows one way — DOM to model —
+// until the composition ends. The one place we deliberately push the other
+// way is syncComposerDom(), for splices the user explicitly asked for.
 
 /**
- * Flush a programmatic rewrite of `text` out to the textarea. A no-op in the
- * common case — v-model has already written the same string — and the whole
- * point during a composition, where it hasn't and won't.
+ * Flush a programmatic rewrite of `text` out to the textarea. v-model normally
+ * does this; it won't while a composition is live, so a splice would land in
+ * the model and never appear on screen. A no-op in the common case.
+ *
+ * No matching "tell v-model the composition is over" step: onComposingInput
+ * keeps the model current regardless of what v-model believes, so the stale
+ * `composing` flag costs nothing and we don't have to forge a compositionend
+ * that would cut a real IME's candidate session short.
  */
 function syncComposerDom(): void {
   const el = inputEl.value;
   if (!el) return;
-  const want = text.value;
-  if (el.value === want) return;
-  el.value = want;
-  // Assigning .value ends the composition as far as the editor is concerned,
-  // but v-model only clears its own `composing` flag on a compositionend
-  // event — without one it goes on dropping every keystroke and the model
-  // stays frozen at the pre-splice text indefinitely. Vue's handler responds
-  // by re-dispatching `input`, which lands back in our `text` setter; the
-  // `cycling` guard keeps that from re-running onInput's side effects for an
-  // edit we just made ourselves.
-  const wasCycling = cycling;
-  cycling = true;
-  el.dispatchEvent(
-    typeof CompositionEvent === 'function'
-      ? new CompositionEvent('compositionend', { data: want })
-      : new Event('compositionend'),
-  );
-  cycling = wasCycling;
+  if (el.value !== text.value) el.value = text.value;
 }
 
 // Input history walking state. `historyIndex` is null when we're not in a
@@ -822,10 +803,7 @@ function commitCompletion(opts: {
   matches: string[];
 }): void {
   const { start, end, pick, suffix, matches } = opts;
-  // liveText, not the model: `start`/`end` were located against the on-screen
-  // text, so slicing the (possibly pre-composition) model with them would
-  // splice at the wrong offsets.
-  const value = liveText();
+  const value = text.value;
   const found = matches.indexOf(pick);
   completion = {
     prefix: value.slice(0, start),
@@ -1243,8 +1221,8 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
 
-  const value = liveText();
-  const cursor = liveCaret(value);
+  const value = text.value;
+  const cursor = el.selectionStart ?? value.length;
   const { token, start, end } = tokenAtCursor(value, cursor);
   if (!token) return;
 
@@ -1326,8 +1304,8 @@ async function showEmojiStrip() {
     closeEmojiStrip();
     return;
   }
-  const value = liveText();
-  const sc = findActiveShortcode(value, liveCaret(value));
+  const value = text.value;
+  const sc = findActiveShortcode(value, el.selectionStart ?? value.length);
   if (!sc || sc.name.length < 2) {
     closeEmojiStrip();
     return;
@@ -1346,7 +1324,7 @@ async function showEmojiStrip() {
 // often run together, and the typed-out auto-convert path can't add one
 // either, so the two stay consistent.
 function onEmojiSelect(item: EmojiMatch): void {
-  const value = liveText();
+  const value = text.value;
   // Re-validate the captured span still holds an in-progress shortcode before
   // splicing — the draft could have shifted since the strip opened (edits
   // re-sync the span via refreshPicker, but the async strip refresh leaves a
@@ -1382,8 +1360,7 @@ function onEmojiSelect(item: EmojiMatch): void {
 async function maybeConvertShortcode() {
   const el = inputEl.value;
   if (!el) return;
-  const pre = liveText();
-  const sc = findCompletedShortcode(pre, liveCaret(pre));
+  const sc = findCompletedShortcode(text.value, el.selectionStart ?? text.value.length);
   if (!sc) return;
   const mod = await loadEmoji().catch(() => null);
   if (!mod) return;
@@ -1391,8 +1368,8 @@ async function maybeConvertShortcode() {
   if (!emoji) return;
   const el2 = inputEl.value;
   if (!el2) return;
-  const value = liveText();
-  const fresh = findCompletedShortcode(value, liveCaret(value));
+  const value = text.value;
+  const fresh = findCompletedShortcode(value, el2.selectionStart ?? value.length);
   if (!fresh || fresh.name !== sc.name) return;
   const before = value.slice(0, fresh.start);
   const after = value.slice(fresh.end);
@@ -1419,8 +1396,8 @@ function refreshPicker() {
     closeChannelPicker();
     return;
   }
-  const value = liveText();
-  const cursor = liveCaret(value);
+  const value = text.value;
+  const cursor = el.selectionStart ?? value.length;
 
   // An in-progress `:shortcode:` owns the suggester slot — it isn't a nick
   // token, and both emoji UIs and the nick picker/strip share one slot over the
@@ -1538,7 +1515,7 @@ function onPickerSelect(nick: string): void {
   // mid-sentence — which is exactly why the suffix rides on the session instead
   // of being re-derived on each cycle: a walk seeded from here has to keep
   // reproducing the space the picker already inserted.
-  const suffix = isAtLineStart(liveText().slice(0, pickerTokenStart)) ? ': ' : ' ';
+  const suffix = isAtLineStart(text.value.slice(0, pickerTokenStart)) ? ': ' : ' ';
   // pickerQuery is the token minus its '@' — the bare prefix buildNickMatches
   // expects. Read before commitCompletion, which closes the picker and clears it.
   commitCompletion({
@@ -1556,7 +1533,7 @@ function onChannelPickerSelect(channel: string): void {
     return;
   }
   const networkId = active.value?.networkId;
-  const token = liveText().slice(channelPickerTokenStart, channelPickerTokenEnd);
+  const token = text.value.slice(channelPickerTokenStart, channelPickerTokenEnd);
   // Channels just get a trailing space — there's no "addressing" form like
   // nicks' ': ', and the '#' is already part of the inserted name. The sent
   // `#channel` renders as a clickable join link for the recipient
@@ -1580,7 +1557,7 @@ function onStripSelect(nick: string): void {
   // A nick at the start of a line is being addressed → ': '; mid-sentence
   // gets a bare space (what the old @-menu was missing — task #198). Shares
   // isAtLineStart() with Tab-completion and the desktop picker.
-  const draft = liveText();
+  const draft = text.value;
   const suffix = isAtLineStart(draft.slice(0, stripTokenStart)) ? ': ' : ' ';
   // The strip is prefix-less: its token is the bare word under the cursor, which
   // is already the prefix buildNickMatches wants (no '@' to strip).
@@ -1651,25 +1628,27 @@ function onHistorySelect(entry: string): void {
   queueMicrotask(() => inputEl.value?.focus());
 }
 
-// Second `input` listener on the textarea, alongside the one v-model installs.
-// It exists for the keystrokes v-model throws away: mid-composition, vModelText
-// bails out before touching the model, so the `text` setter never fires, onInput
-// never runs, and the suggester below it never refreshes. That's the whole bug —
-// on an Android keyboard the nick strip stayed shut for the entire word, and an
-// open `@` picker sat frozen on its unfiltered first page until the keyboard was
-// dismissed and the composition committed.
+// Second `input` listener on the textarea, alongside the one v-model installs,
+// covering the keystrokes v-model throws away. Mid-composition vModelText bails
+// before touching the model, so without this the `text` setter never fires for
+// the length of a word — and everything hanging off it stalls with it (see the
+// IME composition note further up).
+//
+// Assigning through the same setter a real keystroke uses is deliberate: it
+// routes into onInput() exactly like any other edit, so there is one input
+// pipeline rather than a composing-only side channel that has to remember to
+// replicate each of onInput's jobs.
 //
 // Ordering makes the guard reliable: Vue registers v-model's listener from the
 // directive's `created` hook, which runs before template props are patched, so
 // its listener is always ahead of ours on the same element. By the time we run,
-// a non-composing keystroke has already been through the setter and onInput, and
-// the model matches the DOM — so an equal comparison means "already handled" and
-// we leave it alone rather than refreshing the suggester twice per keystroke.
+// a non-composing keystroke has already been through the setter and the model
+// matches the DOM — so an equal comparison means "v-model already handled this"
+// and we skip rather than run the whole pipeline twice per keystroke.
 function onComposingInput() {
   const el = inputEl.value;
   if (!el || el.value === text.value) return;
-  if (!sendable.value || !active.value) return;
-  refreshPicker();
+  text.value = el.value;
 }
 
 function onInput() {
@@ -1798,7 +1777,7 @@ onBeforeUnmount(() => {
 
 function insertUrlAtCaret(url: string): void {
   const el = inputEl.value;
-  const current = liveText();
+  const current = text.value;
   if (!el) {
     text.value = current ? `${current} ${url}` : url;
     return;

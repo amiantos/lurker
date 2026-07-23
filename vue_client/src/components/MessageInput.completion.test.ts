@@ -19,9 +19,10 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
-import { useComposerOverlay } from '../composables/useComposerOverlay.js';
+import { useComposerOverlay, selectNick } from '../composables/useComposerOverlay.js';
 import { useViewport } from '../composables/useViewport.js';
 import MessageInput from './MessageInput.vue';
+import NickPicker from './NickPicker.vue';
 
 // Module-level singleton shared by every consumer, so a test that flips it to
 // mobile has to put it back (see the afterEach) or it leaks into the rest of
@@ -102,11 +103,6 @@ async function tab(el: HTMLTextAreaElement, opts: { shift?: boolean } = {}) {
   el.dispatchEvent(
     new KeyboardEvent('keydown', { key: 'Tab', shiftKey: !!opts.shift, bubbles: true }),
   );
-  await flush();
-}
-
-async function enter(el: HTMLTextAreaElement) {
-  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   await flush();
 }
 
@@ -285,17 +281,46 @@ describe('MessageInput Tab-completion', () => {
   });
 
   // A mobile keyboard types a whole word inside one IME composition, and
-  // v-model deliberately drops every input event for its duration. The composer
-  // used to read the draft exclusively from the model, so for the length of the
-  // word being typed the suggester was working off pre-composition text: the
-  // nick strip never opened at all, and an already-open `@` picker sat frozen on
-  // its unfiltered first page until the keyboard was dismissed (which committed
-  // the composition and delivered the whole word at once). Token lookup now
-  // reads the textarea; these lock that in.
+  // v-model deliberately drops every input event for its duration — so the
+  // model, and everything derived from it, used to freeze until the word was
+  // committed. The suggester was the reported symptom (the nick strip never
+  // opened; an open `@` picker sat on its unfiltered first page until the
+  // keyboard was dismissed), but the Send button, submit(), the typing
+  // indicator and the draft sync were all stalled on the same stale model.
+  //
+  // Note none of these press Enter to accept: a soft-keyboard Enter arrives
+  // with `isComposing === true`, which every suggester key handler is gated
+  // against on purpose (the IME owns those keys while composing). The real
+  // mobile accept path is a tap on a row, which is what these drive.
   describe('IME composition', () => {
-    it('filters the @ picker while a composition is in flight', async () => {
+    it('keeps the model tracking the textarea', async () => {
+      // The root fix. Everything below is a consequence of this holding.
       seedStores('#zebra');
       const { el } = await mountComposer();
+      const drafts = useDraftStore();
+
+      composeStart(el);
+      await type(el, 'hi');
+
+      expect(drafts.forBuffer(1, '#zebra')).toBe('hi');
+    });
+
+    it('leaves the Send button usable during the first composed word', async () => {
+      // hasComposerContent reads the model, so a frozen model meant a one-word
+      // message could not be sent at all: Send stayed disabled and the
+      // soft-keyboard Enter is ignored while composing.
+      seedStores('#zebra');
+      const { wrapper, el } = await mountComposer();
+
+      composeStart(el);
+      await type(el, 'hi');
+
+      expect(wrapper.find('.send-btn').attributes('disabled')).toBeUndefined();
+    });
+
+    it('filters the @ picker while a composition is in flight', async () => {
+      seedStores('#zebra');
+      const { wrapper, el } = await mountComposer();
 
       // '@' commits on its own — punctuation ends the composing run — so the
       // picker opens here, unfiltered.
@@ -304,36 +329,9 @@ describe('MessageInput Tab-completion', () => {
       composeStart(el);
       await type(el, '@b');
 
-      // Enter accepts the picker's highlighted row. Filtered, that's bob; on the
-      // stale empty query it was alexis, the alphabetical first of the whole
-      // channel.
-      await enter(el);
-
-      expect(el.value).toBe('bob: ');
-    });
-
-    it('writes a pick through to the textarea mid-composition', async () => {
-      // v-model skips its DOM write just as hard as its model read while
-      // composing, so the splice landed in the model and never appeared on
-      // screen. The commit has to push it out itself — and end the composition,
-      // or v-model goes on ignoring the input forever after.
-      seedStores('#zebra');
-      const { el } = await mountComposer();
-      const drafts = useDraftStore();
-
-      await type(el, 'hey @');
-      composeStart(el);
-      await type(el, 'hey @b');
-      await enter(el);
-
-      expect(el.value).toBe('hey bob ');
-      // The model caught back up, so a send would ship what's on screen.
-      expect(drafts.forBuffer(1, '#zebra')).toBe('hey bob ');
-
-      // v-model is tracking again: a plain keystroke after the commit reaches
-      // the model without needing another composition to end first.
-      await type(el, 'hey bob !');
-      expect(drafts.forBuffer(1, '#zebra')).toBe('hey bob !');
+      // The query the picker filters on. Frozen, it stayed '' and the list went
+      // on offering the whole channel.
+      expect(wrapper.findComponent(NickPicker).props('query')).toBe('b');
     });
 
     it('opens the mobile nick strip while a composition is in flight', async () => {
@@ -349,6 +347,44 @@ describe('MessageInput Tab-completion', () => {
 
       expect(overlay.nickOpen).toBe(true);
       expect(overlay.nickItems.map((i) => i.nick)).toEqual(['bob']);
+    });
+
+    it('writes a tapped pick through to the textarea mid-composition', async () => {
+      // v-model skips its DOM write as hard as its model read while composing,
+      // so the splice landed in the model and never appeared on screen — the
+      // pre-fix run left the typed '@b' sitting there untouched.
+      seedStores('#zebra');
+      isMobile.value = true;
+      const { el } = await mountComposer();
+      const drafts = useDraftStore();
+
+      composeStart(el);
+      await type(el, 'hey bo');
+      // What tapping a chip on the strip does.
+      selectNick('bob');
+      await flush();
+
+      expect(el.value).toBe('hey bob ');
+      expect(drafts.forBuffer(1, '#zebra')).toBe('hey bob ');
+    });
+
+    it('keeps tracking after a pick, without waiting for the composition to end', async () => {
+      // The splice does not forge a compositionend, so v-model stays parked on
+      // its stale `composing` flag. Our own listener is what has to keep the
+      // model moving afterwards.
+      seedStores('#zebra');
+      isMobile.value = true;
+      const { el } = await mountComposer();
+      const drafts = useDraftStore();
+
+      composeStart(el);
+      await type(el, 'hey bo');
+      selectNick('bob');
+      await flush();
+
+      await type(el, 'hey bob !');
+
+      expect(drafts.forBuffer(1, '#zebra')).toBe('hey bob !');
     });
   });
 });
