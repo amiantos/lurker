@@ -91,7 +91,8 @@ async function flush() {
 }
 
 // Type `value` into the composer: set it, put the caret at the end, and fire the
-// input event v-model listens for — the same sequence a real keystroke produces.
+// input event the composer listens for — the same sequence a real keystroke
+// produces.
 async function type(el: HTMLTextAreaElement, value: string) {
   el.value = value;
   el.setSelectionRange(value.length, value.length);
@@ -114,6 +115,14 @@ async function tab(el: HTMLTextAreaElement, opts: { shift?: boolean } = {}) {
 // every word; Firefox on Android is where it was first reported.
 function composeStart(el: HTMLTextAreaElement) {
   el.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+}
+
+// Close the composing run. Deliberately fires compositionend *alone*, with no
+// trailing `input` — that's the case the composer's own compositionend listener
+// exists to cover.
+async function commitComposition(el: HTMLTextAreaElement) {
+  el.dispatchEvent(new Event('compositionend', { bubbles: true }));
+  await flush();
 }
 
 describe('MessageInput Tab-completion', () => {
@@ -415,22 +424,40 @@ describe('MessageInput Tab-completion', () => {
 
     it('keeps tracking after the composition commits', async () => {
       // The commit path: the IME replaces its preedit and fires compositionend.
-      // Nothing in the component listens for it — the input events on either
-      // side are what carry the text — so this asserts the commit is a
-      // non-event rather than something needing its own handling.
+      // The input events on either side are what normally carry the text, so
+      // the commit itself should be a non-event — nothing here changes.
       seedStores('#zebra');
       const { el } = await mountComposer();
       const drafts = useDraftStore();
 
       composeStart(el);
       await type(el, 'hi');
-      el.dispatchEvent(new Event('compositionend', { bubbles: true }));
-      await flush();
+      await commitComposition(el);
 
       expect(drafts.forBuffer(1, '#zebra')).toBe('hi');
 
       await type(el, 'hi there');
       expect(drafts.forBuffer(1, '#zebra')).toBe('hi there');
+    });
+
+    it('resyncs on compositionend when the commit fires no input event', async () => {
+      // The backstop. v-model used to re-dispatch a synthetic `input` on
+      // compositionend; binding :value + @input dropped that, so a commit (or
+      // cancel) that rewrites the field without a trailing `input` — engines
+      // disagree on whether one is owed — would strand the model on the preedit
+      // with nothing left to resync it, and the next Send would ship it.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+      const drafts = useDraftStore();
+
+      composeStart(el);
+      await type(el, 'ami');
+      // The IME swaps its preedit for the committed text and fires *only*
+      // compositionend.
+      el.value = 'amiantos';
+      await commitComposition(el);
+
+      expect(drafts.forBuffer(1, '#zebra')).toBe('amiantos');
     });
 
     it('keeps tracking after a pick, without waiting for the composition to end', async () => {

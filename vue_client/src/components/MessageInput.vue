@@ -31,7 +31,13 @@
     <!-- `:value` + `@input` rather than `v-model`: see the IME composition note
          in the script block. v-model carries a hidden `composing` flag that
          stops it both reading and writing for the duration of an IME
-         composition — which on an Android keyboard is every word. -->
+         composition — which on an Android keyboard is every word.
+         `@compositionend` runs the same handler as a backstop: dropping v-model
+         also dropped the synthetic `input` it re-dispatched on commit, and a
+         browser that commits (or cancels) a composition without a trailing
+         `input` would otherwise leave the model parked on the preedit with no
+         path back — a divergence nothing else resyncs, so the next Send would
+         ship the stale text. onTextInput no-ops when the two already agree. -->
     <textarea
       ref="inputEl"
       rows="1"
@@ -43,6 +49,7 @@
       :autocapitalize="systemFeatures.autocapitalize"
       @keydown="onKeydown"
       @input="onTextInput"
+      @compositionend="onTextInput"
       @paste="onPaste"
       @blur="onBlur"
     ></textarea>
@@ -1199,8 +1206,15 @@ function onKeydown(e: KeyboardEvent): void {
   // the candidate list with it. Completing here would splice underneath an
   // active composition, and the model rewrite would repaint the textarea out
   // from under the preedit. Matches the `!e.isComposing` gate every picker
-  // branch above already carries; this one was missed.
-  if (e.isComposing) return;
+  // branch above already carries; this one was missed. preventDefault anyway:
+  // the IME has already consumed the key by the time we see it, and letting
+  // Tab's default through would walk focus out of the composer onto Send —
+  // which on Firefox/Gboard Android, where a composition is open for every
+  // word, would be the *only* thing Tab ever did.
+  if (e.isComposing) {
+    e.preventDefault();
+    return;
+  }
   if (!sendable.value) return;
   e.preventDefault();
   const el = inputEl.value;
@@ -1634,6 +1648,12 @@ function onHistorySelect(entry: string): void {
 // `text` setter, so assigning here routes composed and uncomposed input down
 // the identical path rather than giving composition its own side channel that
 // has to remember to replicate each of onInput's jobs.
+//
+// Also wired to `compositionend`, which v-model used to cover by re-dispatching
+// a synthetic `input` on commit. Modern engines fire a real one, but a commit
+// or cancel that doesn't would strand the model on the preedit with nothing to
+// resync it — cheap to close off given the skip below makes the duplicate call
+// free.
 //
 // The equality check is a redundancy skip, not a correctness gate: an input
 // event that reports the value the model already holds has nothing to update,
