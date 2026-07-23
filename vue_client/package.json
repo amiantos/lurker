@@ -23,7 +23,7 @@
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/test-utils": "^2.4.11",
     "postcss-hover-media-feature": "^1.0.2",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vite": "^8.1.5",
     "vite-plugin-mkcert": "^2.1.0",
     "vue-tsc": "^3.3.7"
