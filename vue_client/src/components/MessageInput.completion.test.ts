@@ -38,7 +38,7 @@ vi.mock('../composables/useSocket.js', () => ({
 }));
 
 // The mocked socketSend, so the command-dispatch tests can assert the wire payload.
-import { socketSend } from '../composables/useSocket.js';
+import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
 
 const CHANNELS = ['#apple', '#mango', '#zebra'];
 // `mallory` exists so the self-exclusion test has a positive control: without a
@@ -366,6 +366,71 @@ describe('MessageInput Tab-completion', () => {
 
       expect(el.value).toBe('hey bob ');
       expect(drafts.forBuffer(1, '#zebra')).toBe('hey bob ');
+    });
+
+    it('clears the textarea when a message is sent mid-composition', async () => {
+      // This PR leaves Send enabled during the first composed word, so the
+      // post-send clear has to actually repaint. It used to land in the model
+      // only: the sent text stayed on screen, and the next composed keystroke
+      // adopted it as the draft again — the message reappearing in the
+      // composer after being sent.
+      seedStores('#zebra');
+      const { wrapper, el } = await mountComposer();
+      const drafts = useDraftStore();
+      // Once, so the file-wide `() => null` default is back for the next test.
+      vi.mocked(socketSendWithAck).mockReturnValueOnce(Promise.resolve({ ok: true }) as never);
+
+      composeStart(el);
+      await type(el, 'hi');
+      await wrapper.find('.send-btn').trigger('click');
+      await flush();
+
+      expect(el.value).toBe('');
+      // …and the composition carries on into an empty composer rather than
+      // resurrecting what was just sent.
+      await type(el, 'x');
+      expect(drafts.forBuffer(1, '#zebra')).toBe('x');
+    });
+
+    it('does not leak a composed draft into the next buffer on a switch', async () => {
+      // The nastiest version: the textarea kept showing the old buffer's text
+      // after the switch, and the next composed keystroke wrote it over the
+      // buffer we had just moved to — silently destroying that draft.
+      seedStores('#zebra');
+      const networks = useNetworksStore();
+      const drafts = useDraftStore();
+      const { el } = await mountComposer();
+      drafts.drafts['1::#apple'] = 'apple draft';
+
+      composeStart(el);
+      await type(el, 'zebra text');
+
+      networks.activeKey = '1::#apple';
+      await flush();
+
+      expect(el.value).toBe('apple draft');
+      expect(drafts.forBuffer(1, '#apple')).toBe('apple draft');
+      expect(drafts.forBuffer(1, '#zebra')).toBe('zebra text');
+    });
+
+    it('keeps tracking after the composition commits', async () => {
+      // The commit path: the IME replaces its preedit and fires compositionend.
+      // Nothing in the component listens for it — the input events on either
+      // side are what carry the text — so this asserts the commit is a
+      // non-event rather than something needing its own handling.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+      const drafts = useDraftStore();
+
+      composeStart(el);
+      await type(el, 'hi');
+      el.dispatchEvent(new Event('compositionend', { bubbles: true }));
+      await flush();
+
+      expect(drafts.forBuffer(1, '#zebra')).toBe('hi');
+
+      await type(el, 'hi there');
+      expect(drafts.forBuffer(1, '#zebra')).toBe('hi there');
     });
 
     it('keeps tracking after a pick, without waiting for the composition to end', async () => {
