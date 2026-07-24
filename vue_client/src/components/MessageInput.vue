@@ -28,16 +28,36 @@
         >&gt;</span
       ><template v-else>&gt;</template></span
     >
+    <!-- `:value` + `@input` rather than `v-model`: see the IME composition note
+         in the script block. v-model carries a hidden `composing` flag that
+         stops it both reading and writing for the duration of an IME
+         composition — which on an Android keyboard is every word.
+         `@compositionend` runs the same handler as a backstop: dropping v-model
+         also dropped the synthetic `input` it re-dispatched on commit, and a
+         browser that commits (or cancels) a composition without a trailing
+         `input` would otherwise leave the model parked on the preedit with no
+         path back — a divergence nothing else resyncs, so the next Send would
+         ship the stale text. `@change` is the third copy of the same backstop,
+         and it too is one v-model registered and we'd otherwise have dropped:
+         some engines (iOS Chrome on autocomplete/autofill) fire `change`
+         *instead of* `input`, which would leave the model behind the textarea
+         until the next keystroke — and `change` beats `blur`, whose flushBuffer
+         would push that stale body to the server as the buffer's draft.
+         onTextInput no-ops when the two already agree, so the duplicates are
+         free. -->
     <textarea
       ref="inputEl"
-      v-model="text"
       rows="1"
+      :value="text"
       :placeholder="placeholder"
       :disabled="(!active && !isSystemBuffer) || isPaused"
       :spellcheck="systemFeatures.spellcheck"
       :autocorrect="systemFeatures.autocorrect"
       :autocapitalize="systemFeatures.autocapitalize"
       @keydown="onKeydown"
+      @input="onTextInput"
+      @compositionend="onTextInput"
+      @change="onTextInput"
       @paste="onPaste"
       @blur="onBlur"
     ></textarea>
@@ -319,8 +339,8 @@ const isSystemBuffer = computed(() => networks.activeKey === SYSTEM_KEY);
 const systemText = ref('');
 
 // Input contents are server-side per-buffer drafts — switching channels swaps
-// the input bar's body to that buffer's draft (or empty). v-model writes go
-// through the setter, which records the optimistic local update and schedules
+// the input bar's body to that buffer's draft (or empty). Keystrokes reach the
+// setter via onTextInput, which records the optimistic local update and schedules
 // a debounced WS flush; the typing-state side effects in onInput run here
 // (not in a watch(text)) so remote `draft-updated` echoes from other tabs
 // don't fire fake "active" typing notifications. The system buffer routes to
@@ -362,7 +382,7 @@ if (!supportsFieldSizing) {
     el.style.height = 'auto';
     el.style.height = `${el.scrollHeight}px`;
   };
-  // Re-measure whenever the visible text changes — typing (the v-model setter),
+  // Re-measure whenever the visible text changes — typing (via the `text` setter),
   // programmatic edits (history recall, send-clear), and buffer switches that
   // swap in a different draft (the getter changes without firing the setter).
   watch(text, () => nextTick(autosizeInput));
@@ -590,6 +610,43 @@ interface CompletionState {
 let completion: CompletionState | null = null;
 let cycling = false; // true while we're programmatically rewriting `text`
 
+// ─── IME composition ────────────────────────────────────────────────────────
+//
+// The composer binds `:value` + `@input` instead of `v-model`, which is worth
+// the explanation because v-model is otherwise the obvious choice.
+//
+// vModelText carries a `composing` flag, set between compositionstart and
+// compositionend, and refuses to do anything while it is up: its input
+// listener opens with `if (e.target.composing) return`, and its beforeUpdate
+// hook bails the same way before it would write. On a desktop CJK IME that
+// covers a candidate session; on an Android soft keyboard with suggestions on
+// it covers *every word*, first letter to space. Firefox on Android composes
+// the most aggressively of the mobile engines, which is where this surfaced —
+// a user's `@ami` suggester sat frozen on the unfiltered list until they
+// dismissed the keyboard, which committed the composition and delivered the
+// whole word at once.
+//
+// The composer cannot live with either half of that. `text` is not merely
+// what's on screen: the Send button's enabled state, what submit() puts on
+// the wire, the SPLIT/FLOOD estimate, the typing indicator, the cross-device
+// draft sync and the textarea's own auto-grow all hang off it. And the write
+// half is worse than it looks — a draft cleared after a send, or swapped by a
+// buffer switch, would not reach the textarea, leaving stale text on screen
+// that the next keystroke would then adopt as the new draft.
+//
+// A plain `:value` binding has no such flag. patchDOMProp writes el.value
+// whenever the model differs and skips when it doesn't, so normal typing
+// leaves the caret alone while a genuine divergence (send-clear, buffer
+// switch, a completion splice) still repaints. Paired with onTextInput below,
+// which assigns unconditionally, the model and the DOM track each other in
+// both directions no matter what the IME is doing.
+//
+// Known tradeoff: a CJK IME's preedit now reaches the draft store and the
+// typing indicator, where before only the committed text did. That is wrong
+// in the abstract — romaji is throwaway phonetic input — but it self-corrects
+// on commit and is much the lesser evil next to a Send button that stays
+// disabled and a submit() that ships pre-composition text.
+
 // Input history walking state. `historyIndex` is null when we're not in a
 // recall walk; otherwise it points into the per-buffer history slice.
 // `historyDraft` preserves whatever the user had typed before they hit Up,
@@ -723,7 +780,7 @@ function applyCompletion() {
   cycling = false;
   // Move caret to just after the inserted nick + suffix.
   const caret = completion.prefix.length + pick.length + suffix.length;
-  // Set on the next tick so v-model has propagated.
+  // Set on the next tick so the `:value` patch has propagated.
   queueMicrotask(() => {
     const el = inputEl.value;
     if (!el) return;
@@ -1153,6 +1210,19 @@ function onKeydown(e: KeyboardEvent): void {
     if (completion) resetCompletion();
     return;
   }
+  // Tab belongs to the IME while a composition is live — several of them walk
+  // the candidate list with it. Completing here would splice underneath an
+  // active composition, and the model rewrite would repaint the textarea out
+  // from under the preedit. Matches the `!e.isComposing` gate every picker
+  // branch above already carries; this one was missed. preventDefault anyway:
+  // the IME has already consumed the key by the time we see it, and letting
+  // Tab's default through would walk focus out of the composer onto Send —
+  // which on Firefox/Gboard Android, where a composition is open for every
+  // word, would be the *only* thing Tab ever did.
+  if (e.isComposing) {
+    e.preventDefault();
+    return;
+  }
   if (!sendable.value) return;
   e.preventDefault();
   const el = inputEl.value;
@@ -1509,10 +1579,11 @@ function onStripSelect(nick: string): void {
   // A nick at the start of a line is being addressed → ': '; mid-sentence
   // gets a bare space (what the old @-menu was missing — task #198). Shares
   // isAtLineStart() with Tab-completion and the desktop picker.
-  const suffix = isAtLineStart(text.value.slice(0, stripTokenStart)) ? ': ' : ' ';
+  const draft = text.value;
+  const suffix = isAtLineStart(draft.slice(0, stripTokenStart)) ? ': ' : ' ';
   // The strip is prefix-less: its token is the bare word under the cursor, which
   // is already the prefix buildNickMatches wants (no '@' to strip).
-  const token = text.value.slice(stripTokenStart, stripTokenEnd);
+  const token = draft.slice(stripTokenStart, stripTokenEnd);
   commitCompletion({
     start: stripTokenStart,
     end: stripTokenEnd,
@@ -1577,6 +1648,32 @@ function onHistorySelect(entry: string): void {
   resetHistoryNav();
   setInputAndCaretEnd(entry);
   queueMicrotask(() => inputEl.value?.focus());
+}
+
+// The composer's only `input` listener — what v-model would have installed,
+// minus the composing guard that made it drop a word at a time (see the IME
+// composition note further up). Everything a keystroke should do hangs off the
+// `text` setter, so assigning here routes composed and uncomposed input down
+// the identical path rather than giving composition its own side channel that
+// has to remember to replicate each of onInput's jobs.
+//
+// Also wired to `compositionend` and `change`, both of which v-model used to
+// cover by re-dispatching a synthetic `input`. Modern engines fire a real one
+// on commit, but a commit or cancel that doesn't would strand the model on the
+// preedit with nothing to resync it; and `change`-without-`input` is a real
+// autocomplete/autofill path (v-model's own source cites iOS Chrome) that would
+// otherwise leave the model behind until the next keystroke — with `blur`'s
+// flushBuffer shipping the stale body to the server in between. Cheap to close
+// off given the skip below makes the duplicate calls free.
+//
+// The equality check is a redundancy skip, not a correctness gate: an input
+// event that reports the value the model already holds has nothing to update,
+// and running the pipeline for it would fire a typing notification and a draft
+// flush for a no-op edit.
+function onTextInput() {
+  const el = inputEl.value;
+  if (!el || el.value === text.value) return;
+  text.value = el.value;
 }
 
 function onInput() {
