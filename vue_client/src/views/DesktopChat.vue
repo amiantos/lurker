@@ -18,8 +18,21 @@
            (#355); the collapse control lives there too. When collapsed the list
            is unmounted, so the expand control returns to the top of the rail. -->
       <BufferList v-if="showChannels" />
-      <button v-else class="link rail-toggle" title="Show channel list" @click="toggleChannels">
+      <!-- Collapsing the list takes its per-row highlight badges with it, so the
+           control that brings it back carries their total (#636). Unlike the
+           Transfers button below this one IS a count badge: the number is the
+           information here, not a state the glyph could stand in for. -->
+      <button
+        v-else
+        class="link rail-toggle"
+        :title="railToggleTitle"
+        :aria-label="railToggleTitle"
+        @click="toggleChannels"
+      >
         <i class="fa-solid fa-angles-right"></i>
+        <span v-if="hlChip.show.value" class="hl-chip" aria-hidden="true">{{
+          hlChip.label.value
+        }}</span>
       </button>
       <div ref="footEl" class="sidebar-foot" :class="{ 'foot-wrapped': footWrapped }">
         <!-- Settings and Add-network normally live in the LURKER header (#411),
@@ -311,6 +324,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { useActiveBuffer } from '../composables/useActiveBuffer.js';
 import { useBufferSearchScope } from '../composables/useBufferSearchScope.js';
+import { useHighlightChip } from '../composables/useHighlightChip.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
 import BufferList from '../components/BufferList.vue';
@@ -390,6 +404,17 @@ const dccTitle = computed(() =>
   dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',
 );
 const whois = useWhoisStore();
+
+// Not reactive()-wrapped: the chip's fields stay refs so the template can read
+// them as `hlChip.show.value`, which keeps this identical to MobileChat's use.
+const hlChip = useHighlightChip();
+// The count is aria-hidden in the markup — screen readers get it here instead,
+// as words rather than a bare number floating beside "Show channel list".
+const railToggleTitle = computed(() =>
+  hlChip.show.value
+    ? `Show channel list — ${hlChip.label.value} highlight${hlChip.count.value === 1 ? '' : 's'}`
+    : 'Show channel list',
+);
 
 const channelListModal = reactive(useChannelListModal());
 const joinChannelModal = reactive(useJoinChannelModal());
@@ -793,6 +818,30 @@ useChatBootstrap({ onJump: onJumpToMessage });
   text-align: center;
   padding: var(--space-4) 0;
   border-bottom: 1px solid var(--border);
+  /* Anchors .hl-chip only — the chip is positioned so it stays OUT of the line
+     box, which is what keeps the rule below aligned with the topic divider. */
+  position: relative;
+}
+/* Highlight total for the list this button reveals. Colored text on a tint of
+   the same var rather than a solid fill: --buffer-highlight is user-themeable
+   (look.color.buffer.highlight), so any fixed label color could land on an
+   unreadable pairing. The tint tracks whatever they picked and the text keeps
+   its own contrast against it.
+
+   Mixed against --bg, not transparent: the chip sits over the chevron, and a
+   see-through wash let the glyph ghost through the pill where they overlap at
+   larger font sizes. An opaque tint covers it cleanly while staying light
+   enough to keep the colored text legible. */
+.rail-toggle .hl-chip {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.75em;
+  line-height: 1.5;
+  color: var(--buffer-highlight);
+  background: color-mix(in srgb, var(--buffer-highlight) 24%, var(--bg));
 }
 /* The global `button:hover` repaints border-color to --accent, which would
    recolor the bottom rule on hover. Pin it back to --border — and keep it a
