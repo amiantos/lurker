@@ -37,7 +37,14 @@
          browser that commits (or cancels) a composition without a trailing
          `input` would otherwise leave the model parked on the preedit with no
          path back — a divergence nothing else resyncs, so the next Send would
-         ship the stale text. onTextInput no-ops when the two already agree. -->
+         ship the stale text. `@change` is the third copy of the same backstop,
+         and it too is one v-model registered and we'd otherwise have dropped:
+         some engines (iOS Chrome on autocomplete/autofill) fire `change`
+         *instead of* `input`, which would leave the model behind the textarea
+         until the next keystroke — and `change` beats `blur`, whose flushBuffer
+         would push that stale body to the server as the buffer's draft.
+         onTextInput no-ops when the two already agree, so the duplicates are
+         free. -->
     <textarea
       ref="inputEl"
       rows="1"
@@ -50,6 +57,7 @@
       @keydown="onKeydown"
       @input="onTextInput"
       @compositionend="onTextInput"
+      @change="onTextInput"
       @paste="onPaste"
       @blur="onBlur"
     ></textarea>
@@ -1649,11 +1657,14 @@ function onHistorySelect(entry: string): void {
 // the identical path rather than giving composition its own side channel that
 // has to remember to replicate each of onInput's jobs.
 //
-// Also wired to `compositionend`, which v-model used to cover by re-dispatching
-// a synthetic `input` on commit. Modern engines fire a real one, but a commit
-// or cancel that doesn't would strand the model on the preedit with nothing to
-// resync it — cheap to close off given the skip below makes the duplicate call
-// free.
+// Also wired to `compositionend` and `change`, both of which v-model used to
+// cover by re-dispatching a synthetic `input`. Modern engines fire a real one
+// on commit, but a commit or cancel that doesn't would strand the model on the
+// preedit with nothing to resync it; and `change`-without-`input` is a real
+// autocomplete/autofill path (v-model's own source cites iOS Chrome) that would
+// otherwise leave the model behind until the next keystroke — with `blur`'s
+// flushBuffer shipping the stale body to the server in between. Cheap to close
+// off given the skip below makes the duplicate calls free.
 //
 // The equality check is a redundancy skip, not a correctness gate: an input
 // event that reports the value the model already holds has nothing to update,
