@@ -60,8 +60,16 @@
     <!-- Screen: buffer -->
     <section v-else-if="screen === 'buffer'" class="screen buffer">
       <header class="bar">
-        <button class="icon back" title="Back" @click="goList">
+        <!-- Leaving this screen is the only way back to the buffer list, so its
+             per-row highlight badges collapse onto this button while it's the
+             only thing standing in for them (#636). Inline rather than a corner
+             badge: .icon is already a flex row and the bar has the width, so
+             "← 3" stays legible where an overlay on a 36px target would not. -->
+        <button class="icon back" :title="backTitle" :aria-label="backTitle" @click="goList">
           <i class="fa-solid fa-arrow-left"></i>
+          <span v-if="hlChip.show.value" class="hl-chip" aria-hidden="true">{{
+            hlChip.label.value
+          }}</span>
         </button>
         <!-- Channels and DMs drop the name here — the compact status bar
              carries net/#chan on mobile, so a header copy is just redundant
@@ -274,6 +282,7 @@ import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useVisualViewport } from '../composables/useVisualViewport.js';
+import { useHighlightChip } from '../composables/useHighlightChip.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
@@ -284,6 +293,15 @@ const auth = useAuthStore();
 
 // Admin panel entry in the mobile top bar.
 const showAdminEntry = computed(() => auth.isAdmin);
+
+const hlChip = useHighlightChip();
+// The chip is aria-hidden in the markup — screen readers get the count here as
+// words instead, so "Back" doesn't turn into "Back 3".
+const backTitle = computed(() =>
+  hlChip.show.value
+    ? `Back — ${hlChip.label.value} highlight${hlChip.count.value === 1 ? '' : 's'}`
+    : 'Back',
+);
 const { connected } = useSocket();
 const { keyboardOpen } = useVisualViewport();
 const {
@@ -588,6 +606,21 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .icon.back {
   margin-left: -4px;
+  gap: var(--space-2);
+}
+/* Highlight total for the buffer list this button returns to. Colored text on a
+   tint of the same var rather than a solid fill: --buffer-highlight is
+   user-themeable (look.color.buffer.highlight), so a fixed label color could
+   land on an unreadable pairing — the tint tracks their choice and the text
+   keeps its contrast against it. Mixed against --bg (not transparent) so the
+   pill is opaque: a see-through wash let the back arrow ghost through where the
+   two overlap at larger font sizes. Matches DesktopChat's rail chip. */
+.icon.back .hl-chip {
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.85em;
+  color: var(--buffer-highlight);
+  background: color-mix(in srgb, var(--buffer-highlight) 24%, var(--bg));
 }
 /* The buffer screen's MessageList + StatusBar + MessageInput chain mirrors
    the desktop rows but in a vertical flex. min-height: 0 on the screen +

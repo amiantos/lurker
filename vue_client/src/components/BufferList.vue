@@ -351,6 +351,7 @@ import { useNetworkActions } from '../composables/useNetworkActions.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
 import { useContextMenu } from '../composables/useContextMenu.js';
+import { unreadLabel } from '../utils/unreadLabel.js';
 import {
   isPeerOffline as derivePeerOffline,
   isPeerAway as derivePeerAway,
@@ -478,12 +479,6 @@ function serverUnread(networkId: number): number {
 
 function serverHighlights(networkId: number): number {
   return serverBuf(networkId)?.highlighted || 0;
-}
-
-// Keep the unread chip narrow — a four-figure count would stretch the row
-// and isn't more actionable than "a lot".
-function unreadLabel(count: number): string {
-  return count > 999 ? '>999' : String(count);
 }
 
 function hasDraft(buf: Buffer): boolean {
