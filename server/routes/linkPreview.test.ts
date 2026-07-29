@@ -21,13 +21,17 @@ let alice: User;
 let putPreview: typeof import('../db/linkPreviews.js').putPreview;
 let mintProxyToken: typeof import('../services/mediaProxyToken.js').mintProxyToken;
 let OK_TTL_MS: number;
+let urlHash: typeof import('../db/linkPreviews.js').urlHash;
+let db: typeof import('../db/index.js').default;
+let createUser: typeof import('../db/users.js').createUser;
 
 const SAVED_SECRET = process.env.SESSION_SECRET;
 
 beforeAll(async () => {
   process.env.SESSION_SECRET = 'link-preview-route-test-secret';
-  const { createUser } = await import('../db/users.js');
-  ({ putPreview, OK_TTL_MS } = await import('../db/linkPreviews.js'));
+  ({ createUser } = await import('../db/users.js'));
+  ({ putPreview, OK_TTL_MS, urlHash } = await import('../db/linkPreviews.js'));
+  db = (await import('../db/index.js')).default;
   ({ mintProxyToken } = await import('../services/mediaProxyToken.js'));
   const router = (await import('./linkPreview.js')).default;
 
@@ -60,6 +64,21 @@ function seed(url: string, over: Partial<Parameters<typeof putPreview>[0]> = {})
     expiresAt: new Date(Date.now() + OK_TTL_MS).toISOString(),
     ...over,
   });
+}
+
+/** When the cached row for `url` was fetched, or null if there isn't one. */
+function firstFetchedAt(url: string): string | null {
+  const row = db
+    .prepare('SELECT fetched_at FROM link_previews WHERE url_hash = ?')
+    .get(urlHash(url)) as { fetched_at: string } | undefined;
+  return row?.fetched_at ?? null;
+}
+
+function rowCount(url: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM link_previews WHERE url_hash = ?')
+    .get(urlHash(url)) as { n: number };
+  return row.n;
 }
 
 describe('POST /api/link-preview/resolve', () => {
@@ -258,6 +277,64 @@ describe('POST /api/link-preview/resolve', () => {
       .expect(200);
     expect(res.body.previews.length).toBe(1);
     expect(res.body.previews[0].title).toBe('Mixed');
+  });
+});
+
+describe('one resolve serves every user on the cell', () => {
+  it('does not refetch for a second user', async () => {
+    // The guarantee: ten people in a channel scrolling past one link is ONE outbound
+    // fetch, not ten. The cache is keyed by URL with no user_id anywhere in it, so this
+    // holds across accounts by construction — but it's the kind of property that breaks
+    // quietly, so it gets a test.
+    //
+    // A blocked address makes "fetching" deterministic and offline: it resolves to
+    // `unavailable`, which is cached exactly like a success.
+    const url = 'http://10.1.2.3/shared-link';
+    const bob = createUser('bob-cache');
+    const bobAgent = await createAuthedAgent(app, bob.id);
+
+    await agent
+      .post('/api/link-preview/resolve')
+      .send({ urls: [url] })
+      .expect(200);
+    const first = firstFetchedAt(url);
+    expect(first).not.toBeNull();
+
+    await bobAgent
+      .post('/api/link-preview/resolve')
+      .send({ urls: [url] })
+      .expect(200);
+    // Same row, untouched — the second user read the first user's answer.
+    expect(firstFetchedAt(url)).toBe(first);
+    expect(rowCount(url)).toBe(1);
+  });
+
+  it('answers ten simultaneous asks for one URL identically', async () => {
+    const url = 'http://10.9.9.9/hot-link';
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () =>
+        agent.post('/api/link-preview/resolve').send({ urls: [url] }),
+      ),
+    );
+    for (const res of results) expect(res.status).toBe(200);
+    expect(rowCount(url)).toBe(1);
+  });
+});
+
+describe('the URL a descriptor is keyed by', () => {
+  it('echoes the URL as asked, so a client lookup matches', async () => {
+    // ⚠ Regression guard for a two-headed bug. Descriptors used to echo the URL the fetch
+    // ENDED at, so for anything that redirects (http→https, www canonicalisation, a
+    // renamed article) the client's lookup by the string it sent missed and the preview
+    // never rendered — while the cache row, written under that same unreachable key, was
+    // never read either, so every resolve went back out to the origin.
+    const asked = 'http://10.4.4.4/redirects-somewhere';
+    const res = await agent
+      .post('/api/link-preview/resolve')
+      .send({ urls: [asked] })
+      .expect(200);
+    expect(res.body.previews[0].url).toBe(asked);
+    expect(rowCount(asked)).toBe(1);
   });
 });
 

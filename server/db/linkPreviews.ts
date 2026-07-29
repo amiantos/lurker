@@ -34,10 +34,35 @@ export const OK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  *  just not on every scroll. */
 export const FAIL_TTL_MS = 60 * 60 * 1000;
 
-/** Cache key. The URL itself is stored alongside for debugging; the hash is the
- *  key so a pathological 4 KB URL can't bloat the index. */
+/**
+ * Bumped whenever the resolver's LOGIC changes in a way that could turn a previous
+ * `unavailable` into an `ok`.
+ *
+ * Folded into the cache key, so a bump orphans every old row rather than requiring a schema
+ * change or a manual flush — the expiry sweep collects them in its own time.
+ *
+ * This is not hypothetical bookkeeping. During development the YouTube fix was invisible for
+ * an hour after it shipped, because the previous code had already cached
+ * `youtube.com/watch?v=…` as `unavailable` and the negative TTL had not lapsed. A fix that
+ * can't be observed is a fix that gets re-debugged.
+ *
+ *   v2 — provider oEmbed tried before scraping; prefix reads no longer refuse oversized
+ *        bodies; cache keyed by the REQUESTED url rather than the post-redirect one.
+ */
+const RESOLVER_VERSION = 2;
+
+/**
+ * Cache key: the requested URL, scoped to the resolver version.
+ *
+ * ⚠ Keyed on the URL **as asked for**, never on where it ended up after redirects. Getting
+ * this wrong was a two-headed bug: the client looks a preview up by the string it sent, so a
+ * descriptor echoing the post-redirect URL silently never matched and the preview never
+ * rendered — and the cache was written under a key nothing would ever read, so every single
+ * resolve of a redirecting URL went back out to the origin. `http://en.wikipedia.org/wiki/IRC`
+ * refetched forever and displayed nothing.
+ */
 export function urlHash(url: string): string {
-  return crypto.createHash('sha256').update(url).digest('hex');
+  return crypto.createHash('sha256').update(`v${RESOLVER_VERSION}|${url}`).digest('hex');
 }
 
 const selectStmt = db.prepare(`

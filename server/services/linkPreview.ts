@@ -291,7 +291,17 @@ export async function resolvePreview(raw: string): Promise<PreviewRecord> {
   const task = (async (): Promise<PreviewRecord> => {
     inFlightCount++;
     try {
-      const record = await doResolve(raw);
+      const resolved = await doResolve(raw);
+      // ⚠ Always echo the URL we were ASKED about, whatever the fetch ended up at.
+      //
+      // The endpoint's contract is one descriptor per input, in order, and callers look each
+      // one up by the string they sent. Returning a post-redirect URL broke that silently in
+      // both directions: the client's `cache.get(preview.url)` missed, so nothing ever
+      // rendered, and `putPreview` wrote a row keyed by something no lookup would ever ask
+      // for, so every resolve re-hit the origin. The canonical URL is still used internally
+      // where it matters — resolving a relative og:image against the page we actually landed
+      // on — it just isn't the identity.
+      const record = { ...resolved, url: raw };
       putPreview(record);
       return record;
     } catch (err) {
