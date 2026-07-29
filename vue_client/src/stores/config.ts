@@ -21,6 +21,10 @@ let inflight: Promise<Edition> | null = null;
 export const useConfigStore = defineStore('config', {
   state: () => ({
     edition: 'standalone' as Edition,
+    // Whether this instance offers voice calls (operator opt-in + a configured
+    // LiveKit SFU). Defaults false so a fetch failure hides the call UI rather
+    // than surfacing a button that can only 503.
+    voiceEnabled: false,
     checked: false,
   }),
   getters: {
@@ -33,8 +37,9 @@ export const useConfigStore = defineStore('config', {
       if (inflight) return inflight; // a fetch is in flight — share its result
       inflight = (async () => {
         try {
-          const data = await api<{ edition?: string }>('/api/config');
+          const data = await api<{ edition?: string; voiceEnabled?: boolean }>('/api/config');
           this.edition = data.edition === 'node' ? 'node' : 'standalone';
+          this.voiceEnabled = data.voiceEnabled === true;
           // Latch `checked` ONLY on success. A transient failure must not wedge
           // the session on the safe defaults — leaving it false lets the next
           // caller retry and self-heal. That second caller is the router guard,

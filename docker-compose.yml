@@ -71,4 +71,39 @@ services:
       # where the container itself sees cleartext. Flip on only if you serve
       # Lurker over true end-to-end HTTPS.
       # - COOKIE_SECURE=true
+      #
+      # ───── Optional: Voice / video calls (LiveKit) ───────────────────────
+      # Native voice+video for the Scully desktop client, via a self-hosted
+      # LiveKit SFU. OFF by default. To turn it on:
+      #   1. Uncomment the four vars below (and pick your own API secret).
+      #   2. Start the bundled SFU with the "voice" profile:
+      #        docker compose --profile voice up -d
+      #   3. Set LIVEKIT_WS_URL to the address the *desktop clients* reach —
+      #      ws://<this-host>:7880 on a LAN, or wss://<public-host> behind TLS.
+      # Lurker only mints room-scoped access tokens; it never carries media.
+      # - LURKER_VOICE_ENABLED=true
+      # - LIVEKIT_WS_URL=ws://localhost:7880
+      # - LIVEKIT_API_KEY=devkey
+      # - LIVEKIT_API_SECRET=replace-me-with-a-long-random-secret
+    restart: unless-stopped
+
+  # Self-hosted LiveKit SFU. Defined but inert unless you opt in with the
+  # "voice" profile: `docker compose --profile voice up -d`. The API key/secret
+  # here MUST match LIVEKIT_API_KEY / LIVEKIT_API_SECRET on the lurker service
+  # above — that shared secret is what lets Lurker sign tokens this SFU trusts.
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: lurker-livekit
+    profiles: ['voice']
+    command: --dev --node-ip=127.0.0.1
+    environment:
+      # `key: secret` pairs. Keep in lockstep with the lurker service vars.
+      - LIVEKIT_KEYS=devkey: replace-me-with-a-long-random-secret
+    ports:
+      - '7880:7880'       # signaling (WebSocket + HTTP)
+      - '7881:7881'       # WebRTC over TCP (ICE/TCP fallback)
+      - '7882:7882/udp'   # WebRTC over UDP (media)
+      # NOTE on NAT: --node-ip must be the address clients can reach the SFU at.
+      # 127.0.0.1 works for localhost only. On a LAN set it to this host's LAN IP;
+      # behind real NAT you need a public IP + a TURN server (see LiveKit docs).
     restart: unless-stopped

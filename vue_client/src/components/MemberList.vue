@@ -5,6 +5,18 @@
 
 <template>
   <div class="members">
+    <div v-if="canCall" class="members-head">
+      <button
+        type="button"
+        class="call-btn"
+        :disabled="voice.connecting || voice.active"
+        :title="voice.active ? 'Already in a call' : 'Start a voice call in this channel'"
+        @click="startCall"
+      >
+        <i class="fa-solid fa-phone"></i>
+        <span>{{ voice.active ? 'In call' : 'Call' }}</span>
+      </button>
+    </div>
     <ul ref="listEl">
       <li
         v-for="m in sorted"
@@ -45,6 +57,8 @@ import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useConfigStore } from '../stores/config.js';
+import { useVoiceStore } from '../stores/voice.js';
 import {
   PREFIX_ORDER,
   prefixOf as modePrefixOf,
@@ -57,11 +71,24 @@ const buffers = useBuffersStore();
 const nicks = useNickColors();
 const memberActions = useMemberActions();
 const ignores = useIgnoresStore();
+const config = useConfigStore();
+const voice = useVoiceStore();
 const modalMember = ref<BufferMember | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
+
+// Voice-call affordance: channels only, and only when the server advertises it.
+const canCall = computed(
+  () => config.voiceEnabled && buffer.value?.kind === 'channel' && buffer.value?.networkId != null,
+);
+function startCall() {
+  const b = buffer.value;
+  if (!b || b.networkId == null) return;
+  // label = the channel target; the store mints its own token + room.
+  voice.startCall(b.networkId, b.target, b.target);
+}
 const selfNick = computed(() => {
   const b = buffer.value;
   if (!b || b.networkId == null) return null;
@@ -190,6 +217,27 @@ const sorted = computed(() => {
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+.members-head {
+  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border, #2c2f38);
+}
+.call-btn {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.35rem;
+  border: 1px solid var(--border, #2c2f38);
+  background: var(--button-bg, #262933);
+  color: inherit;
+  cursor: pointer;
+}
+.call-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 ul {
   list-style: none;

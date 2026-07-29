@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getEdition } from '../utils/edition.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
+import { voiceEnabled } from '../services/voice.js';
 
 const router = Router();
 
@@ -22,6 +23,9 @@ router.get('/', (_req: Request, res: Response) => {
     edition: getEdition(),
     protocolVersion: PROTOCOL_VERSION,
     minProtocolVersion: MIN_PROTOCOL_VERSION,
+    // Whether this instance offers voice/video calls (operator opt-in + a
+    // configured LiveKit SFU). The native client hides all call UI when false.
+    voiceEnabled: voiceEnabled(),
   });
 });
 
