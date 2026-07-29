@@ -4,8 +4,29 @@
 -->
 
 <template>
-  <div v-if="urls.length" class="attachments">
-    <MessageAttachment v-for="url in urls" :key="url" :url="url" @measured="$emit('measured')" />
+  <div v-if="visible.length" class="attachments">
+    <!-- Two or more images/videos become one horizontally-scrolling row rather than a
+         vertical stack, following Slack. Three portrait screenshots stacked is most of a
+         screen of somebody else's message; as a strip it's one glance.
+
+         The row's height is ALSO the sizing win: it comes from the server's dimensions, so
+         it's known before a single byte of image data arrives, and it's ONE height for the
+         whole group instead of N unknown ones. -->
+    <div v-if="strip.length > 1" class="filmstrip" :style="{ height: `${stripHeight}px` }">
+      <MessageAttachment
+        v-for="item in strip"
+        :key="item.url"
+        :preview="item"
+        in-strip
+        @measured="$emit('measured')"
+      />
+    </div>
+    <MessageAttachment
+      v-for="item in stacked"
+      :key="item.url"
+      :preview="item"
+      @measured="$emit('measured')"
+    />
   </div>
 </template>
 
@@ -13,49 +34,111 @@
 import { computed } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { previewableUrls } from '../utils/previewUrls.js';
+import { useLinkPreview, type LinkPreview } from '../composables/useLinkPreview.js';
 import MessageAttachment from './MessageAttachment.vue';
 
-// Decides WHICH urls in a message are worth asking the server about; the
-// selection rule itself lives in utils/previewUrls so it can be tested without
-// mounting anything. Rendering any one of them is MessageAttachment's problem.
+// Owns the ARRANGEMENT of a message's attachments; MessageAttachment owns how any one of
+// them looks. That split is what makes grouping possible at all — while each child resolved
+// its own preview, nothing was in a position to know that a message had three images and
+// could lay them out as a row.
 //
-// Both settings off and this component never mounts a child, never makes a
-// request, and costs one regex pass over text we had already tokenised anyway.
+// Reads are pure (see composables/useLinkPreview): resolution happens at message ingest, so
+// nothing here triggers a fetch no matter how often it re-renders.
 const props = defineProps<{ text: string | null | undefined }>();
 
-// Bubbles up from an image that had no server-side dimensions and therefore grew the row
-// when it decoded. The message list re-pins the viewport on it.
 defineEmits<{ measured: [] }>();
 
 const settings = useSettingsStore();
 
-const urls = computed(() =>
-  previewableUrls(props.text, {
-    inlineMedia: settings.effective('chat.inline_media.enabled') === true,
-    linkPreviews: settings.effective('chat.link_previews.enabled') === true,
-  }),
+/** Row heights for a strip, picked by the group's dominant orientation.
+ *
+ *  Slack effectively has two, and it's the right simplification: it means a message list has
+ *  a small, known set of possible attachment heights instead of one per image. Portrait gets
+ *  more room because a tall photo squeezed into a landscape row is unreadable — but only a
+ *  little more, or one message wins the screen. */
+const STRIP_LANDSCAPE = 200;
+const STRIP_PORTRAIT = 300;
+
+const toggles = computed(() => ({
+  inlineMedia: settings.effective('chat.inline_media.enabled') === true,
+  linkPreviews: settings.effective('chat.link_previews.enabled') === true,
+}));
+
+const urls = computed(() => previewableUrls(props.text, toggles.value));
+
+// One ref per URL, read-only. `useLinkPreview` on a URL nobody primed returns a permanently
+// null ref, which is exactly the "render nothing" case.
+const entries = computed(() => urls.value.map((url) => useLinkPreview(url)));
+
+/**
+ * Previews that are resolved AND allowed by the settings.
+ *
+ * Re-checked against the server's answer rather than the extension guess that prompted the
+ * request: an extensionless URL that turns out to be a PNG is inline media, and a `.jpg` that
+ * redirects to an HTML login page is not. Otherwise "link previews off" could still be talked
+ * into rendering a card.
+ */
+const visible = computed<LinkPreview[]>(() =>
+  entries.value
+    .map((entry) => entry.value)
+    .filter((p): p is LinkPreview => {
+      if (!p || p.status !== 'ok') return false;
+      const isMedia = p.kind === 'image' || p.kind === 'video' || p.kind === 'audio';
+      return isMedia ? toggles.value.inlineMedia : toggles.value.linkPreviews;
+    }),
 );
+
+/** Strip candidates: pictures and video, which read as a row. Audio doesn't — a row of
+ *  transport controls is not a gallery — so it stays stacked and full-width. */
+const strip = computed(() => visible.value.filter((p) => p.kind === 'image' || p.kind === 'video'));
+
+/** Everything the strip didn't take. A lone image renders on its own, at its own size: it's
+ *  the common case and a one-item strip would only make it smaller for no reason. */
+const stacked = computed(() =>
+  strip.value.length > 1 ? visible.value.filter((p) => !strip.value.includes(p)) : visible.value,
+);
+
+const stripHeight = computed(() => {
+  const portrait = strip.value.filter((p) => (p.thumbHeight ?? 0) > (p.thumbWidth ?? 0)).length;
+  // "Primarily portrait" rather than "any portrait": one tall image among four wide ones
+  // shouldn't make the whole row tall.
+  return portrait * 2 > strip.value.length ? STRIP_PORTRAIT : STRIP_LANDSCAPE;
+});
 </script>
 
 <style scoped>
 .attachments {
   display: flex;
   flex-direction: column;
-  /* ⚠ NOT the default `stretch`. A flex column stretches its children across the
-     cross axis, which forced every inline image to the container's full width while
-     `max-height` capped its height — squashing it instead of scaling it. Images size
-     themselves from their own dimensions; only the cards want the full width. */
+  /* NOT the default `stretch`. A flex column stretches its children across the cross axis,
+     which forced every inline image to the container's full width while `max-height` capped
+     its height — squashing it instead of scaling it. */
   align-items: flex-start;
   gap: var(--space-2);
   margin-top: var(--space-2);
-  /* Attachments hang under the message body, and a card that stretched the full
-     width of a wide window would read as a page element rather than as part of
-     the message. */
-  max-width: 480px;
+  /* No width cap HERE. The cap belongs to the card (below), not to the container: a strip
+     scrolls, so capping it at card width would mean two images visible out of five for no
+     reason other than that cards need a limit. */
+  max-width: 100%;
+  min-width: 0;
 }
-/* The card is the one attachment that wants the width it's given — its text has to wrap
-   against something. Undoes the container's flex-start for cards only. */
+/* A card wants the width it's given — its text has to wrap against something — but not the
+   full width of a wide window, where it stops reading as part of the message and starts
+   reading as a page element. */
 .attachments > :deep(.card) {
   align-self: stretch;
+  max-width: 480px;
+}
+
+.filmstrip {
+  display: flex;
+  gap: var(--space-2);
+  /* The strip scrolls itself; the message list must never scroll sideways. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  /* Height comes from the inline style — one known value for the whole group. */
+  align-items: stretch;
+  scrollbar-width: thin;
 }
 </style>

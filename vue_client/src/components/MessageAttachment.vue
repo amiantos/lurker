@@ -4,170 +4,146 @@
 -->
 
 <template>
-  <!-- Nothing renders until the server has answered. A preview appearing is
-       always an ADDITION to the layout — no skeleton that later collapses,
-       which in a scrolling message list would shove everything around twice. -->
-  <template v-if="preview && preview.status === 'ok' && allowed">
-    <!-- Direct media: no card, no chrome. A frame around an image is furniture
-         around content. Click opens the media viewer that already exists. -->
-    <!-- `width`/`height` are the server's real pixel dimensions, and they are load-bearing
-         rather than decorative: the browser derives the intrinsic aspect ratio from them and
-         reserves the right box BEFORE any bytes arrive. Without them the row grows twice —
-         once when the metadata lands and again when the image decodes — and in a
-         bottom-anchored chat log the second growth yanks the reader off the live tail. -->
+  <!-- Direct media: no card, no chrome. A frame around an image is furniture around content.
+       `width`/`height` are the server's real pixel dimensions, and they're load-bearing rather
+       than decorative — the browser derives the intrinsic aspect ratio from them and reserves
+       the right box BEFORE any bytes arrive. -->
+  <img
+    v-if="preview.kind === 'image' && preview.src"
+    class="inline-image"
+    :class="{ 'strip-item': inStrip }"
+    :src="preview.src"
+    :width="preview.thumbWidth || undefined"
+    :height="preview.thumbHeight || undefined"
+    alt=""
+    loading="lazy"
+    decoding="async"
+    @click.stop="openViewer"
+    @load="$emit('measured')"
+  />
+  <video
+    v-else-if="preview.kind === 'video' && preview.src"
+    class="inline-video"
+    :class="{ 'strip-item': inStrip }"
+    :src="preview.src"
+    controls
+    preload="metadata"
+    @click.stop
+  />
+  <audio
+    v-else-if="preview.kind === 'audio' && preview.src"
+    class="inline-audio"
+    :src="preview.src"
+    controls
+    preload="metadata"
+    @click.stop
+  />
+
+  <!-- A page, or a video page. Discord's panel treatment: the card sits on its own slightly
+       raised background so it reads as a distinct object rather than as more chat text. -->
+  <div v-else class="card" :class="{ 'card-video': isVideo }">
+    <div class="card-text">
+      <div v-if="preview.siteName" class="card-site">
+        {{ preview.siteName }}<template v-if="preview.author"> · {{ preview.author }}</template>
+      </div>
+      <a
+        v-if="preview.title"
+        class="card-title"
+        :href="preview.url"
+        target="_blank"
+        rel="noreferrer noopener"
+        @click.stop
+        >{{ preview.title }}</a
+      >
+      <div v-if="preview.description" class="card-desc">{{ preview.description }}</div>
+    </div>
+
+    <!-- Video: the thumbnail goes full-width with a play badge, because a video reduced to a
+         72px square is pointless. Everything else keeps the small right-aligned thumbnail. -->
+    <div v-if="isVideo && preview.thumb" class="card-media">
+      <!-- THE FACADE. The iframe does not exist until this is clicked, so nothing is requested
+           from the video host on render — not even the thumbnail, which is proxied through us
+           like every other preview image. The first request the viewer makes to YouTube is the
+           one they asked for by pressing play. -->
+      <iframe
+        v-if="playing"
+        class="card-embed"
+        :src="preview.embedUrl"
+        title="Video player"
+        allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+        referrerpolicy="no-referrer"
+        allowfullscreen
+      ></iframe>
+      <button
+        v-else
+        type="button"
+        class="card-play"
+        :aria-label="`Play ${preview.title ?? 'video'}`"
+        @click.stop="play"
+      >
+        <img class="card-thumb-wide" :src="preview.thumb" alt="" loading="lazy" />
+        <span class="play-badge" aria-hidden="true">▶</span>
+      </button>
+    </div>
     <img
-      v-if="preview.kind === 'image' && preview.src"
-      class="inline-image"
-      :src="preview.src"
-      :width="preview.thumbWidth || undefined"
-      :height="preview.thumbHeight || undefined"
-      :alt="''"
+      v-else-if="preview.thumb"
+      class="card-thumb"
+      :src="preview.thumb"
+      alt=""
       loading="lazy"
       decoding="async"
-      @click.stop="openViewer"
-      @load="$emit('measured')"
     />
-    <video
-      v-else-if="preview.kind === 'video' && preview.src"
-      class="inline-video"
-      :src="preview.src"
-      controls
-      preload="metadata"
-      @click.stop
-    />
-    <audio
-      v-else-if="preview.kind === 'audio' && preview.src"
-      class="inline-audio"
-      :src="preview.src"
-      controls
-      preload="metadata"
-      @click.stop
-    />
-
-    <!-- A page, or a video page. Slack's treatment rather than Discord's: a thin
-         accent rule and restrained text, not a large colourful engagement card.
-         Lurker's timeline is dense and quiet and a preview should stay a guest
-         in it. -->
-    <div v-else class="card" :class="{ 'card-video': isVideo }">
-      <div class="card-text">
-        <div v-if="preview.siteName" class="card-site">
-          {{ preview.siteName }}<template v-if="preview.author"> · {{ preview.author }}</template>
-        </div>
-        <a
-          v-if="preview.title"
-          class="card-title"
-          :href="url"
-          target="_blank"
-          rel="noreferrer noopener"
-          @click.stop
-          >{{ preview.title }}</a
-        >
-        <div v-if="preview.description" class="card-desc">{{ preview.description }}</div>
-      </div>
-
-      <!-- Video: the thumbnail goes full-width with a play badge, because a
-           video reduced to a 72px square is pointless. Everything else keeps the
-           small right-aligned thumbnail. -->
-      <div v-if="isVideo && preview.thumb" class="card-media">
-        <!-- THE FACADE. The iframe does not exist until this is clicked, so
-             nothing is requested from the video host on render — not even the
-             thumbnail, which is proxied through us like every other preview
-             image. The first request the viewer makes to YouTube is the one
-             they asked for by pressing play. -->
-        <iframe
-          v-if="playing"
-          class="card-embed"
-          :src="preview.embedUrl"
-          title="Video player"
-          allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-          referrerpolicy="no-referrer"
-          allowfullscreen
-        ></iframe>
-        <button
-          v-else
-          type="button"
-          class="card-play"
-          :aria-label="`Play ${preview.title ?? 'video'}`"
-          @click.stop="play"
-        >
-          <img class="card-thumb-wide" :src="preview.thumb" alt="" loading="lazy" />
-          <span class="play-badge" aria-hidden="true">▶</span>
-        </button>
-      </div>
-      <img
-        v-else-if="preview.thumb"
-        class="card-thumb"
-        :src="preview.thumb"
-        alt=""
-        loading="lazy"
-        decoding="async"
-      />
-    </div>
-  </template>
+  </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { useLinkPreview } from '../composables/useLinkPreview.js';
+import type { LinkPreview } from '../composables/useLinkPreview.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 
-const props = defineProps<{ url: string }>();
+// Purely presentational: it renders ONE already-resolved, already-permitted preview.
+// Resolution happens at message ingest and the settings check happens in
+// MessageAttachments, which needs the resolved set anyway to decide the arrangement.
+const props = defineProps<{
+  preview: LinkPreview;
+  /** Sized by the strip's row height rather than by its own dimensions. */
+  inStrip?: boolean;
+}>();
 
-// Emitted when an image finishes decoding. Only matters in the case the server COULDN'T give
-// us dimensions (an exotic format, a truncated header) — there the box wasn't reserved, so the
+// Emitted when an image finishes decoding. Only matters when the server couldn't give us
+// dimensions (an exotic format, a truncated header) — there the box wasn't reserved, so the
 // row does grow on load and the list needs a chance to re-pin.
 defineEmits<{ measured: [] }>();
 
 const settings = useSettingsStore();
 const viewer = useMediaViewer();
-const preview = useLinkPreview(props.url);
 const playing = ref(false);
 
-/**
- * Re-check the answer against the settings.
- *
- * The parent asked based on the URL's extension; the server replies with what
- * the thing ACTUALLY is. Those can disagree — an extensionless URL that turns
- * out to be a PNG, a `.jpg` that 302s to an HTML login page — and when they do,
- * the setting that governs is the one covering the server's answer, not the one
- * that covered our guess. Otherwise "link previews off" could still be talked
- * into rendering a card.
- */
-const allowed = computed(() => {
-  const kind = preview.value?.kind;
-  if (!kind) return false;
-  if (kind === 'image' || kind === 'video' || kind === 'audio') {
-    return settings.effective('chat.inline_media.enabled') === true;
-  }
-  return settings.effective('chat.link_previews.enabled') === true;
-});
-
-const isVideo = computed(() => preview.value?.kind === 'video-embed' && !!preview.value.embedUrl);
+const isVideo = computed(() => props.preview.kind === 'video-embed' && !!props.preview.embedUrl);
 
 function play(): void {
   playing.value = true;
 }
 
 function openViewer(): void {
-  // The viewer is opt-out (chat.image_modal.enabled); when it's off, an inline
-  // image is just an image and a click does nothing special.
+  // The viewer is opt-out (chat.image_modal.enabled); when it's off, an inline image is just
+  // an image and a click does nothing special.
   if (settings.effective('chat.image_modal.enabled') !== true) return;
-  viewer.open(props.url);
+  viewer.open(props.preview.url);
 }
 </script>
 
 <style scoped>
 .inline-image {
   max-width: 100%;
-  /* Capped so one tall screenshot can't push the rest of the conversation off
-     screen. The viewer is one click away for the full thing. */
+  /* Capped so one tall screenshot can't push the rest of the conversation off screen. The
+     viewer is one click away for the full thing. */
   max-height: 240px;
-  /* ⚠ Both `auto`, and both needed. `width`/`height` attributes on the element give the
-     browser the intrinsic ratio to reserve space with; these let it SCALE that box down
-     proportionally to fit inside max-width/max-height. Without `width: auto` a portrait image
-     hits the height cap and keeps its attribute width — which is exactly the squashing this
-     replaced. */
+  /* ⚠ Both `auto`, and both needed. The `width`/`height` attributes give the browser the
+     intrinsic ratio to reserve space with; these let it SCALE that box down proportionally to
+     fit inside max-width/max-height. Without `width: auto` a portrait image hits the height
+     cap and keeps its attribute width, which is squashing rather than scaling. */
   width: auto;
   height: auto;
   object-fit: contain;
@@ -189,15 +165,42 @@ function openViewer(): void {
   width: 100%;
 }
 
+/* Inside a strip the ROW decides the height and every item fills it, so the group reads as
+   one band. Widths then vary with each image's aspect ratio, which is what makes a strip look
+   like a strip rather than a grid of letterboxed cells. `cover` because a uniform height is
+   the point — a panorama is cropped rather than allowed to be 2000px wide. */
+.strip-item {
+  height: 100%;
+  width: auto;
+  max-width: 360px;
+  max-height: none;
+  object-fit: cover;
+  flex: none;
+}
+
 .card {
   display: flex;
   gap: var(--space-4);
   align-items: flex-start;
-  /* The left rule is the Slack signature. Deliberately a muted border colour
-     rather than a per-site accent: extracting a dominant colour per domain is a
-     lot of machinery whose only effect is to make the timeline louder. */
-  border-left: 3px solid var(--border);
-  padding: var(--space-2) 0 var(--space-2) var(--space-6);
+  /* A raised panel, Discord-style, so the card reads as a distinct object rather than as more
+     chat text. Doing the distinction with a background instead of a left rule is what lets the
+     rule go away on desktop (below) without the card losing its edges.
+     ⚠ --embed-bg, NOT --bg-soft: that's the message row's hover fill, and a card painted with
+     it disappears the moment the pointer crosses its row. */
+  background: var(--embed-bg);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+/* The Slack-style left rule is a MOBILE-only cue. On desktop the app already has a vertical
+   border running down the side of the message column right next to this, and a second rule a
+   few pixels away just reads as noise. On a narrow viewport that border isn't there, so the
+   rule is doing real work. */
+@media (max-width: 768px) {
+  .card {
+    border-left: 3px solid var(--border);
+    /* The rule replaces the panel's own left padding rather than adding to it. */
+    padding-left: var(--space-5);
+  }
 }
 .card-video {
   flex-direction: column;
@@ -244,7 +247,8 @@ function openViewer(): void {
   aspect-ratio: 16 / 9;
   border-radius: var(--radius-md);
   overflow: hidden;
-  background: var(--bg-soft);
+  /* Reads against the card's own panel, not against the chat background. */
+  background: var(--bg);
 }
 .card-play {
   display: block;

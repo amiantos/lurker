@@ -91,6 +91,15 @@
   --icon-md: 1.1em;
   --icon-lg: 1.2em;
 
+  /* The raised panel a link-preview card sits on, so it reads as a distinct object
+     rather than as more chat text (Discord's treatment).
+     ⚠ Must differ from BOTH --bg (the chat background) and --bg-soft, because --bg-soft
+     is the message row's hover fill — a card painted --bg-soft would vanish the moment
+     you moved the pointer over its row. Derived rather than literal so it tracks whatever
+     theme the user has chosen: one step further from the background than hover is, in the
+     same direction. */
+  --embed-bg: color-mix(in srgb, var(--fg) 6%, var(--bg-soft));
+
   /* Corner radii. The app is intentionally flat (most things are square);
      these are the few deliberate exceptions. */
   --radius-sm: 2px;
