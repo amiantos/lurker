@@ -1610,44 +1610,28 @@ async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback
   }
 }
 
-// Link previews landing changes row HEIGHTS without changing the messages array, so the
-// shape watcher below never sees it. Left alone the effect is exactly what QA reported: the
-// buffer paints flat, a burst of previews resolves ~100ms later, every affected row grows,
-// and a reader who was sitting at the live tail is silently pushed up off it and has to
-// scroll back down.
+// The RESIDUAL preview case, after priming moved resolution to message ingest (see
+// composables/useLinkPreview): a reader scrolling fast enough to outrun the priming request
+// renders a row before its preview is known, and the row grows when it lands.
 //
-// `overflow-anchor: none` on the scroller (see the CSS, and the prepend comment) means the
-// browser will NOT compensate for this on its own — the same deliberate choice that makes
-// history prepends predictable makes this our problem to handle.
+// This used to fire on every scroll into history, because resolution was triggered BY
+// rendering — and the compensation walked every row in the buffer reading offsetTop and
+// offsetHeight, forcing a synchronous layout per row. That was QA's "the whole screen is
+// trying to redraw". Priming makes the growth rare; this makes handling it cheap.
 //
-// Two cases, and they want opposite things:
-//   - pinned to the bottom: follow the growth down, same as a live append.
-//   - scrolled up reading: hold the row under the reader's eye still, same as a prepend.
+// `overflow-anchor: none` on the scroller (see the CSS) means the browser won't compensate on
+// its own — the same deliberate choice that makes history prepends predictable.
+//
+// Only the pinned case is corrected, and that's deliberate. A reader at the live tail is
+// followed down, which is what they want and what a live append already does. A reader
+// scrolled up is left alone: growth below the viewport doesn't move anything they can see, and
+// growth above it is what `pinAnchorRow` handles on the paths that actually prepend content.
+// Guessing at an anchor here cost a full-buffer layout read to fix a case that priming has
+// already made rare.
 async function repinAfterPreviewGrowth() {
-  const el = scroller.value;
-  if (!el) return;
-  if (stickToBottom.value) {
-    await nextTick();
-    scrollToBottom();
-    return;
-  }
-  // Anchor on the topmost message currently in view: growth anywhere at or below it would
-  // otherwise slide it under the reader.
-  const anchorId = firstVisibleMessageId(el);
-  if (anchorId != null) await pinAnchorRow(el, anchorId, false);
-}
-
-/** The id of the topmost message row intersecting the viewport, or null. */
-function firstVisibleMessageId(el: HTMLElement): number | null {
-  const rows = el.querySelectorAll('[data-msg-id]');
-  for (const row of rows) {
-    const node = row as HTMLElement;
-    if (node.offsetTop + node.offsetHeight > el.scrollTop) {
-      const id = Number(node.dataset.msgId);
-      return Number.isFinite(id) && id > 0 ? id : null;
-    }
-  }
-  return null;
+  if (!scroller.value || !stickToBottom.value) return;
+  await nextTick();
+  scrollToBottom();
 }
 
 watch(previewRevision, () => void repinAfterPreviewGrowth());

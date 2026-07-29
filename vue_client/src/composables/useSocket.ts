@@ -7,6 +7,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { primePreviews } from './useLinkPreview.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
@@ -190,6 +191,10 @@ function applyEvent(event: any): void {
       // server's read-state broadcast (fired after every countable event),
       // so we don't increment them here.
       if (!buffers.pushMessage(event)) break;
+      // A live message is the one case where growth is expected and harmless: it lands at the
+      // bottom, where the list's existing stick-to-bottom logic follows it down. Primed after
+      // the dedupe check so a replayed event doesn't re-queue.
+      primeEventPreviews([event]);
       // Speakers feeds tab-complete and the nick-picker. Our own messages
       // would just clutter our own suggestions, so they don't count as
       // "people who recently spoke here."
@@ -455,6 +460,30 @@ function applyEvent(event: any): void {
   }
 }
 
+// Kick off preview resolution for a batch of incoming events.
+//
+// ⚠ This is the ONLY place previews are requested. Rendering a row never triggers a fetch —
+// see the header of composables/useLinkPreview. Priming here is what gives scrollback the
+// Slack/Discord property: by the time a history page's rows are rendered their previews are
+// usually already known, so the rows are laid out correctly on first paint instead of growing
+// under the reader a moment later.
+//
+// Fire-and-forget by design. A history page must not wait on the internet before it can be
+// read, and nothing here can fail in a way a reader should hear about.
+function primeEventPreviews(events: unknown): void {
+  if (!Array.isArray(events) || events.length === 0) return;
+  const settings = useSettingsStore();
+  const toggles = {
+    inlineMedia: settings.effective('chat.inline_media.enabled') === true,
+    linkPreviews: settings.effective('chat.link_previews.enabled') === true,
+  };
+  if (!toggles.inlineMedia && !toggles.linkPreviews) return;
+  primePreviews(
+    events.map((e) => (e as { text?: string | null }).text),
+    toggles,
+  );
+}
+
 function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
@@ -553,6 +582,7 @@ function handleMessage(raw: string): void {
       for (const e of payload.events) trackSeenId(e?.id);
     }
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
+    primeEventPreviews(payload.events);
     applyBacklog(payload);
     return;
   }
@@ -566,6 +596,7 @@ function handleMessage(raw: string): void {
     // Every mode carries `events`; reconcile before the mode-specific dispatch so
     // one call covers around/latest/after/before alike.
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
+    primeEventPreviews(payload.events);
     if (mode === 'around') {
       buffers.applyAroundSlice(payload.networkId, payload.target, payload);
     } else if (mode === 'latest') {

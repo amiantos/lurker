@@ -1,25 +1,34 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Client half of link previews: ask the server about a URL, once, ever.
+// Client half of link previews.
 //
-// Everything expensive is on the server — the fetch, the parse, the cache, the
-// byte proxy. What's left here is the thing a client is uniquely placed to do:
-// notice that a screenful of scrollback contains the same eight URLs forty
-// times, and turn that into one request.
+// ⚠⚠ Resolution is driven by message INGEST, never by rendering. `primePreviews` is called
+// when messages enter the store — a backlog frame, a history page, a live message — and
+// components only ever READ, through `useLinkPreview`.
 //
-// Two layers of coalescing, because they catch different things:
+// The first version had this backwards: a row asked for its preview *while rendering*, which
+// kicked off a fetch, which mutated shared state, which grew the row, which forced the list to
+// correct its own scroll position. Rendering had side effects, so every scroll into history
+// triggered async growth and needed bespoke compensation. QA felt it exactly as described:
+// "the chat loads in completely flat, then inline content loads in a burst, throwing off the
+// scroll offset".
 //
-//   - `cache` dedupes across TIME. Scroll down past a link and back up, and the
-//     second render is free.
-//   - `queue` dedupes across a TICK. A buffer switch mounts fifty rows in one
-//     frame; they all want previews, and they become one POST rather than fifty.
+// Slack and Discord don't have this problem because an unfurl is part of the message record —
+// it arrives WITH the message, so scrollback is laid out correctly on first paint and async
+// growth only happens for a brand-new message at the bottom, where the list already follows.
+// Priming at ingest is how we get that property without the server storing unfurls on every
+// message (which would mean fetching for people who have the feature off).
 //
-// Without the second, opening a link-heavy channel would fire a request per row
-// and immediately eat the server's per-user rate limit.
+// Two layers of coalescing, catching different things:
+//
+//   - `cache` dedupes across TIME. Scroll past a link and back, and the second pass is free.
+//   - `queue` dedupes across a TICK. A history page arrives with fifty rows; they become one
+//     POST rather than fifty.
 
 import { ref, type Ref } from 'vue';
 import { api } from '../api.js';
+import { previewableUrls, type PreviewToggles } from '../utils/previewUrls.js';
 
 export type PreviewKind = 'image' | 'video' | 'audio' | 'page' | 'video-embed';
 
@@ -48,12 +57,11 @@ export interface LinkPreview {
 const cache = new Map<string, Ref<LinkPreview | null>>();
 
 /**
- * Bumped whenever a batch of previews lands and changed something.
+ * Bumped when a batch of previews lands and something changed.
  *
- * A message list needs to know that rows just got taller, and it can't learn that from any
- * individual preview ref — the growth is spread across however many rows were in the batch,
- * and it all reflows in one tick. One counter for the whole batch is exactly the granularity
- * the scroll fix wants: react once, after everything settles.
+ * Only for the residual case: a reader scrolling fast enough to outrun the priming request,
+ * so a row renders before its preview is known and grows when it arrives. With priming at
+ * ingest this is the exception rather than — as it was — every single scroll into history.
  */
 export const previewRevision = ref(0);
 
@@ -107,22 +115,52 @@ async function flush(): Promise<void> {
   }
 }
 
+function entryFor(url: string): Ref<LinkPreview | null> {
+  let entry = cache.get(url);
+  if (!entry) {
+    entry = ref<LinkPreview | null>(null);
+    cache.set(url, entry);
+  }
+  return entry;
+}
+
 /**
- * A reactive preview for `url`, resolving in the background.
+ * Ask the server about every previewable URL in a batch of message bodies.
  *
- * Starts null and fills in. Callers render nothing until it's populated, so a
- * preview appearing is always an addition to the layout — never a flash of a
- * skeleton that then collapses.
+ * Called at INGEST — from the socket layer, as messages enter the store — so that by the time
+ * a row is rendered its preview is usually already known and the row is laid out correctly on
+ * its first paint. Idempotent and cheap: a URL already known or already queued is skipped, so
+ * calling this for an overlapping page costs a map lookup per URL.
+ *
+ * Returns immediately. Nothing awaits it: a history page must not wait on the internet before
+ * it can be read.
+ */
+export function primePreviews(
+  texts: readonly (string | null | undefined)[],
+  toggles: PreviewToggles,
+): void {
+  if (!toggles.inlineMedia && !toggles.linkPreviews) return;
+  let queued = false;
+  for (const text of texts) {
+    for (const url of previewableUrls(text, toggles)) {
+      if (cache.has(url)) continue;
+      entryFor(url);
+      queue.add(url);
+      queued = true;
+    }
+  }
+  if (queued && flushTimer === null) flushTimer = setTimeout(() => void flush(), FLUSH_MS);
+}
+
+/**
+ * The preview for `url`, if one is known.
+ *
+ * READ-ONLY: this never triggers a fetch. A component asking about a URL nobody primed gets a
+ * permanently-null ref and renders nothing — which is correct, and is the property that keeps
+ * rendering free of side effects.
  */
 export function useLinkPreview(url: string): Ref<LinkPreview | null> {
-  const existing = cache.get(url);
-  if (existing) return existing;
-
-  const entry = ref<LinkPreview | null>(null);
-  cache.set(url, entry);
-  queue.add(url);
-  if (flushTimer === null) flushTimer = setTimeout(() => void flush(), FLUSH_MS);
-  return entry;
+  return entryFor(url);
 }
 
 /** Test-only: drop everything so a suite starts from a known state. */
