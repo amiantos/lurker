@@ -228,12 +228,22 @@ export function listMessages(
   { before, afterId, limit = 50 }: { before?: number; afterId?: number; limit?: number } = {},
 ): MessageEvent[] {
   if (afterId) {
-    const rows = db
-      .prepare(
-        `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE network_id = ? AND target = ? AND id > ?
-       ORDER BY id ASC LIMIT ?`,
-      )
-      .all(networkId, target, afterId, limit) as MessageRow[];
+    // `before` is an exclusive CEILING here, not a paging cursor — it bounds the
+    // forward window at the top the same way it bounds the backward window below.
+    // The connect snapshot uses it to keep a slice at or below its burst ceiling
+    // (#469); bounding in SQL rather than filtering the result matters because a
+    // post-filter would silently return a short — or empty — page while the
+    // caller's hasMoreNewer still said "keep paging", which is a client paging
+    // loop that never advances.
+    const sql = before
+      ? `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE network_id = ? AND target = ? AND id > ? AND id < ?
+       ORDER BY id ASC LIMIT ?`
+      : `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE network_id = ? AND target = ? AND id > ?
+       ORDER BY id ASC LIMIT ?`;
+    const params = before
+      ? [networkId, target, afterId, before, limit]
+      : [networkId, target, afterId, limit];
+    const rows = db.prepare(sql).all(...params) as MessageRow[];
     return rows.map(rowToEvent);
   }
   const sql = before
@@ -319,15 +329,23 @@ export function listMessagesCounted(
 
   // Step 1: walk out from the cursor and stop at whichever comes first — the
   // `limit`-th COUNTING row, or `maxScan` rows.
+  // Forward paging accepts `before` as an exclusive ceiling too (see listMessages),
+  // so a caller bounded at the top gets a correctly-sized page rather than a
+  // full one it has to trim.
   const scanSql = forward
-    ? `SELECT id, type FROM messages WHERE network_id = ? AND target = ? AND id > ? ORDER BY id ASC LIMIT ?`
+    ? before
+      ? `SELECT id, type FROM messages WHERE network_id = ? AND target = ? AND id > ? AND id < ? ORDER BY id ASC LIMIT ?`
+      : `SELECT id, type FROM messages WHERE network_id = ? AND target = ? AND id > ? ORDER BY id ASC LIMIT ?`
     : before
       ? `SELECT id, type FROM messages WHERE network_id = ? AND target = ? AND id < ? ORDER BY id DESC LIMIT ?`
       : `SELECT id, type FROM messages WHERE network_id = ? AND target = ? ORDER BY id DESC LIMIT ?`;
   const cursor = forward ? afterId : before;
-  const scanParams: Array<number | string> = cursor
-    ? [networkId, target, cursor, maxScan]
-    : [networkId, target, maxScan];
+  const scanParams: Array<number | string> =
+    forward && before
+      ? [networkId, target, afterId as number, before, maxScan]
+      : cursor
+        ? [networkId, target, cursor, maxScan]
+        : [networkId, target, maxScan];
   const scanned = db.prepare(scanSql).all(...scanParams) as Array<{ id: number; type: string }>;
   if (scanned.length === 0) return [];
 
@@ -351,6 +369,10 @@ export function listMessagesCounted(
   if (forward) {
     conds.push('id > ?', 'id <= ?');
     params.push(afterId as number, boundary);
+    if (before) {
+      conds.push('id < ?');
+      params.push(before);
+    }
   } else {
     conds.push('id >= ?');
     params.push(boundary);

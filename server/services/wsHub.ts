@@ -157,6 +157,10 @@ interface LurkerWebSocket extends WebSocket {
   // so it can't overwrite a slice the user just asked for. Lives only for the
   // duration of one burst.
   historyServedDuringBurst?: Set<string>;
+  // The in-flight burst's ceiling, exposed on the socket so replies serviced
+  // BETWEEN chunks (open-buffer, history) can cap themselves at it too. Undefined
+  // outside a burst, which is what makes those paths unbounded by default.
+  burstMaxId?: number;
 }
 
 // #574: cap a single inbound WS frame. The library default is 100 MB; client→
@@ -984,8 +988,6 @@ export function buildResumeSlice(
   // path, where the mutation runs.
   maxId: number = Number.POSITIVE_INFINITY,
 ): { events: DecoratedEvent[]; reset: boolean; mode: BacklogMode; hasMoreOlder: boolean } {
-  const withinBurst = (rows: MessageEvent[]): MessageEvent[] =>
-    maxId === Number.POSITIVE_INFINITY ? rows : rows.filter((e) => (e.id ?? 0) <= maxId);
   if (sinceId > 0) {
     // Ask whether the gap overflows BEFORE reading it. The truncation test used to
     // be "read RESUME_GAP_CAP rows, and if we filled the cap, is there another one
@@ -997,9 +999,14 @@ export function buildResumeSlice(
     // probe. Equivalent by construction: "more than CAP rows exist after the
     // cursor" is exactly what the old length-plus-hasNewerRow pair detected.
     if (!hasMoreThan(networkId, target, sinceId, RESUME_GAP_CAP, maxId)) {
-      const gap = withinBurst(
-        listMessages(networkId, target, { afterId: sinceId, limit: RESUME_GAP_CAP }),
-      );
+      // Bounded in the query, not after it: post-filtering would read and
+      // decorate up to RESUME_GAP_CAP rows and then throw away the ones above the
+      // ceiling — the same wasted read hasMoreThan was added to eliminate.
+      const gap = listMessages(networkId, target, {
+        afterId: sinceId,
+        limit: RESUME_GAP_CAP,
+        ...(Number.isFinite(maxId) ? { before: maxId + 1 } : {}),
+      });
       // hasMoreOlder must be accurate even though a LOADED buffer ignores it
       // (gap-fill just appends): a client holding this buffer only as an empty
       // SHELL (the fresh-connect optimization) empty-seeds from this frame, and a
@@ -1213,6 +1220,21 @@ export function buildSystemHistoryReply(userId: number, msg: WsPayload): WsPaylo
 // No live conn, so channelJoined folds #channels to parted and DMs to joined
 // (they never dim). Shared by buildOfflineBacklogFrames and the snapshot's single
 // enumeration pass so the offline carve-out lives in exactly one place.
+// Record that this socket was just handed a STANDALONE latest slice for a buffer
+// while its snapshot was mid-flight, so the burst downgrades that buffer to a
+// shell instead of replacing what the user is now looking at (#469). A no-op
+// outside a burst, which is when `historyServedDuringBurst` is undefined.
+//
+// Only ever call this for a reply that lands the client on the live tail — an
+// `open-buffer` backlog or a `history mode:'latest'`. A reply that merely extends
+// the client's scrollback ('before'/'after') leaves its tail as stale as it was,
+// so that buffer still NEEDS the burst's gap frame; suppressing it would drop
+// those rows permanently, since ws.sinceId is one global sequence advanced past
+// them by every other buffer.
+function noteHydratedDuringBurst(ws: LurkerWebSocket, networkId: number, target: string): void {
+  ws.historyServedDuringBurst?.add(`${networkId}::${target.toLowerCase()}`);
+}
+
 function buildOfflineFrame(
   userId: number,
   networkId: number,
@@ -1331,7 +1353,8 @@ export function handleOpenBuffer(
     kindForTarget(requested) === 'channel' && !!conn?.channels.has(requested.toLowerCase());
   if (row && (hasMessageForTarget(networkId, row.target) || inChannel)) {
     reopenBufferRow(userId, networkId, row.target);
-    send(ws, buildBufferBacklog(userId, networkId, row.target, countBy));
+    send(ws, buildBufferBacklog(userId, networkId, row.target, countBy, ws.burstMaxId));
+    noteHydratedDuringBurst(ws, networkId, row.target);
     send(ws, { kind: 'buffer-opened', networkId, target: row.target });
     announceOpen(ws, userId, networkId, row.target, conn);
   } else if (requested.startsWith('#')) {
@@ -1344,7 +1367,8 @@ export function handleOpenBuffer(
     // buffer that never JOINs — those fall through as a no-op, exactly as the
     // pre-registry code behaved.
     const { record } = ensureBufferOpen(userId, networkId, requested);
-    send(ws, buildBufferBacklog(userId, networkId, record.target, countBy));
+    send(ws, buildBufferBacklog(userId, networkId, record.target, countBy, ws.burstMaxId));
+    noteHydratedDuringBurst(ws, networkId, record.target);
     send(ws, { kind: 'buffer-opened', networkId, target: record.target });
     announceOpen(ws, userId, networkId, record.target, conn);
   }
@@ -2350,6 +2374,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     let ms = 0;
     ws.snapshotting = true;
     ws.historyServedDuringBurst = new Set();
+    ws.burstMaxId = maxMessageId();
     try {
       b = await sendSnapshotInner(ws, userId, freshIds);
       ok = true;
@@ -2374,8 +2399,16 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // drainSnapshotQueue owns clearing `snapshotting` — it has to stay set for
         // the whole drain so a fanOut landing mid-drain queues behind what's still
         // going out rather than overtaking it.
-        await drainSnapshotQueue(ws);
+        // Cleared BEFORE the drain, not after. The drain yields, so a reply
+        // serviced during it would otherwise be recorded into a set that is then
+        // thrown away — and carrying the set into a deferred second burst would be
+        // wrong anyway: by then those buffers DO want that burst's frames, and
+        // suppressing them is the permanent-hole failure again. A 'latest' served
+        // during the drain needs no guard: the client is already on the live tail,
+        // so the next burst's gap simply appends.
         ws.historyServedDuringBurst = undefined;
+        ws.burstMaxId = undefined;
+        await drainSnapshotQueue(ws);
         // Run any snapshot that was requested while this one held the socket. The
         // drain went first so the held events keep their place ahead of the
         // new burst's frames, matching the order they'd have had all along.
@@ -2388,6 +2421,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         console.error(`[wsHub] snapshot teardown for user ${userId} failed:`, err);
         ws.snapshotting = false;
         ws.historyServedDuringBurst = undefined;
+        ws.burstMaxId = undefined;
       }
     }
     // Only attribute phases on success — a throw leaves the breakdown at its
@@ -2458,9 +2492,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // or below it is the burst's to ship; anything newer was created while the
     // burst was yielding and is already held in snapshotQueue, so slices must not
     // also include it — see buildResumeSlice's `maxId` for what the duplicate
-    // costs. Taken once here rather than per buffer so the whole burst agrees on
-    // where "now" was.
-    const burstMaxId = maxMessageId();
+    // costs. Read from the socket rather than taken again here, so the burst and
+    // the mid-burst replies that cap themselves against `ws.burstMaxId` agree on
+    // the same instant — a second maxMessageId() call would sit a few rows later
+    // and reopen the duplicate window between them. (The fallback is for direct
+    // callers in tests, which never set it.)
+    const burstMaxId = ws.burstMaxId ?? maxMessageId();
     const cursor = isFreshConnect ? burstMaxId : 0;
     // #627: the effective upload cap rides the snapshot so a client can size media
     // to fit BEFORE it starts an upload — lurker-ios compresses video against this
@@ -3441,12 +3478,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           send(ws, { kind: 'error', text: 'unknown network' });
           break;
         }
-        // Serving this mid-burst means the client is about to hold a slice newer
-        // than anything the in-flight snapshot would ship for this buffer. Record
-        // it so the burst downgrades that buffer to a shell rather than replacing
-        // what we just handed over. Folded, because the burst compares against
-        // the row's casing and the request may not match it (see below).
-        ws.historyServedDuringBurst?.add(`${histNetworkId}::${histTarget.toLowerCase()}`);
         // Resolve the caller's casing to the row's, the way `open-buffer` always
         // has. IRC target names are case-insensitive, but `messages.target` is
         // BINARY-collated TEXT and rows keep whatever casing the network handed
@@ -3528,7 +3559,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             send(ws, { kind: 'error', text: 'invalid afterId' });
             break;
           }
-          const rows = listMessagesCounted(histNetworkId, histTarget, countBy, { afterId, limit });
+          const rows = listMessagesCounted(histNetworkId, histTarget, countBy, {
+            afterId,
+            limit,
+            // Burst ceiling — see the 'latest' branch below for why a mid-burst
+            // reply must not carry rows the drain is already holding.
+            ...(ws.burstMaxId != null ? { before: ws.burstMaxId + 1 } : {}),
+          });
           const events = rows.map((e) => decorateMessage(userId, e));
           const newestId = events.length ? events[events.length - 1].id : afterId;
           send(ws, {
@@ -3550,7 +3587,34 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           // upward paging cleanly, plus inputHistory so up-arrow recall is
           // restored for a shell (fresh-connect shells omit it, so this is the
           // only place a reloaded client gets its per-buffer recall back).
-          const rows = listMessagesCounted(histNetworkId, histTarget, countBy, { limit });
+          // Mid-burst, this reply hands the client a STANDALONE latest slice —
+          // which supersedes anything the in-flight snapshot would ship for this
+          // buffer, so record it and let the burst downgrade to a shell rather
+          // than replacing what we just gave the user (see the online loop).
+          //
+          // ONLY 'latest'. The other modes must NOT be recorded: 'before' and
+          // 'after' leave the client's tail exactly as stale as it was, so it
+          // still needs the burst's gap — suppressing that frame would drop those
+          // rows for good, since ws.sinceId is a single global sequence advanced
+          // by every other buffer, so the next `?since` can't reach them either.
+          // That is the permanent-hole class (#205) the replace path exists to
+          // prevent. 'around' detaches the buffer, and a detached buffer ignores
+          // resume frames client-side regardless.
+          //
+          // Placed here, after validation and inside the mode branch, so a
+          // request that errors out can't poison the buffer's frame while having
+          // delivered nothing.
+          noteHydratedDuringBurst(ws, histNetworkId, histTarget);
+          // Capped at the burst ceiling for the same reason buildResumeSlice is:
+          // a row inserted while the burst was yielding is already held in
+          // snapshotQueue, and delivering it here too means the drain's copy is
+          // dropped by the client's id-dedupe — taking its state mutation
+          // (addMember / setTopic / ...) with it. The held copy lands moments
+          // later and appends cleanly.
+          const rows = listMessagesCounted(histNetworkId, histTarget, countBy, {
+            limit,
+            ...(ws.burstMaxId != null ? { before: ws.burstMaxId + 1 } : {}),
+          });
           const events = rows.map((e) => decorateMessage(userId, e));
           const oldestId = events.length ? events[0].id : 0;
           send(ws, {

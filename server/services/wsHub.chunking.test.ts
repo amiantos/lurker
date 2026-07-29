@@ -241,6 +241,37 @@ describe('chunked connect burst (#469)', () => {
     expect(burstFrame!.events).toEqual([]);
   });
 
+  it('does NOT downgrade for a scroll-up served mid-burst', async () => {
+    // The dangerous half of the downgrade. `history` defaults to mode:'before',
+    // which only PREPENDS older rows — the client's tail stays exactly as stale
+    // as it was, so it still needs the burst's frame. Suppressing that frame
+    // drops those rows permanently: ws.sinceId is one global sequence, advanced
+    // past them by every other buffer in the burst plus the queue drain, so the
+    // next `?since` can't reach them either. That is the #205 permanent-hole
+    // class, traded for a cosmetic win. Only a slice that lands the client on the
+    // LIVE TAIL may suppress.
+    const target = `:server:${lateNetworkId}`;
+    let asked = false;
+    const frames = await collectBurst((frame) => {
+      if (asked || frame.kind !== 'backlog') return;
+      asked = true;
+      liveSocket?.send(
+        JSON.stringify({ type: 'history', networkId: lateNetworkId, target, mode: 'before' }),
+      );
+    });
+
+    expect(asked).toBe(true);
+    // The request WAS serviced mid-burst — `:server:` can't serve 'before' (the
+    // recent_messages verb rejects it), so it comes back an error. That makes this
+    // the sharper case of the same rule: a request that delivered the client
+    // NOTHING must certainly not suppress the burst's frame for that buffer.
+    // Recording before mode-dispatch and validation did exactly that.
+    expect(frames.some((f) => f.kind === 'error')).toBe(true);
+    const burstFrame = frames.find((f) => f.kind === 'backlog' && f.target === target);
+    expect(burstFrame).toBeDefined();
+    expect(burstFrame!.mode).not.toBe('shell');
+  });
+
   it('defers a snapshot requested mid-burst instead of dropping it', async () => {
     // Concurrent snapshots can't interleave on one socket, but the loser must not
     // be discarded: chunking made "a network finishes connecting partway through
