@@ -129,6 +129,7 @@
               interactive-nicks
               @nick-click="onMentionMenu"
             />
+            <MessageAttachments :text="row.m?.text" />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
         </template>
@@ -160,6 +161,9 @@
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
               @nick-click="onMentionMenu"
+            /><MessageAttachments
+              v-if="row.m?.type === 'message' || row.m?.type === 'action'"
+              :text="row.m?.text"
             />
             <template v-else-if="row.m?.type === 'join'"
               ><NickRef
@@ -333,6 +337,7 @@ import { asEventMode, eventModeKey, isNoiseType } from '../../../shared/eventFil
 import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
+import MessageAttachments from './MessageAttachments.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type {

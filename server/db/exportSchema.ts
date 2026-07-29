@@ -479,6 +479,14 @@ export const EXPORT_TABLES = Object.freeze({
     reason: 'cookie-based session tokens; new instance issues its own',
   },
 
+  link_previews: {
+    mode: 'skip',
+    reason:
+      'a URL-keyed cache of publicly-fetched page metadata — derived data about other ' +
+      'people’s web pages, not the user’s. Exporting it would leak which links the user ' +
+      'has seen without adding anything they could not refetch',
+  },
+
   webauthn_credentials: {
     mode: 'skip',
     reason:

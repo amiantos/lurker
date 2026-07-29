@@ -1003,6 +1003,42 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'in a new tab.',
   },
 
+  // ─── Inline media & link previews ─────────────────────────────────────
+  //
+  // Two keys rather than one, because wanting one does not imply wanting the
+  // other. Seeing the screenshots your friends paste is a different appetite
+  // from having every news article sprout a card, and plenty of people want
+  // exactly one of them.
+  //
+  // Both default OFF. Neither is device-split: if you want images inline you
+  // want them inline everywhere. (Contrast `chat.events`, which IS device-split
+  // because screen size genuinely changes the right answer.)
+  {
+    key: 'chat.inline_media.enabled',
+    label: 'Inline media',
+    category: 'chat',
+    group: 'viewing',
+    type: 'bool',
+    default: false,
+    description:
+      'When enabled, a link that points straight at an image, video, or audio file ' +
+      'renders under the message instead of showing only as a link. The file is fetched ' +
+      'and served by your Lurker server, so the site hosting it never sees your device.',
+  },
+  {
+    key: 'chat.link_previews.enabled',
+    label: 'Link previews',
+    category: 'chat',
+    group: 'viewing',
+    type: 'bool',
+    default: false,
+    description:
+      'When enabled, a link to a web page renders a small card with its title, ' +
+      'description, and thumbnail. Your Lurker server fetches the page — your device ' +
+      'never contacts the site. Video links get a play button, and nothing is sent to ' +
+      'the video host until you press it.',
+  },
+
   // ─── Connection ───────────────────────────────────────────────────────
   {
     key: 'chat.quit_message',

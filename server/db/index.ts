@@ -648,6 +648,40 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_system_messages_recent ON system_messages(user_id, id);
 
+    -- Resolved link-preview metadata, keyed by URL rather than by message or by
+    -- user: the whole point is that a link pasted in forty channels by forty
+    -- people is fetched once. Nothing here is per-account, so there's no
+    -- user_id and no FK — it's a cache, and dropping the table costs a refetch.
+    --
+    -- FAILURES ARE CACHED TOO, and that's load-bearing rather than an
+    -- optimisation. A dead link, a 403 from a datacenter-IP block, or a page
+    -- with no metadata sits in old scrollback forever; without a negative entry
+    -- every scroll past it reopens a socket, and hammering a host that just
+    -- challenged us is how a rate-limit becomes a ban. status is
+    -- 'ok' | 'unavailable', and unavailable rows get a much shorter TTL so a
+    -- site that was merely down gets another chance before long.
+    --
+    -- Not part of the export contract (derived public data, not the user's) —
+    -- see the 'skip' entry in db/exportSchema.ts.
+    CREATE TABLE IF NOT EXISTS link_previews (
+      url_hash TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ok',
+      kind TEXT NOT NULL DEFAULT 'page',
+      title TEXT,
+      description TEXT,
+      site_name TEXT,
+      author TEXT,
+      image_url TEXT,
+      image_width INTEGER,
+      image_height INTEGER,
+      embed_url TEXT,
+      mime TEXT,
+      fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_link_previews_expires ON link_previews(expires_at);
+
     -- RPE2E end-to-end-encryption keyring (issue #382). Secrets — the identity
     -- private key and the session keys — are stored as secretCrypto envelopes
     -- (TEXT, the same lk1.* at-rest scheme as network credentials); public
