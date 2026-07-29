@@ -19,6 +19,7 @@ import MessageAttachment from './MessageAttachment.vue';
 import MessageAttachments from './MessageAttachments.vue';
 import type { LinkPreview } from '../composables/useLinkPreview.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useMediaViewer } from '../composables/useMediaViewer.js';
 
 // Resolution is driven by message ingest, so components only read — stub the read. A real
 // `ref` is required: the templates rely on Vue's auto-unwrapping, which is keyed on `isRef`.
@@ -208,5 +209,67 @@ describe('MessageAttachments — arrangement', () => {
     // The ingest-driven model's normal early state, and the case a row must render as
     // "nothing" rather than as a placeholder that later collapses.
     expect(mountFor('https://e.test/not-primed').find('.attachments').exists()).toBe(false);
+  });
+});
+
+describe('MessageAttachments — the lightbox is a gallery over the strip', () => {
+  beforeEach(() => {
+    resolved.clear();
+    useMediaViewer().close();
+  });
+
+  const img = (n: number) =>
+    preview({
+      url: `https://e.test/${n}.png`,
+      kind: 'image',
+      src: `/api/link-preview/media/t${n}`,
+      thumbWidth: 800,
+      thumbHeight: 600,
+    });
+
+  it('opens every image in the strip, positioned on the one clicked', async () => {
+    // This is what makes a generous media cap safe: however many images a message carries,
+    // all of them are reachable by arrowing through the viewer.
+    for (const n of [1, 2, 3]) resolved.set(img(n).url, img(n));
+    seedSettings();
+    const wrapper = mount(MessageAttachments, {
+      props: { text: 'https://e.test/1.png https://e.test/2.png https://e.test/3.png' },
+    });
+
+    await wrapper.findAll('.filmstrip img')[1].trigger('click');
+
+    const viewer = useMediaViewer();
+    expect(viewer.isOpen.value).toBe(true);
+    expect(viewer.count.value).toBe(3);
+    expect(viewer.index.value).toBe(1);
+    expect(viewer.url.value).toBe('https://e.test/2.png');
+    // And the arrows are live in both directions, which is the whole point.
+    expect(viewer.hasPrev.value).toBe(true);
+    expect(viewer.hasNext.value).toBe(true);
+  });
+
+  it('opens a lone image as a gallery of one', () => {
+    resolved.set(img(1).url, img(1));
+    seedSettings();
+    const wrapper = mount(MessageAttachments, { props: { text: 'https://e.test/1.png' } });
+    wrapper.find('img.inline-image').trigger('click');
+    expect(useMediaViewer().count.value).toBe(1);
+  });
+
+  it('does not open anything when the media viewer is switched off', async () => {
+    for (const n of [1, 2]) resolved.set(img(n).url, img(n));
+    setActivePinia(createPinia());
+    const settings = useSettingsStore();
+    settings.values = {
+      'chat.inline_media.enabled': true,
+      'chat.link_previews.enabled': true,
+      'chat.image_modal.enabled': false,
+    };
+    settings.loaded = true;
+    const wrapper = mount(MessageAttachments, {
+      props: { text: 'https://e.test/1.png https://e.test/2.png' },
+    });
+    await wrapper.findAll('.filmstrip img')[0].trigger('click');
+    expect(useMediaViewer().isOpen.value).toBe(false);
   });
 });

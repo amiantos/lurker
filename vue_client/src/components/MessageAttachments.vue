@@ -19,6 +19,7 @@
         :preview="item"
         in-strip
         @measured="$emit('measured')"
+        @activate="openStripAt(item)"
       />
     </div>
     <MessageAttachment
@@ -26,6 +27,7 @@
       :key="item.url"
       :preview="item"
       @measured="$emit('measured')"
+      @activate="viewer.open(item.url)"
     />
   </div>
 </template>
@@ -35,6 +37,7 @@ import { computed } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { previewableUrls } from '../utils/previewUrls.js';
 import { useLinkPreview, type LinkPreview } from '../composables/useLinkPreview.js';
+import { useMediaViewer } from '../composables/useMediaViewer.js';
 import MessageAttachment from './MessageAttachment.vue';
 
 // Owns the ARRANGEMENT of a message's attachments; MessageAttachment owns how any one of
@@ -49,6 +52,7 @@ const props = defineProps<{ text: string | null | undefined }>();
 defineEmits<{ measured: [] }>();
 
 const settings = useSettingsStore();
+const viewer = useMediaViewer();
 
 /** Row heights for a strip, picked by the group's dominant orientation.
  *
@@ -97,6 +101,19 @@ const strip = computed(() => visible.value.filter((p) => p.kind === 'image' || p
 const stacked = computed(() =>
   strip.value.length > 1 ? visible.value.filter((p) => !strip.value.includes(p)) : visible.value,
 );
+
+/**
+ * Open the lightbox over the WHOLE strip, positioned on the image that was clicked.
+ *
+ * This is what makes a generous media cap safe: however many images a message carries, every
+ * one of them is reachable by arrowing through the viewer rather than only by scrolling the
+ * strip. The viewer has always been a gallery — a single file is a gallery of one — so this
+ * needed no work there.
+ */
+function openStripAt(item: LinkPreview): void {
+  const items = strip.value.map((p) => ({ url: p.url }));
+  viewer.openGallery(items, strip.value.indexOf(item));
+}
 
 const stripHeight = computed(() => {
   const portrait = strip.value.filter((p) => (p.thumbHeight ?? 0) > (p.thumbWidth ?? 0)).length;

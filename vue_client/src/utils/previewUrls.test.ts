@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { previewableUrls, MAX_PREVIEWS_PER_MESSAGE } from './previewUrls.js';
+import { previewableUrls, MAX_CARDS_PER_MESSAGE, MAX_MEDIA_PER_MESSAGE } from './previewUrls.js';
 
 const BOTH = { inlineMedia: true, linkPreviews: true };
 const NEITHER = { inlineMedia: false, linkPreviews: false };
@@ -87,9 +87,32 @@ describe('previewableUrls — limits', () => {
     expect(previewableUrls(text, BOTH)).toEqual(['https://e.test/a']);
   });
 
-  it('caps a link-spam message', () => {
+  it('caps CARDS tightly, because each one costs vertical space', () => {
     const text = Array.from({ length: 12 }, (_, i) => `https://e.test/${i}`).join(' ');
-    expect(previewableUrls(text, BOTH).length).toBe(MAX_PREVIEWS_PER_MESSAGE);
+    expect(previewableUrls(text, BOTH).length).toBe(MAX_CARDS_PER_MESSAGE);
+  });
+
+  it('lets many images through, because a strip costs the same at 2 or at 12', () => {
+    // Media renders as one horizontally-scrolling strip of fixed height and the lightbox
+    // opens as a gallery over the whole thing, so the tenth image costs no more screen than
+    // the second and none of them is unreachable.
+    const text = Array.from({ length: 12 }, (_, i) => `https://e.test/${i}.png`).join(' ');
+    expect(previewableUrls(text, BOTH).length).toBe(12);
+  });
+
+  it('still bounds media, so a spam message is not fifty outbound fetches', () => {
+    const text = Array.from({ length: 40 }, (_, i) => `https://e.test/${i}.png`).join(' ');
+    expect(previewableUrls(text, BOTH).length).toBe(MAX_MEDIA_PER_MESSAGE);
+  });
+
+  it('counts the two caps independently', () => {
+    // Five cards' worth of pages plus five images: the pages are trimmed to three, the
+    // images all survive. One class filling up must not consume the other's budget.
+    const pages = Array.from({ length: 5 }, (_, i) => `https://e.test/page${i}`);
+    const images = Array.from({ length: 5 }, (_, i) => `https://e.test/img${i}.png`);
+    const got = previewableUrls([...pages, ...images].join(' '), BOTH);
+    expect(got.filter((u) => u.endsWith('.png')).length).toBe(5);
+    expect(got.filter((u) => !u.endsWith('.png')).length).toBe(MAX_CARDS_PER_MESSAGE);
   });
 
   it('counts the cap after deduping, not before', () => {

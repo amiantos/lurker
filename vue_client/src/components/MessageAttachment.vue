@@ -100,7 +100,6 @@
 import { computed, ref } from 'vue';
 import type { LinkPreview } from '../composables/useLinkPreview.js';
 import { useSettingsStore } from '../stores/settings.js';
-import { useMediaViewer } from '../composables/useMediaViewer.js';
 
 // Purely presentational: it renders ONE already-resolved, already-permitted preview.
 // Resolution happens at message ingest and the settings check happens in
@@ -114,10 +113,12 @@ const props = defineProps<{
 // Emitted when an image finishes decoding. Only matters when the server couldn't give us
 // dimensions (an exotic format, a truncated header) — there the box wasn't reserved, so the
 // row does grow on load and the list needs a chance to re-pin.
-defineEmits<{ measured: [] }>();
+// `activate` rather than opening the viewer here: what a click MEANS depends on the
+// arrangement, and the arrangement is the parent's business. A tap on one image of a strip
+// should open the whole strip as a gallery, and only the parent knows what the strip holds.
+const emit = defineEmits<{ measured: []; activate: [] }>();
 
 const settings = useSettingsStore();
-const viewer = useMediaViewer();
 const playing = ref(false);
 
 const isVideo = computed(() => props.preview.kind === 'video-embed' && !!props.preview.embedUrl);
@@ -130,7 +131,7 @@ function openViewer(): void {
   // The viewer is opt-out (chat.image_modal.enabled); when it's off, an inline image is just
   // an image and a click does nothing special.
   if (settings.effective('chat.image_modal.enabled') !== true) return;
-  viewer.open(props.preview.url);
+  emit('activate');
 }
 </script>
 

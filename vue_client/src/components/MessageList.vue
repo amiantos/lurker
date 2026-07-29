@@ -1622,16 +1622,47 @@ async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback
 // `overflow-anchor: none` on the scroller (see the CSS) means the browser won't compensate on
 // its own — the same deliberate choice that makes history prepends predictable.
 //
-// Only the pinned case is corrected, and that's deliberate. A reader at the live tail is
-// followed down, which is what they want and what a live append already does. A reader
-// scrolled up is left alone: growth below the viewport doesn't move anything they can see, and
-// growth above it is what `pinAnchorRow` handles on the paths that actually prepend content.
-// Guessing at an anchor here cost a full-buffer layout read to fix a case that priming has
-// already made rare.
+// BOTH cases need handling, and the previous pass got this wrong. The reasoning then was that
+// growth above the viewport "belongs to the prepend paths that already pin an anchor" — but a
+// prepend's pin runs when the prepend lands, and the previews for that batch resolve a moment
+// LATER. Nothing was covering the gap, which is exactly what QA hit: scroll up, history
+// arrives, previews arrive, position lost.
+//
+// This watcher runs BEFORE the DOM updates (Vue's default 'pre' flush), which is what makes a
+// correction possible at all: `pinAnchorRow` measures the anchor now, awaits the re-render, and
+// puts it back where it was.
+//
+// The anchor is found with elementFromPoint — O(1). Scanning every row for the first visible
+// one, as an earlier version did, read offsetTop/offsetHeight per row and forced a synchronous
+// layout for each; that was QA's "the whole screen is trying to redraw".
 async function repinAfterPreviewGrowth() {
-  if (!scroller.value || !stickToBottom.value) return;
-  await nextTick();
-  scrollToBottom();
+  const el = scroller.value;
+  if (!el) return;
+  if (stickToBottom.value) {
+    // A reader at the live tail wants to follow the growth down, same as a live append.
+    await nextTick();
+    scrollToBottom();
+    return;
+  }
+  const anchorId = topVisibleMessageId(el);
+  if (anchorId != null) await pinAnchorRow(el, anchorId, false);
+}
+
+/**
+ * The id of the message row at the top of the viewport, in constant time.
+ *
+ * `elementFromPoint` asks the browser what it has already laid out rather than re-measuring
+ * anything, so this costs the same whether the buffer holds ten rows or a thousand. A point
+ * just inside the top edge lands on whatever the reader's eye is on; walking up to the nearest
+ * `[data-msg-id]` turns it into the anchor `pinAnchorRow` wants.
+ */
+function topVisibleMessageId(el: HTMLElement): number | null {
+  const box = el.getBoundingClientRect();
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
+  const row = hit?.closest('[data-msg-id]') as HTMLElement | null;
+  if (!row) return null;
+  const id = Number(row.dataset.msgId);
+  return Number.isFinite(id) && id > 0 ? id : null;
 }
 
 watch(previewRevision, () => void repinAfterPreviewGrowth());
@@ -2117,9 +2148,17 @@ watch(
    own buffer + unread badge already. */
 .line.highlight {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
+  /* A link-preview card inside a highlighted row needs a WARM panel: the neutral grey one
+     reads as a foreign object dropped onto the tint. Re-tinted rather than lightened, one
+     step further into the highlight than the row itself, so it still reads as raised.
+     Custom properties inherit through scoped styles, so overriding the token here is enough
+     — MessageAttachment needs no knowledge that highlights exist. */
+  --embed-bg: color-mix(in srgb, var(--warn) 24%, var(--bg));
 }
 .message-list:not(.compact) .line.highlight.alt {
   background: color-mix(in srgb, var(--warn) 18%, transparent);
+  /* Matched the alt row's stronger tint, so the panel stays a step above it. */
+  --embed-bg: color-mix(in srgb, var(--warn) 30%, var(--bg));
 }
 .line.scroll-target {
   animation: scroll-target-pulse 1.5s ease-out;

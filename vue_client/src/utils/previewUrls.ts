@@ -5,14 +5,30 @@ import { createUrlRegex } from '../../../shared/urlPattern.js';
 import { mediaKindForUrl } from './uploadHostMatch.js';
 
 /**
- * Cap per message.
+ * Cap on CARDS per message.
  *
- * Slack allows five, halloy defaults to one. Three is enough for a message
- * genuinely sharing a few links, and short of enough for one message to take
- * over a screen. Deliberately not configurable — a knob here would be a knob
- * about how much of the screen someone else's message may claim.
+ * Slack allows five, halloy defaults to one. Three is enough for a message genuinely sharing
+ * a few links, and short of enough for one message to take over a screen. Each card costs
+ * real vertical space, so this one has to stay tight.
  */
-export const MAX_PREVIEWS_PER_MESSAGE = 3;
+export const MAX_CARDS_PER_MESSAGE = 3;
+
+/**
+ * Cap on MEDIA per message — deliberately generous.
+ *
+ * Media doesn't cost vertical space the way a card does: two or more images render as one
+ * horizontally-scrolling strip of fixed height, so the tenth image costs exactly as much
+ * screen as the second. And clicking any of them opens the lightbox as a GALLERY over the
+ * whole strip, so nothing is unreachable.
+ *
+ * A limit still exists, because a message carrying fifty image URLs is spam and each one is
+ * an outbound fetch on the server's behalf. It's set high enough not to bind on anything a
+ * person would actually post.
+ */
+export const MAX_MEDIA_PER_MESSAGE = 20;
+
+/** @deprecated Kept for the old single-cap name; prefer the two above. */
+export const MAX_PREVIEWS_PER_MESSAGE = MAX_CARDS_PER_MESSAGE;
 
 export interface PreviewToggles {
   inlineMedia: boolean;
@@ -42,6 +58,8 @@ export function previewableUrls(
 
   const out: string[] = [];
   const seen = new Set<string>();
+  let mediaCount = 0;
+  let cardCount = 0;
 
   for (const match of text.matchAll(createUrlRegex())) {
     const raw = match[0];
@@ -59,10 +77,13 @@ export function previewableUrls(
 
     const looksLikeMedia = mediaKindForUrl(url) !== null;
     if (looksLikeMedia ? !inlineMedia : !linkPreviews) continue;
+    if (looksLikeMedia ? mediaCount >= MAX_MEDIA_PER_MESSAGE : cardCount >= MAX_CARDS_PER_MESSAGE)
+      continue;
 
+    if (looksLikeMedia) mediaCount++;
+    else cardCount++;
     seen.add(url);
     out.push(url);
-    if (out.length >= MAX_PREVIEWS_PER_MESSAGE) break;
   }
   return out;
 }
