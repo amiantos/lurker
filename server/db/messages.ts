@@ -301,7 +301,7 @@ interface PageOptions {
  * open a hole. That property is what makes it worth doing server-side rather
  * than having clients over-fetch and trim.
  *
- * Two indexed reads, both on idx_messages_buffer(network_id, target, id DESC):
+ * Two indexed reads, both on idx_messages_unread(network_id, target, id DESC, ...):
  * a (id, type) scan to find the boundary row, then a fetch of the range it
  * bounds.
  */
@@ -434,6 +434,49 @@ export function hasOlderRow(networkId: number, target: string, id: number): bool
 }
 export function hasNewerRow(networkId: number, target: string, id: number): boolean {
   return hasNewerThan(networkId, target, id);
+}
+
+// Are there MORE than `count` rows newer than `afterId` in this buffer? Answers
+// buildResumeSlice's "did the gap overflow the cap?" question without reading the
+// gap body: the caller used to fetch all `count` rows, decorate them, discover the
+// overflow from their length, and throw every one away before re-reading a latest
+// slice. On a flooding account every buffer overflows, so that discarded read was
+// the dominant cost of a resume snapshot.
+//
+// OFFSET, not id arithmetic: message ids are a single GLOBAL sequence shared by
+// every buffer, so `afterId + count` says nothing about how many rows THIS buffer
+// holds in that span. The offset walks the buffer's own rows. Selecting only `id`
+// keeps it inside idx_messages_unread (index-only, no table fetches), so the probe
+// costs a bounded index walk instead of `count` random row reads.
+// `maxId` bounds the count at the top the same way `afterId` bounds it at the
+// bottom. The caller counts rows it is about to SHIP, and it never ships past its
+// burst ceiling — so rows that arrived mid-burst must not tip this over the cap.
+// Without the bound, a gap of exactly `count` shippable rows plus one row that
+// landed while the snapshot was yielding answers "more than the cap", sending the
+// caller down the truncated replace path and discarding the client's retained
+// scrollback for a gap that would have fitted as an append.
+export function hasMoreThan(
+  networkId: number,
+  target: string,
+  afterId: number,
+  count: number,
+  maxId: number = Number.MAX_SAFE_INTEGER,
+): boolean {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM (
+         SELECT id FROM messages
+         WHERE network_id = ? AND target = ? AND id > ? AND id <= ?
+         ORDER BY id ASC LIMIT 1 OFFSET ?
+       )`,
+    )
+    .get(
+      networkId,
+      target,
+      afterId,
+      Number.isFinite(maxId) ? maxId : Number.MAX_SAFE_INTEGER,
+      count,
+    );
 }
 
 // --- IRCv3 draft/chathistory window queries --------------------------------
@@ -657,7 +700,7 @@ const COUNTABLE_TYPES_SQL = `('${[...COUNTABLE_TYPES].join("','")}')`;
 // buffer's ENTIRE unread range (every row with id > the read pointer), which is
 // the dominant per-buffer cost of a connect snapshot on a deep buffer with a low
 // read pointer. Cap the count at UNREAD_COUNT_CAP: the inner ORDER BY id DESC +
-// LIMIT lets SQLite walk idx_messages_buffer(network_id, target, id DESC) and
+// LIMIT lets SQLite walk idx_messages_unread(network_id, target, id DESC, ...) and
 // stop once that many countable rows are found. Any value >= the cap renders
 // identically (">999"); below the cap it's still exact.
 //
@@ -925,8 +968,8 @@ export function searchMessages(
 // deep the buffer is. The window is small: autocomplete only cares about the last
 // handful of speakers, and the client keeps building the list live via
 // recordSpeaker as the conversation continues. The filters live INSIDE the
-// windowed subquery on purpose: SQLite walks the tail of idx_messages_buffer(
-// network_id, target, id DESC) applying them, so a burst of non-chat rows (a
+// windowed subquery on purpose: SQLite walks the tail of idx_messages_unread(
+// network_id, target, id DESC, ...) applying them, so a burst of non-chat rows (a
 // netsplit's join/quit flood) is skipped rather than eating the window and
 // starving the speaker set. (Backfilled CHATHISTORY isn't a concern: those batches
 // are dropped, not inserted, so id order tracks time order — see ircConnection.ts.)

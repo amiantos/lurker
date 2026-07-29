@@ -283,6 +283,105 @@ describe('buildResumeSlice', () => {
     expect(slice.hasMoreOlder).toBe(true);
   });
 
+  it('appends a gap that exactly fills the cap without truncating it (#469)', () => {
+    // THE boundary. A gap of exactly RESUME_GAP_CAP rows is complete — the cap
+    // bounded it but nothing was dropped — so it must still append. Getting this
+    // wrong resets the client wholesale on a gap that fit, throwing away its
+    // scrollback for no reason.
+    //
+    // Guards the probe-first rewrite specifically: the old test was "did the read
+    // fill the cap AND is there another row after the last one I read", the new
+    // one is "are there MORE than cap rows after the cursor". They agree only if
+    // the probe's offset is exact — an off-by-one here flips this case to
+    // 'replace' and the cap+10 case below would never catch it.
+    const since = seed('#resumeExact', 'm0');
+    let lastId = since;
+    for (let i = 1; i <= RESUME_GAP_CAP; i++) lastId = seed('#resumeExact', `m${i}`);
+    const slice = buildResumeSlice(userId, networkId, '#resumeExact', since);
+    expect(slice.mode).toBe('append');
+    expect(slice.reset).toBe(false);
+    expect(slice.events.length).toBe(RESUME_GAP_CAP);
+    expect((slice.events.at(-1) as { id: number }).id).toBe(lastId);
+  });
+
+  it('never ships a row newer than the burst ceiling (#469)', () => {
+    // Since the snapshot became chunked it spans event-loop turns, so a row can be
+    // INSERTed after the burst pinned its cursor but before this buffer's slice is
+    // read. That row is already held in the socket's snapshotQueue; shipping it
+    // here too delivers it twice, and the client's replay-dedupe then swallows the
+    // second copy ALONG WITH its state mutation (addMember / setTopic / ...), so a
+    // join never joins. The ceiling keeps mid-burst rows exclusive to the live path.
+    const since = seed('#burstCap', 'm0');
+    const inBurst = seed('#burstCap', 'm1');
+    const afterBurst = seed('#burstCap', 'm2'); // "arrived while we were yielding"
+
+    const capped = buildResumeSlice(userId, networkId, '#burstCap', since, inBurst);
+    const ids = (capped.events as Array<{ id: number }>).map((e) => e.id);
+    expect(ids).toContain(inBurst);
+    expect(ids).not.toContain(afterBurst);
+
+    // Uncapped is the pre-fix behaviour, and the contrast is the point: without a
+    // ceiling the same call hands back the row the queue is already holding.
+    const uncapped = buildResumeSlice(userId, networkId, '#burstCap', since);
+    expect((uncapped.events as Array<{ id: number }>).map((e) => e.id)).toContain(afterBurst);
+  });
+
+  it('applies the burst ceiling to the truncated replace slice too', () => {
+    // The overflow branch reads the LATEST rows rather than the gap, so it needs
+    // the same ceiling — it is if anything more exposed, since it deliberately
+    // reads the newest end of the buffer, which is exactly where a mid-burst
+    // insert lands.
+    const since = seed('#burstCapBig', 'm0');
+    let lastInBurst = since;
+    for (let i = 1; i <= RESUME_GAP_CAP + 10; i++) lastInBurst = seed('#burstCapBig', `m${i}`);
+    const afterBurst = seed('#burstCapBig', 'late');
+
+    const slice = buildResumeSlice(userId, networkId, '#burstCapBig', since, lastInBurst);
+    expect(slice.mode).toBe('replace');
+    const ids = (slice.events as Array<{ id: number }>).map((e) => e.id);
+    expect(ids).not.toContain(afterBurst);
+    expect(ids.at(-1)).toBe(lastInBurst);
+  });
+
+  it('fills the replace slice from below the ceiling instead of shrinking it', () => {
+    // The ceiling must SHIFT the window, not trim the result. Enough rows land
+    // after the ceiling here to have swallowed the whole slice if it were applied
+    // post-LIMIT — and an empty replace frame is the bad one: it carries
+    // hasMoreOlder:false, which the client reads as "hydrated and genuinely
+    // empty", leaving the buffer blank and unpageable until a reload.
+    const since = seed('#burstWindow', 'm0');
+    let ceiling = since;
+    for (let i = 1; i <= RESUME_GAP_CAP + 50; i++) ceiling = seed('#burstWindow', `old${i}`);
+    // More than a full latest-slice worth of mid-burst arrivals, all above it.
+    for (let i = 0; i < RESUME_LATEST_LIMIT + 25; i++) seed('#burstWindow', `new${i}`);
+
+    const slice = buildResumeSlice(userId, networkId, '#burstWindow', since, ceiling);
+    expect(slice.mode).toBe('replace');
+    // A full slice, drawn from at-or-below the ceiling — not an empty one.
+    expect(slice.events.length).toBe(RESUME_LATEST_LIMIT);
+    const ids = (slice.events as Array<{ id: number }>).map((e) => e.id);
+    expect(ids.at(-1)).toBe(ceiling);
+    expect(Math.max(...ids)).toBeLessThanOrEqual(ceiling);
+    // And it must stay pageable — the client's only route back to older history.
+    expect(slice.hasMoreOlder).toBe(true);
+  });
+
+  it('does not count mid-burst rows toward the gap cap', () => {
+    // A gap of exactly the cap in SHIPPABLE rows, plus arrivals above the ceiling.
+    // Those arrivals go out via the live queue, so they must not push this over
+    // the cap — doing so would take the truncated replace path and throw away the
+    // client's retained scrollback for a gap that fits as an append.
+    const since = seed('#burstCapCount', 'm0');
+    let ceiling = since;
+    for (let i = 1; i <= RESUME_GAP_CAP; i++) ceiling = seed('#burstCapCount', `m${i}`);
+    for (let i = 0; i < 5; i++) seed('#burstCapCount', `mid${i}`);
+
+    const slice = buildResumeSlice(userId, networkId, '#burstCapCount', since, ceiling);
+    expect(slice.mode).toBe('append');
+    expect(slice.reset).toBe(false);
+    expect(slice.events.length).toBe(RESUME_GAP_CAP);
+  });
+
   it('ships the latest slice without reset on first connect (sinceId=0)', () => {
     seed('#resumeFresh', 'a');
     seed('#resumeFresh', 'b');
@@ -375,7 +474,7 @@ describe('buildOfflineBacklogFrames', () => {
     seedOff(`:server:${offId}`, 'server notice');
 
     const byTarget = new Map(
-      buildOfflineBacklogFrames(userId)
+      [...buildOfflineBacklogFrames(userId)]
         .filter((f) => f.networkId === offId)
         .map((f) => [f.target as string, f]),
     );
@@ -426,7 +525,7 @@ describe('buildOfflineBacklogFrames', () => {
     });
     closeBuffer(userId, offId, '#hidden');
 
-    const targets = buildOfflineBacklogFrames(userId)
+    const targets = [...buildOfflineBacklogFrames(userId)]
       .filter((f) => f.networkId === offId)
       .map((f) => f.target);
     expect(targets).not.toContain('#hidden');
@@ -1115,7 +1214,7 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
     ins(net, `:server:${net}`, 'connection notice');
 
     const systemFrame = buildSystemBacklog(u) as { highlights?: number };
-    const offlineHighlights = buildOfflineBacklogFrames(u).reduce(
+    const offlineHighlights = [...buildOfflineBacklogFrames(u)].reduce(
       (sum, f) => sum + (Number((f as { highlights?: number }).highlights) || 0),
       0,
     );
@@ -1140,8 +1239,8 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
     closeBuffer(u, net, '#closed');
     ins(net, `:server:${net}`, 'notice');
 
-    const shape = (frames: ReturnType<typeof buildOfflineBacklogFrames>) =>
-      frames
+    const shape = (frames: Iterable<Record<string, unknown>>) =>
+      [...frames]
         .filter((f) => f.networkId === net)
         .map((f) => `${f.target}|${f.kind}|${(f as { unread?: number }).unread ?? ''}`)
         .sort();

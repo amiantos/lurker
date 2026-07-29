@@ -132,7 +132,10 @@ function migrate() {
       extra TEXT,
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
     );
-    CREATE INDEX IF NOT EXISTS idx_messages_buffer ON messages(network_id, target, id DESC);
+    -- The per-buffer index lives further down as idx_messages_unread, because it
+    -- needs columns (type, from_ignored, notable) this CREATE TABLE predates and
+    -- ensureColumn adds later. It supersedes the old idx_messages_buffer, which
+    -- is dropped there.
 
     -- network_id is nullable: NULL keys the app-scoped system buffer (#355),
     -- which has no network. The composite PK stays (network buffers dedupe on it,
@@ -838,6 +841,10 @@ function tableExists(table: string): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table);
 }
 
+function indexExists(name: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`).get(name);
+}
+
 // Recovery for pre-role SELF-HOSTED installs: if no admin exists, promote the
 // earliest user so a single-user install that pre-dates the role column keeps
 // control. Deliberately SKIPPED in node edition — a cell is managed by the
@@ -1015,6 +1022,74 @@ ensureColumn('messages', 'notable', 'INTEGER NOT NULL DEFAULT 1');
 // behavior applies to existing history too. Gated on the column having been
 // absent, so it runs exactly once — never a repeated full scan on later boots.
 if (!hadNotableColumn) demoteLegacyServerStatusNotices();
+
+// Covering index for the connect-snapshot unread counts (#469). countUnreadRows
+// filters on `type` and `from_ignored` (and `notable` for :server: buffers), but
+// the index this replaces carried only (network_id, target, id) — so SQLite found
+// each candidate in the index and then fetched the full table ROW to evaluate those
+// predicates. On a flood-heavy channel only ~40% of rows are countable, so
+// reaching UNREAD_COUNT_CAP meant ~2,500 scattered rowid lookups PER BUFFER, and a
+// connect snapshot pays that for every buffer on the account. Warm it is invisible;
+// cold — a fresh boot, or an account whose DB doesn't fit in page cache — every one
+// of those lookups is a real seek, which is what pins the event loop for tens of
+// seconds on spinning disks and trips IRC ping timeouts in a feedback loop.
+//
+// Listing the filter columns after the cursor makes the count index-ONLY (verify
+// with EXPLAIN QUERY PLAN: "USING COVERING INDEX idx_messages_unread"). Column
+// order matters: (network_id, target) are the equality prefix, `id DESC` matches
+// the ORDER BY that lets the LIMIT stop early, and the three filter columns ride
+// along purely as payload — they must come last or they'd break the range scan.
+//
+// This REPLACES the old idx_messages_buffer rather than sitting alongside it —
+// see the DROP below for why keeping both would be pure write-path cost.
+//
+// Cost, measured on a synthetic 2.08M-row / 451MB account: a ONE-TIME build on the
+// first boot after upgrade (~1s on NVMe; expect meaningfully longer on the
+// spinning-disk installs this fix targets, since the build is a full scan plus a
+// sort). Startup blocks on it, which is the right trade — the alternative is
+// paying scattered row lookups on every connect, forever — but an operator
+// watching a slow first boot deserves to know why. Net disk after the DROP below
+// is roughly +3.5%, not the +13% this index costs on its own.
+
+// Tell the operator before starting, because a silent stall here is
+// indistinguishable from a hang. The build blocks module import, is not
+// resumable, and on the spinning-disk installs this targets can take long
+// enough that a
+// supervisor (Docker restart policy, the control-plane heartbeat watchdog) kills
+// the container mid-build — SQLite then rolls it back and the next boot starts
+// over, which is a restart loop on precisely the installs the fix is for. An
+// operator who can see WHY boot is stalled can raise the timeout instead of
+// guessing. Only warns when there's enough history for the build to be slow, so
+// ordinary instances stay quiet.
+if (!indexExists('idx_messages_unread')) {
+  const rows = (db.prepare(`SELECT COUNT(*) AS n FROM messages`).get() as { n: number }).n;
+  if (rows > 250_000) {
+    console.warn(
+      `[db] building idx_messages_unread over ${rows.toLocaleString()} messages — one-time, ` +
+        `blocks startup, and can take minutes on slow storage. Do not kill the process: the ` +
+        `build is not resumable and a restart begins again from zero.`,
+    );
+  }
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_unread
+         ON messages(network_id, target, id DESC, type, from_ignored, notable)`);
+
+// ...and retire the index it supersedes. idx_messages_buffer was
+// (network_id, target, id DESC) — a strict column PREFIX of the above, so every
+// query it could serve, idx_messages_unread serves too. Keeping both would mean
+// maintaining two b-trees on every INSERT (on a busy channel, the write path
+// that matters most) to no read benefit.
+//
+// Measured on the same 2.08M-row account, dropping it: no query regresses
+// (the `SELECT *` reads are dominated by fetching full rows from the table, not
+// by index width, and come out within noise), the unread count gets ~24% FASTER,
+// and the database shrinks 44MB. That turns the net cost of this whole change
+// from +13% to roughly +3.5%.
+//
+// Ordered after the CREATE above so there is never a boot in which neither index
+// exists. On an existing database the old index stays live through every
+// migration that ran before this line; on a fresh one the table is empty.
+db.exec(`DROP INDEX IF EXISTS idx_messages_buffer`);
 
 // #470 backfill body, split out so it can be unit-tested against seeded rows
 // (a hoisted declaration, so the gated call above reaches it). Demotes only

@@ -33,6 +33,7 @@ import {
   listMessagesAround,
   hasOlderRow,
   hasNewerRow,
+  hasMoreThan,
   hasMessageForTarget,
   listSpeakers,
   countNewer,
@@ -130,6 +131,32 @@ interface LurkerWebSocket extends WebSocket {
   // the first message; see allowInboundMessage.
   floodTokens?: number;
   floodRefilledAt?: number;
+  // True while this socket's snapshot is mid-flight (#469). The snapshot yields
+  // to the event loop between chunks so it can't starve IRC socket I/O, which
+  // means live events can now arrive BETWEEN a buffer's frames — something that
+  // was impossible when the whole burst ran as one uninterruptible block. While
+  // this is set, fanOut diverts this socket's events to snapshotQueue instead of
+  // sending them; the queue is flushed, in order, once the burst completes.
+  //
+  // Without the divert the snapshot would be wrong in two ways: an event could
+  // reach the client BEFORE its buffer's backlog frame (a 'replace' frame would
+  // then wipe it, an 'append' would duplicate it), and fanOut's cursor advance
+  // would move ws.sinceId out from under the per-buffer resume reads still to
+  // come — so later buffers would resume from a cursor past events they were
+  // never sent. Only this socket is affected; the user's other tabs fan out
+  // normally.
+  snapshotting?: boolean;
+  snapshotQueue?: Array<{ json: string; eventId: number | null }>;
+  // A snapshot requested while one was already in flight, re-run once it ends.
+  // See sendSnapshot for why it's deferred rather than dropped or interleaved,
+  // and why the fresh-network ids UNION rather than overwrite.
+  pendingSnapshot?: { freshNetworkIds: Set<number> };
+  // Folded `${networkId}::${target}` keys the client re-hydrated via a `history`
+  // reply while this socket's burst was in flight — a race chunking created, since
+  // inbound verbs are now serviced between chunks. The burst ships these as shells
+  // so it can't overwrite a slice the user just asked for. Lives only for the
+  // duration of one burst.
+  historyServedDuringBurst?: Set<string>;
 }
 
 // #574: cap a single inbound WS frame. The library default is 100 MB; client→
@@ -749,9 +776,20 @@ export function buildBufferBacklog(
   networkId: number,
   target: string,
   countBy: PageUnit = 'event',
+  // Burst ceiling, same contract as buildResumeSlice's `maxId` (#469). The
+  // offline path reaches this for `:server:` buffers, and a network the user
+  // starts mid-burst publishes its "Connecting…" notice there — which is fanned
+  // out (and so queued) AND would otherwise be read into this frame moments
+  // later. Benign today only because `:server:` rows carry no member/topic
+  // mutation for the client's replay-dedupe to swallow; capping here closes the
+  // hole rather than relying on that staying true.
+  maxId: number = Number.POSITIVE_INFINITY,
 ): WsPayload {
   const conn = ircManager.getConnection(userId, networkId);
-  const rows = listMessagesCounted(networkId, target, countBy, { limit: 200 });
+  const rows = listMessagesCounted(networkId, target, countBy, {
+    limit: 200,
+    ...(Number.isFinite(maxId) ? { before: maxId + 1 } : {}),
+  });
   const events = rows.map((e) => decorateMessage(userId, e));
   const oldestId = rows.length ? (rows[0].id ?? 0) : 0;
   return {
@@ -854,6 +892,18 @@ const SNAPSHOT_SLOW_MS = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 250;
 })();
 
+// How many buffers the snapshot builds between yields to the event loop (#469).
+// The snapshot used to run as one uninterruptible block, so its cost landed
+// directly on IRC socket I/O: a fat account on slow storage could hold the loop
+// long enough to miss ping replies, drop its networks, and reconnect straight
+// into another snapshot. Chunking bounds the damage to one chunk's worth
+// regardless of how many buffers the account has, or how slow the disk is.
+//
+// 16 is a compromise: small enough that a chunk stays in the low-milliseconds
+// even when every buffer misses the page cache, large enough that the yields
+// themselves (one macrotask each) don't dominate a fast warm snapshot.
+const SNAPSHOT_CHUNK_BUFFERS = 16;
+
 // Per-phase timing of one snapshot, so a slow one says WHERE the time went
 // (member-list blob vs seeds vs the per-buffer loop vs offline frames) instead
 // of just a total. See the sendSnapshot wrapper's log.
@@ -877,6 +927,22 @@ interface SnapshotBreakdown {
   // (e.g. detached read pointers counting whole histories from lastReadId 0).
   offlineServerMs: number;
   offlineShellMs: number;
+  // Time actually spent holding the event loop, summed across chunks and
+  // EXCLUDING the yields between them (#469). Since the snapshot became chunked
+  // the wall-clock total no longer answers the question the log exists to answer
+  // — "could this have starved IRC socket I/O?" — because a long snapshot that
+  // yielded often is harmless. blockedMs is what a pre-chunking build would have
+  // blocked for outright.
+  blockedMs: number;
+  yields: number;
+  // The single longest uninterrupted chunk. THIS is the number that decides
+  // whether IRC socket I/O could have starved — a sum or an average can't say,
+  // because one pathological chunk hides inside a comfortable mean. Kept
+  // separate for exactly that reason.
+  maxChunkMs: number;
+  // The socket closed mid-burst and the remaining buffers were abandoned. The
+  // frames already sent were valid, but no `backlog-complete` was emitted.
+  aborted: boolean;
 }
 
 // Decide the slice a resume snapshot ships for ONE buffer.
@@ -901,12 +967,39 @@ export function buildResumeSlice(
   networkId: number,
   target: string,
   sinceId: number,
+  // Upper bound: never ship a row newer than this (#469). Since the snapshot
+  // became chunked, an event can be inserted WHILE the burst is running — after
+  // this socket's cursor was pinned, but before this buffer's slice is read. Such
+  // an event is already held in the socket's snapshotQueue, so including it here
+  // too would deliver it twice.
+  //
+  // The second copy is not harmless. The client's pushMessage drops any id it has
+  // already seen, and useSocket deliberately gates the STATE mutation on that
+  // return value (addMember / removeMember / renameMember / setTopic) — a guard
+  // written for the opposite order, where the live event arrived first and the
+  // mutation had already been applied. Deliver the backlog copy first and the
+  // queued one is swallowed along with its mutation: a join whose nick never
+  // enters the member list, or a topic change that never lands, until the next
+  // full snapshot. Capping here keeps mid-burst events exclusive to the live
+  // path, where the mutation runs.
+  maxId: number = Number.POSITIVE_INFINITY,
 ): { events: DecoratedEvent[]; reset: boolean; mode: BacklogMode; hasMoreOlder: boolean } {
+  const withinBurst = (rows: MessageEvent[]): MessageEvent[] =>
+    maxId === Number.POSITIVE_INFINITY ? rows : rows.filter((e) => (e.id ?? 0) <= maxId);
   if (sinceId > 0) {
-    const gap = listMessages(networkId, target, { afterId: sinceId, limit: RESUME_GAP_CAP });
-    const lastGapId = gap.length ? (gap[gap.length - 1].id ?? sinceId) : sinceId;
-    const truncated = gap.length >= RESUME_GAP_CAP && hasNewerRow(networkId, target, lastGapId);
-    if (!truncated) {
+    // Ask whether the gap overflows BEFORE reading it. The truncation test used to
+    // be "read RESUME_GAP_CAP rows, and if we filled the cap, is there another one
+    // after the last?" — which meant a buffer that overflowed paid for a full
+    // capped read plus a decorate pass, then discarded every row and re-read a
+    // latest slice. That is the common case on a busy account after any real
+    // disconnect (every channel overflows), so the discarded work dominated the
+    // resume path. hasMoreThan settles the same question with one index-only
+    // probe. Equivalent by construction: "more than CAP rows exist after the
+    // cursor" is exactly what the old length-plus-hasNewerRow pair detected.
+    if (!hasMoreThan(networkId, target, sinceId, RESUME_GAP_CAP, maxId)) {
+      const gap = withinBurst(
+        listMessages(networkId, target, { afterId: sinceId, limit: RESUME_GAP_CAP }),
+      );
       // hasMoreOlder must be accurate even though a LOADED buffer ignores it
       // (gap-fill just appends): a client holding this buffer only as an empty
       // SHELL (the fresh-connect optimization) empty-seeds from this frame, and a
@@ -924,7 +1017,24 @@ export function buildResumeSlice(
     }
     // Truncated: fall through to the latest-slice replace below.
   }
-  const latest = listMessages(networkId, target, { limit: RESUME_LATEST_LIMIT });
+  // The ceiling goes INTO the query here, rather than filtering the result the
+  // way the gap branch can. The gap reads ascending from the cursor, so dropping
+  // rows above the ceiling only trims its tail; this branch reads the NEWEST
+  // RESUME_LATEST_LIMIT rows, so post-filtering would shrink the slice — and if
+  // that many rows landed while the burst was yielding (the flood-on-slow-storage
+  // case this whole change exists for) it would empty it outright. An empty
+  // `replace` frame is not benign: it ships hasMoreOlder:false, and the client's
+  // reset branch then sets messages:[] with hasMoreOlder:false and unseeded:false,
+  // which is exactly the combination bufferNeedsHydration reads as "hydrated and
+  // genuinely empty" — a permanently blank buffer with no way to page, until a
+  // reload. `before` is exclusive, so +1 makes it "at or below the ceiling".
+  const latest = listMessages(
+    networkId,
+    target,
+    Number.isFinite(maxId)
+      ? { before: maxId + 1, limit: RESUME_LATEST_LIMIT }
+      : { limit: RESUME_LATEST_LIMIT },
+  );
   const oldestId = latest.length ? (latest[0].id ?? 0) : 0;
   return {
     events: latest.map((e) => decorateMessage(userId, e)),
@@ -1103,9 +1213,14 @@ export function buildSystemHistoryReply(userId: number, msg: WsPayload): WsPaylo
 // No live conn, so channelJoined folds #channels to parted and DMs to joined
 // (they never dim). Shared by buildOfflineBacklogFrames and the snapshot's single
 // enumeration pass so the offline carve-out lives in exactly one place.
-function buildOfflineFrame(userId: number, networkId: number, target: string): WsPayload {
+function buildOfflineFrame(
+  userId: number,
+  networkId: number,
+  target: string,
+  maxId: number = Number.POSITIVE_INFINITY,
+): WsPayload {
   return target.startsWith(':server:')
-    ? buildBufferBacklog(userId, networkId, target)
+    ? buildBufferBacklog(userId, networkId, target, 'event', maxId)
     : buildBufferShell(userId, networkId, target, channelJoined(target));
 }
 
@@ -1114,12 +1229,24 @@ function buildOfflineFrame(userId: number, networkId: number, target: string): W
 // listBufferStatesForUser/listNetworksForUser DB reads — exactly ONCE instead
 // of once here and once in the live loop. Standalone callers (tests) omit it
 // and get a fresh walk.
-export function buildOfflineBacklogFrames(
+// A GENERATOR, not an array — the distinction is load-bearing (#469). Returning
+// a materialized array meant every buildOfflineFrame ran in one uninterrupted
+// block before the caller saw a single frame, so the snapshot's chunked send loop
+// only spaced out the `send()` calls (the cheap part) while the actual per-buffer
+// reads still blocked the event loop end to end. That is worst exactly where it
+// matters most: on a cell restart no IRC network is up yet, so every buffer on
+// the account takes this offline path and the whole cost lands in one block, with
+// a cold page cache. Yielding per frame lets the caller breathe between them.
+export function* buildOfflineBacklogFrames(
   userId: number,
   targets: Iterable<UserBufferTarget> = eachUserBufferTarget(userId),
   timings?: { serverMs: number; shellMs: number },
-): WsPayload[] {
-  const frames: WsPayload[] = [];
+  maxId: number = Number.POSITIVE_INFINITY,
+  // Buffers the client already re-hydrated itself, mid-burst, via a `history`
+  // reply — ship those as shells so this burst can't clobber the newer slice the
+  // user is looking at. See the online loop for the full rationale.
+  historyServed?: Set<string>,
+): Generator<WsPayload> {
   for (const { networkId, target, conn } of targets) {
     // Offline backlog only: the app-scoped system buffer ships via its own frame,
     // and live networks are handled by the snapshot's live loop. eachUserBufferTarget
@@ -1127,14 +1254,16 @@ export function buildOfflineBacklogFrames(
     // there's no autorejoin race to defend against here — unlike the live loop).
     if (networkId == null || conn) continue;
     const t0 = timings ? Date.now() : 0;
-    frames.push(buildOfflineFrame(userId, networkId, target));
+    const frame = historyServed?.has(`${networkId}::${target.toLowerCase()}`)
+      ? buildBufferShell(userId, networkId, target, channelJoined(target))
+      : buildOfflineFrame(userId, networkId, target, maxId);
     if (timings) {
       const dt = Date.now() - t0;
       if (target.startsWith(':server:')) timings.serverMs += dt;
       else timings.shellMs += dt;
     }
+    yield frame;
   }
-  return frames;
 }
 
 // A buffer the user closed and isn't currently joined to is hidden from the
@@ -1363,6 +1492,77 @@ export function dropIfBackpressured(ws: LurkerWebSocket, now: number = Date.now(
   return true;
 }
 
+// Upper bound on events held while one socket's snapshot runs (#469). A chunked
+// snapshot is measured in tens of milliseconds per chunk, so a real account fills
+// a handful of slots; this exists only so a flood against a pathologically slow
+// snapshot can't grow the queue without limit. On overflow we terminate rather
+// than drop: dropping would leave a silent hole in the middle of the client's
+// history with nothing to signal it, whereas a terminate costs one reconnect and
+// the client resumes from its own `?since` — the same trade dropIfBackpressured
+// already makes.
+const MAX_SNAPSHOT_QUEUE = 10000;
+
+function queueDuringSnapshot(ws: LurkerWebSocket, json: string, eventId: number | null): void {
+  const queue = ws.snapshotQueue ?? (ws.snapshotQueue = []);
+  if (queue.length >= MAX_SNAPSHOT_QUEUE) {
+    console.warn(
+      `[wsHub] snapshot queue exceeded ${MAX_SNAPSHOT_QUEUE} events; terminating socket ` +
+        `(client resumes via ?since)`,
+    );
+    ws.snapshotQueue = [];
+    try {
+      ws.terminate();
+    } catch (_err) {
+      // Already tearing down; the close handler prunes it either way.
+    }
+    return;
+  }
+  queue.push({ json, eventId });
+}
+
+// How many held events go out between yields while draining. Same reasoning as
+// SNAPSHOT_CHUNK_BUFFERS, applied to the teardown: a drain of up to
+// MAX_SNAPSHOT_QUEUE entries in one pass would reintroduce, at the very end, the
+// single long synchronous block the chunked burst exists to avoid.
+const SNAPSHOT_DRAIN_CHUNK = 256;
+
+// Release everything held during the snapshot, in arrival order, and advance the
+// cursor as if each had been sent live. Runs AFTER the snapshot has set its own
+// ws.sinceId, so these events — all newer than the burst — move it forward.
+//
+// Takes ownership of `ws.snapshotting` and clears it only once the queue is
+// empty. That is what keeps ordering correct across the yields: while the flag is
+// set fanOut keeps diverting, so an event arriving mid-drain lands at the BACK of
+// the queue and is picked up by the next pass, instead of being sent directly and
+// overtaking events queued before it. The loop swaps the whole batch out per pass
+// rather than shifting one at a time, so a full queue costs O(n), not O(n²).
+async function drainSnapshotQueue(ws: LurkerWebSocket): Promise<void> {
+  let sent = 0;
+  for (;;) {
+    const batch = ws.snapshotQueue;
+    ws.snapshotQueue = undefined;
+    if (!batch?.length) break;
+    for (const { json, eventId } of batch) {
+      if (ws.readyState !== ws.OPEN) {
+        ws.snapshotting = false;
+        return;
+      }
+      if (dropIfBackpressured(ws)) {
+        ws.snapshotting = false;
+        return;
+      }
+      ws.send(json);
+      if (eventId != null && eventId > (ws.sinceId || 0)) ws.sinceId = eventId;
+      if (++sent % SNAPSHOT_DRAIN_CHUNK === 0) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+  }
+  // No await between the empty check above and this line, so nothing can slip
+  // into the queue and be stranded there by clearing the flag.
+  ws.snapshotting = false;
+}
+
 function fanOut(userId: number, payload: WsPayload, opts: FanOutOpts = {}): void {
   const set = socketsByUser.get(userId);
   if (!set) return;
@@ -1371,6 +1571,15 @@ function fanOut(userId: number, payload: WsPayload, opts: FanOutOpts = {}): void
   for (const ws of set) {
     if (opts.exceptWs && ws === opts.exceptWs) continue;
     if (ws.readyState === ws.OPEN) {
+      // Snapshot in flight: hold the event rather than racing it against the
+      // backlog frames still going out (see LurkerWebSocket.snapshotting). Held
+      // BEFORE the backpressure check on purpose — a queued frame hasn't been
+      // handed to the socket yet, so it can't be evidence the socket is wedged,
+      // and the flush re-checks backpressure when it actually sends.
+      if (ws.snapshotting) {
+        queueDuringSnapshot(ws, json, eventId);
+        continue;
+      }
       // Checked BEFORE the send: once a socket is provably wedged, adding to
       // its queue is exactly what we're trying to stop. The cursor is
       // deliberately not advanced for a dropped socket either — it never
@@ -2079,15 +2288,47 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     ws.on('error', () => removeSocket(user.id, ws));
   }
 
-  // Wrapper around the (synchronous) snapshot builder. Two jobs: (1) time it,
-  // so a stall serving one connect is visible; (2) contain any throw so a bad
+  // Wrapper around the chunked snapshot builder. Three jobs: (1) time it, so a
+  // stall serving one connect is visible; (2) contain any throw so a bad
   // snapshot for ONE client can't take down the process and drop every user's
-  // IRC. There is no global unhandledRejection guard, so this is the backstop.
-  function sendSnapshot(
+  // IRC — there is no global unhandledRejection guard, so this is the backstop;
+  // (3) own the snapshotting/queue lifecycle, so live events are held for the
+  // duration and released exactly once however the burst ends.
+  //
+  // Callers deliberately don't await this — a connect, an in-band resync, and the
+  // fresh-network re-emit are all fire-and-forget, and the socket's own frames
+  // stay ordered because the builder awaits only between chunks.
+  async function sendSnapshot(
     ws: LurkerWebSocket,
     userId: number,
-    freshNetworkId: number | null = null,
-  ): void {
+    freshNetworks: number | Set<number> | null = null,
+  ): Promise<void> {
+    const freshIds =
+      typeof freshNetworks === 'number' ? new Set([freshNetworks]) : (freshNetworks ?? new Set());
+    // A second snapshot landing while one is mid-flight (e.g. a network coming
+    // online mid-burst, or an in-band resync) can't just run: two interleaved
+    // bursts on one socket would flush the queue early and mix their frames.
+    //
+    // But it must not be DROPPED either. Chunking widened this window — the
+    // burst now spans many event-loop turns, so a network finishing its connect
+    // partway through is a real possibility, and that network's buffers would
+    // otherwise never be shipped on this socket. So defer it and re-run once the
+    // current burst finishes.
+    //
+    // The pending request UNIONS its fresh-network ids rather than replacing
+    // them. `freshNetworkId` is not a cosmetic label — it is what routes a
+    // just-connected network's buffers to the cheap shell path instead of a
+    // cursor read. Overwriting it would strand the superseded network: its
+    // history all predates the already-advanced ws.sinceId, so its buffers would
+    // ship as empty `append` frames. Two networks finishing their connects during
+    // one burst is routine at boot on a multi-network account, and an in-band
+    // `{type:'snapshot'}` (which a client can send at will) would otherwise clear
+    // the flag outright.
+    if (ws.snapshotting) {
+      const pending = ws.pendingSnapshot ?? (ws.pendingSnapshot = { freshNetworkIds: new Set() });
+      for (const id of freshIds) pending.freshNetworkIds.add(id);
+      return;
+    }
     const startedAt = Date.now();
     let b: SnapshotBreakdown = {
       bufferCount: 0,
@@ -2100,10 +2341,17 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       sliceMs: 0,
       offlineServerMs: 0,
       offlineShellMs: 0,
+      blockedMs: 0,
+      yields: 0,
+      maxChunkMs: 0,
+      aborted: false,
     };
     let ok = false;
+    let ms = 0;
+    ws.snapshotting = true;
+    ws.historyServedDuringBurst = new Set();
     try {
-      b = sendSnapshotInner(ws, userId, freshNetworkId);
+      b = await sendSnapshotInner(ws, userId, freshIds);
       ok = true;
     } catch (err) {
       console.error(
@@ -2111,30 +2359,89 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           `(IRC left intact):`,
         err,
       );
+    } finally {
+      // The whole finally body is guarded. It does real work — sends, a
+      // backpressure check, and a re-dispatch — and it runs OUTSIDE the try above,
+      // so a throw here would escape into a fire-and-forget promise and become an
+      // unhandled rejection. That kills the process and drops every user's IRC,
+      // which is precisely the outcome this function's catch exists to prevent.
+      // Stamp the elapsed time BEFORE the teardown runs. The teardown drains the
+      // held-event queue and may synchronously start the first chunk of a pending
+      // NEXT burst, and attributing either to this snapshot would misreport the
+      // one number the slow-snapshot warning leads with.
+      ms = Date.now() - startedAt;
+      try {
+        // drainSnapshotQueue owns clearing `snapshotting` — it has to stay set for
+        // the whole drain so a fanOut landing mid-drain queues behind what's still
+        // going out rather than overtaking it.
+        await drainSnapshotQueue(ws);
+        ws.historyServedDuringBurst = undefined;
+        // Run any snapshot that was requested while this one held the socket. The
+        // drain went first so the held events keep their place ahead of the
+        // new burst's frames, matching the order they'd have had all along.
+        const pending = ws.pendingSnapshot;
+        ws.pendingSnapshot = undefined;
+        if (pending && ws.readyState === ws.OPEN) {
+          void sendSnapshot(ws, userId, pending.freshNetworkIds);
+        }
+      } catch (err) {
+        console.error(`[wsHub] snapshot teardown for user ${userId} failed:`, err);
+        ws.snapshotting = false;
+        ws.historyServedDuringBurst = undefined;
+      }
     }
-    const ms = Date.now() - startedAt;
     // Only attribute phases on success — a throw leaves the breakdown at its
     // zero defaults, which would mislead exactly when the log is meant to help.
     if (ok && ms >= SNAPSHOT_SLOW_MS) {
       console.warn(
-        `[wsHub] snapshot for user ${userId} took ${ms}ms across ${b.bufferCount} buffers ` +
-          `(${b.fresh ? 'fresh/shells' : 'resume'}) — networks=${b.networksMs}ms seeds=${b.seedsMs}ms ` +
+        `[wsHub] snapshot for user ${userId} took ${ms}ms wall / ${b.blockedMs}ms blocked ` +
+          `across ${b.bufferCount} buffers (${b.fresh ? 'fresh/shells' : 'resume'}` +
+          `${b.aborted ? ', ABORTED — socket closed mid-burst' : ''}) — ` +
+          `networks=${b.networksMs}ms seeds=${b.seedsMs}ms ` +
           `online=${b.onlineMs}ms offline=${b.offlineMs}ms [online split: unread=${b.unreadMs}ms ` +
           `slice=${b.sliceMs}ms rest=${Math.max(0, b.onlineMs - b.unreadMs - b.sliceMs)}ms] ` +
           `[offline split: server=${b.offlineServerMs}ms shells=${b.offlineShellMs}ms]. ` +
-          `Runs synchronously on the event loop; on slow storage or a large account this can starve ` +
-          `IRC socket I/O and trip ping timeouts (see [event-loop] logs). networks=member-list blob; ` +
-          `unread≈computeUnreadFor(+frame assembly), slice=buildResumeSlice reads, ` +
-          `rest=sends/input-history/overhead.`,
+          `Yielded ${b.yields}x, longest chunk ${b.maxChunkMs}ms — it is that LONGEST CHUNK, not ` +
+          `the total, that can starve IRC socket I/O and trip ping timeouts (see [event-loop] ` +
+          `logs); a large wall/blocked gap just means the loop was busy elsewhere. ` +
+          `networks=member-list blob; unread≈computeUnreadFor(+frame assembly), ` +
+          `slice=buildResumeSlice reads, rest=sends/input-history/overhead.`,
       );
     }
   }
 
-  function sendSnapshotInner(
+  async function sendSnapshotInner(
     ws: LurkerWebSocket,
     userId: number,
-    freshNetworkId: number | null = null,
-  ): SnapshotBreakdown {
+    freshNetworkIds: Set<number>,
+  ): Promise<SnapshotBreakdown> {
+    // Chunking state (#469). `breathe()` returns to the event loop so IRC socket
+    // reads, pongs and timers get a turn mid-burst, and reports whether the
+    // snapshot should continue — a client that gave up (closed the socket, or was
+    // terminated for backpressure) shouldn't cost us the rest of its buffers,
+    // which on the accounts this fix targets is the expensive majority.
+    let blockedMs = 0;
+    let yields = 0;
+    let maxChunkMs = 0;
+    let aborted = false;
+    let chunkStartedAt = Date.now();
+    let sinceYield = 0;
+    const breathe = async (): Promise<boolean> => {
+      const chunk = Date.now() - chunkStartedAt;
+      blockedMs += chunk;
+      if (chunk > maxChunkMs) maxChunkMs = chunk;
+      yields += 1;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      chunkStartedAt = Date.now();
+      if (ws.readyState !== ws.OPEN) aborted = true;
+      return !aborted;
+    };
+    // Call after each buffer; yields once every SNAPSHOT_CHUNK_BUFFERS.
+    const maybeBreathe = async (): Promise<boolean> => {
+      if (++sinceYield < SNAPSHOT_CHUNK_BUFFERS) return true;
+      sinceYield = 0;
+      return breathe();
+    };
     const tNetworks = Date.now();
     const networks = ircManager.snapshotForUser(userId);
     const networksMs = Date.now() - tNetworks;
@@ -2147,7 +2454,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // filling everything it was never sent. Resume connects (sinceId>0) keep the
     // full gap-fill path untouched.
     const isFreshConnect = (ws.sinceId || 0) === 0;
-    const cursor = isFreshConnect ? maxMessageId() : 0;
+    // The burst's CEILING, pinned before any buffer is read (#469). Everything at
+    // or below it is the burst's to ship; anything newer was created while the
+    // burst was yielding and is already held in snapshotQueue, so slices must not
+    // also include it — see buildResumeSlice's `maxId` for what the duplicate
+    // costs. Taken once here rather than per buffer so the whole burst agrees on
+    // where "now" was.
+    const burstMaxId = maxMessageId();
+    const cursor = isFreshConnect ? burstMaxId : 0;
     // #627: the effective upload cap rides the snapshot so a client can size media
     // to fit BEFORE it starts an upload — lurker-ios compresses video against this
     // number, and hardcoded a Cloudflare-safe guess until it existed. Advisory: it
@@ -2206,7 +2520,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const allTargets = [...eachUserBufferTarget(userId)];
     const seedsMs = Date.now() - tSeeds;
     const tOnline = Date.now();
-    let maxSentId = ws.sinceId || 0;
+    // Pin the resume cursor for the whole burst. Every buffer's slice must be cut
+    // from the SAME point the client last saw — re-reading ws.sinceId per buffer
+    // was safe only while the snapshot was uninterruptible. Now that it yields,
+    // an unpinned read would drift forward mid-burst and later buffers would
+    // silently skip the events in between. (fanOut also holds its cursor advance
+    // while snapshotting, so this is belt-and-braces — but the invariant belongs
+    // here, where the slices are actually cut.)
+    const resumeFrom = ws.sinceId || 0;
+    let maxSentId = resumeFrom;
     let bufferCount = 0;
     let unreadMs = 0;
     let sliceMs = 0;
@@ -2220,7 +2542,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // session. ws.sinceId has been advanced by live events on other
       // networks, so a cursor read would return nothing — ship the full
       // recent slice instead.
-      const isFreshNetwork = freshNetworkId != null && conn.network.id === freshNetworkId;
+      const isFreshNetwork = freshNetworkIds.has(conn.network.id);
       // Fresh connect (empty client, nothing focused) or a just-connected
       // network: ship a lazy SHELL for channel/DM buffers instead of reading
       // their backlog. Lurker auto-focuses nothing on load, so no messages are
@@ -2240,7 +2562,21 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         lastReadId: readState[key] || 0,
         cleared: clearedState[key] ?? { clearedBeforeId: 0, clearedAt: null },
       };
-      if ((isFreshConnect || isFreshNetwork) && !target.startsWith(':server:')) {
+      // The user opened this buffer WHILE the burst was running, and the server
+      // already answered with a `history` reply carrying a fresher slice than
+      // anything this burst would ship. Send a shell: it states the buffer exists
+      // and refreshes its read state, but 'shell' explicitly means "leave your
+      // contents alone", so the burst can't overwrite what the user is reading.
+      //
+      // This race is new. While the snapshot was one uninterruptible block no
+      // inbound verb could be serviced during it; now every chunk boundary is an
+      // opportunity, and on a resume connect to a busy account nearly every buffer
+      // takes the reset:true replace path — which would discard the scrollback the
+      // user just paged in, seconds after they asked for it.
+      const historyServed = ws.historyServedDuringBurst?.has(
+        `${conn.network.id}::${target.toLowerCase()}`,
+      );
+      if (historyServed || ((isFreshConnect || isFreshNetwork) && !target.startsWith(':server:'))) {
         // Shell path: the only per-buffer work is buildBufferShell's unread
         // count (bufferStateFields → computeUnreadFor), so it goes to unreadMs.
         const tShell = Date.now();
@@ -2254,13 +2590,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         unreadMs += Date.now() - tShell;
         send(ws, shell);
         bufferCount += 1;
+        if (!(await maybeBreathe())) break;
         continue;
       }
       // Resume cursor: ship the gap the client missed (id > sinceId), or a
       // fresh latest slice + reset flag when that gap exceeds the cap (see
       // buildResumeSlice for the gap/reset rationale).
       const tSlice = Date.now();
-      const slice = buildResumeSlice(userId, conn.network.id, target, ws.sinceId || 0);
+      const slice = buildResumeSlice(userId, conn.network.id, target, resumeFrom, burstMaxId);
       sliceMs += Date.now() - tSlice;
       const events = slice.events;
       for (const e of events) {
@@ -2304,6 +2641,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         inputHistory,
       });
       bufferCount += 1;
+      if (!(await maybeBreathe())) break;
     }
     const onlineMs = Date.now() - tOnline;
     const tOffline = Date.now();
@@ -2316,12 +2654,23 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // from reading recent backlog for every historical/offline buffer — the bulk
     // of the synchronous read burst on a long-lived account. Reuses the enumeration
     // materialized above so this doesn't re-run the per-network DB reads.
-    for (const frame of buildOfflineBacklogFrames(userId, allTargets, offlineSplit)) {
-      for (const e of frame.events as Array<{ id?: number | null }>) {
-        if (e.id != null && e.id > maxSentId) maxSentId = e.id;
+    // Skipped entirely once the socket is gone — `aborted` means the online loop
+    // broke out because the client closed, and these frames have nowhere to go.
+    if (!aborted) {
+      for (const frame of buildOfflineBacklogFrames(
+        userId,
+        allTargets,
+        offlineSplit,
+        burstMaxId,
+        ws.historyServedDuringBurst,
+      )) {
+        for (const e of frame.events as Array<{ id?: number | null }>) {
+          if (e.id != null && e.id > maxSentId) maxSentId = e.id;
+        }
+        send(ws, frame);
+        bufferCount += 1;
+        if (!(await maybeBreathe())) break;
       }
-      send(ws, frame);
-      bufferCount += 1;
     }
     const offlineMs = Date.now() - tOffline;
     // Advance the resume cursor past everything we just shipped, so the next
@@ -2351,7 +2700,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // a buffer it owns doesn't exist. Sent on every snapshot (connect, in-band
     // resync, and the fresh-network re-emit) — it terminates whichever burst
     // just went out, and carries no state of its own.
-    send(ws, { kind: 'backlog-complete' });
+    //
+    // `aborted` is the same argument reached a different way: the burst stopped
+    // early because the socket closed, so the buffers it never reached are
+    // equally unproven. The send would be a no-op on a closed socket anyway —
+    // the guard is here to state the invariant, not to avoid the write.
+    if (!aborted) send(ws, { kind: 'backlog-complete' });
+    const lastChunk = Date.now() - chunkStartedAt;
+    blockedMs += lastChunk;
+    if (lastChunk > maxChunkMs) maxChunkMs = lastChunk;
     return {
       bufferCount,
       fresh: isFreshConnect,
@@ -2363,6 +2720,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       sliceMs,
       offlineServerMs: offlineSplit.serverMs,
       offlineShellMs: offlineSplit.shellMs,
+      blockedMs,
+      yields,
+      maxChunkMs,
+      aborted,
     };
   }
 
@@ -3080,6 +3441,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           send(ws, { kind: 'error', text: 'unknown network' });
           break;
         }
+        // Serving this mid-burst means the client is about to hold a slice newer
+        // than anything the in-flight snapshot would ship for this buffer. Record
+        // it so the burst downgrades that buffer to a shell rather than replacing
+        // what we just handed over. Folded, because the burst compares against
+        // the row's casing and the request may not match it (see below).
+        ws.historyServedDuringBurst?.add(`${histNetworkId}::${histTarget.toLowerCase()}`);
         // Resolve the caller's casing to the row's, the way `open-buffer` always
         // has. IRC target names are case-insensitive, but `messages.target` is
         // BINARY-collated TEXT and rows keep whatever casing the network handed
