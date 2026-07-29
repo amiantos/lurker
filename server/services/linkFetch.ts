@@ -34,13 +34,17 @@ const MAX_REDIRECTS = 3;
 /**
  * How much of an HTML document we read before giving up on finding metadata.
  *
- * Metadata lives in `<head>`, so this is generous rather than tight. The Lounge
- * defaults to 50 KB and had to expose it as a config knob specifically because
- * YouTube pushes its og: tags past 300 KB; Slack asks for the first 32 KB via a
- * Range header and simply misses anything later. 256 KB covers the sites people
- * actually paste without turning a preview into a download.
+ * Generous, because `stopAtHeadEnd` means a well-formed page costs its head and not a byte
+ * more — the ceiling only binds on documents that bury their metadata, and for those the
+ * choice is a large read or no preview. The Lounge defaults to 50 KB and had to expose a
+ * config knob when YouTube pushed its og: tags past 300 KB; Slack asks for the first 32 KB
+ * via a Range header and silently misses anything later.
+ *
+ * Note this is NOT the YouTube fix — see `oembedEndpointFor`. Sites that hide their metadata
+ * behind half a megabyte of inline script are asked directly instead, and no cap large enough
+ * to scrape YouTube would be a sane thing to apply to the whole web.
  */
-export const MAX_SCRAPE_BYTES = 256 * 1024;
+export const MAX_SCRAPE_BYTES = 512 * 1024;
 
 /**
  * What we tell the origin we are.
@@ -262,23 +266,45 @@ export interface BufferedResponse {
   truncated: boolean;
 }
 
-/**
- * Fetch and buffer, hard-capped.
- *
- * The cap is enforced on bytes actually received rather than on `Content-Length`,
- * because a hostile or merely broken origin can lie about the latter or omit it.
- * `Content-Length` is still honoured as an early exit so we don't open a socket
- * to something we already know is too big.
- */
-export async function fetchBuffered(url: URL, opts: FetchOptions = {}): Promise<BufferedResponse> {
-  const maxBytes = opts.maxBytes ?? MAX_SCRAPE_BYTES;
-  const res = await safeRequest(url, opts);
+export interface BufferOptions {
+  maxBytes?: number;
+  /**
+   * Stop as soon as `</head>` has been seen.
+   *
+   * Everything we scrape lives in the head, so the rest of the document is bytes we pay for
+   * and discard. This is what lets the cap be generous — a well-formed page costs its head
+   * and not a byte more, whatever the ceiling is set to.
+   */
+  stopAtHeadEnd?: boolean;
+}
 
-  const declared = Number(res.headers['content-length']);
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    res.stream.destroy();
-    throw new UnsafeUrlError(`response too large (${declared} bytes)`);
-  }
+/**
+ * Buffer a response we've already opened, hard-capped.
+ *
+ * Separate from `safeRequest` so a caller that has to inspect the headers before deciding
+ * what to do — which is every caller — doesn't have to throw the response away and issue a
+ * second request for the body. Doing that doubled every page fetch, which is both wasteful
+ * and twice the chance of tripping a rate limit on a host we want to stay welcome at.
+ *
+ * The cap is enforced on bytes actually received, not on `Content-Length`: a hostile or
+ * merely broken origin can lie about that or omit it. It's still honoured as an early exit,
+ * so we don't drain a socket we already know is too big.
+ */
+export async function bufferStream(
+  res: RawResponse,
+  opts: BufferOptions = {},
+): Promise<BufferedResponse> {
+  const maxBytes = opts.maxBytes ?? MAX_SCRAPE_BYTES;
+
+  // ⚠ `maxBytes` means "read at most this much", NOT "refuse anything bigger". Every caller
+  // here wants a PREFIX: the scraper wants a document's head, `imageDimensions` wants an
+  // image's first few hundred bytes. An earlier version threw on an oversized
+  // `Content-Length` and it broke both — Wikipedia (a 572 KB article) got no preview at all,
+  // and image dimensions silently failed for every image over 64 KB, which is most of them.
+  //
+  // The place a size limit genuinely belongs is the byte proxy, which is serving a whole file
+  // to a browser and enforces its own ceiling.
+
   // We asked for identity; anything else means we can't reason about the byte
   // count, so we don't try.
   const encoding = String(res.headers['content-encoding'] || 'identity').toLowerCase();
@@ -291,19 +317,37 @@ export async function fetchBuffered(url: URL, opts: FetchOptions = {}): Promise<
     const chunks: Buffer[] = [];
     let total = 0;
     let truncated = false;
+    let settled = false;
+
     res.stream.on('data', (chunk: Buffer) => {
       total += chunk.length;
       if (total > maxBytes) {
-        // Keep the prefix — for an HTML scrape a truncated head is often still
-        // enough to find og: tags in, and a partial answer beats no answer.
+        // Keep the prefix — a truncated head is often still enough to find og: tags in, and
+        // a partial answer beats no answer.
         chunks.push(chunk.subarray(0, chunk.length - (total - maxBytes)));
         truncated = true;
         res.stream.destroy();
         return;
       }
       chunks.push(chunk);
+      if (opts.stopAtHeadEnd && !settled) {
+        // The tag can straddle a chunk boundary, so search the accumulated buffer rather
+        // than the chunk. Then TRIM to it: stopping the stream only bounds the read at
+        // whatever chunk boundary we happened to land on, which makes the saving depend on
+        // the socket's chunk size. Cutting the buffer makes the guarantee real — the caller
+        // gets the head and nothing after it, whatever shape the bytes arrived in.
+        const soFar = Buffer.concat(chunks);
+        const end = soFar.toString('latin1').toLowerCase().indexOf('</head');
+        if (end !== -1) {
+          settled = true;
+          chunks.length = 0;
+          chunks.push(soFar.subarray(0, end));
+          res.stream.destroy();
+        }
+      }
     });
-    res.stream.on('error', (err) => (truncated ? resolve(done()) : reject(err)));
+
+    res.stream.on('error', (err) => (truncated || settled ? resolve(done()) : reject(err)));
     res.stream.on('close', () => resolve(done()));
     res.stream.on('end', () => resolve(done()));
 
@@ -317,4 +361,13 @@ export async function fetchBuffered(url: URL, opts: FetchOptions = {}): Promise<
       };
     }
   });
+}
+
+/** Open a URL and buffer it in one step, for callers with nothing to decide. */
+export async function fetchBuffered(
+  url: URL,
+  opts: FetchOptions & BufferOptions = {},
+): Promise<BufferedResponse> {
+  const res = await safeRequest(url, opts);
+  return await bufferStream(res, opts);
 }

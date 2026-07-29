@@ -10,14 +10,22 @@
   <template v-if="preview && preview.status === 'ok' && allowed">
     <!-- Direct media: no card, no chrome. A frame around an image is furniture
          around content. Click opens the media viewer that already exists. -->
+    <!-- `width`/`height` are the server's real pixel dimensions, and they are load-bearing
+         rather than decorative: the browser derives the intrinsic aspect ratio from them and
+         reserves the right box BEFORE any bytes arrive. Without them the row grows twice —
+         once when the metadata lands and again when the image decodes — and in a
+         bottom-anchored chat log the second growth yanks the reader off the live tail. -->
     <img
       v-if="preview.kind === 'image' && preview.src"
       class="inline-image"
       :src="preview.src"
+      :width="preview.thumbWidth || undefined"
+      :height="preview.thumbHeight || undefined"
       :alt="''"
       loading="lazy"
       decoding="async"
       @click.stop="openViewer"
+      @load="$emit('measured')"
     />
     <video
       v-else-if="preview.kind === 'video' && preview.src"
@@ -106,6 +114,11 @@ import { useMediaViewer } from '../composables/useMediaViewer.js';
 
 const props = defineProps<{ url: string }>();
 
+// Emitted when an image finishes decoding. Only matters in the case the server COULDN'T give
+// us dimensions (an exotic format, a truncated header) — there the box wasn't reserved, so the
+// row does grow on load and the list needs a chance to re-pin.
+defineEmits<{ measured: [] }>();
+
 const settings = useSettingsStore();
 const viewer = useMediaViewer();
 const preview = useLinkPreview(props.url);
@@ -150,6 +163,14 @@ function openViewer(): void {
   /* Capped so one tall screenshot can't push the rest of the conversation off
      screen. The viewer is one click away for the full thing. */
   max-height: 240px;
+  /* ⚠ Both `auto`, and both needed. `width`/`height` attributes on the element give the
+     browser the intrinsic ratio to reserve space with; these let it SCALE that box down
+     proportionally to fit inside max-width/max-height. Without `width: auto` a portrait image
+     hits the height cap and keeps its attribute width — which is exactly the squashing this
+     replaced. */
+  width: auto;
+  height: auto;
+  object-fit: contain;
   border-radius: var(--radius-md);
   cursor: pointer;
   display: block;
@@ -157,6 +178,7 @@ function openViewer(): void {
 .inline-video,
 .inline-audio {
   max-width: 100%;
+  width: auto;
   border-radius: var(--radius-md);
   display: block;
 }

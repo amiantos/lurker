@@ -47,6 +47,16 @@ export interface LinkPreview {
 // it learned.
 const cache = new Map<string, Ref<LinkPreview | null>>();
 
+/**
+ * Bumped whenever a batch of previews lands and changed something.
+ *
+ * A message list needs to know that rows just got taller, and it can't learn that from any
+ * individual preview ref — the growth is spread across however many rows were in the batch,
+ * and it all reflows in one tick. One counter for the whole batch is exactly the granularity
+ * the scroll fix wants: react once, after everything settles.
+ */
+export const previewRevision = ref(0);
+
 let queue = new Set<string>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -72,10 +82,18 @@ async function flush(): Promise<void> {
         method: 'POST',
         body: { urls: slice },
       });
+      let changed = false;
       for (const preview of res.previews ?? []) {
         const entry = cache.get(preview.url);
-        if (entry) entry.value = preview;
+        // Only an `ok` preview renders anything, so only an `ok` preview can change a row's
+        // height — bumping the revision for a batch of `unavailable` answers would make the
+        // list re-pin for no reason.
+        if (entry) {
+          entry.value = preview;
+          if (preview.status === 'ok') changed = true;
+        }
       }
+      if (changed) previewRevision.value++;
     } catch {
       // A failed resolve leaves the ref null, which renders as "no preview" —
       // the same as a link the server couldn't unfurl. There is nothing useful
@@ -109,6 +127,7 @@ export function useLinkPreview(url: string): Ref<LinkPreview | null> {
 
 /** Test-only: drop everything so a suite starts from a known state. */
 export function resetLinkPreviewCache(): void {
+  previewRevision.value = 0;
   cache.clear();
   queue = new Set();
   if (flushTimer !== null) {

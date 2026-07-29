@@ -129,7 +129,7 @@
               interactive-nicks
               @nick-click="onMentionMenu"
             />
-            <MessageAttachments :text="row.m?.text" />
+            <MessageAttachments :text="row.m?.text" @measured="repinAfterPreviewGrowth" />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
         </template>
@@ -164,6 +164,7 @@
             /><MessageAttachments
               v-if="row.m?.type === 'message' || row.m?.type === 'action'"
               :text="row.m?.text"
+              @measured="repinAfterPreviewGrowth"
             />
             <template v-else-if="row.m?.type === 'join'"
               ><NickRef
@@ -338,6 +339,7 @@ import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
 import MessageAttachments from './MessageAttachments.vue';
+import { previewRevision } from '../composables/useLinkPreview.js';
 import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type {
@@ -1607,6 +1609,48 @@ async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback
     el.scrollTop = el.scrollHeight - oldScrollHeight + oldScrollTop;
   }
 }
+
+// Link previews landing changes row HEIGHTS without changing the messages array, so the
+// shape watcher below never sees it. Left alone the effect is exactly what QA reported: the
+// buffer paints flat, a burst of previews resolves ~100ms later, every affected row grows,
+// and a reader who was sitting at the live tail is silently pushed up off it and has to
+// scroll back down.
+//
+// `overflow-anchor: none` on the scroller (see the CSS, and the prepend comment) means the
+// browser will NOT compensate for this on its own — the same deliberate choice that makes
+// history prepends predictable makes this our problem to handle.
+//
+// Two cases, and they want opposite things:
+//   - pinned to the bottom: follow the growth down, same as a live append.
+//   - scrolled up reading: hold the row under the reader's eye still, same as a prepend.
+async function repinAfterPreviewGrowth() {
+  const el = scroller.value;
+  if (!el) return;
+  if (stickToBottom.value) {
+    await nextTick();
+    scrollToBottom();
+    return;
+  }
+  // Anchor on the topmost message currently in view: growth anywhere at or below it would
+  // otherwise slide it under the reader.
+  const anchorId = firstVisibleMessageId(el);
+  if (anchorId != null) await pinAnchorRow(el, anchorId, false);
+}
+
+/** The id of the topmost message row intersecting the viewport, or null. */
+function firstVisibleMessageId(el: HTMLElement): number | null {
+  const rows = el.querySelectorAll('[data-msg-id]');
+  for (const row of rows) {
+    const node = row as HTMLElement;
+    if (node.offsetTop + node.offsetHeight > el.scrollTop) {
+      const id = Number(node.dataset.msgId);
+      return Number.isFinite(id) && id > 0 ? id : null;
+    }
+  }
+  return null;
+}
+
+watch(previewRevision, () => void repinAfterPreviewGrowth());
 
 // Watch the messages array shape so we can react to:
 //   - prepend (older history): pin the OLD first row's viewport position.

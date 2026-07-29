@@ -13,16 +13,19 @@
 // the stored message), which is right for a server-global config knob and wrong
 // for a per-user, default-off setting.
 
+import sharp from 'sharp';
 import {
+  bufferStream,
   fetchBuffered,
   normalizeUrl,
   safeRequest,
   fetchingEnabled,
   MAX_SCRAPE_BYTES,
   UnsafeUrlError,
+  type RawResponse,
 } from './linkFetch.js';
-import { scrapeMeta, readOEmbed, decodeBody, decodeEntities } from './linkMeta.js';
-import { videoEmbedFor } from './linkEmbed.js';
+import { scrapeMeta, readOEmbed, decodeBody, decodeEntities, type OEmbedMeta } from './linkMeta.js';
+import { videoEmbedFor, oembedEndpointFor } from './linkEmbed.js';
 import {
   getCachedPreview,
   putPreview,
@@ -119,17 +122,12 @@ async function fetchOEmbed(raw: string, base: URL): Promise<ReturnType<typeof re
   }
 }
 
-/** Resolve an HTML page into a card. */
-async function resolvePage(url: URL, body: Buffer, contentType: string): Promise<PreviewRecord> {
-  const html = decodeBody(body, contentType);
-  const meta = scrapeMeta(html);
-
-  // oEmbed is preferred where a page offers it, matching Slack. It's a
-  // structured, versioned answer from the site itself rather than a bag of
-  // strings, and it's what makes YouTube, Vimeo, Bluesky and Mastodon links
-  // come out well instead of merely adequately.
-  const oembed = meta.oembedUrl ? await fetchOEmbed(meta.oembedUrl, url) : null;
-
+/** Assemble a page record from whatever combination of oEmbed and scraped tags we got. */
+function pageRecord(
+  url: URL,
+  oembed: OEmbedMeta | null,
+  meta: ReturnType<typeof scrapeMeta>,
+): PreviewRecord {
   const embed = videoEmbedFor(url);
   const kind: PreviewKind = embed ? 'video-embed' : 'page';
 
@@ -166,9 +164,64 @@ async function resolvePage(url: URL, body: Buffer, contentType: string): Promise
   };
 }
 
+/** Resolve an HTML page into a card by scraping it. */
+async function resolveScrapedPage(
+  url: URL,
+  body: Buffer,
+  contentType: string,
+): Promise<PreviewRecord> {
+  const html = decodeBody(body, contentType);
+  const meta = scrapeMeta(html);
+
+  // Discovered oEmbed still wins over the scraped tags where a page advertises one, matching
+  // Slack: it's a structured, versioned answer from the site itself rather than a bag of
+  // strings. This is the discovery path, for sites not in the provider table.
+  const oembed = meta.oembedUrl ? await fetchOEmbed(meta.oembedUrl, url) : null;
+  return pageRecord(url, oembed, meta);
+}
+
+/**
+ * Pixel dimensions of an image, from as few bytes as we can get away with.
+ *
+ * Purely so clients can reserve the right amount of space *before* the bytes arrive. Without
+ * it a message list grows twice — once when the metadata lands and again when the image
+ * decodes — and in a bottom-anchored chat log the second one yanks the reader off the live
+ * tail. With an aspect ratio in hand the box is allocated at metadata time and the image
+ * simply appears inside it.
+ *
+ * A header-sized read is enough for every format that matters: the dimensions live in the
+ * first few hundred bytes of a JPEG/PNG/GIF/WebP. Failure is fine and common (a truncated
+ * buffer sharp can't parse, an exotic format) — the clients fall back to a fixed max height,
+ * which is merely the old behaviour.
+ */
+async function imageDimensions(
+  res: RawResponse,
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const head = await bufferStream(res, { maxBytes: 64 * 1024 });
+    const meta = await sharp(head.body).metadata();
+    if (meta.width && meta.height) return { width: meta.width, height: meta.height };
+  } catch {
+    // Not worth distinguishing: no dimensions means no reservation, not no preview.
+  }
+  return null;
+}
+
 async function doResolve(raw: string): Promise<PreviewRecord> {
   const url = normalizeUrl(raw);
   if (!url) return unavailable(raw);
+
+  // Known providers are asked directly, BEFORE anything is fetched from the page itself.
+  // For YouTube this is the difference between working and not: its og: tags sit past
+  // half a megabyte of inline script, while its oEmbed endpoint answers in under a
+  // kilobyte. See `oembedEndpointFor`.
+  const endpoint = oembedEndpointFor(url);
+  if (endpoint) {
+    const oembed = await fetchOEmbed(endpoint, url);
+    if (oembed?.title) return pageRecord(url, oembed, {});
+    // Fall through and scrape. A provider can be down, or rate-limiting us, or have
+    // retired an endpoint — none of which should mean no preview at all.
+  }
 
   const res = await safeRequest(url, {});
   if (res.status !== 200) {
@@ -182,10 +235,12 @@ async function doResolve(raw: string): Promise<PreviewRecord> {
     return unavailable(raw);
   }
 
-  // Direct media: the URL IS the content, so there's nothing to scrape. We
-  // already have the headers we need and no reason to pull the bytes — the
-  // client will ask the proxy for those, and only if it actually renders it.
+  // Direct media: the URL IS the content, so there's nothing to scrape. For an image we
+  // read a header's worth to learn its dimensions — see `imageDimensions` for why that
+  // matters more than it looks — and for video/audio we stop at the headers, since the
+  // client asks the proxy for the bytes and only if it actually renders it.
   if (kind !== 'page') {
+    const size = kind === 'image' ? await imageDimensions(res) : null;
     res.stream.destroy();
     return {
       url: url.toString(),
@@ -196,17 +251,22 @@ async function doResolve(raw: string): Promise<PreviewRecord> {
       siteName: null,
       author: null,
       imageUrl: url.toString(),
-      imageWidth: null,
-      imageHeight: null,
+      imageWidth: size?.width ?? null,
+      imageHeight: size?.height ?? null,
       embedUrl: null,
       mime: res.contentType,
       expiresAt: new Date(Date.now() + OK_TTL_MS).toISOString(),
     };
   }
 
-  res.stream.destroy();
-  const buffered = await fetchBuffered(url, { maxBytes: MAX_SCRAPE_BYTES });
-  return await resolvePage(buffered.finalUrl, buffered.body, buffered.contentType);
+  // Buffered off the response we already have, rather than re-requesting: a second GET for
+  // the body doubled every page fetch, and doubled the chance of a rate limit on a host we
+  // want to stay welcome at. `stopAtHeadEnd` means a well-formed page costs its head only.
+  const buffered = await bufferStream(res, {
+    maxBytes: MAX_SCRAPE_BYTES,
+    stopAtHeadEnd: true,
+  });
+  return await resolveScrapedPage(buffered.finalUrl, buffered.body, buffered.contentType);
 }
 
 /**

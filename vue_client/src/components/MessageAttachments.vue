@@ -5,7 +5,7 @@
 
 <template>
   <div v-if="urls.length" class="attachments">
-    <MessageAttachment v-for="url in urls" :key="url" :url="url" />
+    <MessageAttachment v-for="url in urls" :key="url" :url="url" @measured="$emit('measured')" />
   </div>
 </template>
 
@@ -23,6 +23,10 @@ import MessageAttachment from './MessageAttachment.vue';
 // request, and costs one regex pass over text we had already tokenised anyway.
 const props = defineProps<{ text: string | null | undefined }>();
 
+// Bubbles up from an image that had no server-side dimensions and therefore grew the row
+// when it decoded. The message list re-pins the viewport on it.
+defineEmits<{ measured: [] }>();
+
 const settings = useSettingsStore();
 
 const urls = computed(() =>
@@ -37,11 +41,21 @@ const urls = computed(() =>
 .attachments {
   display: flex;
   flex-direction: column;
+  /* ⚠ NOT the default `stretch`. A flex column stretches its children across the
+     cross axis, which forced every inline image to the container's full width while
+     `max-height` capped its height — squashing it instead of scaling it. Images size
+     themselves from their own dimensions; only the cards want the full width. */
+  align-items: flex-start;
   gap: var(--space-2);
   margin-top: var(--space-2);
   /* Attachments hang under the message body, and a card that stretched the full
      width of a wide window would read as a page element rather than as part of
      the message. */
   max-width: 480px;
+}
+/* The card is the one attachment that wants the width it's given — its text has to wrap
+   against something. Undoes the container's flex-start for cards only. */
+.attachments > :deep(.card) {
+  align-self: stretch;
 }
 </style>

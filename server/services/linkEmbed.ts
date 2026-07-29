@@ -99,6 +99,39 @@ export function videoEmbedFor(url: URL): VideoEmbed | null {
 }
 
 /**
+ * A provider's oEmbed endpoint for a URL, when we know it without asking.
+ *
+ * ⚠ This exists because scraping YouTube does not work, and cannot be made to work by
+ * turning a dial. Measured on `youtube.com/watch?v=…`: 256 KB of HTML read, truncated, and
+ * `og:title` **not present anywhere in it** — YouTube front-loads a colossal inline config
+ * blob and puts its metadata after it. The Lounge hit the same wall and exposed
+ * `prefetchMaxSearchSize` as a config knob so admins could raise it past 300 KB.
+ *
+ * The same request against YouTube's own oEmbed endpoint returns **848 bytes** containing
+ * the title, the author, and a thumbnail URL. Raising a byte cap to "fix" this would mean
+ * downloading a megabyte of someone's HTML to extract what they will hand over in under a
+ * kilobyte if asked properly.
+ *
+ * So: known providers are asked directly, before any scraping. Discovery via
+ * `<link rel=alternate type=application/json+oembed>` still runs for everyone else
+ * (see linkMeta), and HTML scraping remains the fallback for both.
+ */
+export function oembedEndpointFor(url: URL): string | null {
+  const yt = youtubeId(url);
+  if (yt && SAFE_ID.test(yt)) {
+    // The endpoint wants the canonical watch URL, not whatever shape was pasted.
+    const canonical = `https://www.youtube.com/watch?v=${yt}`;
+    return `https://www.youtube.com/oembed?url=${encodeURIComponent(canonical)}&format=json`;
+  }
+  const vim = vimeoId(url);
+  if (vim && SAFE_ID.test(vim)) {
+    const canonical = `https://vimeo.com/${vim}`;
+    return `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(canonical)}`;
+  }
+  return null;
+}
+
+/**
  * Origins a client may load in a preview iframe.
  *
  * Exported so the Vue client's CSP frame-src and this table can't drift apart —

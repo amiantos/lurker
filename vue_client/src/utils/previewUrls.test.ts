@@ -17,15 +17,15 @@ describe('previewableUrls — the toggles', () => {
   });
 
   it('inline media selects file links and ignores pages', () => {
-    expect(
-      previewableUrls('https://e.test/a.png https://e.test/article', MEDIA_ONLY),
-    ).toEqual(['https://e.test/a.png']);
+    expect(previewableUrls('https://e.test/a.png https://e.test/article', MEDIA_ONLY)).toEqual([
+      'https://e.test/a.png',
+    ]);
   });
 
   it('link previews selects pages and ignores file links', () => {
-    expect(
-      previewableUrls('https://e.test/a.png https://e.test/article', PAGES_ONLY),
-    ).toEqual(['https://e.test/article']);
+    expect(previewableUrls('https://e.test/a.png https://e.test/article', PAGES_ONLY)).toEqual([
+      'https://e.test/article',
+    ]);
   });
 
   it('both on selects both', () => {
