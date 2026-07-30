@@ -62,7 +62,14 @@ const RESOLVER_VERSION = 2;
  * refetched forever and displayed nothing.
  */
 export function urlHash(url: string): string {
-  return crypto.createHash('sha256').update(`v${RESOLVER_VERSION}|${url}`).digest('hex');
+  // The fragment is client-side only and never reaches the origin, so `#intro` and `#appendix` of
+  // one document are the same fetch. `normalizeUrl` strips it for exactly that stated reason —
+  // but the cache keyed the RAW request string, so the documented dedupe never happened and a
+  // channel linking five anchors of one page paid for five identical scrapes. Stripped here so
+  // the key collapses them, while the descriptor still echoes the URL as asked (see
+  // `resolvePreview`, where that echo is load-bearing for the client's own lookup).
+  const key = url.replace(/#.*$/, '');
+  return crypto.createHash('sha256').update(`v${RESOLVER_VERSION}|${key}`).digest('hex');
 }
 
 // ⚠ `datetime(expires_at)`, not a bare comparison. `expires_at` is stored ISO-8601

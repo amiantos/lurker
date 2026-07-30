@@ -60,7 +60,12 @@
 
     <!-- Video: the thumbnail goes full-width with a play badge, because a video reduced to a
          72px square is pointless. Everything else keeps the small right-aligned thumbnail. -->
-    <div v-if="isVideo && preview.thumb" class="card-media">
+    <!-- ⚠ Gated on isVideo alone, NOT on having a thumbnail. `pageRecord` returns ok as soon as
+         there is a title OR an image, so an oEmbed reply with a title but no thumbnail_url (or
+         an og:image that normalizeUrl rejected) yielded embedUrl set and thumb undefined — both
+         this branch and the `v-else-if="preview.thumb"` one were false, so the card showed a
+         title with the ▶, and the whole video, unreachable. -->
+    <div v-if="isVideo" class="card-media">
       <!-- THE FACADE. The iframe does not exist until this is clicked, so nothing is requested
            from the video host on render — not even the thumbnail, which is proxied through us
            like every other preview image. The first request the viewer makes to YouTube is the
@@ -81,7 +86,13 @@
         :aria-label="`Play ${preview.title ?? 'video'}`"
         @click.stop="play"
       >
-        <img class="card-thumb-wide" :src="preview.thumb" alt="" loading="lazy" />
+        <img
+          v-if="preview.thumb"
+          class="card-thumb-wide"
+          :src="preview.thumb"
+          alt=""
+          loading="lazy"
+        />
         <span class="play-badge" aria-hidden="true">▶</span>
       </button>
     </div>

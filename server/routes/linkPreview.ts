@@ -20,6 +20,7 @@ import {
   resolvePreview,
   toDescriptor,
   MAX_IMAGE_PROXY_BYTES,
+  MAX_MEDIA_PROXY_BYTES,
   MAX_URLS_PER_REQUEST,
 } from '../services/linkPreview.js';
 import { verifyProxyToken } from '../services/mediaProxyToken.js';
@@ -41,6 +42,20 @@ const resolveThrottle = new RequestThrottle({
   windowMs: 60_000,
   maxRequests: 120,
 });
+
+/**
+ * Per-account cap on BYTE requests.
+ *
+ * ⚠ The byte endpoint needs its own. Only `/resolve` was throttled, so any authenticated session
+ * could loop `GET /media/:token` for a token it already held: keep-alive is off by design, so
+ * each request opens a fresh upstream socket and pulls up to the cap — a few hundred in flight
+ * saturate the cell's egress and file descriptors and hammer the origin from the operator's IP,
+ * which is the exact resource the resolve throttle exists to protect.
+ *
+ * Set well above what a person browsing generates (the browser and iOS URLCache hold these for a
+ * day, so a re-scroll costs nothing) and far below what a loop does.
+ */
+const mediaThrottle = new RequestThrottle({ windowMs: 60_000, maxRequests: 300 });
 
 router.post(
   '/resolve',
@@ -99,6 +114,13 @@ router.get(
       return;
     }
 
+    const verdict = mediaThrottle.allow(String(req.user!.id));
+    if (!verdict.ok) {
+      res.set('Retry-After', String(verdict.retryAfter));
+      res.status(429).end();
+      return;
+    }
+
     // The token is the capability: the server minted it during resolve, after the
     // URL had already passed the guard, so a client can only replay a decision we
     // made. It cannot author one.
@@ -134,8 +156,16 @@ router.get(
         res.status(404).end();
         return;
       }
+      // ⚠ Per-KIND cap. The single 8 MB ceiling was named for images and silently applied to
+      // everything, so a 30 MB mp4 rendered inline was streamed to 8 MB and then had both ends
+      // destroyed — the <video> died with a network error partway through, and since the
+      // `immutable` Cache-Control had already gone out the browser could cache the truncated
+      // body. Video and audio are streamed to a media element and are legitimately larger.
+      const cap = upstream.contentType.startsWith('image/')
+        ? MAX_IMAGE_PROXY_BYTES
+        : MAX_MEDIA_PROXY_BYTES;
       const declared = Number(upstream.headers['content-length']);
-      if (Number.isFinite(declared) && declared > MAX_IMAGE_PROXY_BYTES) {
+      if (Number.isFinite(declared) && declared > cap) {
         upstream.stream.destroy();
         res.status(413).end();
         return;
@@ -162,14 +192,11 @@ router.get(
       }
 
       // ⚠ Content-Length is only forwarded when we KNOW we'll send exactly that many bytes.
-      // Echoing it verbatim while truncating the body at MAX_IMAGE_PROXY_BYTES produced a
-      // length/body mismatch — the client saw ERR_HTTP_CONTENT_LENGTH_MISMATCH (a broken
-      // transfer) instead of a clean, cacheable failure.
-      const declaredLength = Number(upstream.headers['content-length']);
-      const lengthIsTrustworthy =
-        Number.isFinite(declaredLength) && declaredLength <= MAX_IMAGE_PROXY_BYTES;
-      if (lengthIsTrustworthy) {
-        res.setHeader('Content-Length', String(declaredLength));
+      // Echoing it verbatim while the body was truncated at the cap produced a length/body
+      // mismatch — the client saw ERR_HTTP_CONTENT_LENGTH_MISMATCH (a broken transfer) rather
+      // than a clean, cacheable failure.
+      if (Number.isFinite(declared) && declared <= cap) {
+        res.setHeader('Content-Length', String(declared));
       }
       res.status(upstream.status === 206 ? 206 : 200);
 
@@ -178,7 +205,7 @@ router.get(
       let sent = 0;
       upstream.stream.on('data', (chunk: Buffer) => {
         sent += chunk.length;
-        if (sent > MAX_IMAGE_PROXY_BYTES) {
+        if (sent > cap) {
           upstream.stream.destroy();
           res.destroy();
         }

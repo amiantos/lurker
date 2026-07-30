@@ -55,6 +55,24 @@ describe('rendering has no side effects', () => {
   });
 });
 
+describe('rendering never blocks priming', () => {
+  it('a URL that was RENDERED before priming is still primed', async () => {
+    // ⚠⚠ Regression guard, and this one shipped broken once: `useLinkPreview` inserts a cache
+    // entry as a side effect of being read, and the skip condition was `cache.has(url)` — so a
+    // mere render permanently blocked that URL. The failure path was the default one: both
+    // settings off → nothing primed → user enables one → rows render and create null entries →
+    // no later history page, backlog replay or live message could ever queue them.
+    const url = 'https://e.test/rendered-first';
+    useLinkPreview(url); // a row renders and reads it
+    await settle();
+    expect(posted).toEqual([]);
+
+    primePreviews([`look at ${url}`], BOTH);
+    await settle();
+    expect(posted).toEqual([[url]]);
+  });
+});
+
 describe('primePreviews', () => {
   it('coalesces a whole batch into one request', async () => {
     // A history page arrives as one batch; it must not become one POST per row.

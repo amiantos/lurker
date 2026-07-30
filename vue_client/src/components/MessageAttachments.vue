@@ -127,8 +127,16 @@ const stacked = computed(() =>
  * once the lightbox loaded it directly, so the click produced a dead "open in browser" card.
  */
 function openStripAt(item: LinkPreview): void {
-  const items = strip.value.map((p) => ({ url: p.src ?? p.url }));
-  viewer.openGallery(items, strip.value.indexOf(item));
+  // ⚠ IMAGES only. MediaViewerModal derives which element to render from the URL's extension,
+  // and a proxy path has none — `mediaKindForUrl` even throws on a relative URL and returns
+  // null — so it falls back to `image` and would mount a <video>'s bytes in an <img>, producing
+  // the "open in browser" failure card for a file that plays fine inline. A video in a strip has
+  // its own inline controls anyway; it isn't a lightbox item.
+  const gallery = strip.value.filter((p) => p.kind === 'image');
+  const items = gallery.map((p) => ({ url: p.src ?? p.url }));
+  const at = gallery.indexOf(item);
+  if (at === -1) return;
+  viewer.openGallery(items, at);
 }
 
 function openSingle(item: LinkPreview): void {

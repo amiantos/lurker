@@ -89,6 +89,35 @@ describe('isBlockedIpLiteral — IPv4-embedding IPv6 notations', () => {
   });
 });
 
+describe('isBlockedIpLiteral — IPv4-in-IPv6 tunnels', () => {
+  it('blocks 6to4, which sits INSIDE the 2000::/3 allowlist', () => {
+    // ⚠ The mapped-address hole again in a different notation: 2002::/16 embeds an IPv4 and is
+    // global unicast, so the allowlist passed it. `net.isIP` calls it IPv6, so `pinnedLookup`
+    // never runs either.
+    expect(isBlockedIpLiteral('2002:7f00:0001::')).toBe(true); // 127.0.0.1
+    expect(isBlockedIpLiteral('2002:0a00:0001::')).toBe(true); // 10.0.0.1
+    expect(isBlockedIpLiteral('2002:a9fe:a9fe::')).toBe(true); // 169.254.169.254
+  });
+
+  it('blocks Teredo', () => {
+    expect(isBlockedIpLiteral('2001:0:0:0:0:0:a9fe:a9fe')).toBe(true);
+    expect(isBlockedIpLiteral('2001:0::1')).toBe(true);
+  });
+
+  it('does not over-block ordinary public IPv6 that merely starts 2001', () => {
+    expect(isBlockedIpLiteral('2001:db8::1')).toBe(false);
+    expect(isBlockedIpLiteral('2001:4860:4860::8888')).toBe(false);
+    expect(isBlockedIpLiteral('2606:4700:4700::1111')).toBe(false);
+  });
+
+  it('refuses a literal with two elisions instead of parsing it', () => {
+    // `filter(g => g !== '')` swallowed the extra empty groups, so this parsed as valid — the
+    // parser failing open in a guard whose whole premise is failing closed.
+    expect(isBlockedIpLiteral('2001::1::1')).toBe(true);
+    expect(isBlockedIpLiteral('::1::')).toBe(true);
+  });
+});
+
 describe('isBlockedIpLiteral — IPv6 is an allowlist', () => {
   it('allows only global unicast (2000::/3)', () => {
     expect(isBlockedIpLiteral('2606:4700:4700::1111')).toBe(false);

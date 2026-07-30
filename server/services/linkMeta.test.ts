@@ -73,6 +73,29 @@ describe('scrapeMeta', () => {
     expect(meta.imageUrl).toBe('https://e.test/secure.png');
   });
 
+  it('is not fooled by a hyphen-prefixed attribute of the same name', () => {
+    // ⚠ `\bcontent` matches INSIDE `data-content` — a hyphen is a non-word character, so the
+    // boundary holds there — and the first match won, so the card showed the placeholder.
+    const meta = scrapeMeta(
+      `<head><meta property="og:title" data-content="Loading…" content="Real Title"></head>`,
+    );
+    expect(meta.title).toBe('Real Title');
+  });
+
+  it('is not fooled by data-name or data-type either', () => {
+    const meta = scrapeMeta(
+      `<head><meta data-name="decoy" name="twitter:title" content="Tw"></head>`,
+    );
+    expect(meta.title).toBe('Tw');
+
+    // `type` vs `data-type` in the oEmbed scan could hide an endpoint entirely.
+    const oembed = scrapeMeta(
+      `<head><link rel="alternate" data-type="text/xml+oembed" ` +
+        `type="application/json+oembed" href="https://e.test/o"></head>`,
+    );
+    expect(oembed.oembedUrl).toBe('https://e.test/o');
+  });
+
   it('ignores meta tags that live in the body', () => {
     // A stray <meta> inside a third-party embed must not win over the head.
     const meta = scrapeMeta(`

@@ -294,9 +294,10 @@ export interface BufferOptions {
  * second request for the body. Doing that doubled every page fetch, which is both wasteful
  * and twice the chance of tripping a rate limit on a host we want to stay welcome at.
  *
- * The cap is enforced on bytes actually received, not on `Content-Length`: a hostile or
- * merely broken origin can lie about that or omit it. It's still honoured as an early exit,
- * so we don't drain a socket we already know is too big.
+ * The cap is enforced on bytes actually received, and ONLY on those. `Content-Length` is
+ * deliberately not consulted — see the ⚠ note in the body: rejecting early on an oversized
+ * declared length broke every caller here, all of which want a PREFIX. A maintainer trusting
+ * the sentence that used to be here would have believed in a guard that had been removed.
  */
 /** What `stopAtHeadEnd` looks for. Lowercased; the scan lowercases its window to match. */
 const NEEDLE = '</head';

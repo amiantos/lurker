@@ -61,6 +61,11 @@ export function isBlockedIpv4(ip: string): boolean {
 function parseIpv6(input: string): number[] | null {
   let text = input;
 
+  // At most ONE elision. `filter(g => g !== '')` below silently swallows extra empty groups, so
+  // `2001::1::1` parsed as a perfectly good address — the parser failing open in a file whose
+  // whole premise is failing closed.
+  if (text.split('::').length > 2) return null;
+
   // A trailing dotted quad contributes the last two groups.
   const tail: number[] = [];
   const dotted = /:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(text);
@@ -160,6 +165,18 @@ export function isBlockedIpLiteral(host: string): boolean {
 
   const embedded = embeddedIpv4(groups);
   if (embedded !== null) return isBlockedIpv4(embedded);
+
+  // ⚠ IPv4-in-IPv6 TUNNELS, blocked outright. Both live INSIDE the 2000::/3 allowlist below, so
+  // without this they were the `::ffff:a9fe:a9fe` hole again wearing a different notation:
+  // `http://[2002:7f00:0001::]/` is 6to4 for 127.0.0.1 and `[2002:a9fe:a9fe::]` for the cloud
+  // metadata endpoint — `net.isIP` calls them IPv6, so `pinnedLookup` never runs.
+  //
+  // Refused rather than decoded. Both mechanisms are deprecated (6to4 by RFC 7526, Teredo
+  // effectively dead), Teredo's embedded client address is bit-complemented so reading it is
+  // fiddly, and a preview fetcher has no business dialling a tunnel broker either way. Blocking
+  // costs us nothing real and removes a whole class of notation from the audit.
+  if (groups[0] === 0x2002) return true; // 2002::/16 — 6to4
+  if (groups[0] === 0x2001 && groups[1] === 0x0000) return true; // 2001:0::/32 — Teredo
 
   // ALLOWLIST: 2000::/3 is the global unicast range. Loopback (::1), the
   // unspecified address, unique-local (fc00::/7), link-local (fe80::/10),

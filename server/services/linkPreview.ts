@@ -75,7 +75,17 @@ const MAX_QUEUE_WAIT_MS = 10_000;
 let inFlightCount = 0;
 const slotWaiters: (() => void)[] = [];
 
-/** Take a slot, waiting if the pool is full. Resolves false if it gave up. */
+/**
+ * Take a slot, waiting if the pool is full. Resolves false only if it gave up waiting.
+ *
+ * ⚠ The slot is HANDED OVER directly, not re-contended for. An earlier version woke a waiter
+ * and had it re-check `inFlightCount` in a `while (…) await setImmediate` loop — which meant a
+ * brand-new caller could take the just-freed slot synchronously before the woken waiter's
+ * microtask ran, leaving it spinning on setImmediate with its timeout already cleared: a
+ * starved waiter burning a core, and an HTTP request hanging well past the bound that was
+ * supposed to prevent exactly that. `releaseSlot` now transfers ownership without decrementing,
+ * so a woken waiter already owns its slot and nothing can race it.
+ */
 async function acquireSlot(): Promise<boolean> {
   if (inFlightCount < MAX_CONCURRENT) {
     inFlightCount++;
@@ -83,31 +93,39 @@ async function acquireSlot(): Promise<boolean> {
   }
   if (slotWaiters.length >= MAX_QUEUED) return false;
 
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const woken = await new Promise<boolean>((resolve) => {
-    const wake = () => {
-      if (timer) clearTimeout(timer);
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const wake = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // No increment: the releasing caller's slot was never given up, it was passed to us.
       resolve(true);
     };
-    slotWaiters.push(wake);
+
     timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       const at = slotWaiters.indexOf(wake);
       if (at !== -1) slotWaiters.splice(at, 1);
       resolve(false);
     }, MAX_QUEUE_WAIT_MS);
+
+    slotWaiters.push(wake);
   });
-  if (!woken) return false;
-  // Re-checked rather than assumed: several waiters can be woken by successive releases.
-  while (inFlightCount >= MAX_CONCURRENT) {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  inFlightCount++;
-  return true;
 }
 
 function releaseSlot(): void {
+  // Hand the slot to the next waiter rather than releasing it into a free-for-all. Only when
+  // nobody is queued does the pool actually shrink.
+  const next = slotWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
   inFlightCount--;
-  slotWaiters.shift()?.();
 }
 
 /**
@@ -342,13 +360,21 @@ export async function resolvePreview(raw: string): Promise<PreviewRecord> {
   if (pending) return await pending;
 
   const task = (async (): Promise<PreviewRecord> => {
-    if (!(await acquireSlot())) {
-      // Deliberately NOT cached: this says nothing about the URL, only that the instance was
-      // saturated when we asked. Caching it would turn a momentary spike into a permanently
-      // blank preview.
-      return unavailable(raw);
-    }
+    // ⚠ `acquired` and the try must wrap EVERYTHING, including the give-up path. An earlier
+    // version returned before entering the try, so `finally` never ran and the resolved
+    // `unavailable` promise stayed pinned in `inFlight` for the life of the process — every
+    // later request for that URL replayed it via the `if (pending)` short-circuit above, never
+    // consulting the DB cache again. That's permanent blankness, which is precisely what the
+    // "deliberately not cached" note below was trying to avoid.
+    let acquired = false;
     try {
+      acquired = await acquireSlot();
+      if (!acquired) {
+        // Deliberately NOT cached: this says nothing about the URL, only that the instance was
+        // saturated when we asked. Caching it would turn a momentary spike into a permanently
+        // blank preview.
+        return unavailable(raw);
+      }
       const resolved = await doResolve(raw);
       // ⚠ Always echo the URL we were ASKED about, whatever the fetch ended up at.
       //
@@ -373,7 +399,8 @@ export async function resolvePreview(raw: string): Promise<PreviewRecord> {
       putPreview(record);
       return record;
     } finally {
-      releaseSlot();
+      // Only release what we actually took; always clear the in-flight entry.
+      if (acquired) releaseSlot();
       inFlight.delete(raw);
     }
   })();
@@ -433,4 +460,8 @@ export function toDescriptor(record: PreviewRecord): PreviewDescriptor {
   return d;
 }
 
+/** Ceiling on preview IMAGE bytes the proxy will serve. */
 export const MAX_IMAGE_PROXY_BYTES = MAX_IMAGE_BYTES;
+/** Ceiling on VIDEO/AUDIO bytes. Larger because these stream to a media element rather than
+ *  being decoded whole — an 8 MB cut-off truncated ordinary clips mid-playback. */
+export const MAX_MEDIA_PROXY_BYTES = 64 * 1024 * 1024;

@@ -129,7 +129,7 @@
               interactive-nicks
               @nick-click="onMentionMenu"
             />
-            <MessageAttachments :text="row.m?.text" @measured="repinAfterPreviewGrowth" />
+            <MessageAttachments :text="row.m?.text" @measured="repinAfterPreviewGrowth(true)" />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
         </template>
@@ -161,10 +161,6 @@
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
               @nick-click="onMentionMenu"
-            /><MessageAttachments
-              v-if="row.m?.type === 'message' || row.m?.type === 'action'"
-              :text="row.m?.text"
-              @measured="repinAfterPreviewGrowth"
             />
             <template v-else-if="row.m?.type === 'join'"
               ><NickRef
@@ -267,6 +263,19 @@
             <template v-else-if="row.m?.type === 'error'"
               ><LinkedText :text="row.m.text ?? ''"
             /></template>
+            <!-- ⚠ OUTSIDE the v-if/v-else-if chain above, deliberately. Sitting between
+                 RenderSegments and the first `v-else-if` re-parented the ENTIRE event chain
+                 (join/part/quit/kick/…) onto this element's condition instead of
+                 `hasInlineText`. Output was identical only because message|action is a subset
+                 of what hasInlineText covers — so any later edit to the condition here (gating
+                 on a setting, adding `notice`, extracting the component) would have silently
+                 deleted or doubled every event row, from an edit site that gives no hint the
+                 two are connected. -->
+            <MessageAttachments
+              v-if="row.m?.type === 'message' || row.m?.type === 'action'"
+              :text="row.m?.text"
+              @measured="repinAfterPreviewGrowth(true)"
+            />
           </span>
         </template>
         <div
@@ -1635,9 +1644,20 @@ async function pinAnchorRow(el: HTMLElement, anchorId: number, useHeightFallback
 // The anchor is found with elementFromPoint — O(1). Scanning every row for the first visible
 // one, as an earlier version did, read offsetTop/offsetHeight per row and forced a synchronous
 // layout for each; that was QA's "the whole screen is trying to redraw".
-async function repinAfterPreviewGrowth() {
+/**
+ * @param afterGrowth true when the growth has ALREADY happened (an image `load` event) rather
+ *   than being about to happen (the pre-flush `previewRevision` watcher).
+ *
+ * ⚠ A post-growth call can only follow the bottom. `pinAnchorRow` works by measuring the
+ * anchor, awaiting the re-render, and restoring — so if the row grew before we were told, it
+ * measures the already-grown position and restores the same scrollTop it started from: a no-op
+ * that reads like a fix. Only the pre-flush path can hold a scrolled-up reader still, which is
+ * why server-provided dimensions matter — they move the growth into that path.
+ */
+async function repinAfterPreviewGrowth(afterGrowth = false) {
   const el = scroller.value;
   if (!el) return;
+  if (afterGrowth && !stickToBottom.value) return;
   if (stickToBottom.value) {
     // A reader at the live tail wants to follow the growth down, same as a live append.
     await nextTick();
@@ -1675,9 +1695,22 @@ function topVisibleMessageId(el: HTMLElement): number | null {
   const direct = idOf(hit.closest('[data-msg-id]'));
   if (direct != null) return direct;
 
-  const rows = [...el.querySelectorAll('[data-msg-id]')] as HTMLElement[];
-  for (const row of rows) {
-    if (row.offsetTop + row.offsetHeight > el.scrollTop) return idOf(row);
+  // Walk FORWARD in document order from whatever is at the top edge, rather than measuring.
+  //
+  // ⚠ The obvious version — scanning every row for `offsetTop + offsetHeight > el.scrollTop` —
+  // is wrong here: `offsetTop` is relative to the nearest POSITIONED ancestor, and
+  // `.message-list` sets no `position`, so it carries the scroller's own document offset and the
+  // comparison mixes coordinate spaces. It came out true for row 0 at any realistic scrollTop,
+  // making the "fallback" reliably return the OLDEST row in the buffer. (The prepend code is
+  // safe from this because it only ever uses offsetTop *differences*.)
+  //
+  // Walking siblings needs no measurement at all, is correct by construction, and costs a few
+  // steps instead of a layout read per row.
+  let node: Element | null = hit.closest('.line, .notice') ?? hit;
+  while (node) {
+    const found = idOf(node.matches('[data-msg-id]') ? node : node.querySelector('[data-msg-id]'));
+    if (found != null) return found;
+    node = node.nextElementSibling;
   }
   return null;
 }

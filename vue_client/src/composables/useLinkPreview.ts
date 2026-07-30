@@ -192,7 +192,8 @@ export function primePreviews(
   for (const text of texts) {
     for (const url of previewableUrls(text, toggles)) {
       dropIfExpired(url);
-      if (cache.has(url)) continue;
+      if (asked.has(url)) continue;
+      asked.add(url);
       entryFor(url);
       queue.add(url);
       queued = true;

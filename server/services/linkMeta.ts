@@ -117,7 +117,15 @@ export function decodeBody(body: Buffer, contentTypeHeader: string): string {
 // One <meta>/<link> tag's attributes, order-independent and quote-agnostic.
 // Real-world HTML puts these in every order and quotes them three ways.
 function attr(tag: string, name: string): string | undefined {
-  const m = new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(tag);
+  // ⚠ Anchored on a boundary that a hyphen does NOT satisfy. `\b${name}` matched inside
+  // hyphen-prefixed attributes — `-` is a non-word character, so `\bcontent` matches within
+  // `data-content` — and since the first match wins,
+  // `<meta property="og:title" data-content="Loading…" content="Real Title">` produced the
+  // placeholder. Same shape for `name` vs `data-name`, and for `type` vs `data-type` in the
+  // oEmbed `<link rel=alternate>` scan, where it could hide an endpoint entirely.
+  const m = new RegExp(`(?:^|[\\s"'])${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'>]+))`, 'i').exec(
+    tag,
+  );
   if (!m) return undefined;
   return m[2] ?? m[3] ?? m[4];
 }
