@@ -11,7 +11,7 @@
 // Detached, idempotent module singleton — mirrors startBufferHydration so it
 // survives the Desktop<->Mobile shell swap without double-registering.
 
-import { effectScope, watch } from 'vue';
+import { computed, effectScope, watch } from 'vue';
 import { connected } from './useSocket.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
@@ -28,19 +28,28 @@ export function startCallPresenceHydration(): void {
     const config = useConfigStore();
     const presence = useCallPresenceStore();
 
-    const hydrateAll = (): void => {
-      if (!connected.value || !config.voiceEnabled) return;
-      for (const n of networks.networks) {
-        if (networks.states[n.id]?.state === 'connected') void presence.hydrate(n.id);
-      }
-    };
+    // The set of networks we can meaningfully hydrate right now, as a stable
+    // string key. Watching this (not the raw `connected` edge) is what makes
+    // hydration reliable: a network's per-connection state arrives over the WS
+    // *after* the socket opens, and voiceEnabled lands after the config fetch —
+    // so a one-shot fire on the connect edge would run before either was ready
+    // and never retry. Re-deriving from all three reactive inputs means we fire
+    // the moment a network actually becomes connected, on every reconnect, and
+    // if voice is enabled late.
+    const hydratableKey = computed(() => {
+      if (!connected.value || !config.voiceEnabled) return '';
+      return networks.networks
+        .filter((n) => networks.states[n.id]?.state === 'connected')
+        .map((n) => n.id)
+        .sort((a, b) => a - b)
+        .join(',');
+    });
 
-    // immediate: reconcile the initial connected state on cold launch, not just
-    // later transitions. Re-runs on every reconnect edge.
     watch(
-      connected,
-      (isUp) => {
-        if (isUp) hydrateAll();
+      hydratableKey,
+      (key) => {
+        if (!key) return;
+        for (const id of key.split(',')) void presence.hydrate(Number(id));
       },
       { immediate: true },
     );
