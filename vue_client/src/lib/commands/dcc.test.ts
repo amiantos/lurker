@@ -54,4 +54,21 @@ describe('parseDccCommand', () => {
   it('errors on an unknown subcommand', () => {
     expect(parseDccCommand('frobnicate 1').kind).toBe('error');
   });
+
+  it('parses /dcc chat <nick>', () => {
+    expect(parseDccCommand('chat alice')).toEqual({ kind: 'chat', nick: 'alice' });
+    expect(parseDccCommand('CHAT Bob')).toEqual({ kind: 'chat', nick: 'Bob' });
+    expect(parseDccCommand('chat')).toMatchObject({ kind: 'error' });
+  });
+
+  it('parses /dcc chat close <nick> and /dcc close <nick>', () => {
+    expect(parseDccCommand('chat close alice')).toEqual({ kind: 'chatClose', nick: 'alice' });
+    expect(parseDccCommand('close bob')).toEqual({ kind: 'chatClose', nick: 'bob' });
+    expect(parseDccCommand('close')).toMatchObject({ kind: 'error' });
+  });
+
+  it('parses /dcc send <nick>', () => {
+    expect(parseDccCommand('send alice')).toEqual({ kind: 'send', nick: 'alice' });
+    expect(parseDccCommand('send')).toMatchObject({ kind: 'error' });
+  });
 });

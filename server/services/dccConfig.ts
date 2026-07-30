@@ -49,3 +49,49 @@ export function dccMaxFileBytes(): number {
 export function dccAllowPrivateHosts(): boolean {
   return parseDccEnabled(process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS);
 }
+
+// ---------------------------------------------------------------------------
+// Outbound-side config: DCC SEND / CHAT offers and passive receive need Lurker
+// to LISTEN for an inbound connection and advertise a reachable address back to
+// the peer. All of this is only consulted when the user offers a send/chat or
+// accepts a passive send — plain XDCC downloads (dial-out) never touch it.
+// ---------------------------------------------------------------------------
+
+/** The public host to advertise in outgoing DCC offers (LURKER_DCC_EXTERNAL_HOST)
+ *  — the address a peer on the internet connects back to, i.e. the host's public
+ *  IPv4 (or a hostname that resolves to it), NOT the container's private IP. An
+ *  IPv6 literal is allowed too. Unset means active/listening DCC can't advertise
+ *  a usable address, so the offer path falls back to passive/reverse where the
+ *  peer listens instead. Returns the trimmed value or null. */
+export function dccExternalHost(): string | null {
+  const h = (process.env.LURKER_DCC_EXTERNAL_HOST ?? '').trim();
+  return h || null;
+}
+
+/** Bind address for DCC listening sockets inside the container
+ *  (LURKER_DCC_LISTEN_BIND). Defaults to 0.0.0.0 so a Docker port-publish reaches
+ *  it; pin it to one interface if you run multi-homed. */
+export function dccListenBindHost(): string {
+  const h = (process.env.LURKER_DCC_LISTEN_BIND ?? '').trim();
+  return h || '0.0.0.0';
+}
+
+/** The inclusive TCP port range DCC listeners are allocated from
+ *  (LURKER_DCC_LISTEN_PORT_MIN / _MAX). This exact range must be reachable from
+ *  the internet — opened in the firewall AND published by Docker. Returns null
+ *  when unset or invalid, which disables active listening (passive-only). The
+ *  range size also caps how many concurrent offers can be outstanding. */
+export function dccListenPortRange(): { min: number; max: number } | null {
+  const min = Number((process.env.LURKER_DCC_LISTEN_PORT_MIN ?? '').trim());
+  const max = Number((process.env.LURKER_DCC_LISTEN_PORT_MAX ?? '').trim());
+  if (!Number.isInteger(min) || !Number.isInteger(max)) return null;
+  if (min < 1 || max > 65535 || min > max) return null;
+  return { min, max };
+}
+
+/** Whether Lurker can open active (listening) DCC — needs both a public host to
+ *  advertise and a port range to listen on. When false, the offer/passive paths
+ *  fall back to reverse DCC (peer listens, Lurker dials out). */
+export function dccActiveListenAvailable(): boolean {
+  return dccExternalHost() !== null && dccListenPortRange() !== null;
+}

@@ -48,12 +48,27 @@ export interface DccAccept {
   token: number | null;
 }
 
+/** A parsed inbound `DCC CHAT` offer — a request to open a direct line-oriented
+ *  chat. `host`/`port` are where the offerer is listening (active); `passive`
+ *  (port 0) means the offerer is firewalled and wants US to listen, correlated
+ *  by `token`. The `protocol` field is almost always `chat` (the only widely
+ *  used subtype). */
+export interface DccChat {
+  kind: 'chat';
+  protocol: string;
+  host: string;
+  port: number;
+  token: number | null;
+  passive: boolean;
+}
+
 /** Result of parsing a CTCP DCC body: a `SEND` offer, an `ACCEPT` (resume
  *  confirmation), a recognised-but-unhandled subtype (CHAT/RESUME/…), or a
  *  structural rejection with a reason for logging. */
 export type DccParse =
   | DccSend
   | DccAccept
+  | DccChat
   | { kind: 'unsupported'; subtype: string }
   | { kind: 'invalid'; reason: string };
 
@@ -108,7 +123,31 @@ export function parseDcc(args: string): DccParse {
   const rest = sp === -1 ? '' : body.slice(sp + 1).trim();
   if (subtype === 'SEND') return parseDccSend(rest);
   if (subtype === 'ACCEPT') return parseDccAccept(rest);
+  if (subtype === 'CHAT') return parseDccChat(rest);
   return { kind: 'unsupported', subtype };
+}
+
+// `DCC CHAT <protocol> <ip> <port> [token]` — an offer to open a direct chat.
+// `protocol` is conventionally the literal `chat` (some clients send `chat`,
+// others echo it in other case); we keep it verbatim but don't require a
+// specific value. Port 0 marks a passive/reverse offer carrying a token.
+function parseDccChat(rest: string): DccParse {
+  if (rest === '') return { kind: 'invalid', reason: 'missing DCC CHAT parameters' };
+  const fields = rest.split(/\s+/).filter(Boolean);
+  if (fields.length < 3 || fields.length > 4) {
+    return { kind: 'invalid', reason: 'expected <protocol> <ip> <port> [token]' };
+  }
+  const [protocol, hostStr, portStr, tokenStr] = fields;
+  const host = decodeDccAddress(hostStr);
+  if (host === null) return { kind: 'invalid', reason: `bad address: ${hostStr}` };
+  const port = parseUint(portStr);
+  if (port === null || port > 65535) return { kind: 'invalid', reason: `bad port: ${portStr}` };
+  let token: number | null = null;
+  if (tokenStr !== undefined) {
+    token = parseUint(tokenStr);
+    if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
+  }
+  return { kind: 'chat', protocol, host, port, token, passive: port === 0 };
 }
 
 // `DCC ACCEPT <filename> <port> <position> [token]` — the sender's go-ahead for a
@@ -190,6 +229,107 @@ function parseDccSend(rest: string): DccParse {
   }
 
   return { kind: 'send', filename, host, port, size, token, passive: port === 0 };
+}
+
+// ---------------------------------------------------------------------------
+// Outgoing DCC — building the CTCP bodies WE send when offering a transfer/chat.
+// The IPv4 address goes on the wire as a uint32 in network byte order (the
+// classic form every client understands); an IPv6 offerer sends the literal.
+// These return the CTCP *body* (the part after `DCC`); the caller frames it as a
+// CTCP request of type DCC. Pure + unit-tested.
+// ---------------------------------------------------------------------------
+
+/** Encode a host for a DCC offer field: IPv4 → its uint32 (network byte order)
+ *  as a decimal string; an IPv6 literal is passed through verbatim (detected by
+ *  a colon). Returns null if it's neither a dotted-quad nor a v6 literal. */
+export function encodeDccAddress(host: string): string | null {
+  const h = host.trim();
+  if (h.includes(':')) {
+    return /^[0-9a-fA-F:.]+$/.test(h) ? h : null;
+  }
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
+  if (!m) return null;
+  const o = m.slice(1).map((x) => Number(x));
+  if (o.some((x) => x > 255)) return null;
+  const n = ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
+  return String(n);
+}
+
+// A filename with a space (or a quote) must be double-quoted on the wire so the
+// address/port/size fields stay unambiguous. Embedded quotes are dropped — DCC
+// has no escaping, and a name with a literal quote is degenerate anyway. Names
+// reaching here are already storage-sanitized, so this is belt-and-suspenders.
+function quoteDccFilename(name: string): string {
+  // Strip quotes + line breaks + NUL so the offer can't be split or smuggled;
+  // matching the control chars is the whole point here.
+  // eslint-disable-next-line no-control-regex
+  const clean = name.replace(/["\r\n\x00]/g, '');
+  return /\s/.test(clean) ? `"${clean}"` : clean;
+}
+
+/** Build the body of an active `DCC SEND` offer (we listen; the peer connects to
+ *  `host:port`). Returns `SEND <file> <addr> <port> <size>`. */
+export function buildDccSend(
+  filename: string,
+  host: string,
+  port: number,
+  size: number,
+): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `SEND ${quoteDccFilename(filename)} ${addr} ${port} ${size}`;
+}
+
+/** Build the body of a passive/reverse `DCC SEND` offer (the PEER listens; port
+ *  is 0 and a token correlates its reply). Returns
+ *  `SEND <file> <addr> 0 <size> <token>`. */
+export function buildDccSendPassive(
+  filename: string,
+  host: string,
+  size: number,
+  token: number,
+): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `SEND ${quoteDccFilename(filename)} ${addr} 0 ${size} ${token}`;
+}
+
+/** Build the body of an active `DCC CHAT` offer — `CHAT chat <addr> <port>`. */
+export function buildDccChat(host: string, port: number): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `CHAT chat ${addr} ${port}`;
+}
+
+/** Build the body of a passive/reverse `DCC CHAT` offer —
+ *  `CHAT chat <addr> 0 <token>` (the peer listens and replies). */
+export function buildDccChatPassive(host: string, token: number): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `CHAT chat ${addr} 0 ${token}`;
+}
+
+/** Reverse reply to a peer's PASSIVE `DCC SEND`: after we start listening for
+ *  their firewalled send, we echo our own listening address/port plus their
+ *  token so they dial us — `SEND <file> <addr> <port> <size> <token>`. */
+export function buildDccSendReverse(
+  filename: string,
+  host: string,
+  port: number,
+  size: number,
+  token: number,
+): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `SEND ${quoteDccFilename(filename)} ${addr} ${port} ${size} ${token}`;
+}
+
+/** Reverse reply to a peer's PASSIVE `DCC CHAT`: our listening address/port +
+ *  their token — `CHAT chat <addr> <port> <token>`. */
+export function buildDccChatReverse(host: string, port: number, token: number): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `CHAT chat ${addr} ${port} ${token}`;
 }
 
 /** Human-readable byte size for status lines — 1024-based, one decimal place

@@ -15,7 +15,7 @@
 // reveals the affordance the moment an offer lands.
 
 import { defineStore } from 'pinia';
-import { api } from '../api.js';
+import { api, apiMultipart } from '../api.js';
 
 // Mirror of the server DccTransferState union (db/dccTransfers.ts). Two entry
 // states (requested / pending_approval), an active receive path, and terminal
@@ -196,6 +196,28 @@ export const useDccStore = defineStore('dcc', {
       } finally {
         delete this.busy[id];
       }
+    },
+
+    // Offer a DCC chat to a peer. The `=nick` buffer materializes from the
+    // server's chat notices/messages; the caller opens/navigates to it.
+    async openChat(networkId: number, nick: string): Promise<void> {
+      await api('/api/dcc/chat', { method: 'POST', body: { networkId, nick } });
+    },
+
+    async closeChat(networkId: number, nick: string): Promise<void> {
+      await api('/api/dcc/chat/close', { method: 'POST', body: { networkId, nick } });
+    },
+
+    // Upload a file and offer it to a peer over DCC SEND. Returns the new
+    // transfer row (the Transfers view tracks its progress).
+    async sendFile(networkId: number, nick: string, file: File): Promise<DccTransfer> {
+      const form = new FormData();
+      form.append('file', file);
+      form.append('networkId', String(networkId));
+      form.append('nick', nick);
+      const { transfer } = await apiMultipart<{ transfer: DccTransfer }>('/api/dcc/send', form);
+      if (transfer) this.applyTransfer(transfer);
+      return transfer;
     },
 
     // Open the Transfers modal and (re)load the list. Used by the sidebar button
