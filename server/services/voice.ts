@@ -80,20 +80,27 @@ function foldAscii(s: string): string {
 /**
  * Derive the LiveKit room name for a call. Pure and deterministic.
  *
- *  - Channel `#dev` on network 7      → `net-7-c-#dev`
- *  - DM between `Alice` and `bob`     → `net-7-d-alice-bob` (sorted, either end)
+ * Keyed on the IRC network's HOST — NOT a local network row id. A networkId is
+ * per-account, so two users of the same instance (jawsh + jawsh-qa) on the same
+ * channel would otherwise derive different rooms and never connect. Hosts are
+ * shared across users, and across *instances* pointed at a common SFU — so a
+ * host key is also what makes opt-in cross-instance bridging Just Work.
+ *
+ *  - Channel `#dev` on irc.libera.chat → `net-irc.libera.chat-c-#dev`
+ *  - DM `Alice`↔`bob`                  → `net-irc.libera.chat-d-alice-bob` (sorted, either end)
  *
  * `self` is the caller's own nick on the network; it is only consulted for DMs,
  * where it is paired with `target` and sorted so both ends agree on one room.
  */
-export function roomFor(networkId: number, target: string, self: string): string {
+export function roomFor(networkKey: string, target: string, self: string): string {
+  const net = foldAscii(networkKey);
   if (isChannelTarget(target)) {
-    return `net-${networkId}-c-${foldAscii(target)}`;
+    return `net-${net}-c-${foldAscii(target)}`;
   }
   const a = foldAscii(self);
   const b = foldAscii(target);
   const [lo, hi] = a <= b ? [a, b] : [b, a];
-  return `net-${networkId}-d-${lo}-${hi}`;
+  return `net-${net}-d-${lo}-${hi}`;
 }
 
 export interface MintedToken {

@@ -41,29 +41,31 @@ describe('isChannelTarget', () => {
 });
 
 describe('roomFor', () => {
-  it('makes a channel room everyone in the channel derives identically', () => {
-    // self is irrelevant for a channel — two members produce the same room.
-    expect(roomFor(7, '#dev', 'alice')).toBe('net-7-c-#dev');
-    expect(roomFor(7, '#dev', 'bob')).toBe('net-7-c-#dev');
+  it('makes a channel room everyone on the same host+channel derives identically', () => {
+    // self is irrelevant for a channel; the host is shared across users and
+    // instances, so two different accounts produce the same room.
+    expect(roomFor('irc.libera.chat', '#dev', 'alice')).toBe('net-irc.libera.chat-c-#dev');
+    expect(roomFor('irc.libera.chat', '#dev', 'bob')).toBe('net-irc.libera.chat-c-#dev');
   });
 
-  it('folds the channel name ASCII-only, leaving sigils and non-ASCII intact', () => {
-    expect(roomFor(3, '#DevOps', 'x')).toBe('net-3-c-#devops');
+  it('folds host + channel ASCII-only, leaving sigils and non-ASCII intact', () => {
+    expect(roomFor('IRC.Libera.Chat', '#DevOps', 'x')).toBe('net-irc.libera.chat-c-#devops');
     // [] and {} are NOT folded (RFC casemapping deliberately absent, §9.2).
-    expect(roomFor(3, '#Foo[Bar]', 'x')).toBe('net-3-c-#foo[bar]');
+    expect(roomFor('irc.libera.chat', '#Foo[Bar]', 'x')).toBe('net-irc.libera.chat-c-#foo[bar]');
   });
 
   it('gives a DM the SAME room from either end (canonical sorted pair)', () => {
     // The bug this prevents: A's target is "B", B's target is "A" — verbatim
     // naming would split one call into two rooms.
-    const fromAlice = roomFor(7, 'Bob', 'Alice');
-    const fromBob = roomFor(7, 'Alice', 'Bob');
+    const fromAlice = roomFor('irc.libera.chat', 'Bob', 'Alice');
+    const fromBob = roomFor('irc.libera.chat', 'Alice', 'Bob');
     expect(fromAlice).toBe(fromBob);
-    expect(fromAlice).toBe('net-7-d-alice-bob');
+    expect(fromAlice).toBe('net-irc.libera.chat-d-alice-bob');
   });
 
-  it('scopes rooms by network id', () => {
-    expect(roomFor(1, '#dev', 'x')).not.toBe(roomFor(2, '#dev', 'x'));
+  it('scopes rooms by host, not by per-user network id', () => {
+    // Same channel on two different networks → different rooms.
+    expect(roomFor('irc.libera.chat', '#dev', 'x')).not.toBe(roomFor('irc.rizon.net', '#dev', 'x'));
   });
 });
 

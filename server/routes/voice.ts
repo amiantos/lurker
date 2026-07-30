@@ -64,7 +64,10 @@ router.post('/token', async (req: Request, res: Response) => {
     return;
   }
 
-  const room = roomFor(networkId, target, conn.currentNick);
+  // Key the room on the network HOST, not the per-user networkId, so every user
+  // (this instance or another sharing the SFU) on the same IRC network + channel
+  // lands in the same room. See services/voice.ts roomFor().
+  const room = roomFor(network.host, target, conn.currentNick);
   try {
     const minted = await mintVoiceToken({ identity: conn.currentNick, room });
     res.json(minted); // { token, room, url }
