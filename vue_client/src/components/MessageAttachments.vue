@@ -12,7 +12,14 @@
          The row's height is ALSO the sizing win: it comes from the server's dimensions, so
          it's known before a single byte of image data arrives, and it's ONE height for the
          whole group instead of N unknown ones. -->
-    <div v-if="strip.length > 1" class="filmstrip" :style="{ height: `${stripHeight}px` }">
+    <div
+      v-if="strip.length > 1"
+      ref="stripEl"
+      class="filmstrip"
+      :class="{ 'fade-start': !atStart, 'fade-end': !atEnd }"
+      :style="{ height: `${stripHeight}px` }"
+      @scroll.passive="updateEdges"
+    >
       <MessageAttachment
         v-for="item in strip"
         :key="item.url"
@@ -33,7 +40,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { previewableUrls } from '../utils/previewUrls.js';
 import { useLinkPreview, type LinkPreview } from '../composables/useLinkPreview.js';
@@ -115,6 +122,44 @@ function openStripAt(item: LinkPreview): void {
   viewer.openGallery(items, strip.value.indexOf(item));
 }
 
+// ─── Scroll affordance ────────────────────────────────────────────────────────
+//
+// A strip that scrolls has to LOOK like it scrolls, or the images past the edge simply don't
+// exist as far as the reader is concerned. The fade is applied with `mask-image`, so the
+// content itself dissolves at the boundary rather than having a gradient laid over it — which
+// means it works on any background, including the highlight tint, with nothing to keep in sync.
+//
+// Only faded on a side that can actually move. A permanent fade would be a lie in both
+// directions: it implies more content when the strip is fully scrolled, and it dims the first
+// image for no reason when there's nothing to the left.
+const stripEl = useTemplateRef<HTMLElement>('stripEl');
+const atStart = ref(true);
+const atEnd = ref(true);
+
+function updateEdges(): void {
+  const el = stripEl.value;
+  if (!el) return;
+  const max = el.scrollWidth - el.clientWidth;
+  // A pixel of slack: fractional scroll positions and sub-pixel layout mean an exact
+  // comparison flickers the fade on and off at the extremes.
+  atStart.value = el.scrollLeft <= 1;
+  atEnd.value = el.scrollLeft >= max - 1;
+}
+
+// The strip's scrollable width changes without it being scrolled — the window resizes, images
+// finish laying out, a re-render swaps the group. One observer catches all of those, including
+// the initial measurement, which is why there's no separate onMounted call.
+let observer: ResizeObserver | null = null;
+watch(stripEl, (el) => {
+  observer?.disconnect();
+  observer = null;
+  if (!el) return;
+  observer = new ResizeObserver(() => updateEdges());
+  observer.observe(el);
+  for (const child of el.children) observer.observe(child);
+});
+onBeforeUnmount(() => observer?.disconnect());
+
 const stripHeight = computed(() => {
   const portrait = strip.value.filter((p) => (p.thumbHeight ?? 0) > (p.thumbWidth ?? 0)).length;
   // "Primarily portrait" rather than "any portrait": one tall image among four wide ones
@@ -132,7 +177,11 @@ const stripHeight = computed(() => {
      its height — squashing it instead of scaling it. */
   align-items: flex-start;
   gap: var(--space-2);
+  /* Breathing room on BOTH sides. The bottom margin matters more than it looks: without it an
+     image or card sits flush against the next author's name, and the attachment reads as
+     belonging to the message below it rather than the one above. */
   margin-top: var(--space-2);
+  margin-bottom: var(--space-4);
   /* No width cap HERE. The cap belongs to the card (below), not to the container: a strip
      scrolls, so capping it at card width would mean two images visible out of five for no
      reason other than that cards need a limit. */
@@ -156,6 +205,37 @@ const stripHeight = computed(() => {
   max-width: 100%;
   /* Height comes from the inline style — one known value for the whole group. */
   align-items: stretch;
-  scrollbar-width: thin;
+  /* No visible scrollbar: it would eat into a height that's deliberately fixed, and change the
+     strip's height depending on the platform's scrollbar style. The fade is the affordance. */
+  scrollbar-width: none;
+  /* Snap so a flick lands on an image rather than halfway across one. `proximity` rather than
+     `mandatory` — mandatory fights a deliberate small drag. */
+  scroll-snap-type: x proximity;
+}
+.filmstrip::-webkit-scrollbar {
+  display: none;
+}
+.filmstrip > :deep(*) {
+  scroll-snap-align: start;
+}
+
+/* The fade, as a mask on the content rather than a gradient laid over it — so it works on any
+   background (including the highlight tint) with nothing to keep in sync.
+   The three cases are spelled out rather than composited, because `mask-composite` for the
+   both-sides case is more machinery than three declarations. */
+.filmstrip.fade-end {
+  mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent 100%);
+}
+.filmstrip.fade-start {
+  mask-image: linear-gradient(to right, transparent 0, #000 40px);
+}
+.filmstrip.fade-start.fade-end {
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 40px,
+    #000 calc(100% - 40px),
+    transparent 100%
+  );
 }
 </style>

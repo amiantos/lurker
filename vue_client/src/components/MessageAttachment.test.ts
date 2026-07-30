@@ -273,3 +273,31 @@ describe('MessageAttachments — the lightbox is a gallery over the strip', () =
     expect(useMediaViewer().isOpen.value).toBe(false);
   });
 });
+
+describe('MessageAttachments — the strip advertises that it scrolls', () => {
+  beforeEach(() => resolved.clear());
+
+  it('shows no fade when there is nothing to scroll to', () => {
+    // The affordance has to be honest in both directions: a permanent fade implies more
+    // content when the strip is fully scrolled, and dims the first image for no reason when
+    // there's nothing to the left. Under happy-dom nothing overflows, so neither side moves.
+    for (const n of [1, 2]) {
+      const p = preview({
+        url: `https://e.test/${n}.png`,
+        kind: 'image',
+        src: `/api/link-preview/media/t${n}`,
+        thumbWidth: 800,
+        thumbHeight: 600,
+      });
+      resolved.set(p.url, p);
+    }
+    seedSettings();
+    const strip = mount(MessageAttachments, {
+      props: { text: 'https://e.test/1.png https://e.test/2.png' },
+    }).find('.filmstrip');
+
+    expect(strip.exists()).toBe(true);
+    expect(strip.classes()).not.toContain('fade-start');
+    expect(strip.classes()).not.toContain('fade-end');
+  });
+});
