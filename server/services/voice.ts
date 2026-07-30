@@ -112,6 +112,19 @@ export function roomFor(networkKey: string, target: string, self: string): strin
   return `net-${net}-d-${lo}-${hi}`;
 }
 
+/** Inverse of roomFor for CHANNEL rooms: recover (host, channel) from a room
+ *  name, both already ASCII-folded. Returns null for DM rooms (no channel) or
+ *  anything unparseable. This lets a webhook resolve presence to a channel even
+ *  when the in-memory roomChannel map was never seeded for the room — e.g. after
+ *  a Lurker restart mid-call, or a call started on another instance sharing the
+ *  SFU. The `-c-` before a channel-prefixed segment is the anchor; the host may
+ *  itself contain dashes. */
+export function parseRoom(room: string): { host: string; channel: string } | null {
+  const m = /^net-(.+)-c-([#&].*)$/.exec(room);
+  if (!m) return null;
+  return { host: foldAscii(m[1]), channel: foldAscii(m[2]) };
+}
+
 export interface MintedToken {
   /** The signed JWT the client passes to LiveKit. */
   token: string;
@@ -156,7 +169,12 @@ export async function mintVoiceToken(args: {
 // IRC prefix modes, ranked. Owner (q), admin (a) and op (o) all count as the
 // top "op" tier; halfop (h) above voice (v). Read from ChannelMember.modes.
 
-const MODE_RANK: Record<MinJoinMode, number> = { none: 0, voice: 1, halfop: 2, op: 3 };
+const MODE_RANK: Record<MinJoinMode, number> = {
+  none: 0,
+  voice: 1,
+  halfop: 2,
+  op: 3,
+};
 const LETTER_RANK: Record<string, number> = { v: 1, h: 2, o: 3, a: 3, q: 3 };
 const MODERATE_LETTERS = new Set(['q', 'a', 'o', 'h']); // may mute/remove in a call
 const OP_LETTERS = new Set(['q', 'a', 'o']); // may set policy / mint guest links
@@ -220,6 +238,30 @@ export async function muteParticipant(room: string, identity: string): Promise<v
   for (const t of p.tracks ?? []) {
     await svc.mutePublishedTrack(room, identity, t.sid, true);
   }
+}
+
+/** Snapshot every active CHANNEL call the SFU currently knows about, so a
+ *  freshly-connected client can hydrate presence badges for calls that started
+ *  before it connected — the webhook stream only carries live deltas. LiveKit is
+ *  the source of truth, so this is correct across a Lurker restart (unlike the
+ *  in-memory registry). Returns [] when voice is unconfigured. */
+export async function listActiveCalls(): Promise<
+  Array<{ host: string; channel: string; count: number }>
+> {
+  const svc = roomService();
+  if (!svc) return [];
+  const rooms = await svc.listRooms();
+  const out: Array<{ host: string; channel: string; count: number }> = [];
+  for (const r of rooms) {
+    const parsed = parseRoom(r.name);
+    if (!parsed) continue; // DM rooms + anything unparseable carry no channel badge
+    out.push({
+      host: parsed.host,
+      channel: parsed.channel,
+      count: r.numParticipants ?? 0,
+    });
+  }
+  return out;
 }
 
 // ─── Call presence registry (fed by LiveKit webhooks) ──────────────────────
@@ -288,8 +330,17 @@ export function applyWebhookEvent(ev: WebhookEvent): CallPresenceChange | null {
     default:
       return null;
   }
-  const mapping = roomChannel.get(room);
-  if (!mapping) return null; // can't map to a channel → nothing to broadcast
+  // Prefer the map seeded at token-mint (authoritative host/channel casing), but
+  // fall back to parsing the room name so presence survives a restart that
+  // cleared the map while a call kept running (the room name encodes both).
+  const mapping = roomChannel.get(room) ?? parseRoom(room);
+  if (!mapping) return null; // DM room / unparseable → nothing to broadcast
   const count = roomParticipants.get(room)?.size ?? 0;
-  return { room, host: mapping.host, channel: mapping.channel, active: count > 0, count };
+  return {
+    room,
+    host: mapping.host,
+    channel: mapping.channel,
+    active: count > 0,
+    count,
+  };
 }

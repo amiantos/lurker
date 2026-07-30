@@ -23,6 +23,7 @@ import {
   rememberRoom,
   receiveWebhook,
   applyWebhookEvent,
+  listActiveCalls,
   foldKey,
   type CallPresenceChange,
 } from '../services/voice.js';
@@ -100,9 +101,9 @@ router.post('/token', async (req: Request, res: Response) => {
     // Per-channel join gating: caller must meet the channel's min join mode.
     const min = getPolicy(foldKey(network.host), foldKey(target));
     if (!meetsJoinMode(memberModes(conn, target, nick), min)) {
-      res
-        .status(403)
-        .json({ error: `this call is restricted to ${min}+ — you don't have that mode` });
+      res.status(403).json({
+        error: `this call is restricted to ${min}+ — you don't have that mode`,
+      });
       return;
     }
   }
@@ -114,6 +115,27 @@ router.post('/token', async (req: Request, res: Response) => {
     res.json(minted); // { token, room, url }
   } catch {
     res.status(500).json({ error: 'failed to mint token' });
+  }
+});
+
+// ─── Presence snapshot: current calls in the caller's channels ─────────────
+// The webhook stream only pushes live join/leave deltas, so a client that
+// connects (or reconnects) mid-call would never learn about a call already in
+// progress. This hydrates that gap from the SFU (source of truth → correct
+// across a Lurker restart too). Filtered to channels the caller is actually in.
+router.get('/presence', async (req: Request, res: Response) => {
+  const networkId = Number(req.query?.networkId);
+  const ctx = resolveCall(req, res, networkId);
+  if (!ctx) return;
+  const host = foldKey(ctx.network.host);
+  try {
+    const calls = await listActiveCalls();
+    const out = calls
+      .filter((c) => c.host === host && c.count > 0 && ctx.conn.channels.has(c.channel))
+      .map((c) => ({ target: c.channel, count: c.count }));
+    res.json({ calls: out });
+  } catch {
+    res.status(502).json({ error: 'could not list active calls' });
   }
 });
 
@@ -154,7 +176,9 @@ router.get('/policy', (req: Request, res: Response) => {
   }
   const ctx = resolveCall(req, res, networkId);
   if (!ctx) return;
-  res.json({ minJoinMode: getPolicy(foldKey(ctx.network.host), foldKey(target)) });
+  res.json({
+    minJoinMode: getPolicy(foldKey(ctx.network.host), foldKey(target)),
+  });
 });
 
 router.put('/policy', (req: Request, res: Response) => {
@@ -317,7 +341,11 @@ voicePublicRouter.post('/guest-token', async (req: Request, res: Response) => {
       ttlSeconds: 4 * 60 * 60,
     });
     bumpGuestLinkUse(token);
-    res.json({ token: minted.token, url: minted.url, canPublish: link.canPublish });
+    res.json({
+      token: minted.token,
+      url: minted.url,
+      canPublish: link.canPublish,
+    });
   } catch {
     res.status(500).json({ error: 'failed to mint token' });
   }

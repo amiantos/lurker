@@ -9,13 +9,17 @@ import {
   mintVoiceToken,
   parseVoiceEnabled,
   roomFor,
+  parseRoom,
   voiceEnabled,
   voiceMasterEnabled,
   meetsJoinMode,
   canModerateCall,
   canAdminCall,
   guestIdentity,
+  applyWebhookEvent,
+  listActiveCalls,
 } from './voice.js';
+import type { WebhookEvent } from 'livekit-server-sdk';
 
 describe('parseVoiceEnabled', () => {
   it('treats the conventional truthy values as on (trimmed, case-insensitive)', () => {
@@ -132,7 +136,10 @@ describe('mintVoiceToken', () => {
     process.env.LIVEKIT_API_KEY = 'devkey';
     process.env.LIVEKIT_API_SECRET = 'devsecret-long-enough-for-hs256';
 
-    const minted = await mintVoiceToken({ identity: 'alice', room: 'net-1-c-#dev' });
+    const minted = await mintVoiceToken({
+      identity: 'alice',
+      room: 'net-1-c-#dev',
+    });
     expect(minted.room).toBe('net-1-c-#dev');
     expect(minted.url).toBe('wss://sfu.example');
     expect(typeof minted.token).toBe('string');
@@ -177,5 +184,80 @@ describe('guestIdentity', () => {
     expect(guestIdentity('bad nick!@#')).toMatch(/^guest-badnick-[0-9a-f]{8}$/);
     expect(guestIdentity('')).toMatch(/^guest-guest-[0-9a-f]{8}$/);
     expect(guestIdentity('x')).not.toBe(guestIdentity('x')); // random suffix
+  });
+});
+
+describe('parseRoom', () => {
+  it('is the inverse of roomFor for channel rooms', () => {
+    expect(parseRoom('net-irc.libera.chat-c-#dev')).toEqual({
+      host: 'irc.libera.chat',
+      channel: '#dev',
+    });
+    // Round-trips a host that contains dashes + a channel with brackets.
+    expect(parseRoom(roomFor('my-irc.host.net', '#Foo[Bar]', 'x'))).toEqual({
+      host: 'my-irc.host.net',
+      channel: '#foo[bar]',
+    });
+  });
+
+  it('folds ASCII-only so it matches roomFor / foldKey', () => {
+    expect(parseRoom('net-IRC.Libera.Chat-c-#DevOps')).toEqual({
+      host: 'irc.libera.chat',
+      channel: '#devops',
+    });
+  });
+
+  it('returns null for DM rooms and anything unparseable', () => {
+    expect(parseRoom('net-irc.libera.chat-d-alice-bob')).toBeNull();
+    expect(parseRoom('not-a-room')).toBeNull();
+    expect(parseRoom('net-irc.libera.chat-c-notachannel')).toBeNull();
+  });
+});
+
+describe('applyWebhookEvent', () => {
+  const ev = (event: string, room: string, identity?: string): WebhookEvent =>
+    ({
+      event,
+      room: { name: room },
+      participant: identity ? { identity } : undefined,
+    }) as WebhookEvent;
+
+  it('resolves the channel by parsing the room even without a prior rememberRoom', () => {
+    // The regression from the field: after a restart the roomChannel map is
+    // empty, but presence must still broadcast (room name encodes the channel).
+    const room = 'net-irc.libera.chat-c-#restart-proof';
+    const change = applyWebhookEvent(ev('participant_joined', room, 'jawsh'));
+    expect(change).toEqual({
+      room,
+      host: 'irc.libera.chat',
+      channel: '#restart-proof',
+      active: true,
+      count: 1,
+    });
+  });
+
+  it('tracks a running count across joins and leaves', () => {
+    const room = 'net-irc.libera.chat-c-#counting';
+    applyWebhookEvent(ev('participant_joined', room, 'a'));
+    const two = applyWebhookEvent(ev('participant_joined', room, 'b'));
+    expect(two?.count).toBe(2);
+    const one = applyWebhookEvent(ev('participant_left', room, 'a'));
+    expect(one).toMatchObject({ count: 1, active: true });
+    const gone = applyWebhookEvent(ev('participant_left', room, 'b'));
+    expect(gone).toMatchObject({ count: 0, active: false });
+  });
+
+  it('ignores DM rooms (no channel to badge) and irrelevant events', () => {
+    expect(applyWebhookEvent(ev('participant_joined', 'net-h-d-a-b', 'a'))).toBeNull();
+    expect(applyWebhookEvent(ev('track_published', 'net-irc.libera.chat-c-#x', 'a'))).toBeNull();
+  });
+});
+
+describe('listActiveCalls', () => {
+  it('returns [] when voice is unconfigured (no SFU to query)', async () => {
+    delete process.env.LIVEKIT_WS_URL;
+    delete process.env.LIVEKIT_API_KEY;
+    delete process.env.LIVEKIT_API_SECRET;
+    await expect(listActiveCalls()).resolves.toEqual([]);
   });
 });

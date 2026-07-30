@@ -100,9 +100,9 @@ services:
       # `key: secret` pairs. Keep in lockstep with the lurker service vars.
       - LIVEKIT_KEYS=devkey: replace-me-with-a-long-random-secret
     ports:
-      - '7880:7880'       # signaling (WebSocket + HTTP)
-      - '7881:7881'       # WebRTC over TCP (ICE/TCP fallback)
-      - '7882:7882/udp'   # WebRTC over UDP (media)
+      - '7880:7880' # signaling (WebSocket + HTTP)
+      - '7881:7881' # WebRTC over TCP (ICE/TCP fallback)
+      - '7882:7882/udp' # WebRTC over UDP (media)
       # NOTE on NAT: --node-ip must be the address clients can reach the SFU at.
       # 127.0.0.1 works for localhost only. On a LAN set it to this host's LAN IP;
       # behind real NAT you need a public IP + a TURN server (see LiveKit docs).
