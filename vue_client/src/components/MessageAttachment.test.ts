@@ -242,18 +242,28 @@ describe('MessageAttachments — the lightbox is a gallery over the strip', () =
     expect(viewer.isOpen.value).toBe(true);
     expect(viewer.count.value).toBe(3);
     expect(viewer.index.value).toBe(1);
-    expect(viewer.url.value).toBe('https://e.test/2.png');
+    // ⚠ OUR proxy path, not the origin URL. Handing the viewer `preview.url` broke the promise
+    // the setting makes in words ("the site hosting it never sees your device") — the image
+    // rendered inline via the proxy and then the click went straight to the remote host — and
+    // made an `http://` image fail as mixed content once the lightbox loaded it directly.
+    expect(viewer.url.value).toBe('/api/link-preview/media/t2');
+    expect(viewer.items.value.map((i) => i.url)).toEqual([
+      '/api/link-preview/media/t1',
+      '/api/link-preview/media/t2',
+      '/api/link-preview/media/t3',
+    ]);
     // And the arrows are live in both directions, which is the whole point.
     expect(viewer.hasPrev.value).toBe(true);
     expect(viewer.hasNext.value).toBe(true);
   });
 
-  it('opens a lone image as a gallery of one', () => {
+  it('opens a lone image as a gallery of one, also through the proxy', () => {
     resolved.set(img(1).url, img(1));
     seedSettings();
     const wrapper = mount(MessageAttachments, { props: { text: 'https://e.test/1.png' } });
     wrapper.find('img.inline-image').trigger('click');
     expect(useMediaViewer().count.value).toBe(1);
+    expect(useMediaViewer().url.value).toBe('/api/link-preview/media/t1');
   });
 
   it('does not open anything when the media viewer is switched off', async () => {

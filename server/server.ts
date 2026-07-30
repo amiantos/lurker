@@ -12,6 +12,7 @@ import { getNodeSecret } from './middleware/nodeAuth.js';
 import { nodeUploadConfigured } from './services/uploadProviders/nodeUpload.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
+import { sweepExpiredPreviews } from './db/linkPreviews.js';
 import { listGrandfatheredUsernames } from './db/users.js';
 import { backfillEncryptColumns } from './db/secretBackfill.js';
 import { assertPushCredentials } from './services/push/credentials.js';
@@ -78,6 +79,11 @@ attachWsHub(server, SESSION_SECRET);
 
 purgeExpiredSessions();
 setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
+
+// link_previews is a cache with a TTL, so lapsed rows have to actually go — without this it
+// only ever grows.
+sweepExpiredPreviews();
+setInterval(sweepExpiredPreviews, 60 * 60 * 1000).unref();
 
 systemLog.log({ scope: 'server', text: `Lurker server starting up (edition: ${EDITION})` });
 

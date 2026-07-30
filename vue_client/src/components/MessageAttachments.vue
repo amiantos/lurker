@@ -34,7 +34,7 @@
       :key="item.url"
       :preview="item"
       @measured="$emit('measured')"
-      @activate="viewer.open(item.url)"
+      @activate="openSingle(item)"
     />
   </div>
 </template>
@@ -117,9 +117,22 @@ const stacked = computed(() =>
  * strip. The viewer has always been a gallery — a single file is a gallery of one — so this
  * needed no work there.
  */
+/**
+ * ⚠ The viewer gets `src` — OUR proxy path — never the origin URL.
+ *
+ * Handing it `preview.url` broke the promise the setting makes in so many words ("the file is
+ * fetched and served by your Lurker server, so the site hosting it never sees your device"):
+ * the image rendered inline through the proxy, and then clicking it went straight to the remote
+ * host. It also meant an `http://` image displayed fine inline but was blocked as mixed content
+ * once the lightbox loaded it directly, so the click produced a dead "open in browser" card.
+ */
 function openStripAt(item: LinkPreview): void {
-  const items = strip.value.map((p) => ({ url: p.url }));
+  const items = strip.value.map((p) => ({ url: p.src ?? p.url }));
   viewer.openGallery(items, strip.value.indexOf(item));
+}
+
+function openSingle(item: LinkPreview): void {
+  viewer.open(item.src ?? item.url);
 }
 
 // ─── Scroll affordance ────────────────────────────────────────────────────────

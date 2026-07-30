@@ -65,8 +65,15 @@ export function urlHash(url: string): string {
   return crypto.createHash('sha256').update(`v${RESOLVER_VERSION}|${url}`).digest('hex');
 }
 
+// ⚠ `datetime(expires_at)`, not a bare comparison. `expires_at` is stored ISO-8601
+// (`2026-07-30T11:00:00.000Z`) while `datetime('now')` yields `2026-07-30 11:00:00` — and
+// SQLite compares TEXT lexicographically, where 'T' (0x54) sorts after ' ' (0x20). So for any
+// expiry on the SAME calendar date as now, the bare form always answered "still live": a 1-hour
+// failure TTL survived until midnight UTC instead of an hour. Wrapping both sides in
+// `datetime()` compares instants rather than strings.
 const selectStmt = db.prepare(`
-  SELECT * FROM link_previews WHERE url_hash = ? AND expires_at > datetime('now')
+  SELECT * FROM link_previews
+  WHERE url_hash = ? AND datetime(expires_at) > datetime('now')
 `);
 
 const upsertStmt = db.prepare(`
@@ -86,7 +93,9 @@ const upsertStmt = db.prepare(`
     fetched_at = datetime('now'), expires_at = excluded.expires_at
 `);
 
-const sweepStmt = db.prepare(`DELETE FROM link_previews WHERE expires_at <= datetime('now')`);
+const sweepStmt = db.prepare(
+  `DELETE FROM link_previews WHERE datetime(expires_at) <= datetime('now')`,
+);
 
 interface Row {
   url: string;
@@ -132,8 +141,8 @@ export function putPreview(record: PreviewRecord): void {
   upsertStmt.run({ ...record, urlHash: urlHash(record.url) });
 }
 
-/** Drop lapsed rows. Called on a timer from server.ts — the table is a cache,
- *  so this is housekeeping, not correctness. */
+/** Drop lapsed rows. Wired to a timer in server.ts — the table is a cache, so this is
+ *  housekeeping rather than correctness, but without it the table only ever grows. */
 export function sweepExpiredPreviews(): number {
   return sweepStmt.run().changes;
 }

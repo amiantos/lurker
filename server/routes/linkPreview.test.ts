@@ -263,6 +263,22 @@ describe('POST /api/link-preview/resolve', () => {
     }
   });
 
+  it('resolves a FULL batch rather than starving it', async () => {
+    // ⚠⚠ Regression guard. The concurrency pool was 6 while a request may carry 20, and
+    // `resolvePreview` runs synchronously up to its first await — so `Promise.all` over a batch
+    // started all 20 before any finished, and calls 7-20 were refused a slot and answered
+    // `unavailable` without ever dialling. On a link-heavy history page that meant 6 previews
+    // rendered and 14 links stayed bare for the whole session.
+    //
+    // Blocked addresses make this offline and deterministic: each resolves to `unavailable`
+    // either way, so what's actually asserted is that all 20 got a real ANSWER — i.e. a cache
+    // row was written for each, which the starvation path never did.
+    const urls = Array.from({ length: 20 }, (_, i) => `http://10.20.30.${i + 1}/x`);
+    const res = await agent.post('/api/link-preview/resolve').send({ urls }).expect(200);
+    expect(res.body.previews.length).toBe(20);
+    for (const url of urls) expect(rowCount(url)).toBe(1);
+  });
+
   it('caps how many URLs one request can fan out to', async () => {
     const urls = Array.from({ length: 50 }, (_, i) => `http://127.0.0.1/${i}`);
     const res = await agent.post('/api/link-preview/resolve').send({ urls }).expect(200);

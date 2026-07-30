@@ -57,6 +57,19 @@ export interface LinkPreview {
 const cache = new Map<string, Ref<LinkPreview | null>>();
 
 /**
+ * URLs priming has already asked about.
+ *
+ * ⚠ Tracked SEPARATELY from `cache`, and that separation is load-bearing. `useLinkPreview`
+ * creates an empty entry as a side effect of being read, so when the skip condition was
+ * `cache.has(url)` a mere RENDER blocked that URL from ever being primed. The failure was
+ * exactly the default path: with both settings off nothing primes, then the user switches one
+ * on, every visible URL gets a null entry from the render pass, and no later history page or
+ * live message could ever queue them because they "already existed". Previews stayed missing
+ * until a full reload.
+ */
+const asked = new Set<string>();
+
+/**
  * Bumped when a batch of previews lands and something changed.
  *
  * Only for the residual case: a reader scrolling fast enough to outrun the priming request,
@@ -107,12 +120,47 @@ async function flush(): Promise<void> {
       // the same as a link the server couldn't unfurl. There is nothing useful
       // to tell the user about a decoration that didn't appear, and an error
       // state in the message list would be worse than the missing card.
+      // Dropped from `asked` as well as `cache`, so a request that failed for transport
+      // reasons can be retried on the next priming pass rather than being remembered as a
+      // permanent verdict about the URL.
       for (const url of slice) {
         const entry = cache.get(url);
-        if (entry && entry.value === null) cache.delete(url);
+        if (entry && entry.value === null) {
+          cache.delete(url);
+          asked.delete(url);
+        }
       }
     }
   }
+}
+
+/**
+ * Ceiling on remembered URLs.
+ *
+ * A long-lived tab would otherwise accumulate an entry per distinct URL for as long as it's
+ * open. Evicts oldest-first: `Map` preserves insertion order, and the oldest entry is the one
+ * least likely to still be on screen.
+ */
+const MAX_CACHE_ENTRIES = 2000;
+
+function evictIfNeeded(): void {
+  while (cache.size > MAX_CACHE_ENTRIES) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+    asked.delete(oldest);
+  }
+}
+
+/** Drop entries whose server-side TTL has lapsed, so they can be asked about again.
+ *  `expiresAt` was being carried on the wire and never read. */
+function dropIfExpired(url: string): void {
+  const entry = cache.get(url);
+  const expiresAt = entry?.value?.expiresAt;
+  if (!expiresAt) return;
+  if (Date.parse(expiresAt) > Date.now()) return;
+  cache.delete(url);
+  asked.delete(url);
 }
 
 function entryFor(url: string): Ref<LinkPreview | null> {
@@ -143,6 +191,7 @@ export function primePreviews(
   let queued = false;
   for (const text of texts) {
     for (const url of previewableUrls(text, toggles)) {
+      dropIfExpired(url);
       if (cache.has(url)) continue;
       entryFor(url);
       queue.add(url);
@@ -150,6 +199,7 @@ export function primePreviews(
     }
   }
   if (queued && flushTimer === null) flushTimer = setTimeout(() => void flush(), FLUSH_MS);
+  evictIfNeeded();
 }
 
 /**
@@ -167,6 +217,7 @@ export function useLinkPreview(url: string): Ref<LinkPreview | null> {
 export function resetLinkPreviewCache(): void {
   previewRevision.value = 0;
   cache.clear();
+  asked.clear();
   queue = new Set();
   if (flushTimer !== null) {
     clearTimeout(flushTimer);

@@ -13,14 +13,24 @@
 //     user can paste, and the response is parsed into a card or proxied to a
 //     browser.
 //
-// Same threat, same answer, so it lives once. Blocks loopback, RFC 1918, the
-// cloud metadata endpoint at 169.254.169.254, CGNAT, multicast and reserved
-// space. On a hosted cell the VPC neighbours — the control plane, other cells —
-// sit squarely in this range, which is what makes it load-bearing rather than
-// hygienic.
+// Same threat, same answer, so it lives once. On a hosted cell the VPC
+// neighbours — the control plane, other cells — sit squarely in the blocked
+// ranges, which is what makes this load-bearing rather than hygienic.
 //
-// Fails SAFE: anything unparseable is blocked. A malformed address that reaches
-// a real socket is a worse outcome than a false refusal.
+// ⚠⚠ IPv6 is an ALLOWLIST, not a denylist, and that asymmetry is deliberate.
+// An earlier version enumerated the bad IPv6 prefixes and returned `false`
+// (allow) for anything it didn't recognise. That shipped a real hole: the WHATWG
+// URL parser rewrites an IPv4-mapped literal into hex, so
+// `http://[::ffff:169.254.169.254]/` arrives as `[::ffff:a9fe:a9fe]` — which
+// matched none of the deny prefixes and was allowed straight through to the
+// cloud metadata endpoint. `net.isIP()` calls that string IPv6, so node skips
+// DNS for it and `pinnedLookup` never runs either; this function was the only
+// guard on the path, and it said yes.
+//
+// The lesson is the general one: a denylist over a 128-bit space with several
+// IPv4-embedding notations cannot be audited. Only 2000::/3 is global unicast,
+// so that's what we allow, and everything we can't parse or don't recognise is
+// refused.
 
 /** True when a dotted-quad IPv4 string is in a range the cell must not dial. */
 export function isBlockedIpv4(ip: string): boolean {
@@ -41,26 +51,119 @@ export function isBlockedIpv4(ip: string): boolean {
 }
 
 /**
- * True when an IP *literal* — dotted-quad IPv4 or an IPv6 literal — is in a
- * range the cell must not dial.
+ * Expand an IPv6 literal to its eight 16-bit groups, or null if it isn't one.
  *
- * This takes a literal, never a hostname: a name has to be resolved first and
- * then judged by what it resolved to, because the name says nothing about where
- * it points. See `safeLookup` in linkFetch.ts for the pinning that makes that
- * safe against DNS rebinding.
+ * Handles `::` elision and a trailing dotted quad (`::ffff:1.2.3.4`), which is
+ * the form DCC hands us — the URL parser has already converted that shape to
+ * hex by the time a preview URL reaches us, but both have to be understood
+ * because both call this.
+ */
+function parseIpv6(input: string): number[] | null {
+  let text = input;
+
+  // A trailing dotted quad contributes the last two groups.
+  const tail: number[] = [];
+  const dotted = /:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(text);
+  if (dotted) {
+    const octets = dotted[1].split('.').map(Number);
+    if (octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return null;
+    tail.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
+    text = text.slice(0, dotted.index + 1); // keep the ':' so the split below still works
+  }
+
+  const elision = text.indexOf('::');
+  let head: string[];
+  let rest: string[];
+  if (elision === -1) {
+    head = text.split(':').filter((g) => g !== '');
+    rest = [];
+  } else {
+    head = text
+      .slice(0, elision)
+      .split(':')
+      .filter((g) => g !== '');
+    rest = text
+      .slice(elision + 2)
+      .split(':')
+      .filter((g) => g !== '');
+  }
+
+  const toGroup = (g: string): number | null => {
+    if (!/^[0-9a-f]{1,4}$/i.test(g)) return null;
+    return Number.parseInt(g, 16);
+  };
+
+  const headGroups: number[] = [];
+  for (const g of head) {
+    const v = toGroup(g);
+    if (v === null) return null;
+    headGroups.push(v);
+  }
+  const restGroups: number[] = [];
+  for (const g of rest) {
+    const v = toGroup(g);
+    if (v === null) return null;
+    restGroups.push(v);
+  }
+  restGroups.push(...tail);
+
+  const total = headGroups.length + restGroups.length;
+  if (elision === -1) {
+    return total === 8 ? [...headGroups, ...restGroups] : null;
+  }
+  if (total > 8) return null;
+  return [...headGroups, ...Array.from<number>({ length: 8 - total }).fill(0), ...restGroups];
+}
+
+/** The IPv4 embedded in an IPv6 address, for every notation that embeds one. */
+function embeddedIpv4(groups: number[]): string | null {
+  const isZero = (n: number) => groups[n] === 0;
+  const last32 = () => {
+    const g6 = groups[6];
+    const g7 = groups[7];
+    return `${g6 >> 8}.${g6 & 0xff}.${g7 >> 8}.${g7 & 0xff}`;
+  };
+
+  // ::ffff:a.b.c.d — IPv4-mapped. The form that caused the hole.
+  if ([0, 1, 2, 3, 4].every(isZero) && groups[5] === 0xffff) return last32();
+  // ::a.b.c.d and ::0:a.b.c.d — deprecated IPv4-compatible, still routable by some stacks.
+  if ([0, 1, 2, 3, 4, 5].every(isZero)) return last32();
+  // 64:ff9b::/96 — NAT64. Blocked by the 2000::/3 rule anyway, but judging the
+  // embedded address gives a more honest answer than "unrecognised".
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && [2, 3, 4, 5].every(isZero)) return last32();
+  return null;
+}
+
+/**
+ * Whether an IP *literal* — dotted-quad IPv4 or an IPv6 literal — is one the
+ * cell must not dial.
+ *
+ * Takes a literal, never a hostname: a name says nothing about where it points,
+ * so it has to be resolved first and judged by the answer. See `pinnedLookup` in
+ * linkFetch.ts for the pinning that makes that safe against DNS rebinding.
+ *
+ * Fails CLOSED throughout. Anything unparseable, and any IPv6 outside global
+ * unicast, is blocked.
  */
 export function isBlockedIpLiteral(host: string): boolean {
   const h = host.trim().toLowerCase();
   if (h === '') return true;
-  if (h.includes(':')) {
-    // IPv4-mapped IPv6 (::ffff:1.2.3.4) — judge by the embedded IPv4.
-    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h);
-    if (mapped) return isBlockedIpv4(mapped[1]);
-    if (h === '::1' || h === '::') return true; // loopback / unspecified
-    if (/^fe[89ab]/.test(h)) return true; // fe80::/10 link-local
-    if (/^f[cd]/.test(h)) return true; // fc00::/7 unique-local
-    if (h.startsWith('ff')) return true; // ff00::/8 multicast
-    return false;
-  }
-  return isBlockedIpv4(h);
+  // `new URL().hostname` keeps IPv6 literals bracketed; callers may or may not
+  // have stripped them.
+  const bare = h.replace(/^\[|\]$/g, '');
+  if (bare === '') return true;
+
+  if (!bare.includes(':')) return isBlockedIpv4(bare);
+
+  const groups = parseIpv6(bare);
+  if (groups === null) return true; // not a literal we understand → refuse
+
+  const embedded = embeddedIpv4(groups);
+  if (embedded !== null) return isBlockedIpv4(embedded);
+
+  // ALLOWLIST: 2000::/3 is the global unicast range. Loopback (::1), the
+  // unspecified address, unique-local (fc00::/7), link-local (fe80::/10),
+  // multicast (ff00::/8) and every unassigned block all fall outside it, so one
+  // check covers the lot — including notations nobody has thought of yet.
+  return (groups[0] & 0xe000) !== 0x2000;
 }

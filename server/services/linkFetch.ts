@@ -173,6 +173,9 @@ const httpsAgent = new https.Agent({ keepAlive: false });
 export interface FetchOptions {
   /** `Accept` header. Defaults to a browser-ish HTML preference. */
   accept?: string;
+  /** A `Range` header to forward, so the byte proxy can serve partial content. Media elements
+   *  require it: Safari won't play a <video> from a source that ignores ranges. */
+  range?: string;
   /** Overall byte ceiling. The stream is destroyed the moment it's crossed. */
   maxBytes?: number;
 }
@@ -208,6 +211,7 @@ function requestOnce(url: URL, opts: FetchOptions): Promise<RawResponse> {
           // something enormous — a zip bomb aimed straight at the scrape buffer.
           // Identity costs bandwidth and removes a whole class of surprise.
           'Accept-Encoding': 'identity',
+          ...(opts.range ? { Range: opts.range } : {}),
           // No cookies, no auth, ever. Included explicitly so a future edit that
           // adds a header set has to walk past this note.
         },
@@ -248,7 +252,11 @@ export async function safeRequest(start: URL, opts: FetchOptions = {}): Promise<
     const isRedirect = res.status >= 300 && res.status < 400 && res.headers.location;
     if (!isRedirect) return res;
 
-    res.stream.resume(); // drain, so the socket can be reused rather than hung
+    // Destroyed, not drained. `resume()` reads the ENTIRE redirect body first — a hostile
+    // origin can answer 302 with a gigabyte, per hop, and none of the byte caps apply to it.
+    // Draining exists to let a socket be reused, and keep-alive is off on both agents, so
+    // nothing here needs the socket back.
+    res.stream.destroy();
     if (hop === MAX_REDIRECTS) throw new UnsafeUrlError('too many redirects');
     const next = normalizeUrl(new URL(String(res.headers.location), url).toString());
     if (!next) throw new UnsafeUrlError('redirect to a disallowed target');
@@ -290,6 +298,9 @@ export interface BufferOptions {
  * merely broken origin can lie about that or omit it. It's still honoured as an early exit,
  * so we don't drain a socket we already know is too big.
  */
+/** What `stopAtHeadEnd` looks for. Lowercased; the scan lowercases its window to match. */
+const NEEDLE = '</head';
+
 export async function bufferStream(
   res: RawResponse,
   opts: BufferOptions = {},
@@ -318,6 +329,9 @@ export async function bufferStream(
     let total = 0;
     let truncated = false;
     let settled = false;
+    // Rolling state for the `</head` scan — see the data handler.
+    let tail: Buffer = Buffer.alloc(0);
+    let scanned = 0;
 
     res.stream.on('data', (chunk: Buffer) => {
       total += chunk.length;
@@ -331,19 +345,32 @@ export async function bufferStream(
       }
       chunks.push(chunk);
       if (opts.stopAtHeadEnd && !settled) {
-        // The tag can straddle a chunk boundary, so search the accumulated buffer rather
-        // than the chunk. Then TRIM to it: stopping the stream only bounds the read at
-        // whatever chunk boundary we happened to land on, which makes the saving depend on
-        // the socket's chunk size. Cutting the buffer makes the guarantee real — the caller
-        // gets the head and nothing after it, whatever shape the bytes arrived in.
-        const soFar = Buffer.concat(chunks);
-        const end = soFar.toString('latin1').toLowerCase().indexOf('</head');
-        if (end !== -1) {
+        // Search only the NEW bytes plus a small overlap, not the whole buffer. Concatenating
+        // and latin1-decoding everything on every chunk is O(n²) — on exactly the documents the
+        // 512 KB ceiling exists for (metadata buried behind hundreds of KB of script) that's
+        // tens of MB of copying and a full decode per chunk.
+        //
+        // The overlap covers a `</head` split across a chunk boundary; `NEEDLE.length - 1` is
+        // the most that can carry over.
+        const carry = Math.min(scanned, NEEDLE.length - 1);
+        const window = Buffer.concat([tail.subarray(tail.length - carry), chunk]).toString(
+          'latin1',
+        );
+        const at = window.toLowerCase().indexOf(NEEDLE);
+        if (at !== -1) {
           settled = true;
+          // TRIM to the tag rather than merely stopping: stopping bounds the read at whatever
+          // chunk boundary we landed on, so the saving would depend on the socket's chunk size.
+          // Cutting makes the guarantee real — the caller gets the head and nothing after it.
+          const keep = scanned - carry + at;
+          const whole = Buffer.concat(chunks);
           chunks.length = 0;
-          chunks.push(soFar.subarray(0, end));
+          chunks.push(whole.subarray(0, keep));
           res.stream.destroy();
+          return;
         }
+        tail = chunk;
+        scanned += chunk.length;
       }
     });
 

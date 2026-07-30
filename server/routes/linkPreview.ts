@@ -16,7 +16,12 @@ import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { RequestThrottle } from '../middleware/rateLimit.js';
-import { resolvePreview, toDescriptor, MAX_IMAGE_PROXY_BYTES } from '../services/linkPreview.js';
+import {
+  resolvePreview,
+  toDescriptor,
+  MAX_IMAGE_PROXY_BYTES,
+  MAX_URLS_PER_REQUEST,
+} from '../services/linkPreview.js';
 import { verifyProxyToken } from '../services/mediaProxyToken.js';
 import { normalizeUrl, safeRequest, fetchingEnabled } from '../services/linkFetch.js';
 
@@ -36,9 +41,6 @@ const resolveThrottle = new RequestThrottle({
   windowMs: 60_000,
   maxRequests: 120,
 });
-
-/** Cap per request, so one call can't fan out into a hundred outbound fetches. */
-const MAX_URLS_PER_REQUEST = 20;
 
 router.post(
   '/resolve',
@@ -119,9 +121,15 @@ router.get(
     try {
       const upstream = await safeRequest(url, {
         accept: 'image/*,video/*,audio/*;q=0.9,*/*;q=0.5',
+        // Forwarded so inline video works at all. Safari (iOS and macOS) refuses to play a
+        // <video> whose source doesn't honour byte ranges, and seeking is broken everywhere
+        // without it — and this route is what serves `kind === 'video'`.
+        range: typeof req.headers.range === 'string' ? req.headers.range : undefined,
       });
 
-      if (upstream.status !== 200 || !proxyableContentType(upstream.contentType)) {
+      // 206 is a success here: it's what a range request is asking for.
+      const ok = upstream.status === 200 || upstream.status === 206;
+      if (!ok || !proxyableContentType(upstream.contentType)) {
         upstream.stream.destroy();
         res.status(404).end();
         return;
@@ -146,9 +154,24 @@ router.get(
       // an image-heavy channel from re-proxying on every pass. `private` because
       // the response travels over an authenticated session.
       res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
-      if (upstream.headers['content-length']) {
-        res.setHeader('Content-Length', String(upstream.headers['content-length']));
+
+      // Range plumbing, so a media element can seek.
+      res.setHeader('Accept-Ranges', 'bytes');
+      if (upstream.headers['content-range']) {
+        res.setHeader('Content-Range', String(upstream.headers['content-range']));
       }
+
+      // ⚠ Content-Length is only forwarded when we KNOW we'll send exactly that many bytes.
+      // Echoing it verbatim while truncating the body at MAX_IMAGE_PROXY_BYTES produced a
+      // length/body mismatch — the client saw ERR_HTTP_CONTENT_LENGTH_MISMATCH (a broken
+      // transfer) instead of a clean, cacheable failure.
+      const declaredLength = Number(upstream.headers['content-length']);
+      const lengthIsTrustworthy =
+        Number.isFinite(declaredLength) && declaredLength <= MAX_IMAGE_PROXY_BYTES;
+      if (lengthIsTrustworthy) {
+        res.setHeader('Content-Length', String(declaredLength));
+      }
+      res.status(upstream.status === 206 ? 206 : 200);
 
       // Enforce the cap on bytes actually seen, not on the declared length — an
       // origin can omit Content-Length or lie about it.

@@ -43,17 +43,72 @@ const MAX_DESCRIPTION = 300;
 /** Cap on a preview image we're willing to pull down and proxy. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
+/** Cap on URLs one resolve request may carry. Lives here rather than in the route so it can
+ *  be tied to the concurrency limit below, which has to be at least this big. */
+export const MAX_URLS_PER_REQUEST = 20;
+
 /**
  * Outbound fetches in flight across the whole instance.
  *
- * A cap rather than a queue-per-user: the resource being protected is the
- * instance's egress and its standing with the hosts it talks to, and neither
- * cares which account caused the traffic. Overflow resolves as `unavailable`
- * rather than waiting, because a preview is decoration — making someone's
- * scroll hitch to render a card is a worse outcome than not rendering it.
+ * A cap rather than a queue-per-user: the resource being protected is the instance's egress and
+ * its standing with the hosts it talks to, and neither cares which account caused the traffic.
+ *
+ * ⚠ Must be >= MAX_URLS_PER_REQUEST, and overflow must QUEUE rather than fail. An earlier
+ * version had a cap of 6 and answered overflow with `unavailable` immediately, which quietly
+ * broke the common case rather than a rare one: `resolvePreview` runs synchronously up to its
+ * first await, so `Promise.all` over a 20-URL batch started all 20 before any finished — calls
+ * 7 through 20 saw a full pool and were refused without ever dialling. On a link-heavy history
+ * page 6 previews rendered and 14 links stayed bare, and because the client stores whatever
+ * verdict it's given, they stayed bare for the rest of the session.
  */
-const MAX_CONCURRENT = 6;
+const MAX_CONCURRENT = MAX_URLS_PER_REQUEST;
+/**
+ * Callers parked waiting for a slot, bounded so a flood can't grow this without limit.
+ * Cross-request contention is what queues here; a single batch never has to.
+ */
+const MAX_QUEUED = 200;
+/** How long a caller will wait for a slot before giving up, so an HTTP request can't hang on
+ *  a backlog of slow origins. Recoverable: an `unavailable` from here is NOT written to the
+ *  cache, and the client re-asks on the next priming pass. */
+const MAX_QUEUE_WAIT_MS = 10_000;
+
 let inFlightCount = 0;
+const slotWaiters: (() => void)[] = [];
+
+/** Take a slot, waiting if the pool is full. Resolves false if it gave up. */
+async function acquireSlot(): Promise<boolean> {
+  if (inFlightCount < MAX_CONCURRENT) {
+    inFlightCount++;
+    return true;
+  }
+  if (slotWaiters.length >= MAX_QUEUED) return false;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const woken = await new Promise<boolean>((resolve) => {
+    const wake = () => {
+      if (timer) clearTimeout(timer);
+      resolve(true);
+    };
+    slotWaiters.push(wake);
+    timer = setTimeout(() => {
+      const at = slotWaiters.indexOf(wake);
+      if (at !== -1) slotWaiters.splice(at, 1);
+      resolve(false);
+    }, MAX_QUEUE_WAIT_MS);
+  });
+  if (!woken) return false;
+  // Re-checked rather than assumed: several waiters can be woken by successive releases.
+  while (inFlightCount >= MAX_CONCURRENT) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  inFlightCount++;
+  return true;
+}
+
+function releaseSlot(): void {
+  inFlightCount--;
+  slotWaiters.shift()?.();
+}
 
 /**
  * Coalesce concurrent resolutions of the same URL.
@@ -286,10 +341,13 @@ export async function resolvePreview(raw: string): Promise<PreviewRecord> {
   const pending = inFlight.get(raw);
   if (pending) return await pending;
 
-  if (inFlightCount >= MAX_CONCURRENT) return unavailable(raw);
-
   const task = (async (): Promise<PreviewRecord> => {
-    inFlightCount++;
+    if (!(await acquireSlot())) {
+      // Deliberately NOT cached: this says nothing about the URL, only that the instance was
+      // saturated when we asked. Caching it would turn a momentary spike into a permanently
+      // blank preview.
+      return unavailable(raw);
+    }
     try {
       const resolved = await doResolve(raw);
       // ⚠ Always echo the URL we were ASKED about, whatever the fetch ended up at.
@@ -315,7 +373,7 @@ export async function resolvePreview(raw: string): Promise<PreviewRecord> {
       putPreview(record);
       return record;
     } finally {
-      inFlightCount--;
+      releaseSlot();
       inFlight.delete(raw);
     }
   })();

@@ -55,6 +55,64 @@ describe('isBlockedIpLiteral', () => {
   });
 });
 
+describe('isBlockedIpLiteral — IPv4-embedding IPv6 notations', () => {
+  it('blocks an IPv4-mapped address in the HEX form the URL parser produces', () => {
+    // ⚠⚠ The regression that matters. `new URL('http://[::ffff:169.254.169.254]/')` rewrites
+    // the host to `[::ffff:a9fe:a9fe]`, and an earlier deny-list version matched only the
+    // DOTTED form — so this sailed through to the cloud metadata endpoint. `net.isIP` calls it
+    // IPv6, so node skips DNS and `pinnedLookup` never runs: this function is the only guard.
+    expect(isBlockedIpLiteral('::ffff:a9fe:a9fe')).toBe(true); // 169.254.169.254
+    expect(isBlockedIpLiteral('::ffff:7f00:1')).toBe(true); // 127.0.0.1
+    expect(isBlockedIpLiteral('::ffff:a00:5')).toBe(true); // 10.0.0.5
+    expect(isBlockedIpLiteral('::ffff:c0a8:1')).toBe(true); // 192.168.0.1
+  });
+
+  it('still blocks the dotted mapped form', () => {
+    expect(isBlockedIpLiteral('::ffff:127.0.0.1')).toBe(true);
+    expect(isBlockedIpLiteral('::ffff:169.254.169.254')).toBe(true);
+  });
+
+  it('allows a mapped PUBLIC address in either notation', () => {
+    expect(isBlockedIpLiteral('::ffff:8.8.8.8')).toBe(false);
+    expect(isBlockedIpLiteral('::ffff:808:808')).toBe(false);
+  });
+
+  it('blocks deprecated IPv4-compatible and NAT64 embeddings', () => {
+    expect(isBlockedIpLiteral('::127.0.0.1')).toBe(true);
+    expect(isBlockedIpLiteral('::a9fe:a9fe')).toBe(true);
+    expect(isBlockedIpLiteral('64:ff9b::169.254.169.254')).toBe(true);
+  });
+
+  it('handles bracketed input, as `new URL().hostname` hands it over', () => {
+    expect(isBlockedIpLiteral('[::ffff:7f00:1]')).toBe(true);
+    expect(isBlockedIpLiteral('[2606:4700:4700::1111]')).toBe(false);
+  });
+});
+
+describe('isBlockedIpLiteral — IPv6 is an allowlist', () => {
+  it('allows only global unicast (2000::/3)', () => {
+    expect(isBlockedIpLiteral('2606:4700:4700::1111')).toBe(false);
+    expect(isBlockedIpLiteral('2001:db8::1')).toBe(false);
+    expect(isBlockedIpLiteral('3fff::1')).toBe(false);
+    // Just outside the range on either side.
+    expect(isBlockedIpLiteral('1fff::1')).toBe(true);
+    expect(isBlockedIpLiteral('4000::1')).toBe(true);
+  });
+
+  it('blocks unassigned space rather than allowing what it does not recognise', () => {
+    // The point of the allowlist: a deny-list cannot be audited over 128 bits.
+    for (const ip of ['0100::1', '5000::1', '8000::1', 'c000::1', 'e000::1']) {
+      expect(isBlockedIpLiteral(ip)).toBe(true);
+    }
+  });
+
+  it('blocks anything it cannot parse', () => {
+    for (const bad of [':::1', '::ffff:1.2.3', '12345::1', 'gggg::1', '1:2:3:4:5:6:7', '::1::2']) {
+      expect(isBlockedIpLiteral(bad)).toBe(true);
+    }
+  });
+});
+
 describe('normalizeUrl', () => {
   it('accepts ordinary http and https URLs', () => {
     expect(normalizeUrl('https://example.com/a')?.toString()).toBe('https://example.com/a');
@@ -86,6 +144,10 @@ describe('normalizeUrl', () => {
       'http://10.0.0.1/',
       'http://[::1]/',
       'http://[fd00::1]/',
+      // The mapped forms, through the real parser this time.
+      'http://[::ffff:127.0.0.1]/',
+      'http://[::ffff:169.254.169.254]/latest/meta-data/',
+      'http://[::ffff:10.0.0.5]:8015/',
     ]) {
       expect(normalizeUrl(raw)).toBeNull();
     }

@@ -339,7 +339,7 @@ import NickRef from './NickRef.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
 import MessageAttachments from './MessageAttachments.vue';
-import { previewRevision } from '../composables/useLinkPreview.js';
+import { previewRevision, primePreviews } from '../composables/useLinkPreview.js';
 import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type {
@@ -1659,13 +1659,50 @@ async function repinAfterPreviewGrowth() {
 function topVisibleMessageId(el: HTMLElement): number | null {
   const box = el.getBoundingClientRect();
   const hit = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
-  const row = hit?.closest('[data-msg-id]') as HTMLElement | null;
-  if (!row) return null;
-  const id = Number(row.dataset.msgId);
-  return Number.isFinite(id) && id > 0 ? id : null;
+  if (!hit) return null;
+
+  const idOf = (node: Element | null): number | null => {
+    const raw = (node as HTMLElement | null)?.dataset?.msgId;
+    const id = Number(raw);
+    return raw != null && Number.isFinite(id) && id > 0 ? id : null;
+  };
+
+  // The row under the top edge is often NOT a message: date/unread/away/cleared dividers carry
+  // no `data-msg-id` at all, and a consolidated joins/parts block carries
+  // `data-cons-first-id`/`-last-id` instead. Both are routine at the top of the viewport when
+  // scrolling into history — which is precisely when this correction is needed — so returning
+  // null there silently skipped the re-pin. Walk forward to the next real message instead.
+  const direct = idOf(hit.closest('[data-msg-id]'));
+  if (direct != null) return direct;
+
+  const rows = [...el.querySelectorAll('[data-msg-id]')] as HTMLElement[];
+  for (const row of rows) {
+    if (row.offsetTop + row.offsetHeight > el.scrollTop) return idOf(row);
+  }
+  return null;
 }
 
 watch(previewRevision, () => void repinAfterPreviewGrowth());
+
+// Priming happens at message INGEST, which means messages already in the store were never
+// asked about if the feature was off when they arrived — and turning a toggle on doesn't
+// re-ingest anything. Without this, enabling either setting shows previews only for messages
+// that arrive AFTERWARDS, which reads as the setting being broken.
+watch(
+  () => [
+    settings.effective('chat.inline_media.enabled') === true,
+    settings.effective('chat.link_previews.enabled') === true,
+  ],
+  ([inlineMedia, linkPreviews], previous) => {
+    // Only on a flip TO enabled. Turning one off needs no work: the rows simply stop rendering.
+    const gained = (inlineMedia && !previous?.[0]) || (linkPreviews && !previous?.[1]);
+    if (!gained) return;
+    primePreviews(
+      messages.value.map((m) => m.text as string | null | undefined),
+      { inlineMedia, linkPreviews },
+    );
+  },
+);
 
 // Watch the messages array shape so we can react to:
 //   - prepend (older history): pin the OLD first row's viewport position.
