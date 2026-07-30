@@ -9,11 +9,27 @@
 -->
 
 <template>
-  <div v-if="voice.active || voice.connecting" class="call-bar" role="dialog" aria-label="Voice call">
+  <div
+    v-if="voice.active || voice.connecting"
+    class="call-bar"
+    :class="{ 'has-video': voice.videoTiles.length }"
+    role="dialog"
+    aria-label="Voice call"
+  >
     <div class="call-head">
       <i class="fa-solid fa-phone"></i>
       <span class="call-title">{{ voice.label || 'Voice call' }}</span>
       <span class="call-status">{{ statusText }}</span>
+    </div>
+
+    <div v-if="voice.videoTiles.length" class="video-grid">
+      <VideoTile
+        v-for="t in voice.videoTiles"
+        :key="`${t.identity}|${t.source}`"
+        :identity="t.identity"
+        :source="t.source"
+        :self="t.self"
+      />
     </div>
 
     <ul v-if="voice.participants.length" class="call-parts">
@@ -65,6 +81,24 @@
         <i :class="voice.muted ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone'"></i>
         {{ voice.muted ? 'Unmute' : 'Mute' }}
       </button>
+      <button
+        type="button"
+        class="icon-btn"
+        :class="{ on: voice.cameraOn }"
+        title="Toggle camera"
+        @click="voice.toggleCamera()"
+      >
+        <i :class="voice.cameraOn ? 'fa-solid fa-video' : 'fa-solid fa-video-slash'"></i>
+      </button>
+      <button
+        type="button"
+        class="icon-btn"
+        :class="{ on: voice.screenOn }"
+        title="Share screen"
+        @click="voice.toggleScreen()"
+      >
+        <i class="fa-solid fa-desktop"></i>
+      </button>
       <button type="button" class="leave" @click="voice.leave()">
         <i class="fa-solid fa-phone-slash"></i> Leave
       </button>
@@ -80,6 +114,7 @@ import { useVoiceStore } from '../stores/voice.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { api } from '../api.js';
+import VideoTile from './VideoTile.vue';
 
 const voice = useVoiceStore();
 const buffers = useBuffersStore();
@@ -191,9 +226,28 @@ async function moderate(identity: string, action: 'mute' | 'remove') {
   margin-top: 0.1rem;
   cursor: pointer;
 }
+.call-bar.has-video {
+  width: 30rem;
+  max-width: calc(100vw - 2rem);
+}
+.video-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+  max-height: 24rem;
+  overflow-y: auto;
+}
 .call-empty {
   margin: 0 0 0.5rem;
   opacity: 0.6;
+}
+.call-actions .icon-btn {
+  flex: 0 0 auto;
+}
+.call-actions button.on {
+  background: var(--accent, #6ea8fe);
+  color: #08101f;
 }
 .call-actions {
   display: flex;
