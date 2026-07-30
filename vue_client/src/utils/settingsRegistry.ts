@@ -46,8 +46,14 @@ export function categoryVisible(cat: SettingCategory, ctx: VisibilityContext): b
 }
 
 /** Whether an individual registry setting renders, given the edition. */
-export function optionVisible(opt: SettingOption, ctx: Pick<VisibilityContext, 'isNode'>): boolean {
+export function optionVisible(
+  opt: SettingOption,
+  ctx: Pick<VisibilityContext, 'isNode'> & { features?: Partial<Record<'linkPreviews', boolean>> },
+): boolean {
   if (opt.selfHostedOnly && ctx.isNode) return false;
+  // A feature the instance hasn't enabled has no server behind it, so its settings are hidden
+  // rather than rendered inert.
+  if (opt.requiresFeature && ctx.features?.[opt.requiresFeature] !== true) return false;
   return true;
 }
 

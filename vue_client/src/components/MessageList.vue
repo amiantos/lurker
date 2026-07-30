@@ -349,6 +349,7 @@ import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
 import MessageAttachments from './MessageAttachments.vue';
 import { previewRevision, primePreviews } from '../composables/useLinkPreview.js';
+import { useConfigStore } from '../stores/config.js';
 import IgnoreModal from './IgnoreModal.vue';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import type {
@@ -453,6 +454,7 @@ const props = withDefaults(
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const settings = useSettingsStore();
+const config = useConfigStore();
 const ignores = useIgnoresStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
@@ -1723,8 +1725,8 @@ watch(previewRevision, () => void repinAfterPreviewGrowth());
 // that arrive AFTERWARDS, which reads as the setting being broken.
 watch(
   () => [
-    settings.effective('chat.inline_media.enabled') === true,
-    settings.effective('chat.link_previews.enabled') === true,
+    config.linkPreviews && settings.effective('chat.inline_media.enabled') === true,
+    config.linkPreviews && settings.effective('chat.link_previews.enabled') === true,
   ],
   ([inlineMedia, linkPreviews], previous) => {
     // Only on a flip TO enabled. Turning one off needs no work: the rows simply stop rendering.

@@ -8,6 +8,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { primePreviews } from './useLinkPreview.js';
+import { useConfigStore } from '../stores/config.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
@@ -472,6 +473,10 @@ function applyEvent(event: any): void {
 // read, and nothing here can fail in a way a reader should hear about.
 function primeEventPreviews(events: unknown): void {
   if (!Array.isArray(events) || events.length === 0) return;
+  // ANDed with the instance feature flag, matching MessageAttachments — priming a URL the
+  // server has no route for would be a guaranteed 404 per batch.
+  const config = useConfigStore();
+  if (!config.linkPreviews) return;
   const settings = useSettingsStore();
   const toggles = {
     inlineMedia: settings.effective('chat.inline_media.enabled') === true,

@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getEdition } from '../utils/edition.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
+import { previewsEnabled } from '../services/linkFetch.js';
 
 const router = Router();
 
@@ -22,6 +23,12 @@ router.get('/', (_req: Request, res: Response) => {
     edition: getEdition(),
     protocolVersion: PROTOCOL_VERSION,
     minProtocolVersion: MIN_PROTOCOL_VERSION,
+    // Feature flags. `linkPreviews` is off unless the operator opted in
+    // (LURKER_LINK_PREVIEWS); clients use it to hide the two user settings entirely rather than
+    // presenting toggles that can't do anything.
+    features: {
+      linkPreviews: previewsEnabled(),
+    },
   });
 });
 

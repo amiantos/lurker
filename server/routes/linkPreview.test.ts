@@ -27,8 +27,13 @@ let createUser: typeof import('../db/users.js').createUser;
 
 const SAVED_SECRET = process.env.SESSION_SECRET;
 
+const SAVED_FLAG = process.env.LURKER_LINK_PREVIEWS;
+
 beforeAll(async () => {
   process.env.SESSION_SECRET = 'link-preview-route-test-secret';
+  // The feature is off by default now, and `previewsEnabled()` gates the routes from inside as
+  // well as their mounting. Every test here is about behaviour WHEN enabled.
+  process.env.LURKER_LINK_PREVIEWS = 'on';
   ({ createUser } = await import('../db/users.js'));
   ({ putPreview, OK_TTL_MS, urlHash } = await import('../db/linkPreviews.js'));
   db = (await import('../db/index.js')).default;
@@ -43,6 +48,8 @@ beforeAll(async () => {
 afterAll(() => {
   if (SAVED_SECRET === undefined) delete process.env.SESSION_SECRET;
   else process.env.SESSION_SECRET = SAVED_SECRET;
+  if (SAVED_FLAG === undefined) delete process.env.LURKER_LINK_PREVIEWS;
+  else process.env.LURKER_LINK_PREVIEWS = SAVED_FLAG;
   ctx.cleanup();
 });
 
@@ -384,9 +391,9 @@ describe('GET /api/link-preview/media/:token', () => {
     expect((await agent.get(`/api/link-preview/media/${token}`)).status).toBe(404);
   });
 
-  it('goes dark entirely when the operator kill switch is set', async () => {
+  it('goes dark entirely when the feature flag is off', async () => {
     const saved = process.env.LURKER_LINK_PREVIEWS;
-    process.env.LURKER_LINK_PREVIEWS = 'off';
+    delete process.env.LURKER_LINK_PREVIEWS;
     try {
       const token = mintProxyToken('https://cdn.example.com/a.png');
       expect((await agent.get(`/api/link-preview/media/${token}`)).status).toBe(404);

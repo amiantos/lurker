@@ -50,6 +50,12 @@ interface BaseOption {
   // reference pattern: hidden here, enforced in the cell's upload route.
   selfHostedOnly?: boolean;
 
+  // This option only exists when the named instance feature is enabled. Unlike `selfHostedOnly`
+  // (a cosmetic gate on a knob that still works), a flagged-off feature has no server behind it
+  // at all — the routes aren't even mounted — so the option is HIDDEN rather than shown and
+  // ignored. Offering a switch that silently does nothing is worse than offering none.
+  requiresFeature?: 'linkPreviews';
+
   // Conditions under which this setting actually does anything, ORed together:
   // the option is live if ANY clause holds. Resolution is TRANSITIVE — an
   // option whose dependency is itself inactive is inactive too, so a chain like
@@ -1015,6 +1021,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   // because screen size genuinely changes the right answer.)
   {
     key: 'chat.inline_media.enabled',
+    requiresFeature: 'linkPreviews',
     label: 'Inline media',
     category: 'chat',
     group: 'viewing',
@@ -1027,6 +1034,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
   {
     key: 'chat.link_previews.enabled',
+    requiresFeature: 'linkPreviews',
     label: 'Link previews',
     category: 'chat',
     group: 'viewing',

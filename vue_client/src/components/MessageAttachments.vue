@@ -42,6 +42,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
+import { useConfigStore } from '../stores/config.js';
 import { previewableUrls } from '../utils/previewUrls.js';
 import { useLinkPreview, type LinkPreview } from '../composables/useLinkPreview.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
@@ -59,6 +60,7 @@ const props = defineProps<{ text: string | null | undefined }>();
 defineEmits<{ measured: [] }>();
 
 const settings = useSettingsStore();
+const config = useConfigStore();
 const viewer = useMediaViewer();
 
 /** Row heights for a strip, picked by the group's dominant orientation.
@@ -70,9 +72,13 @@ const viewer = useMediaViewer();
 const STRIP_LANDSCAPE = 200;
 const STRIP_PORTRAIT = 300;
 
+// ⚠ ANDed with the instance feature flag. A stored `true` from an instance that had the feature
+// on must not render anything on one that doesn't — the routes aren't even mounted there, so a
+// preview could never resolve and the setting rows aren't shown either. One choke point, so the
+// render path and the priming path can't disagree.
 const toggles = computed(() => ({
-  inlineMedia: settings.effective('chat.inline_media.enabled') === true,
-  linkPreviews: settings.effective('chat.link_previews.enabled') === true,
+  inlineMedia: config.linkPreviews && settings.effective('chat.inline_media.enabled') === true,
+  linkPreviews: config.linkPreviews && settings.effective('chat.link_previews.enabled') === true,
 }));
 
 const urls = computed(() => previewableUrls(props.text, toggles.value));

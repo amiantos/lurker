@@ -19,6 +19,7 @@ import MessageAttachment from './MessageAttachment.vue';
 import MessageAttachments from './MessageAttachments.vue';
 import type { LinkPreview } from '../composables/useLinkPreview.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useConfigStore } from '../stores/config.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 
 // Resolution is driven by message ingest, so components only read — stub the read. A real
@@ -56,8 +57,12 @@ const IMAGE = preview({
   mime: 'image/png',
 });
 
-function seedSettings({ inlineMedia = true, linkPreviews = true } = {}) {
+function seedSettings({ inlineMedia = true, linkPreviews = true, feature = true } = {}) {
   setActivePinia(createPinia());
+  // The instance feature flag gates both user settings — a stored `true` must not render on an
+  // instance that has the feature off, where the routes aren't even mounted. Defaults on here so
+  // the suite is about the user settings; `feature: false` covers the gate itself.
+  useConfigStore().features = { linkPreviews: feature };
   const settings = useSettingsStore();
   // Real store values rather than a mocked getter: `effective` is a Pinia getter returning a
   // closure, so it can't be spied — and seeding state exercises the same lookup the app does.
@@ -200,6 +205,14 @@ describe('MessageAttachments — arrangement', () => {
     expect(pagesOnly.find('.card').exists()).toBe(true);
   });
 
+  it('renders nothing when the INSTANCE has the feature off', () => {
+    // Both user settings on, feature flag off: nothing renders. A stored `true` carried over
+    // from another instance must not draw a card the server here could never resolve.
+    seed(img(1, 800, 600), YOUTUBE);
+    const wrapper = mountFor(`https://e.test/1.png ${YOUTUBE.url}`, { feature: false });
+    expect(wrapper.find('.attachments').exists()).toBe(false);
+  });
+
   it('renders nothing for an unavailable preview', () => {
     seed(preview({ url: 'https://e.test/gone', status: 'unavailable' }));
     expect(mountFor('https://e.test/gone').find('.attachments').exists()).toBe(false);
@@ -268,7 +281,9 @@ describe('MessageAttachments — the lightbox is a gallery over the strip', () =
 
   it('does not open anything when the media viewer is switched off', async () => {
     for (const n of [1, 2]) resolved.set(img(n).url, img(n));
+    // Hand-built rather than via seedSettings because this one needs image_modal OFF.
     setActivePinia(createPinia());
+    useConfigStore().features = { linkPreviews: true };
     const settings = useSettingsStore();
     settings.values = {
       'chat.inline_media.enabled': true,

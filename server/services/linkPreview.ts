@@ -19,7 +19,7 @@ import {
   fetchBuffered,
   normalizeUrl,
   safeRequest,
-  fetchingEnabled,
+  previewsEnabled,
   MAX_SCRAPE_BYTES,
   UnsafeUrlError,
   type RawResponse,
@@ -354,7 +354,7 @@ export async function resolvePreview(raw: string): Promise<PreviewRecord> {
   const cached = getCachedPreview(raw);
   if (cached) return cached;
 
-  if (!fetchingEnabled()) return unavailable(raw);
+  if (!previewsEnabled()) return unavailable(raw);
 
   const pending = inFlight.get(raw);
   if (pending) return await pending;

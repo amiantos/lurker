@@ -24,7 +24,7 @@ import {
   MAX_URLS_PER_REQUEST,
 } from '../services/linkPreview.js';
 import { verifyProxyToken } from '../services/mediaProxyToken.js';
-import { normalizeUrl, safeRequest, fetchingEnabled } from '../services/linkFetch.js';
+import { normalizeUrl, safeRequest, previewsEnabled } from '../services/linkFetch.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -109,7 +109,7 @@ function proxyableContentType(contentType: string): boolean {
 router.get(
   '/media/:token',
   asyncHandler(async (req: Request, res: Response) => {
-    if (!fetchingEnabled()) {
+    if (!previewsEnabled()) {
       res.status(404).end();
       return;
     }

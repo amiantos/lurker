@@ -85,7 +85,10 @@ const groups = computed(() => {
     (opt) =>
       opt.category === props.categoryId &&
       (!props.only || props.only.includes(opt.group || '_')) &&
-      optionVisible(opt, { isNode: config.isNode }),
+      optionVisible(opt, {
+        isNode: config.isNode,
+        features: { linkPreviews: config.linkPreviews },
+      }),
   );
   if (!items.length) return [];
   const groupsMap = new Map<string, SettingOption[]>();

@@ -40,3 +40,29 @@ describe('GET /api/config', () => {
     expect(res.body.minProtocolVersion).toBe(MIN_PROTOCOL_VERSION);
   });
 });
+
+describe('feature flags', () => {
+  const withFlag = async (value: string | undefined) => {
+    const saved = process.env.LURKER_LINK_PREVIEWS;
+    if (value === undefined) delete process.env.LURKER_LINK_PREVIEWS;
+    else process.env.LURKER_LINK_PREVIEWS = value;
+    try {
+      return (await createAnonAgent(app).get('/api/config')).body as {
+        features?: { linkPreviews?: boolean };
+      };
+    } finally {
+      if (saved === undefined) delete process.env.LURKER_LINK_PREVIEWS;
+      else process.env.LURKER_LINK_PREVIEWS = saved;
+    }
+  };
+
+  it('reports link previews off by default', async () => {
+    // Clients use this to HIDE the two settings rather than offer toggles with no server behind
+    // them — the routes aren't even mounted when the flag is off.
+    expect((await withFlag(undefined)).features?.linkPreviews).toBe(false);
+  });
+
+  it('reports them on once the operator opts in', async () => {
+    expect((await withFlag('on')).features?.linkPreviews).toBe(true);
+  });
+});

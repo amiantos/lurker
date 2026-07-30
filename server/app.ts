@@ -31,6 +31,7 @@ import { exportsRouter, importRouter } from './routes/exports.js';
 import apiTokensRouter from './routes/apiTokens.js';
 import configRouter from './routes/config.js';
 import linkPreviewRouter from './routes/linkPreview.js';
+import { previewsEnabled } from './services/linkFetch.js';
 import nodeRouter from './routes/node.js';
 import mcpRouter from './services/mcpServer.js';
 import { requireApiAuth } from './middleware/apiAuth.js';
@@ -99,7 +100,12 @@ export function buildApp(sessionSecret: string): Express {
   app.use('/api/exports', exportsRouter);
   app.use('/api/imports', importRouter);
   app.use('/api/config', configRouter);
-  app.use('/api/link-preview', linkPreviewRouter);
+  // ⚠ Not mounted at all when the feature is off, so both endpoints 404 rather than existing
+  // and refusing. The in-route and resolver guards stay as defence in depth — this is the outer
+  // one, and it's what makes "off" mean the surface isn't there.
+  if (previewsEnabled()) {
+    app.use('/api/link-preview', linkPreviewRouter);
+  }
 
   // The HTTP API-token feature and the MCP server are the two ends of the same
   // bearer-token model: /api/api-tokens (session-cookie auth) mints the tokens,

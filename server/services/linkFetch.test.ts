@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { Readable } from 'node:stream';
-import { normalizeUrl, userAgent, fetchingEnabled, bufferStream } from './linkFetch.js';
+import { normalizeUrl, userAgent, previewsEnabled, bufferStream } from './linkFetch.js';
 import { isBlockedIpLiteral, isBlockedIpv4 } from '../utils/ipGuard.js';
 
 describe('isBlockedIpv4', () => {
@@ -217,29 +217,36 @@ describe('userAgent', () => {
   });
 });
 
-describe('fetchingEnabled', () => {
-  it('defaults on', () => {
+describe('previewsEnabled', () => {
+  const withEnv = (value: string | undefined, run: () => void) => {
     const saved = process.env.LURKER_LINK_PREVIEWS;
-    delete process.env.LURKER_LINK_PREVIEWS;
+    if (value === undefined) delete process.env.LURKER_LINK_PREVIEWS;
+    else process.env.LURKER_LINK_PREVIEWS = value;
     try {
-      expect(fetchingEnabled()).toBe(true);
-    } finally {
-      if (saved !== undefined) process.env.LURKER_LINK_PREVIEWS = saved;
-    }
-  });
-
-  it('honours the operator kill switch in its usual spellings', () => {
-    const saved = process.env.LURKER_LINK_PREVIEWS;
-    try {
-      for (const v of ['off', 'OFF', '0', 'false', ' off ']) {
-        process.env.LURKER_LINK_PREVIEWS = v;
-        expect(fetchingEnabled()).toBe(false);
-      }
-      process.env.LURKER_LINK_PREVIEWS = 'on';
-      expect(fetchingEnabled()).toBe(true);
+      run();
     } finally {
       if (saved === undefined) delete process.env.LURKER_LINK_PREVIEWS;
       else process.env.LURKER_LINK_PREVIEWS = saved;
+    }
+  };
+
+  it('defaults OFF — an upgrade must not start dialling arbitrary URLs', () => {
+    // The whole feature is opt-in, not just the fetch: an operator who upgrades and does
+    // nothing gets a server that never reaches out. The Lounge ships `prefetch: false` for the
+    // same reason.
+    withEnv(undefined, () => expect(previewsEnabled()).toBe(false));
+    withEnv('', () => expect(previewsEnabled()).toBe(false));
+  });
+
+  it('is enabled only by an affirmative value', () => {
+    for (const v of ['on', 'ON', '1', 'true', 'yes', ' on ']) {
+      withEnv(v, () => expect(previewsEnabled()).toBe(true));
+    }
+  });
+
+  it('treats anything else as off rather than guessing', () => {
+    for (const v of ['off', '0', 'false', 'no', 'maybe', 'enabled?']) {
+      withEnv(v, () => expect(previewsEnabled()).toBe(false));
     }
   });
 });

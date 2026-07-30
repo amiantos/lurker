@@ -73,17 +73,25 @@ export function userAgent(): string {
 }
 
 /**
- * Whether this instance may make outbound preview requests at all.
+ * Whether link previews and inline media exist on this instance at all.
  *
- * Distinct from the two per-user settings on purpose. A user setting decides
- * whether *you* see previews; this decides whether the instance reaches out to
- * the internet — which is the operator's bandwidth, the operator's IP
- * reputation, and the operator's problem if someone tries to use a channel to
- * aim the cell at something. Operators get a switch that no user can override.
+ * ⚠ A FEATURE FLAG, defaulting to OFF — not merely a fetch switch. When it's off the routes
+ * aren't mounted, the resolver never runs, and both clients hide the two user settings rather
+ * than offering toggles that do nothing. A visible switch that silently has no effect is worse
+ * than no switch.
+ *
+ * Off by default because this is the one feature that makes the server dial arbitrary
+ * user-supplied URLs. That's the operator's bandwidth, the operator's IP reputation, and the
+ * operator's problem if someone points a channel at something — so it should be a decision
+ * somebody made, not something an upgrade turns on. The Lounge reaches the same conclusion for
+ * the same reason (`prefetch: false` in its shipped defaults).
+ *
+ * The two per-user settings remain independent and also default off: this decides whether the
+ * instance participates, those decide whether *you* see previews.
  */
-export function fetchingEnabled(): boolean {
+export function previewsEnabled(): boolean {
   const v = (process.env.LURKER_LINK_PREVIEWS || '').trim().toLowerCase();
-  return v !== 'off' && v !== '0' && v !== 'false';
+  return v === 'on' || v === '1' || v === 'true' || v === 'yes';
 }
 
 export class UnsafeUrlError extends Error {}
