@@ -165,6 +165,15 @@ class IrcManager extends EventEmitter {
     return Array.from(this.connectionsForUser(userId).values());
   }
 
+  /** Every live connection across ALL users — for cross-user broadcasts (e.g.
+   *  call-presence: a call by one account must notify other accounts in the
+   *  same IRC channel on this instance). */
+  listAllConnections(): IrcConnection[] {
+    const out: IrcConnection[] = [];
+    for (const m of this.byUser.values()) for (const c of m.values()) out.push(c);
+    return out;
+  }
+
   initForUser(userId: number): void {
     // Bulk path — cold-start autoconnect (via initAll) and un-pause resume. The
     // herd of connects this fans out is exactly what issue #236 throttles, so

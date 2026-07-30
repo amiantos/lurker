@@ -23,6 +23,7 @@ import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useDccStore } from '../stores/dcc.js';
+import { useCallPresenceStore } from '../stores/callPresence.js';
 import { useUploadsStore } from '../stores/uploads.js';
 import { makeClientId } from '../utils/clientId.js';
 import { useToastsStore } from '../stores/toasts.js';
@@ -248,6 +249,11 @@ function applyEvent(event: any): void {
       break;
     case 'lag':
       networks.applyLag(event);
+      break;
+    case 'call-presence':
+      // A voice call's participant count changed in a channel; surface a badge
+      // to users who aren't in the call. (Voice / #680.)
+      useCallPresenceStore().set(event.networkId, event.target, event.count);
       break;
     case 'usermode':
       networks.applyUserMode(event);

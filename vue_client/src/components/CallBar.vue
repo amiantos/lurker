@@ -17,9 +17,45 @@
     </div>
 
     <ul v-if="voice.participants.length" class="call-parts">
-      <li v-for="id in voice.participants" :key="id" :class="{ talking: voice.speaking.includes(id) }">
-        <i v-if="voice.speaking.includes(id)" class="fa-solid fa-volume-high"></i>
-        <span>{{ id }}</span>
+      <li
+        v-for="id in voice.participants"
+        :key="id"
+        :class="{ talking: voice.speaking.includes(id) }"
+      >
+        <div class="part-row">
+          <i
+            class="fa-solid"
+            :class="voice.speaking.includes(id) ? 'fa-volume-high' : 'fa-user'"
+          ></i>
+          <span class="part-nick" :title="id">{{ id }}</span>
+          <button
+            v-if="amOp"
+            type="button"
+            class="mod"
+            title="Mute in call"
+            @click="moderate(id, 'mute')"
+          >
+            <i class="fa-solid fa-microphone-slash"></i>
+          </button>
+          <button
+            v-if="amOp"
+            type="button"
+            class="mod danger"
+            title="Remove from call"
+            @click="moderate(id, 'remove')"
+          >
+            <i class="fa-solid fa-user-slash"></i>
+          </button>
+        </div>
+        <input
+          class="vol"
+          type="range"
+          min="0"
+          max="100"
+          :value="volPct(id)"
+          :aria-label="`Volume for ${id}`"
+          @input="onVol(id, $event)"
+        />
       </li>
     </ul>
     <p v-else class="call-empty">Just you so far…</p>
@@ -41,9 +77,45 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useVoiceStore } from '../stores/voice.js';
+import { useBuffersStore } from '../stores/buffers.js';
+import { useNetworksStore } from '../stores/networks.js';
+import { api } from '../api.js';
 
 const voice = useVoiceStore();
+const buffers = useBuffersStore();
+const networks = useNetworksStore();
 const statusText = computed(() => (voice.connecting ? 'Connecting…' : 'Connected'));
+
+// Am I an operator of the call's channel? Gates the mute/remove controls (the
+// server enforces this too). Guests never moderate.
+const MODERATE_MODES = ['q', 'a', 'o', 'h'];
+const amOp = computed(() => {
+  if (voice.isGuest || voice.networkId == null) return false;
+  const b = buffers.byKey(`${voice.networkId}::${voice.target.toLowerCase()}`);
+  const selfNick = networks.states[voice.networkId]?.nick;
+  if (!b || !selfNick) return false;
+  const me = b.members?.find((m) => m.nick.toLowerCase() === selfNick.toLowerCase());
+  return !!me?.modes?.some((mm) => MODERATE_MODES.includes(mm));
+});
+
+function volPct(id: string): number {
+  return Math.round((voice.volumes[id] ?? 1) * 100);
+}
+function onVol(id: string, e: Event) {
+  voice.setVolume(id, Number((e.target as HTMLInputElement).value) / 100);
+}
+
+async function moderate(identity: string, action: 'mute' | 'remove') {
+  if (voice.networkId == null) return;
+  try {
+    await api('/api/voice/moderate', {
+      method: 'POST',
+      body: { networkId: voice.networkId, target: voice.target, action, identity },
+    });
+  } catch {
+    /* server enforces; ignore transient failures */
+  }
+}
 </script>
 
 <style scoped>
@@ -83,13 +155,41 @@ const statusText = computed(() => (voice.connecting ? 'Connecting…' : 'Connect
   overflow-y: auto;
 }
 .call-parts li {
+  padding: 0.15rem 0;
+}
+.part-row {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.1rem 0;
 }
-.call-parts li.talking {
+.part-nick {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.call-parts li.talking .part-nick {
   color: var(--accent, #6ea8fe);
+}
+.part-row .mod {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted, #9aa0ac);
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+.part-row .mod:hover {
+  color: var(--text, #e7e9ee);
+}
+.part-row .mod.danger:hover {
+  color: var(--danger, #ff6b6b);
+}
+.vol {
+  width: 100%;
+  height: 0.6rem;
+  margin-top: 0.1rem;
+  cursor: pointer;
 }
 .call-empty {
   margin: 0 0 0.5rem;

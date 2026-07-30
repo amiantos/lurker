@@ -29,7 +29,7 @@ import dccRouter from './routes/dcc.js';
 import draftsRouter from './routes/drafts.js';
 import { exportsRouter, importRouter } from './routes/exports.js';
 import apiTokensRouter from './routes/apiTokens.js';
-import voiceRouter from './routes/voice.js';
+import voiceRouter, { voicePublicRouter } from './routes/voice.js';
 import configRouter from './routes/config.js';
 import nodeRouter from './routes/node.js';
 import mcpRouter from './services/mcpServer.js';
@@ -76,6 +76,10 @@ export function buildApp(sessionSecret: string): Express {
   app.use('/api/highlights', highlightsRouter);
   app.use('/api/bookmarks', bookmarksRouter);
   app.use('/api/push', pushRouter);
+  // Public voice sub-routes (LiveKit webhook + guest join token) FIRST — they
+  // authenticate by capability (webhook signature / guest-link token), not the
+  // session cookie, so they must be matched before the requireAuth'd router.
+  app.use('/api/voice', voicePublicRouter);
   app.use('/api/voice', voiceRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/uploads', uploadsRouter);

@@ -11,6 +11,14 @@ const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('./views/Login.vue') },
   { path: '/invite/:token', name: 'invite', component: () => import('./views/InviteAccept.vue') },
   {
+    // Public guest voice-call page — no auth. The :token is a capability link an
+    // op minted (POST /api/voice/guest-link); the page exchanges it for a
+    // room-scoped LiveKit token. Deliberately has NO requiresAuth meta.
+    path: '/call/:token',
+    name: 'guest-call',
+    component: () => import('./views/GuestCall.vue'),
+  },
+  {
     path: '/',
     name: 'chat',
     component: () => import('./views/Chat.vue'),

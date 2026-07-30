@@ -11,6 +11,10 @@ import {
   roomFor,
   voiceEnabled,
   voiceMasterEnabled,
+  meetsJoinMode,
+  canModerateCall,
+  canAdminCall,
+  guestIdentity,
 } from './voice.js';
 
 describe('parseVoiceEnabled', () => {
@@ -134,5 +138,44 @@ describe('mintVoiceToken', () => {
     expect(typeof minted.token).toBe('string');
     // A JWT is three dot-separated base64url segments.
     expect(minted.token.split('.')).toHaveLength(3);
+  });
+});
+
+describe('meetsJoinMode', () => {
+  it("'none' lets anyone in", () => {
+    expect(meetsJoinMode([], 'none')).toBe(true);
+    expect(meetsJoinMode(['v'], 'none')).toBe(true);
+  });
+  it('ranks voice < halfop < op; owner/admin count as op', () => {
+    expect(meetsJoinMode([], 'voice')).toBe(false);
+    expect(meetsJoinMode(['v'], 'voice')).toBe(true);
+    expect(meetsJoinMode(['v'], 'op')).toBe(false);
+    expect(meetsJoinMode(['h'], 'op')).toBe(false);
+    expect(meetsJoinMode(['h'], 'halfop')).toBe(true);
+    expect(meetsJoinMode(['o'], 'op')).toBe(true);
+    expect(meetsJoinMode(['q'], 'op')).toBe(true);
+    expect(meetsJoinMode(['o'], 'halfop')).toBe(true); // op exceeds the halfop bar
+  });
+});
+
+describe('canModerateCall / canAdminCall', () => {
+  it('moderation allows q/a/o/h; admin (policy + guest links) allows q/a/o only', () => {
+    expect(canModerateCall(['h'])).toBe(true);
+    expect(canModerateCall(['o'])).toBe(true);
+    expect(canModerateCall(['v'])).toBe(false);
+    expect(canModerateCall([])).toBe(false);
+    expect(canAdminCall(['h'])).toBe(false);
+    expect(canAdminCall(['o'])).toBe(true);
+    expect(canAdminCall(['q'])).toBe(true);
+    expect(canAdminCall([])).toBe(false);
+  });
+});
+
+describe('guestIdentity', () => {
+  it('namespaces + sanitizes so a guest can never be a bare IRC nick', () => {
+    expect(guestIdentity('Alice')).toMatch(/^guest-alice-[0-9a-f]{8}$/);
+    expect(guestIdentity('bad nick!@#')).toMatch(/^guest-badnick-[0-9a-f]{8}$/);
+    expect(guestIdentity('')).toMatch(/^guest-guest-[0-9a-f]{8}$/);
+    expect(guestIdentity('x')).not.toBe(guestIdentity('x')); // random suffix
   });
 });

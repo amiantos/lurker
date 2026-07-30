@@ -10,12 +10,36 @@
         type="button"
         class="call-btn"
         :disabled="voice.connecting || voice.active"
-        :title="voice.active ? 'Already in a call' : 'Start a voice call in this channel'"
+        :title="voice.active ? 'Already in a call' : 'Start or join a voice call in this channel'"
         @click="startCall"
       >
         <i class="fa-solid fa-phone"></i>
-        <span>{{ voice.active ? 'In call' : 'Call' }}</span>
+        <span>{{ callBtnLabel }}</span>
       </button>
+      <div v-if="isOp" class="call-admin">
+        <label class="policy" title="Who may join this channel's call">
+          <span>Join</span>
+          <select :value="policy" @change="onPolicyChange">
+            <option value="none">anyone</option>
+            <option value="voice">voiced+</option>
+            <option value="halfop">halfop+</option>
+            <option value="op">ops only</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          class="guest-btn"
+          :disabled="guestBusy"
+          title="Create a public link a guest can use to join without an account"
+          @click="createGuestLink"
+        >
+          <i class="fa-solid fa-link"></i> Guest link
+        </button>
+      </div>
+      <div v-if="guestUrl" class="guest-url">
+        <input :value="guestUrl" readonly aria-label="Guest call link" @focus="selectAll" />
+        <button type="button" @click="copyGuest">{{ copied ? 'Copied' : 'Copy' }}</button>
+      </div>
     </div>
     <ul ref="listEl">
       <li
@@ -59,6 +83,8 @@ import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useConfigStore } from '../stores/config.js';
 import { useVoiceStore } from '../stores/voice.js';
+import { useCallPresenceStore } from '../stores/callPresence.js';
+import { api } from '../api.js';
 import {
   PREFIX_ORDER,
   prefixOf as modePrefixOf,
@@ -102,6 +128,95 @@ const selfModes = computed<string[]>(() => {
   const me = members.value.find((m) => nickOf(m).toLowerCase() === sn.toLowerCase());
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
+
+// ─── Voice: join-with-count, op join policy, op guest links ─────────────────
+const callPresence = useCallPresenceStore();
+const OP_MODES = ['q', 'a', 'o'];
+const isOp = computed(() => selfModes.value.some((m) => OP_MODES.includes(m)));
+
+const inThisCall = computed(
+  () =>
+    voice.active &&
+    voice.networkId === (buffer.value?.networkId ?? null) &&
+    voice.target === buffer.value?.target,
+);
+const callCount = computed(() => {
+  const b = buffer.value;
+  return b?.networkId != null ? callPresence.countFor(b.networkId, b.target) : 0;
+});
+const callBtnLabel = computed(() => {
+  if (inThisCall.value) return 'In call';
+  if (callCount.value > 0) return `Join call (${callCount.value})`;
+  return 'Call';
+});
+
+const policy = ref('none');
+const guestUrl = ref('');
+const guestBusy = ref(false);
+const copied = ref(false);
+
+// Load the channel's join policy whenever the active channel changes (any member
+// may read it; only ops see/change the control).
+watch(
+  buffer,
+  async (b) => {
+    guestUrl.value = '';
+    copied.value = false;
+    policy.value = 'none';
+    if (!config.voiceEnabled || !b || b.kind !== 'channel' || b.networkId == null) return;
+    try {
+      const r = await api<{ minJoinMode: string }>(
+        `/api/voice/policy?networkId=${b.networkId}&target=${encodeURIComponent(b.target)}`,
+      );
+      policy.value = r.minJoinMode;
+    } catch {
+      /* leave default */
+    }
+  },
+  { immediate: true },
+);
+
+async function onPolicyChange(e: Event) {
+  const b = buffer.value;
+  if (!b || b.networkId == null) return;
+  const minJoinMode = (e.target as HTMLSelectElement).value;
+  try {
+    const r = await api<{ minJoinMode: string }>('/api/voice/policy', {
+      method: 'PUT',
+      body: { networkId: b.networkId, target: b.target, minJoinMode },
+    });
+    policy.value = r.minJoinMode;
+  } catch {
+    /* keep previous */
+  }
+}
+
+async function createGuestLink() {
+  const b = buffer.value;
+  if (!b || b.networkId == null) return;
+  guestBusy.value = true;
+  copied.value = false;
+  try {
+    const r = await api<{ url: string }>('/api/voice/guest-link', {
+      method: 'POST',
+      body: { networkId: b.networkId, target: b.target },
+    });
+    guestUrl.value = r.url;
+  } catch {
+    /* ignore */
+  } finally {
+    guestBusy.value = false;
+  }
+}
+
+function copyGuest() {
+  if (!guestUrl.value) return;
+  void navigator.clipboard?.writeText(guestUrl.value);
+  copied.value = true;
+}
+function selectAll(e: FocusEvent) {
+  (e.target as HTMLInputElement).select();
+}
 
 watch(
   () => networks.activeKey,
@@ -238,6 +353,61 @@ const sorted = computed(() => {
 .call-btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+.call-admin {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+}
+.call-admin .policy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--fg-muted);
+}
+.call-admin select {
+  background: var(--button-bg, #262933);
+  color: inherit;
+  border: 1px solid var(--border, #2c2f38);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.2rem;
+}
+.guest-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--border, #2c2f38);
+  background: var(--button-bg, #262933);
+  color: inherit;
+  cursor: pointer;
+}
+.guest-url {
+  display: flex;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
+.guest-url input {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.3rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--border, #2c2f38);
+  background: var(--bg-soft, #14161c);
+  color: inherit;
+}
+.guest-url button {
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--border, #2c2f38);
+  background: var(--button-bg, #262933);
+  color: inherit;
+  cursor: pointer;
 }
 ul {
   list-style: none;

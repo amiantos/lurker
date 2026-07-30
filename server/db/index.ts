@@ -586,6 +586,37 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
 
+    -- Per-channel voice-call join policy (voice / #680). Keyed by IRC network
+    -- host + folded channel so it is shared across all users of the channel on
+    -- this instance (the same scoping as the LiveKit room name). min_join_mode
+    -- is the lowest IRC prefix mode allowed to join a call: 'none' (anyone),
+    -- 'voice', 'halfop', or 'op'. Set by a channel op.
+    CREATE TABLE IF NOT EXISTS voice_channel_policy (
+      network_host TEXT NOT NULL,
+      channel_folded TEXT NOT NULL,
+      min_join_mode TEXT NOT NULL DEFAULT 'none',
+      updated_by TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (network_host, channel_folded)
+    );
+
+    -- Public guest call links (voice / #680). A capability token that lets
+    -- someone without an account join exactly one LiveKit room. Opaque token,
+    -- 24h expiry, soft-revocable via revoked_at. can_publish gates talk vs
+    -- listen-only. Not tied to a user row — it outlives the op who minted it.
+    CREATE TABLE IF NOT EXISTS voice_guest_link (
+      token TEXT PRIMARY KEY,
+      network_host TEXT NOT NULL,
+      channel_folded TEXT NOT NULL,
+      room TEXT NOT NULL,
+      can_publish INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT NOT NULL,
+      revoked_at TEXT,
+      use_count INTEGER NOT NULL DEFAULT 0
+    );
+
     -- Per-user data-export jobs. A request to export account data spawns a
     -- background worker (separate readonly SQLite connection) that builds the
     -- .lurk archive to disk under data/exports/<token>.lurk; the row tracks
