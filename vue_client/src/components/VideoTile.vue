@@ -5,12 +5,12 @@
   One video tile in the call panel. It owns the attach/detach of its LiveKit
   track to the <video> element — REQUIRED for adaptiveStream to deliver remote
   video (an unattached/hidden track never starts). Self camera tiles are mirrored
-  and muted; screen-share tiles are letterboxed (contain) and always muted here
-  (you don't play your own screen audio back).
+  and muted; screen-share tiles are letterboxed. A hover button fullscreens the
+  tile.
 -->
 
 <template>
-  <div class="video-tile" :class="{ screen: source === 'screen_share' }">
+  <div ref="tileEl" class="video-tile" :class="{ screen: source === 'screen_share' }">
     <video
       ref="el"
       autoplay
@@ -18,6 +18,9 @@
       :muted="self"
       :class="{ mirror: self && source !== 'screen_share' }"
     ></video>
+    <button type="button" class="fs" title="Fullscreen" @click="fullscreen">
+      <i class="fa-solid fa-expand"></i>
+    </button>
     <span class="tile-label">
       <i v-if="source === 'screen_share'" class="fa-solid fa-desktop"></i>
       {{ self ? 'You' : identity }}<span v-if="source === 'screen_share'"> · screen</span>
@@ -32,6 +35,14 @@ import { useVoiceStore } from '../stores/voice.js';
 const props = defineProps<{ identity: string; source: string; self: boolean }>();
 const voice = useVoiceStore();
 const el = ref<HTMLVideoElement | null>(null);
+const tileEl = ref<HTMLElement | null>(null);
+
+function fullscreen() {
+  const node = tileEl.value;
+  if (!node) return;
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else void node.requestFullscreen?.();
+}
 
 onMounted(() => {
   if (el.value) voice.attachVideo(props.identity, props.source, el.value, props.self);
@@ -46,7 +57,7 @@ onBeforeUnmount(() => {
   position: relative;
   aspect-ratio: 16 / 9;
   background: #000;
-  border-radius: 0.35rem;
+  border-radius: 0.4rem;
   overflow: hidden;
   border: 1px solid var(--border, #2c2f38);
 }
@@ -62,6 +73,36 @@ onBeforeUnmount(() => {
 }
 .video-tile video.mirror {
   transform: scaleX(-1);
+}
+/* When a tile is the fullscreen element, fill the screen and letterbox. */
+.video-tile:fullscreen {
+  aspect-ratio: auto;
+  border: none;
+  border-radius: 0;
+}
+.video-tile:fullscreen video {
+  object-fit: contain;
+}
+.fs {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.25rem;
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 0.25rem;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+.video-tile:hover .fs,
+.fs:focus-visible {
+  opacity: 1;
 }
 .tile-label {
   position: absolute;
