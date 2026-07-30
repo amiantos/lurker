@@ -250,11 +250,6 @@ function applyEvent(event: any): void {
     case 'lag':
       networks.applyLag(event);
       break;
-    case 'call-presence':
-      // A voice call's participant count changed in a channel; surface a badge
-      // to users who aren't in the call. (Voice / #680.)
-      useCallPresenceStore().set(event.networkId, event.target, event.count);
-      break;
     case 'usermode':
       networks.applyUserMode(event);
       break;
@@ -611,6 +606,17 @@ function handleMessage(raw: string): void {
     // cursor (#355).
     if (payload.networkId != null) trackSeenId(payload.id);
     applyEvent(payload);
+    return;
+  }
+  if (payload.kind === 'call-presence') {
+    // A voice call's participant count changed in a channel; surface a badge to
+    // users who aren't in the call. Its own top-level frame (not an 'irc' event)
+    // so it never rides the resume cursor. (Voice / #680.)
+    useCallPresenceStore().set(
+      payload.networkId as number,
+      payload.target as string,
+      payload.count as number,
+    );
     return;
   }
   if (payload.kind === 'account-state') {

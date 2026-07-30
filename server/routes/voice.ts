@@ -358,7 +358,10 @@ function broadcastCallPresence(change: CallPresenceChange): void {
     if (foldKey(conn.network.host) !== change.host) continue;
     if (!conn.channels.has(change.channel)) continue;
     fanOutToUser(conn.network.user_id, {
-      type: 'call-presence',
+      // Top-level frame kind — the client dispatches on `kind` in handleMessage.
+      // (A bare `type:` never reached the handler: only kind:'irc' frames are
+      // unwrapped to the type-switch, so the badge only ever updated on refresh.)
+      kind: 'call-presence',
       networkId: conn.network.id,
       target: change.channel,
       active: change.active,
