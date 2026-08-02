@@ -19,7 +19,7 @@
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.1.2",
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/test-utils": "^2.4.11",
     "postcss-hover-media-feature": "^1.0.2",
