@@ -2614,3 +2614,65 @@ describe('renameChannel (in-memory rekey)', () => {
     expect(conn.autoWhoTargets.has('#loud')).toBe(true);
   });
 });
+
+describe('renameChannel with a live destination', () => {
+  function makeConn(suffix: string): IrcConnection {
+    const user = createUser(`rename-dest-${suffix}`);
+    const network = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.test',
+      port: 6697,
+      tls: true,
+      nick: 'nick',
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+  function joinMember(conn: IrcConnection, channel: string, nick: string): void {
+    conn.client.emit('join', { channel, nick, ident: 'i', hostname: 'h' });
+  }
+
+  it('keeps the destination channel state instead of clobbering it', () => {
+    // renameBufferAndAnnounce drives the DB merge and this rekey together, and
+    // the merge exists precisely for a destination that already exists — so the
+    // "two live channels can't be the same" assumption was wrong. Clobbering
+    // left the surviving buffer showing the OLD channel's members and topic.
+    const conn = makeConn('clobber');
+    joinMember(conn, '#old', 'alice');
+    joinMember(conn, '#new', 'bob');
+    conn.channels.get('#old')!.topic = 'old topic';
+    conn.channels.get('#new')!.topic = 'new topic';
+
+    expect(conn.renameChannel('#old', '#new')).toBe(true);
+
+    expect(conn.channels.has('#old')).toBe(false);
+    const survivor = conn.channels.get('#new');
+    expect(survivor?.topic).toBe('new topic');
+    expect([...(survivor?.members.keys() ?? [])]).toEqual(['bob']);
+  });
+
+  it('does not carry send-state marks onto a live destination', () => {
+    // #old being +m-unsendable says nothing about #new, which we are really in.
+    const conn = makeConn('marks-dest');
+    joinMember(conn, '#old', 'alice');
+    joinMember(conn, '#new', 'bob');
+    conn.unsendableTargets.add('#old');
+
+    conn.renameChannel('#old', '#new');
+
+    expect(conn.unsendableTargets.has('#old')).toBe(false);
+    expect(conn.unsendableTargets.has('#new')).toBe(false);
+  });
+
+  it('carries lastUserSendAt when the destination is not live', () => {
+    // Losing it makes isOverloadedSpeakRejection misread a real failed PRIVMSG
+    // as an automated TAGMSG bounce — the message is silently dropped.
+    const conn = makeConn('sendat');
+    joinMember(conn, '#old', 'alice');
+    conn.lastUserSendAt.set('#old', 1234);
+
+    conn.renameChannel('#old', '#new');
+
+    expect(conn.lastUserSendAt.get('#old')).toBeUndefined();
+    expect(conn.lastUserSendAt.get('#new')).toBe(1234);
+  });
+});

@@ -471,3 +471,125 @@ describe('estimateCost', () => {
     expect(messageCount(net, '#big')).toBe(12);
   });
 });
+
+describe('a source with a case fork', () => {
+  it("moves EVERY casing, not just the caller's", () => {
+    // IRC targets are case-insensitive, so '#Foo' and '#foo' are one channel and
+    // a forked database holds one buffer's history under both. Moving only the
+    // caller's casing stranded the rest under a name with no buffers row — and
+    // post-schema-16 the sidebar is registry-derived, so it became invisible.
+    const net = freshNetwork();
+    addBuffer(net, '#Foo');
+    seed(net, '#Foo', 3);
+    seed(net, '#foo', 900);
+    seed(net, '#FOO', 7);
+
+    const res = renameBuffer(userId, net, '#Foo', '#Bar');
+
+    expect(res.renamed).toBe(true);
+    expect(messageCount(net, '#Bar')).toBe(910);
+    const leftovers = db
+      .prepare(
+        `SELECT target, COUNT(*) AS n FROM messages WHERE network_id = ? AND target <> '#Bar'
+          GROUP BY target`,
+      )
+      .all(net);
+    expect(leftovers).toEqual([]);
+  });
+
+  it('estimates the cost of every casing', () => {
+    // The pre-flight exists so a caller can warn/defer/refuse. Counting one
+    // casing reported 3 for a 910-row rename.
+    const net = freshNetwork();
+    addBuffer(net, '#Foo');
+    seed(net, '#Foo', 3);
+    seed(net, '#foo', 900);
+
+    expect(estimateCost(userId, net, '#Foo').rowsByTable.messages).toBe(903);
+  });
+
+  it('folds per-user state across casings too', () => {
+    const net = freshNetwork();
+    addBuffer(net, '#Foo');
+    db.prepare(
+      `INSERT INTO buffer_reads (user_id, network_id, target, last_read_message_id)
+       VALUES (?, ?, '#Foo', 10), (?, ?, '#foo', 99)`,
+    ).run(userId, net, userId, net);
+
+    renameBuffer(userId, net, '#Foo', '#Bar');
+
+    const rows = db
+      .prepare(
+        `SELECT target, last_read_message_id AS lastRead FROM buffer_reads
+          WHERE user_id = ? AND network_id = ?`,
+      )
+      .all(userId, net);
+    // Both casings collapse onto the destination, keeping the furthest pointer.
+    expect(rows).toEqual([{ target: '#Bar', lastRead: 99 }]);
+  });
+});
+
+describe('targets a rename must refuse', () => {
+  it('will not move a virtual buffer', () => {
+    // ':' sentinels live outside the normal namespace, and foldBufferCase
+    // excludes them from both scopes — anything renamed into or out of that
+    // space is beyond the only repair tool there is.
+    const net = freshNetwork();
+    addBuffer(net, ':server:1');
+    seed(net, ':server:1', 2);
+
+    expect(renameBuffer(userId, net, ':server:1', '#hijacked').renamed).toBe(false);
+    expect(messageCount(net, ':server:1')).toBe(2);
+  });
+
+  it('will not rename a real buffer into the virtual namespace', () => {
+    const net = freshNetwork();
+    addBuffer(net, '#real');
+    seed(net, '#real', 2);
+
+    expect(renameBuffer(userId, net, '#real', ':server:1').renamed).toBe(false);
+    expect(messageCount(net, '#real')).toBe(2);
+  });
+
+  it('will not rename INTO a sentinel scope value', () => {
+    // The guard has to cover what is WRITTEN, not just what MATCHES: renaming
+    // into 'global' rewrote a one-channel auto-trust rule onto the network-wide
+    // scope, auto-accepting every E2E peer.
+    const net = freshNetwork();
+    addBuffer(net, '#trusted');
+    db.prepare(
+      `INSERT INTO e2e_autotrust (user_id, network_id, scope, handle_pattern, created_at)
+       VALUES (?, ?, '#trusted', '*', 1)`,
+    ).run(userId, net);
+
+    renameBuffer(userId, net, '#trusted', 'global');
+
+    const rows = db
+      .prepare(`SELECT scope FROM e2e_autotrust WHERE user_id = ? AND network_id = ?`)
+      .all(userId, net);
+    expect(rows).toEqual([{ scope: '#trusted' }]);
+  });
+});
+
+describe('merged reporting', () => {
+  it('reports merged when only a satellite table folds', () => {
+    // buffers is unique on target_folded so it can never hold both casings, but
+    // every satellite is BINARY-collated and can. Reporting merged:false there
+    // meant no read-state push and clients taking the wrong client-side path.
+    const net = freshNetwork();
+    addBuffer(net, '#Foo');
+    db.prepare(
+      `INSERT INTO user_drafts (user_id, network_id, target, body)
+       VALUES (?, ?, '#Foo', 'src'), (?, ?, '#foo', 'dst')`,
+    ).run(userId, net, userId, net);
+
+    const res = renameBuffer(userId, net, '#Foo', '#foo');
+
+    expect(res.renamed).toBe(true);
+    expect(res.merged).toBe(true);
+    const drafts = db
+      .prepare(`SELECT target, body FROM user_drafts WHERE user_id = ? AND network_id = ?`)
+      .all(userId, net);
+    expect(drafts).toEqual([{ target: '#foo', body: 'dst' }]);
+  });
+});

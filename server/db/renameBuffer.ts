@@ -47,6 +47,7 @@ export function estimateCost(
   from: string,
 ): { rowsByTable: Record<string, number>; total: number } {
   const canonical = canonicalName(userId, networkId, from);
+  const folded = foldTarget(canonical);
   const rowsByTable: Record<string, number> = {};
   let total = 0;
   for (const t of BUFFER_KEYED_TABLES) {
@@ -58,17 +59,24 @@ export function estimateCost(
     // the rename will deliberately refuse to move — a DM peer named `global`
     // against an e2e_autotrust rule scoped 'global'. The number is exported so a
     // caller can warn, defer or refuse on it; an over-count is a wrong decision.
-    const guard = (t.excludeValues ?? []).map(() => `AND ${t.column} <> ?`).join(' ');
-    const n = (
-      db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM ${t.table}
-            WHERE ${scopeSql(t.table, t.scope)} AND ${t.column} = ? ${guard}`,
-        )
-        .get(...scopeArgs(t.scope, userId, networkId), canonical, ...(t.excludeValues ?? [])) as {
-        n: number;
-      }
-    ).n;
+    const sentinels = t.excludeValues ?? [];
+    const guard = sentinels.map(() => `AND ${t.column} <> ?`).join(' ');
+    // Every casing, matching what the rename will actually move. Counting only
+    // the caller's casing reported "3 messages" for a rename that had 903 to
+    // move — and the number exists precisely so a caller can decide whether to
+    // accept the stall.
+    let n = 0;
+    for (const casing of casingsOf(t.table, t.column, t.scope, userId, networkId, folded)) {
+      if (sentinels.includes(casing)) continue;
+      n += (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM ${t.table}
+              WHERE ${scopeSql(t.table, t.scope)} AND ${t.column} = ? ${guard}`,
+          )
+          .get(...scopeArgs(t.scope, userId, networkId), casing, ...sentinels) as { n: number }
+      ).n;
+    }
     if (n > 0) {
       rowsByTable[t.table] = n;
       total += n;
@@ -183,6 +191,44 @@ function storedTarget(userId: number, networkId: number, target: string): string
   return row?.target;
 }
 
+/**
+ * Every casing of `folded` actually present in a table — all of which the rename
+ * has to move.
+ *
+ * IRC targets are case-insensitive, so `#channeL`, `#Channel` and `#ChAnNeL` are
+ * one channel; a database that accumulated several casings (which is why
+ * foldBufferCase exists) holds one buffer's history under all of them. Moving
+ * only the caller's casing left the rest behind with no `buffers` row pointing
+ * at it — and post-schema-16 the sidebar is registry-derived, so that history
+ * became unreachable. It also destroyed the registry row the fold's own override
+ * needs, closing the one repair path that could have realigned it.
+ *
+ * Discovery rather than a case-insensitive UPDATE, deliberately. `COLLATE
+ * NOCASE` on the rewrite would defeat idx_messages_unread's (network_id, target)
+ * prefix and turn every rename into a scan; it is also ASCII-only, so it would
+ * silently miss the Unicode casings `foldTarget` folds together. A `DISTINCT`
+ * over the same index is proportional to how many buffers exist, not how many
+ * messages, and each rewrite it feeds stays an exact-match index range scan.
+ *
+ * Ordered longest-first only for determinism in tests and reports.
+ */
+function casingsOf(
+  table: string,
+  column: string,
+  scope: readonly string[],
+  userId: number,
+  networkId: number,
+  folded: string,
+): string[] {
+  const rows = db
+    .prepare(`SELECT DISTINCT ${column} AS v FROM ${table} WHERE ${scopeSql(table, scope)}`)
+    .all(...scopeArgs(scope, userId, networkId)) as Array<{ v: string | null }>;
+  return rows
+    .map((r) => r.v)
+    .filter((v): v is string => typeof v === 'string' && foldTarget(v) === folded)
+    .toSorted();
+}
+
 function scopeSql(table: string, scope: readonly string[]): string {
   return (
     scope
@@ -257,12 +303,21 @@ export function renameBuffer(
     resolvedTo: to,
   };
 
-  if (!to || !resolvedFrom || resolvedFrom === to) return empty;
+  // A rename must not be able to invent a target the rest of the system can't
+  // represent. Both producers feed remote strings straight in: a channel RENAME
+  // and a NICK event.
+  //
+  // The ':' sentinels (`:server:`, `:system:`) are virtual buffers that exist
+  // outside the normal namespace — foldBufferCase excludes them from BOTH its
+  // scopes, so anything renamed into or out of that space is permanently beyond
+  // the only repair tool there is.
+  if (!to.trim() || !resolvedFrom || resolvedFrom === to) return empty;
+  if (to.startsWith(':') || resolvedFrom.startsWith(':')) return empty;
 
-  const caseOnly = foldTarget(resolvedFrom) === foldTarget(to);
+  const fromFolded = foldTarget(resolvedFrom);
+  const caseOnly = fromFolded === foldTarget(to);
   // A destination row only counts as a collision when it's a DIFFERENT buffer.
   const destination = caseOnly ? undefined : storedTarget(userId, networkId, to);
-  const merged = !!destination;
 
   // When merging, the DESTINATION's stored casing is what everything moves to —
   // not the caller's string.
@@ -275,6 +330,32 @@ export function renameBuffer(
   // the read pointers are never reconciled. Same invariant the fold now honours:
   // the registry owns display casing.
   const effectiveTo = destination ?? to;
+
+  // `merged` cannot be read off the registry alone.
+  //
+  // `buffers` is unique on target_folded, so it can never hold both casings of a
+  // case-only rename — but every satellite table is BINARY-collated and can. A
+  // '#Foo' draft folding onto an existing '#foo' draft IS a merge: a row is
+  // dropped and read pointers are reconciled. Reporting merged:false there meant
+  // wsHub skipped the read-state push (nothing else corrects that badge) and
+  // clients took §9.7's rekey path instead of folding two message lists.
+  //
+  // So it's answered by asking whether anything actually sits at the
+  // destination, binary-distinct from what we're moving.
+  const mergedInto = (): boolean => {
+    if (destination) return true;
+    for (const t of BUFFER_KEYED_TABLES) {
+      if (!hasRenameHandler(t.table) || !tableExists(t.table)) continue;
+      const hit = db
+        .prepare(
+          `SELECT 1 FROM ${t.table} WHERE ${scopeSql(t.table, t.scope)} AND ${t.column} = ? LIMIT 1`,
+        )
+        .get(...scopeArgs(t.scope, userId, networkId), effectiveTo);
+      if (hit) return true;
+    }
+    return false;
+  };
+  const merged = mergedInto();
 
   const run = db.transaction((): boolean => {
     let touched = false;
@@ -289,14 +370,18 @@ export function renameBuffer(
       if (t.legacy || !tableExists(t.table)) continue;
 
       // Sentinel values that share the column but aren't buffer names
-      // (e2e_autotrust's 'global'). Excluded from BOTH statements, so a DM peer
-      // nicked `global` can't rewrite a network-wide rule.
-      const guard = (t.excludeValues ?? []).map(() => `AND ${t.column} <> ?`).join(' ');
+      // (e2e_autotrust's 'global'). The guard has to cover BOTH ends: filtering
+      // which rows MATCH says nothing about what gets WRITTEN, so renaming a
+      // buffer INTO 'global' rewrote a one-channel auto-trust rule onto the
+      // network-wide scope — auto-accepting every E2E peer on the network.
+      const sentinels = t.excludeValues ?? [];
+      if (sentinels.some((v) => v.toLowerCase() === effectiveTo.toLowerCase())) continue;
+      const guard = sentinels.map(() => `AND ${t.column} <> ?`).join(' ');
       const where = `${scopeSql(t.table, t.scope)} AND ${t.column} = ? ${guard}`;
-      const args = [
+      const argsFor = (casing: string) => [
         ...scopeArgs(t.scope, userId, networkId),
-        resolvedFrom,
-        ...(t.excludeValues ?? []),
+        casing,
+        ...sentinels,
       ];
 
       if (UNHANDLED_TABLES[t.table]) {
@@ -305,46 +390,61 @@ export function renameBuffer(
         continue;
       }
 
+      // EVERY casing this table holds, not just the caller's. IRC targets are
+      // case-insensitive, so a database that accumulated `#Foo` and `#foo` holds
+      // one buffer under both; moving only one stranded the rest under a name
+      // with no registry row, which post-schema-16 means invisible.
+      const casings = casingsOf(t.table, t.column, t.scope, userId, networkId, fromFolded).filter(
+        (c) => c !== effectiveTo && !sentinels.includes(c),
+      );
+
       if (BESPOKE_HANDLERS.has(t.table)) {
-        bump(
-          t.table,
-          t.table === 'buffers'
-            ? renameBufferRow(userId, networkId, resolvedFrom, effectiveTo, caseOnly)
-            : mergeBufferReads(userId, networkId, resolvedFrom, effectiveTo),
-        );
+        if (t.table === 'buffers') {
+          // Unique on target_folded, so there is at most one source row here and
+          // the casing loop cannot apply.
+          bump(t.table, renameBufferRow(userId, networkId, resolvedFrom, effectiveTo, caseOnly));
+        } else {
+          for (const casing of casings) {
+            bump(t.table, mergeBufferReads(userId, networkId, casing, effectiveTo));
+          }
+        }
         continue;
       }
 
       if (t.policy === 'rewrite') {
         // No uniqueness on the target, so every row moves and nothing collides.
-        bump(
-          t.table,
-          db
-            .prepare(`UPDATE ${t.table} SET ${t.column} = ? WHERE ${where}`)
-            .run(effectiveTo, ...args).changes,
-        );
+        for (const casing of casings) {
+          bump(
+            t.table,
+            db
+              .prepare(`UPDATE ${t.table} SET ${t.column} = ? WHERE ${where}`)
+              .run(effectiveTo, ...argsFor(casing)).changes,
+          );
+        }
         continue;
       }
 
       if (t.policy === 'destination-wins') {
         // OR IGNORE moves what it can; the DELETE clears what collided, leaving
         // the destination's own row as the survivor.
-        const moved = db
-          .prepare(`UPDATE OR IGNORE ${t.table} SET ${t.column} = ? WHERE ${where}`)
-          .run(effectiveTo, ...args).changes;
-        // `<> ? COLLATE BINARY` on the DELETE, not a caseOnly short-circuit.
-        //
-        // Four e2e tables declare their target column COLLATE NOCASE, so on a
-        // case-only rename `WHERE channel = '#Foo'` still matches the row the
-        // UPDATE just rewrote to '#foo' — and the DELETE destroys it. That
-        // silently wiped every E2E session key for the channel. An explicit
-        // BINARY comparison excludes rows already sitting at the destination
-        // while still clearing genuine collision leftovers, which a caseOnly
-        // short-circuit would strand.
-        const dropped = db
-          .prepare(`DELETE FROM ${t.table} WHERE ${where} AND ${t.column} <> ? COLLATE BINARY`)
-          .run(...args, effectiveTo).changes;
-        bump(t.table, moved + dropped);
+        for (const casing of casings) {
+          const moved = db
+            .prepare(`UPDATE OR IGNORE ${t.table} SET ${t.column} = ? WHERE ${where}`)
+            .run(effectiveTo, ...argsFor(casing)).changes;
+          // `<> ? COLLATE BINARY` on the DELETE, not a caseOnly short-circuit.
+          //
+          // Four e2e tables declare their target column COLLATE NOCASE, so on a
+          // case-only rename `WHERE channel = '#Foo'` still matches the row the
+          // UPDATE just rewrote to '#foo' — and the DELETE destroys it. That
+          // silently wiped every E2E session key for the channel. An explicit
+          // BINARY comparison excludes rows already sitting at the destination
+          // while still clearing genuine collision leftovers, which a caseOnly
+          // short-circuit would strand.
+          const dropped = db
+            .prepare(`DELETE FROM ${t.table} WHERE ${where} AND ${t.column} <> ? COLLATE BINARY`)
+            .run(...argsFor(casing), effectiveTo).changes;
+          bump(t.table, moved + dropped);
+        }
         continue;
       }
 

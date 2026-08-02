@@ -105,6 +105,9 @@ export interface FoldReport {
 // entries come from the registry's own `legacy` flag rather than being named
 // again here — a second hardcoded copy is what rotted the first time.
 const SKIPPED_FROM_FOLD = new Set(['buffers']);
+
+/** Tables the apply path handles by name, so the generic loop must not. */
+const HANDLED_EXPLICITLY = ['messages', 'input_history', 'buffer_reads', 'closed_buffers'];
 const foldable = (t: (typeof BUFFER_KEYED_TABLES)[number]): boolean =>
   t.column === 'target' && !t.caseInsensitive && !t.listValued && !SKIPPED_FROM_FOLD.has(t.table);
 const CANDIDATE_TARGET_TABLES: readonly string[] = BUFFER_KEYED_TABLES.filter(foldable).map(
@@ -148,6 +151,29 @@ export function foldBufferCase(
     `${pred(`${t}.target`)} AND EXISTS (SELECT 1 FROM _buf_canon c
         WHERE c.network_id = ${t}.network_id AND c.lkey = lower(${t}.target)
           AND c.canon <> ${t}.target)`;
+
+  // Validated BEFORE any work, and outside the dryRun branch.
+  //
+  // This check used to live inside the apply loop, which had it exactly backwards
+  // on both counts: an operator's dry run printed a clean report for a
+  // mis-declared table and only --apply threw, and — far worse — foldBufferCase
+  // is called from the schemaVersion<9 and <16 migrations at module load, so the
+  // same throw was an unhandled exception on the one boot that migrates. On a
+  // hosted cell that is a crash loop.
+  //
+  // Up here it is a plain precondition: cheap, side-effect free, and identical
+  // in dry run and apply.
+  for (const table of CANDIDATE_TARGET_TABLES) {
+    if (HANDLED_EXPLICITLY.includes(table)) continue;
+    const policy = bufferKeyedTable(table)?.policy;
+    if (policy !== 'destination-wins') {
+      throw new Error(
+        `foldBufferCase: ${table} is declared policy '${policy}' but the fold only ` +
+          `implements destination-wins for it. Give it explicit handling, or correct ` +
+          `its policy in bufferKeyedTables.ts.`,
+      );
+    }
+  }
 
   const work = (): FoldReport => {
     // Connection-local temp table; drop defensively in case a prior run in this
@@ -359,16 +385,7 @@ export function foldBufferCase(
       // here would delete that progress with no error and no report line. A new
       // registry entry either belongs in this loop or fails loudly on the first
       // fold, which is the only outcome that can't ship silently.
-      const handledExplicitly = ['messages', 'input_history', 'buffer_reads', 'closed_buffers'];
-      for (const t of TARGET_TABLES.filter((n) => !handledExplicitly.includes(n))) {
-        const policy = bufferKeyedTable(t)?.policy;
-        if (policy !== 'destination-wins') {
-          throw new Error(
-            `foldBufferCase: ${t} is declared policy '${policy}' but reached the ` +
-              `destination-wins loop. Give it explicit handling above, or correct ` +
-              `its policy in bufferKeyedTables.ts.`,
-          );
-        }
+      for (const t of TARGET_TABLES.filter((n) => !HANDLED_EXPLICITLY.includes(n))) {
         db.exec(`UPDATE OR IGNORE ${t} SET target = ${canonExpr(t)} WHERE ${needsFold(t)}`);
         db.exec(`DELETE FROM ${t} WHERE ${needsFold(t)}`);
       }

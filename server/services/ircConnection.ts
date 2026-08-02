@@ -3035,15 +3035,45 @@ export class IrcConnection {
 
       // Other channel-keyed in-memory marks, for the same reason. Left behind,
       // `unsendableTargets` keeps a "can't speak here" flag under a dead key so
-      // canSendTo reports the new name sendable until something re-learns it,
-      // and `autoWhoTargets` leaks its one-shot suppression so an in-flight
-      // auto-WHO reply gets echoed to the user as visible output.
-      if (this.unsendableTargets.delete(fromKey)) this.unsendableTargets.add(toKey);
-      if (this.autoWhoTargets.delete(fromKey)) this.autoWhoTargets.add(toKey);
+      // canSendTo reports the new name sendable until something re-learns it;
+      // `autoWhoTargets` leaks its one-shot suppression so an in-flight auto-WHO
+      // reply gets echoed to the user; and `lastUserSendAt` loses the timestamp
+      // isOverloadedSpeakRejection needs, so a real failed PRIVMSG is
+      // misclassified as an automated TAGMSG bounce and silently dropped.
+      // resetSendState() already clears these together — they are one unit.
+      //
+      // Only migrated when the destination has no value of its own. On a merge
+      // the destination is a channel we are really in, and its marks describe
+      // it; overwriting them with the source's would suppress sends in a channel
+      // the user can speak in.
+      const destinationLive = this.channels.has(toKey);
+      const carry = (from: Set<string>, key: string, dest: string) => {
+        const had = from.delete(key);
+        if (had && !destinationLive) from.add(dest);
+      };
+      carry(this.unsendableTargets, fromKey, toKey);
+      carry(this.autoWhoTargets, fromKey, toKey);
+      const sentAt = this.lastUserSendAt.get(fromKey);
+      this.lastUserSendAt.delete(fromKey);
+      if (sentAt !== undefined && !destinationLive) this.lastUserSendAt.set(toKey, sentAt);
     }
 
     const ch = this.channels.get(fromKey);
     if (!ch) return false;
+
+    // A live destination wins, and the source entry is dropped rather than
+    // overwriting it.
+    //
+    // The docstring used to argue this state was impossible — "two live channels
+    // cannot be the same channel" — but renameBufferAndAnnounce drives the
+    // database merge and this rekey together, and the merge exists precisely for
+    // a destination that already exists. Clobbering left the surviving buffer
+    // showing the OLD channel's nicklist and topic until the next NAMES.
+    if (fromKey !== toKey && this.channels.has(toKey)) {
+      this.channels.delete(fromKey);
+      return true;
+    }
+
     ch.name = to;
     if (fromKey !== toKey) this.channels.delete(fromKey);
     this.channels.set(toKey, ch);
