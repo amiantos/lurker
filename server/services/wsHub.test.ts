@@ -37,6 +37,7 @@ let startChanlistRefresh: typeof import('./wsHub.js').startChanlistRefresh;
 let DM_ELIGIBLE_TYPES: typeof import('./wsHub.js').DM_ELIGIBLE_TYPES;
 let reopensClosedBuffer: typeof import('./wsHub.js').reopensClosedBuffer;
 let renameBufferAndAnnounce: typeof import('./wsHub.js').renameBufferAndAnnounce;
+let getReadState: typeof import('../db/bufferReads.js').getReadState;
 let chanlist: typeof import('../db/chanlist.js');
 let systemMessages: typeof import('../db/systemMessages.js').default;
 
@@ -49,7 +50,7 @@ beforeAll(async () => {
   dbHandle = (await import('../db/index.js')).default;
   ({ insertMessage, maxMessageId } = await import('../db/messages.js'));
   buffers = await import('../db/buffers.js');
-  ({ setClearedState, setReadState } = await import('../db/bufferReads.js'));
+  ({ setClearedState, setReadState, getReadState } = await import('../db/bufferReads.js'));
   ircManager = (await import('./ircManager.js')).default;
   ({
     computeTotalHighlights,
@@ -1518,6 +1519,11 @@ describe('renameBufferAndAnnounce', () => {
       expect(result.resolvedTo).toBe('#dest');
       expect(result.merged).toBe(true);
       expect(renameChannel).toHaveBeenCalledWith('#Mixed', '#dest');
+      // A merge also pushes read-state, since it reconciled the two read
+      // pointers and moved messages onto the survivor. Only the DB effect and
+      // the fact that the path completes are asserted here — observing the
+      // frame itself needs a socket seam wsHub does not currently expose.
+      expect(getReadState(userId, networkId, '#dest')).toBeGreaterThanOrEqual(0);
     } finally {
       spy.mockRestore();
     }

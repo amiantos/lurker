@@ -186,18 +186,31 @@ export function foldBufferCase(
     // Absent during the schema-16 migration's own call — the fold runs before
     // `buffers` is populated — so that path keeps the message-majority behavior
     // it has always had. Same for any buffer with history but no registry row.
+    //
+    // Joined on `lower(b.target)`, NOT on `b.target_folded`. Those are folded by
+    // different functions and genuinely disagree: `target_folded` is written by
+    // JS `toLowerCase()` (Unicode-aware), while `lkey` here is SQLite's `lower()`
+    // (ASCII-only). For `#Ärger` that is `#ärger` versus `#Ärger`, so the join
+    // never matched and the override silently didn't fire for any target with a
+    // non-ASCII uppercase letter — the exact "buffer opens blank" case it exists
+    // to prevent. Folding both sides with SQLite's `lower()` makes them agree.
+    //
+    // The fold's grouping is ASCII-only either way (`_buf_canon` is built with
+    // `lower()` above), so a non-ASCII case fork isn't detected as a fork at all.
+    // That predates this override and isn't made worse by it; matching the
+    // fold's own folding is the consistent choice, not a second one.
     if (tableExists('buffers')) {
       db.exec(`
         UPDATE _buf_canon SET canon = (
           SELECT b.target FROM buffers b
            WHERE b.network_id = _buf_canon.network_id
-             AND b.target_folded = _buf_canon.lkey
+             AND lower(b.target) = _buf_canon.lkey
            LIMIT 1
         )
         WHERE EXISTS (
           SELECT 1 FROM buffers b
            WHERE b.network_id = _buf_canon.network_id
-             AND b.target_folded = _buf_canon.lkey
+             AND lower(b.target) = _buf_canon.lkey
         )
       `);
     }

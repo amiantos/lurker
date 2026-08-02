@@ -2581,17 +2581,36 @@ describe('renameChannel (in-memory rekey)', () => {
   });
 
   it('carries a pending join key across the rename', () => {
-    // A key stashed for a join whose echo hasn't landed yet is keyed by channel.
-    // If a rename lands in that window and leaves the key behind, the echo for
-    // the NEW name finds nothing, the +k is never persisted, and the channel
-    // silently fails to auto-rejoin after the next reconnect.
+    // NO joinMember here, and that's the point. ircManager stashes a key only in
+    // the else-branch of `channels.has(...)` — so the only state in which a
+    // pending key exists is one where we are NOT in the channel. An earlier
+    // version of this test joined first, which faked a precondition that cannot
+    // occur and let an unreachable code path look covered.
     const conn = makeConn('pendingkey');
-    joinMember(conn, '#secret', 'nick');
     conn.stashJoinKey('#secret', 'hunter2');
+    expect(conn.channels.has('#secret')).toBe(false);
 
-    conn.renameChannel('#secret', '#classified');
+    // Returns false (no live channel), but the key must still move.
+    expect(conn.renameChannel('#secret', '#classified')).toBe(false);
 
     expect(conn.takeStashedJoinKey('#secret')).toBeUndefined();
     expect(conn.takeStashedJoinKey('#classified')).toBe('hunter2');
+  });
+
+  it('rekeys the other channel-keyed marks', () => {
+    // Left behind, unsendableTargets keeps a "can't speak here" flag under a
+    // dead key so canSendTo reports the new name sendable, and autoWhoTargets
+    // leaks its one-shot suppression so an auto-WHO reply is echoed to the user.
+    const conn = makeConn('marks');
+    joinMember(conn, '#quiet', 'alice');
+    conn.unsendableTargets.add('#quiet');
+    conn.autoWhoTargets.add('#quiet');
+
+    conn.renameChannel('#quiet', '#loud');
+
+    expect(conn.unsendableTargets.has('#quiet')).toBe(false);
+    expect(conn.unsendableTargets.has('#loud')).toBe(true);
+    expect(conn.autoWhoTargets.has('#quiet')).toBe(false);
+    expect(conn.autoWhoTargets.has('#loud')).toBe(true);
   });
 });

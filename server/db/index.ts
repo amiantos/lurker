@@ -1445,8 +1445,14 @@ if (tableExists('messages_fts')) {
       .get() as { sql: string } | undefined
   )?.sql;
   if (messagesAuSql !== MESSAGES_AU_SQL) {
-    db.exec(`DROP TRIGGER IF EXISTS messages_au`);
-    db.exec(MESSAGES_AU_SQL);
+    // One transaction: between a bare DROP and its CREATE the database has FTS
+    // insert/delete triggers but no update trigger. The next boot repairs that,
+    // but any `UPDATE messages SET text = ...` in the interim desyncs
+    // messages_fts — an external-content table, so nothing detects or heals it.
+    db.transaction(() => {
+      db.exec(`DROP TRIGGER IF EXISTS messages_au`);
+      db.exec(MESSAGES_AU_SQL);
+    })();
   }
 }
 

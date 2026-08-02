@@ -54,13 +54,20 @@ export function estimateCost(
     // skips — keyed off the same predicate as the dispatch, not off `listValued`,
     // which happens to select the same tables today and needn't tomorrow.
     if (!hasRenameHandler(t.table) || !tableExists(t.table)) continue;
+    // Same excludeValues guard the rename applies, or the estimate counts rows
+    // the rename will deliberately refuse to move — a DM peer named `global`
+    // against an e2e_autotrust rule scoped 'global'. The number is exported so a
+    // caller can warn, defer or refuse on it; an over-count is a wrong decision.
+    const guard = (t.excludeValues ?? []).map(() => `AND ${t.column} <> ?`).join(' ');
     const n = (
       db
         .prepare(
           `SELECT COUNT(*) AS n FROM ${t.table}
-            WHERE ${scopeSql(t.table, t.scope)} AND ${t.column} = ?`,
+            WHERE ${scopeSql(t.table, t.scope)} AND ${t.column} = ? ${guard}`,
         )
-        .get(...scopeArgs(t.scope, userId, networkId), canonical) as { n: number }
+        .get(...scopeArgs(t.scope, userId, networkId), canonical, ...(t.excludeValues ?? [])) as {
+        n: number;
+      }
     ).n;
     if (n > 0) {
       rowsByTable[t.table] = n;

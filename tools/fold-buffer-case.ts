@@ -96,6 +96,20 @@ function printReport(report: FoldReport): void {
     return;
   }
 
+  // A row count with no forks listed is not a contradiction, and an operator
+  // staring at "Forked buffers: 0" next to "messages 903000" deserves to be told
+  // why before they hit --apply. History can also be rewritten to REALIGN a
+  // single-cased buffer onto the casing the buffers registry holds; the fold
+  // takes canon from the registry, and `forks` only lists targets that had more
+  // than one casing in `messages`.
+  if (report.forks.length === 0 && totalRows > 0) {
+    console.log(
+      'No case forks found, but rows below still move: history is being realigned\n' +
+        'onto the casing the buffer registry holds. This is the display casing every\n' +
+        'read path already matches exactly, so the rewrite is what makes them agree.\n',
+    );
+  }
+
   if (report.forks.length > 0) {
     console.log(`Forked buffers (${report.forks.length}):`);
     for (const f of report.forks) {

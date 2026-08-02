@@ -2997,9 +2997,6 @@ export class IrcConnection {
     return this.addPeerWatch(nick, 'dm', null);
   }
 
-  // User closed the DM buffer: drop the 'dm' reason. If the nick is still a
-  // friend the shared watch + presence row stay; otherwise both are cleared —
-  // even when it wasn't actively tracked, so a stale row from history is swept.
   /**
    * Rekey a live channel in the in-memory map after a rename.
    *
@@ -3020,23 +3017,42 @@ export class IrcConnection {
   renameChannel(from: string, to: string): boolean {
     const fromKey = from.toLowerCase();
     const toKey = to.toLowerCase();
-    const ch = this.channels.get(fromKey);
-    if (!ch) return false;
-    ch.name = to;
+    if (fromKey === toKey && from === to) return this.channels.has(fromKey);
+
     if (fromKey !== toKey) {
-      this.channels.delete(fromKey);
-      // Any pending join key follows the channel it belongs to, or a rename
-      // racing a +k join would drop the key and break the auto-rejoin.
+      // ABOVE the membership check, deliberately. A key is stashed only while we
+      // are NOT yet in the channel (ircManager only calls stashJoinKey in the
+      // else-branch of `channels.has(...)`), so the one state in which a pending
+      // key exists is precisely the one where there is no `channels` entry to
+      // find. Migrating it after an early return made this unreachable — the key
+      // would be stranded under the old name, the +k never persisted, and the
+      // channel would quietly stop auto-rejoining.
       const pendingKey = this.pendingJoinKeys.get(fromKey);
       if (pendingKey !== undefined) {
         this.pendingJoinKeys.delete(fromKey);
         this.pendingJoinKeys.set(toKey, pendingKey);
       }
+
+      // Other channel-keyed in-memory marks, for the same reason. Left behind,
+      // `unsendableTargets` keeps a "can't speak here" flag under a dead key so
+      // canSendTo reports the new name sendable until something re-learns it,
+      // and `autoWhoTargets` leaks its one-shot suppression so an in-flight
+      // auto-WHO reply gets echoed to the user as visible output.
+      if (this.unsendableTargets.delete(fromKey)) this.unsendableTargets.add(toKey);
+      if (this.autoWhoTargets.delete(fromKey)) this.autoWhoTargets.add(toKey);
     }
+
+    const ch = this.channels.get(fromKey);
+    if (!ch) return false;
+    ch.name = to;
+    if (fromKey !== toKey) this.channels.delete(fromKey);
     this.channels.set(toKey, ch);
     return true;
   }
 
+  // User closed the DM buffer: drop the 'dm' reason. If the nick is still a
+  // friend the shared watch + presence row stay; otherwise both are cleared —
+  // even when it wasn't actively tracked, so a stale row from history is swept.
   untrackDmPeer(nick: string | undefined | null): void {
     if (!nick) return;
     const lower = nick.toLowerCase();

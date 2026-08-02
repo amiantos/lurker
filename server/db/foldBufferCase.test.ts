@@ -207,6 +207,13 @@ describe('canon defers to the buffers registry', () => {
        VALUES (?, ?, ?, ?, 'channel', 'open')`,
     ).run(userId, networkId, target, target.toLowerCase());
   }
+  function countUnder(networkId: number, target: string): number {
+    return (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM messages WHERE network_id = ? AND target = ?`)
+        .get(networkId, target) as { n: number }
+    ).n;
+  }
   /** What the open-buffer path actually runs: exact match on buffers.target. */
   function backlogCount(networkId: number, registryTarget: string): number {
     return (
@@ -228,6 +235,28 @@ describe('canon defers to the buffers registry', () => {
     expect(targetCounts(net)).toEqual({ '#Foo': 903 });
     // The assertion that matters: the buffer the user opens is not empty.
     expect(backlogCount(net, '#Foo')).toBe(903);
+  });
+
+  it('fires for a target containing a non-ASCII character', () => {
+    // The override joins with SQLite's lower() on BOTH sides. Joining
+    // buffers.target_folded (JS toLowerCase, Unicode-aware) against lkey
+    // (SQL lower, ASCII-only) silently never matched once a target held a
+    // non-ASCII letter — '#Ärger' folds to '#ärger' in JS and stays '#Ärger'
+    // in SQL — so the override skipped exactly the buffers it exists to protect.
+    //
+    // The two casings here differ only in ASCII letters, so SQLite groups them.
+    // A pair differing in the non-ASCII letter ('#Ärger' vs '#ärger') is NOT
+    // grouped by this fold at all — its canon query is ASCII-only too. That
+    // predates the override and is not something joining consistently can fix.
+    const net = freshNetwork();
+    addBufferRow(net, '#Ärger');
+    seed(net, '#ÄRGER', 20); // message majority...
+    seed(net, '#Ärger', 1); // ...but the registry says this one
+
+    foldBufferCase(db, { scope: 'all' });
+
+    expect(backlogCount(net, '#Ärger')).toBe(21);
+    expect(countUnder(net, '#ÄRGER')).toBe(0);
   });
 
   it('still uses the message majority when no registry row exists', () => {

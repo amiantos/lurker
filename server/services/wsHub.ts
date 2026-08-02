@@ -1267,6 +1267,33 @@ function announceOpen(
   fanOut(userId, { kind: 'buffer-opened', networkId, target }, { exceptWs: requester });
 }
 
+// Single path for "tell every tab of this user what the buffer's unread counts
+// are now." Used by mark-read echo, the live IRC-event fan-out, and a rename
+// that merged two buffers — the client doesn't increment locally anymore, so
+// this is the only source of badge state.
+//
+// Module scope rather than a closure inside attachWsHub: a merge reconciles read
+// progress in the database, and the frame that reports it has to be reachable
+// from the rename path too. Both callers need the same function or the badge
+// silently disagrees with the rows.
+export function broadcastReadState(
+  userId: number,
+  networkId: number | null,
+  target: string,
+  lastReadId: number,
+): void {
+  const counts = computeUnreadFor(userId, networkId, target, lastReadId);
+  fanOut(userId, {
+    kind: 'read-state',
+    networkId,
+    target,
+    lastReadId: counts.lastReadId,
+    unread: counts.unread,
+    highlights: counts.highlights,
+    highlightsCapped: counts.highlightsCapped,
+  });
+}
+
 /**
  * Move a buffer to a new name and tell every one of the user's clients.
  *
@@ -1318,6 +1345,21 @@ export function renameBufferAndAnnounce(
     // rather than rekey one — and the client cannot infer it from the names.
     merged: result.merged,
   });
+
+  // A merge moved messages onto the destination AND took the furthest of the two
+  // read pointers, so the unread count the clients hold for it is now wrong in
+  // both directions. Nothing else will correct it: badge state only ever changes
+  // on a countable event in that buffer, and an idle merged DM may not see one
+  // for days. Push it explicitly rather than telling clients to wait for a frame
+  // that may never come.
+  if (result.merged) {
+    broadcastReadState(
+      userId,
+      networkId,
+      result.resolvedTo,
+      getReadState(userId, networkId, result.resolvedTo),
+    );
+  }
   return result;
 }
 
@@ -1708,24 +1750,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // counts are now." Used by mark-read echo and by the live IRC-event fan-out
   // below — the client doesn't increment locally anymore, so this is the
   // only source of badge state.
-  function broadcastReadState(
-    userId: number,
-    networkId: number | null,
-    target: string,
-    lastReadId: number,
-  ): void {
-    const counts = computeUnreadFor(userId, networkId, target, lastReadId);
-    fanOut(userId, {
-      kind: 'read-state',
-      networkId,
-      target,
-      lastReadId: counts.lastReadId,
-      unread: counts.unread,
-      highlights: counts.highlights,
-      highlightsCapped: counts.highlightsCapped,
-    });
-  }
-
   // Push-suppression gates shared by message and presence pushes: a manual
   // /away (when mute_when_away is on — auto-away is the case push matters most,
   // so it's not gated) and the user's configured quiet-hours window.

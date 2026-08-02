@@ -916,6 +916,11 @@ nicklist patch arrives separately as `member-update`).
 
 ### 9.7 Renames change a buffer's identity
 
+> ⚠ **Not yet emitted.** The server-side plumbing exists but nothing produces
+> this frame today — the two producers (channel `RENAME`, and a DM peer changing
+> nick) haven't landed. Implementing a handler now is safe and forward-looking;
+> just don't expect to see one on the wire yet.
+
 `buffer-renamed` (`networkId, from, to, merged`) says a buffer you already hold
 is now called something else. It is sent when a channel is renamed and when a DM
 peer changes nick.
