@@ -14,7 +14,7 @@
 // the migrations actually produced and compares reality to the declaration, in
 // both directions.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -62,6 +62,8 @@ function columns(table: string): ColumnRow[] {
 beforeAll(async () => {
   ({ default: db } = await import('./index.js'));
 });
+
+afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 describe('BUFFER_KEYED_TABLES completeness', () => {
   it('declares every table in the live schema with a buffer-target column', () => {

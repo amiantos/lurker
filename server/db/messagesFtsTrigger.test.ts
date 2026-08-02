@@ -20,7 +20,7 @@
 //     content-agreement check — measured, it returns OK on the `<>` desync
 //     above — so it backstops the match assertions rather than replacing them.
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -75,6 +75,8 @@ beforeAll(async () => {
   if (!network) throw new Error('fixture: createNetwork returned undefined');
   networkId = network.id;
 });
+
+afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 describe('messages_au trigger definition', () => {
   it('is installed with the text/id guard', () => {
