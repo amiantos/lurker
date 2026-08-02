@@ -124,6 +124,12 @@ export interface RenameBufferResult {
   stillReferencing: Record<string, number>;
   /** The stored casing `from` resolved to. */
   resolvedFrom: string;
+  /**
+   * The name rows actually landed on. Differs from the caller's `to` when
+   * merging into an existing buffer, whose stored casing wins — so this, not
+   * the requested string, is what a client must be told to key by.
+   */
+  resolvedTo: string;
 }
 
 function tableExists(table: string): boolean {
@@ -241,6 +247,7 @@ export function renameBuffer(
     rowsAffected,
     stillReferencing,
     resolvedFrom,
+    resolvedTo: to,
   };
 
   if (!to || !resolvedFrom || resolvedFrom === to) return empty;
@@ -366,7 +373,7 @@ export function renameBuffer(
   });
 
   const renamed = run();
-  return { renamed, merged, rowsAffected, stillReferencing, resolvedFrom };
+  return { renamed, merged, rowsAffected, stillReferencing, resolvedFrom, resolvedTo: effectiveTo };
 }
 
 /**

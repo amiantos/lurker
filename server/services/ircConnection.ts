@@ -3000,6 +3000,43 @@ export class IrcConnection {
   // User closed the DM buffer: drop the 'dm' reason. If the nick is still a
   // friend the shared watch + presence row stay; otherwise both are cleared —
   // even when it wasn't actively tracked, so a stale row from history is swept.
+  /**
+   * Rekey a live channel in the in-memory map after a rename.
+   *
+   * `channels` is the only record of who is currently IN a channel — membership
+   * is never persisted (see the class comment). A rename that moves the database
+   * rows but leaves this Map keyed by the old name leaves the renamed channel
+   * with an empty nicklist until the next NAMES, while the old key lingers as a
+   * ghost that `canonicalChannelTarget` can still resolve incoming events onto.
+   *
+   * Returns false when there was no live channel under `from` — a DM rename, or
+   * a channel we aren't currently joined to. Both are ordinary, not errors.
+   *
+   * Merging is deliberately NOT attempted: two live channels cannot be the same
+   * channel, so a destination key already existing means the server told us
+   * something contradictory. The incoming state wins, since it's the one the
+   * rename just described.
+   */
+  renameChannel(from: string, to: string): boolean {
+    const fromKey = from.toLowerCase();
+    const toKey = to.toLowerCase();
+    const ch = this.channels.get(fromKey);
+    if (!ch) return false;
+    ch.name = to;
+    if (fromKey !== toKey) {
+      this.channels.delete(fromKey);
+      // Any pending join key follows the channel it belongs to, or a rename
+      // racing a +k join would drop the key and break the auto-rejoin.
+      const pendingKey = this.pendingJoinKeys.get(fromKey);
+      if (pendingKey !== undefined) {
+        this.pendingJoinKeys.delete(fromKey);
+        this.pendingJoinKeys.set(toKey, pendingKey);
+      }
+    }
+    this.channels.set(toKey, ch);
+    return true;
+  }
+
   untrackDmPeer(nick: string | undefined | null): void {
     if (!nick) return;
     const lower = nick.toLowerCase();

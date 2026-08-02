@@ -597,6 +597,7 @@ a v1 client.
 | `read-state`                                                                                                                                                             | see §5.4                                                                                                                                                                                                                                                    | After every countable event / mark-read                                                                                                                   |
 | `send-result`                                                                                                                                                            | `clientId, ok, error?`                                                                                                                                                                                                                                      | Ack for `send`/`action`/`notice`                                                                                                                          |
 | `buffer-opened` / `buffer-closed` / `buffer-reopened`                                                                                                                    | `networkId, target`                                                                                                                                                                                                                                         | Buffer lifecycle (§9.1). `buffer-opened` is an ack to the socket that asked **and** a fan-out to the user's other devices — only focus on your own (§4.3) |
+| `buffer-renamed`                                                                                                                                                         | `networkId, from, to, merged`                                                                                                                                                                                                                               | A buffer changed identity (§9.7). Goes to **every** socket, including the one that caused it                                                              |
 | `buffer-cleared`                                                                                                                                                         | `networkId, target, clearedBeforeId, clearedAt`                                                                                                                                                                                                             | `/clear` marker                                                                                                                                           |
 | `pins-changed`                                                                                                                                                           | `networkId, pinned[]`                                                                                                                                                                                                                                       | Authoritative pin order                                                                                                                                   |
 | `nicklist-collapsed-changed` / `channel-notify-changed`                                                                                                                  | `networkId, target, …`                                                                                                                                                                                                                                      | View-state sync                                                                                                                                           |
@@ -912,6 +913,44 @@ bugs both came from mutating state below a missing dedupe check. Membership
 side effects ride the same events you render: `join`→add member, `part`/`quit`→
 remove, `kick`→remove `kicked`, `nick`→rename (`chghost` renders only; its
 nicklist patch arrives separately as `member-update`).
+
+### 9.7 Renames change a buffer's identity
+
+`buffer-renamed` (`networkId, from, to, merged`) says a buffer you already hold
+is now called something else. It is sent when a channel is renamed and when a DM
+peer changes nick.
+
+Unlike `buffer-opened`, this frame goes to **every** socket including the one
+whose action caused it, and it is **not** a focus instruction. It describes a
+change that has already happened server-side; a client that ignores it is simply
+wrong about what its buffers are called. Rules:
+
+- **Rekey everything you store per buffer**, not just the message list:
+  membership, draft, read/unread state, pin position, scroll anchor, nicklist
+  collapse, search scope, and any navigation history. A rekey that misses one of
+  these strands it under a name nothing will ask for again.
+- **Key off `to`, never off a name you predicted.** When `merged` is true the
+  server adopted the _destination's_ stored casing, which may differ from the
+  new name you saw on the wire (a `NICK` to `Robert` merging into an existing
+  `robert` buffer resolves to `robert`). §9.2's rule still holds: the server owns
+  display casing.
+- **`merged: true` means fold, not rename.** A buffer already existed at `to`,
+  and the two are now one. Concatenate the message lists and re-sort by id
+  rather than replacing one with the other; drop your row for `from` entirely.
+  Server-side the destination wins for scalar state (draft, collapse) while read
+  progress takes the furthest of the two, so re-reading state from the next
+  `read-state` frame is safer than merging it yourself.
+- **If the renamed buffer is your active one, follow it.** That is the same
+  conversation under a new name, so following is not a navigation — and leaving
+  the user on a buffer key that no longer exists shows them an empty room.
+- **A rename you have no buffer for is not an error** — ignore it. Renames are
+  fanned out per network, and a client may legitimately not hold that buffer
+  (never opened, or closed).
+
+Some things deliberately do **not** follow a rename, and the server will not
+pretend otherwise: highlight and ignore rules scoped to the old channel name are
+left alone, because their scope can span networks and can contain globs. If you
+surface rule management, that is worth telling the user about.
 
 ---
 

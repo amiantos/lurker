@@ -36,6 +36,7 @@ let buildSystemHistoryReply: typeof import('./wsHub.js').buildSystemHistoryReply
 let startChanlistRefresh: typeof import('./wsHub.js').startChanlistRefresh;
 let DM_ELIGIBLE_TYPES: typeof import('./wsHub.js').DM_ELIGIBLE_TYPES;
 let reopensClosedBuffer: typeof import('./wsHub.js').reopensClosedBuffer;
+let renameBufferAndAnnounce: typeof import('./wsHub.js').renameBufferAndAnnounce;
 let chanlist: typeof import('../db/chanlist.js');
 let systemMessages: typeof import('../db/systemMessages.js').default;
 
@@ -68,6 +69,7 @@ beforeAll(async () => {
     startChanlistRefresh,
     DM_ELIGIBLE_TYPES,
     reopensClosedBuffer,
+    renameBufferAndAnnounce,
   } = await import('./wsHub.js'));
   chanlist = await import('../db/chanlist.js');
   systemMessages = (await import('../db/systemMessages.js')).default;
@@ -1464,5 +1466,86 @@ describe('allowInboundMessage', () => {
     expect(rejected).toBeGreaterThan(0); // the flood was throttled
     // Nowhere near all 10k were admitted — the cap held.
     expect(allowed).toBeLessThan(1_000);
+  });
+});
+
+// The single entry point for a rename: database rows, live channel membership,
+// and the clients all have to move together. Split across two call sites they
+// would drift, and each of the three failing alone is silent.
+describe('renameBufferAndAnnounce', () => {
+  it('moves the rows and rekeys the live channel together', () => {
+    buffers.ensureOpen(userId, networkId, '#before', { kind: 'channel', autojoin: true });
+    insertMessage({
+      networkId,
+      target: '#before',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'alice',
+      text: 'hello',
+    });
+    const renameChannel = vi.fn<(from: string, to: string) => boolean>().mockReturnValue(true);
+    const spy = vi
+      .spyOn(ircManager, 'getConnection')
+      .mockReturnValue({ channels: new Map(), renameChannel } as never);
+    try {
+      const result = renameBufferAndAnnounce(userId, networkId, '#before', '#after');
+
+      expect(result.renamed).toBe(true);
+      expect(buffers.getBuffer(userId, networkId, '#after')?.target).toBe('#after');
+      expect(buffers.getBuffer(userId, networkId, '#before')).toBeUndefined();
+      // The live map is the ONLY record of current membership; leaving it on the
+      // old key empties the renamed channel's nicklist until the next NAMES.
+      expect(renameChannel).toHaveBeenCalledWith('#before', '#after');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('passes the RESOLVED names to the live rekey, not the caller strings', () => {
+    // Both ends can be re-resolved: `from` against the registry's stored casing,
+    // `to` against an existing destination's. The in-memory map has to be told
+    // the same names the rows actually moved between.
+    buffers.ensureOpen(userId, networkId, '#Mixed', { kind: 'channel', autojoin: true });
+    buffers.ensureOpen(userId, networkId, '#dest', { kind: 'channel', autojoin: true });
+    const renameChannel = vi.fn<(from: string, to: string) => boolean>().mockReturnValue(true);
+    const spy = vi
+      .spyOn(ircManager, 'getConnection')
+      .mockReturnValue({ channels: new Map(), renameChannel } as never);
+    try {
+      const result = renameBufferAndAnnounce(userId, networkId, '#mIxEd', '#DEST');
+
+      expect(result.resolvedFrom).toBe('#Mixed');
+      expect(result.resolvedTo).toBe('#dest');
+      expect(result.merged).toBe(true);
+      expect(renameChannel).toHaveBeenCalledWith('#Mixed', '#dest');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('does nothing at all when there is no such buffer', () => {
+    const renameChannel = vi.fn<(from: string, to: string) => boolean>();
+    const spy = vi
+      .spyOn(ircManager, 'getConnection')
+      .mockReturnValue({ channels: new Map(), renameChannel } as never);
+    try {
+      const result = renameBufferAndAnnounce(userId, networkId, '#nope', '#other');
+      expect(result.renamed).toBe(false);
+      // No frame, and no live-state churn, for a rename that moved nothing.
+      expect(renameChannel).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('survives a disconnected network (no live connection to rekey)', () => {
+    buffers.ensureOpen(userId, networkId, '#offline', { kind: 'channel', autojoin: true });
+    const spy = vi.spyOn(ircManager, 'getConnection').mockReturnValue(undefined as never);
+    try {
+      expect(() => renameBufferAndAnnounce(userId, networkId, '#offline', '#backup')).not.toThrow();
+      expect(buffers.getBuffer(userId, networkId, '#backup')?.target).toBe('#backup');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -75,6 +75,8 @@ import {
   kindForTarget,
 } from '../db/buffers.js';
 import type { BufferStateRow } from '../db/buffers.js';
+import { renameBuffer as renameBufferRows } from '../db/renameBuffer.js';
+import type { RenameBufferResult } from '../db/renameBuffer.js';
 import {
   pinBuffer,
   unpinBuffer,
@@ -1263,6 +1265,60 @@ function announceOpen(
   const shell = buildBufferShell(userId, networkId, target, channelJoined(target, conn));
   fanOut(userId, shell, { exceptWs: requester });
   fanOut(userId, { kind: 'buffer-opened', networkId, target }, { exceptWs: requester });
+}
+
+/**
+ * Move a buffer to a new name and tell every one of the user's clients.
+ *
+ * The single entry point for a rename, so the three things that must happen
+ * together can't be done in two places and drift: the database rows move, the
+ * live channel map is rekeyed, and the clients are told. Callers are the two
+ * events that rename a buffer — a channel RENAME, and a DM peer changing nick.
+ *
+ * ## The frame is not an instruction to focus
+ *
+ * Unlike `buffer-opened`, `buffer-renamed` goes to EVERY socket including the
+ * one that caused it. It describes a change of identity that already happened
+ * server-side, so a client that doesn't apply it is simply wrong about what its
+ * buffers are called — there is no "someone else's action" reading of it, and
+ * nothing to yank. A client whose active buffer was renamed should follow it:
+ * that's the same buffer, not a navigation.
+ *
+ * ## Why `to` is echoed back rather than assumed
+ *
+ * `resolvedTo` may differ from the requested name. Merging into an existing
+ * buffer adopts that buffer's stored casing, because the registry owns display
+ * casing and every read path matches it exactly. Clients must key off the
+ * frame's `to`, never the name they might have predicted.
+ *
+ * Returns the rename result (including `stillReferencing`) so the caller can
+ * surface what the rename could not follow. A no-op rename fans out nothing.
+ */
+export function renameBufferAndAnnounce(
+  userId: number,
+  networkId: number,
+  from: string,
+  to: string,
+): RenameBufferResult {
+  const result = renameBufferRows(userId, networkId, from, to);
+  if (!result.renamed) return result;
+
+  // Live membership is in-memory only, so it has to move with the rows or the
+  // renamed channel shows an empty nicklist until the next NAMES.
+  ircManager
+    .getConnection(userId, networkId)
+    ?.renameChannel(result.resolvedFrom, result.resolvedTo);
+
+  fanOut(userId, {
+    kind: 'buffer-renamed',
+    networkId,
+    from: result.resolvedFrom,
+    to: result.resolvedTo,
+    // A merge is materially different client work — fold two buffers into one
+    // rather than rekey one — and the client cannot infer it from the names.
+    merged: result.merged,
+  });
+  return result;
 }
 
 // Per-user socket bookkeeping lives at module scope so the verb registry can

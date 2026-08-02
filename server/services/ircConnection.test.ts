@@ -2522,3 +2522,76 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
   });
 });
+
+// Live channel membership is in-memory only — `channels` is the sole record of
+// who is in a channel right now. A rename that moves the database rows but
+// leaves this Map keyed by the old name leaves the renamed channel with an
+// empty nicklist until the next NAMES, and strands a ghost key that
+// canonicalChannelTarget can still resolve incoming events onto.
+describe('renameChannel (in-memory rekey)', () => {
+  function makeConn(suffix: string): IrcConnection {
+    const user = createUser(`rename-chan-${suffix}`);
+    const network = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.test',
+      port: 6697,
+      tls: true,
+      nick: 'nick',
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  function joinMember(conn: IrcConnection, channel: string, nick: string): void {
+    conn.client.emit('join', { channel, nick, ident: 'i', hostname: 'h' });
+  }
+
+  it('moves membership and topic onto the new key', () => {
+    const conn = makeConn('basic');
+    joinMember(conn, '#old', 'alice');
+    joinMember(conn, '#old', 'bob');
+    conn.channels.get('#old')!.topic = 'the topic';
+
+    expect(conn.renameChannel('#old', '#new')).toBe(true);
+
+    expect(conn.channels.has('#old')).toBe(false);
+    const moved = conn.channels.get('#new');
+    expect(moved?.name).toBe('#new');
+    expect(moved?.topic).toBe('the topic');
+    expect([...(moved?.members.keys() ?? [])].toSorted()).toEqual(['alice', 'bob']);
+  });
+
+  it('updates the display name on a case-only rename without dropping the key', () => {
+    const conn = makeConn('case');
+    joinMember(conn, '#Foo', 'alice');
+
+    expect(conn.renameChannel('#Foo', '#foo')).toBe(true);
+
+    // Same folded key, so the entry must survive rather than be deleted and
+    // re-added — but the display casing has to follow.
+    expect(conn.channels.size).toBe(1);
+    expect(conn.channels.get('#foo')?.name).toBe('#foo');
+    expect([...conn.channels.get('#foo')!.members.keys()]).toEqual(['alice']);
+  });
+
+  it('reports false for a channel we are not in', () => {
+    const conn = makeConn('absent');
+    // A DM rename, or a channel we have history for but are not joined to.
+    expect(conn.renameChannel('#nothere', '#elsewhere')).toBe(false);
+    expect(conn.channels.size).toBe(0);
+  });
+
+  it('carries a pending join key across the rename', () => {
+    // A key stashed for a join whose echo hasn't landed yet is keyed by channel.
+    // If a rename lands in that window and leaves the key behind, the echo for
+    // the NEW name finds nothing, the +k is never persisted, and the channel
+    // silently fails to auto-rejoin after the next reconnect.
+    const conn = makeConn('pendingkey');
+    joinMember(conn, '#secret', 'nick');
+    conn.stashJoinKey('#secret', 'hunter2');
+
+    conn.renameChannel('#secret', '#classified');
+
+    expect(conn.takeStashedJoinKey('#secret')).toBeUndefined();
+    expect(conn.takeStashedJoinKey('#classified')).toBe('hunter2');
+  });
+});
