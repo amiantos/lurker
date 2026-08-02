@@ -256,6 +256,159 @@ describe('merging into an existing destination', () => {
   });
 });
 
+describe('casing hazards around a merge', () => {
+  it('adopts the destination stored casing rather than the caller string', () => {
+    // A NICK event says 'Robert' while we hold a 'robert' buffer. Writing rows
+    // as 'Robert' while the registry keeps 'robert' splits the buffer: the
+    // exact-match backlog finds only the rows that didn't move.
+    const net = freshNetwork();
+    addBuffer(net, 'bob');
+    addBuffer(net, 'robert');
+    seed(net, 'bob', 3);
+    seed(net, 'robert', 2);
+
+    renameBuffer(userId, net, 'bob', 'Robert');
+
+    expect(bufferTargets(net)).toEqual([{ target: 'robert', folded: 'robert' }]);
+    const byTarget = db
+      .prepare(`SELECT target, COUNT(*) AS n FROM messages WHERE network_id = ? GROUP BY target`)
+      .all(net) as Array<{ target: string; n: number }>;
+    expect(byTarget).toEqual([{ target: 'robert', n: 5 }]);
+  });
+
+  it('reconciles read pointers even when the caller casing differs', () => {
+    // Same root cause: a mismatched destination casing means ON CONFLICT never
+    // fires and both pointers survive.
+    const net = freshNetwork();
+    addBuffer(net, 'bob');
+    addBuffer(net, 'robert');
+    db.prepare(
+      `INSERT INTO buffer_reads (user_id, network_id, target, last_read_message_id)
+       VALUES (?, ?, 'bob', 100), (?, ?, 'robert', 40)`,
+    ).run(userId, net, userId, net);
+
+    renameBuffer(userId, net, 'bob', 'Robert');
+
+    const rows = db
+      .prepare(
+        `SELECT target, last_read_message_id AS lastRead FROM buffer_reads
+          WHERE user_id = ? AND network_id = ?`,
+      )
+      .all(userId, net) as Array<{ target: string; lastRead: number }>;
+    expect(rows).toEqual([{ target: 'robert', lastRead: 100 }]);
+  });
+
+  it('does not destroy E2E state on a case-only rename', () => {
+    // The four e2e tables declare their channel column COLLATE NOCASE, so a
+    // DELETE bound to '#Foo' also matches the row just rewritten to '#foo'.
+    // This wiped every session key for the channel.
+    const net = freshNetwork();
+    addBuffer(net, '#Foo');
+    db.prepare(
+      `INSERT INTO e2e_channel_config (user_id, network_id, channel, enabled, mode)
+       VALUES (?, ?, '#Foo', 1, 'normal')`,
+    ).run(userId, net);
+    db.prepare(
+      `INSERT INTO e2e_outgoing_sessions (user_id, network_id, channel, sk, created_at)
+       VALUES (?, ?, '#Foo', 'secret', 1)`,
+    ).run(userId, net);
+
+    renameBuffer(userId, net, '#Foo', '#foo');
+
+    const cfg = db
+      .prepare(`SELECT channel FROM e2e_channel_config WHERE user_id = ?`)
+      .all(userId) as Array<{ channel: string }>;
+    const out = db
+      .prepare(`SELECT channel, sk FROM e2e_outgoing_sessions WHERE user_id = ?`)
+      .all(userId) as Array<{ channel: string; sk: string }>;
+    expect(cfg).toEqual([{ channel: '#foo' }]);
+    expect(out).toEqual([{ channel: '#foo', sk: 'secret' }]);
+  });
+});
+
+describe('sentinel values in a shared column', () => {
+  it("never rewrites e2e_autotrust's 'global' scope", () => {
+    // `scope` holds either a channel or the literal 'global'. A DM peer nicked
+    // `global` must not rewrite the user's network-wide auto-trust rule.
+    const net = freshNetwork();
+    addBuffer(net, 'global');
+    seed(net, 'global', 1);
+    db.prepare(
+      `INSERT INTO e2e_autotrust (user_id, network_id, scope, handle_pattern, created_at)
+       VALUES (?, ?, 'global', '*', 1)`,
+    ).run(userId, net);
+
+    renameBuffer(userId, net, 'global', 'globular');
+
+    const rows = db
+      .prepare(`SELECT scope FROM e2e_autotrust WHERE user_id = ? AND network_id = ?`)
+      .all(userId, net) as Array<{ scope: string }>;
+    expect(rows).toEqual([{ scope: 'global' }]);
+  });
+
+  it('does move a real channel-scoped autotrust rule', () => {
+    const net = freshNetwork();
+    addBuffer(net, '#trusted');
+    db.prepare(
+      `INSERT INTO e2e_autotrust (user_id, network_id, scope, handle_pattern, created_at)
+       VALUES (?, ?, '#trusted', '*', 1)`,
+    ).run(userId, net);
+
+    renameBuffer(userId, net, '#trusted', '#vouched');
+
+    const rows = db
+      .prepare(`SELECT scope FROM e2e_autotrust WHERE user_id = ? AND network_id = ?`)
+      .all(userId, net) as Array<{ scope: string }>;
+    expect(rows).toEqual([{ scope: '#vouched' }]);
+  });
+});
+
+describe('merged buffer state', () => {
+  it('clears closed_at when it reopens the destination', () => {
+    const net = freshNetwork();
+    addBuffer(net, 'bob', 'open');
+    addBuffer(net, 'robert', 'closed');
+    db.prepare(
+      `UPDATE buffers SET closed_at = '2026-01-01T00:00:00Z'
+        WHERE user_id = ? AND network_id = ? AND target = 'robert'`,
+    ).run(userId, net);
+
+    renameBuffer(userId, net, 'bob', 'robert');
+
+    const row = db
+      .prepare(
+        `SELECT state, closed_at AS closedAt FROM buffers
+          WHERE user_id = ? AND network_id = ? AND target = 'robert'`,
+      )
+      .get(userId, net) as { state: string; closedAt: string | null };
+    // An open row carrying a closed_at is a contradiction the export round-trip
+    // branches on.
+    expect(row).toEqual({ state: 'open', closedAt: null });
+  });
+
+  it('renames a keyed channel whose +k envelope cannot be decrypted', () => {
+    // getBuffer would decrypt and THROW for an envelope under a rotated key id,
+    // aborting a rename that never reads the key.
+    const net = freshNetwork();
+    addBuffer(net, '#keyed');
+    // A well-formed envelope under a key id the registry doesn't have — what a
+    // LURKER_SECRET_KEY rotation leaves behind. The exact shape matters:
+    // decryptSecret only engages for strings matching
+    // `lk1.<8 hex>.<base64url>`, and passes anything else straight through. Two
+    // earlier fixtures here ('v99:...', then a non-hex keyid) both failed that
+    // pattern, so this test passed against the broken code as well. Verified
+    // that it now fails when canonicalName goes back through getBuffer.
+    db.prepare(
+      `UPDATE buffers SET key = 'lk1.deadbeef.${'A'.repeat(64)}'
+        WHERE user_id = ? AND network_id = ? AND target = '#keyed'`,
+    ).run(userId, net);
+    seed(net, '#keyed', 2);
+
+    expect(() => renameBuffer(userId, net, '#keyed', '#rekeyed')).not.toThrow();
+    expect(bufferTargets(net)).toEqual([{ target: '#rekeyed', folded: '#rekeyed' }]);
+  });
+});
+
 describe('rules that still name the old buffer', () => {
   it('reports them instead of rewriting or ignoring them', () => {
     const net = freshNetwork();

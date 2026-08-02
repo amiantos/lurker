@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
-import { foldTarget, getBuffer } from './buffers.js';
+import { foldTarget } from './buffers.js';
 import { BUFFER_KEYED_TABLES, bufferKeyedTable } from './bufferKeyedTables.js';
 
 // Move a buffer to a new name, across every table that stores it.
@@ -147,7 +147,27 @@ function tableExists(table: string): boolean {
  * is foldBufferCase's job, not this one's.
  */
 function canonicalName(userId: number, networkId: number, target: string): string {
-  return getBuffer(userId, networkId, target)?.target ?? target;
+  return storedTarget(userId, networkId, target) ?? target;
+}
+
+/**
+ * The registry's display casing for a folded target, read WITHOUT materializing
+ * the record.
+ *
+ * Deliberately not `getBuffer`, which runs the row through `toRecord` and so
+ * `decryptSecret` on the channel's +k envelope — and that THROWS for an envelope
+ * sealed under a rotated or unknown key id. Renaming a keyed channel after a
+ * LURKER_SECRET_KEY rotation would abort the whole rename on a crypto error, for
+ * a key this function never looks at. Same reasoning as `getState` existing
+ * alongside `getBuffer` in buffers.ts.
+ */
+function storedTarget(userId: number, networkId: number, target: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT target FROM buffers WHERE user_id = ? AND network_id = ? AND target_folded = ?`,
+    )
+    .get(userId, networkId, foldTarget(target)) as { target: string } | undefined;
+  return row?.target;
 }
 
 function scopeSql(table: string, scope: readonly string[]): string {
@@ -227,8 +247,20 @@ export function renameBuffer(
 
   const caseOnly = foldTarget(resolvedFrom) === foldTarget(to);
   // A destination row only counts as a collision when it's a DIFFERENT buffer.
-  const destination = caseOnly ? undefined : getBuffer(userId, networkId, to);
+  const destination = caseOnly ? undefined : storedTarget(userId, networkId, to);
   const merged = !!destination;
+
+  // When merging, the DESTINATION's stored casing is what everything moves to —
+  // not the caller's string.
+  //
+  // A NICK event is exactly this case: the wire says `Robert` while we already
+  // hold a `robert` buffer. Writing rows as `Robert` while the surviving
+  // registry row stays `robert` splits the buffer in half — the exact-match
+  // backlog query finds only the rows that didn't move, `destination-wins`
+  // quietly becomes "two rows", and mergeBufferReads' ON CONFLICT never fires so
+  // the read pointers are never reconciled. Same invariant the fold now honours:
+  // the registry owns display casing.
+  const effectiveTo = destination ?? to;
 
   const run = db.transaction((): boolean => {
     let touched = false;
@@ -242,8 +274,16 @@ export function renameBuffer(
     for (const t of BUFFER_KEYED_TABLES) {
       if (t.legacy || !tableExists(t.table)) continue;
 
-      const where = `${scopeSql(t.table, t.scope)} AND ${t.column} = ?`;
-      const args = [...scopeArgs(t.scope, userId, networkId), resolvedFrom];
+      // Sentinel values that share the column but aren't buffer names
+      // (e2e_autotrust's 'global'). Excluded from BOTH statements, so a DM peer
+      // nicked `global` can't rewrite a network-wide rule.
+      const guard = (t.excludeValues ?? []).map(() => `AND ${t.column} <> ?`).join(' ');
+      const where = `${scopeSql(t.table, t.scope)} AND ${t.column} = ? ${guard}`;
+      const args = [
+        ...scopeArgs(t.scope, userId, networkId),
+        resolvedFrom,
+        ...(t.excludeValues ?? []),
+      ];
 
       if (UNHANDLED_TABLES[t.table]) {
         const n = countListReferences(t, userId, resolvedFrom);
@@ -255,8 +295,8 @@ export function renameBuffer(
         bump(
           t.table,
           t.table === 'buffers'
-            ? renameBufferRow(userId, networkId, resolvedFrom, to, caseOnly)
-            : mergeBufferReads(userId, networkId, resolvedFrom, to),
+            ? renameBufferRow(userId, networkId, resolvedFrom, effectiveTo, caseOnly)
+            : mergeBufferReads(userId, networkId, resolvedFrom, effectiveTo),
         );
         continue;
       }
@@ -265,8 +305,9 @@ export function renameBuffer(
         // No uniqueness on the target, so every row moves and nothing collides.
         bump(
           t.table,
-          db.prepare(`UPDATE ${t.table} SET ${t.column} = ? WHERE ${where}`).run(to, ...args)
-            .changes,
+          db
+            .prepare(`UPDATE ${t.table} SET ${t.column} = ? WHERE ${where}`)
+            .run(effectiveTo, ...args).changes,
         );
         continue;
       }
@@ -276,8 +317,19 @@ export function renameBuffer(
         // the destination's own row as the survivor.
         const moved = db
           .prepare(`UPDATE OR IGNORE ${t.table} SET ${t.column} = ? WHERE ${where}`)
-          .run(to, ...args).changes;
-        const dropped = db.prepare(`DELETE FROM ${t.table} WHERE ${where}`).run(...args).changes;
+          .run(effectiveTo, ...args).changes;
+        // `<> ? COLLATE BINARY` on the DELETE, not a caseOnly short-circuit.
+        //
+        // Four e2e tables declare their target column COLLATE NOCASE, so on a
+        // case-only rename `WHERE channel = '#Foo'` still matches the row the
+        // UPDATE just rewrote to '#foo' — and the DELETE destroys it. That
+        // silently wiped every E2E session key for the channel. An explicit
+        // BINARY comparison excludes rows already sitting at the destination
+        // while still clearing genuine collision leftovers, which a caseOnly
+        // short-circuit would strand.
+        const dropped = db
+          .prepare(`DELETE FROM ${t.table} WHERE ${where} AND ${t.column} <> ? COLLATE BINARY`)
+          .run(...args, effectiveTo).changes;
         bump(t.table, moved + dropped);
         continue;
       }
@@ -334,7 +386,17 @@ function renameBufferRow(
   to: string,
   caseOnly: boolean,
 ): number {
-  const source = getBuffer(userId, networkId, from);
+  // Raw row, not getBuffer: `toRecord` decrypts the +k envelope and throws for
+  // one sealed under a rotated key id, which would abort a rename that never
+  // reads the key. See storedTarget.
+  const source = db
+    .prepare(
+      `SELECT state, autojoin, key, created_at AS createdAt FROM buffers
+        WHERE user_id = ? AND network_id = ? AND target_folded = ?`,
+    )
+    .get(userId, networkId, foldTarget(from)) as
+    | { state: string; autojoin: number; key: string | null; createdAt: string }
+    | undefined;
   if (!source) return 0;
 
   if (caseOnly) {
@@ -346,7 +408,7 @@ function renameBufferRow(
       .run(to, foldTarget(to), userId, networkId, foldTarget(from)).changes;
   }
 
-  const destination = getBuffer(userId, networkId, to);
+  const destination = storedTarget(userId, networkId, to);
   if (!destination) {
     return db
       .prepare(
@@ -360,6 +422,11 @@ function renameBufferRow(
     .prepare(
       `UPDATE buffers
           SET state      = CASE WHEN ? = 'open' THEN 'open' ELSE state END,
+              -- Paired with state, always: every other reopen path clears
+              -- closed_at too (buffers.reopen), and leaving a stale timestamp on
+              -- an open row is a contradiction the export/import round-trip
+              -- branches on.
+              closed_at  = CASE WHEN ? = 'open' THEN NULL ELSE closed_at END,
               autojoin   = MAX(autojoin, ?),
               key        = COALESCE(key, ?),
               created_at = MIN(created_at, ?)
@@ -367,11 +434,13 @@ function renameBufferRow(
     )
     .run(
       source.state,
+      source.state,
       source.autojoin ? 1 : 0,
-      // Re-encrypting the source key would need the plaintext; carry the stored
-      // envelope instead. COALESCE keeps the destination's own key when it has
-      // one, so this only fills a gap.
-      rawKey(userId, networkId, from),
+      // Carry the stored envelope rather than a plaintext key — re-encrypting
+      // would mean decrypting first, which is what we're avoiding. COALESCE
+      // keeps the destination's own key when it has one, so this only fills a
+      // gap.
+      source.key,
       source.createdAt,
       userId,
       networkId,
@@ -383,14 +452,6 @@ function renameBufferRow(
     .run(userId, networkId, foldTarget(from)).changes;
 
   return merged + dropped;
-}
-
-/** The stored (still-encrypted) channel key envelope, without decrypting it. */
-function rawKey(userId: number, networkId: number, target: string): string | null {
-  const row = db
-    .prepare(`SELECT key FROM buffers WHERE user_id = ? AND network_id = ? AND target_folded = ?`)
-    .get(userId, networkId, foldTarget(target)) as { key: string | null } | undefined;
-  return row?.key ?? null;
 }
 
 /**

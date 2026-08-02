@@ -65,6 +65,11 @@ export interface BufferKeyedTable {
    * forget, not because anything handles them generically.
    */
   listValued?: boolean;
+  /**
+   * Sentinel values in this column that are NOT buffer names and must never be
+   * rewritten, however exactly a target appears to match them.
+   */
+  excludeValues?: readonly string[];
 }
 
 export const BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = [
@@ -166,6 +171,20 @@ export const BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = [
     caseInsensitive: true,
   },
 
+  // E2E auto-trust rules, scoped per channel. The column is `scope` rather than
+  // `channel` and holds either a channel name or the literal sentinel 'global',
+  // which is why it hid from the first version of the drift test — and why it
+  // needs `excludeValues`: a DM buffer whose peer is nicked `global` would
+  // otherwise rewrite the user's network-wide auto-trust rule.
+  {
+    table: 'e2e_autotrust',
+    column: 'scope',
+    scope: ['user_id', 'network_id'],
+    policy: 'destination-wins',
+    caseInsensitive: true,
+    excludeValues: ['global'],
+  },
+
   // ---- List-valued scopes. ----
   // Both hold a CSV of channel GLOBS, not a single exact target, so neither can
   // be rewritten by the whole-column UPDATE every other entry uses. A rule
@@ -225,21 +244,53 @@ export const CURRENT_BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = BUFFER_K
  * singular `channel` matched the e2e tables, the plural did not match anything,
  * and both CSV columns sailed past a test whose whole job was catching them.
  *
+ * `scope` is here for `e2e_autotrust`, which hid from the first version of this
+ * list for the same reason `channels` did — it names a buffer without using any
+ * of the words the list knew about. It costs three exemptions below, which is
+ * the right trade: an exemption is a decision someone wrote down, an omission is
+ * a rename that silently strands rows.
+ *
  * This is a heuristic and its limits are real. It cannot catch a column that
- * names the same concept differently — `instance_network.channels_json` (admin
- * autojoin config) and `chanlist_channels.name` (an ephemeral /LIST cache) are
- * both buffer-name-shaped and both invisible here. Neither is per-user buffer
- * state, so neither belongs in a rename; adding `name` to this list would flag
- * half the schema. If you add a buffer-keyed table, name the column `target`.
+ * names the same concept differently again — `instance_network.channels_json`
+ * (admin autojoin config) and `chanlist_channels.name` (an ephemeral /LIST
+ * cache) are both buffer-name-shaped and both invisible here. Neither is
+ * per-user buffer state, so neither belongs in a rename; adding `name` would
+ * flag half the schema. If you add a buffer-keyed table, name the column
+ * `target`.
  */
-export const BUFFER_TARGET_COLUMN_NAMES: readonly string[] = ['target', 'channel', 'channels'];
+export const BUFFER_TARGET_COLUMN_NAMES: readonly string[] = [
+  'target',
+  'channel',
+  'channels',
+  'scope',
+];
 
 /**
- * Tables that have a column named like a buffer target but genuinely aren't
- * buffer-keyed. Listed explicitly so the drift test stays a real assertion
- * rather than something that gets loosened the first time it fires.
+ * Tables with a column named like a buffer target that genuinely isn't one.
+ * Listed explicitly so the drift test stays a real assertion rather than
+ * something that gets loosened the first time it fires.
  */
-export const NON_BUFFER_TARGET_TABLES: readonly string[] = [];
+export const NON_BUFFER_TARGET_TABLES: readonly string[] = [
+  'api_tokens', // scope = permission scope
+  'system_messages', // scope = message origin ('lurker')
+  'uploader_config', // scope = 'instance' | 'user'
+];
+
+/**
+ * Nick-keyed per-user state. Not buffer-keyed — these attach to a person, not a
+ * buffer — but for a DM the two coincide, so a peer's nick change moves the
+ * buffer and leaves these behind under the old nick.
+ *
+ * Deliberately NOT in the registry: renaming a channel must not touch them, and
+ * whether a nick note should follow its subject through a nick change is a
+ * product decision the DM-rename work has to make. Recorded here so that
+ * decision is made rather than missed.
+ */
+export const NICK_KEYED_TABLES: readonly string[] = [
+  'user_nick_notes',
+  'user_relay_bots',
+  'peer_presence_state',
+];
 
 /** The declared entry for a table, or undefined when it isn't buffer-keyed. */
 export function bufferKeyedTable(table: string): BufferKeyedTable | undefined {
