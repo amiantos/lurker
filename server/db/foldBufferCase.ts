@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type Database from 'better-sqlite3';
+import { CURRENT_BUFFER_KEYED_TABLES } from './bufferKeyedTables.js';
 
 // Case-fold repair for forked buffers (#268 channels, #289/#327 generalization).
 //
@@ -34,11 +35,16 @@ import type Database from 'better-sqlite3';
 // The schema version this fold was last audited against. The schema-version-9
 // migration in index.ts calls foldBufferCase mid-upgrade (before the version row
 // is written), so it can't be gated — but the manual operator script refuses to
-// run unless the DB sits exactly here. A future migration that adds or reshapes
-// a buffer-keyed table must re-check TARGET_TABLES (and the channels/buffer_reads
-// merges) below, then deliberately bump this in lockstep with SCHEMA_VERSION in
-// index.ts — so the script can never silently fold an out-of-date table set.
-export const FOLD_VALIDATED_SCHEMA_VERSION = 9;
+// run unless the DB sits exactly here.
+//
+// It sat at 9 while SCHEMA_VERSION reached 16, which made the operator script
+// refuse to run on every current database. That guard was doing its job: by 16
+// this file was addressing `channels` and `closed_buffers`, both of which
+// schema 16 drops, so a run would have died on "no such table: channels". The
+// tables it names are now existence-gated and derived from BUFFER_KEYED_TABLES,
+// and bufferKeyedTables.test.ts fails when a new buffer-keyed table appears
+// undeclared — so re-auditing is a test failure now, not a memo.
+export const FOLD_VALIDATED_SCHEMA_VERSION = 16;
 
 export type FoldScope = 'channels' | 'all';
 
@@ -69,19 +75,36 @@ export interface FoldReport {
   forks: FoldGroup[];
 }
 
-// Tables keyed by a per-buffer `target` column (channels live in `channels.name`,
-// handled separately). Order matters only for readability; each fold is
-// independent.
-const TARGET_TABLES = [
-  'messages',
-  'input_history',
-  'buffer_reads',
-  'closed_buffers',
-  'pinned_buffers',
-  'nicklist_collapsed',
-  'channel_notify_settings',
-  'user_drafts',
-] as const;
+// Tables this fold rewrites, derived from the one registry rather than kept as a
+// second hand-maintained copy — the copy is what rotted.
+//
+// Two filters, both deliberate:
+//
+//   - COLLATE NOCASE columns are skipped. The e2e tables declare `channel` that
+//     way, so their rows already collapse across casings and there is no fork to
+//     merge. A rename is different and must visit them; a case fold has nothing
+//     to do there.
+//
+//   - `buffers` is skipped. Its lookup key is `target_folded`, so it cannot fork
+//     either, and `buffers.target` is the authoritative display casing
+//     (first-writer-wins) rather than something derived from message counts.
+//     Overwriting it from the message-majority casing would be a behavior
+//     change, not a repair — left alone deliberately. The consequence is that
+//     after a fold the sidebar can show a different casing than the folded
+//     history; both still resolve to the same buffer, because every lookup goes
+//     through the folded key.
+//
+// `channels` is handled separately below (its column is `name`, and it needs a
+// key-preserving merge).
+//
+// This is the CANDIDATE set. Schema 16 drops `closed_buffers`, but the fold runs
+// mid-upgrade while it still exists, so it stays a candidate and every use is
+// filtered through `existing()` against the database actually in hand.
+const CANDIDATE_TARGET_TABLES: readonly string[] = CURRENT_BUFFER_KEYED_TABLES.filter(
+  (t) => !t.caseInsensitive && t.table !== 'buffers' && t.column === 'target',
+)
+  .map((t) => t.table)
+  .concat(['closed_buffers']);
 
 export function foldBufferCase(
   db: Database.Database,
@@ -99,6 +122,16 @@ export function foldBufferCase(
   // channels; 'all' covers every real buffer — every channel prefix (#, &, +, !)
   // and DM nicks — while still excluding the ':'-virtual buffers.
   const pred = (col: string) => (scope === 'all' ? `${col} NOT LIKE ':%'` : `${col} LIKE '#%'`);
+
+  // Tables that exist in THIS database. The fold runs both mid-upgrade (schema
+  // 16, before it drops the legacy tables) and standalone from the operator
+  // script afterwards, so which tables are present is a property of the database
+  // in hand, not of the code. Resolved once — the set can't change under a
+  // single call, and every use below is inside the same transaction.
+  const tableExists = (t: string): boolean =>
+    !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(t);
+  const TARGET_TABLES = CANDIDATE_TARGET_TABLES.filter(tableExists);
+  const hasChannels = tableExists('channels');
 
   // Resolves a row's canonical case from the temp table; matches only off-case
   // rows that have a canonical to fold into (so single-case targets and virtuals
@@ -139,17 +172,21 @@ export function foldBufferCase(
           db.prepare(`SELECT COUNT(*) AS n FROM ${t} WHERE ${needsFold(t)}`).get() as { n: number }
         ).n;
       }
-      rowsAffected['channels'] = (
-        db
-          .prepare(
-            `SELECT COUNT(*) AS n FROM channels
-               WHERE ${pred('name')} AND EXISTS (
-                 SELECT 1 FROM _buf_canon c
-                 WHERE c.network_id = channels.network_id AND c.lkey = lower(channels.name)
-                   AND c.canon <> channels.name)`,
-          )
-          .get() as { n: number }
-      ).n;
+      // Omitted rather than reported as 0 once the table is gone, so the report
+      // distinguishes "nothing to fold" from "not applicable to this schema".
+      if (hasChannels) {
+        rowsAffected['channels'] = (
+          db
+            .prepare(
+              `SELECT COUNT(*) AS n FROM channels
+                 WHERE ${pred('name')} AND EXISTS (
+                   SELECT 1 FROM _buf_canon c
+                   WHERE c.network_id = channels.network_id AND c.lkey = lower(channels.name)
+                     AND c.canon <> channels.name)`,
+            )
+            .get() as { n: number }
+        ).n;
+      }
 
       const variantRows = db
         .prepare(
@@ -199,23 +236,28 @@ export function foldBufferCase(
       // drop the off-case variant. Carrying `key` here is essential — without it
       // the merge would strip the channel key off a case-forked keyed channel
       // and it would fail to auto-rejoin after the next reconnect.
-      db.exec(`
-        INSERT INTO channels (network_id, name, joined, created_at, key)
-          SELECT ch.network_id, c.canon, ch.joined, ch.created_at, ch.key
-          FROM channels ch JOIN _buf_canon c
-            ON c.network_id = ch.network_id AND c.lkey = lower(ch.name)
-          WHERE ${pred('ch.name')} AND c.canon <> ch.name
-        ON CONFLICT(network_id, name) DO UPDATE SET
-          joined = MAX(channels.joined, excluded.joined),
-          created_at = MIN(channels.created_at, excluded.created_at),
-          key = COALESCE(channels.key, excluded.key)
-      `);
-      db.exec(`
-        DELETE FROM channels WHERE ${pred('name')} AND EXISTS (
-          SELECT 1 FROM _buf_canon c
-          WHERE c.network_id = channels.network_id AND c.lkey = lower(channels.name)
-            AND c.canon <> channels.name)
-      `);
+      //
+      // Retired by schema 16 in favor of `buffers`; still reachable because the
+      // v16 migration folds before it drops the table.
+      if (hasChannels) {
+        db.exec(`
+          INSERT INTO channels (network_id, name, joined, created_at, key)
+            SELECT ch.network_id, c.canon, ch.joined, ch.created_at, ch.key
+            FROM channels ch JOIN _buf_canon c
+              ON c.network_id = ch.network_id AND c.lkey = lower(ch.name)
+            WHERE ${pred('ch.name')} AND c.canon <> ch.name
+          ON CONFLICT(network_id, name) DO UPDATE SET
+            joined = MAX(channels.joined, excluded.joined),
+            created_at = MIN(channels.created_at, excluded.created_at),
+            key = COALESCE(channels.key, excluded.key)
+        `);
+        db.exec(`
+          DELETE FROM channels WHERE ${pred('name')} AND EXISTS (
+            SELECT 1 FROM _buf_canon c
+            WHERE c.network_id = channels.network_id AND c.lkey = lower(channels.name)
+              AND c.canon <> channels.name)
+        `);
+      }
 
       // buffer_reads: composite PK. Merge keeping the furthest read pointer and any
       // clear marker, then drop the variant so nothing resurfaces as unread.
@@ -247,16 +289,17 @@ export function foldBufferCase(
 
       // closed_buffers: a stray-cased row was the junk buffer the user closed; the
       // canonical buffer's own open/closed state wins, so drop the off-case rows.
-      db.exec(`DELETE FROM closed_buffers WHERE ${needsFold('closed_buffers')}`);
+      // Retired by schema 16, same as `channels` above.
+      if (TARGET_TABLES.includes('closed_buffers')) {
+        db.exec(`DELETE FROM closed_buffers WHERE ${needsFold('closed_buffers')}`);
+      }
 
       // Remaining per-(user, network, target) state: move to canon, or drop if a
-      // canon row already exists (its state wins).
-      for (const t of [
-        'pinned_buffers',
-        'nicklist_collapsed',
-        'channel_notify_settings',
-        'user_drafts',
-      ]) {
+      // canon row already exists (its state wins). Whatever the registry declares
+      // beyond the tables handled explicitly above — so a newly-added
+      // destination-wins table is folded without touching this loop.
+      const handledExplicitly = ['messages', 'input_history', 'buffer_reads', 'closed_buffers'];
+      for (const t of TARGET_TABLES.filter((n) => !handledExplicitly.includes(n))) {
         db.exec(`UPDATE OR IGNORE ${t} SET target = ${canonExpr(t)} WHERE ${needsFold(t)}`);
         db.exec(`DELETE FROM ${t} WHERE ${needsFold(t)}`);
       }
