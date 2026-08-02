@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type Database from 'better-sqlite3';
-import { CURRENT_BUFFER_KEYED_TABLES } from './bufferKeyedTables.js';
+import { BUFFER_KEYED_TABLES, bufferKeyedTable } from './bufferKeyedTables.js';
 
 // Case-fold repair for forked buffers (#268 channels, #289/#327 generalization).
 //
@@ -85,26 +85,31 @@ export interface FoldReport {
 //     merge. A rename is different and must visit them; a case fold has nothing
 //     to do there.
 //
-//   - `buffers` is skipped. Its lookup key is `target_folded`, so it cannot fork
-//     either, and `buffers.target` is the authoritative display casing
-//     (first-writer-wins) rather than something derived from message counts.
-//     Overwriting it from the message-majority casing would be a behavior
-//     change, not a repair — left alone deliberately. The consequence is that
-//     after a fold the sidebar can show a different casing than the folded
-//     history; both still resolve to the same buffer, because every lookup goes
-//     through the folded key.
+//   - `buffers` is skipped, because it cannot fork (its lookup key is
+//     `target_folded`) and because it is not the fold's to rewrite: post-schema-16
+//     `buffers.target` is the authoritative display casing. Rather than fold it,
+//     the fold now DEFERS to it — see the _buf_canon override in work(), which
+//     takes canon from the registry row when one exists. Getting this backwards
+//     empties the buffer; the override comment has the mechanism.
 //
-// `channels` is handled separately below (its column is `name`, and it needs a
-// key-preserving merge).
+//   - List-valued columns are skipped. `highlight_rules.channels` and
+//     `ignored_masks.channels` hold CSVs of channel globs, and the matcher is
+//     case-insensitive, so a case fold has nothing it must repair there.
 //
-// This is the CANDIDATE set. Schema 16 drops `closed_buffers`, but the fold runs
-// mid-upgrade while it still exists, so it stays a candidate and every use is
-// filtered through `existing()` against the database actually in hand.
-const CANDIDATE_TARGET_TABLES: readonly string[] = CURRENT_BUFFER_KEYED_TABLES.filter(
-  (t) => !t.caseInsensitive && t.table !== 'buffers' && t.column === 'target',
-)
-  .map((t) => t.table)
-  .concat(['closed_buffers']);
+// `channels` (the retired table) is handled separately below — its column is
+// `name`, and it needs a key-preserving merge.
+//
+// This is the CANDIDATE set: schema 16 drops the legacy tables, but the fold
+// runs mid-upgrade while they still exist, so they stay candidates and every use
+// is filtered by `tableExists` against the database actually in hand. Legacy
+// entries come from the registry's own `legacy` flag rather than being named
+// again here — a second hardcoded copy is what rotted the first time.
+const SKIPPED_FROM_FOLD = new Set(['buffers']);
+const foldable = (t: (typeof BUFFER_KEYED_TABLES)[number]): boolean =>
+  t.column === 'target' && !t.caseInsensitive && !t.listValued && !SKIPPED_FROM_FOLD.has(t.table);
+const CANDIDATE_TARGET_TABLES: readonly string[] = BUFFER_KEYED_TABLES.filter(foldable).map(
+  (t) => t.table,
+);
 
 export function foldBufferCase(
   db: Database.Database,
@@ -160,6 +165,42 @@ export function foldBufferCase(
         GROUP BY network_id, target
       ) WHERE rn = 1
     `);
+
+    // Where a `buffers` row exists, ITS casing is canon — overriding the
+    // message-majority pick above.
+    //
+    // This is not a preference. Post-schema-16 `buffers.target` is the display
+    // casing every reader is handed: wsHub's open-buffer path passes `row.target`
+    // straight into buildBufferBacklog, and from there `listMessagesCounted`
+    // matches `target = ?` EXACTLY (messages.ts) — as do the draft, pin and
+    // read-pointer lookups. Only the existence gate in front of it
+    // (`hasMessageForTarget`) is COLLATE NOCASE.
+    //
+    // So folding history to the message-majority casing while leaving
+    // `buffers.target` alone doesn't produce a cosmetic mismatch, it empties the
+    // buffer: the NOCASE gate still says "has messages", the exact-match backlog
+    // query returns zero rows, and the draft and read pointer are orphaned under
+    // a name nothing looks up. Taking canon from `buffers` instead keeps every
+    // consumer pointing at the rows the fold just moved.
+    //
+    // Absent during the schema-16 migration's own call — the fold runs before
+    // `buffers` is populated — so that path keeps the message-majority behavior
+    // it has always had. Same for any buffer with history but no registry row.
+    if (tableExists('buffers')) {
+      db.exec(`
+        UPDATE _buf_canon SET canon = (
+          SELECT b.target FROM buffers b
+           WHERE b.network_id = _buf_canon.network_id
+             AND b.target_folded = _buf_canon.lkey
+           LIMIT 1
+        )
+        WHERE EXISTS (
+          SELECT 1 FROM buffers b
+           WHERE b.network_id = _buf_canon.network_id
+             AND b.target_folded = _buf_canon.lkey
+        )
+      `);
+    }
 
     // ---- Report (computed pre-apply so counts reflect what will change).
     // Skipped entirely when the caller doesn't want it (the migration), since
@@ -225,8 +266,9 @@ export function foldBufferCase(
     }
 
     if (!dryRun) {
-      // id-keyed (target not unique) — straight rewrite. messages_fts only indexes
-      // text, so the AFTER UPDATE trigger reindexes identical text (harmless).
+      // id-keyed (target not unique) — straight rewrite. messages_fts indexes
+      // only `text`, and messages_au is guarded on `text`/`id`, so rewriting
+      // `target` doesn't fire it at all.
       for (const t of ['messages', 'input_history']) {
         db.exec(`UPDATE ${t} SET target = ${canonExpr(t)} WHERE ${needsFold(t)}`);
       }
@@ -295,11 +337,25 @@ export function foldBufferCase(
       }
 
       // Remaining per-(user, network, target) state: move to canon, or drop if a
-      // canon row already exists (its state wins). Whatever the registry declares
-      // beyond the tables handled explicitly above — so a newly-added
-      // destination-wins table is folded without touching this loop.
+      // canon row already exists (its state wins).
+      //
+      // This loop implements destination-wins and NOTHING ELSE, so it asserts
+      // that rather than trusting the filter above to have excluded everything
+      // else. A table declared `merge` carries progress that has to be
+      // reconciled — the registry's own words — and quietly running it through
+      // here would delete that progress with no error and no report line. A new
+      // registry entry either belongs in this loop or fails loudly on the first
+      // fold, which is the only outcome that can't ship silently.
       const handledExplicitly = ['messages', 'input_history', 'buffer_reads', 'closed_buffers'];
       for (const t of TARGET_TABLES.filter((n) => !handledExplicitly.includes(n))) {
+        const policy = bufferKeyedTable(t)?.policy;
+        if (policy !== 'destination-wins') {
+          throw new Error(
+            `foldBufferCase: ${t} is declared policy '${policy}' but reached the ` +
+              `destination-wins loop. Give it explicit handling above, or correct ` +
+              `its policy in bufferKeyedTables.ts.`,
+          );
+        }
         db.exec(`UPDATE OR IGNORE ${t} SET target = ${canonExpr(t)} WHERE ${needsFold(t)}`);
         db.exec(`DELETE FROM ${t} WHERE ${needsFold(t)}`);
       }

@@ -55,6 +55,16 @@ export interface BufferKeyedTable {
    * so every use has to be existence-gated.
    */
   legacy?: boolean;
+  /** Dropping a colliding row leaves a position gap that must be renumbered. */
+  requiresPinRenumber?: boolean;
+  /**
+   * The column holds a LIST of targets (CSV or JSON), not one. A whole-column
+   * rewrite is wrong for these — the value has to be parsed, the matching
+   * element replaced, and the rest left alone — so no generic path may touch
+   * them. Declared here so they are visible to the drift test and impossible to
+   * forget, not because anything handles them generically.
+   */
+  listValued?: boolean;
 }
 
 export const BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = [
@@ -90,13 +100,17 @@ export const BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = [
     policy: 'merge',
   },
 
-  // Sidebar pins. Positions are dense per (user, network), so dropping a
-  // colliding row leaves a gap that has to be renumbered afterwards.
+  // Sidebar pins. A collision drops the source row — there is no progress to
+  // reconcile, only a slot — but positions are dense per (user, network) and
+  // reorderPins assumes 0..n-1, so the drop leaves a gap that must be renumbered
+  // afterwards. That post-step is why this is flagged rather than being a plain
+  // destination-wins table.
   {
     table: 'pinned_buffers',
     column: 'target',
     scope: ['user_id', 'network_id'],
-    policy: 'merge',
+    policy: 'destination-wins',
+    requiresPinRenumber: true,
   },
 
   // Plain per-buffer preferences: nothing to reconcile, the destination wins.
@@ -152,6 +166,32 @@ export const BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = [
     caseInsensitive: true,
   },
 
+  // ---- List-valued scopes. ----
+  // Both hold a CSV of channel GLOBS, not a single exact target, so neither can
+  // be rewritten by the whole-column UPDATE every other entry uses. A rule
+  // scoped to the literal `#old` should follow a rename; one scoped to `#old*`
+  // is a pattern and must not be rewritten blindly.
+  //
+  // Nothing handles them yet — the fold skips them (case-folding a glob is
+  // safe to defer; the matcher is case-insensitive) and renameBuffer will need
+  // bespoke parse-and-replace. They are declared so the gap is visible in the
+  // registry and enforced by the drift test rather than being an omission
+  // nobody notices, which is exactly how the previous list rotted.
+  {
+    table: 'highlight_rules',
+    column: 'channels',
+    scope: ['user_id'],
+    policy: 'merge',
+    listValued: true,
+  },
+  {
+    table: 'ignored_masks',
+    column: 'channels',
+    scope: ['user_id', 'network_id'],
+    policy: 'merge',
+    listValued: true,
+  },
+
   // ---- Retired at schema 16, replaced by the `buffers` registry. ----
   // foldBufferCase runs mid-upgrade, before these are dropped, so it still has
   // to repair them; everything else must skip them. Existence-gated at every
@@ -178,11 +218,21 @@ export const CURRENT_BUFFER_KEYED_TABLES: readonly BufferKeyedTable[] = BUFFER_K
 );
 
 /**
- * Column names that mean "a buffer target" for drift detection. A new table
- * using one of these gets caught by bufferKeyedTables.test.ts; a new table that
- * invents a different name for the same thing does not, so don't.
+ * Column names that mean "a buffer target" for drift detection.
+ *
+ * `channels` is in the list because leaving it out is precisely how
+ * `highlight_rules.channels` and `ignored_masks.channels` stayed invisible: the
+ * singular `channel` matched the e2e tables, the plural did not match anything,
+ * and both CSV columns sailed past a test whose whole job was catching them.
+ *
+ * This is a heuristic and its limits are real. It cannot catch a column that
+ * names the same concept differently — `instance_network.channels_json` (admin
+ * autojoin config) and `chanlist_channels.name` (an ephemeral /LIST cache) are
+ * both buffer-name-shaped and both invisible here. Neither is per-user buffer
+ * state, so neither belongs in a rename; adding `name` to this list would flag
+ * half the schema. If you add a buffer-keyed table, name the column `target`.
  */
-export const BUFFER_TARGET_COLUMN_NAMES: readonly string[] = ['target', 'channel'];
+export const BUFFER_TARGET_COLUMN_NAMES: readonly string[] = ['target', 'channel', 'channels'];
 
 /**
  * Tables that have a column named like a buffer target but genuinely aren't
@@ -190,3 +240,8 @@ export const BUFFER_TARGET_COLUMN_NAMES: readonly string[] = ['target', 'channel
  * rather than something that gets loosened the first time it fires.
  */
 export const NON_BUFFER_TARGET_TABLES: readonly string[] = [];
+
+/** The declared entry for a table, or undefined when it isn't buffer-keyed. */
+export function bufferKeyedTable(table: string): BufferKeyedTable | undefined {
+  return BUFFER_KEYED_TABLES.find((t) => t.table === table);
+}

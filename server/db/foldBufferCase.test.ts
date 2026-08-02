@@ -194,3 +194,69 @@ describe('foldBufferCase', () => {
     expect(targetCounts(net)).toEqual({ '#solo': 3, Carol: 2 });
   });
 });
+
+// The `buffers` registry is the display casing every reader is handed, and the
+// backlog query matches `target` EXACTLY. So on a post-registry database the
+// fold must land history on the casing `buffers` holds — folding to the
+// message-majority casing instead leaves the registry pointing at a name no row
+// carries, and the buffer opens blank.
+describe('canon defers to the buffers registry', () => {
+  function addBufferRow(networkId: number, target: string): void {
+    db.prepare(
+      `INSERT INTO buffers (user_id, network_id, target, target_folded, kind, state)
+       VALUES (?, ?, ?, ?, 'channel', 'open')`,
+    ).run(userId, networkId, target, target.toLowerCase());
+  }
+  /** What the open-buffer path actually runs: exact match on buffers.target. */
+  function backlogCount(networkId: number, registryTarget: string): number {
+    return (
+      db
+        .prepare(`SELECT COUNT(*) AS n FROM messages WHERE network_id = ? AND target = ?`)
+        .get(networkId, registryTarget) as { n: number }
+    ).n;
+  }
+
+  it('folds to the registry casing even when the message majority disagrees', () => {
+    const net = freshNetwork();
+    addBufferRow(net, '#Foo'); // registry says '#Foo'...
+    seed(net, '#Foo', 3);
+    seed(net, '#foo', 900); // ...but the messages overwhelmingly say '#foo'
+
+    const report = foldBufferCase(db, { scope: 'all' });
+
+    expect(report.forks.find((f) => f.lkey === '#foo')?.canonical).toBe('#Foo');
+    expect(targetCounts(net)).toEqual({ '#Foo': 903 });
+    // The assertion that matters: the buffer the user opens is not empty.
+    expect(backlogCount(net, '#Foo')).toBe(903);
+  });
+
+  it('still uses the message majority when no registry row exists', () => {
+    // The schema-16 migration folds BEFORE it populates `buffers`, so this path
+    // has to keep working exactly as it always did.
+    const net = freshNetwork();
+    seed(net, '#Bar', 1);
+    seed(net, '#bar', 5);
+
+    foldBufferCase(db, { scope: 'all' });
+
+    expect(targetCounts(net)).toEqual({ '#bar': 6 });
+  });
+
+  it('carries per-user state onto the registry casing too', () => {
+    const net = freshNetwork();
+    addBufferRow(net, '#Baz');
+    seed(net, '#Baz', 1);
+    seed(net, '#baz', 50);
+    db.prepare(
+      `INSERT INTO user_drafts (user_id, network_id, target, body) VALUES (?, ?, '#baz', 'wip')`,
+    ).run(userId, net);
+
+    foldBufferCase(db, { scope: 'all' });
+
+    const draft = db
+      .prepare(`SELECT target FROM user_drafts WHERE user_id = ? AND network_id = ?`)
+      .get(userId, net) as { target: string } | undefined;
+    // Orphaning this under '#baz' would lose the draft — nothing looks it up.
+    expect(draft?.target).toBe('#Baz');
+  });
+});
