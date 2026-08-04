@@ -14,7 +14,7 @@
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "vitepress": "^2.0.0-alpha.17",
+    "vitepress": "^2.0.0-alpha.18",
     "wrangler": "^4.114.0"
   },
   "allowScripts": {
