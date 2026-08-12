@@ -1107,6 +1107,157 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'the video host until you press it.',
   },
 
+  // ─── Translation ──────────────────────────────────────────────────────
+  // Live message translation (device-local). YOUR DEVICE calls the endpoint you
+  // configure — the Lurker server is never involved and never sees which
+  // messages you translate. That is the whole design: it works with a
+  // local-network translator (Ollama, LM Studio, a self-hosted LibreTranslate)
+  // using credentials only you hold. The trade is disclosed in each
+  // description below, because the description is the entire basis on which
+  // someone decides to turn a knob on: message text is sent to the configured
+  // endpoint.
+  //
+  // These keys configure the translator; the per-conversation reading/posting
+  // switches live in the buffer menu (device-local state, deliberately not
+  // synced — which conversations you translate is as private as the messages).
+  {
+    key: 'chat.translate.backend',
+    label: 'Translation backend',
+    category: 'chat',
+    group: 'translation',
+    type: 'enum',
+    choices: ['off', 'libretranslate', 'openai'],
+    choiceLabels: { off: 'Off', libretranslate: 'LibreTranslate', openai: 'OpenAI-compatible' },
+    default: 'off',
+    description:
+      'Translate messages using a service you configure. "LibreTranslate" is a free, ' +
+      'self-hostable translator; "OpenAI-compatible" works with Ollama, LM Studio, or any ' +
+      'API gateway speaking that protocol. Message text is sent from YOUR DEVICE to the ' +
+      'endpoint below — your Lurker server never sees it. Off hides all translation UI.',
+  },
+  {
+    key: 'chat.translate.endpoint',
+    label: 'Translator endpoint',
+    category: 'chat',
+    group: 'translation',
+    type: 'string',
+    default: '',
+    dependsOn: [{ key: 'chat.translate.backend', in: ['libretranslate', 'openai'] }],
+    description:
+      'Base URL of the translator (e.g. https://translate.example.com, or ' +
+      'http://localhost:11434 for Ollama). For OpenAI-compatible backends, /v1 is ' +
+      'appended automatically when missing. Because your browser calls this endpoint ' +
+      'directly, it must allow cross-origin requests from your Lurker origin.',
+  },
+  {
+    key: 'chat.translate.api_key',
+    label: 'Translator API key',
+    category: 'chat',
+    group: 'translation',
+    type: 'secret',
+    default: '',
+    dependsOn: [{ key: 'chat.translate.backend', in: ['libretranslate', 'openai'] }],
+    description:
+      'Optional. Sent as an api_key field to LibreTranslate, or as a Bearer token to an ' +
+      'OpenAI-compatible backend. Leave empty for keyless services (a local Ollama, or a ' +
+      'public LibreTranslate that requires none).',
+  },
+  {
+    key: 'chat.translate.model',
+    label: 'Translator model',
+    category: 'chat',
+    group: 'translation',
+    type: 'string',
+    default: '',
+    // OpenAI-compatible only: LibreTranslate has no model concept, so showing
+    // this knob there would be a switch that silently does nothing.
+    dependsOn: [{ key: 'chat.translate.backend', in: ['openai'] }],
+    description:
+      'The model an OpenAI-compatible backend should use (e.g. llama3.2, gpt-4o-mini). ' +
+      'Required for that backend — the API refuses a request without one.',
+  },
+  {
+    key: 'chat.translate.target_lang',
+    label: 'Translate into',
+    category: 'chat',
+    group: 'translation',
+    type: 'enum',
+    // A picker, never free-form entry: a typo'd language code fails silently at
+    // the translator, which reads as "translation is broken" with no error to
+    // chase. Codes are ISO-639-1 as LibreTranslate uses them ('zt' =
+    // traditional Chinese in its scheme).
+    choices: [
+      'en',
+      'ar',
+      'cs',
+      'da',
+      'de',
+      'el',
+      'es',
+      'fa',
+      'fi',
+      'fr',
+      'he',
+      'hi',
+      'hu',
+      'id',
+      'it',
+      'ja',
+      'ko',
+      'nl',
+      'no',
+      'pl',
+      'pt',
+      'ro',
+      'ru',
+      'sv',
+      'th',
+      'tr',
+      'uk',
+      'vi',
+      'zh',
+      'zt',
+    ],
+    choiceLabels: {
+      en: 'English',
+      ar: 'Arabic',
+      cs: 'Czech',
+      da: 'Danish',
+      de: 'German',
+      el: 'Greek',
+      es: 'Spanish',
+      fa: 'Persian',
+      fi: 'Finnish',
+      fr: 'French',
+      he: 'Hebrew',
+      hi: 'Hindi',
+      hu: 'Hungarian',
+      id: 'Indonesian',
+      it: 'Italian',
+      ja: 'Japanese',
+      ko: 'Korean',
+      nl: 'Dutch',
+      no: 'Norwegian',
+      pl: 'Polish',
+      pt: 'Portuguese',
+      ro: 'Romanian',
+      ru: 'Russian',
+      sv: 'Swedish',
+      th: 'Thai',
+      tr: 'Turkish',
+      uk: 'Ukrainian',
+      vi: 'Vietnamese',
+      zh: 'Chinese (simplified)',
+      zt: 'Chinese (traditional)',
+    },
+    default: 'en',
+    dependsOn: [{ key: 'chat.translate.backend', in: ['libretranslate', 'openai'] }],
+    description:
+      'The language incoming messages are translated into, and the default language ' +
+      'outgoing messages are translated to when posting translation is enabled for a ' +
+      'conversation.',
+  },
+
   // ─── Connection ───────────────────────────────────────────────────────
   {
     key: 'chat.quit_message',
