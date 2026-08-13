@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # Stage 1: Build Vue client
-FROM node:24-slim@sha256:cd84903a12dbd26b46f1f3b8144a2568c41c5d37ddd0c7a80a34c7a19786b35f AS vue-builder
+FROM node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS vue-builder
 
 WORKDIR /app/vue_client
 
@@ -37,7 +37,7 @@ RUN npm run build
 #
 # The digest is refreshed by dependabot; see .github/dependabot.yml, which
 # also explains why tag bumps here are deliberately not automated.
-FROM node:24-slim@sha256:cd84903a12dbd26b46f1f3b8144a2568c41c5d37ddd0c7a80a34c7a19786b35f AS server-deps
+FROM node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS server-deps
 
 WORKDIR /app
 
@@ -45,7 +45,7 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 
 # Stage 3: Runtime image
-FROM node:24-slim@sha256:cd84903a12dbd26b46f1f3b8144a2568c41c5d37ddd0c7a80a34c7a19786b35f
+FROM node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
 
 WORKDIR /app
 
