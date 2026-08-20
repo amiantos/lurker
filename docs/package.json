@@ -15,7 +15,7 @@
   },
   "devDependencies": {
     "vitepress": "^2.0.0-alpha.19",
-    "wrangler": "^4.122.0"
+    "wrangler": "^4.123.0"
   },
   "allowScripts": {
     "esbuild": true,
