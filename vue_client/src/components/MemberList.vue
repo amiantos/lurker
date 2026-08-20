@@ -51,6 +51,7 @@ import {
   prefixClass as modePrefixClass,
 } from '../utils/memberPrefix.js';
 import IgnoreModal from './IgnoreModal.vue';
+import { useBufferKey } from '../composables/useActiveBuffer.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -60,7 +61,8 @@ const ignores = useIgnoresStore();
 const modalMember = ref<BufferMember | null>(null);
 const listEl = ref<HTMLElement | null>(null);
 
-const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
+const paneKey = useBufferKey();
+const buffer = computed(() => (paneKey.value ? buffers.byKey(paneKey.value) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
 const selfNick = computed(() => {
   const b = buffer.value;
@@ -76,8 +78,11 @@ const selfModes = computed<string[]>(() => {
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
 
+// This pane's buffer, not the app's active one: a member list renders per pane,
+// so keying the reset on activeKey scrolled EVERY nicklist back to the top
+// whenever focus moved between panes.
 watch(
-  () => networks.activeKey,
+  paneKey,
   () => {
     if (listEl.value) listEl.value.scrollTop = 0;
   },

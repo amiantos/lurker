@@ -333,7 +333,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import type { CSSProperties, ComponentPublicInstance } from 'vue';
+import type { CSSProperties, ComponentPublicInstance, Ref } from 'vue';
 import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -343,13 +343,8 @@ import { useRelayBotsStore } from '../stores/relayBots.js';
 import { socketSend } from '../composables/useSocket.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useViewport } from '../composables/useViewport.js';
-import {
-  setStuckToBottom,
-  bumpNewBelow,
-  resetScrollState,
-  setUnreadAnchor,
-  useScrollState,
-} from '../composables/useScrollState.js';
+import { useScrollState } from '../composables/useScrollState.js';
+import { useBufferKey } from '../composables/useActiveBuffer.js';
 import type { RenderSegment } from '../utils/nickColor.js';
 import {
   formatTimestamp,
@@ -382,7 +377,7 @@ import type { MemberContext, MemberLike } from '../composables/useMemberActions.
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
-import { setViewedBuffer } from '../composables/useViewedBuffer.js';
+import { retainViewedBuffer, releaseViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 
 // Extended BufferMessage fields accessed in the template and script
@@ -508,7 +503,18 @@ const tsFormat = computed(() =>
 
 const scroller = ref<HTMLElement | null>(null);
 const stickToBottom = ref(true);
-const { scrollToBottomToken, scrollToUnreadToken } = useScrollState();
+// Which buffer this list renders: the pane's, or the global active buffer when
+// this list isn't inside a pane. Everything below keys off `paneKey`, never
+// networks.activeKey directly, so N lists can be alive at once.
+const paneKey = useBufferKey();
+const {
+  scrollToBottomToken,
+  scrollToUnreadToken,
+  setStuckToBottom,
+  bumpNewBelow,
+  reset: resetScrollState,
+  setUnreadAnchor,
+} = useScrollState();
 
 // Unread-divider visibility tracking. The divider is pinned for the whole
 // visit (dividerAfterId snapshot). The "Jump to unread" button exists to catch
@@ -600,7 +606,7 @@ function setUnreadDividerEl(el: Element | ComponentPublicInstance | null): void 
   else if (!next) setUnreadAnchor(null);
 }
 
-const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
+const buffer = computed(() => (paneKey.value ? buffers.byKey(paneKey.value) : null));
 const messages = computed(() => buffer.value?.messages || []);
 
 // "Loading messages…" vs "No messages yet.": an empty list whose buffer is
@@ -1977,12 +1983,14 @@ watch(
 );
 
 // immediate: true handles the mobile case where MessageList is v-if'd out
-// until the user taps a buffer — by the time we mount, activeKey is already
-// set, so a plain (lazy) watcher would never see it change. The first
+// until the user taps a buffer — by the time we mount, the buffer key is
+// already set, so a plain (lazy) watcher would never see it change. The first
 // nextTick after setup resolves after the initial render, so scroller.value
-// is populated by the time scrollToBottom runs.
+// is populated by the time scrollToBottom runs. Inside a windowed pane the key
+// never changes, so this fires once at mount and the resets are the pane's
+// entry scroll.
 watch(
-  () => networks.activeKey,
+  paneKey,
   async () => {
     stickToBottom.value = true;
     unreadSeen = false;
@@ -2006,10 +2014,31 @@ watch(compactMode, async () => {
   if (stickToBottom.value) scrollToBottom();
 });
 
+// The scroll-request tokens are PER-BUFFER counters, so they only mean "the
+// user asked" while the buffer stays put: changing buffer re-resolves the
+// computed to another buffer's count, which can move it in either direction and
+// is not a request. (A bare `token > previous` test isn't enough — switching to
+// a buffer whose count happens to be higher reads as an increase.) So a change
+// counts only when the key it belongs to is the same one we last saw it under.
+//
+// Not split-only: this fires in the plain single-pane shell too, where clicking
+// "jump to unread" in one buffer and then switching to another used to run the
+// new buffer's jump unrequested — overriding its fresh scroll-to-bottom, or
+// tripping an unasked-for loadAround.
+function onScrollRequest(token: Readonly<Ref<number>>, run: () => void): void {
+  let seen = { key: paneKey.value, token: token.value };
+  watch([paneKey, token], () => {
+    const now = { key: paneKey.value, token: token.value };
+    const requested = now.key === seen.key && now.token > seen.token;
+    seen = now;
+    if (requested) run();
+  });
+}
+
 // StatusBar's "Return to present ↓" click increments scrollToBottomToken.
 // Watching the token (rather than wiring a callback) keeps the composable
 // stateless and avoids leaking refs to MessageList's DOM out of the component.
-watch(scrollToBottomToken, async () => {
+onScrollRequest(scrollToBottomToken, async () => {
   await nextTick();
   stickToBottom.value = true;
   setStuckToBottom(true);
@@ -2036,7 +2065,7 @@ function scrollDividerIntoView() {
 // the history pager, and stalls before reaching the seam (issue #216). In that
 // case fetch a slice centered on the boundary first — the same loadAround path
 // jump-to-message uses — then center the real divider once it lands.
-watch(scrollToUnreadToken, async () => {
+onScrollRequest(scrollToUnreadToken, async () => {
   await nextTick();
   if (!scroller.value) return;
   const buf = buffer.value;
@@ -2050,7 +2079,7 @@ watch(scrollToUnreadToken, async () => {
   if (dividerPinnedToTop && buf.networkId != null && buf.hasMoreOlder && !buf.loadingHistory) {
     stickToBottom.value = false;
     setStuckToBottom(false);
-    const wantKey = networks.activeKey;
+    const wantKey = paneKey.value;
     buffers.loadAround(buf.networkId, buf.target, dividerAfterId);
     // loadAround rolls loadingHistory back to false synchronously if the send
     // failed (offline) — nothing will land to drive the scroll, and there's no
@@ -2071,7 +2100,7 @@ watch(scrollToUnreadToken, async () => {
         stop();
         // Bail if the user switched buffers while the slice was in flight —
         // the scroller now belongs to a different buffer.
-        if (networks.activeKey !== wantKey) return;
+        if (paneKey.value !== wantKey) return;
         await nextTick();
         scrollDividerIntoView();
       },
@@ -2103,11 +2132,18 @@ function onScrollerResize() {
 // "looking at this buffer" apart from networks.activeKey's looser "last-opened
 // buffer" (see useHighlightNotifier.shouldNotifyInApp). This component mounts
 // only while a buffer's messages are actually rendered, so its lifecycle is
-// the signal: follow activeKey while mounted, clear on unmount (Settings
-// route, mobile list/members screen, system console).
+// the signal: retain our buffer while mounted, release on unmount (Settings
+// route, mobile list/members screen, system console, closed window).
+//
+// Refcounted rather than a single "the viewed buffer" slot, because with
+// windowed panes several message lists are mounted at once and each is looking
+// at a buffer of its own.
 watch(
-  () => networks.activeKey,
-  (key) => setViewedBuffer(key),
+  paneKey,
+  (key, prev) => {
+    if (prev) releaseViewedBuffer(prev);
+    retainViewedBuffer(key);
+  },
   { immediate: true },
 );
 
@@ -2140,7 +2176,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  setViewedBuffer(null);
+  releaseViewedBuffer(paneKey.value);
   if (scrollerObserver) {
     scrollerObserver.disconnect();
     scrollerObserver = null;

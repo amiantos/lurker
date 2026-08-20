@@ -16,7 +16,7 @@
         class="net-head"
         :class="{ active: isSystemActive }"
         title="Open Lurker system buffer"
-        @click="selectSystem"
+        @click="selectSystem($event)"
       >
         <span
           class="indicator"
@@ -112,7 +112,7 @@
               <li
                 :class="rowClasses(row.buf, row.networkId)"
                 :title="sectionRowTitle(row)"
-                @click="select(row.networkId, row.buf.target)"
+                @click="select(row.networkId, row.buf.target, $event)"
                 @contextmenu.prevent="onBufferContextMenu($event, row.buf)"
               >
                 <span class="label"
@@ -159,7 +159,7 @@
             class="net-head"
             :class="netHeadClasses(net.id)"
             :title="`Open ${net.name} server buffer`"
-            @click="select(net.id, serverTarget(net.id))"
+            @click="select(net.id, serverTarget(net.id), $event)"
             @contextmenu.prevent="
               networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)
             "
@@ -228,7 +228,7 @@
               <li
                 :class="rowClasses(buf, net.id)"
                 :title="dmTitle(buf)"
-                @click="select(net.id, buf.target)"
+                @click="select(net.id, buf.target, $event)"
                 @contextmenu.prevent="onBufferContextMenu($event, buf)"
               >
                 <span class="label">{{ labelFor(buf) }}</span>
@@ -275,7 +275,7 @@
               :key="buf.target"
               :class="rowClasses(buf, net.id)"
               :title="dmTitle(buf)"
-              @click="select(net.id, buf.target)"
+              @click="select(net.id, buf.target, $event)"
               @contextmenu.prevent="onBufferContextMenu($event, buf)"
             >
               <span class="label">{{ labelFor(buf) }}</span>
@@ -349,7 +349,8 @@ import {
 import { useRouter } from 'vue-router';
 import draggable from 'vuedraggable';
 import { useNetworksStore, type Network, type PeerPresenceEntry } from '../stores/networks.js';
-import { useBuffersStore, type Buffer } from '../stores/buffers.js';
+import { useBuffersStore, bufferKey, type Buffer } from '../stores/buffers.js';
+import { useSplitsStore } from '../stores/splits.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { connected as lurkerConnected } from '../composables/useSocket.js';
 import { useDraftStore } from '../stores/drafts.js';
@@ -372,6 +373,7 @@ import { bufferSortKey } from '../utils/bufferOrder.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const splits = useSplitsStore();
 const drafts = useDraftStore();
 const pins = usePinsStore();
 const favorites = useFavoritesStore();
@@ -419,7 +421,12 @@ const systemUnread = computed(() =>
   countFor(systemBuf.value?.unread || 0, systemBuf.value?.highlighted || 0),
 );
 const systemHighlights = computed(() => systemBuf.value?.highlighted || 0);
-function selectSystem(): void {
+function selectSystem(e?: MouseEvent): void {
+  if (e && openAlongside(e)) {
+    splits.addPane(SYSTEM_KEY);
+    buffers.activate(null, SYSTEM_KEY, { retainPrevious: true });
+    return;
+  }
   buffers.activate(null, SYSTEM_KEY);
 }
 // The LURKER header's corner control collapses the channel list. (Settings
@@ -741,7 +748,27 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
   };
 }
 
-function select(networkId: number, target: string): void {
+// Cmd (macOS) / Ctrl (elsewhere) + click opens the buffer in a pane of its own
+// beside the ones already up, rather than replacing the focused pane. Same
+// modifier test the keyboard shortcuts use.
+//
+// No macOS special-case for Ctrl: there, Ctrl+click dispatches `contextmenu`
+// and no `click` at all, so this handler never sees it and the row's context
+// menu opens as it always has. On Windows/Linux Ctrl+click is a plain click
+// with ctrlKey set, and there's no contextmenu to compete with.
+function openAlongside(e: MouseEvent): boolean {
+  return e.metaKey || e.ctrlKey;
+}
+
+function select(networkId: number, target: string, e?: MouseEvent): void {
+  if (e && openAlongside(e)) {
+    splits.addPane(bufferKey(networkId, target));
+    // retainPrevious: the pane we were in is still on screen, so it keeps its
+    // unread divider and any detached slice. The splits store owns the teardown
+    // of whatever actually leaves.
+    buffers.activate(networkId, target, { retainPrevious: true });
+    return;
+  }
   buffers.activate(networkId, target);
 }
 

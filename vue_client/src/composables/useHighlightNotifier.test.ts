@@ -15,11 +15,12 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from 'vite
 let push: Mock<(t: unknown) => void>;
 let effective: Mock<(key: string) => unknown>;
 
-// Load a fresh notifyForEvent with the stores it reads mocked. `viewed` is the
-// buffer key currently on screen (default '' so the event's buffer is never the
-// viewed one); `hidden` models a background tab; `enabled` toggles the per-kind
-// master switch. Sound is forced off so no Audio is constructed.
-async function load(opts: { viewed?: string; hidden?: boolean; enabled?: boolean } = {}) {
+// Load a fresh notifyForEvent with the stores it reads mocked. `viewed` lists
+// the buffer keys on screen — a list, not one key, because a split layout puts
+// several message lists up at once (default empty, so the event's buffer is
+// never a viewed one); `hidden` models a background tab; `enabled` toggles the
+// per-kind master switch. Sound is forced off so no Audio is constructed.
+async function load(opts: { viewed?: string[]; hidden?: boolean; enabled?: boolean } = {}) {
   vi.resetModules();
   push = vi.fn<(t: unknown) => void>();
   effective = vi.fn<(key: string) => unknown>((key: string) => {
@@ -32,7 +33,9 @@ async function load(opts: { viewed?: string; hidden?: boolean; enabled?: boolean
   vi.doMock('../stores/networks.js', () => ({
     useNetworksStore: () => ({ networkById: () => ({ name: 'libera' }) }),
   }));
-  vi.doMock('./useViewedBuffer.js', () => ({ viewedBuffer: () => opts.viewed ?? '' }));
+  vi.doMock('./useViewedBuffer.js', () => ({
+    isBufferViewed: (key: string) => (opts.viewed ?? []).includes(key),
+  }));
   vi.stubGlobal('document', { hidden: opts.hidden ?? false });
   return import('./useHighlightNotifier.js');
 }
@@ -96,9 +99,25 @@ describe('notifyForEvent notify gate', () => {
   });
 
   it('does not toast when viewing the event’s own buffer', async () => {
-    const { notifyForEvent } = await load({ viewed: '1::bob' });
+    const { notifyForEvent } = await load({ viewed: ['1::bob'] });
     notifyForEvent(dm());
     expect(push).not.toHaveBeenCalled();
+  });
+
+  // Split view: the event's buffer is one of several on screen, not the only
+  // one. Suppression asks "can the user see it right now", so a second pane
+  // showing something else must not turn the toast back on.
+  it('does not toast when the event’s buffer is one of several on screen', async () => {
+    const { notifyForEvent } = await load({ viewed: ['1::#ops', '1::bob'] });
+    notifyForEvent(dm());
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  // The converse: panes are open, but none of them is the event's buffer.
+  it('toasts when the open panes do not include the event’s buffer', async () => {
+    const { notifyForEvent } = await load({ viewed: ['1::#ops', '1::#dev'] });
+    notifyForEvent(dm());
+    expect(push).toHaveBeenCalled();
   });
 
   it('respects the per-kind enabled toggle even when notify is true', async () => {

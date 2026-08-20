@@ -5,6 +5,7 @@ import { defineStore } from 'pinia';
 import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
+import { isBufferViewed } from '../composables/useViewedBuffer.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget } from '../../../shared/channels.js';
@@ -597,7 +598,21 @@ export const useBuffersStore = defineStore('buffers', {
         // `bob` while the user sits in the `Bob` buffer reads as inactive and
         // the divider/read-sync below silently skips (#327). Mirrors the same
         // resolve-then-compare applyReadState does.
-        const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
+        // "The user is sitting in this buffer" is what this gates, and in a
+        // split frame that stopped being the same as "this is THE active
+        // buffer": a side pane is on screen and being read while another pane
+        // holds focus. Left as an activeKey test, such a pane accrued an unread
+        // badge and a growing divider and never advanced the server's read
+        // pointer — while its toasts WERE suppressed, because suppression asks
+        // the viewed set. Ask the same question here so the two halves of "can
+        // the user see this" cannot disagree.
+        //
+        // activeKey stays beside it for the states where no message list is
+        // mounted at all yet the buffer is still the active one — the Settings
+        // route and the mobile list/members screens, where this has always
+        // marked read.
+        const key = bufferKey(buf.networkId, buf.target);
+        const isActive = isBufferViewed(key) || networks.activeKey === key;
         if (isActive) {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
@@ -1436,13 +1451,46 @@ export const useBuffersStore = defineStore('buffers', {
     unclearBuffer(networkId: number | string, target: string) {
       socketSend({ type: 'unclear-buffer', networkId, target, bufferId: idFor(networkId, target) });
     },
+    // "The user stopped looking at this buffer." Drops the visit-scoped local
+    // state: the pinned unread divider, the unread/highlight counters, and any
+    // detached history slice.
+    //
+    // Split out of activate() because focus and visibility are the same thing in
+    // a single-pane shell and different things in a split one. With one pane,
+    // switching away IS stopping looking, so activate() calls this for the
+    // previous buffer. With a split, a pane you focused away from is still on
+    // screen and still being read — what means "stopped looking" there is
+    // closing that pane, so the splits store calls this itself.
+    leaveBuffer(bufKey: string) {
+      const prev = this.buffers[bufKey];
+      if (!prev) return;
+      prev.dividerAfterId = null;
+      prev.unread = 0;
+      prev.highlighted = 0;
+      prev.highlightsCapped = false;
+      // Carrying a detached slice across buffer switches gets weird fast
+      // (the user can't see the detach status on a buffer they aren't
+      // viewing, the live counter ticks invisibly, the next entry has
+      // to remember whether to render the slice or live). Drop it and
+      // wipe the slice on switch-away — re-entry then reseeds from
+      // snapshot or the next history fetch as if it were fresh.
+      if (prev.detached) this.clearDetached(prev.networkId, prev.target, { wipeMessages: true });
+    },
     // Switch to a buffer. We mark the entered buffer read on focus-IN (not
     // on focus-OUT of the previous one) so that a tab close / reload / lost
     // socket before switch-away still leaves the buffer marked read — no
     // phantom divider on the next session. The previous buffer's pointer
     // is already current because pushMessage keeps it synced live while
     // focused (see pushMessage), so leaving it just drops local state.
-    activate(networkId: number | string | null, target: string) {
+    //
+    // `retainPrevious` suppresses the leave-teardown of the outgoing buffer, for
+    // callers where focusing elsewhere doesn't mean the old buffer left the
+    // screen — i.e. a split layout, which owns that lifecycle itself.
+    activate(
+      networkId: number | string | null,
+      target: string,
+      opts: { retainPrevious?: boolean } = {},
+    ) {
       const networks = useNetworksStore();
       // Resolve to the canonical open buffer first (case-insensitive): a DM
       // activated from a member-list nick, /query, the profile modal, or a
@@ -1458,23 +1506,17 @@ export const useBuffersStore = defineStore('buffers', {
       // (networkId null) and the usual `${networkId}::${target}` otherwise.
       const newKey = bufferKey(networkId, canonTarget);
       const prevKey = networks.activeKey;
-      if (prevKey && prevKey !== newKey) {
-        const prev = this.buffers[prevKey];
-        if (prev) {
-          prev.dividerAfterId = null;
-          prev.unread = 0;
-          prev.highlighted = 0;
-          prev.highlightsCapped = false;
-          // Carrying a detached slice across buffer switches gets weird fast
-          // (the user can't see the detach status on a buffer they aren't
-          // viewing, the live counter ticks invisibly, the next entry has
-          // to remember whether to render the slice or live). Drop it and
-          // wipe the slice on switch-away — re-entry then reseeds from
-          // snapshot or the next history fetch as if it were fresh.
-          if (prev.detached)
-            this.clearDetached(prev.networkId, prev.target, { wipeMessages: true });
-        }
-      }
+      // Activating a buffer that is ALREADY rendered on screen is a focus
+      // change, not a switch — so the outgoing buffer hasn't gone anywhere and
+      // must keep its divider and counters. That case only exists in a split
+      // layout (focus pane B while pane A stays up), and it arrives through the
+      // paths the splits store doesn't own: the quick switcher, /query, a
+      // jump-to-message, a deep link. With one pane the only on-screen buffer
+      // IS the active one, so this never fires — prevKey === newKey is already
+      // excluded on the next line.
+      const focusingVisiblePane = isBufferViewed(newKey);
+      if (!opts.retainPrevious && !focusingVisiblePane && prevKey && prevKey !== newKey)
+        this.leaveBuffer(prevKey);
       networks.setActive(networkId, canonTarget);
       const buf = ensureBuffer(this, networkId, canonTarget);
       // Snapshot the divider from the CURRENT lastReadId before we advance

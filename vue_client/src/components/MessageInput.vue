@@ -193,7 +193,8 @@ import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
-import { requestScrollToBottom } from '../composables/useScrollState.js';
+import { useScrollState } from '../composables/useScrollState.js';
+import { useBufferKey } from '../composables/useActiveBuffer.js';
 import { setComposingState } from '../composables/useComposing.js';
 import {
   chunkCountForSay,
@@ -337,13 +338,28 @@ const emojiPickerOpen = ref(false);
 const emojiPickerQuery = ref('');
 const emojiPickerEl = ref<InstanceType<typeof EmojiPicker> | null>(null);
 
-const active = computed(() => networks.activeBuffer);
+const paneKey = useBufferKey();
+const active = computed(() => networks.bufferFor(paneKey.value));
+// Sending a line snaps this pane's message list back to the live tail.
+const { requestScrollToBottom } = useScrollState();
 
 // The app-scoped system buffer (issue #355) has no network, so networks
-// .activeBuffer reports null for it. It accepts slash commands, not chat, so it
+// .bufferFor reports null for it. It accepts slash commands, not chat, so it
 // gets a local-only input ref rather than a server-synced per-buffer draft (no
 // network to key a draft row to, and command typing needn't sync cross-device).
-const isSystemBuffer = computed(() => networks.activeKey === SYSTEM_KEY);
+const isSystemBuffer = computed(() => paneKey.value === SYSTEM_KEY);
+
+// Is this the composer the user is actually typing in? A split frame mounts one
+// MessageInput per pane, but three pieces of composer state are module-level
+// singletons: the overlay popovers (useComposerOverlay), the composing chip
+// (useComposing), and the uploads insert-URL bus. That shape is still right —
+// there is only ever one FOCUSED composer — but "the only one mounted" is no
+// longer the same statement, so each of them gates on this instead.
+//
+// activeKey follows pane focus, so this is true for exactly one pane; with a
+// single pane (and on mobile, where nothing provides a key) it is always true,
+// which is why none of those three change behavior outside a split.
+const isFocusedComposer = computed(() => paneKey.value === networks.activeKey);
 const systemText = ref('');
 
 // Input contents are server-side per-buffer drafts — switching channels swaps
@@ -611,7 +627,13 @@ function multilineCountFor(raw: string): number {
 // for the live keystroke path and the bare buffer-switch so both stay in sync.
 // On a multiline network `chunks` carries the batch (message) count and
 // `multiline` is set; otherwise it's the legacy wire-PRIVMSG estimate.
+//
+// Focused composer only: the composing state is a module-level singleton, so an
+// unfocused pane publishing would paint its SPLIT/FLOOD chip across every status
+// bar — and a pane repointing to an empty draft would zero the indicator of the
+// pane actually being typed in.
 function publishComposing(raw: string): void {
+  if (!isFocusedComposer.value) return;
   const batches = multilineCountFor(raw);
   if (batches > 0) {
     setComposingState({ chunks: batches, isAction: false, multiline: true });
@@ -1891,6 +1913,11 @@ onBeforeUnmount(() => {
 });
 
 function insertUrlAtCaret(url: string): void {
+  // onInsertUrl is a broadcast to every subscriber, and every mounted composer
+  // subscribes. Without this, finishing one upload pasted the URL into all four
+  // panes' drafts at once — so the link sat in channels the user never meant to
+  // put it in, waiting to be sent — and every composer called focus().
+  if (!isFocusedComposer.value) return;
   const el = inputEl.value;
   const current = text.value;
   if (!el) {
@@ -1920,9 +1947,16 @@ let unsubInsert: (() => boolean) | null = null;
 onMounted(() => {
   unsubInsert = onInsertUrl(insertUrlAtCaret);
   if (typeof window !== 'undefined') window.addEventListener('pagehide', onPagehide);
-  // Route picks from StatusBar's overlay-rendered popovers back to the
-  // textarea-mutation logic that owns the draft. Re-registered on every
-  // mount so closures bind to the live `text`/`inputEl`.
+  if (isFocusedComposer.value) claimComposerOverlay();
+});
+
+// Route picks from StatusBar's overlay-rendered popovers back to the
+// textarea-mutation logic that owns the draft. The handler slots are a
+// singleton, so with several panes mounted the LAST mount used to win
+// regardless of where the user was typing: an emoji picked in the focused pane
+// spliced itself into a different pane's textarea. Claimed on focus instead, so
+// the composer that owns the overlay is the one being typed in.
+function claimComposerOverlay(): void {
   setComposerOverlayHandlers({
     onNickSelect: onStripSelect,
     onEmojiSelect,
@@ -1933,6 +1967,17 @@ onMounted(() => {
     onPickCamera,
     onAddress: addressInComposer,
   });
+}
+
+watch(isFocusedComposer, (focused) => {
+  if (!focused) return;
+  claimComposerOverlay();
+  // Taking the overlay over must not inherit the previous pane's open strip —
+  // its items belong to that pane's buffer and its picks would now splice here.
+  closeStrip();
+  closeEmojiStrip();
+  closeEmojiPicker();
+  closeColorPicker();
 });
 
 function blobFromClipboardItem(item: DataTransferItem): File | null {

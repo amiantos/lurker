@@ -5,6 +5,7 @@ import type { ComputedRef } from 'vue';
 import { computed } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useBufferKey } from './useActiveBuffer.js';
 import { prefixOf } from '../utils/memberPrefix.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 
@@ -22,14 +23,20 @@ export interface SelfLabelState {
 // mode suffix (issue #415). Plus a separate away label like "(brb)" when /away
 // is set.
 //
-// The channel-prefix is the user's own op/voice marker derived from the
-// active channel's member list. For DMs / server buffers it's empty.
+// The channel-prefix is the user's own op/voice marker derived from THIS
+// buffer's member list. For DMs / server buffers it's empty.
+//
+// Resolved through useBufferKey(), not networks.activeKey: the prompt renders
+// once per composer, and a composer belongs to a pane. Two panes on different
+// networks would otherwise both show the focused pane's nick — and its channel
+// op marker, so a DM's prompt could wear an `@` borrowed from another channel.
 export function useSelfLabel(): SelfLabelState {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
+  const paneKey = useBufferKey();
 
-  const active = computed(() => networks.activeBuffer);
-  const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
+  const active = computed(() => networks.bufferFor(paneKey.value));
+  const buffer = computed(() => (paneKey.value ? buffers.byKey(paneKey.value) : null));
 
   const channelPrefix = computed(() => {
     const buf = buffer.value;

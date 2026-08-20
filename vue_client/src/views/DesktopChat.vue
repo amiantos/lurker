@@ -4,15 +4,7 @@
 -->
 
 <template>
-  <div
-    class="chat"
-    :class="{
-      'sidebar-collapsed': !showChannels,
-      'members-collapsed': !showMembers,
-      'system-active': isSystemBuffer,
-    }"
-    @click="onChatClick"
-  >
+  <div class="chat" :class="{ 'sidebar-collapsed': !showChannels }" @click="onChatClick">
     <aside class="sidebar" :class="{ collapsed: !showChannels }">
       <!-- The "lurker" header + connection dot live in BufferList's LURKER row
            (#355); the collapse control lives there too. When collapsed the list
@@ -82,155 +74,32 @@
       </div>
     </aside>
 
-    <!-- Topic bar: always rendered so the back/forward history controls (#411)
-         are present in every state, even before any buffer is selected. The nav
-         cluster is anchored at the far left, left of the buffer title; the meta
-         (name + topic) and per-buffer actions render conditionally beside it. -->
-    <header class="topic">
-      <div class="topic-nav">
-        <button
-          type="button"
-          class="link nav-btn"
-          title="Back"
-          aria-label="Back"
-          :disabled="!navHistory.canBack"
-          @click="navHistory.back()"
-        >
-          <i class="fa-solid fa-angle-left"></i>
-        </button>
-        <button
-          type="button"
-          class="link nav-btn"
-          title="Forward"
-          aria-label="Forward"
-          :disabled="!navHistory.canForward"
-          @click="navHistory.forward()"
-        >
-          <i class="fa-solid fa-angle-right"></i>
-        </button>
-      </div>
-      <div class="topic-meta">
-        <span v-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
-        <template v-if="active && topic">
-          <!-- A channel topic is user prose: auto-link it and open the full
-               view on click. A DM's pseudo-topic is the peer's ident@host —
-               an identity string, not prose; auto-linking turns the host into
-               a bogus email/URL link, so it renders as plain static text. -->
-          <button
-            v-if="isChannel"
-            type="button"
-            class="topic-text"
-            title="View full topic"
-            @click="showTopic = true"
-          >
-            <LinkedText :text="topic" />
-          </button>
-          <span v-else class="topic-text">{{ topic }}</span>
-        </template>
-      </div>
-      <div class="topic-actions">
-        <template v-if="active && !isVirtual">
-          <!-- Search & highlights scoped to this buffer (channels/DMs only) —
-               parity with the mobile topic bar. The server buffer has no
-               per-buffer scope, so it's excluded. -->
-          <template v-if="!isServerBuffer">
-            <button
-              type="button"
-              class="link"
-              title="Search this buffer"
-              aria-label="Search this buffer"
-              @click="openSearch(true)"
-            >
-              <i class="fa-solid fa-magnifying-glass"></i>
-            </button>
-            <button
-              type="button"
-              class="link"
-              title="Highlights in this buffer"
-              aria-label="Highlights in this buffer"
-              @click="openHighlights(true)"
-            >
-              <i class="fa-regular fa-bell"></i>
-            </button>
-          </template>
-          <template v-if="isServerBuffer">
-            <button
-              type="button"
-              class="link"
-              title="Join channel"
-              aria-label="Join channel"
-              :disabled="serverConnectionState !== 'connected'"
-              @click="active && joinChannelModal.open(active.networkId)"
-            >
-              <i class="fa-solid fa-plus"></i>
-            </button>
-            <button
-              type="button"
-              class="link"
-              title="Channel list"
-              aria-label="Channel list"
-              @click="active && channelListModal.open(active.networkId)"
-            >
-              <i class="fa-solid fa-hashtag"></i>
-            </button>
-            <button
-              type="button"
-              class="link"
-              :title="serverConnectActionLabel"
-              :aria-label="serverConnectActionLabel"
-              @click="toggleServerConnection"
-            >
-              <i :class="serverConnectActionIcon"></i>
-            </button>
-            <button class="link" title="Edit network" @click="editActiveNetwork">
-              <i class="fa-solid fa-gear"></i>
-            </button>
-          </template>
-          <template v-else-if="isDmHeader">
-            <button
-              type="button"
-              class="link"
-              title="View profile"
-              aria-label="View profile"
-              @click="openDmProfile"
-            >
-              <i class="fa-solid fa-id-card"></i>
-            </button>
-            <button
-              type="button"
-              class="link"
-              :title="dmNoteLabel"
-              :aria-label="dmNoteLabel"
-              @click="openDmNote"
-            >
-              <i class="fa-solid fa-note-sticky"></i>
-            </button>
-          </template>
-          <template v-else-if="isChannel">
-            <button
-              class="link"
-              :title="showMembers ? 'Hide members' : 'Show members'"
-              :aria-label="showMembers ? 'Hide members' : 'Show members'"
-              @click="toggleMembers"
-            >
-              <i class="fa-solid fa-users"></i>
-            </button>
-            <span
-              v-if="memberCount != null"
-              class="member-count"
-              :title="`${memberCount} ${memberCount === 1 ? 'user' : 'users'} in channel`"
-              >{{ memberCount }}</span
-            >
-          </template>
-        </template>
-      </div>
-    </header>
-    <div class="topic-divider"></div>
+    <!-- The chat frame: one pane, or up to four sharing a 2x2 grid. The
+         container paints --border and leaves a 1px gap, so the separators
+         between panes come out of the gap itself and no pane has to know which
+         edges it has neighbours on.
 
-    <MessageList ref="messageListRef" :pending-scroll-id="pendingScrollId" />
-    <MemberList v-if="showMembers && hasNicklist" />
-    <StatusBar />
-    <MessageInput v-if="hasInput" ref="messageInputRef" />
+         Keyed by INDEX, not by buffer: a plain click swaps the focused pane's
+         buffer, and keying by buffer would tear the whole subtree down and
+         rebuild it on every switch. The single-pane view has always repointed
+         in place, and it has to keep doing that. -->
+    <div class="panes" :class="`panes-${paneKeys.length}`">
+      <BufferPane
+        v-for="(key, i) in paneKeys"
+        :key="i"
+        :style="{ gridArea: PANE_AREAS[i] }"
+        :pane-key="key"
+        :split="splits.isSplit"
+        :focused="i === splits.focused"
+        :pending-scroll-id="i === splits.focused ? pendingScrollId : null"
+        @focus="onPaneFocus(i)"
+        @close="onPaneClose(i)"
+        @maximize="onPaneMaximize(i)"
+        @open-search="openSearch"
+        @open-highlights="openHighlights"
+        @show-topic="showTopic = true"
+      />
+    </div>
 
     <NetworkForm
       v-if="networkEditor.isOpen"
@@ -303,8 +172,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import type { Network } from '../stores/networks.js';
-import { useBuffersStore, type Buffer } from '../stores/buffers.js';
+import { useBuffersStore } from '../stores/buffers.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { useSocket } from '../composables/useSocket.js';
 import { useNetworksStore } from '../stores/networks.js';
@@ -315,14 +183,10 @@ import { useHighlightChip } from '../composables/useHighlightChip.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
 import BufferList from '../components/BufferList.vue';
-import MessageList from '../components/MessageList.vue';
-import MessageInput from '../components/MessageInput.vue';
-import MemberList from '../components/MemberList.vue';
-import StatusBar from '../components/StatusBar.vue';
+import BufferPane from '../components/BufferPane.vue';
 import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
-import LinkedText from '../components/LinkedText.vue';
 import TopicModal from '../components/TopicModal.vue';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
@@ -335,7 +199,6 @@ import NickNoteModal from '../components/NickNoteModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
 import MediaViewerModal from '../components/MediaViewerModal.vue';
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts.js';
-import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { shouldOpenSystemBufferOnLoad } from '../utils/defaultBuffer.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useDccStore } from '../stores/dcc.js';
@@ -345,7 +208,8 @@ import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
-import { useNavHistoryStore } from '../stores/navHistory.js';
+import { useSplitsStore, PANE_AREAS } from '../stores/splits.js';
+import { paneFor } from '../composables/usePaneRegistry.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -355,22 +219,14 @@ const buffers = useBuffersStore();
 // the socket never opens: red status light + no buffers (#355 regression).
 useSocket();
 
-const {
-  active,
-  activeBuf,
-  topic,
-  isServerBuffer,
-  isChannel,
-  bufferLabel,
-  isSystemBuffer,
-  isVirtual,
-  hasInput,
-  hasNicklist,
-} = useActiveBuffer();
+// Un-provided, so this resolves through networks.activeKey — which follows pane
+// focus. The shell only needs the focused pane's buffer now: the topic modal it
+// hosts, and the type-ahead guard. Everything else that used to live here moved
+// into BufferPane, which resolves its own buffer instead.
+const { active, topic, bufferLabel } = useActiveBuffer();
 
 const settings = useSettingsStore();
 const auth = useAuthStore();
-const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
 const dcc = useDccStore();
 const dccTitle = computed(() =>
@@ -393,7 +249,6 @@ const channelListModal = reactive(useChannelListModal());
 const joinChannelModal = reactive(useJoinChannelModal());
 const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
-const navHistory = useNavHistoryStore();
 const showBookmarks = ref(false);
 const showTopic = ref(false);
 const showUploads = ref(false);
@@ -405,8 +260,89 @@ const pendingScrollId = ref<number | null>(null);
 // MobileChat (#496).
 const { showSearch, showHighlights, searchScope, highlightScope, openSearch, openHighlights } =
   useBufferSearchScope();
-const messageInputRef = ref<{ focus: () => void } | null>(null);
-const messageListRef = ref<{ scrollByPage: (dir: number) => void } | null>(null);
+
+const splits = useSplitsStore();
+
+// One pane per open buffer, or a single empty pane before anything is active —
+// the shell has always rendered its frame with no buffer selected (the topic
+// bar and "No messages yet." body), and it still does.
+const paneKeys = computed<(string | null)[]>(() => (splits.count ? splits.panes : [null]));
+
+// Point the app's active buffer at whatever the focused pane is showing. This
+// is what keeps a split frame coherent with everything outside it: the
+// buffer-list highlight, scoped search, the nav history and the keyboard
+// shortcuts all still ask "what is the active buffer" and get the pane the user
+// is in. It also keeps READ state honest — pushMessage advances the read
+// pointer of the active buffer, so leaving activeKey on a buffer no pane is
+// showing would mark it read while the user looks at something else.
+//
+// retainPrevious because nothing left the screen by getting here: either the
+// outgoing pane is still sitting there, or the splits store already tore it
+// down when it closed. That lifecycle is the store's, not activate()'s.
+function activateFocusedPane() {
+  const key = splits.focusedKey;
+  if (!key || key === networks.activeKey) return;
+  const buf = networks.bufferFor(key);
+  if (buf) buffers.activate(buf.networkId, buf.target, { retainPrevious: true });
+  else if (key === SYSTEM_KEY) buffers.activate(null, SYSTEM_KEY, { retainPrevious: true });
+}
+
+function onPaneFocus(index: number) {
+  if (index === splits.focused) return;
+  splits.focusPane(index);
+  activateFocusedPane();
+}
+
+// Closing the FOCUSED pane hands focus to a neighbour showing a different
+// buffer, so the active buffer has to follow it there. (Closing any other pane
+// leaves focus where it was, and this no-ops.)
+function onPaneClose(index: number) {
+  splits.closePane(index);
+  activateFocusedPane();
+}
+
+// Maximize is the same story: collapsing to one pane changes which buffer is
+// focused whenever the maximized pane wasn't the focused one.
+function onPaneMaximize(index: number) {
+  splits.collapseTo(index);
+  activateFocusedPane();
+}
+
+// The keyboard and the click-anywhere-to-type behavior address "the pane the
+// user is in", which is the focused one — look it up by buffer rather than
+// holding a template ref, since there are now up to four panes to hold one to.
+function focusedPane() {
+  return paneFor(splits.focusedKey);
+}
+
+// Activations that don't come through the pane controls — /query, the quick
+// switcher, a jump-to-message, a push deep link, the land-on-system-buffer rule
+// below — set networks.activeKey and expect the frame to follow. For a split
+// frame that means "show it in the focused pane", which is exactly what a plain
+// buffer-list click already does, so they share the one path.
+//
+// immediate, so a remount (a viewport flip back to desktop, coming back from
+// Settings) reconciles the frame with whatever is active instead of painting an
+// empty pane until the next click.
+watch(
+  () => networks.activeKey,
+  (key) => {
+    if (key) {
+      splits.syncActive(key);
+      return;
+    }
+    // Closing a buffer nulls activeKey (networks.dropBuffer) — right when it
+    // was the only view of it, wrong when other panes are still up. The sweep
+    // is synchronous and this watcher flushes after it, so by now the splits
+    // store has closed that pane and focus has landed on a survivor: adopt it,
+    // rather than leave the app with no active buffer while a conversation is
+    // plainly on screen (no sidebar highlight, and type-ahead refusing to focus
+    // the composer). With no panes left there's nothing to adopt, and the
+    // land-on-system-buffer rule below takes it from here.
+    activateFocusedPane();
+  },
+  { immediate: true },
+);
 
 // Any modal open? Type-ahead must not steal focus from a modal's own fields.
 const anyModalOpen = computed(
@@ -437,11 +373,11 @@ useKeyboardShortcuts({
   },
   onTypeAhead: () => {
     if (anyModalOpen.value || !active.value) return;
-    messageInputRef.value?.focus();
+    focusedPane()?.focusInput();
   },
   onScrollMessages: (dir) => {
     if (anyModalOpen.value) return;
-    messageListRef.value?.scrollByPage(dir);
+    focusedPane()?.scrollByPage(dir);
   },
 });
 
@@ -491,65 +427,9 @@ watch(showChannels, async (open) => {
 });
 onMounted(measureFootWrap);
 
-// True when the active buffer is a DM (not a channel, not the network's
-// server buffer). Drives the clickable DM header that opens the user
-// profile modal — channel headers stay non-interactive.
-const isDmHeader = computed(() => {
-  if (!active.value) return false;
-  if (isChannel.value || isServerBuffer.value) return false;
-  return true;
-});
-function openDmProfile() {
-  if (!active.value) return;
-  whois.openViewer(active.value.networkId, active.value.target);
-}
-// DM note button — mirrors the old context-menu entry, surfaced inline so the
-// per-peer note is one click from the conversation. Label flips once a note
-// exists so the button doubles as a "has a note" tell.
-const dmNoteLabel = computed(() =>
-  active.value && nickNotes.hasNote(active.value.networkId, active.value.target)
-    ? 'Edit note'
-    : 'Add note',
-);
-function openDmNote() {
-  if (!active.value) return;
-  nickNotes.openEditor(active.value.networkId, active.value.target);
-}
-
-// Channel notification level (always/highlights/nothing/muted) now lives in the
-// buffer context-menu ladder (right-click the sidebar row, or the topic-bar cog),
-// so there is no dedicated topic-bar bell anymore (issue #359).
-
-// User count for the active channel buffer. Sits in the topic bar (next to
-// the members-toggle button) rather than the status bar — the count is a
-// property of the channel, so the channel header is the natural home.
-const memberCount = computed(() => {
-  if (!isChannel.value) return null;
-  return (activeBuf.value as Buffer | null)?.members?.length ?? null;
-});
-
-// Per-channel nicklist visibility. A channel the user has explicitly toggled
-// carries an override (true = collapsed); otherwise the global
-// look.layout.show_member_list default applies. DMs and server buffers have no
-// member list at all, so the toggle and panel are hidden for them entirely.
-const showMembers = computed(() => {
-  if (!isChannel.value || !active.value) return false;
-  const { networkId, target } = active.value;
-  const override = nicklistCollapse.override(networkId, target);
-  if (override !== undefined) return !override;
-  return settings.effective('look.layout.show_member_list');
-});
-
 function toggleChannels() {
   settings.setValue('look.layout.show_channel_list', !showChannels.value);
 }
-function toggleMembers() {
-  if (!isChannel.value || !active.value) return;
-  const { networkId, target } = active.value;
-  // Pass the current visibility through as the new collapsed flag — it flips.
-  nicklistCollapse.setCollapsed(networkId, target, !!showMembers.value);
-}
-
 // Forward stray clicks anywhere in the chat frame (topic bar, message list,
 // member list, sidebar gutter, etc.) into the message input. The selector
 // excludes anything genuinely interactive — buttons, links, form controls,
@@ -564,7 +444,7 @@ function onChatClick(e: MouseEvent) {
     return;
   const sel = window.getSelection();
   if (sel && sel.toString().length > 0) return;
-  messageInputRef.value?.focus();
+  focusedPane()?.focusInput();
 }
 
 const onJumpToMessage = useJumpToMessage({ pendingScrollId });
@@ -623,70 +503,22 @@ function closeNetworkForm() {
   networkEditor.close();
 }
 
-function editActiveNetwork() {
-  const net = active.value?.network as Network | undefined;
-  if (net) networkEditor.open(net);
-}
-
-// State-aware connect/disconnect for the server buffer header. We label the
-// button "Disconnect" only while we're confidently connected; every other
-// state (idle, connecting, reconnecting, disconnected, unknown) reads as
-// "Reconnect" because the action — fire a fresh connect — is the same in
-// each case, and "Reconnect" is what the user reaches for when something
-// looks stuck.
-const serverConnectionState = computed(() => {
-  if (!active.value || !isServerBuffer.value) return null;
-  return networks.states[active.value.networkId]?.state ?? null;
-});
-const serverConnectActionLabel = computed(() =>
-  serverConnectionState.value === 'connected' ? 'Disconnect' : 'Reconnect',
-);
-const serverConnectActionIcon = computed(() =>
-  serverConnectionState.value === 'connected'
-    ? 'fa-solid fa-plug-circle-xmark'
-    : 'fa-solid fa-plug',
-);
-function toggleServerConnection() {
-  if (!active.value) return;
-  const id = active.value.networkId;
-  // Fire-and-forget — the button's label is driven by networks.states so
-  // success reflects itself. A failed call stays observable via the state
-  // (label doesn't flip), so we just log and let the user retry rather
-  // than wiring a toast through the topic bar for this case.
-  const p =
-    serverConnectionState.value === 'connected' ? networks.disconnect(id) : networks.reconnect(id);
-  p.catch((err) => console.error('[DesktopChat] toggle server connection failed', err));
-}
-
 useChatBootstrap({ onJump: onJumpToMessage });
 </script>
 
 <style scoped>
-/* WeeChat-style frame: the sidebar runs full height on the left; the topic
-   and input bars span the full width to the right of it; and the message
-   list + nicklist sit between them.
-
-   The sidebar and member-list columns are sized via CSS custom properties
-   so the .sidebar-collapsed / .members-collapsed modifier classes can shrink
-   either side to a 36px rail without touching the rest of the grid. */
+/* WeeChat-style frame: the sidebar runs full height on the left, and the rest
+   of the width is the chat content. The shell used to own the whole five-row
+   topic/divider/messages/status/input grid; BufferPane owns that now, so what's
+   left here is just the two columns. The sidebar is sized via a custom property
+   so .sidebar-collapsed can shrink it to a 36px rail without touching the rest
+   of the grid. */
 .chat {
   --sidebar-w: 220px;
-  --members-w: 180px;
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr var(--members-w);
-  /* The 1px row owns the topic/messages divider as its own grid track,
-     outside the scroll container. Putting the line inside .message-list
-     (border-top, inset box-shadow) lets row backgrounds and hover states
-     paint over it as content scrolls past — the line appears to be eaten
-     by the scrolling rows. A dedicated row sits between the two children
-     and nothing can paint on top of it. */
-  grid-template-rows: auto auto 1fr auto auto;
-  grid-template-areas:
-    'sidebar topic    topic'
-    'sidebar divider  divider'
-    'sidebar messages members'
-    'sidebar status   status'
-    'sidebar input    input';
+  grid-template-columns: var(--sidebar-w) 1fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: 'sidebar content';
   /* Height sized to the dynamic viewport. iOS scrolls the page
      naturally when the keyboard opens; the input row at the bottom
      stays visible above the keyboard, and the upper portion (sidebar,
@@ -698,26 +530,60 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .chat.sidebar-collapsed {
   --sidebar-w: 36px;
 }
-/* Members column fully collapses — no rail. The reopen toggle lives in the
-   topic bar on the right, so there's nothing to leave behind. */
-.chat.members-collapsed {
-  --members-w: 0px;
-}
-/* System console has no member list — collapse the rail so the log pane
-   spans the full content width instead of leaving an empty column. */
-.chat.system-active {
-  --members-w: 0px;
-}
-/* The status bar carries the separator border above the input, but it's hidden
-   in the system buffer (no network state to show). Give the input its own top
-   border there so it stays visually divided from the message list. */
-.chat.system-active .input {
-  border-top: 1px solid var(--border);
-}
 /* min-height/min-width 0 lets flex/scrolling children stay inside their row. */
 .chat > * {
   min-width: 0;
   min-height: 0;
+}
+
+/* The pane grid. Every layout is a way of filling a 2x2, so the pane count
+   picks a template rather than each count getting its own grid:
+
+     1 pane    2 panes   3 panes   4 panes
+     ┌─────┐   ┌─────┐   ┌─────┐   ┌──┬──┐
+     │  a  │   │  a  │   │  a  │   │a │b │
+     │     │   ├─────┤   ├──┬──┤   ├──┼──┤
+     │     │   │  b  │   │b │c │   │c │d │
+     └─────┘   └─────┘   └──┴──┘   └──┴──┘
+
+   The separators are the 1px grid gap over a --border background rather than
+   per-pane borders: which edges a pane needs a line on differs in all four
+   layouts, and a gap is right in every one of them without the pane knowing
+   anything about its neighbours. */
+.panes {
+  grid-area: content;
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.panes-1 {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  grid-template-areas: 'a';
+}
+.panes-2 {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas: 'a' 'b';
+}
+/* Splitting the BOTTOM half is what makes a third pane an addition rather than
+   a re-layout: a and b keep their full width and only b's height changes. */
+.panes-3 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    'a a'
+    'b c';
+}
+.panes-4 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  grid-template-areas:
+    'a b'
+    'c d';
 }
 
 .sidebar {
@@ -844,112 +710,5 @@ useChatBootstrap({ onJump: onJumpToMessage });
    (0,3,0) beats the global `button:hover:not(:disabled)` (0,2,1). */
 .rail-toggle:hover:not(:disabled) {
   border-color: var(--border);
-}
-
-.topic {
-  grid-area: topic;
-  padding: var(--space-4) var(--space-6);
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-4);
-  white-space: nowrap;
-  overflow: hidden;
-}
-/* Back/forward history controls (#411), anchored at the far left of the bar,
-   left of the buffer title. Same accent icon buttons as the rest of the bar;
-   disabled (dimmed, non-interactive) when there's nowhere to go that way. */
-.topic-nav {
-  display: flex;
-  align-items: baseline;
-  /* Match .topic-actions' gap so the back/forward pair is spaced like every
-     other button pair in the bar, not tighter. */
-  gap: var(--space-4);
-  flex-shrink: 0;
-}
-.nav-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-.nav-btn:disabled:hover {
-  color: var(--accent);
-}
-.topic-divider {
-  grid-area: divider;
-  background: var(--border);
-  height: 1px;
-}
-.topic .buffer {
-  color: var(--accent);
-}
-.topic .topic-text {
-  color: var(--fg-muted);
-  text-overflow: ellipsis;
-  overflow: hidden;
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0;
-  font: inherit;
-  text-align: left;
-  white-space: nowrap;
-  min-width: 0;
-}
-/* Hover/click affordances belong to the clickable channel-topic BUTTON only;
-   the DM identity renders as a static span sharing the layout styles above. */
-button.topic-text {
-  cursor: pointer;
-}
-button.topic-text:hover {
-  color: var(--fg);
-}
-button.topic-text:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* These selectors target the root elements of the imported components.
-   Vue 3 scoped CSS attaches the parent's data-v attribute to a child
-   component's root element, so .message-list / .members / .input here
-   match the rendered roots of MessageList / MemberList / MessageInput. */
-.message-list {
-  grid-area: messages;
-}
-.members {
-  grid-area: members;
-  border-left: 1px solid var(--border);
-}
-.status-bar {
-  grid-area: status;
-}
-.input {
-  grid-area: input;
-}
-
-/* Two-group layout for the topic bar: .topic-meta (name + topic text, spaced
-   by the 2ch gap — wider than the 1ch bar convention to give the name and
-   topic breathing room now that the │ divider is gone) sits left,
-   .topic-actions (buffer/network/channel buttons) sits right.
-   .topic uses justify-content:space-between to split them. .topic-meta
-   shrinks first via min-width:0 + topic-text ellipsis, so the action
-   cluster stays anchored to the right edge. */
-.topic-meta {
-  display: flex;
-  align-items: baseline;
-  gap: 2ch;
-  /* flex:1 so the meta absorbs the free space and keeps the action cluster
-     anchored to the right edge; min-width:0 lets the topic text ellipsis. */
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-.topic-actions {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-4);
-  flex-shrink: 0;
-}
-.topic .member-count {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
 }
 </style>

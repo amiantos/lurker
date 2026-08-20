@@ -14,12 +14,15 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
+import { ref } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useComposerOverlay, selectNick } from '../composables/useComposerOverlay.js';
+import { BUFFER_KEY } from '../composables/useActiveBuffer.js';
+import { useUploadsStore } from '../stores/uploads.js';
 import { useViewport } from '../composables/useViewport.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useScrollState } from '../composables/useScrollState.js';
@@ -1181,5 +1184,87 @@ describe('scroll position on send (#628)', () => {
     // Positive control, as above: proves the send got as far as the detached
     // branch rather than falling out of submit() somewhere earlier.
     expect(reattach).toHaveBeenCalled();
+  });
+});
+
+// A split frame mounts one composer per pane, but three pieces of composer
+// state are module-level singletons: the overlay handler slots, the composing
+// chip, and the uploads insert-URL bus. Each now gates on "am I the FOCUSED
+// composer" (pane key === activeKey). These pin both directions, because a
+// wrong gate fails silently either way: stuck closed, the ordinary single-pane
+// composer quietly stops taking emoji picks and upload URLs; stuck open, a
+// background pane eats them.
+describe('MessageInput singleton gating across panes', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    // The nick strip these picks come from is mobile-by-default, so the pick
+    // path only runs with the viewport flipped (same as the strip tests above).
+    // Restored in afterEach — it's a module singleton.
+    isMobile.value = true;
+  });
+  afterEach(() => {
+    isMobile.value = false;
+    for (const w of mounted) w.unmount();
+    mounted = [];
+  });
+
+  // Mount a composer bound to `paneTarget` while `activeTarget` is the focused
+  // buffer — i.e. an UNFOCUSED pane. Providing the key is exactly what
+  // BufferPane does.
+  async function mountPaneComposer(paneTarget: string) {
+    const wrapper = mount(MessageInput, {
+      attachTo: document.body,
+      global: { provide: { [BUFFER_KEY as symbol]: ref(`1::${paneTarget}`) } },
+    });
+    mounted.push(wrapper);
+    await flush();
+    return { wrapper, el: wrapper.find('textarea').element as HTMLTextAreaElement };
+  }
+
+  it('routes an overlay pick to the focused composer, not the last mounted one', async () => {
+    seedStores('#zebra');
+    const focused = await mountComposer();
+    // Mounted AFTER the focused one: under the old last-mount-wins registration
+    // this composer owned the overlay handlers.
+    const background = await mountPaneComposer('#apple');
+
+    // BOTH get a token to splice into, so the assertion distinguishes "the pick
+    // went to the right composer" from "the pick went nowhere" — with only the
+    // focused one primed, a broken gate would look identical to a correct one.
+    await type(focused.el, 'hey bo');
+    await type(background.el, 'hey bo');
+
+    selectNick('bob');
+    await flush();
+
+    expect(focused.el.value).toBe('hey bob ');
+    expect(background.el.value).toBe('hey bo');
+  });
+
+  it('inserts an upload URL only into the focused composer', async () => {
+    seedStores('#zebra');
+    const focused = await mountComposer();
+    const background = await mountPaneComposer('#apple');
+
+    // What the uploads store does when a transfer completes: broadcast to every
+    // subscriber, and every mounted composer subscribes.
+    useUploadsStore().requestInsert('https://ex.ample/cat.png');
+    await flush();
+
+    expect(focused.el.value).toContain('https://ex.ample/cat.png');
+    expect(background.el.value).toBe('');
+  });
+
+  // The un-provided case IS the single-pane desktop shell and all of mobile, so
+  // the gate must be open there or the composer silently loses these features.
+  it('leaves the gate open for a composer with no pane key', async () => {
+    seedStores('#zebra');
+    const solo = await mountComposer();
+    await type(solo.el, 'hey bo');
+
+    selectNick('bob');
+    await flush();
+
+    expect(solo.el.value).toBe('hey bob ');
   });
 });

@@ -15,6 +15,7 @@ import { computed } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
+import { useBufferKey } from '../composables/useActiveBuffer.js';
 import { prefixOf } from '../utils/memberPrefix.js';
 
 const props = defineProps<{
@@ -34,12 +35,18 @@ const props = defineProps<{
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const nicks = useNickColors();
+const paneKey = useBufferKey();
 
 const glyph = computed(() => (props.showPrefix ? prefixOf(props.modes) : ''));
 const glyphClass = computed(() => `mode-${glyph.value}`);
 
+// "Am I this nick" is a question about the buffer this row is IN, not about the
+// app's active buffer — a NickRef renders once per message, in whichever pane
+// owns it. Reading activeKey left a pane on another network resolving self
+// against the focused pane's nick: own lines uncoloured, and an unrelated user
+// who happens to share that nick coloured as self.
 const selfLower = computed(() => {
-  const key = networks.activeKey;
+  const key = paneKey.value;
   if (!key) return null;
   const buf = buffers.byKey(key);
   const sn = buf && buf.networkId != null ? networks.states[buf.networkId]?.nick : null;

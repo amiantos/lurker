@@ -33,6 +33,7 @@ vi.mock('../composables/useSocket.js', () => ({
 import { useBuffersStore, bufferNeedsHydration, windowAroundAnchor } from './buffers.js';
 import { useSettingsStore } from './settings.js';
 import { socketSend } from '../composables/useSocket.js';
+import { retainViewedBuffer, resetViewedBuffers } from '../composables/useViewedBuffer.js';
 
 // The store always seeds the app-scoped system buffer (#355). These tests assert
 // on network-buffer counts (fork/removal semantics), so filter it out.
@@ -42,6 +43,9 @@ const netBuffers = (store: ReturnType<typeof useBuffersStore>) =>
 beforeEach(() => {
   setActivePinia(createPinia());
   h.activeKey = null;
+  // Module state like h.activeKey above: the set of buffers with a message list
+  // on screen, which live read-sync now consults.
+  resetViewedBuffers();
   vi.mocked(socketSend).mockClear();
 });
 
@@ -1286,5 +1290,61 @@ describe('applyAroundSlice — the anchor survives the ring', () => {
     expect(ids.indexOf(250528)).toBeGreaterThan(100);
     expect(buf.hasMoreOlder).toBe(true);
     expect(buf.hasMoreNewer).toBe(true);
+  });
+});
+
+// A split frame puts several buffers on screen at once, so "the user is sitting
+// in this buffer" stopped meaning "this is THE active buffer". Live read-sync
+// asks the viewed set — the same question toast suppression asks — so a pane
+// the user is watching can't accrue unread while its toasts are suppressed.
+describe('live read-sync follows what is on screen', () => {
+  const line = (target: string, id: number) => ({
+    networkId: 1,
+    target,
+    id,
+    type: 'message',
+    nick: 'bob',
+    body: 'x',
+  });
+
+  it('marks read in a visible pane that does not hold focus', () => {
+    const store = useBuffersStore();
+    store.pushMessage(line('#side', 1));
+    // Another pane has focus; this buffer is on screen in a second pane.
+    h.activeKey = '1::#focused';
+    retainViewedBuffer('1::#side');
+
+    store.pushMessage(line('#side', 2));
+
+    expect(store.byKey('1::#side')!.lastReadId).toBe(2);
+    expect(socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mark-read', target: '#side', messageId: 2 }),
+    );
+  });
+
+  it('leaves a buffer that is on no screen alone', () => {
+    const store = useBuffersStore();
+    store.pushMessage(line('#off', 1));
+    h.activeKey = '1::#focused';
+
+    store.pushMessage(line('#off', 2));
+
+    expect(store.byKey('1::#off')!.lastReadId).toBe(0);
+    expect(socketSend).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'mark-read', target: '#off' }),
+    );
+  });
+
+  // The states with no message list mounted at all — the Settings route, the
+  // mobile buffer-list/members screens — have always marked read off activeKey,
+  // and still do.
+  it('still marks read for the active buffer with no message list mounted', () => {
+    const store = useBuffersStore();
+    store.pushMessage(line('#here', 1));
+    h.activeKey = '1::#here';
+
+    store.pushMessage(line('#here', 2));
+
+    expect(store.byKey('1::#here')!.lastReadId).toBe(2);
   });
 });

@@ -15,9 +15,12 @@ import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
+import { useSplitsStore } from '../stores/splits.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
-import { resetScrollState } from './useScrollState.js';
+import { resetAllScrollState } from './useScrollState.js';
+import { resetViewedBuffers } from './useViewedBuffer.js';
+import { resetPanes } from './usePaneRegistry.js';
 import { resetOnboarding } from './useOnboarding.js';
 import { clearAppBadgeNow } from './useAppBadge.js';
 
@@ -53,8 +56,19 @@ export function resetSession(): void {
   // isn't — leaving it loaded would hand the next user a picker built from a
   // response fetched under someone else's session.
   useNetworkPresetsStore().$reset();
+  // Pane layout is per-session view state — $reset() rather than the store's own
+  // reset() for the same reason every other store here uses it: the buffers this
+  // layout points at were wiped above, so there is no per-pane teardown left to
+  // run, only state to drop.
+  useSplitsStore().$reset();
   resetPresence();
-  resetScrollState();
+  resetAllScrollState();
+  resetViewedBuffers();
+  // Module-level Map of pane handles, like the two above — not Pinia state, so
+  // $reset() doesn't reach it. Panes unmount on logout and deregister
+  // themselves, but clear it explicitly so a handle can't outlive the session
+  // if teardown order ever changes.
+  resetPanes();
   // Closing the first-run flow unmounts it, which is what drops the half-filled
   // form (nick, SASL password) with it — the next user re-evaluates from scratch.
   resetOnboarding();
