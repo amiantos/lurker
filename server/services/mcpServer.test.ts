@@ -112,16 +112,27 @@ describe('MCP server', () => {
       .map((t) => t.name)
       .toSorted();
     expect(names).toEqual([
+      'connect_network',
+      'disconnect_network',
       'get_nick_note',
+      'get_topic',
+      'join_channel',
       'list_buffers',
+      'list_members',
       'list_networks',
+      'part_channel',
       'recent_messages',
       'search_messages',
       'send_action',
       'send_message',
       'send_notice',
+      'send_raw',
+      'set_away',
+      'set_nick',
       'set_nick_note',
       'set_relay_bot',
+      'set_topic',
+      'whois',
     ]);
     // Each entry carries an inputSchema usable by an MCP client.
     for (const tool of res.body.result.tools as Array<{ inputSchema: { type: string } }>) {

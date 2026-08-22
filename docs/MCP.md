@@ -95,6 +95,62 @@ branch on the value instead of catching.
 Send a CTCP ACTION (`/me ...`). Same shape and error semantics as
 `send_message`.
 
+### `send_raw` _(read-write)_
+
+Send a raw IRC protocol line verbatim on a network — the escape hatch for any
+command without a dedicated verb: `MODE #chan +o nick`, `KICK #chan bob :spam`,
+`TOPIC #chan :new topic`, `WHOIS bob`, `INVITE bob #chan`, and so on. No
+parsing, no trailing CRLF. **Powerful and unguarded — it runs as you.** Server
+replies (WHOIS, LIST, …) arrive asynchronously; read them with `recent_messages`
+on the relevant buffer. Same `not-connected` semantics as `send_message`.
+
+### `join_channel` _(read-write)_
+
+Join a channel; optional `key` for +k channels. The channel buffer and its
+member list arrive asynchronously.
+
+### `part_channel` _(read-write)_
+
+Leave a channel, with an optional part `reason`.
+
+### `set_nick` _(read-write)_
+
+Change your nick on a network. Asynchronous and may be rejected (nick in use /
+invalid) — watch the server buffer for the outcome.
+
+### `set_away` _(read-write)_
+
+Set or clear your away status across every network (user-wide). Pass `message`
+to go away; omit it to come back. Returns `{ ok: true, away }`.
+
+### `list_members` _(read)_
+
+List the members currently in a joined channel, with their prefix modes
+(`o`/`h`/`v`/…) and away state. Returns `not-in-channel` if you aren't in it.
+
+### `whois` _(read-write)_
+
+Send a WHOIS for a nick. The reply arrives asynchronously as numeric lines in
+the network **server buffer** — read it afterward with `recent_messages`.
+
+### `connect_network` / `disconnect_network` _(read-write)_
+
+Connect (optionally `force` a fresh reconnect) or disconnect a configured
+network. Connection is asynchronous — watch the server buffer for registration.
+
+### `get_topic` _(read)_ / `set_topic` _(read-write)_
+
+Read or change a joined channel's topic. `set_topic` needs the usual channel
+privileges (+o or a -t channel); the server may reject it.
+
+### `send_dcc_file` _(read-write)_
+
+Offer a file to a peer over DCC SEND. **Sandboxed to your fserve archive**
+(`LURKER_FSERVE_DIR`): `path` is resolved relative to that root and rejected if
+it escapes (symlinks included), so an agent can't exfiltrate arbitrary server
+files. Requires DCC enabled and an fserve root configured. Returns
+`{ ok: true, transferId }` on success.
+
 ## Wire format
 
 Transport is MCP's Streamable HTTP profile: a single `POST /mcp` with a
