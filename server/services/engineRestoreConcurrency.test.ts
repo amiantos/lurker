@@ -42,6 +42,17 @@ function numericFor(line: string, numeric: string, chan: string): boolean {
   return new RegExp(`^\\S+ ${numeric} \\S+ ${chan}\\b`).test(line);
 }
 
+// Set a knob for one test and hand back the way to put it back — the value
+// it had, or unset, so the next test in this file sees what the harness set.
+function setEnv(name: string, value: string): () => void {
+  const prev = process.env[name];
+  process.env[name] = value;
+  return () => {
+    if (prev === undefined) delete process.env[name];
+    else process.env[name] = prev;
+  };
+}
+
 function makeNet(nick: string, channels: string[]): Net {
   const network = createNetwork(userId, {
     name: `restore-concurrency-${nick}`,
@@ -225,7 +236,7 @@ describe('engine restore concurrency', () => {
     // Long enough that a turn given up "at the deadline" rather than on the
     // drop is unmistakable.
     const LONG_DEADLINE_MS = 8000;
-    process.env.LURKER_RESTORE_STEP_DEADLINE_MS = String(LONG_DEADLINE_MS);
+    const restoreDeadline = setEnv('LURKER_RESTORE_STEP_DEADLINE_MS', String(LONG_DEADLINE_MS));
     const a = makeNet('gd', ['#gd1', '#gd2']);
     const b = makeNet('ge', ['#ge1']);
     await holdInEngine([a, b]);
@@ -255,6 +266,7 @@ describe('engine restore concurrency', () => {
       expect(connA.state).not.toBe('connected');
     } finally {
       harness.ircd.hold = null;
+      restoreDeadline();
     }
   }, 30000);
 
@@ -265,8 +277,8 @@ describe('engine restore concurrency', () => {
     // land — and they must still be read as the restore's: here, the WHO
     // size gate (pinned to 0, so every restore WHO is skipped) has to apply
     // to the replayed 366 as it does to the step's own.
-    process.env.LURKER_RESTORE_STEP_DEADLINE_MS = '8000';
-    process.env.LURKER_RESTORE_WHO_MAX_MEMBERS = '0';
+    const restoreDeadline = setEnv('LURKER_RESTORE_STEP_DEADLINE_MS', '8000');
+    const restoreWhoMax = setEnv('LURKER_RESTORE_WHO_MAX_MEMBERS', '0');
     const blocker = makeNet('gy', ['#gy1']);
     const x = makeNet('gx', ['#gx1']);
     await holdInEngine([blocker, x]);
@@ -301,7 +313,8 @@ describe('engine restore concurrency', () => {
       expect(sentBy(x.nick, 'WHO #gx1')).toBe(-1);
     } finally {
       harness.ircd.hold = null;
-      delete process.env.LURKER_RESTORE_WHO_MAX_MEMBERS;
+      restoreWhoMax();
+      restoreDeadline();
     }
   }, 30000);
 });
