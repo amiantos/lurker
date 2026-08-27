@@ -21,8 +21,23 @@
 // DATABASE_PATH selects the database (same env the server uses); the base URL
 // defaults to the first entry in WEBAUTHN_ORIGIN, which is already the public
 // origin on any instance where passkeys work.
+//
+// ⚠ Opens its OWN bare connection rather than importing server/db/index.ts, the
+// same way tools/fold-buffer-case.ts does. That module's body runs the entire
+// migration + seed pipeline, and this tool is documented as `docker compose
+// exec` against a RUNNING server — importing it would make this a second
+// process migrating a database the server is actively writing, risking
+// SQLITE_BUSY at precisely the moment (sole admin locked out) when this has to
+// work. The token rules are shared through server/db/accountRecoveryToken.ts,
+// which is db-free, so there is still exactly one definition of them.
 
+import Database from 'better-sqlite3';
 import path from 'path';
+import {
+  generateRecoveryToken,
+  hashRecoveryToken,
+  recoveryExpiresAt,
+} from '../server/db/accountRecoveryToken.js';
 
 const argv = process.argv.slice(2);
 
@@ -63,23 +78,47 @@ if (!origin) {
   process.exit(1);
 }
 
-// db/index.ts resolves DATABASE_PATH at import time, so the default has to be in
-// place before anything below it loads.
-process.env.DATABASE_PATH =
-  process.env.DATABASE_PATH || path.join(import.meta.dirname, '../data/lurker.db');
+// Same default as db/index.ts, so `DATABASE_PATH` unset means the same file the
+// server would open.
+const dbPath = process.env.DATABASE_PATH || path.join(import.meta.dirname, '../data/lurker.db');
 
-const { findUserByUsername } = await import('../server/db/users.js');
-const { createRecoveryToken } = await import('../server/db/accountRecovery.js');
+const db = new Database(dbPath);
+db.pragma('busy_timeout = 5000');
+db.pragma('foreign_keys = ON');
 
-const user = findUserByUsername(username);
-if (!user) {
-  console.error(`No account named '${username}' in ${process.env.DATABASE_PATH}.`);
+// The table is created by the server's migration, not here — a tool that runs
+// before the server has ever started has nothing to recover anyway.
+const hasTable = db
+  .prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'account_recovery_tokens'`)
+  .get();
+if (!hasTable) {
+  console.error(
+    `${dbPath} has no account_recovery_tokens table — start the server once to migrate it.`,
+  );
   process.exit(1);
 }
 
-// createdBy is null: nobody in the users table issued this one, and recording a
+// Case-insensitive, matching findUserByUsername.
+const user = db
+  .prepare('SELECT id, username FROM users WHERE username = ? COLLATE NOCASE')
+  .get(username) as { id: number; username: string } | undefined;
+if (!user) {
+  console.error(`No account named '${username}' in ${dbPath}.`);
+  process.exit(1);
+}
+
+// created_by is null: nobody in the users table issued this one, and recording a
 // stand-in admin would misattribute it in the panel.
-const token = createRecoveryToken(user.id, null);
+const token = generateRecoveryToken();
+db.prepare(
+  `INSERT INTO account_recovery_tokens (token_hash, user_id, created_by, expires_at)
+   VALUES (?, ?, NULL, ?)
+   ON CONFLICT(user_id) DO UPDATE SET
+     token_hash = excluded.token_hash,
+     created_by = excluded.created_by,
+     expires_at = excluded.expires_at,
+     created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+).run(hashRecoveryToken(token), user.id, recoveryExpiresAt());
 
 console.log('');
 console.log(`Recovery link for ${user.username} (expires in 24 hours, single use):`);

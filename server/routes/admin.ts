@@ -22,7 +22,6 @@ import {
 } from '../db/invites.js';
 import {
   createRecoveryToken,
-  getRecoveryTokenForUser,
   deleteRecoveryTokensForUser,
   listRecoveryExpiries,
 } from '../db/accountRecovery.js';
@@ -337,13 +336,12 @@ router.post('/users/:id/recovery', (req: Request, res: Response) => {
     res.status(404).json({ error: 'not found' });
     return;
   }
-  const token = createRecoveryToken(user.id, req.user!.id);
-  const info = getRecoveryTokenForUser(user.id)!;
+  const { token, expiresAt } = createRecoveryToken(user.id, req.user!.id);
   res.json({
     recovery: {
       username: user.username,
       url: `${originFromRequest(req)}/recover/${token}`,
-      expiresAt: info.expiresAt,
+      expiresAt,
     },
   });
 });

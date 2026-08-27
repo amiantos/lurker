@@ -117,7 +117,7 @@ describe('account recovery evicts live sockets', () => {
     const user = createUser('revoke-via-route');
     const attacker = await connect(user.id);
     const evicted = closed(attacker);
-    const token = createRecoveryToken(user.id, null);
+    const { token } = createRecoveryToken(user.id, null);
 
     const res = await request(server)
       .post(`/api/auth/recovery/${token}/password`)

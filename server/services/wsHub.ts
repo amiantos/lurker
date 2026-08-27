@@ -1451,9 +1451,11 @@ function announceOpen(
 }
 
 // Per-user socket bookkeeping lives at module scope so the verb registry can
-// reach into fanOut without importing the WSS instance. The state is still
-// owned by attachWsHub at runtime (it's the only writer to socketsByUser via
-// addSocket/removeSocket); the registry just reads through it.
+// reach into fanOut without importing the WSS instance. attachWsHub owns the
+// state at runtime — addSocket/removeSocket are the only mutators — and
+// everything else reads through it. closeSocketsForUser is the one outside
+// caller that acts on the sockets themselves, and it deliberately mutates
+// nothing: it closes them and lets removeSocket do the bookkeeping.
 const socketsByUser = new Map<number, Set<LurkerWebSocket>>();
 
 // How many bytes of un-drained outbound frames a socket may hold before it
@@ -1615,10 +1617,14 @@ export function closeSocketsForUser(userId: number, reason = 'session revoked'):
       /* already tearing down; the close handler prunes it either way */
     }
   }
-  // The close handlers prune the set themselves, but a socket that never fires
-  // one (already-dead transport) would otherwise linger and keep receiving
-  // fan-out. Dropping the whole entry is safe: a reconnect re-adds it.
-  socketsByUser.delete(userId);
+  // Deliberately NOT socketsByUser.delete(userId) here. removeSocket() bails out
+  // early when the entry is already gone, so deleting it first makes every close
+  // handler a no-op and evaluatePresence() never runs: the account would sit
+  // with nobody connected and auto-away never armed, so its IRC connections
+  // would stay non-away indefinitely. Letting each close handler prune normally
+  // keeps presence honest, and the heartbeat reaps any socket whose close never
+  // fires. ('user-disposed' can afford the eager delete because it clears the
+  // auto-away timer itself and the account is going away regardless.)
   return closed;
 }
 

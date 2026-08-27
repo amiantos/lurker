@@ -265,6 +265,38 @@ describe('POST /api/auth/recovery/:token/password', () => {
     expect(res.status).toBe(200);
   });
 
+  it('revokes API tokens, which outlive every session', async () => {
+    // An attacker holding the account can mint a read-write bearer token and
+    // walk away; without this it keeps working straight through the recovery.
+    const u = createUser('redeem-api-tokens');
+    const apiTokens = await import('../db/apiTokens.js');
+    apiTokens.createToken({ userId: u.id, name: 'attacker script', scope: 'read-write' });
+    expect(apiTokens.listForUser(u.id).filter((t) => !t.revokedAt)).toHaveLength(1);
+    const { token } = await issue(u.id);
+    await testRequest(app)
+      .post(`/api/auth/recovery/${token}/password`)
+      .send({ password: 'revokethetokens' });
+    expect(apiTokens.listForUser(u.id).filter((t) => !t.revokedAt)).toHaveLength(0);
+  });
+
+  it('drops push registrations, which leak message content to an evicted device', async () => {
+    const u = createUser('redeem-push');
+    const push = await import('../db/pushSubscriptions.js');
+    push.upsertSubscription(u.id, {
+      transport: 'webpush',
+      endpoint: 'https://push.example/attacker-device',
+      p256dh: 'key',
+      auth: 'auth',
+      userAgent: 'attacker browser',
+    });
+    expect(push.listAllForUser(u.id)).toHaveLength(1);
+    const { token } = await issue(u.id);
+    await testRequest(app)
+      .post(`/api/auth/recovery/${token}/password`)
+      .send({ password: 'dropthepushsubs' });
+    expect(push.listAllForUser(u.id)).toHaveLength(0);
+  });
+
   it('leaves existing passkeys alone', async () => {
     // Recovery restores a way in; it is not a way to strip someone's
     // credentials out from under them.

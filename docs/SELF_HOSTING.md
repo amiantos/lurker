@@ -40,7 +40,7 @@ A few things worth knowing:
 
 - **The URL is shown once.** Only its hash is stored, so nothing can display it again. Lost it? Issue another — that invalidates the first.
 - **Single use, 24 hours.** Redeeming it or letting it expire ends it; **revoke recovery** ends it early.
-- **Redeeming signs that account out everywhere else.** A lockout is indistinguishable from a takeover, so every other session is dropped and every open connection is closed.
+- **Redeeming cuts off every other way in.** A lockout is indistinguishable from a takeover, so recovery assumes one: web sessions, open connections, attached bouncer clients, API tokens, and push registrations for that account all go. The member will need to sign in again on their other devices, re-issue any API tokens, and re-enable notifications.
 - **Existing passkeys survive.** Recovery adds a way in; it never removes one.
 
 ### When the only admin is locked out

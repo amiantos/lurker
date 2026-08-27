@@ -44,6 +44,9 @@ import {
 } from '../db/webauthnCredentials.js';
 import { createSession, deleteSession, deleteSessionsForUser } from '../db/sessions.js';
 import { closeSocketsForUser } from '../services/wsHub.js';
+import { dropSessionsForUser as dropBouncerSessionsForUser } from '../services/bouncer.js';
+import { revokeAllForUser as revokeApiTokensForUser } from '../db/apiTokens.js';
+import { deleteAllForUser as deletePushSubscriptionsForUser } from '../db/pushSubscriptions.js';
 import { SESSION_COOKIE, getCookieOptions, requireAuth, bearerToken } from '../middleware/auth.js';
 import { rpConfig, saveChallenge, consumeChallenge, userIdToHandle } from '../services/webauthn.js';
 import {
@@ -420,19 +423,33 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
 // Every path here ends in finishRecovery(), which signs the account out
 // everywhere before minting the new session: the lockout that made recovery
 // necessary is indistinguishable from a takeover, so any session predating the
-// recovery is assumed hostile — the session rows AND the open sockets, since a
-// socket is only ever checked at upgrade. Existing passkeys are deliberately
-// left alone — recovery restores a way in, it is not a way to strip someone's
-// credentials.
+// recovery is assumed hostile: session rows, open WebSockets, attached bouncer
+// sessions, API tokens, and push registrations all go, because every one of them
+// authenticates once and is never re-checked afterwards. Existing passkeys are
+// the deliberate exception — recovery restores a way in, it is not a way to
+// strip someone's credentials, and a passkey cannot be used without the
+// authenticator itself.
 
 function finishRecovery(res: Response, user: { id: number; username: string; role: string }): void {
+  // "Signed out everywhere" means every door, not just the web session. Each of
+  // these is a credential that authenticates ONCE and is then never re-checked
+  // against the session table, so dropping rows alone leaves all of them open to
+  // whoever held the account — which is precisely who this flow assumes is on
+  // the other end.
   deleteSessionsForUser(user.id);
-  // Rows alone aren't enough: an open socket authenticated at upgrade time and
-  // is never re-checked, so without this an attacker holding the account keeps
-  // reading and sending as them indefinitely — and that is precisely who this
-  // flow assumes is on the other end. Runs before the new session is minted;
-  // the recovering device has no socket yet and reconnects with the new cookie.
+  // Checked at the /ws upgrade and never again; the handler reads its user from
+  // the socket's own closure. Runs before the new session is minted — the
+  // recovering device has no socket yet and reconnects with the new cookie.
   closeSocketsForUser(user.id, 'account recovered');
+  // Same shape one layer down: a bouncer session authenticates at login and then
+  // carries its userId for the life of the TCP connection.
+  dropBouncerSessionsForUser(user.id, 'Account recovered');
+  // Independent bearer credentials that outlive every session — an attacker who
+  // minted one would otherwise keep read-write access straight through recovery.
+  revokeApiTokensForUser(user.id);
+  // Keyed on user_id with no session linkage, so an evicted device would keep
+  // receiving the member's incoming messages as push content.
+  deletePushSubscriptionsForUser(user.id);
   const { token: sessionToken } = createSession(user.id);
   res.cookie(SESSION_COOKIE, sessionToken, getCookieOptions());
   res.json({ user: { id: user.id, username: user.username, role: user.role } });
@@ -589,9 +606,14 @@ router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, r
       backedUp: credentialBackedUp,
       label,
     });
-  } catch (_err) {
-    // The rollback put the link back, so the member can retry with a different
-    // authenticator rather than going back to the admin for a new one.
+  } catch (err) {
+    // ONLY a duplicate credential means what this 409 says. A SQLITE_BUSY or a
+    // full disk would otherwise be reported as "already registered", sending a
+    // locked-out member off to try authenticator after authenticator against
+    // what is actually a server fault. Anything else rethrows to the 500 path,
+    // where it gets logged. The rollback happened either way, so the link
+    // survives and a retry is safe.
+    if ((err as { code?: string }).code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err;
     res.status(409).json({ error: 'that passkey is already registered on this server' });
     return;
   }

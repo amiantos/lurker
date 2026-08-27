@@ -119,6 +119,23 @@ export function revoke(id: number, userId: number): boolean {
   return revokeStmt.run(id, userId).changes > 0;
 }
 
+/**
+ * Revoke every live token for a user, returning how many were revoked.
+ *
+ * For account recovery (#855): an API token is an independent bearer credential
+ * that outlives any session, so someone who held the account could mint one and
+ * keep read-write REST/MCP/IRC access straight through a recovery. "Every
+ * session predating the recovery is assumed hostile" has to include these.
+ * Soft-revokes, like revoke() — the row stays as a record of what was cut off.
+ */
+export function revokeAllForUser(userId: number): number {
+  return db
+    .prepare(
+      `UPDATE api_tokens SET revoked_at = datetime('now') WHERE user_id = ? AND revoked_at IS NULL`,
+    )
+    .run(userId).changes;
+}
+
 export function touchLastUsed(id: number): void {
   touchStmt.run(id);
 }

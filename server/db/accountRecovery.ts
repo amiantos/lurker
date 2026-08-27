@@ -1,10 +1,14 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { createHash, randomBytes } from 'crypto';
 import db from './index.js';
 import { insertCredential } from './webauthnCredentials.js';
 import type { InsertCredentialFields } from './webauthnCredentials.js';
+import {
+  generateRecoveryToken,
+  hashRecoveryToken,
+  recoveryExpiresAt,
+} from './accountRecoveryToken.js';
 
 // Admin-issued, single-use account recovery links (#855). Lurker accounts carry
 // no email address, so there is nothing a self-service "forgot password" flow
@@ -20,10 +24,6 @@ import type { InsertCredentialFields } from './webauthnCredentials.js';
 // expires_at is an ISO-8601 UTC string (lexicographically ordered) compared
 // against a caller-supplied `now`, so expiry is directly unit-testable.
 
-// Hand-delivered over IRC/Signal/in person rather than emailed, so this is a day
-// rather than the control plane's hour.
-const TTL_MS = 24 * 60 * 60 * 1000;
-
 /** A recovery link as the admin panel sees it. Never includes the token. */
 export interface RecoveryTokenInfo {
   userId: number;
@@ -32,13 +32,10 @@ export interface RecoveryTokenInfo {
   createdAt: string;
 }
 
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
-
 /**
- * Issue a recovery link for `userId` and return the RAW token to put in the URL.
- * Only the hash is stored, and only the caller ever sees this value.
+ * Issue a recovery link for `userId`, returning the RAW token to put in the URL
+ * along with its expiry. Only the hash is stored, and only the caller ever sees
+ * the raw value.
  *
  * Any outstanding link for the account is replaced: user_id is UNIQUE, so the
  * upsert is what "issuing a new link invalidates the old one" means.
@@ -47,9 +44,9 @@ export function createRecoveryToken(
   userId: number,
   createdBy: number | null,
   now = Date.now(),
-): string {
-  const token = randomBytes(32).toString('base64url');
-  const expiresAt = new Date(now + TTL_MS).toISOString();
+): { token: string; expiresAt: string } {
+  const token = generateRecoveryToken();
+  const expiresAt = recoveryExpiresAt(now);
   db.prepare(
     `INSERT INTO account_recovery_tokens (token_hash, user_id, created_by, expires_at)
      VALUES (?, ?, ?, ?)
@@ -58,8 +55,12 @@ export function createRecoveryToken(
        created_by = excluded.created_by,
        expires_at = excluded.expires_at,
        created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
-  ).run(hashToken(token), userId, createdBy, expiresAt);
-  return token;
+  ).run(hashRecoveryToken(token), userId, createdBy, expiresAt);
+  // Returned rather than left for the caller to re-read: a concurrent revoke
+  // between the write and a follow-up SELECT would hand back nothing, and by
+  // then the raw token exists only in this local — the response would be lost
+  // AND the previous link already replaced.
+  return { token, expiresAt };
 }
 
 /**
@@ -80,7 +81,7 @@ export function findLiveRecoveryToken(
          FROM account_recovery_tokens
         WHERE token_hash = ? AND expires_at > ?`,
     )
-    .get(hashToken(token), new Date(now).toISOString()) as RecoveryTokenInfo | undefined;
+    .get(hashRecoveryToken(token), new Date(now).toISOString()) as RecoveryTokenInfo | undefined;
   return row ?? null;
 }
 
@@ -97,7 +98,7 @@ export function consumeRecoveryToken(token: string, now = Date.now()): number | 
         WHERE token_hash = ? AND expires_at > ?
       RETURNING user_id AS userId`,
     )
-    .get(hashToken(token), new Date(now).toISOString()) as { userId: number } | undefined;
+    .get(hashRecoveryToken(token), new Date(now).toISOString()) as { userId: number } | undefined;
   return row?.userId ?? null;
 }
 

@@ -29,7 +29,7 @@ afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 describe('createRecoveryToken', () => {
   it('returns a high-entropy base64url token and stores only its hash', () => {
     const u = createUser('r-hash');
-    const token = recovery.createRecoveryToken(u.id, admin.id);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id);
     expect(token).toMatch(/^[A-Za-z0-9_-]{40,}$/);
 
     // The raw token must not appear anywhere in the row -- a read of this table
@@ -44,15 +44,16 @@ describe('createRecoveryToken', () => {
   it('expires 24 hours out', () => {
     const u = createUser('r-ttl');
     const now = Date.UTC(2026, 0, 1);
-    recovery.createRecoveryToken(u.id, admin.id, now);
-    const info = recovery.getRecoveryTokenForUser(u.id, now)!;
-    expect(Date.parse(info.expiresAt) - now).toBe(DAY);
+    const { expiresAt } = recovery.createRecoveryToken(u.id, admin.id, now);
+    expect(Date.parse(expiresAt) - now).toBe(DAY);
+    // The returned expiry is the one that was stored, not a second computation.
+    expect(recovery.getRecoveryTokenForUser(u.id, now)!.expiresAt).toBe(expiresAt);
   });
 
   it('issuing a new link invalidates the outstanding one', () => {
     const u = createUser('r-replace');
-    const first = recovery.createRecoveryToken(u.id, admin.id);
-    const second = recovery.createRecoveryToken(u.id, admin.id);
+    const { token: first } = recovery.createRecoveryToken(u.id, admin.id);
+    const { token: second } = recovery.createRecoveryToken(u.id, admin.id);
     expect(second).not.toBe(first);
     expect(recovery.findLiveRecoveryToken(first)).toBeNull();
     expect(recovery.findLiveRecoveryToken(second)).toMatchObject({ userId: u.id });
@@ -75,7 +76,7 @@ describe('createRecoveryToken', () => {
 describe('findLiveRecoveryToken', () => {
   it('finds a live token by its raw value', () => {
     const u = createUser('r-find');
-    const token = recovery.createRecoveryToken(u.id, admin.id);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id);
     expect(recovery.findLiveRecoveryToken(token)).toMatchObject({
       userId: u.id,
       createdBy: admin.id,
@@ -85,7 +86,7 @@ describe('findLiveRecoveryToken', () => {
   it('returns null for unknown, empty, and expired tokens alike', () => {
     const u = createUser('r-find-dead');
     const now = Date.UTC(2026, 0, 1);
-    const token = recovery.createRecoveryToken(u.id, admin.id, now);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id, now);
     expect(recovery.findLiveRecoveryToken('nope')).toBeNull();
     expect(recovery.findLiveRecoveryToken('')).toBeNull();
     expect(recovery.findLiveRecoveryToken(null)).toBeNull();
@@ -94,7 +95,7 @@ describe('findLiveRecoveryToken', () => {
 
   it('does not spend the token', () => {
     const u = createUser('r-probe');
-    const token = recovery.createRecoveryToken(u.id, admin.id);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id);
     recovery.findLiveRecoveryToken(token);
     recovery.findLiveRecoveryToken(token);
     expect(recovery.consumeRecoveryToken(token)).toBe(u.id);
@@ -104,7 +105,7 @@ describe('findLiveRecoveryToken', () => {
 describe('consumeRecoveryToken', () => {
   it('spends a live token exactly once', () => {
     const u = createUser('r-consume');
-    const token = recovery.createRecoveryToken(u.id, admin.id);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id);
     expect(recovery.consumeRecoveryToken(token)).toBe(u.id);
     // The second attempt is the one a leaked link would make.
     expect(recovery.consumeRecoveryToken(token)).toBeNull();
@@ -114,10 +115,10 @@ describe('consumeRecoveryToken', () => {
   it('refuses an expired token', () => {
     const u = createUser('r-consume-expired');
     const now = Date.UTC(2026, 0, 1);
-    const token = recovery.createRecoveryToken(u.id, admin.id, now);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id, now);
     expect(recovery.consumeRecoveryToken(token, now + DAY + 1)).toBeNull();
     // Still live a minute before the deadline.
-    const fresh = recovery.createRecoveryToken(u.id, admin.id, now);
+    const { token: fresh } = recovery.createRecoveryToken(u.id, admin.id, now);
     expect(recovery.consumeRecoveryToken(fresh, now + DAY - 60_000)).toBe(u.id);
   });
 
@@ -142,7 +143,7 @@ describe('purgeExpiredRecoveryTokens', () => {
     const live = createUser('r-purge-live');
     const now = Date.UTC(2026, 0, 1);
     recovery.createRecoveryToken(stale.id, admin.id, now);
-    const liveToken = recovery.createRecoveryToken(live.id, admin.id, now + DAY);
+    const { token: liveToken } = recovery.createRecoveryToken(live.id, admin.id, now + DAY);
     recovery.purgeExpiredRecoveryTokens(now + DAY + 1);
     expect(
       db.prepare('SELECT 1 FROM account_recovery_tokens WHERE user_id = ?').get(stale.id),
@@ -156,7 +157,7 @@ describe('purgeExpiredRecoveryTokens', () => {
 describe('foreign keys', () => {
   it('deleting the account wipes its link', () => {
     const u = createUser('r-cascade');
-    const token = recovery.createRecoveryToken(u.id, admin.id);
+    const { token } = recovery.createRecoveryToken(u.id, admin.id);
     db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
     expect(recovery.findLiveRecoveryToken(token)).toBeNull();
   });
@@ -166,7 +167,7 @@ describe('foreign keys', () => {
     // to the account being recovered, not to whoever issued it.
     const issuer = createUser('r-departing-admin', { role: 'admin' });
     const u = createUser('r-orphaned-link');
-    const token = recovery.createRecoveryToken(u.id, issuer.id);
+    const { token } = recovery.createRecoveryToken(u.id, issuer.id);
     db.prepare('DELETE FROM users WHERE id = ?').run(issuer.id);
     expect(recovery.findLiveRecoveryToken(token)).toMatchObject({ userId: u.id, createdBy: null });
     expect(recovery.consumeRecoveryToken(token)).toBe(u.id);
