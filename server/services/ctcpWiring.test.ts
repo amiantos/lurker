@@ -11,7 +11,7 @@
 // MUST be first — redirect DATABASE_PATH before the static imports below open
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
@@ -63,12 +63,19 @@ function harness() {
   conn.client.ctcpRequest = ctcpRequest;
   conn.client.ctcpResponse = ctcpResponse;
   conn.publishEphemeral = publishEphemeral;
+  // Where each ctcp line went and what it said — all any assertion here reads.
   const ctcpLines = () =>
-    publishEphemeral.mock.calls.map((c) => c[0]).filter((e) => e.type === 'ctcp') as Array<{
-      target: string;
-      text: string;
-    }>;
+    publishEphemeral.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.type === 'ctcp')
+      .map((e) => ({ target: e.target as string, text: e.text as string }));
   return { conn, ctcpRequest, ctcpResponse, publishEphemeral, ctcpLines };
+}
+
+// Every Date.now() reading is a new millisecond. Undo with vi.restoreAllMocks().
+function tickingClock() {
+  let now = 1_700_000_000_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => ++now);
 }
 
 describe('inbound CTCP request (auto-reply + surface)', () => {
@@ -470,19 +477,24 @@ describe('outbound CTCP needs a writable connection', () => {
 // so the half that says "you tried" and the half that says "it failed" landed in
 // different buffers, and WHICH buffer depended on why it failed.
 describe('a failed /ctcp reports where it was issued (#821)', () => {
-  type Lines = () => Array<{ target: string; text: string }>;
+  // ⚠ Under a clock that ticks on EVERY Date.now() reading. Three of these were
+  // the CI flake: sendCtcpRequest stamped the request, then noteUserSend
+  // recorded the send as a nick intent with its own reading, and whenever a
+  // millisecond boundary fell between the two the 401 path took the request's
+  // OWN intent for a newer move and skipped it — or, with two requests, took
+  // the second's for a move newer than the first. A few percent of full-suite
+  // runs; certain here, so the same tests pin the fix instead.
+  beforeEach(tickingClock);
+  afterEach(() => vi.restoreAllMocks());
 
-  // ctcpLines() hands back whole publish events; assertions here only care where
-  // a line went and what it said.
-  const said = (lines: Array<{ target: string; text: string }>) =>
-    lines.map((l) => ({ target: l.target, text: l.text }));
+  type Lines = () => Array<{ target: string; text: string }>;
 
   // Sends a /ctcp from #anime, then hands back only the lines that came after,
   // so the outbound echo doesn't have to be filtered out of every assertion.
   function issued(conn: IrcConnection, ctcpLines: Lines) {
     conn.sendCtcpRequest('#anime', 'bob', 'VERSION', '');
     const before = ctcpLines().length;
-    return () => said(ctcpLines().slice(before));
+    return () => ctcpLines().slice(before);
   }
 
   it('puts the echo and the failure in the same buffer', () => {
@@ -490,7 +502,7 @@ describe('a failed /ctcp reports where it was issued (#821)', () => {
     conn.sendCtcpRequest('#anime', 'bob', 'VERSION', '');
     conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
 
-    expect(said(ctcpLines())).toEqual([
+    expect(ctcpLines()).toEqual([
       { target: '#anime', text: '→ CTCP VERSION to bob' },
       { target: '#anime', text: "bob isn't on this network." },
     ]);
@@ -543,7 +555,7 @@ describe('a failed /ctcp reports where it was issued (#821)', () => {
   });
 
   it('consumes the request, so a later unrelated 401 is not claimed by it', () => {
-    // The hazard takeCommandChannel had to learn in #815: one command, one
+    // The hazard takeCommandIntent had to learn in #815: one command, one
     // bounce. A spent entry left in the map lies in wait.
     const { conn, ctcpLines } = harness();
     const after = issued(conn, ctcpLines);
@@ -607,7 +619,7 @@ describe('a failed /ctcp reports where it was issued (#821)', () => {
 
     conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
 
-    expect(said(ctcpLines().slice(before))).toEqual([
+    expect(ctcpLines().slice(before)).toEqual([
       { target: ':server:1', text: "bob isn't on this network." },
     ]);
   });
@@ -624,9 +636,6 @@ describe('a failed /ctcp reports where it was issued (#821)', () => {
 // or an outstanding CTCP quietly becomes an attractor for every later failure
 // naming the same target.
 describe('a CTCP claims a failure only while it is the last thing sent (#821)', () => {
-  const said = (lines: Array<{ target: string; text: string }>) =>
-    lines.map((l) => ({ target: l.target, text: l.text }));
-
   it('yields to a real message sent after it', () => {
     // The #434 rule. /ctcp bob from #anime, bob ignores it (they exist), then
     // the user messages bob and bob has since quit. That 401 answers the
@@ -685,7 +694,7 @@ describe('a CTCP claims a failure only while it is the last thing sent (#821)', 
 
       conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
 
-      expect(said(ctcpLines().slice(before))).toEqual([
+      expect(ctcpLines().slice(before)).toEqual([
         { target: '#manga', text: "bob isn't on this network." },
       ]);
     } finally {
@@ -735,7 +744,7 @@ describe('a CTCP claims a failure only while it is the last thing sent (#821)', 
 
       conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
 
-      expect(said(ctcpLines().slice(before))).toEqual([
+      expect(ctcpLines().slice(before)).toEqual([
         { target: '#manga', text: "bob isn't on this network." },
       ]);
     } finally {
@@ -801,5 +810,103 @@ describe('CTCP routing survives the shapes clients actually send (#821 review)',
     const last = ctcpLines()[ctcpLines().length - 1];
     expect(last.target).toBe('#anime'); // not the server buffer as unsolicited
     expect(last.text).toContain('SomeClient 1.0');
+  });
+});
+
+describe('a /whois between requests is ordered by sequence, not by the clock', () => {
+  // The other edge of the ticking clock over the #821 block: a frozen one,
+  // where two moves share a millisecond and only their order can tell them
+  // apart. A per-connection move sequence orders them; Date.now() cannot.
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('a /whois between two requests still outranks only the earlier one', () => {
+    // The gate the fix must not loosen: a raw command IS a newer move, and a
+    // later send must not erase its claim on the earlier request. One numeric
+    // on purpose: takeCommandIntent consumes the whois with it.
+    tickingClock();
+    const { conn, ctcpLines } = harness();
+    conn.client.raw = vi.fn<(line: string) => void>();
+    conn.sendCtcpRequest('#anime', 'bob', 'CLIENTINFO', '');
+    conn.raw('WHOIS bob');
+    conn.sendCtcpRequest('#manga', 'bob', 'VERSION', '');
+    const before = ctcpLines().length;
+
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
+
+    expect(ctcpLines().slice(before)).toEqual([
+      { target: '#manga', text: "bob isn't on this network." },
+    ]);
+  });
+
+  it('a same-type request issued after the /whois is not hidden by the one it outranked', () => {
+    // VERSION is the type people actually send, so both requests share one
+    // queue. Judged by its head alone, the outranked older request hid the
+    // newer one and the #manga echo never got its outcome. The outranked one
+    // stays in the queue, though: it can still catch its own late reply.
+    tickingClock();
+    const { conn, ctcpLines } = harness();
+    conn.client.raw = vi.fn<(line: string) => void>();
+    conn.sendCtcpRequest('#anime', 'bob', 'VERSION', '');
+    conn.raw('WHOIS bob');
+    conn.sendCtcpRequest('#manga', 'bob', 'VERSION', '');
+    const before = ctcpLines().length;
+
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
+    expect(ctcpLines().slice(before)).toEqual([
+      { target: '#manga', text: "bob isn't on this network." },
+    ]);
+
+    conn.client.emit('ctcp response', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      target: 'alice',
+      type: 'VERSION',
+      message: 'VERSION LateClient 1.0',
+    });
+    const last = ctcpLines()[ctcpLines().length - 1];
+    expect(last.target).toBe('#anime');
+    expect(last.text).toContain('LateClient 1.0');
+  });
+
+  it('a /whois in the same millisecond as the request still outranks it', () => {
+    // A scripted or MCP client can land both frames in one chunk, and wsHub
+    // dispatches them in one tick. The outranked request's 401 still goes
+    // somewhere — the server buffer, as an unclaimed 401 does.
+    vi.useFakeTimers();
+    const { conn, ctcpLines } = harness();
+    conn.client.raw = vi.fn<(line: string) => void>();
+    conn.sendCtcpRequest('#anime', 'bob', 'CLIENTINFO', '');
+    const before = ctcpLines().length;
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.raw('WHOIS bob');
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
+
+    expect(ctcpLines().slice(before)).toHaveLength(0);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'error', target: ':server:1' }),
+    );
+  });
+
+  it('a request in the same millisecond as an earlier /whois still claims', () => {
+    // The other order of the same tie — what a `<=` on timestamps would break.
+    vi.useFakeTimers();
+    const { conn, ctcpLines } = harness();
+    conn.client.raw = vi.fn<(line: string) => void>();
+    conn.raw('WHOIS bob');
+    conn.sendCtcpRequest('#anime', 'bob', 'CLIENTINFO', '');
+    const before = ctcpLines().length;
+
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
+
+    expect(ctcpLines().slice(before)).toEqual([
+      { target: '#anime', text: "bob isn't on this network." },
+    ]);
   });
 });

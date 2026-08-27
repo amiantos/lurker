@@ -613,9 +613,14 @@ export class IrcConnection {
   // reports its outcome back to the buffer it was issued from. Both count for
   // the rejection handler; only the former may open a DM buffer (#817).
   lastUserSendAt: Map<string, { at: number; conversational: boolean }>;
-  // nick → the user's last move on them, for placing a 401 (#434). A null
-  // channel means the move was a direct one (a query, a whois).
-  lastNickIntent = new Map<string, { channel: string | null; at: number }>();
+  // nick → the user's last raw COMMAND naming them, for placing a 401 (#434):
+  // what went out through raw() — /whois, /kick #c nick, and a /raw PRIVMSG or
+  // NOTICE counts too. A null channel means the command was a direct one (a
+  // whois), or a channel command that a later DM send superseded: noteUserSend
+  // nulls the channel here but records nothing of its own, because the say /
+  // notice / ctcp verbs never pass through raw(). `seq` orders the command
+  // against outstanding CTCP requests, see takeCtcpIssuer.
+  lastNickIntent = new Map<string, { channel: string | null; at: number; seq: number }>();
   // Channels we auto-issued a WHO for on join (lowercase). The auto-WHO learns
   // away/ident state and would flood the server buffer if echoed per-member, so
   // the 'wholist' handler consumes these silently. Any wholist NOT in this set
@@ -654,7 +659,13 @@ export class IrcConnection {
   // buffer the /ctcp was issued from. Key = `${nick-lc} ${TYPE}` → a FIFO queue
   // of issuing buffers, so two concurrent same-type queries to one nick route
   // their replies back in order. Bounded + TTL-pruned on access.
-  ctcpOutstanding: Map<string, Array<{ issuingTarget: string; sentAt: number }>>;
+  ctcpOutstanding: Map<string, Array<{ issuingTarget: string; sentAt: number; seq: number }>>;
+  // One counter orders every move on a nick — CTCP requests and raw commands —
+  // for takeCtcpIssuer's "which came last" rule. A sequence, not the wall
+  // clock: two moves can share a millisecond (a scripted client's frames land
+  // in one chunk and wsHub dispatches them in one tick), and a clock can step
+  // backwards. `sentAt`/`at` stay for the duration windows, which are durations.
+  moveSeq = 0;
   // The raw 001–005 registration burst as the server sent it, captured by the
   // 'raw' handler (reset on each 001). The bouncer replays these verbatim
   // (nick-rewritten) to IRC clients that attach mid-session, so they see the
@@ -2975,15 +2986,14 @@ export class IrcConnection {
       // aimed at a named channel, seconds ago — against "we have DM history
       // with this nick at some point in the past".
       if (tag === 'no_such_nick' && eventNick) {
-        // Read before takeCommandChannel consumes it: a nick-only command
-        // (/whois, /whowas) records an intent but is not a SEND, so
-        // takeCtcpIssuer's "is the CTCP still the last move here" gate — which
-        // reads lastUserSendAt — cannot see it on its own. Both maps record
-        // moves on a nick; the rule is only true to its own statement if it
-        // consults both (Copilot, PR #823).
-        const nickIntentAt = this.lastNickIntent.get(eventNick.toLowerCase())?.at ?? null;
-        const commandChannel = this.takeCommandChannel(eventNick);
-        const joined = commandChannel ? this.channelState(commandChannel) : undefined;
+        // The command's `seq` rides along for the CTCP bucket below: a nick-only
+        // command (/whois, /whowas) is not a SEND, so takeCtcpIssuer's "is the
+        // CTCP still the last move here" gate — which reads lastUserSendAt —
+        // cannot see it on its own. Both maps record moves on a nick; the rule
+        // is only true to its own statement if it consults both (Copilot, PR
+        // #823).
+        const command = this.takeCommandIntent(eventNick);
+        const joined = command?.channel ? this.channelState(command.channel) : undefined;
         if (joined) {
           this.publish({
             type: 'error',
@@ -3004,7 +3014,7 @@ export class IrcConnection {
         // echo and the reply are both transient status. A persisted error row
         // would outlive the echo that gives it meaning and strand "bob isn't on
         // this network." in a channel after a reload.
-        const ctcpIssuer = this.takeCtcpIssuer(eventNick, nickIntentAt);
+        const ctcpIssuer = this.takeCtcpIssuer(eventNick, command?.seq ?? null);
         if (ctcpIssuer) {
           this.surfaceCtcp(ctcpIssuer, `${eventNick} isn't on this network.`);
           return;
@@ -4475,7 +4485,7 @@ export class IrcConnection {
   // unrelated 401.
   //
   // ⚠ CONSUMES the entry, on the "one command, one bounce" discipline
-  // takeCommandChannel had to learn in #815: a spent CTCP left lying around is
+  // takeCommandIntent had to learn in #815: a spent CTCP left lying around is
   // exactly the shape that lies in wait and claims a later unrelated failure.
   //
   // ⚠ ctcpOutstanding is keyed by nick AND type, but a 401 names only the nick,
@@ -4490,8 +4500,8 @@ export class IrcConnection {
   // ⚠ Keys are `<nick-lc> <TYPE>`, not the bare nick. The re-key this replaces
   // read `ctcpOutstanding.get(oldNick)`, a key that cannot exist, so the queue
   // never followed a rename at all. A rename ONTO a nick we already have
-  // requests out to merges rather than clobbers, re-sorted by send time so the
-  // FIFO pairing both consumers rely on still holds.
+  // requests out to merges rather than clobbers, re-sorted by move sequence so
+  // the FIFO pairing both consumers rely on still holds.
   rekeyCtcpOutstanding(oldNick: string, newNick: string): void {
     const oldLower = oldNick.toLowerCase();
     const newLower = newNick.toLowerCase();
@@ -4509,18 +4519,30 @@ export class IrcConnection {
       this.ctcpOutstanding.delete(key);
       const existing = this.ctcpOutstanding.get(moved);
       const merged = existing ? [...existing, ...queue] : queue;
-      merged.sort((a, b) => a.sentAt - b.sentAt);
+      merged.sort((a, b) => a.seq - b.seq);
       this.ctcpOutstanding.set(moved, merged);
     }
   }
 
   //
-  // `newerMoveAt` is the timestamp of a non-send move on this nick (a /whois),
-  // which the lastUserSendAt gate above is blind to. A request older than it is
-  // no longer the user's last move, so it must not claim this numeric — see the
-  // 401 bucket. Per-entry rather than a blanket refusal: with two requests
-  // outstanding and the whois between them, the NEWER one is still the answer.
-  takeCtcpIssuer(nick: string, newerMoveAt: number | null = null): string | null {
+  // `newerMoveSeq` is the move sequence of a non-send move on this nick (a
+  // /whois), which the lastUserSendAt gate above is blind to. A request
+  // sequenced before it is no longer the user's last move, so it must not claim
+  // this numeric — see the 401 bucket. Per-entry rather than a blanket refusal:
+  // with two requests outstanding and the whois between them, the NEWER one is
+  // still the answer, whether or not they share a type.
+  //
+  // Null from the send-rejection path on purpose: a 531/404/477 answers a
+  // SEND, and the only sends lastNickIntent knows are /raw PRIVMSG lines.
+  // Weighing a /whois there would skip a refused /ctcp into the recentUserSend
+  // bucket beneath it, which conjures a DM for the failure — the #817 anti-goal.
+  //
+  // Known and unchanged: takeCommandIntent consumes the whois with the FIRST
+  // numeric, so when the server answers both commands (bob is gone and the
+  // whois lands inside the PRIVMSG's round trip) the rule swaps them — the
+  // request's own 401 falls through, and the whois's is presented as the
+  // request's. Both lines show; the buffers are transposed.
+  takeCtcpIssuer(nick: string, newerMoveSeq: number | null = null): string | null {
     const now = Date.now();
     this.pruneCtcpOutstanding(now);
     const lower = nick.toLowerCase();
@@ -4544,22 +4566,31 @@ export class IrcConnection {
     // catch an unrelated failure long before it stops being able to catch a reply.
     if (now - lastSend.at > SEND_REJECTION_ATTRIBUTION_MS) return null;
     let bestKey: string | null = null;
-    let bestAt = Infinity;
+    let bestIndex = -1;
+    let bestSeq = Infinity;
     for (const [key, queue] of this.ctcpOutstanding) {
       // Keys are `<nick-lc> <TYPE>`; sendCtcpRequest guarantees the type is a
       // single token, so the last space splits them unambiguously.
       if (key.slice(0, key.lastIndexOf(' ')) !== lower) continue;
-      const head = queue[0]; // each queue is already oldest-first
-      if (head && now - head.sentAt > SEND_REJECTION_ATTRIBUTION_MS) continue;
-      if (head && newerMoveAt != null && head.sentAt < newerMoveAt) continue;
-      if (head && head.sentAt < bestAt) {
-        bestAt = head.sentAt;
+      // Each queue is oldest-first. Its candidate is the first entry still
+      // inside the send window and not outranked. The ones before it stay put:
+      // past the window or outranked, each can still catch its own late reply,
+      // which handleInboundCtcpReply pairs from the head.
+      const i = queue.findIndex(
+        (e) =>
+          now - e.sentAt <= SEND_REJECTION_ATTRIBUTION_MS &&
+          (newerMoveSeq == null || e.seq > newerMoveSeq),
+      );
+      const candidate = i === -1 ? undefined : queue[i];
+      if (candidate && candidate.seq < bestSeq) {
+        bestSeq = candidate.seq;
         bestKey = key;
+        bestIndex = i;
       }
     }
     if (!bestKey) return null;
     const queue = this.ctcpOutstanding.get(bestKey);
-    const entry = queue?.shift();
+    const entry = queue?.splice(bestIndex, 1)[0];
     if (queue && queue.length === 0) this.ctcpOutstanding.delete(bestKey);
     return entry ? this.ctcpIssuingBuffer(entry.issuingTarget) : null;
   }
@@ -5063,6 +5094,7 @@ export class IrcConnection {
     if (this.disposed) return;
     const issuing = issuingTarget || this.serverTarget();
     const now = Date.now();
+    const seq = ++this.moveSeq;
     // A CTCP type is a single token on the wire — parseCtcp splits the inbound
     // side at the first space. Only the web client's own /ctcp guarantees that
     // shape; iOS and MCP hand us whatever was typed, and a type of "PING FOO"
@@ -5084,7 +5116,7 @@ export class IrcConnection {
     this.pruneCtcpOutstanding(now);
     const key = this.ctcpKey(target, t);
     const queue = this.ctcpOutstanding.get(key) ?? [];
-    queue.push({ issuingTarget: issuing, sentAt: now });
+    queue.push({ issuingTarget: issuing, sentAt: now, seq });
     this.ctcpOutstanding.set(key, queue);
     this.surfaceCtcp(issuing, `→ CTCP ${t} to ${target}`);
   }
@@ -5783,11 +5815,22 @@ export class IrcConnection {
       if (now - seen.at > SEND_REJECTION_ATTRIBUTION_MS) this.lastUserSendAt.delete(key);
     }
     this.lastUserSendAt.set(target.toLowerCase(), { at: now, conversational });
-    // A direct message is a channel-less intent (#434): messaging someone you
-    // just tried to kick means the next 401 answers the message, not the kick.
-    // say/action/notice all funnel through here, and none of them pass through
-    // raw() where noteOutgoingCommand would otherwise see them.
-    if (!isChannelTarget(target)) this.noteNickIntent(target, null);
+    // A direct message supersedes a channel command's claim on the next 401
+    // (#434): messaging someone you just tried to kick means that 401 answers
+    // the message, not the kick. say/action/notice all funnel through here, and
+    // none of them pass through raw() where noteOutgoingCommand would see them.
+    //
+    // ⚠ It nulls the command's channel and records NOTHING of its own. A send
+    // is not a move takeCtcpIssuer may hold against an outstanding request —
+    // every /ctcp is a send, so recording one here (with its own clock reading)
+    // let a request outrank ITSELF, and a second request outrank the first,
+    // whenever a millisecond boundary fell between the readings: the
+    // ctcpWiring CI flake, and in production a /ctcp that silently lost its
+    // failure routing. lastNickIntent holds commands only.
+    if (!isChannelTarget(target)) {
+      const seen = this.lastNickIntent.get(target.toLowerCase());
+      if (seen) seen.channel = null;
+    }
   }
 
   recentUserSend(target: string): boolean {
@@ -5817,7 +5860,7 @@ export class IrcConnection {
     for (const [key, seen] of this.lastNickIntent) {
       if (now - seen.at > SEND_REJECTION_ATTRIBUTION_MS) this.lastNickIntent.delete(key);
     }
-    this.lastNickIntent.set(nick.toLowerCase(), { channel, at: now });
+    this.lastNickIntent.set(nick.toLowerCase(), { channel, at: now, seq: ++this.moveSeq });
   }
 
   noteOutgoingCommand(line: string): void {
@@ -5826,17 +5869,20 @@ export class IrcConnection {
     }
   }
 
-  // The channel a 401 for `nick` belongs in, if the user's last move on them was
-  // a channel command. CONSUMES the intent: one command produces one bounce, and
-  // a spent entry left lying around is exactly what put a query's 401 into the
-  // channel the nick was last kicked from.
-  takeCommandChannel(nick: string): string | null {
+  // The user's last raw command naming `nick`, CONSUMED: one command produces
+  // one bounce, and a spent entry left lying around is exactly what put a
+  // query's 401 into the channel the nick was last kicked from. `channel` is
+  // where that 401 belongs if the command named one and is still inside the
+  // window; `seq` comes back regardless, because ordering the command against
+  // an outstanding CTCP request has no window of its own — takeCtcpIssuer
+  // applies the send window to the request.
+  takeCommandIntent(nick: string): { channel: string | null; seq: number } | null {
     const key = nick.toLowerCase();
     const seen = this.lastNickIntent.get(key);
     if (!seen) return null;
     this.lastNickIntent.delete(key);
-    if (Date.now() - seen.at > SEND_REJECTION_ATTRIBUTION_MS) return null;
-    return seen.channel;
+    const live = Date.now() - seen.at <= SEND_REJECTION_ATTRIBUTION_MS;
+    return { channel: live ? seen.channel : null, seq: seen.seq };
   }
 
   // The server refused an outgoing message to `target` (ERR_CANNOTSENDTOCHAN
@@ -5854,7 +5900,9 @@ export class IrcConnection {
     // report in the issuing buffer or in the peer's DM depending on WHY it
     // failed. Ahead of the recentUserSend gate because an outstanding request is
     // the stronger claim — the user asked for this outcome by name, and the two
-    // windows are not the same length.
+    // windows are not the same length. No newerMoveSeq here, and not by
+    // oversight — see takeCtcpIssuer: letting a /whois outrank a refused send
+    // would drop it into the recentUserSend bucket below.
     const ctcpIssuer = this.takeCtcpIssuer(target);
     if (ctcpIssuer) {
       this.surfaceCtcp(ctcpIssuer, sendRejectionText(reason));
