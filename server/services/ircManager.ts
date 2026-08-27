@@ -11,6 +11,7 @@ import {
 } from './engineLink.js';
 import * as systemLog from './systemLog.js';
 import connectScheduler from './connectScheduler.js';
+import restoreGate from './restoreGate.js';
 import { listNetworksForUser, getNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import {
@@ -961,6 +962,9 @@ class IrcManager extends EventEmitter {
     // Drop any queued (not-yet-fired) connect launches first — otherwise a
     // staggered launch could fire against a connection we're about to tear down.
     connectScheduler.reset();
+    // Likewise a channel-state refresh still queued at the cap (#842): the
+    // detaches below would otherwise grant it to a connection on its way out.
+    restoreGate.reset();
     for (const userMap of this.byUser.values()) {
       for (const conn of userMap.values()) {
         try {

@@ -61,6 +61,7 @@ import {
 import { startIgnoreSweeper, stopIgnoreSweeper } from './services/ignoreSweeper.js';
 import { sweepTempUploads } from './routes/uploads.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
+import restoreGate from './services/restoreGate.js';
 import * as systemMessages from './db/systemMessages.js';
 
 // Wired here rather than inside processGuards (which must stay import-free —
@@ -169,7 +170,9 @@ systemLog.log({ scope: 'server', text: `Lurker server starting up (edition: ${ED
 // Watch for synchronous event-loop stalls (a heavy client-connect snapshot on
 // slow storage can starve IRC socket I/O and trip ping timeouts, dropping every
 // network at once). Console-only; read via `docker logs`. See eventLoopMonitor.
-startEventLoopMonitor();
+// The stall line names the engine-restore refreshes in flight, if any — the
+// known heavy hitter after a re-attach (#842).
+startEventLoopMonitor({ context: () => restoreGate.describeInFlight() });
 
 // Built-in identd (opt-in via LURKER_IDENTD_ENABLED). A multi-user gateway
 // needs it so IRC networks can attribute each user behind the shared IP; bind

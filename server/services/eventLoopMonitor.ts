@@ -39,8 +39,15 @@ function envFlag(name: string): boolean {
 
 // intervalMs: how often we poll the histogram for its window max. warnMs:
 // minimum stall (max delay seen in a window) worth logging — below this is
-// normal scheduler jitter, not a stall.
-export function startEventLoopMonitor(opts: { intervalMs?: number; warnMs?: number } = {}): void {
+// normal scheduler jitter, not a stall. context: what to append to the line —
+// which subsystem's work is in flight — so the next report says where the time
+// went, not just how long. Sampled at the poll, i.e. just AFTER the stall it
+// reports (the stall itself is synchronous, so nothing can sample during it);
+// a null/empty answer appends nothing, and a throw is swallowed — the monitor
+// must never be the thing that fails on the stall path.
+export function startEventLoopMonitor(
+  opts: { intervalMs?: number; warnMs?: number; context?: () => string | null } = {},
+): void {
   if (envFlag('LURKER_EVENT_LOOP_MONITOR_DISABLED')) return;
   if (timer) return;
   // Floor the poll interval so a misconfigured 0/tiny value can't turn into a
@@ -60,9 +67,19 @@ export function startEventLoopMonitor(opts: { intervalMs?: number; warnMs?: numb
     const maxMs = Math.round(h.max / 1e6);
     h.reset();
     if (maxMs >= warnMs) {
+      let context = '';
+      if (opts.context) {
+        try {
+          const c = opts.context();
+          if (c) context = `; ${c}`;
+        } catch (_) {
+          /* never let a describe() break the monitor */
+        }
+      }
       console.warn(
         `[event-loop] stalled ~${maxMs}ms — synchronous work blocked socket I/O ` +
-          `(a stall past ~120s trips IRC ping timeouts; watch for a reconnect burst near this line)`,
+          `(a stall past ~120s trips IRC ping timeouts; watch for a reconnect burst near this line)` +
+          context,
       );
     }
   }, intervalMs);
