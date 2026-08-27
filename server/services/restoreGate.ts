@@ -21,33 +21,46 @@
 // the ircd side while it does — the socket is up, the engine answered PINGs
 // throughout — it is only "when does this channel's member list come back".
 //
+// The unit of a turn is one STEP (one channel's three requests), not a
+// connection's whole walk: each step is its own reservation at the back of the
+// FIFO, so with more connections than slots the steps round-robin — every
+// session's first member list comes back early, and a connection whose server
+// answers slowly (or not at all: the step deadline) holds a slot for one step
+// at a time, never for all of its channels.
+//
 // Model: a counting semaphore with a FIFO wait queue, not a rate limiter like
 // connectScheduler. A connect may never register, so the scheduler can't await
-// one; a refresh has a definite end (its queue drains) and definite abort
-// points (the socket closes, the connection re-dials or re-attaches, the
-// network is removed), all of which release the slot. A holder that stalls is
-// bounded by drainRestoreQueue's per-step deadline: every step ends, so every
-// queue drains, so every slot comes back.
+// one; a step has a definite end (its replies, or the deadline) and definite
+// abort points (the socket closes, the connection re-dials or re-attaches, the
+// network is removed), all of which release the slot. Under the cap a step
+// starts synchronously inside start(), so a single-user instance with a
+// handful of networks sees no change at all.
 //
-// Under the cap the refresh starts synchronously inside acquire(), so a
-// single-user instance with a handful of networks sees no change at all.
+// This bounds ONE producer of the post-restart burst: the refresh a re-attach
+// runs for channels the socket is already in. A socket the engine registered
+// unattended has no channels to refresh; its autojoin JOINs at `live`, and a
+// non-engine restart's fresh connects (spaced only by connectScheduler), each
+// bring their own volunteered 353/366 + WHO per channel, ungated here.
+
+import { envInt } from '../utils/envInt.js';
 
 const DEFAULT_CONCURRENCY = 4;
 // How many holders describeInFlight() names before it says "+N more".
 const DESCRIBE_MAX = 6;
 
-export type RestoreSlotState = 'waiting' | 'active' | 'released';
-
 export interface RestoreSlot {
-  // Give the slot back, or leave the queue if it was never granted. Idempotent.
+  // Ask for the turn. `run` fires when a slot is free — synchronously, inside
+  // start(), while the gate is under its cap. Once only; a slot released
+  // before it came up never starts.
+  start(run: () => void): void;
+  // Give the turn back, or leave the queue if it never came up. Idempotent.
   release(): void;
-  state(): RestoreSlotState;
 }
 
 export interface RestoreGateOptions {
-  // How many refreshes may run at once; 0 (or non-finite) = no cap. Read on
-  // every decision, like the other restore knobs, so a test — or an operator —
-  // does not have to restart the process for it to take.
+  // How many steps may be in flight at once; 0 (or non-finite) = no cap. Read
+  // on every decision, like the other restore knobs, so a test — or an
+  // operator — does not have to restart the process for it to take.
   concurrency?: () => number;
   now?: () => number;
 }
@@ -55,15 +68,10 @@ export interface RestoreGateOptions {
 interface Entry {
   id: number;
   describe: () => string;
-  run: (slot: RestoreSlot) => void;
-  slot: RestoreSlot;
-}
-
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  run: (() => void) | null;
+  released: boolean;
+  // Sat in the queue before being granted — what the drained log counts.
+  waited: boolean;
 }
 
 export class RestoreGate {
@@ -73,8 +81,8 @@ export class RestoreGate {
   private readonly active = new Map<number, Entry>();
   private nextId = 1;
   private pumping = false;
-  // Set from the first refresh that has to wait until every refresh is done —
-  // one log line at each end of the burst, never one per queued session.
+  // Set from the first step that has to wait until every step is done — one
+  // log line at each end of the burst, never one per queued step.
   private burst: { since: number; queued: number } | null = null;
 
   constructor(opts: RestoreGateOptions = {}) {
@@ -83,34 +91,27 @@ export class RestoreGate {
     this.now = opts.now ?? (() => Date.now());
   }
 
-  // Ask for a slot. `run` is called with the slot the moment one is free —
-  // synchronously, inside this call, when the gate is under its cap — and the
-  // caller keeps the slot until its refresh is done or abandoned. `describe`
-  // labels the holder for the event-loop monitor (describeInFlight).
-  acquire(describe: () => string, run: (slot: RestoreSlot) => void): RestoreSlot {
-    const id = this.nextId++;
-    const slot: RestoreSlot = {
-      release: () => this.release(id),
-      state: () => {
-        if (this.active.has(id)) return 'active';
-        return this.waiting.some((e) => e.id === id) ? 'waiting' : 'released';
-      },
+  // A slot handle for one step. Two-phase so the caller holds the handle
+  // BEFORE anything can run: start() may grant synchronously, and the step it
+  // runs may give the slot straight back (nothing to ask after all) — with a
+  // one-call API the caller would have nothing to release yet. `describe`
+  // labels the step for the event-loop monitor (describeInFlight).
+  reserve(describe: () => string): RestoreSlot {
+    const entry: Entry = {
+      id: this.nextId++,
+      describe,
+      run: null,
+      released: false,
+      waited: false,
     };
-    const entry: Entry = { id, describe, run, slot };
-    this.waiting.push(entry);
-    this.pump();
-    if (this.waiting.includes(entry)) {
-      if (!this.burst) {
-        this.burst = { since: this.now(), queued: 0 };
-        const n = this.active.size;
-        console.log(
-          `[restore-gate] ${n} connection${n === 1 ? '' : 's'} refreshing channel state after re-attach; ` +
-            `queuing the rest (LURKER_RESTORE_CONCURRENCY=${this.limit()})`,
-        );
-      }
-      this.burst.queued++;
-    }
-    return slot;
+    return {
+      start: (run) => {
+        if (entry.released || entry.run) return;
+        entry.run = run;
+        this.enqueue(entry);
+      },
+      release: () => this.release(entry),
+    };
   }
 
   activeCount(): number {
@@ -123,7 +124,7 @@ export class RestoreGate {
 
   // What the gate is doing right now, for the [event-loop] stall line, or null
   // when idle. Sampled by the monitor at its poll, which runs after the stall
-  // it reports — so this names the refreshes in flight just after, which for a
+  // it reports — so this names the steps in flight just after, which for a
   // stall caused by their replies is the same set.
   describeInFlight(): string | null {
     if (this.active.size === 0 && this.waiting.length === 0) return null;
@@ -141,13 +142,18 @@ export class RestoreGate {
     const more = this.active.size - names.length;
     const list = names.length ? ` (${names.join(', ')}${more > 0 ? `, +${more} more` : ''})` : '';
     const waiting = this.waiting.length > 0 ? `; ${this.waiting.length} waiting` : '';
-    return `re-attach channel-state refreshes in flight: ${this.active.size}${list}${waiting}`;
+    return `re-attach channel-state refresh steps in flight: ${this.active.size}${list}${waiting}`;
   }
 
-  // Drop everything. Called on shutdown (the connections are being detached
-  // and nothing should start a refresh) and by tests. A slot handed out before
-  // the reset releases as a no-op.
+  // Drop everything, running nothing. For shutdown ONLY, and before the
+  // connections are detached: a detach's synchronous 'close' releases its slot,
+  // which would otherwise grant the next queued step to a connection that is
+  // itself about to detach — three requests whose replies land in the engine
+  // backlog and replay to the next process as if it had asked. Any other
+  // caller strands whatever was queued (its channels never get refreshed) and
+  // lifts the cap for the steps still running.
   reset(): void {
+    for (const entry of this.waiting) entry.released = true;
     this.waiting.length = 0;
     this.active.clear();
     this.burst = null;
@@ -158,21 +164,37 @@ export class RestoreGate {
     return Number.isFinite(n) && n > 0 ? n : Infinity;
   }
 
-  private release(id: number): void {
-    const w = this.waiting.findIndex((e) => e.id === id);
+  private enqueue(entry: Entry): void {
+    this.waiting.push(entry);
+    this.pump();
+    if (!this.waiting.includes(entry)) return;
+    entry.waited = true;
+    if (!this.burst) {
+      this.burst = { since: this.now(), queued: 0 };
+      const n = this.active.size;
+      console.log(
+        `[restore-gate] ${n} channel-state refresh step${n === 1 ? '' : 's'} in flight after re-attach; ` +
+          `the rest take turns (LURKER_RESTORE_CONCURRENCY=${this.limit()})`,
+      );
+    }
+  }
+
+  private release(entry: Entry): void {
+    entry.released = true;
+    const w = this.waiting.indexOf(entry);
     if (w >= 0) {
       this.waiting.splice(w, 1);
       this.noteIdle();
       return;
     }
-    if (!this.active.delete(id)) return;
+    if (!this.active.delete(entry.id)) return;
     this.pump();
   }
 
   // Grant slots to waiters, FIFO, while there is room. Re-entrant calls (a
-  // run() that acquires or releases synchronously — a connection with no
-  // channels drains its queue inside its own start) return at once; the
-  // outer loop re-reads the counts each pass and picks the change up.
+  // run() that reserves or releases synchronously — a connection re-queues its
+  // next step from inside the release of its last) return at once; the outer
+  // loop re-reads the counts each pass and picks the change up.
   private pump(): void {
     if (this.pumping) return;
     this.pumping = true;
@@ -180,12 +202,13 @@ export class RestoreGate {
       while (this.waiting.length > 0 && this.active.size < this.limit()) {
         const entry = this.waiting.shift()!;
         this.active.set(entry.id, entry);
+        if (entry.waited && this.burst) this.burst.queued++;
         try {
-          entry.run(entry.slot);
+          entry.run!();
         } catch (err) {
           // A start that threw holds nothing; keeping its slot would wedge
-          // every refresh behind it for the life of the process.
-          console.error('[restore-gate] refresh start threw', err);
+          // every step behind it for the life of the process.
+          console.error('[restore-gate] refresh step threw', err);
           this.active.delete(entry.id);
         }
       }
@@ -198,8 +221,9 @@ export class RestoreGate {
   private noteIdle(): void {
     if (!this.burst || this.waiting.length > 0 || this.active.size > 0) return;
     const secs = ((this.now() - this.burst.since) / 1000).toFixed(1);
+    const n = this.burst.queued;
     console.log(
-      `[restore-gate] re-attach refreshes drained: ${this.burst.queued} waited their turn, ` +
+      `[restore-gate] re-attach refreshes drained: ${n} step${n === 1 ? '' : 's'} waited for a turn, ` +
         `${secs}s since the cap was first hit`,
     );
     this.burst = null;

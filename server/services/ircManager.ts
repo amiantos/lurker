@@ -962,8 +962,9 @@ class IrcManager extends EventEmitter {
     // Drop any queued (not-yet-fired) connect launches first — otherwise a
     // staggered launch could fire against a connection we're about to tear down.
     connectScheduler.reset();
-    // Likewise a channel-state refresh still queued at the cap (#842): the
-    // detaches below would otherwise grant it to a connection on its way out.
+    // Likewise a channel-state refresh step still queued at the cap (#842):
+    // each detach below releases its own step synchronously, which would
+    // otherwise grant the next queued one to a connection on its way out.
     restoreGate.reset();
     for (const userMap of this.byUser.values()) {
       for (const conn of userMap.values()) {

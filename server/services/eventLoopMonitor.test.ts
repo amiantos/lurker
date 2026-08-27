@@ -7,6 +7,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './eventLoopMonitor.js';
+import { until } from '../test-utils/until.js';
 
 // Well above the warn threshold so the histogram sees an unambiguous stall on
 // a loaded CI box, well below anything that would slow the suite.
@@ -18,18 +19,6 @@ function block(ms: number): void {
   while (Date.now() < end) {
     /* spin: a synchronous stall is the thing under test */
   }
-}
-
-function until(pred: () => boolean, ms: number, what: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${what}`));
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
 }
 
 async function stallReport(context?: () => string | null): Promise<string> {

@@ -22,16 +22,10 @@
 // Cheap: the histogram samples in native code; the poll is one read per second.
 
 import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
+import { envInt } from '../utils/envInt.js';
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let histogram: IntervalHistogram | null = null;
-
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
 
 function envFlag(name: string): boolean {
   return /^(1|true|yes|on)$/i.test((process.env[name] || '').trim());

@@ -41,6 +41,7 @@ import ignoreRulesService from './ignoreRulesService.js';
 import connectScheduler from './connectScheduler.js';
 import restoreGate from './restoreGate.js';
 import type { RestoreSlot } from './restoreGate.js';
+import { envInt as reconnectEnvInt } from '../utils/envInt.js';
 import { decideStamp } from './insertDecisions.js';
 import * as systemLog from './systemLog.js';
 import { effectiveSetting, effectiveSettings } from './settingsService.js';
@@ -258,13 +259,6 @@ const SEND_REJECTION_ATTRIBUTION_MS = 15000;
 // EXCEPT a confidently-classified terminal reason (a detected ban or a hard SASL
 // auth failure), where retrying can't help and hammering an actively-rejecting
 // server is antisocial — those stop and require a manual reconnect.
-
-function reconnectEnvInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
 
 // First-retry delay; each subsequent attempt doubles up to the cap.
 const RECONNECT_BASE_MS = reconnectEnvInt('LURKER_RECONNECT_BASE_MS', 2000);
@@ -726,9 +720,9 @@ export class IrcConnection {
   // The restore step in flight: the folded channel and which of its replies
   // are still owed. Null between steps and outside a restore.
   private restoreStep: { key: string; owed: Set<RestoreReply> } | null;
-  // This connection's turn at the process-wide refresh cap (restoreGate):
-  // waiting or held from `restored` until the queue drains or the restore is
-  // abandoned. Null outside a restore.
+  // The step's turn at the process-wide cap (restoreGate): reserved when the
+  // step is queued, held while its requests are out, given back with the step.
+  // Null between steps and outside a restore, like restoreStep.
   private restoreSlot: RestoreSlot | null;
   private engineTransport: EngineTransport | null;
   private engineSocketAlive: boolean;
@@ -4058,10 +4052,19 @@ export class IrcConnection {
         // 353/366, no 332, and the join handler's MODE is skipped on a restore —
         // so ask, one channel at a time, each waiting for the last one's
         // replies (drainRestoreQueue), keeping each channel's replies out of
-        // the server buffer until they arrive. Across connections the asking
-        // waits its turn at the process-wide cap (beginRestoreRefresh).
+        // the server buffer until they arrive. Across connections each step
+        // also takes a turn at the process-wide cap (see drainRestoreQueue).
+        // Our umodes were set after the burst ended (the post-MOTD `MODE nick
+        // +i`), so they are not in the replay either; one line, asked at once
+        // — it is the per-channel replies the cap bounds, not this.
+        this.restoreQuiet.set('*', {
+          until: Date.now() + RESTORE_QUIET_MS,
+          mode: true,
+          topic: false,
+        });
+        this.rawQuiet('MODE', this.currentNick);
         this.restoreQueue = [...this.channels.values()].map((ch) => ch.name);
-        this.beginRestoreRefresh();
+        this.drainRestoreQueue();
         // A socket the engine registered on its own never had its
         // post-registration steps: the connect commands run now, and the
         // manager's rejoin (onceRestored, at `live`) covers the autojoin list.
@@ -4110,58 +4113,19 @@ export class IrcConnection {
     this.restoreUnattended = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
-    this.endRestoreRefresh();
+    this.endRestoreStep();
     this.restoreQuiet.clear();
   }
 
+  // The step is over — answered, timed out, or abandoned (resetRestoreState
+  // on close / connect / dial / attach). Its turn at the cap goes back with
+  // it, whether it was held or still queued.
   private endRestoreStep(): void {
     if (this.restoreTimer) {
       clearTimeout(this.restoreTimer);
       this.restoreTimer = null;
     }
     this.restoreStep = null;
-  }
-
-  // The refresh after a re-attach — our umode, then each channel's state —
-  // starts when the process-wide cap (restoreGate, #842) has room for it: at
-  // once under the cap, otherwise when an earlier connection's queue drains.
-  // The attach is already complete by now (the replay walked, the session is
-  // live); what waits is only when the member lists come back. The umode
-  // request and its quiet window are set here rather than at `restored` so a
-  // wait longer than RESTORE_QUIET_MS cannot leave the 221 rendering as
-  // history.
-  private beginRestoreRefresh(): void {
-    this.endRestoreRefresh();
-    const slot = restoreGate.acquire(
-      () => `net ${this.network.id} ${this.restoreStep?.key ?? '(between steps)'}`,
-      (granted) => {
-        this.restoreSlot = granted;
-        if (this.disposed || this.state !== 'connected') {
-          this.endRestoreRefresh();
-          return;
-        }
-        // Our umodes were set after the burst ended (the post-MOTD `MODE nick
-        // +i`), so they are not in the replay either.
-        this.restoreQuiet.set('*', {
-          until: Date.now() + RESTORE_QUIET_MS,
-          mode: true,
-          topic: false,
-        });
-        this.rawQuiet('MODE', this.currentNick);
-        this.drainRestoreQueue();
-      },
-    );
-    // Granted synchronously: the start above already recorded (or, with an
-    // empty queue, already released) it. Still queued: keep it so an abort
-    // can leave the queue.
-    if (slot.state() === 'waiting') this.restoreSlot = slot;
-  }
-
-  // Done with, or done waiting for, the refresh. Every abort path funnels
-  // here (resetRestoreState on close / connect / dial / attach, and dispose),
-  // so a slot cannot outlive the restore that took it.
-  private endRestoreRefresh(): void {
-    this.endRestoreStep();
     const slot = this.restoreSlot;
     this.restoreSlot = null;
     slot?.release();
@@ -4181,6 +4145,18 @@ export class IrcConnection {
   // WHO is deliberately NOT part of the gate: irc-framework's queue never
   // recovers from a 315 that does not come, and a step waiting on it would
   // turn that one lost reply into a deadline wait for every channel after it.
+  //
+  // Across connections each step is also a turn at the process-wide cap
+  // (restoreGate, #842). A re-attach brings every held connection back in the
+  // same tick — on purpose, the attach registers nothing on the ircd — and
+  // with nothing spreading the refreshes out, N first replies (member rebuild
+  // + WS fan-out, all synchronous) land together: the [event-loop] stall a
+  // busy instance sees after a restart. Each step is its own reservation at
+  // the back of the gate's FIFO, so a connection with more channels than there
+  // are free slots queues its next step behind everyone already waiting —
+  // round-robin, every session's first member list early, rather than one
+  // connection's whole walk at a time. Under the cap the step goes out
+  // synchronously, so a small instance sees no change.
   private drainRestoreQueue(): void {
     this.endRestoreStep();
     // Skip what we are no longer in (a backlog KICK may have arrived in
@@ -4190,11 +4166,19 @@ export class IrcConnection {
     while (name !== undefined && !this.isChannelJoined(name)) {
       name = this.restoreQueue.shift();
     }
-    if (name === undefined) {
-      // Drained: the next connection waiting at the cap may start. Its last
-      // channel's WHO may still be answering — that is outside the gate on
-      // purpose (see above), and one WHO per connection is the most it adds.
-      this.endRestoreRefresh();
+    if (name === undefined) return;
+    const channel = name;
+    const slot = restoreGate.reserve(() => `net ${this.network.id} ${channel}`);
+    this.restoreSlot = slot;
+    slot.start(() => this.sendRestoreStep(channel));
+  }
+
+  // The step itself, once it has its turn. Membership is checked again here:
+  // a backlog KICK may have landed while the turn was queued, and a request
+  // for a channel we are no longer in would resurrect it with the replies.
+  private sendRestoreStep(name: string): void {
+    if (!this.isChannelJoined(name)) {
+      this.drainRestoreQueue();
       return;
     }
     this.restoreQuiet.set(name.toLowerCase(), {
@@ -4215,7 +4199,6 @@ export class IrcConnection {
       () => {
         this.restoreTimer = null;
         if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
-        else this.endRestoreRefresh();
       },
       Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_DEADLINE_MS', RESTORE_STEP_DEADLINE_MS)),
     );
@@ -6149,9 +6132,6 @@ export class IrcConnection {
     this.clearReconnectTimer();
     this.stopLagPinger();
     this.cancelPendingConnectCommands();
-    // A refresh still queued at the cap must not be granted to a dead
-    // connection, and one in flight must not hold the slot until 'close'.
-    this.endRestoreRefresh();
     // Abort any in-flight DCC downloads (their sockets are independent of the IRC
     // socket, so they'd otherwise outlive this connection) and drop resume timers.
     for (const receiver of this.dccReceivers.values()) receiver.cancel();

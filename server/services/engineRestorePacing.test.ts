@@ -15,9 +15,10 @@ import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
-import { EngineServer } from '../engine/server.js';
-import { FakeIrcd } from '../test-utils/fakeIrcd.js';
-import { EngineLink, engineConfigured } from './engineLink.js';
+import type { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { startEngineHarness } from '../test-utils/engineHarness.js';
+import type { EngineHarness } from '../test-utils/engineHarness.js';
+import { until as poll } from '../test-utils/until.js';
 
 const SECRET = 'restore-pacing-secret';
 const CHANNELS = ['#p1', '#p2', '#p3', '#p4', '#p5', '#p6'];
@@ -28,8 +29,8 @@ const CHANNELS = ['#p1', '#p2', '#p3', '#p4', '#p5', '#p6'];
 const HELD = '#p3';
 const DEADLINE_MS = 1500;
 
+let harness: EngineHarness;
 let ircd: FakeIrcd;
-let engine: EngineServer;
 let network: Network;
 let userId: number;
 
@@ -45,44 +46,21 @@ interface Wire {
   line: string;
 }
 const wire: Wire[] = [];
-
-function until(pred: () => boolean, ms = 5000, what = 'condition'): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) {
-        const tail = wire
-          .slice(-60)
-          .map((w) => `${w.dir} ${w.line}`)
-          .join('\n');
-        return reject(new Error(`timed out waiting for ${what}; last wire lines:\n${tail}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
+const wireTail = () =>
+  'last wire lines:\n' +
+  wire
+    .slice(-60)
+    .map((w) => `${w.dir} ${w.line}`)
+    .join('\n');
+const until = (pred: () => boolean, ms = 5000, what = 'condition') =>
+  poll(pred, ms, what, wireTail);
 
 beforeAll(async () => {
-  ircd = await FakeIrcd.start();
-  engine = new EngineServer({
+  harness = await startEngineHarness({
     secret: SECRET,
-    bufferBytes: 64 * 1024,
-    bufferTotalBytes: 1024 * 1024,
-    version: 'test',
-    log: () => {},
+    env: { LURKER_RESTORE_STEP_DEADLINE_MS: String(DEADLINE_MS) },
   });
-  const { port } = await engine.listen(0, '127.0.0.1');
-  process.env.LURKER_ENGINE_URL = `tcp://127.0.0.1:${port}`;
-  process.env.LURKER_ENGINE_SECRET = SECRET;
-  process.env.LURKER_ENGINE_RETRY_BASE_MS = '100';
-  // A full-suite CI run starves the event loop; keep the link's heartbeat well
-  // clear of the run so it can't drop a healthy idle link mid-test.
-  process.env.LURKER_ENGINE_HEARTBEAT_MS = '600000';
-  process.env.LURKER_RESTORE_STEP_DEADLINE_MS = String(DEADLINE_MS);
-  EngineLink.resetForTests();
-  if (!engineConfigured()) throw new Error('engine mode did not switch on');
+  ircd = harness.ircd;
   const user = createUser('restore-pacing');
   userId = user.id;
   network = createNetwork(user.id, {
@@ -96,15 +74,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  ircManager.shutdown();
-  EngineLink.resetForTests();
-  await engine.shutdown('tests done', 500);
-  await ircd.close();
-  delete process.env.LURKER_ENGINE_URL;
-  delete process.env.LURKER_ENGINE_SECRET;
-  delete process.env.LURKER_ENGINE_RETRY_BASE_MS;
-  delete process.env.LURKER_ENGINE_HEARTBEAT_MS;
-  delete process.env.LURKER_RESTORE_STEP_DEADLINE_MS;
+  await harness.stop();
 });
 
 describe('engine restore pacing', () => {

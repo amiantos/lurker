@@ -33,6 +33,8 @@
 // when the throttle matters, so re-running cold-start from an empty scheduler
 // is correct. No persistence, no worker threads.
 
+import { envInt } from '../utils/envInt.js';
+
 export interface ConnectSchedulerOptions {
   // Minimum spacing between two launches to the SAME destination host.
   perHostMs?: number;
@@ -55,13 +57,6 @@ export interface ConnectSchedulerOptions {
 interface Task {
   hostKey: string;
   run: () => void;
-}
-
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 function envFlag(name: string): boolean {
