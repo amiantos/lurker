@@ -450,6 +450,14 @@ router.get('/recovery/:token', (req: Request<{ token: string }>, res: Response) 
 
 // Set a password with a recovery link. The password is validated BEFORE the
 // token is spent, so a too-short one doesn't burn a single-use link.
+//
+// guardCredentialAttempt shares this IP's login backoff — it turns away a
+// caller already being throttled, and clears that state on success. It does NOT
+// count failures here: it records only on 401, and a dead link answers 400.
+// That's deliberate rather than an oversight. Nothing on this route is
+// guessable — the token is 32 random bytes — so failure backoff would buy
+// nothing, while the router-wide limitRequests(authRequestThrottle) above
+// already caps how fast anyone can probe the auth surface at all.
 router.post(
   '/recovery/:token/password',
   guardCredentialAttempt(loginFailureThrottle),
