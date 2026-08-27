@@ -19,7 +19,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
-import { useComposerOverlay, selectNick } from '../composables/useComposerOverlay.js';
+import { useComposerOverlay, selectNick, addressNick } from '../composables/useComposerOverlay.js';
 import { useViewport } from '../composables/useViewport.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useScrollState } from '../composables/useScrollState.js';
@@ -243,6 +243,67 @@ describe('MessageInput Tab-completion', () => {
 
       await tab(el);
       expect(el.value).toBe('alice: ');
+    });
+
+    // The addressing punctuation is a setting (#835). It stores the mark alone
+    // and the space is always appended, so the four cases below are the four
+    // code paths that seed a line-start session — picker, in-place Tab, strip,
+    // Reply — each read through the one helper, and any of them could regress
+    // back to the literal on its own.
+    it('takes the addressing punctuation from the setting, across the cycle', async () => {
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ',';
+      const { el } = await mountComposer();
+
+      await type(el, '@al');
+      await tab(el);
+      expect(el.value).toBe('alexis, ');
+
+      await tab(el);
+      expect(el.value).toBe('alice, ');
+    });
+
+    it('addresses with a bare space when the punctuation setting is empty', async () => {
+      // In-place Tab (no '@', no picker) is the path that appends nothing
+      // mid-line, so it is the one most likely to be handed '' and drop the
+      // space too.
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = '';
+      const { el } = await mountComposer();
+
+      await type(el, 'al');
+      await tab(el);
+      expect(el.value).toBe('alexis ');
+    });
+
+    it('applies the setting to a strip pick at line start', async () => {
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ';';
+      isMobile.value = true;
+      const { el } = await mountComposer();
+
+      await type(el, 'al');
+      selectNick('alexis');
+      await flush();
+      expect(el.value).toBe('alexis; ');
+    });
+
+    it('applies the setting to Reply, and recognises an already-addressed draft', async () => {
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ',';
+      const { el } = await mountComposer();
+
+      await type(el, 'sure');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob, sure');
+
+      // Already addressed under THIS suffix — a second Reply must not stack a
+      // second `bob, ` (the check compares against the configured form, not
+      // the old literal).
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob, sure');
     });
 
     it('never offers your own nick', async () => {
