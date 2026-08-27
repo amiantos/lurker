@@ -15,9 +15,9 @@ import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
-import { EngineServer } from '../engine/server.js';
-import { FakeIrcd } from '../test-utils/fakeIrcd.js';
-import { EngineLink, engineConfigured } from './engineLink.js';
+import type { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { startEngineHarness } from '../test-utils/engineHarness.js';
+import type { EngineHarness, WireLine } from '../test-utils/engineHarness.js';
 
 const SECRET = 'restore-pacing-secret';
 const CHANNELS = ['#p1', '#p2', '#p3', '#p4', '#p5', '#p6'];
@@ -28,61 +28,24 @@ const CHANNELS = ['#p1', '#p2', '#p3', '#p4', '#p5', '#p6'];
 const HELD = '#p3';
 const DEADLINE_MS = 1500;
 
+let harness: EngineHarness;
 let ircd: FakeIrcd;
-let engine: EngineServer;
 let network: Network;
 let userId: number;
 
-// Every line on the wire, in causal order: '>' is stamped as the Client writes
-// it — the same synchronous chain that arms the step deadline, so the timing
-// assertions read one clock — and '<' as the fake ircd sends it, which is
-// before the relay hop, so a reply is always logged ahead of the request it
-// releases. (Recording both at the Client would log them the other way round:
-// Lurker's own 'raw' handler runs first and writes the next request inside it.)
-interface Wire {
-  t: number;
-  dir: '>' | '<';
-  line: string;
-}
-const wire: Wire[] = [];
-
-function until(pred: () => boolean, ms = 5000, what = 'condition'): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) {
-        const tail = wire
-          .slice(-60)
-          .map((w) => `${w.dir} ${w.line}`)
-          .join('\n');
-        return reject(new Error(`timed out waiting for ${what}; last wire lines:\n${tail}`));
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
+// Every line on the wire, in causal order — the harness's log (see WireLine
+// for why '<' is stamped at the ircd and '>' at the Client); the timing
+// assertions below read one clock because of it.
+let wire: WireLine[];
+const until = (pred: () => boolean, ms: number, what: string) => harness.until(pred, ms, what);
 
 beforeAll(async () => {
-  ircd = await FakeIrcd.start();
-  engine = new EngineServer({
+  harness = await startEngineHarness({
     secret: SECRET,
-    bufferBytes: 64 * 1024,
-    bufferTotalBytes: 1024 * 1024,
-    version: 'test',
-    log: () => {},
+    env: { LURKER_RESTORE_STEP_DEADLINE_MS: String(DEADLINE_MS) },
   });
-  const { port } = await engine.listen(0, '127.0.0.1');
-  process.env.LURKER_ENGINE_URL = `tcp://127.0.0.1:${port}`;
-  process.env.LURKER_ENGINE_SECRET = SECRET;
-  process.env.LURKER_ENGINE_RETRY_BASE_MS = '100';
-  // A full-suite CI run starves the event loop; keep the link's heartbeat well
-  // clear of the run so it can't drop a healthy idle link mid-test.
-  process.env.LURKER_ENGINE_HEARTBEAT_MS = '600000';
-  process.env.LURKER_RESTORE_STEP_DEADLINE_MS = String(DEADLINE_MS);
-  EngineLink.resetForTests();
-  if (!engineConfigured()) throw new Error('engine mode did not switch on');
+  ircd = harness.ircd;
+  wire = harness.wire;
   const user = createUser('restore-pacing');
   userId = user.id;
   network = createNetwork(user.id, {
@@ -96,15 +59,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  ircManager.shutdown();
-  EngineLink.resetForTests();
-  await engine.shutdown('tests done', 500);
-  await ircd.close();
-  delete process.env.LURKER_ENGINE_URL;
-  delete process.env.LURKER_ENGINE_SECRET;
-  delete process.env.LURKER_ENGINE_RETRY_BASE_MS;
-  delete process.env.LURKER_ENGINE_HEARTBEAT_MS;
-  delete process.env.LURKER_RESTORE_STEP_DEADLINE_MS;
+  await harness.stop();
 });
 
 describe('engine restore pacing', () => {
@@ -126,13 +81,12 @@ describe('engine restore pacing', () => {
     await until(() => whoAnswered.size === CHANNELS.length, 5000, "first session's WHOs answered");
     conn.detach();
     await until(() => conn.state === 'disconnected', 5000, 'detached');
+    // Only the second session's lines matter from here.
+    wire.length = 0;
 
     ircd.hold = (cmd, p) => cmd === 'TOPIC' && (p[0] ?? '').toLowerCase() === HELD;
     const conn2 = ircManager.startNetwork(userId, network.id)!;
-    ircd.on('sent', (line: string) => wire.push({ t: Date.now(), dir: '<', line }));
-    conn2.client.on('raw', (ev: { line: string; from_server: boolean }) => {
-      if (!ev.from_server) wire.push({ t: Date.now(), dir: '>', line: ev.line });
-    });
+    harness.tap(conn2, 'pace');
     await until(() => conn2.state === 'connected', 5000, 'reattached');
     // Done when the last channel's own WHO — the one this session sent — is
     // answered.

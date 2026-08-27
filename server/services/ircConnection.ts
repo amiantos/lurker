@@ -39,6 +39,9 @@ import {
 import highlightRulesService from './highlightRulesService.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import connectScheduler from './connectScheduler.js';
+import restoreGate from './restoreGate.js';
+import type { RestoreSlot } from './restoreGate.js';
+import { envInt as reconnectEnvInt } from '../utils/envInt.js';
 import { decideStamp } from './insertDecisions.js';
 import * as systemLog from './systemLog.js';
 import { effectiveSetting, effectiveSettings } from './settingsService.js';
@@ -256,13 +259,6 @@ const SEND_REJECTION_ATTRIBUTION_MS = 15000;
 // EXCEPT a confidently-classified terminal reason (a detected ban or a hard SASL
 // auth failure), where retrying can't help and hammering an actively-rejecting
 // server is antisocial — those stop and require a manual reconnect.
-
-function reconnectEnvInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw.trim() === '') return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
 
 // First-retry delay; each subsequent attempt doubles up to the cap.
 const RECONNECT_BASE_MS = reconnectEnvInt('LURKER_RECONNECT_BASE_MS', 2000);
@@ -724,6 +720,10 @@ export class IrcConnection {
   // The restore step in flight: the folded channel and which of its replies
   // are still owed. Null between steps and outside a restore.
   private restoreStep: { key: string; owed: Set<RestoreReply> } | null;
+  // The step's turn at the process-wide cap (restoreGate): reserved when the
+  // step is queued, held while its requests are out, given back with the step.
+  // Null between steps and outside a restore, like restoreStep.
+  private restoreSlot: RestoreSlot | null;
   private engineTransport: EngineTransport | null;
   private engineSocketAlive: boolean;
   // folded channel → the state replies still owed from the restore's own
@@ -840,6 +840,7 @@ export class IrcConnection {
     this.restoreQueue = [];
     this.restoreTimer = null;
     this.restoreStep = null;
+    this.restoreSlot = null;
     this.engineTransport = null;
     this.engineSocketAlive = false;
     this.restoreQuiet = new Map();
@@ -4051,9 +4052,11 @@ export class IrcConnection {
         // 353/366, no 332, and the join handler's MODE is skipped on a restore —
         // so ask, one channel at a time, each waiting for the last one's
         // replies (drainRestoreQueue), keeping each channel's replies out of
-        // the server buffer until they arrive.
+        // the server buffer until they arrive. Across connections each step
+        // also takes a turn at the process-wide cap (see drainRestoreQueue).
         // Our umodes were set after the burst ended (the post-MOTD `MODE nick
-        // +i`), so they are not in the replay either.
+        // +i`), so they are not in the replay either; one line, asked at once
+        // — it is the per-channel replies the cap bounds, not this.
         this.restoreQuiet.set('*', {
           until: Date.now() + RESTORE_QUIET_MS,
           mode: true,
@@ -4061,6 +4064,20 @@ export class IrcConnection {
         });
         this.rawQuiet('MODE', this.currentNick);
         this.restoreQueue = [...this.channels.values()].map((ch) => ch.name);
+        // Every queued channel is marked quiet now, not when its own step goes
+        // out: the LAST process may have let go with a step in flight, and
+        // that step's replies sit in the engine backlog, delivered right after
+        // this phase — the size gate on the WHO and the server-buffer filter
+        // must read them as the restore's. With the cap full, even the first
+        // channel's step can still be queued when they land. Each step re-marks
+        // its channel as it goes out, so a long wait cannot outlive the window.
+        for (const name of this.restoreQueue) {
+          this.restoreQuiet.set(name.toLowerCase(), {
+            until: Date.now() + RESTORE_QUIET_MS,
+            mode: true,
+            topic: true,
+          });
+        }
         this.drainRestoreQueue();
         // A socket the engine registered on its own never had its
         // post-registration steps: the connect commands run now, and the
@@ -4114,12 +4131,18 @@ export class IrcConnection {
     this.restoreQuiet.clear();
   }
 
+  // The step is over — answered, timed out, or abandoned (resetRestoreState
+  // on close / connect / dial / attach). Its turn at the cap goes back with
+  // it, whether it was held or still queued.
   private endRestoreStep(): void {
     if (this.restoreTimer) {
       clearTimeout(this.restoreTimer);
       this.restoreTimer = null;
     }
     this.restoreStep = null;
+    const slot = this.restoreSlot;
+    this.restoreSlot = null;
+    slot?.release();
   }
 
   // One channel in flight. The next channel's three requests go out when this
@@ -4136,6 +4159,21 @@ export class IrcConnection {
   // WHO is deliberately NOT part of the gate: irc-framework's queue never
   // recovers from a 315 that does not come, and a step waiting on it would
   // turn that one lost reply into a deadline wait for every channel after it.
+  //
+  // Across connections each step is also a turn at the process-wide cap
+  // (restoreGate, #842). A re-attach brings every held connection back in the
+  // same tick — on purpose, the attach registers nothing on the ircd — and
+  // with nothing spreading the refreshes out, N first replies (member rebuild
+  // + WS fan-out, all synchronous) land together: the [event-loop] stall a
+  // busy instance sees after a restart. Each step is its own reservation at
+  // the back of the gate's FIFO, so a connection with more channels than there
+  // are free slots queues its next step behind everyone already waiting —
+  // round-robin, every session's first member list early, rather than one
+  // connection's whole walk at a time. Under the cap the step goes out
+  // synchronously, so a small instance sees no change. The turn ends with the
+  // step's replies, so the WHO those trigger is outside the cap too — one in
+  // flight per connection (the framework's queue), size-gated, but across
+  // connections as parallel as before.
   private drainRestoreQueue(): void {
     this.endRestoreStep();
     // Skip what we are no longer in (a backlog KICK may have arrived in
@@ -4146,27 +4184,54 @@ export class IrcConnection {
       name = this.restoreQueue.shift();
     }
     if (name === undefined) return;
-    this.restoreQuiet.set(name.toLowerCase(), {
-      until: Date.now() + RESTORE_QUIET_MS,
-      mode: true,
-      topic: true,
-    });
-    // Keyed by the network's own fold: the replies echo the channel as the
-    // server spells it, which on an rfc1459 network is not a toLowerCase away.
-    this.restoreStep = {
-      key: foldTargetFor(this.network.id, name),
-      owed: new Set(['names', 'topic', 'mode']),
-    };
-    this.rawQuiet('NAMES', name);
-    this.rawQuiet('TOPIC', name);
-    this.rawQuiet('MODE', name);
-    this.restoreTimer = setTimeout(
-      () => {
-        this.restoreTimer = null;
-        if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
-      },
-      Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_DEADLINE_MS', RESTORE_STEP_DEADLINE_MS)),
-    );
+    const channel = name;
+    const slot = restoreGate.reserve(() => `net ${this.network.id} ${channel}`);
+    this.restoreSlot = slot;
+    slot.start(() => this.sendRestoreStep(channel));
+  }
+
+  // The step itself, once it has its turn. Membership is checked again here:
+  // a backlog KICK may have landed while the turn was queued, and a request
+  // for a channel we are no longer in would resurrect it with the replies.
+  // A throw anywhere in here moves on to the next channel rather than ending
+  // the walk: the gate would drop the slot and log, but nothing else would
+  // ever call back for this connection — no reply can retire a step that was
+  // never set, and no deadline was armed.
+  private sendRestoreStep(name: string): void {
+    if (!this.isChannelJoined(name)) {
+      this.drainRestoreQueue();
+      return;
+    }
+    try {
+      this.restoreQuiet.set(name.toLowerCase(), {
+        until: Date.now() + RESTORE_QUIET_MS,
+        mode: true,
+        topic: true,
+      });
+      // Keyed by the network's own fold: the replies echo the channel as the
+      // server spells it, which on an rfc1459 network is not a toLowerCase
+      // away.
+      this.restoreStep = {
+        key: foldTargetFor(this.network.id, name),
+        owed: new Set(['names', 'topic', 'mode']),
+      };
+      this.rawQuiet('NAMES', name);
+      this.rawQuiet('TOPIC', name);
+      this.rawQuiet('MODE', name);
+      this.restoreTimer = setTimeout(
+        () => {
+          this.restoreTimer = null;
+          if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
+        },
+        Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_DEADLINE_MS', RESTORE_STEP_DEADLINE_MS)),
+      );
+    } catch (err) {
+      console.warn(
+        `[irc] restore: step for ${name} on network ${this.network.id} threw; skipping it:`,
+        (err as Error)?.message || err,
+      );
+      this.drainRestoreQueue();
+    }
   }
 
   // A server line naming the in-flight step's channel: retire the reply it is,

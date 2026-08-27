@@ -16,50 +16,30 @@ import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
-import { EngineServer } from '../engine/server.js';
-import { FakeIrcd } from '../test-utils/fakeIrcd.js';
-import { EngineLink, engineConfigured } from './engineLink.js';
+import type { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { startEngineHarness } from '../test-utils/engineHarness.js';
+import type { EngineHarness } from '../test-utils/engineHarness.js';
+import { until } from '../test-utils/until.js';
 
 const SECRET = 'who-gate-secret';
 const CHANNELS = ['#wa', '#wb', '#wc'];
+let harness: EngineHarness;
 let ircd: FakeIrcd;
-let engine: EngineServer;
 let network: Network;
 let userId: number;
 
 const sentBy = (nick: string) => ircd.client(nick)?.sent ?? [];
 
-function until(pred: () => boolean, ms = 5000, what = 'condition'): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${what}`));
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
-
 beforeAll(async () => {
-  ircd = await FakeIrcd.start();
-  engine = new EngineServer({
+  harness = await startEngineHarness({
     secret: SECRET,
-    bufferBytes: 64 * 1024,
-    bufferTotalBytes: 1024 * 1024,
-    version: 'test',
-    log: () => {},
+    env: {
+      LURKER_RESTORE_STEP_DEADLINE_MS: '1500',
+      // 0 → every restored channel (>= 1 member: us) is over the threshold.
+      LURKER_RESTORE_WHO_MAX_MEMBERS: '0',
+    },
   });
-  const { port } = await engine.listen(0, '127.0.0.1');
-  process.env.LURKER_ENGINE_URL = `tcp://127.0.0.1:${port}`;
-  process.env.LURKER_ENGINE_SECRET = SECRET;
-  process.env.LURKER_ENGINE_RETRY_BASE_MS = '100';
-  process.env.LURKER_ENGINE_HEARTBEAT_MS = '600000';
-  process.env.LURKER_RESTORE_STEP_DEADLINE_MS = '1500';
-  // 0 → every restored channel (>= 1 member: us) is over the threshold.
-  process.env.LURKER_RESTORE_WHO_MAX_MEMBERS = '0';
-  EngineLink.resetForTests();
-  if (!engineConfigured()) throw new Error('engine mode did not switch on');
+  ircd = harness.ircd;
   const user = createUser('who-gate');
   userId = user.id;
   network = createNetwork(user.id, {
@@ -73,16 +53,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  ircManager.shutdown();
-  EngineLink.resetForTests();
-  await engine.shutdown('tests done', 500);
-  await ircd.close();
-  delete process.env.LURKER_ENGINE_URL;
-  delete process.env.LURKER_ENGINE_SECRET;
-  delete process.env.LURKER_ENGINE_RETRY_BASE_MS;
-  delete process.env.LURKER_ENGINE_HEARTBEAT_MS;
-  delete process.env.LURKER_RESTORE_STEP_DEADLINE_MS;
-  delete process.env.LURKER_RESTORE_WHO_MAX_MEMBERS;
+  await harness.stop();
 });
 
 describe('engine restore WHO size-gate', () => {

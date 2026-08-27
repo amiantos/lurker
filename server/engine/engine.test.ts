@@ -15,6 +15,7 @@ import { MAX_BURST_BYTES } from './upstream.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { TestLink, TEST_INSTANCE } from '../test-utils/engineLink.js';
 import { createIdentdServer } from '../services/identd.js';
+import { until } from '../test-utils/until.js';
 
 const SECRET = 'spike-secret';
 type Attached = Extract<EngineToApp, { op: 'attached' }>;
@@ -75,18 +76,6 @@ async function register(l: TestLink, id: string, nick: string): Promise<void> {
   l.send({ op: 'write', id, line: `NICK ${nick}` });
   l.send({ op: 'write', id, line: `USER ${nick} 0 * :${nick}` });
   await l.waitForLine(id, / 376 /);
-}
-
-function until(pred: () => boolean, ms: number, what: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) return reject(new Error(`timed out waiting for ${what}`));
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
 }
 
 // A close the app asked for is never answered with `closed` (the app's
