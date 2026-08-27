@@ -25,6 +25,7 @@ import { getNodeSecret } from './middleware/nodeAuth.js';
 import { nodeUploadConfigured } from './services/uploadProviders/nodeUpload.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
+import { purgeExpiredRecoveryTokens } from './db/accountRecovery.js';
 import { sweepExpiredPreviews } from './db/linkPreviews.js';
 import { sweepPreviewCache } from './services/previewCache/index.js';
 import { startRetentionSweeper } from './services/retentionSweeper.js';
@@ -143,6 +144,11 @@ attachWsHub(server, SESSION_SECRET);
 
 purgeExpiredSessions();
 setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
+// Same cadence for expired recovery links. Nothing reads a stale row — every
+// query filters on expires_at — this just keeps one from holding an account's
+// single slot and looking live in a table dump.
+purgeExpiredRecoveryTokens();
+setInterval(() => purgeExpiredRecoveryTokens(), 60 * 60 * 1000).unref();
 
 // link_previews is a cache with a TTL, so lapsed rows have to actually go — without this it
 // only ever grows. Deliberately NOT gated on previewsEnabled(): an operator who turns the

@@ -20,6 +20,11 @@ import {
   getInvite,
   isInviteSpent,
 } from '../db/invites.js';
+import {
+  createRecoveryToken,
+  getRecoveryTokenForUser,
+  deleteRecoveryTokensForUser,
+} from '../db/accountRecovery.js';
 import ircManager from '../services/ircManager.js';
 import { presenceDiagnostics } from '../services/wsHub.js';
 import { isIdentdEnabled, isOidentdFileEnabled } from '../services/identd.js';
@@ -116,6 +121,11 @@ router.get('/users', (_req: Request, res: Response) => {
       // Another account answers this same ident — neither is attributable until
       // the operator assigns one of them something else.
       identConflict: (identCounts.get(effectiveIdent(u).toLowerCase()) ?? 0) > 1,
+      // Whether an unredeemed recovery link is outstanding for this account
+      // (#855). The token itself is never returned — only its hash is stored,
+      // so re-showing a link is impossible by construction; an admin who lost
+      // the URL issues a new one, which invalidates the old.
+      recoveryExpiresAt: getRecoveryTokenForUser(u.id)?.expiresAt ?? null,
     })),
     // Whether either ident mode is running. When neither is, the idents above
     // are inert — the UI says so rather than implying networks see them. (The
@@ -300,6 +310,50 @@ router.post('/users/:id/resume', (req: Request, res: Response) => {
 // stays above visible/away counts, or a visible socket for a user who's
 // plainly gone, is the zombie-socket signature the heartbeat reaps. Safe in
 // both editions: it mutates nothing (unlike pause/resume, which are node-gated).
+// Issue a single-use recovery link for an account (#855). Accounts carry no
+// email address, so this is the whole password-reset story: the admin hands the
+// URL to the member over a channel they already trust, and redeeming it sets a
+// password or enrolls a passkey.
+//
+// The response is the ONLY time this URL exists anywhere — only its hash is
+// stored — so an admin who loses it issues a new one, which invalidates the old.
+router.post('/users/:id/recovery', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const user = findUserById(id);
+  if (!user) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  const token = createRecoveryToken(user.id, req.user!.id);
+  const info = getRecoveryTokenForUser(user.id)!;
+  res.json({
+    recovery: {
+      username: user.username,
+      url: `${originFromRequest(req)}/recover/${token}`,
+      expiresAt: info.expiresAt,
+    },
+  });
+});
+
+// Revoke an outstanding link — the admin's undo for one sent to the wrong
+// person, or one no longer needed.
+router.delete('/users/:id/recovery', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  if (!deleteRecoveryTokensForUser(id)) {
+    res.status(404).json({ error: 'no outstanding recovery link' });
+    return;
+  }
+  res.json({ ok: true });
+});
+
 router.get('/presence', (_req: Request, res: Response) => {
   const presence = presenceDiagnostics().map((row) => {
     const u = findUserById(row.userId);

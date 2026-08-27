@@ -33,6 +33,11 @@ describe('shouldBounceToLogin', () => {
       false,
     );
     expect(shouldBounceToLogin('/api/settings/bootstrap', 401, false, '/login')).toBe(false);
+    // Same shape for a recovery link (#855): its whole audience is a logged-out
+    // visitor, so an ejection here strands the one person the link exists for.
+    expect(shouldBounceToLogin('/api/settings/bootstrap', 401, false, '/recover/abc123')).toBe(
+      false,
+    );
   });
 });
 

@@ -58,6 +58,10 @@ COPY package*.json ./
 COPY tsconfig*.json ./
 COPY server/ ./server/
 COPY shared/ ./shared/
+# Operator CLIs (`npm run recovery-link`, tools/fold-buffer-case.ts). Both are
+# documented as `docker compose exec` one-liners, which only works if they're
+# actually in the image — they run under the same tsx as the server.
+COPY tools/ ./tools/
 COPY --from=vue-builder /app/vue_client/dist ./vue_client/dist
 
 RUN mkdir -p /app/data

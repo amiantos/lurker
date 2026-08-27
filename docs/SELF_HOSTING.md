@@ -25,9 +25,33 @@ The very first time you open the app it'll prompt you to create the initial admi
 
 - Invite additional users (each user gets their own IRC networks, history, and settings)
 - Reset their own password from the settings panel
+- Issue recovery links for anyone locked out (see [Account recovery](#account-recovery))
 - Eventually manage the system from the admin panel
 
 Lurker is multi-user — anyone you invite gets their own private set of networks. There is no public sign-up; new accounts can only be created through admin-issued invite links.
+
+## Account recovery
+
+Lurker accounts have no email address, so there is no "forgot my password" email to send. Recovery runs through you instead: in **Admin → Users**, the **recovery link** button on a member's row mints a single-use URL, and you hand it to them over a channel you already trust — IRC, Signal, in person.
+
+Opening it lets them set a password _or_ enroll a new passkey. Both matter: a member whose only credential was a passkey on a lost phone has no password to reset.
+
+A few things worth knowing:
+
+- **The URL is shown once.** Only its hash is stored, so nothing can display it again. Lost it? Issue another — that invalidates the first.
+- **Single use, 24 hours.** Redeeming it or letting it expire ends it; **revoke recovery** ends it early.
+- **Redeeming signs that account out everywhere else.** A lockout is indistinguishable from a takeover, so every other session is dropped.
+- **Existing passkeys survive.** Recovery adds a way in; it never removes one.
+
+### When the only admin is locked out
+
+Nobody is left to click the button, so mint the link from a shell on the server:
+
+```bash
+docker compose exec lurker npm run recovery-link -- your-username
+```
+
+It prints the same URL. `WEBAUTHN_ORIGIN` supplies the base address; pass `--url https://lurker.example.com` if you haven't set it.
 
 ## Updating
 
@@ -595,19 +619,15 @@ That makes the arrangement safe, not tuned: the buffer budget (`LURKER_ENGINE_BU
 
 ## Troubleshooting
 
-### Forgot the admin password
+### Locked out of an account
 
-The cleanest path is to invite a second admin from your phone if you're still logged in there, then have them reset things from the admin panel.
-
-If you're locked out everywhere, the fallback is to clear the password hash directly with sqlite and re-bootstrap. With the server stopped:
+If you're an admin and still signed in somewhere, issue that member a recovery link from **Admin → Users**. If it's your own account and you're locked out everywhere, mint one from a shell:
 
 ```bash
-docker compose down
-sqlite3 data/lurker.db "DELETE FROM users WHERE username = 'your-username';"
-docker compose up -d
+docker compose exec lurker npm run recovery-link -- your-username
 ```
 
-This destroys that user's account and history. If you were the only user, the next visit will return you to the first-run wizard so you can create a fresh admin. (A proper password-reset CLI is on the roadmap.)
+Either way, see [Account recovery](#account-recovery) — nothing is deleted and no history is lost.
 
 ### Port 8015 already in use
 

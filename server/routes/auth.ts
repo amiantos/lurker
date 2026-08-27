@@ -26,6 +26,7 @@ import {
   setPasswordHash,
 } from '../db/users.js';
 import { inviteStatus, consumeInvite } from '../db/invites.js';
+import { findLiveRecoveryToken, consumeRecoveryToken } from '../db/accountRecovery.js';
 import { isValidUsername, isValidLoginUsername } from '../../shared/username.js';
 import {
   listForUser as listCredentialsForUser,
@@ -37,7 +38,7 @@ import {
   updateLabel,
   deleteById as deleteCredentialById,
 } from '../db/webauthnCredentials.js';
-import { createSession, deleteSession } from '../db/sessions.js';
+import { createSession, deleteSession, deleteSessionsForUser } from '../db/sessions.js';
 import { SESSION_COOKIE, getCookieOptions, requireAuth, bearerToken } from '../middleware/auth.js';
 import { rpConfig, saveChallenge, consumeChallenge, userIdToHandle } from '../services/webauthn.js';
 import {
@@ -402,6 +403,179 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
   const { token: sessionToken } = createSession(user.id);
   res.cookie(SESSION_COOKIE, sessionToken, getCookieOptions());
   res.json({ user: { id: user.id, username: user.username, role: user.role } });
+});
+
+// ---------- account recovery ----------
+
+// Redemption of an admin-issued recovery link (#855). An account has no email
+// address, so there is no self-service reset to build: an admin issues a link
+// for one account and hands it over out of band, and redeeming it adds a
+// sign-in method back to an account its owner is locked out of.
+//
+// Every path here ends in finishRecovery(), which signs the account out
+// everywhere before minting the new session: the lockout that made recovery
+// necessary is indistinguishable from a takeover, so any session predating the
+// recovery is assumed hostile. (An already-open WebSocket survives until it
+// disconnects — see deleteSessionsForUser and #567.) Existing passkeys are
+// deliberately left alone — recovery restores a way in, it is not a way to
+// strip someone's credentials.
+
+function finishRecovery(res: Response, user: { id: number; username: string; role: string }): void {
+  deleteSessionsForUser(user.id);
+  const { token: sessionToken } = createSession(user.id);
+  res.cookie(SESSION_COOKIE, sessionToken, getCookieOptions());
+  res.json({ user: { id: user.id, username: user.username, role: user.role } });
+}
+
+// Public status probe for the landing page. An expired link and a token that
+// was never real answer identically — the page is the same dead end either way,
+// and distinguishing them would confirm a token had once existed. The username
+// comes back because the page needs to name the account being recovered, and
+// whoever holds this link can already take that account over.
+router.get('/recovery/:token', (req: Request<{ token: string }>, res: Response) => {
+  const info = findLiveRecoveryToken(req.params.token);
+  const user = info ? findUserById(info.userId) : null;
+  if (!user) {
+    res.json({ valid: false });
+    return;
+  }
+  res.json({
+    valid: true,
+    username: user.username,
+    expiresAt: info!.expiresAt,
+    // Whether the page offers "set a password" or "change your password".
+    hasPassword: userHasPassword(user.id),
+  });
+});
+
+// Set a password with a recovery link. The password is validated BEFORE the
+// token is spent, so a too-short one doesn't burn a single-use link.
+router.post(
+  '/recovery/:token/password',
+  guardCredentialAttempt(loginFailureThrottle),
+  (req: Request<{ token: string }>, res: Response) => {
+    const password: unknown = req.body?.password;
+    if (!isValidPassword(password)) {
+      res.status(400).json({ error: passwordRequirementsMessage() });
+      return;
+    }
+    const userId = consumeRecoveryToken(req.params.token);
+    if (userId === null) {
+      res.status(400).json({ error: 'that recovery link is invalid or has expired' });
+      return;
+    }
+    const user = findUserById(userId);
+    if (!user) {
+      // The row CASCADEs with the account, so this means the account was deleted
+      // between the consume and this read.
+      res.status(404).json({ error: 'that account no longer exists' });
+      return;
+    }
+    setPasswordHash(user.id, hashPassword(password as string));
+    finishRecovery(res, user);
+  },
+);
+
+// Enroll a fresh passkey with a recovery link — the half of this feature a
+// password-only reset would miss, since a passkey-only member who lost their
+// phone has no password to reset. Mirrors /passkeys/options, but authorized by
+// the link instead of a session.
+router.post('/recovery/:token/options', async (req: Request<{ token: string }>, res: Response) => {
+  const info = findLiveRecoveryToken(req.params.token);
+  const user = info ? findUserById(info.userId) : null;
+  if (!user) {
+    res.status(404).json({ error: 'invalid or expired recovery link' });
+    return;
+  }
+  const { rpID, rpName } = rpConfig();
+  // listCredentialsForUser is untyped — credentials are any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const existing = listCredentialsForUser(user.id) as any[];
+  const options = await generateRegistrationOptions({
+    rpName,
+    rpID,
+    userName: user.username,
+    userID: new Uint8Array(userIdToHandle(user.id)),
+    userDisplayName: user.username,
+    attestationType: 'none',
+    authenticatorSelection: {
+      residentKey: 'required',
+      userVerification: 'preferred',
+    },
+    // The authenticators already on the account. Usually none of them are the
+    // one in the member's hand — that's why they're here — but excluding them
+    // keeps a still-enrolled device from silently registering itself twice.
+    excludeCredentials: existing.map((c) => ({
+      id: c.credentialId,
+      transports: c.transports,
+    })),
+  });
+  const token = saveChallenge({
+    purpose: 'recovery',
+    challenge: options.challenge,
+    userId: user.id,
+    recoveryToken: req.params.token,
+  });
+  setChallengeCookie(res, token);
+  res.json({ options, username: user.username });
+});
+
+router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, res: Response) => {
+  const challengeToken = req.signedCookies?.[CHALLENGE_COOKIE];
+  const entry = consumeChallenge(challengeToken);
+  clearChallengeCookie(res);
+  if (!entry || entry.purpose !== 'recovery' || entry.recoveryToken !== req.params.token) {
+    res.status(400).json({ error: 'no pending recovery' });
+    return;
+  }
+  const { rpID, expectedOrigin } = rpConfig();
+  let verification: VerifiedRegistrationResponse;
+  try {
+    verification = await verifyRegistrationResponse({
+      response: req.body?.response,
+      expectedChallenge: entry.challenge as string,
+      expectedOrigin,
+      expectedRPID: rpID,
+      requireUserVerification: false,
+    });
+  } catch (err) {
+    const e = err as { message?: string };
+    res.status(400).json({ error: e.message || 'verification failed' });
+    return;
+  }
+  if (!verification.verified || !verification.registrationInfo) {
+    res.status(400).json({ error: 'verification failed' });
+    return;
+  }
+
+  // Spend the link only once the authenticator has answered, so a failed or
+  // abandoned ceremony leaves it usable. Nothing has been written yet, so losing
+  // this race needs no cleanup — unlike the invite flow, which has a
+  // speculatively-created account to tear down.
+  const userId = consumeRecoveryToken(req.params.token);
+  if (userId === null || userId !== (entry.userId as number)) {
+    res.status(409).json({ error: 'that recovery link is no longer valid' });
+    return;
+  }
+  const user = findUserById(userId);
+  if (!user) {
+    res.status(404).json({ error: 'that account no longer exists' });
+    return;
+  }
+
+  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  insertCredential({
+    userId: user.id,
+    credentialId: credential.id,
+    publicKey: Buffer.from(credential.publicKey),
+    counter: credential.counter,
+    transports: credential.transports || [],
+    deviceType: credentialDeviceType,
+    backedUp: credentialBackedUp,
+    label,
+  });
+  finishRecovery(res, user);
 });
 
 // ---------- login ----------

@@ -43,6 +43,24 @@ export function deleteSession(token: string | null | undefined): void {
   db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
+/**
+ * Sign an account out everywhere. Used after an account recovery (#855): the
+ * lockout that made recovery necessary is indistinguishable from a takeover, so
+ * every session minted before the reset is assumed hostile. The caller mints a
+ * fresh session afterwards so the device doing the recovery stays signed in.
+ *
+ * ⚠ This drops the session ROWS, which is what every future request and /ws
+ * upgrade is checked against — but a WebSocket that is ALREADY open holds its
+ * authenticated user in the socket's closure and is not re-checked, so it keeps
+ * streaming until it disconnects. Closing live sockets on revocation is #567,
+ * which owns the same gap for PUT /password.
+ *
+ * Returns the number of sessions dropped.
+ */
+export function deleteSessionsForUser(userId: number): number {
+  return db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId).changes;
+}
+
 export function purgeExpiredSessions(): void {
   // expires_at is written as ISO 8601 ('YYYY-MM-DDTHH:MM:SS.sssZ') while
   // datetime('now') returns SQLite-local format ('YYYY-MM-DD HH:MM:SS').
