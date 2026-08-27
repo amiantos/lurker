@@ -185,6 +185,7 @@ import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
 import { isChannelTarget } from '../../../shared/channels.js';
+import { escapeRegex } from '../../../shared/textMatch.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
 import { highlightRuleDetailParts } from '../utils/highlightFormat.js';
@@ -805,7 +806,7 @@ function tokenAtCursor(
 // True when `before` (the text preceding a token) sits at the start of a
 // logical line — nothing but whitespace since the last newline, or the very
 // start of the input. Callers use this to detect a nick that's being
-// *addressed* and so wants an opening ': '. Shared by Tab-completion and both
+// *addressed* and so wants addressSuffix(). Shared by Tab-completion and both
 // @-driven selectors so all three detect line starts identically, including
 // on multi-line drafts; what each appends *off* a line start still differs
 // (see the call sites).
@@ -813,15 +814,37 @@ function isAtLineStart(before: string): boolean {
   return /(^|\n)\s*$/.test(before);
 }
 
-// What a nick takes when it opens the line — the addressing form. The setting
-// stores the punctuation alone and the space is always ours to add (see the
-// registry entry), so "space only" is the empty string. Read once when a
-// session is seeded, never per cycle: the suffix rides on CompletionState so a
-// setting change mid-walk can't change the shape of the insertion under the
-// caret. Shared by Tab, the @ picker, the strip, and Reply (#835).
+// The punctuation a nick takes when it opens the line, per the setting. The
+// value stores the mark alone and the space is always ours to add (see the
+// registry entry), so "space only" is the empty string. Trailing whitespace is
+// dropped rather than doubled: the description shows the form as `nick: `, and
+// typing exactly that into the field is the natural mistake — and it lets
+// `/set … " "` land on "space only" too.
+function addressPunct(): string {
+  return String(settings.effective('input.completion.nick_suffix')).trimEnd();
+}
+
+// What a nick takes when it opens the line — the addressing form. Read once
+// when a session is seeded, never per cycle: the suffix rides on
+// CompletionState so a setting change mid-walk can't change the shape of the
+// insertion under the caret. Shared by Tab, the @ picker, the strip, and Reply
+// (#835).
 function addressSuffix(): string {
-  const punct = settings.effective('input.completion.nick_suffix');
-  return `${typeof punct === 'string' ? punct : ':'} `;
+  return `${addressPunct()} `;
+}
+
+// Whether `draft` already opens by addressing `nick`, so Reply is idempotent.
+// Not just the configured form: a draft can carry an older setting's form, or
+// one another client wrote (iOS still says `nick: `, and drafts sync), so any
+// run of punctuation after the nick counts. The bare `nick ` form only counts
+// when it IS the configured form — otherwise a draft that merely opens with a
+// nick that is also a word ("will you come?") would swallow the Reply. Under an
+// empty setting that draft is indistinguishable from an addressed one, which
+// is the ambiguity of the convention itself, not something to second-guess.
+function isAddressedTo(draft: string, nick: string): boolean {
+  const punct = addressPunct();
+  const marks = punct ? `(?:${escapeRegex(punct)}|[^\\w\\s]+)` : '[^\\w\\s]*';
+  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'i').test(draft);
 }
 
 function buildNickMatches(buf: Buffer, networkId: number, prefix: string): string[] {
@@ -1704,10 +1727,8 @@ function addressInComposer(nick: string): void {
   // old text afterward. Same reset onHistorySelect does for the same reason.
   resetCompletion();
   resetHistoryNav();
-  const prefix = nick + addressSuffix();
   const cur = text.value;
-  const next = cur.startsWith(prefix) ? cur : cur ? `${prefix}${cur}` : prefix;
-  setInputAndCaretEnd(next);
+  setInputAndCaretEnd(isAddressedTo(cur, nick) ? cur : nick + addressSuffix() + cur);
   queueMicrotask(() => inputEl.value?.focus());
 }
 
@@ -3140,7 +3161,10 @@ function runSet(argLine: string, networkId: number | null, target: string): void
   const opt = lookupSetting(args.key);
   if (!opt) return reply(`/set: unknown setting "${args.key}" — /set lists available keys`);
   if (args.kind === 'keyonly') {
-    return reply(`usage: /set ${opt.key} <value>  (or /get ${opt.key} to read it)`);
+    // A text key's empty value is only reachable as `""` — a bare `/set key `
+    // trims down to exactly this branch — so say so where the user is stuck.
+    const empty = opt.type === 'string' || opt.type === 'string-list' ? '; "" to empty it' : '';
+    return reply(`usage: /set ${opt.key} <value>  (or /get ${opt.key} to read it${empty})`);
   }
   const coerced = coerceSettingValue(opt, args.rawValue);
   if (!coerced.ok) return reply(`/set: ${coerced.error}`);

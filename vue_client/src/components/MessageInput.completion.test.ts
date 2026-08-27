@@ -306,6 +306,65 @@ describe('MessageInput Tab-completion', () => {
       expect(el.value).toBe('bob, sure');
     });
 
+    it('Reply recognises a draft addressed under another form', async () => {
+      // The draft can predate a settings change, or come from a client with its
+      // own form (iOS still writes `nick: `, and drafts sync) — any punctuation
+      // after the nick counts, so this must not become `bob, bob: sure`.
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ',';
+      const { el } = await mountComposer();
+
+      await type(el, 'bob: sure');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob: sure');
+    });
+
+    it('Reply still addresses a draft that merely opens with the nick as a word', async () => {
+      // "will" is a nick and a word. Under any non-empty suffix the bare
+      // `will ` form is NOT an address, so Reply prepends — the "already
+      // addressed" check must demand punctuation, not just the nick.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+
+      await type(el, 'will you come?');
+      addressNick('will');
+      await flush();
+      expect(el.value).toBe('will: will you come?');
+    });
+
+    it('under an empty suffix, a draft opening with the nick already counts as addressed', async () => {
+      // With "space only" the addressed form and the nick-as-a-word form are
+      // the same text; that ambiguity is the convention's, and Reply follows
+      // it rather than producing `bob bob is wrong`.
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = '';
+      const { el } = await mountComposer();
+
+      await type(el, 'bob is wrong');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob is wrong');
+    });
+
+    it('drops trailing whitespace typed into the setting instead of doubling it', async () => {
+      // The description shows the form as `nick: `; typing exactly that into
+      // the field is the natural mistake, and a quoted " " from /set is the
+      // natural way to ask for "space only".
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ', ';
+      const { el } = await mountComposer();
+
+      await type(el, '@al');
+      await tab(el);
+      expect(el.value).toBe('alexis, ');
+
+      useSettingsStore().values['input.completion.nick_suffix'] = ' ';
+      await type(el, 'bo');
+      await tab(el);
+      expect(el.value).toBe('bob ');
+    });
+
     it('never offers your own nick', async () => {
       // Both m-nicks match "@m"; only mallory may be offered. The positive half
       // of this assertion matters as much as the negative one — with `me` as the

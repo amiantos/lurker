@@ -1669,12 +1669,13 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
   // What a nick picks up when completed at the START of a line — the
   // addressing form, `nick: `. Stored as the punctuation alone, with the
-  // trailing space always appended by the client (irssi's completion_char,
-  // HexChat's completion_suffix): every meaningful value is then visible in a
-  // text field, `/set input.completion.nick_suffix ,` needs no quoting, and
-  // "space only" is the empty string rather than an invisible ' '. Not an enum
-  // — the ask (#835) was for the common four AND free-form, and a string gets
-  // both without a new registry type.
+  // trailing space always appended by the client (irssi's completion_char):
+  // every meaningful value is then visible in a text field, `/set
+  // input.completion.nick_suffix ,` needs no quoting, and "space only" is the
+  // empty string rather than an invisible ' '. The trade is that "no space"
+  // and "two spaces" are inexpressible, which nobody has asked for. Not an
+  // enum — the ask (#835) was for the common four AND free-form, and a string
+  // gets both without a new registry type.
   {
     key: 'input.completion.nick_suffix',
     label: 'Nick completion suffix',
@@ -1684,9 +1685,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: ':',
     description:
       'Punctuation placed after a nick completed at the start of a line — the ' +
-      '"nick: " addressing form. A space always follows it; leave it empty for ' +
-      'a bare space. Applies to Tab, the @ picker, the suggestion strip, and ' +
-      'Reply. Mid-line completions are unaffected.',
+      '"nick: " addressing form: ":" (default), ",", ";", or empty for a bare ' +
+      'space. A space always follows it. Applies to Tab, the @ picker, the ' +
+      'suggestion strip, and Reply; mid-line completions are unaffected.',
   },
 
   // ─── Input bar (formatting) ──────────────────────────────────────────
