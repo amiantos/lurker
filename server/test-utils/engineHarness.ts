@@ -11,6 +11,7 @@ import { EngineLink, engineConfigured } from '../services/engineLink.js';
 import ircManager from '../services/ircManager.js';
 import type { IrcConnection } from '../services/ircConnection.js';
 import { FakeIrcd } from './fakeIrcd.js';
+import { setEnvAll } from './env.js';
 import { until } from './until.js';
 
 // One line on the wire, tagged with the connection's nick. '<' is stamped as
@@ -39,9 +40,9 @@ export interface EngineHarness {
   wireTail(): string;
   // until() with the wire tail as the timeout's detail.
   until(pred: () => boolean, ms: number, what: string): Promise<void>;
-  // Detach every connection, stop the engine and the ircd, and delete every
-  // env var start set — so a knob one test file sets cannot leak into the
-  // next file of a full-suite run.
+  // Detach every connection, stop the engine and the ircd, and put back every
+  // env var start set — to what it was, or unset — so a knob one test file
+  // sets cannot leak into the next file of a full-suite run.
   stop(): Promise<void>;
 }
 
@@ -63,7 +64,7 @@ export async function startEngineHarness(opts: {
     log: () => {},
   });
   const { port } = await engine.listen(0, '127.0.0.1');
-  const env: Record<string, string> = {
+  const restoreEnv = setEnvAll({
     LURKER_ENGINE_URL: `tcp://127.0.0.1:${port}`,
     LURKER_ENGINE_SECRET: opts.secret,
     LURKER_ENGINE_RETRY_BASE_MS: '100',
@@ -71,8 +72,7 @@ export async function startEngineHarness(opts: {
     // well clear of the run so it can't drop a healthy idle link mid-test.
     LURKER_ENGINE_HEARTBEAT_MS: '600000',
     ...opts.env,
-  };
-  for (const [k, v] of Object.entries(env)) process.env[k] = v;
+  });
   EngineLink.resetForTests();
   if (!engineConfigured()) throw new Error('engine mode did not switch on');
   const wireTail = () =>
@@ -97,7 +97,7 @@ export async function startEngineHarness(opts: {
       EngineLink.resetForTests();
       await engine.shutdown('tests done', 500);
       await ircd.close();
-      for (const k of Object.keys(env)) delete process.env[k];
+      restoreEnv();
     },
   };
 }

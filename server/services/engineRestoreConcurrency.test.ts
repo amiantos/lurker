@@ -20,6 +20,7 @@ import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
 import { startEngineHarness } from '../test-utils/engineHarness.js';
 import type { EngineHarness, WireLine } from '../test-utils/engineHarness.js';
+import { setEnv } from '../test-utils/env.js';
 
 const SECRET = 'restore-concurrency-secret';
 // The first test's held step can only end by this deadline: long enough to
@@ -40,17 +41,6 @@ const until = (pred: () => boolean, ms: number, what: string) => harness.until(p
 
 function numericFor(line: string, numeric: string, chan: string): boolean {
   return new RegExp(`^\\S+ ${numeric} \\S+ ${chan}\\b`).test(line);
-}
-
-// Set a knob for one test and hand back the way to put it back — the value
-// it had, or unset, so the next test in this file sees what the harness set.
-function setEnv(name: string, value: string): () => void {
-  const prev = process.env[name];
-  process.env[name] = value;
-  return () => {
-    if (prev === undefined) delete process.env[name];
-    else process.env[name] = prev;
-  };
 }
 
 function makeNet(nick: string, channels: string[]): Net {
