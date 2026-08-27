@@ -23,6 +23,9 @@ function block(ms: number): void {
 
 async function stallReport(context?: () => string | null): Promise<string> {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // A dev shell that exports the kill switch would otherwise make every case
+  // here an opaque timeout.
+  delete process.env.LURKER_EVENT_LOOP_MONITOR_DISABLED;
   startEventLoopMonitor({ intervalMs: 100, warnMs: WARN_MS, context });
   // Node's delay histogram takes its first tick after enable() as the
   // baseline and records nothing for it, so a block that starts before that

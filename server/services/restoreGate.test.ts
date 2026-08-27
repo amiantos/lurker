@@ -245,4 +245,24 @@ describe('RestoreGate', () => {
     step(g, 'F', started);
     expect(log).toHaveBeenCalledTimes(3);
   });
+
+  it('does not count a step enqueued and granted inside the same pass as having waited', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const g = new RestoreGate({ concurrency: () => 1, now: () => 0 });
+    const started: string[] = [];
+    const a = step(g, 'A', started);
+    // B waits behind A. When granted, B finds nothing to ask (its channel
+    // was left while it queued): it gives the slot back and reserves its next
+    // step from inside its own run, the way drainRestoreQueue does. That next
+    // step is granted by the same pass — it never waited.
+    let c: RestoreSlot | null = null;
+    step(g, 'B', started, (slot) => {
+      slot.release();
+      c = step(g, 'C', started);
+    });
+    a.release();
+    expect(started).toEqual(['A', 'B', 'C']);
+    c!.release();
+    expect(String(log.mock.calls[1][0])).toContain('1 step waited for a turn');
+  });
 });

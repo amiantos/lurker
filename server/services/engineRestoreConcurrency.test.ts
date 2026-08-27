@@ -19,8 +19,7 @@ import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
 import { startEngineHarness } from '../test-utils/engineHarness.js';
-import type { EngineHarness } from '../test-utils/engineHarness.js';
-import { until as poll } from '../test-utils/until.js';
+import type { EngineHarness, WireLine } from '../test-utils/engineHarness.js';
 
 const SECRET = 'restore-concurrency-secret';
 // The first test's held step can only end by this deadline: long enough to
@@ -35,25 +34,9 @@ interface Net {
 }
 
 let harness: EngineHarness;
+let wire: WireLine[];
 let userId: number;
-
-// Every line on the wire, in causal order, tagged with the connection's nick:
-// '>' stamped as the Client writes it, '<' as the fake ircd sends it (before
-// the relay hop, so a reply is always logged ahead of the request it releases).
-interface Wire {
-  t: number;
-  dir: '>' | '<';
-  nick: string;
-  line: string;
-}
-const wire: Wire[] = [];
-const wireTail = () =>
-  'last wire lines:\n' +
-  wire
-    .slice(-60)
-    .map((w) => `${w.dir} [${w.nick}] ${w.line}`)
-    .join('\n');
-const until = (pred: () => boolean, ms: number, what: string) => poll(pred, ms, what, wireTail);
+const until = (pred: () => boolean, ms: number, what: string) => harness.until(pred, ms, what);
 
 function numericFor(line: string, numeric: string, chan: string): boolean {
   return new RegExp(`^\\S+ ${numeric} \\S+ ${chan}\\b`).test(line);
@@ -107,13 +90,13 @@ async function holdInEngine(nets: Net[]): Promise<void> {
     5000,
     'first sessions detached',
   );
+  // Only the second sessions' lines matter from here.
+  wire.length = 0;
 }
 
 function reattach(net: Net): IrcConnection {
   const conn = ircManager.startNetwork(userId, net.network.id)!;
-  conn.client.on('raw', (ev: { line: string; from_server: boolean }) => {
-    if (!ev.from_server) wire.push({ t: Date.now(), dir: '>', nick: net.nick, line: ev.line });
-  });
+  harness.tap(conn, net.nick);
   return conn;
 }
 
@@ -132,9 +115,7 @@ beforeAll(async () => {
       LURKER_RESTORE_STEP_DEADLINE_MS: String(DEADLINE_MS),
     },
   });
-  harness.ircd.on('sent', (line: string, c: { nick: string | null }) =>
-    wire.push({ t: Date.now(), dir: '<', nick: c.nick ?? '?', line }),
-  );
+  wire = harness.wire;
   userId = createUser('restore-concurrency').id;
 });
 
@@ -150,7 +131,6 @@ describe('engine restore concurrency', () => {
       makeNet('gc', ['#gc1', '#gc2']),
     ];
     await holdInEngine(nets);
-    wire.length = 0;
 
     // One step — ga's #ga1 — never gets its 324: its NAMES and TOPIC are
     // answered at once, and the turn must still not pass until the deadline.
@@ -249,7 +229,6 @@ describe('engine restore concurrency', () => {
     const a = makeNet('gd', ['#gd1', '#gd2']);
     const b = makeNet('ge', ['#ge1']);
     await holdInEngine([a, b]);
-    wire.length = 0;
 
     // A's first step can only end by the deadline: its TOPIC is never answered.
     harness.ircd.hold = (cmd, p, c) =>
@@ -276,6 +255,53 @@ describe('engine restore concurrency', () => {
       expect(connA.state).not.toBe('connected');
     } finally {
       harness.ircd.hold = null;
+    }
+  }, 30000);
+
+  it("replies the last process's in-flight step left in the engine backlog are the restore's, even while the first step is still queued", async () => {
+    // The previous process let go with a step out; its 353/366 arrived at
+    // the engine afterwards and replay to this one right after `restored`.
+    // With the cap full, the channel's own step is still queued when they
+    // land — and they must still be read as the restore's: here, the WHO
+    // size gate (pinned to 0, so every restore WHO is skipped) has to apply
+    // to the replayed 366 as it does to the step's own.
+    process.env.LURKER_RESTORE_STEP_DEADLINE_MS = '8000';
+    process.env.LURKER_RESTORE_WHO_MAX_MEMBERS = '0';
+    const blocker = makeNet('gy', ['#gy1']);
+    const x = makeNet('gx', ['#gx1']);
+    await holdInEngine([blocker, x]);
+    // While no app is attached: the tail of a step the last process had out.
+    harness.ircd.sendRaw(x.nick, ':fake.test 353 gx = #gx1 :gx');
+    harness.ircd.sendRaw(x.nick, ':fake.test 366 gx #gx1 :End of /NAMES list');
+
+    // The blocker takes the only slot with a step that never ends.
+    harness.ircd.hold = (cmd, p, c) =>
+      c.nick === blocker.nick && cmd === 'TOPIC' && (p[0] ?? '').toLowerCase() === '#gy1';
+    try {
+      reattach(blocker);
+      await until(() => sentBy(blocker.nick, 'NAMES #gy1') >= 0, 5000, "blocker's step started");
+      const connX = reattach(x);
+      await until(() => connX.state === 'connected', 5000, 'X re-attached');
+      await sleep(500);
+      // X's step is queued, the replayed 366 has been through the userlist
+      // handler, and no WHO went out for it.
+      expect(namesSentBy(x.nick)).toHaveLength(0);
+      expect(sentBy(x.nick, 'WHO #gx1')).toBe(-1);
+
+      // Once its turn comes the step still asks (the replay is not credited
+      // to it), and its own 366 is gated the same way.
+      harness.ircd.drop(blocker.nick);
+      await until(() => sentBy(x.nick, 'NAMES #gx1') >= 0, 5000, "X's step started");
+      await until(
+        () => wire.filter((w) => w.dir === '<' && numericFor(w.line, '366', '#gx1')).length >= 2,
+        5000,
+        "X's own 366",
+      );
+      await sleep(200);
+      expect(sentBy(x.nick, 'WHO #gx1')).toBe(-1);
+    } finally {
+      harness.ircd.hold = null;
+      delete process.env.LURKER_RESTORE_WHO_MAX_MEMBERS;
     }
   }, 30000);
 });

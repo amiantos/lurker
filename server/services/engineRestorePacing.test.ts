@@ -17,8 +17,7 @@ import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
 import type { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { startEngineHarness } from '../test-utils/engineHarness.js';
-import type { EngineHarness } from '../test-utils/engineHarness.js';
-import { until as poll } from '../test-utils/until.js';
+import type { EngineHarness, WireLine } from '../test-utils/engineHarness.js';
 
 const SECRET = 'restore-pacing-secret';
 const CHANNELS = ['#p1', '#p2', '#p3', '#p4', '#p5', '#p6'];
@@ -34,26 +33,11 @@ let ircd: FakeIrcd;
 let network: Network;
 let userId: number;
 
-// Every line on the wire, in causal order: '>' is stamped as the Client writes
-// it — the same synchronous chain that arms the step deadline, so the timing
-// assertions read one clock — and '<' as the fake ircd sends it, which is
-// before the relay hop, so a reply is always logged ahead of the request it
-// releases. (Recording both at the Client would log them the other way round:
-// Lurker's own 'raw' handler runs first and writes the next request inside it.)
-interface Wire {
-  t: number;
-  dir: '>' | '<';
-  line: string;
-}
-const wire: Wire[] = [];
-const wireTail = () =>
-  'last wire lines:\n' +
-  wire
-    .slice(-60)
-    .map((w) => `${w.dir} ${w.line}`)
-    .join('\n');
-const until = (pred: () => boolean, ms = 5000, what = 'condition') =>
-  poll(pred, ms, what, wireTail);
+// Every line on the wire, in causal order — the harness's log (see WireLine
+// for why '<' is stamped at the ircd and '>' at the Client); the timing
+// assertions below read one clock because of it.
+let wire: WireLine[];
+const until = (pred: () => boolean, ms: number, what: string) => harness.until(pred, ms, what);
 
 beforeAll(async () => {
   harness = await startEngineHarness({
@@ -61,6 +45,7 @@ beforeAll(async () => {
     env: { LURKER_RESTORE_STEP_DEADLINE_MS: String(DEADLINE_MS) },
   });
   ircd = harness.ircd;
+  wire = harness.wire;
   const user = createUser('restore-pacing');
   userId = user.id;
   network = createNetwork(user.id, {
@@ -96,13 +81,12 @@ describe('engine restore pacing', () => {
     await until(() => whoAnswered.size === CHANNELS.length, 5000, "first session's WHOs answered");
     conn.detach();
     await until(() => conn.state === 'disconnected', 5000, 'detached');
+    // Only the second session's lines matter from here.
+    wire.length = 0;
 
     ircd.hold = (cmd, p) => cmd === 'TOPIC' && (p[0] ?? '').toLowerCase() === HELD;
     const conn2 = ircManager.startNetwork(userId, network.id)!;
-    ircd.on('sent', (line: string) => wire.push({ t: Date.now(), dir: '<', line }));
-    conn2.client.on('raw', (ev: { line: string; from_server: boolean }) => {
-      if (!ev.from_server) wire.push({ t: Date.now(), dir: '>', line: ev.line });
-    });
+    harness.tap(conn2, 'pace');
     await until(() => conn2.state === 'connected', 5000, 'reattached');
     // Done when the last channel's own WHO — the one this session sent — is
     // answered.

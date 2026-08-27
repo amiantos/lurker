@@ -27,17 +27,16 @@ import { setUserPaused } from '../db/users.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
-import { EngineServer } from '../engine/server.js';
-import { FakeIrcd } from '../test-utils/fakeIrcd.js';
-import {
-  EngineLink,
-  engineConfigured,
-  engineConnectionId,
-  isOurConnectionId,
-} from './engineLink.js';
+import type { EngineServer } from '../engine/server.js';
+import type { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { startEngineHarness } from '../test-utils/engineHarness.js';
+import type { EngineHarness } from '../test-utils/engineHarness.js';
+import { until as poll } from '../test-utils/until.js';
+import { EngineLink, engineConnectionId, isOurConnectionId } from './engineLink.js';
 
 const SECRET = 'integration-secret';
 
+let harness: EngineHarness;
 let ircd: FakeIrcd;
 let engine: EngineServer;
 let network: Network;
@@ -59,43 +58,18 @@ const rows = (): Row[] =>
     .prepare('SELECT id, type, target, text, nick FROM messages WHERE network_id = ? ORDER BY id')
     .all(network.id) as Row[];
 
-function until(pred: () => boolean, ms = 5000, what = 'condition'): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) {
-        const conn = ircManager.getConnection(userId, network.id);
-        return reject(
-          new Error(
-            `timed out waiting for ${what}; conn.state=${conn?.state} link=${EngineLink.shared().state} states=${JSON.stringify(stateEvents(managerEvents))} held=${engine.held()}`,
-          ),
-        );
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
+// On a timeout, where things stood: the connection, the link, the manager's
+// state timeline, and what the engine still holds.
+const until = (pred: () => boolean, ms = 5000, what = 'condition') =>
+  poll(pred, ms, what, () => {
+    const conn = ircManager.getConnection(userId, network.id);
+    return `conn.state=${conn?.state} link=${EngineLink.shared().state} states=${JSON.stringify(stateEvents(managerEvents))} held=${engine.held()}`;
   });
-}
 
 beforeAll(async () => {
-  ircd = await FakeIrcd.start();
-  engine = new EngineServer({
-    secret: SECRET,
-    bufferBytes: 64 * 1024,
-    bufferTotalBytes: 1024 * 1024,
-    version: 'test',
-    log: () => {},
-  });
-  const { port } = await engine.listen(0, '127.0.0.1');
-  process.env.LURKER_ENGINE_URL = `tcp://127.0.0.1:${port}`;
-  process.env.LURKER_ENGINE_SECRET = SECRET;
-  process.env.LURKER_ENGINE_RETRY_BASE_MS = '100';
-  // A full-suite CI run starves the event loop; keep the link's heartbeat well
-  // clear of the run so it can't drop a healthy idle link mid-test.
-  process.env.LURKER_ENGINE_HEARTBEAT_MS = '600000';
-  EngineLink.resetForTests();
-  if (!engineConfigured()) throw new Error('engine mode did not switch on');
+  harness = await startEngineHarness({ secret: SECRET });
+  ircd = harness.ircd;
+  engine = harness.engine;
 
   const user = createUser('engine-int');
   userId = user.id;
@@ -115,14 +89,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  ircManager.shutdown();
-  EngineLink.resetForTests();
-  await engine.shutdown('tests done', 500);
-  await ircd.close();
-  delete process.env.LURKER_ENGINE_URL;
-  delete process.env.LURKER_ENGINE_SECRET;
-  delete process.env.LURKER_ENGINE_RETRY_BASE_MS;
-  delete process.env.LURKER_ENGINE_HEARTBEAT_MS;
+  await harness.stop();
 });
 
 const sentBy = (nick: string) => ircd.client(nick)?.sent ?? [];

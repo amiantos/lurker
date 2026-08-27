@@ -23,13 +23,10 @@
 
 import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
 import { envInt } from '../utils/envInt.js';
+import { parseTruthyEnv } from '../utils/truthyEnv.js';
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let histogram: IntervalHistogram | null = null;
-
-function envFlag(name: string): boolean {
-  return /^(1|true|yes|on)$/i.test((process.env[name] || '').trim());
-}
 
 // intervalMs: how often we poll the histogram for its window max. warnMs:
 // minimum stall (max delay seen in a window) worth logging — below this is
@@ -42,7 +39,7 @@ function envFlag(name: string): boolean {
 export function startEventLoopMonitor(
   opts: { intervalMs?: number; warnMs?: number; context?: () => string | null } = {},
 ): void {
-  if (envFlag('LURKER_EVENT_LOOP_MONITOR_DISABLED')) return;
+  if (parseTruthyEnv(process.env.LURKER_EVENT_LOOP_MONITOR_DISABLED)) return;
   if (timer) return;
   // Floor the poll interval so a misconfigured 0/tiny value can't turn into a
   // setInterval(0) hot loop; 100ms is plenty fine-grained for reporting the

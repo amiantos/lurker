@@ -16,6 +16,7 @@ import type { Client, ConnectOptions } from 'irc-framework';
 import { EngineServer } from '../engine/server.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { EngineLink } from './engineLink.js';
+import { until as poll } from '../test-utils/until.js';
 import {
   ENGINE_CLOSE,
   EngineTransport,
@@ -128,21 +129,8 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
 
 // Poll for a condition; on timeout, say which one and show the timeline so a
 // failure reads as "never saw X after [...]" rather than a bare 5000ms.
-function until(pred: () => boolean, what: string, dump?: () => unknown, ms = 4000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const deadline = Date.now() + ms;
-    const tick = () => {
-      if (pred()) return resolve();
-      if (Date.now() > deadline) {
-        return reject(
-          new Error(`timed out waiting for ${what}; timeline: ${JSON.stringify(dump?.() ?? null)}`),
-        );
-      }
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-}
+const until = (pred: () => boolean, what: string, dump?: () => unknown, ms = 4000) =>
+  poll(pred, ms, what, () => `timeline: ${JSON.stringify(dump?.() ?? null)}`);
 
 describe('EngineTransport', () => {
   it('dials fresh through the engine and registers like a socket would', async () => {

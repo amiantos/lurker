@@ -34,6 +34,7 @@
 // is correct. No persistence, no worker threads.
 
 import { envInt } from '../utils/envInt.js';
+import { parseTruthyEnv } from '../utils/truthyEnv.js';
 
 export interface ConnectSchedulerOptions {
   // Minimum spacing between two launches to the SAME destination host.
@@ -57,10 +58,6 @@ export interface ConnectSchedulerOptions {
 interface Task {
   hostKey: string;
   run: () => void;
-}
-
-function envFlag(name: string): boolean {
-  return /^(1|true|yes|on)$/i.test((process.env[name] || '').trim());
 }
 
 export class ConnectScheduler {
@@ -98,7 +95,7 @@ export class ConnectScheduler {
       perHostMs: envInt('LURKER_CONNECT_THROTTLE_PER_HOST_MS', 2000),
       jitterMs: envInt('LURKER_CONNECT_THROTTLE_JITTER_MS', 2000),
       globalMs: envInt('LURKER_CONNECT_THROTTLE_GLOBAL_MS', 150),
-      disabled: envFlag('LURKER_CONNECT_THROTTLE_DISABLED'),
+      disabled: parseTruthyEnv(process.env.LURKER_CONNECT_THROTTLE_DISABLED),
     });
   }
 
