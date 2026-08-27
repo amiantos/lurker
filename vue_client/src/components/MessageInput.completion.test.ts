@@ -333,6 +333,25 @@ describe('MessageInput Tab-completion', () => {
       expect(el.value).toBe('will: will you come?');
     });
 
+    it('Reply does not mistake a longer nick for the addressed one', async () => {
+      // `bob_` is bob's ghost and `bobł` is someone else; a draft addressed to
+      // either must not read as "already addressed to bob". The mark run has
+      // to exclude nick characters — Unicode letters (`\w` is ASCII-only) and
+      // the RFC specials — not just `\w`.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+
+      await type(el, 'bob_: hi');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob: bob_: hi');
+
+      await type(el, 'bobł hi');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob: bobł hi');
+    });
+
     it('under an empty suffix, a draft opening with the nick already counts as addressed', async () => {
       // With "space only" the addressed form and the nick-as-a-word form are
       // the same text; that ambiguity is the convention's, and Reply follows

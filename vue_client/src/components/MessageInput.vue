@@ -833,18 +833,26 @@ function addressSuffix(): string {
   return `${addressPunct()} `;
 }
 
+// A character that cannot continue a nick, which is what "punctuation after
+// the nick" has to mean for isAddressedTo(): not a letter or digit (Unicode —
+// `\w` is ASCII-only, so `bobł` would read as bob + a mark), not whitespace,
+// and not one of the RFC 2812 nick specials `[]\`_^{|}-` — or `bob_: hi`
+// would count as addressing bob, and bob_ is every ghost's nick.
+const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
+
 // Whether `draft` already opens by addressing `nick`, so Reply is idempotent.
 // Not just the configured form: a draft can carry an older setting's form, or
 // one another client wrote (iOS still says `nick: `, and drafts sync), so any
-// run of punctuation after the nick counts. The bare `nick ` form only counts
-// when it IS the configured form — otherwise a draft that merely opens with a
-// nick that is also a word ("will you come?") would swallow the Reply. Under an
-// empty setting that draft is indistinguishable from an addressed one, which
-// is the ambiguity of the convention itself, not something to second-guess.
+// run of punctuation after the nick counts — plus the configured mark
+// verbatim, whatever it is. The bare `nick ` form only counts when it IS the
+// configured form — otherwise a draft that merely opens with a nick that is
+// also a word ("will you come?") would swallow the Reply. Under an empty
+// setting that draft is indistinguishable from an addressed one, which is the
+// ambiguity of the convention itself, not something to second-guess.
 function isAddressedTo(draft: string, nick: string): boolean {
   const punct = addressPunct();
-  const marks = punct ? `(?:${escapeRegex(punct)}|[^\\w\\s]+)` : '[^\\w\\s]*';
-  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'i').test(draft);
+  const marks = punct ? `(?:${escapeRegex(punct)}|${NOT_NICK_CHAR}+)` : `${NOT_NICK_CHAR}*`;
+  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu').test(draft);
 }
 
 function buildNickMatches(buf: Buffer, networkId: number, prefix: string): string[] {
