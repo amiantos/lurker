@@ -10,6 +10,7 @@ import type { MessageEvent } from '../db/messages.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import { asPageUnit } from '../../shared/eventFilter.js';
 import { isChannelTarget } from '../../shared/channels.js';
+import { WS_CLOSE_SESSION_REVOKED } from '../../shared/wsCloseCodes.js';
 import { WebSocketServer } from 'ws';
 import cookie from 'cookie';
 import cookieParser from 'cookie-parser';
@@ -1603,6 +1604,12 @@ export function fanOutToUser(userId: number, payload: WsPayload, opts: FanOutOpt
  * also tears down IRC connections and drops the system log. Here the account
  * lives on and is expected to reconnect immediately.
  *
+ * Closes with WS_CLOSE_SESSION_REVOKED rather than a plain 1000 so the client
+ * can tell this apart from an ordinary drop. It cannot infer the difference, and
+ * reconnecting is futile — the session row is gone, so /ws will 401 forever —
+ * so a 1000 leaves the evicted tab in an endless backoff loop showing stale
+ * content with nothing telling the user they've been signed out.
+ *
  * Returns the number of sockets closed.
  */
 export function closeSocketsForUser(userId: number, reason = 'session revoked'): number {
@@ -1611,7 +1618,7 @@ export function closeSocketsForUser(userId: number, reason = 'session revoked'):
   let closed = 0;
   for (const ws of set) {
     try {
-      ws.close(1000, reason);
+      ws.close(WS_CLOSE_SESSION_REVOKED, reason);
       closed++;
     } catch (_) {
       /* already tearing down; the close handler prunes it either way */

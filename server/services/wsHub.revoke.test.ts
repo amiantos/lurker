@@ -13,6 +13,7 @@ import http from 'http';
 import request from 'supertest';
 import { WebSocket } from 'ws';
 import { createTestApp, setupTestDb, TEST_SESSION_SECRET } from '../test-utils/testApp.js';
+import { WS_CLOSE_SESSION_REVOKED } from '../../shared/wsCloseCodes.js';
 
 const testDb = setupTestDb('wshub-revoke');
 
@@ -87,7 +88,10 @@ describe('closeSocketsForUser', () => {
     const [a, b] = await Promise.all([connect(user.id), connect(user.id)]);
     const bothClosed = Promise.all([closed(a), closed(b)]);
     expect(closeSocketsForUser(user.id, 'account recovered')).toBe(2);
-    expect(await bothClosed).toEqual([1000, 1000]);
+    // The dedicated code, not a plain 1000: the client can only tell an eviction
+    // from an ordinary drop by the code, and reconnecting after this one can
+    // never succeed.
+    expect(await bothClosed).toEqual([WS_CLOSE_SESSION_REVOKED, WS_CLOSE_SESSION_REVOKED]);
   });
 
   it('leaves other accounts connected', async () => {
@@ -124,6 +128,6 @@ describe('account recovery evicts live sockets', () => {
       .send({ password: 'themembersnewpassword' });
     expect(res.status).toBe(200);
 
-    expect(await evicted).toBe(1000);
+    expect(await evicted).toBe(WS_CLOSE_SESSION_REVOKED);
   });
 });

@@ -9,6 +9,7 @@ import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useThemesStore } from '../stores/themes.js';
 import { THEME_POINTER_KEYS } from '../../../shared/themePresets.js';
+import { WS_CLOSE_SESSION_REVOKED } from '../../../shared/wsCloseCodes.js';
 import { primePreviews } from './useLinkPreview.js';
 import { previewableEventTexts } from '../utils/previewEvents.js';
 import { useConfigStore } from '../stores/config.js';
@@ -1010,7 +1011,7 @@ function open() {
   );
   socket.addEventListener(
     'close',
-    () => {
+    (ev) => {
       connected.value = false;
       socket = null;
       // A probe armed against the socket that just died must not survive into
@@ -1035,6 +1036,24 @@ function open() {
         /* store not yet initialized; nothing in flight */
       }
       const auth = useAuthStore();
+      // The server evicted this device: the session behind this socket was
+      // revoked mid-connection by an account recovery. Reconnecting is futile —
+      // /ws will 401 for the rest of this tab's life — and an ordinary drop is
+      // indistinguishable without the code, which is why the server sends one.
+      //
+      // Clearing the user first is what stops the reconnect arm below (the same
+      // ordering the logout path relies on), then a full navigation to `/`
+      // rebuilds the app against the dead cookie and lands on sign-in. That's
+      // the mechanism api.ts already uses for a session that died under a REST
+      // call; here it's the WS noticing first. A reload rather than an in-app
+      // route change on purpose: every store still holds the evicted account's
+      // data, and resetSession() can't be called from here without an import
+      // cycle (useSessionReset imports resetSocket from this module).
+      if (ev.code === WS_CLOSE_SESSION_REVOKED) {
+        auth.user = null;
+        window.location.assign('/');
+        return;
+      }
       if (auth.user) {
         // A socket that lived a while proves the server is healthy and this was
         // an ordinary drop — start over at the base delay. One that died young

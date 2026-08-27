@@ -50,7 +50,8 @@ function usage(): never {
       '',
       '  <username>      The account to recover. Matched case-insensitively.',
       '  --url <origin>  Public origin for the link (e.g. https://lurker.example.com).',
-      '                  Defaults to the first entry in WEBAUTHN_ORIGIN.',
+      '                  --url=<origin> works too. Defaults to the first entry',
+      '                  in WEBAUTHN_ORIGIN.',
       '',
       'DATABASE_PATH selects the database.',
     ].join('\n'),
@@ -60,15 +61,33 @@ function usage(): never {
 
 if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) usage();
 
+// Both spellings. Accepting only the space-separated form meant `--url=https://x`
+// fell through the flag filter, silently fell back to WEBAUTHN_ORIGIN, and
+// handed a locked-out admin a link pointing at the wrong host — after the token
+// was already written, so recovering from it costs a reissue.
+const inlineUrl = argv.find((a) => a.startsWith('--url='));
 const urlIndex = argv.indexOf('--url');
-const originArg = urlIndex === -1 ? null : argv[urlIndex + 1];
-if (urlIndex !== -1 && !originArg) {
+const originArg = inlineUrl ? inlineUrl.slice('--url='.length) : (argv[urlIndex + 1] ?? null);
+if ((urlIndex !== -1 || inlineUrl) && !originArg) {
   console.error('--url needs a value, e.g. --url https://lurker.example.com');
   process.exit(1);
 }
+// Only skip the NEXT argv slot when --url took a separate value; with --url=…
+// there is no separate slot, and urlIndex + 1 would otherwise eat the username.
 const skipIndex = urlIndex === -1 ? -1 : urlIndex + 1;
 const username = argv.filter((a, i) => !a.startsWith('--') && i !== skipIndex)[0];
 if (!username) usage();
+
+// A cell's sign-in belongs to the control plane, which has its own email-based
+// reset — the admin routes refuse there for the same reason. The CLI ships in
+// the same image cells run, so it has to refuse too, rather than minting a link
+// whose redemption would drop CP-injected sessions the CP still believes live.
+if ((process.env.LURKER_EDITION || '').trim().toLowerCase() === 'node') {
+  console.error(
+    'This is a hosted cell — sign-in is managed by the control plane, which has its own password reset.',
+  );
+  process.exit(1);
+}
 
 const origin = (originArg || (process.env.WEBAUTHN_ORIGIN || '').split(',')[0] || '').trim();
 if (!origin) {

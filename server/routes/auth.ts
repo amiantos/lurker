@@ -44,6 +44,7 @@ import {
 } from '../db/webauthnCredentials.js';
 import { createSession, deleteSession, deleteSessionsForUser } from '../db/sessions.js';
 import { closeSocketsForUser } from '../services/wsHub.js';
+import { isNodeMode } from '../utils/edition.js';
 import { dropSessionsForUser as dropBouncerSessionsForUser } from '../services/bouncer.js';
 import { revokeAllForUser as revokeApiTokensForUser } from '../db/apiTokens.js';
 import { deleteAllForUser as deletePushSubscriptionsForUser } from '../db/pushSubscriptions.js';
@@ -430,6 +431,18 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
 // strip someone's credentials, and a passkey cannot be used without the
 // authenticator itself.
 
+// A cell's sign-in is the control plane's: it holds cp_session, injects
+// lurker_session, and has its own email-based reset. Issuing already refuses
+// there (routes/admin.ts), but redemption has to refuse independently — a link
+// minted before an instance became a cell, or by the CLI shipped in the same
+// image, would otherwise be redeemable and would drop CP-injected session rows
+// the control plane still believes are live.
+function recoveryUnavailableInNodeMode(res: Response): boolean {
+  if (!isNodeMode()) return false;
+  res.status(404).json({ error: 'account recovery is managed by the control plane' });
+  return true;
+}
+
 function finishRecovery(res: Response, user: { id: number; username: string; role: string }): void {
   // "Signed out everywhere" means every door, not just the web session. Each of
   // these is a credential that authenticates ONCE and is then never re-checked
@@ -461,6 +474,7 @@ function finishRecovery(res: Response, user: { id: number; username: string; rol
 // comes back because the page needs to name the account being recovered, and
 // whoever holds this link can already take that account over.
 router.get('/recovery/:token', (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
   const info = findLiveRecoveryToken(req.params.token);
   const user = info ? findUserById(info.userId) : null;
   if (!user) {
@@ -489,6 +503,7 @@ router.get('/recovery/:token', (req: Request<{ token: string }>, res: Response) 
 // above already bounds how fast anyone can probe this surface. The passkey half
 // of this flow is unguarded for the same reason; the two now agree.
 router.post('/recovery/:token/password', (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
   const password: unknown = req.body?.password;
   if (!isValidPassword(password)) {
     res.status(400).json({ error: passwordRequirementsMessage() });
@@ -515,6 +530,7 @@ router.post('/recovery/:token/password', (req: Request<{ token: string }>, res: 
 // phone has no password to reset. Mirrors /passkeys/options, but authorized by
 // the link instead of a session.
 router.post('/recovery/:token/options', async (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
   const info = findLiveRecoveryToken(req.params.token);
   const user = info ? findUserById(info.userId) : null;
   if (!user) {
@@ -555,6 +571,7 @@ router.post('/recovery/:token/options', async (req: Request<{ token: string }>, 
 });
 
 router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
   const challengeToken = req.signedCookies?.[CHALLENGE_COOKIE];
   const entry = consumeChallenge(challengeToken);
   clearChallengeCookie(res);
