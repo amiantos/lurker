@@ -366,7 +366,11 @@ describe('IrcConnection through the engine', () => {
     ircManager.partChannel(userId, network.id, '#leaving');
     await until(() => conn.state === 'connected', 8000, 'reattached');
     await until(() => !ircd.client('lurk')!.channels.has('#leaving'), 5000, 'the late PART landed');
-    expect(conn.isChannelJoined('#leaving')).toBe(false);
+    // The app's own view settles one hop later than the ircd's: the loss can
+    // cut in before the join's 353/366 were read, and those replay from the
+    // engine backlog AFTER the synthesised JOIN was answered with the PART —
+    // upsertChannel puts the channel back until the PART's echo takes it out.
+    await until(() => !conn.isChannelJoined('#leaving'), 5000, 'the app saw its PART');
     expect(conn.isChannelJoined('#stay')).toBe(true);
   }, 20000);
 
