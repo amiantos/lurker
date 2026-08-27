@@ -3,6 +3,8 @@
 
 import { createHash, randomBytes } from 'crypto';
 import db from './index.js';
+import { insertCredential } from './webauthnCredentials.js';
+import type { InsertCredentialFields } from './webauthnCredentials.js';
 
 // Admin-issued, single-use account recovery links (#855). Lurker accounts carry
 // no email address, so there is nothing a self-service "forgot password" flow
@@ -99,6 +101,46 @@ export function consumeRecoveryToken(token: string, now = Date.now()): number | 
   return row?.userId ?? null;
 }
 
+/**
+ * Spend a recovery link and enroll a passkey as ONE atomic step, returning the
+ * user id on success or null if the link was already gone.
+ *
+ * They cannot be separate statements. `webauthn_credentials.credential_id` is
+ * UNIQUE across the whole instance, while the ceremony's excludeCredentials only
+ * covers the account being recovered — so an authenticator already enrolled on
+ * some OTHER account here passes the ceremony and then fails the insert. Split
+ * apart, that leaves the link spent and no credential written: the member's one
+ * link is gone and they are still locked out. Rolled back together, the link
+ * survives and they can retry with a different authenticator.
+ *
+ * `expectedUserId` pins the link to the account the challenge was issued for, so
+ * a challenge cannot be redirected onto a different account's link.
+ *
+ * Throws whatever the insert throws (SQLITE_CONSTRAINT for a duplicate
+ * credential); the caller turns that into a 409.
+ */
+export function spendRecoveryAndEnroll(
+  token: string,
+  expectedUserId: number,
+  credential: Omit<InsertCredentialFields, 'userId'>,
+  now = Date.now(),
+): number | null {
+  const run = db.transaction((): number | null => {
+    // Both rejections are checked BEFORE anything is written. A plain `return`
+    // from a better-sqlite3 transaction COMMITS — only a throw rolls back — so a
+    // bail-out after the consume would spend the link on its way out. Order is
+    // the guard here, not the transaction.
+    const info = findLiveRecoveryToken(token, now);
+    if (!info || info.userId !== expectedUserId) return null;
+    const userId = consumeRecoveryToken(token, now);
+    if (userId === null) return null;
+    // The one statement that can fail. Its throw is what rolls the consume back.
+    insertCredential({ ...credential, userId });
+    return userId;
+  });
+  return run();
+}
+
 /** The outstanding link for an account, if any. Powers the admin panel badge. */
 export function getRecoveryTokenForUser(
   userId: number,
@@ -113,6 +155,21 @@ export function getRecoveryTokenForUser(
     )
     .get(userId, new Date(now).toISOString()) as RecoveryTokenInfo | undefined;
   return row ?? null;
+}
+
+/**
+ * Every account with a live link, as {userId → expiresAt}. One query for the
+ * admin roster; the per-user getRecoveryTokenForUser is for single-row callers.
+ */
+export function listRecoveryExpiries(now = Date.now()): Map<number, string> {
+  const rows = db
+    .prepare(
+      `SELECT user_id AS userId, expires_at AS expiresAt
+         FROM account_recovery_tokens
+        WHERE expires_at > ?`,
+    )
+    .all(new Date(now).toISOString()) as { userId: number; expiresAt: string }[];
+  return new Map(rows.map((r) => [r.userId, r.expiresAt]));
 }
 
 /** Revoke an account's outstanding link. True if there was one to revoke. */

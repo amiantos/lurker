@@ -50,10 +50,11 @@ export function deleteSession(token: string | null | undefined): void {
  * fresh session afterwards so the device doing the recovery stays signed in.
  *
  * ⚠ This drops the session ROWS, which is what every future request and /ws
- * upgrade is checked against — but a WebSocket that is ALREADY open holds its
- * authenticated user in the socket's closure and is not re-checked, so it keeps
- * streaming until it disconnects. Closing live sockets on revocation is #567,
- * which owns the same gap for PUT /password.
+ * upgrade is checked against. It does NOT touch a socket that is already open —
+ * that one holds its authenticated user in its own closure and is never
+ * re-checked. Callers that mean "signed out everywhere" must pair this with
+ * wsHub.closeSocketsForUser(); the recovery routes do. (PUT /password still
+ * doesn't — that's #567.)
  *
  * Returns the number of sessions dropped.
  */

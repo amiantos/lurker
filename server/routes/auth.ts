@@ -26,7 +26,11 @@ import {
   setPasswordHash,
 } from '../db/users.js';
 import { inviteStatus, consumeInvite } from '../db/invites.js';
-import { findLiveRecoveryToken, consumeRecoveryToken } from '../db/accountRecovery.js';
+import {
+  findLiveRecoveryToken,
+  consumeRecoveryToken,
+  spendRecoveryAndEnroll,
+} from '../db/accountRecovery.js';
 import { isValidUsername, isValidLoginUsername } from '../../shared/username.js';
 import {
   listForUser as listCredentialsForUser,
@@ -39,6 +43,7 @@ import {
   deleteById as deleteCredentialById,
 } from '../db/webauthnCredentials.js';
 import { createSession, deleteSession, deleteSessionsForUser } from '../db/sessions.js';
+import { closeSocketsForUser } from '../services/wsHub.js';
 import { SESSION_COOKIE, getCookieOptions, requireAuth, bearerToken } from '../middleware/auth.js';
 import { rpConfig, saveChallenge, consumeChallenge, userIdToHandle } from '../services/webauthn.js';
 import {
@@ -415,13 +420,19 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
 // Every path here ends in finishRecovery(), which signs the account out
 // everywhere before minting the new session: the lockout that made recovery
 // necessary is indistinguishable from a takeover, so any session predating the
-// recovery is assumed hostile. (An already-open WebSocket survives until it
-// disconnects — see deleteSessionsForUser and #567.) Existing passkeys are
-// deliberately left alone — recovery restores a way in, it is not a way to
-// strip someone's credentials.
+// recovery is assumed hostile — the session rows AND the open sockets, since a
+// socket is only ever checked at upgrade. Existing passkeys are deliberately
+// left alone — recovery restores a way in, it is not a way to strip someone's
+// credentials.
 
 function finishRecovery(res: Response, user: { id: number; username: string; role: string }): void {
   deleteSessionsForUser(user.id);
+  // Rows alone aren't enough: an open socket authenticated at upgrade time and
+  // is never re-checked, so without this an attacker holding the account keeps
+  // reading and sending as them indefinitely — and that is precisely who this
+  // flow assumes is on the other end. Runs before the new session is minted;
+  // the recovering device has no socket yet and reconnects with the new cookie.
+  closeSocketsForUser(user.id, 'account recovered');
   const { token: sessionToken } = createSession(user.id);
   res.cookie(SESSION_COOKIE, sessionToken, getCookieOptions());
   res.json({ user: { id: user.id, username: user.username, role: user.role } });
@@ -451,38 +462,36 @@ router.get('/recovery/:token', (req: Request<{ token: string }>, res: Response) 
 // Set a password with a recovery link. The password is validated BEFORE the
 // token is spent, so a too-short one doesn't burn a single-use link.
 //
-// guardCredentialAttempt shares this IP's login backoff — it turns away a
-// caller already being throttled, and clears that state on success. It does NOT
-// count failures here: it records only on 401, and a dead link answers 400.
-// That's deliberate rather than an oversight. Nothing on this route is
-// guessable — the token is 32 random bytes — so failure backoff would buy
-// nothing, while the router-wide limitRequests(authRequestThrottle) above
-// already caps how fast anyone can probe the auth surface at all.
-router.post(
-  '/recovery/:token/password',
-  guardCredentialAttempt(loginFailureThrottle),
-  (req: Request<{ token: string }>, res: Response) => {
-    const password: unknown = req.body?.password;
-    if (!isValidPassword(password)) {
-      res.status(400).json({ error: passwordRequirementsMessage() });
-      return;
-    }
-    const userId = consumeRecoveryToken(req.params.token);
-    if (userId === null) {
-      res.status(400).json({ error: 'that recovery link is invalid or has expired' });
-      return;
-    }
-    const user = findUserById(userId);
-    if (!user) {
-      // The row CASCADEs with the account, so this means the account was deleted
-      // between the consume and this read.
-      res.status(404).json({ error: 'that account no longer exists' });
-      return;
-    }
-    setPasswordHash(user.id, hashPassword(password as string));
-    finishRecovery(res, user);
-  },
-);
+// NO guardCredentialAttempt here, unlike the login routes, and that is the
+// point: its 429 pre-check turns away an IP already in login backoff — which is
+// exactly the person recovering, since failing at sign-in is how they got here.
+// (Behind a proxy without LURKER_TRUST_PROXY the key is the proxy's address, so
+// one member's failed logins would lock everyone else out of recovery too.) It
+// would buy nothing either way: the token is 32 random bytes, so there is
+// nothing to brute-force, and the router-wide limitRequests(authRequestThrottle)
+// above already bounds how fast anyone can probe this surface. The passkey half
+// of this flow is unguarded for the same reason; the two now agree.
+router.post('/recovery/:token/password', (req: Request<{ token: string }>, res: Response) => {
+  const password: unknown = req.body?.password;
+  if (!isValidPassword(password)) {
+    res.status(400).json({ error: passwordRequirementsMessage() });
+    return;
+  }
+  const userId = consumeRecoveryToken(req.params.token);
+  if (userId === null) {
+    res.status(400).json({ error: 'that recovery link is invalid or has expired' });
+    return;
+  }
+  const user = findUserById(userId);
+  if (!user) {
+    // The row CASCADEs with the account, so this means the account was deleted
+    // between the consume and this read.
+    res.status(404).json({ error: 'that account no longer exists' });
+    return;
+  }
+  setPasswordHash(user.id, hashPassword(password as string));
+  finishRecovery(res, user);
+});
 
 // Enroll a fresh passkey with a recovery link — the half of this feature a
 // password-only reset would miss, since a passkey-only member who lost their
@@ -557,11 +566,36 @@ router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, r
   }
 
   // Spend the link only once the authenticator has answered, so a failed or
-  // abandoned ceremony leaves it usable. Nothing has been written yet, so losing
-  // this race needs no cleanup — unlike the invite flow, which has a
-  // speculatively-created account to tear down.
-  const userId = consumeRecoveryToken(req.params.token);
-  if (userId === null || userId !== (entry.userId as number)) {
+  // abandoned ceremony leaves it usable.
+  //
+  // Spend and enroll go in ONE transaction. webauthn_credentials.credential_id
+  // is globally UNIQUE while excludeCredentials only excludes THIS account's
+  // keys, so an authenticator already enrolled on a different account of the
+  // same instance (a shared machine, or one person with two accounts) clears the
+  // ceremony and then fails the insert. Outside a transaction that 500s with the
+  // token already deleted: no credential written, one link burned, member still
+  // locked out.
+  const entryUserId = entry.userId as number;
+  let userId: number | null = null;
+  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  try {
+    userId = spendRecoveryAndEnroll(req.params.token, entryUserId, {
+      credentialId: credential.id,
+      publicKey: Buffer.from(credential.publicKey),
+      counter: credential.counter,
+      transports: credential.transports || [],
+      deviceType: credentialDeviceType,
+      backedUp: credentialBackedUp,
+      label,
+    });
+  } catch (_err) {
+    // The rollback put the link back, so the member can retry with a different
+    // authenticator rather than going back to the admin for a new one.
+    res.status(409).json({ error: 'that passkey is already registered on this server' });
+    return;
+  }
+  if (userId === null) {
     res.status(409).json({ error: 'that recovery link is no longer valid' });
     return;
   }
@@ -570,19 +604,6 @@ router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, r
     res.status(404).json({ error: 'that account no longer exists' });
     return;
   }
-
-  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
-  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
-  insertCredential({
-    userId: user.id,
-    credentialId: credential.id,
-    publicKey: Buffer.from(credential.publicKey),
-    counter: credential.counter,
-    transports: credential.transports || [],
-    deviceType: credentialDeviceType,
-    backedUp: credentialBackedUp,
-    label,
-  });
   finishRecovery(res, user);
 });
 

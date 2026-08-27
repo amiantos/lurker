@@ -109,10 +109,19 @@
              loses it issues another, which kills this one. -->
         <div v-if="freshRecovery && freshRecovery.userId === u.id" class="recovery-fresh">
           <code>{{ freshRecovery.url }}</code>
-          <button class="link" @click="copyUrl(freshRecovery.url)">copy</button>
+          <button class="link" @click="onCopyRecovery(freshRecovery.url)">
+            {{ freshRecovery.copied ? 'copied' : 'copy' }}
+          </button>
           <small class="muted">
             Send this to {{ u.username }} over a channel you trust. Single use, expires in 24 hours,
             and shown only now.
+          </small>
+          <!-- Said out loud rather than swallowed: the clipboard API is absent
+               outside a secure context, which includes plain-HTTP LAN installs.
+               Elsewhere a failed copy costs a convenience; here it is the only
+               copy of a value nothing can re-fetch. -->
+          <small v-if="freshRecovery.copyFailed" class="error">
+            clipboard unavailable — select and copy the link above manually
           </small>
         </div>
 
@@ -142,6 +151,7 @@
             {{ u.isPaused ? 'resume' : 'pause' }}
           </button>
           <button
+            v-if="!config.isNode"
             class="link"
             :disabled="adminBusy"
             title="issue a single-use link that lets this member set a password or add a passkey"
@@ -150,7 +160,7 @@
             {{ u.recoveryExpiresAt ? 'reissue recovery' : 'recovery link' }}
           </button>
           <button
-            v-if="u.recoveryExpiresAt"
+            v-if="!config.isNode && u.recoveryExpiresAt"
             class="link"
             :disabled="adminBusy"
             title="revoke the outstanding recovery link"
@@ -211,7 +221,12 @@ const identDraft = ref('');
 // The one recovery link minted this session, if any. Held in the component
 // rather than the store because it is not state — it is a value that exists for
 // exactly as long as this screen is open, and nothing can fetch it back.
-const freshRecovery = ref<{ userId: number; url: string } | null>(null);
+const freshRecovery = ref<{
+  userId: number;
+  url: string;
+  copied: boolean;
+  copyFailed: boolean;
+} | null>(null);
 
 function onEditIdent(user: AdminUser) {
   adminError.value = '';
@@ -259,8 +274,8 @@ async function onIssueRecovery(user: AdminUser) {
   freshRecovery.value = null;
   try {
     const recovery = await adminStore.createRecoveryLink(user.id);
-    freshRecovery.value = { userId: user.id, url: recovery.url };
-    copyUrl(recovery.url);
+    freshRecovery.value = { userId: user.id, url: recovery.url, copied: false, copyFailed: false };
+    await onCopyRecovery(recovery.url);
   } catch (e: any) {
     adminError.value = e.message || 'failed to issue recovery link';
   } finally {
@@ -283,11 +298,15 @@ async function onRevokeRecovery(user: AdminUser) {
   }
 }
 
-function copyUrl(url: string) {
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(url).catch(() => {
-      /* clipboard is best-effort */
-    });
+async function onCopyRecovery(url: string) {
+  if (!freshRecovery.value) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    freshRecovery.value.copied = true;
+    freshRecovery.value.copyFailed = false;
+  } catch (_) {
+    freshRecovery.value.copied = false;
+    freshRecovery.value.copyFailed = true;
   }
 }
 

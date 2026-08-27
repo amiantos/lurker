@@ -1586,6 +1586,42 @@ export function fanOutToUser(userId: number, payload: WsPayload, opts: FanOutOpt
   fanOut(userId, payload, opts);
 }
 
+/**
+ * Close every open socket for a user, so a revoked session stops streaming.
+ *
+ * Session checks happen at the /ws upgrade and nowhere after it — the handler
+ * reads its user off the socket's own closure — so deleting the session rows
+ * alone leaves an ALREADY-OPEN socket reading backlog and sending messages as
+ * that account for as long as its holder cares to keep it open. Account
+ * recovery (#855) is exactly the case where that matters: the lockout it
+ * answers is indistinguishable from a takeover, so "signed out everywhere" has
+ * to mean the sockets too, not just the rows behind future requests.
+ *
+ * Deliberately NOT the 'user-disposed' path, which is for a deleted account: it
+ * also tears down IRC connections and drops the system log. Here the account
+ * lives on and is expected to reconnect immediately.
+ *
+ * Returns the number of sockets closed.
+ */
+export function closeSocketsForUser(userId: number, reason = 'session revoked'): number {
+  const set = socketsByUser.get(userId);
+  if (!set) return 0;
+  let closed = 0;
+  for (const ws of set) {
+    try {
+      ws.close(1000, reason);
+      closed++;
+    } catch (_) {
+      /* already tearing down; the close handler prunes it either way */
+    }
+  }
+  // The close handlers prune the set themselves, but a socket that never fires
+  // one (already-dead transport) would otherwise linger and keep receiving
+  // fan-out. Dropping the whole entry is safe: a reconnect re-adds it.
+  socketsByUser.delete(userId);
+  return closed;
+}
+
 // Push the user's current ignore list for one scope to all their open tabs.
 // networkId null targets the global bucket; a number targets that network's own
 // rules. The client replaces the matching bucket and re-unions at match time.

@@ -64,6 +64,19 @@ describe('POST /api/admin/users/:id/recovery', () => {
     expect(JSON.stringify(list.body)).not.toContain(token);
   });
 
+  it('reports every outstanding link in one listing', async () => {
+    const a = createUser('listing-a');
+    const b = createUser('listing-b');
+    const none = createUser('listing-none');
+    await issue(a.id);
+    await issue(b.id);
+    const list = await adminAgent.get('/api/admin/users');
+    const row = (id: number) => list.body.users.find((r: { id: number }) => r.id === id);
+    expect(row(a.id).recoveryExpiresAt).toBeTruthy();
+    expect(row(b.id).recoveryExpiresAt).toBeTruthy();
+    expect(row(none.id).recoveryExpiresAt).toBeNull();
+  });
+
   it('404s for an account that does not exist', async () => {
     const res = await adminAgent.post('/api/admin/users/999999/recovery');
     expect(res.status).toBe(404);
@@ -228,6 +241,30 @@ describe('POST /api/auth/recovery/:token/password', () => {
     expect(res.status).toBe(400);
   });
 
+  it('still works for an IP already throttled by failed logins', async () => {
+    // The regression this route's missing guardCredentialAttempt prevents:
+    // failing at sign-in is HOW someone ends up needing recovery, so a shared
+    // login backoff would 429 exactly the person the link was issued for.
+    const u = createUser('redeem-throttled');
+    setPasswordHash(u.id, hashPassword('theoldpassword'));
+    const { token } = await issue(u.id);
+    for (let i = 0; i < 12; i++) {
+      await testRequest(app)
+        .post('/api/auth/login/password')
+        .send({ username: 'redeem-throttled', password: 'wrongpassword' });
+    }
+    // Sign-in is now backed off for this IP...
+    const blocked = await testRequest(app)
+      .post('/api/auth/login/password')
+      .send({ username: 'redeem-throttled', password: 'theoldpassword' });
+    expect(blocked.status).toBe(429);
+    // ...and recovery still lets them back in.
+    const res = await testRequest(app)
+      .post(`/api/auth/recovery/${token}/password`)
+      .send({ password: 'thenewpassword' });
+    expect(res.status).toBe(200);
+  });
+
   it('leaves existing passkeys alone', async () => {
     // Recovery restores a way in; it is not a way to strip someone's
     // credentials out from under them.
@@ -248,6 +285,80 @@ describe('POST /api/auth/recovery/:token/password', () => {
       .post(`/api/auth/recovery/${token}/password`)
       .send({ password: 'passwordalongside' });
     expect(countForUser(u.id)).toBe(1);
+  });
+});
+
+describe('spendRecoveryAndEnroll', () => {
+  it('rolls the spend back when the passkey is already registered elsewhere', async () => {
+    // credential_id is UNIQUE across the instance while the ceremony only
+    // excludes THIS account's keys, so an authenticator enrolled on another
+    // account here clears WebAuthn and then fails the insert. If that spent the
+    // link, the member would be left with no passkey and no way back in.
+    const other = createUser('enroll-owner');
+    const u = createUser('enroll-clash');
+    const { insertCredential, countForUser } = await import('../db/webauthnCredentials.js');
+    insertCredential({
+      userId: other.id,
+      credentialId: 'cred-owned-by-someone-else',
+      publicKey: Buffer.from('key'),
+      counter: 0,
+      transports: ['internal'],
+      deviceType: 'singleDevice',
+      backedUp: false,
+      label: null,
+    });
+    const { token } = await issue(u.id);
+    expect(() =>
+      recovery.spendRecoveryAndEnroll(token, u.id, {
+        credentialId: 'cred-owned-by-someone-else',
+        publicKey: Buffer.from('key'),
+        counter: 0,
+        transports: ['internal'],
+        deviceType: 'singleDevice',
+        backedUp: false,
+        label: null,
+      }),
+    ).toThrow(/UNIQUE constraint failed/);
+    // The link survives, so they can retry with a different authenticator.
+    expect(recovery.findLiveRecoveryToken(token)).toMatchObject({ userId: u.id });
+    expect(countForUser(u.id)).toBe(0);
+  });
+
+  it('enrolls and spends together on the happy path', async () => {
+    const u = createUser('enroll-happy');
+    const { countForUser } = await import('../db/webauthnCredentials.js');
+    const { token } = await issue(u.id);
+    expect(
+      recovery.spendRecoveryAndEnroll(token, u.id, {
+        credentialId: 'cred-enrolled-by-recovery',
+        publicKey: Buffer.from('key'),
+        counter: 0,
+        transports: ['internal'],
+        deviceType: 'singleDevice',
+        backedUp: false,
+        label: null,
+      }),
+    ).toBe(u.id);
+    expect(countForUser(u.id)).toBe(1);
+    expect(recovery.findLiveRecoveryToken(token)).toBeNull();
+  });
+
+  it('refuses a link belonging to a different account than the challenge', async () => {
+    const u = createUser('enroll-pinned');
+    const other = createUser('enroll-pinned-other');
+    const { token } = await issue(u.id);
+    expect(
+      recovery.spendRecoveryAndEnroll(token, other.id, {
+        credentialId: 'cred-never-written',
+        publicKey: Buffer.from('key'),
+        counter: 0,
+        transports: ['internal'],
+        deviceType: 'singleDevice',
+        backedUp: false,
+        label: null,
+      }),
+    ).toBeNull();
+    expect(recovery.findLiveRecoveryToken(token)).toMatchObject({ userId: u.id });
   });
 });
 
