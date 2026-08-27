@@ -185,6 +185,7 @@ import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
 import { isChannelTarget } from '../../../shared/channels.js';
+import { escapeRegex } from '../../../shared/textMatch.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
 import { highlightRuleDetailParts } from '../utils/highlightFormat.js';
@@ -655,8 +656,8 @@ function endTypingTo(target: { networkId: number; target: string } | null | unde
 interface CompletionState {
   prefix: string;
   tail: string;
-  // What follows the pick: ': ' for a nick being addressed at line start, ' '
-  // for a channel committed out of the ChannelPicker, '' otherwise. Stored on
+  // What follows the pick: addressSuffix() for a nick being addressed at line
+  // start, ' ' for a channel committed out of the ChannelPicker, '' otherwise. Stored on
   // the session rather than re-derived on each cycle so every Tab reproduces
   // the same shape of insertion the first one made — the picker commits with a
   // trailing space, in-place completion doesn't, and a cycle seeded from the
@@ -805,12 +806,53 @@ function tokenAtCursor(
 // True when `before` (the text preceding a token) sits at the start of a
 // logical line — nothing but whitespace since the last newline, or the very
 // start of the input. Callers use this to detect a nick that's being
-// *addressed* and so wants an opening ': '. Shared by Tab-completion and both
+// *addressed* and so wants addressSuffix(). Shared by Tab-completion and both
 // @-driven selectors so all three detect line starts identically, including
 // on multi-line drafts; what each appends *off* a line start still differs
 // (see the call sites).
 function isAtLineStart(before: string): boolean {
   return /(^|\n)\s*$/.test(before);
+}
+
+// The punctuation a nick takes when it opens the line, per the setting. The
+// value stores the mark alone and the space is always ours to add (see the
+// registry entry), so "space only" is the empty string. Trailing whitespace is
+// dropped rather than doubled: the description shows the form as `nick: `, and
+// typing exactly that into the field is the natural mistake — and it lets
+// `/set … " "` land on "space only" too.
+function addressPunct(): string {
+  return String(settings.effective('input.completion.nick_suffix')).trimEnd();
+}
+
+// What a nick takes when it opens the line — the addressing form. Read once
+// when a session is seeded, never per cycle: the suffix rides on
+// CompletionState so a setting change mid-walk can't change the shape of the
+// insertion under the caret. Shared by Tab, the @ picker, the strip, and Reply
+// (#835).
+function addressSuffix(): string {
+  return `${addressPunct()} `;
+}
+
+// A character that cannot continue a nick, which is what "punctuation after
+// the nick" has to mean for isAddressedTo(): not a letter or digit (Unicode —
+// `\w` is ASCII-only, so `bobł` would read as bob + a mark), not whitespace,
+// and not one of the RFC 2812 nick specials `[]\`_^{|}-` — or `bob_: hi`
+// would count as addressing bob, and bob_ is every ghost's nick.
+const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
+
+// Whether `draft` already opens by addressing `nick`, so Reply is idempotent.
+// Not just the configured form: a draft can carry an older setting's form, or
+// one another client wrote (iOS still says `nick: `, and drafts sync), so any
+// run of punctuation after the nick counts — plus the configured mark
+// verbatim, whatever it is. The bare `nick ` form only counts when it IS the
+// configured form — otherwise a draft that merely opens with a nick that is
+// also a word ("will you come?") would swallow the Reply. Under an empty
+// setting that draft is indistinguishable from an addressed one, which is the
+// ambiguity of the convention itself, not something to second-guess.
+function isAddressedTo(draft: string, nick: string): boolean {
+  const punct = addressPunct();
+  const marks = punct ? `(?:${escapeRegex(punct)}|${NOT_NICK_CHAR}+)` : `${NOT_NICK_CHAR}*`;
+  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu').test(draft);
 }
 
 function buildNickMatches(buf: Buffer, networkId: number, prefix: string): string[] {
@@ -1352,9 +1394,9 @@ function onKeydown(e: KeyboardEvent): void {
 
   const prefix = value.slice(0, start);
   const tail = value.slice(end);
-  // A nick at line start is being *addressed* and wants an opening ': '.
+  // A nick at line start is being *addressed* and wants the addressing suffix.
   // Channels never take one — the '#' is already part of the name.
-  const suffix = !isChannel && isAtLineStart(prefix) ? ': ' : '';
+  const suffix = !isChannel && isAtLineStart(prefix) ? addressSuffix() : '';
 
   completion = { prefix, tail, suffix, matches, index: 0, caret: 0 };
   applyCompletion();
@@ -1617,13 +1659,13 @@ function onPickerSelect(nick: string): void {
   }
   const buf = buffer.value;
   const networkId = active.value?.networkId;
-  // A nick at the start of a line is being addressed → ': '; mid-sentence gets
-  // a bare space. Identical to the mobile strip (onStripSelect). In-place Tab-
-  // completion shares the isAtLineStart() check but appends nothing
-  // mid-sentence — which is exactly why the suffix rides on the session instead
-  // of being re-derived on each cycle: a walk seeded from here has to keep
-  // reproducing the space the picker already inserted.
-  const suffix = isAtLineStart(text.value.slice(0, pickerTokenStart)) ? ': ' : ' ';
+  // A nick at the start of a line is being addressed → addressSuffix();
+  // mid-sentence gets a bare space. Identical to the mobile strip
+  // (onStripSelect). In-place Tab-completion shares the isAtLineStart() check
+  // but appends nothing mid-sentence — which is exactly why the suffix rides on
+  // the session instead of being re-derived on each cycle: a walk seeded from
+  // here has to keep reproducing the space the picker already inserted.
+  const suffix = isAtLineStart(text.value.slice(0, pickerTokenStart)) ? addressSuffix() : ' ';
   // pickerQuery is the token minus its '@' — the bare prefix buildNickMatches
   // expects. Read before commitCompletion, which closes the picker and clears it.
   commitCompletion({
@@ -1643,7 +1685,7 @@ function onChannelPickerSelect(channel: string): void {
   const networkId = active.value?.networkId;
   const token = text.value.slice(channelPickerTokenStart, channelPickerTokenEnd);
   // Channels just get a trailing space — there's no "addressing" form like
-  // nicks' ': ', and the '#' is already part of the inserted name. The sent
+  // nicks' addressSuffix(), and the '#' is already part of the inserted name. The sent
   // `#channel` renders as a clickable join link for the recipient
   // (RenderSegments → openChannel), which is the whole point (issue #154).
   commitCompletion({
@@ -1662,11 +1704,11 @@ function onStripSelect(nick: string): void {
   }
   const buf = buffer.value;
   const networkId = active.value?.networkId;
-  // A nick at the start of a line is being addressed → ': '; mid-sentence
-  // gets a bare space (what the old @-menu was missing — task #198). Shares
-  // isAtLineStart() with Tab-completion and the desktop picker.
+  // A nick at the start of a line is being addressed → addressSuffix();
+  // mid-sentence gets a bare space (what the old @-menu was missing — task
+  // #198). Shares isAtLineStart() with Tab-completion and the desktop picker.
   const draft = text.value;
-  const suffix = isAtLineStart(draft.slice(0, stripTokenStart)) ? ': ' : ' ';
+  const suffix = isAtLineStart(draft.slice(0, stripTokenStart)) ? addressSuffix() : ' ';
   // The strip is prefix-less: its token is the bare word under the cursor, which
   // is already the prefix buildNickMatches wants (no '@' to strip).
   const token = draft.slice(stripTokenStart, stripTokenEnd);
@@ -1679,9 +1721,10 @@ function onStripSelect(nick: string): void {
   });
 }
 
-// Reply action from the message list's action bar: prepend `nick: ` to the
-// current draft (unless it's already addressed to them) and focus the
-// composer. Mirrors the history-recall focus dance — setInputAndCaretEnd owns
+// Reply action from the message list's action bar: prepend the addressing form
+// (`nick: ` under the default suffix) to the current draft, unless it's already
+// addressed to them, and focus the composer. Mirrors the history-recall focus
+// dance — setInputAndCaretEnd owns
 // the `cycling` guard, and the focus()-in-a-microtask matches onHistorySelect
 // so iOS raises the keyboard from the originating tap.
 function addressInComposer(nick: string): void {
@@ -1692,10 +1735,8 @@ function addressInComposer(nick: string): void {
   // old text afterward. Same reset onHistorySelect does for the same reason.
   resetCompletion();
   resetHistoryNav();
-  const prefix = `${nick}: `;
   const cur = text.value;
-  const next = cur.startsWith(prefix) ? cur : cur ? `${prefix}${cur}` : prefix;
-  setInputAndCaretEnd(next);
+  setInputAndCaretEnd(isAddressedTo(cur, nick) ? cur : nick + addressSuffix() + cur);
   queueMicrotask(() => inputEl.value?.focus());
 }
 
@@ -3128,7 +3169,10 @@ function runSet(argLine: string, networkId: number | null, target: string): void
   const opt = lookupSetting(args.key);
   if (!opt) return reply(`/set: unknown setting "${args.key}" — /set lists available keys`);
   if (args.kind === 'keyonly') {
-    return reply(`usage: /set ${opt.key} <value>  (or /get ${opt.key} to read it)`);
+    // A text key's empty value is only reachable as `""` — a bare `/set key `
+    // trims down to exactly this branch — so say so where the user is stuck.
+    const empty = opt.type === 'string' || opt.type === 'string-list' ? '; "" to empty it' : '';
+    return reply(`usage: /set ${opt.key} <value>  (or /get ${opt.key} to read it${empty})`);
   }
   const coerced = coerceSettingValue(opt, args.rawValue);
   if (!coerced.ok) return reply(`/set: ${coerced.error}`);

@@ -19,7 +19,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
-import { useComposerOverlay, selectNick } from '../composables/useComposerOverlay.js';
+import { useComposerOverlay, selectNick, addressNick } from '../composables/useComposerOverlay.js';
 import { useViewport } from '../composables/useViewport.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useScrollState } from '../composables/useScrollState.js';
@@ -243,6 +243,145 @@ describe('MessageInput Tab-completion', () => {
 
       await tab(el);
       expect(el.value).toBe('alice: ');
+    });
+
+    // The addressing punctuation is a setting (#835). It stores the mark alone
+    // and the space is always appended, so the four cases below are the four
+    // code paths that seed a line-start session — picker, in-place Tab, strip,
+    // Reply — each read through the one helper, and any of them could regress
+    // back to the literal on its own.
+    it('takes the addressing punctuation from the setting, across the cycle', async () => {
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ',';
+      const { el } = await mountComposer();
+
+      await type(el, '@al');
+      await tab(el);
+      expect(el.value).toBe('alexis, ');
+
+      await tab(el);
+      expect(el.value).toBe('alice, ');
+    });
+
+    it('addresses with a bare space when the punctuation setting is empty', async () => {
+      // In-place Tab (no '@', no picker) is the path that appends nothing
+      // mid-line, so it is the one most likely to be handed '' and drop the
+      // space too.
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = '';
+      const { el } = await mountComposer();
+
+      await type(el, 'al');
+      await tab(el);
+      expect(el.value).toBe('alexis ');
+    });
+
+    it('applies the setting to a strip pick at line start', async () => {
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ';';
+      isMobile.value = true;
+      const { el } = await mountComposer();
+
+      await type(el, 'al');
+      selectNick('alexis');
+      await flush();
+      expect(el.value).toBe('alexis; ');
+    });
+
+    it('applies the setting to Reply, and recognises an already-addressed draft', async () => {
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ',';
+      const { el } = await mountComposer();
+
+      await type(el, 'sure');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob, sure');
+
+      // Already addressed under THIS suffix — a second Reply must not stack a
+      // second `bob, ` (the check compares against the configured form, not
+      // the old literal).
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob, sure');
+    });
+
+    it('Reply recognises a draft addressed under another form', async () => {
+      // The draft can predate a settings change, or come from a client with its
+      // own form (iOS still writes `nick: `, and drafts sync) — any punctuation
+      // after the nick counts, so this must not become `bob, bob: sure`.
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ',';
+      const { el } = await mountComposer();
+
+      await type(el, 'bob: sure');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob: sure');
+    });
+
+    it('Reply still addresses a draft that merely opens with the nick as a word', async () => {
+      // "will" is a nick and a word. Under any non-empty suffix the bare
+      // `will ` form is NOT an address, so Reply prepends — the "already
+      // addressed" check must demand punctuation, not just the nick.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+
+      await type(el, 'will you come?');
+      addressNick('will');
+      await flush();
+      expect(el.value).toBe('will: will you come?');
+    });
+
+    it('Reply does not mistake a longer nick for the addressed one', async () => {
+      // `bob_` is bob's ghost and `bobł` is someone else; a draft addressed to
+      // either must not read as "already addressed to bob". The mark run has
+      // to exclude nick characters — Unicode letters (`\w` is ASCII-only) and
+      // the RFC specials — not just `\w`.
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+
+      await type(el, 'bob_: hi');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob: bob_: hi');
+
+      await type(el, 'bobł hi');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob: bobł hi');
+    });
+
+    it('under an empty suffix, a draft opening with the nick already counts as addressed', async () => {
+      // With "space only" the addressed form and the nick-as-a-word form are
+      // the same text; that ambiguity is the convention's, and Reply follows
+      // it rather than producing `bob bob is wrong`.
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = '';
+      const { el } = await mountComposer();
+
+      await type(el, 'bob is wrong');
+      addressNick('bob');
+      await flush();
+      expect(el.value).toBe('bob is wrong');
+    });
+
+    it('drops trailing whitespace typed into the setting instead of doubling it', async () => {
+      // The description shows the form as `nick: `; typing exactly that into
+      // the field is the natural mistake, and a quoted " " from /set is the
+      // natural way to ask for "space only".
+      seedStores('#zebra');
+      useSettingsStore().values['input.completion.nick_suffix'] = ', ';
+      const { el } = await mountComposer();
+
+      await type(el, '@al');
+      await tab(el);
+      expect(el.value).toBe('alexis, ');
+
+      useSettingsStore().values['input.completion.nick_suffix'] = ' ';
+      await type(el, 'bo');
+      await tab(el);
+      expect(el.value).toBe('bob ');
     });
 
     it('never offers your own nick', async () => {
