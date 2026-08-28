@@ -101,8 +101,12 @@ export type AppToEngine =
   // the implicit form.
   | { op: 'detach'; id: string }
   // End the IRC socket. This is what QUIT ends in. Allowed from the link that
-  // holds the claim — or from any link when NOBODY does (an orphan left behind
-  // by a previous process).
+  // holds the claim, from any link when NOBODY does (an orphan left behind by a
+  // previous process), and — the attach rule — from any link the holder is not
+  // NEWER than: the holder is then a superseded link (this process's dead
+  // predecessor, or an older process), its claim is dropped, it is sent
+  // `detached` (taken-over), and the socket ends. Only a newer holder refuses
+  // (`error`).
   | { op: 'close'; id: string }
   | { op: 'list' };
 
@@ -136,8 +140,9 @@ export type EngineToApp =
   | { op: 'live'; id: string }
   | { op: 'gap'; id: string; gap: Gap }
   // The engine stopped serving this id to THIS link because a newer app process
-  // claimed the connection. Not a socket event: the socket is alive elsewhere,
-  // so the receiver must not reconnect.
+  // claimed the connection — to serve it, or to end it (a `close` over this
+  // link's claim). Either way not a socket event for this link: it must not
+  // reconnect.
   | { op: 'detached'; id: string; reason: 'taken-over' }
   // The IRC socket is gone. The engine forgets the id.
   | { op: 'closed'; id: string; error?: string }

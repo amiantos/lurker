@@ -139,13 +139,60 @@ export class EngineServer {
   }
 
   // The sessions a given link may attach to: everything held that no OTHER
-  // link currently claims. A session another process owns is not offered.
+  // link currently claims. A session another process owns is not offered —
+  // and neither is one this process's own dead predecessor link still claims,
+  // deliberately: a `connect` for it takes the claim over (contest) a backoff
+  // later, whereas offering it would let reconcile re-adopt a session whose
+  // user-issued close is still sitting in the dead link's unread bytes, and
+  // turn that Disconnect into a reconnect.
   private heldFor(link: AppLink): string[] {
     return [...this.upstreams.values()]
       .filter((u) => u.opts.instance === link.instance)
       .filter((u) => u.state === 'open' && u.registered && !u.closing)
-      .filter((u) => ![...this.links].some((l) => l !== link && l.claimed.has(u)))
+      .filter((u) => !this.holderOf(u, link))
       .map((u) => u.id);
+  }
+
+  // The one other link holding `u`, if any. A claim is exclusive — every path
+  // that adds one strips the previous holder first — so there is at most one.
+  private holderOf(u: EngineUpstream, except: AppLink): AppLink | undefined {
+    for (const l of this.links) if (l !== except && l.claimed.has(u)) return l;
+    return undefined;
+  }
+
+  // Newest wins — the one rule for an attach and for a close. Another link
+  // holding `u` either refuses `link`, because it is a NEWER process and an
+  // older one must not take back or end what it lost, or is superseded: its
+  // claim is dropped and it is told `detached` (taken-over) — for a close as
+  // well as for an attach, since its transport reads `closed` as a network
+  // drop and would re-dial the same id through the engine, undoing the close,
+  // while `detached` is the path that disposes without reconnecting. Returns
+  // the refusing holder, or null when the way is clear; logs either way.
+  //
+  // "Not newer" deliberately includes the SAME generation, which is a
+  // predecessor link of the same process — the app never keeps two alive. That
+  // is the case that bites (#849): a Disconnect issued while the link was down
+  // is flushed on the replacement link, and under load the engine can read
+  // that link's hello and close before it has processed the dead socket's EOF
+  // — both are ready in the same poll batch, and the poll does not order them
+  // by time. Refusing the close then loses the user's Disconnect for good: the
+  // app has already forgotten it, and nobody holds the socket but a link that
+  // will be reaped a moment later.
+  private contest(link: AppLink, u: EngineUpstream, verb: 'attach' | 'close'): AppLink | null {
+    const other = this.holderOf(u, link);
+    if (!other) return null;
+    if (other.generation > link.generation) {
+      this.log(
+        `${u.id}: ${verb} from ${link.peer} (gen ${link.generation}) refused; held by newer ${other.peer} (gen ${other.generation})`,
+      );
+      return other;
+    }
+    other.claimed.delete(u);
+    other.send({ op: 'detached', id: u.id, reason: 'taken-over' });
+    this.log(
+      `${u.id}: ${verb === 'attach' ? 'taken over by' : 'closed by'} ${link.peer} over ${other.peer}'s claim`,
+    );
+    return null;
   }
 
   // The sessions an app can attach to: open, registered, and not on their way
@@ -319,13 +366,20 @@ export class EngineServer {
         // connection it no longer owns. Two exceptions. An `ack` from anyone is
         // welcome — it only says "persisted", and the process that was just taken
         // over is exactly the one whose in-flight acks decide whether its
-        // successor sees those lines a second time. And ending a socket NOBODY
-        // claims is what reconciling orphans after a restart is.
+        // successor sees those lines a second time. And a `close` follows the
+        // attach rule instead (contest): ending an orphan nobody claims is what
+        // reconciling after a restart is, and ending one a superseded link still
+        // claims is #849.
         if (!link.claimed.has(u) && frame.op !== 'ack') {
-          const claimedElsewhere = [...this.links].some((l) => l.claimed.has(u));
-          if (frame.op !== 'close' || claimedElsewhere) {
+          if (frame.op !== 'close') {
             return link.fail('not attached to this connection', frame.id);
           }
+          if (this.contest(link, u, 'close')) {
+            return link.fail('not attached to this connection', frame.id);
+          }
+          // Nothing from the closing socket reaches a link that was just told
+          // it no longer holds it.
+          u.silence();
         }
         if (frame.op === 'write') u.write(frame.line);
         else if (frame.op === 'ack') u.ack(frame.seq);
@@ -395,19 +449,9 @@ export class EngineServer {
     if (u) {
       // Someone else's? Take it over — unless that someone is a NEWER process,
       // in which case this is an older one trying to steal back what it lost.
-      for (const other of this.links) {
-        if (other !== link && other.claimed.has(u)) {
-          if (other.generation > link.generation) {
-            this.log(
-              `${id}: refused ${link.peer} (gen ${link.generation}); held by newer ${other.peer} (gen ${other.generation})`,
-            );
-            link.send({ op: 'detached', id, reason: 'taken-over' });
-            return;
-          }
-          other.claimed.delete(u);
-          other.send({ op: 'detached', id, reason: 'taken-over' });
-          this.log(`${id}: taken over by ${link.peer} from ${other.peer}`);
-        }
+      if (this.contest(link, u, 'attach')) {
+        link.send({ op: 'detached', id, reason: 'taken-over' });
+        return;
       }
       link.claimed.add(u);
       payload = u.attach(link);

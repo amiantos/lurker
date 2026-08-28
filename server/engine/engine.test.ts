@@ -47,8 +47,11 @@ afterEach(() => {
   for (const l of links.splice(0)) l.kill();
 });
 
-async function link(): Promise<TestLink> {
-  const l = await TestLink.connect(enginePort, SECRET);
+// `startedAt` is the app process's generation; the engine reads a missing one
+// as 0, which the ordinary tests are happy with — only the newest-wins cases
+// pass an explicit pair.
+async function link(startedAt?: number): Promise<TestLink> {
+  const l = await TestLink.connect(enginePort, SECRET, { startedAt });
   links.push(l);
   return l;
 }
@@ -626,7 +629,7 @@ describe('review findings', () => {
     expect(l.frames.some((f) => f.op === 'closed' && f.id === id)).toBe(false);
   });
 
-  it('lets any link close a socket nobody claims, and no link close one someone else does', async () => {
+  it('lets any link close a socket nobody claims, and no older process close one a newer one holds', async () => {
     const id = `orphan:${++counter}`;
     const a = await link();
     await register(a, id, 'orphan');
@@ -637,16 +640,55 @@ describe('review findings', () => {
     await gone(engine, id);
     expect(engine.held()).not.toContain(id);
 
+    // "Someone else" here is an OLDER process: the newer one owns the socket,
+    // and a process that was superseded must not end its successor's sessions.
+    // (A same-or-newer link closing over a stale claim is the #849 case below.)
     const id2 = `owned:${++counter}`;
-    const owner = await link();
+    const owner = await link(2000);
     await register(owner, id2, 'owned');
-    const stranger = await link();
+    const stranger = await link(1000);
     stranger.send({ op: 'close', id: id2 });
     expect(await stranger.waitFor((f) => f.op === 'error' && f.id === id2)).toMatchObject({
       message: 'not attached to this connection',
     });
     expect(engine.held()).toContain(id2);
+    expect(ircd.client('owned')).toBeDefined();
+    expect(owner.frames.some((f) => f.op === 'detached' || f.op === 'closed')).toBe(false);
   });
+});
+
+// #849: a close from a link the holder is not newer than ends the socket. The
+// rule and the race behind it: server.ts, contest(). Two shapes of "not newer"
+// — the dead predecessor link of the same process, and an older process; the
+// third, a newer holder refusing, is in 'review findings' above.
+describe('a close over a stale claim (#849)', () => {
+  it.each([
+    ['the same process', 5000, 5000],
+    ['an older process', 1000, 2000],
+  ])(
+    'a close from %s ends a socket the holder still claims',
+    async (_what, holderGen, closerGen) => {
+      const id = `stale:${++counter}`;
+      const nick = `stale${counter}`;
+      const holder = await link(holderGen);
+      await register(holder, id, nick);
+      // The holder is not killed: the point is that its claim is still on the
+      // books when the close arrives.
+      const closer = await link(closerGen);
+      closer.send({ op: 'close', id });
+      await gone(engine, id);
+      expect(engine.held()).not.toContain(id);
+      expect(closer.frames.some((f) => f.op === 'error' && f.id === id)).toBe(false);
+      // The stripped holder is told it was taken over — the path that disposes
+      // without reconnecting — not that its socket closed, which its transport
+      // would read as a network drop and re-dial through the engine.
+      expect(await holder.waitFor((f) => f.op === 'detached' && f.id === id)).toMatchObject({
+        reason: 'taken-over',
+      });
+      expect(holder.frames.some((f) => f.op === 'closed' && f.id === id)).toBe(false);
+      await until(() => ircd.client(nick) === undefined, 5000, 'ircd saw it go');
+    },
+  );
 });
 
 describe('second review round', () => {
@@ -780,27 +822,9 @@ describe('third review round', () => {
 
   it('an older process cannot steal a session from a newer one', async () => {
     const id = `gen:${++counter}`;
-    const older = await TestLink.open(enginePort);
-    older.send({
-      op: 'hello',
-      protocol: PROTOCOL_MAJOR,
-      secret: SECRET,
-      instance: TEST_INSTANCE,
-      app: { version: 'old', startedAt: 1000 },
-    });
-    await older.waitFor((f) => f.op === 'hello');
-    links.push(older);
+    const older = await link(1000);
     await register(older, id, 'gen');
-    const newer = await TestLink.open(enginePort);
-    newer.send({
-      op: 'hello',
-      protocol: PROTOCOL_MAJOR,
-      secret: SECRET,
-      instance: TEST_INSTANCE,
-      app: { version: 'new', startedAt: 2000 },
-    });
-    await newer.waitFor((f) => f.op === 'hello');
-    links.push(newer);
+    const newer = await link(2000);
     newer.send(connectFrame(id));
     await newer.waitFor((f) => f.op === 'live' && f.id === id);
     await older.waitFor((f) => f.op === 'detached' && f.id === id);

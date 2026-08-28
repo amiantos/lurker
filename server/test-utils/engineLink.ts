@@ -49,7 +49,7 @@ export class TestLink {
   static async connect(
     port: number,
     secret: string,
-    opts: { protocol?: number; version?: string; instance?: string } = {},
+    opts: { protocol?: number; version?: string; instance?: string; startedAt?: number } = {},
   ): Promise<TestLink> {
     const link = await TestLink.open(port);
     link.send({
@@ -59,7 +59,8 @@ export class TestLink {
       // One default instance, so the ordinary tests all speak for the same
       // "database"; the cross-instance cases pass their own.
       instance: opts.instance ?? TEST_INSTANCE,
-      app: { version: opts.version ?? 'test' },
+      // startedAt is the process generation; omitted, the engine reads 0.
+      app: { version: opts.version ?? 'test', startedAt: opts.startedAt },
     });
     await link.waitFor((f) => f.op === 'hello' || f.op === 'error');
     return link;
