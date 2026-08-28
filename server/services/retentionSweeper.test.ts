@@ -811,6 +811,51 @@ describe('pacing', () => {
     expect(seen[0]).toBe(shrunk / 2);
   });
 
+  it('does not enter closed-buffer GC on a tick the noise clock already exhausted', async () => {
+    // outOfBudget() is only consulted at the TOP of the per-user queue loop, so
+    // a noiseStep that finishes its window while blowing maxTickMs would still
+    // be followed by gcStep — whose listing, guaranteed drain and row delete
+    // are exactly the synchronous work the backstop exists to stop.
+    const user = createUser('gc-after-noise');
+    const net = createNetwork(user.id, {
+      name: 'gc-after-noise',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'gc-after-noise',
+    })!;
+    insertMessage({
+      networkId: net.id,
+      target: '#chan',
+      time: new Date(Date.now() - 10 * 24 * 3_600_000).toISOString(),
+      type: 'join',
+      nick: 'someone',
+      text: null,
+      self: false,
+    });
+    setUserSetting(user.id, 'data.retention.event_hours', 24);
+    setUserSetting(user.id, 'data.retention.closed_buffer_days', 7); // GC ON
+
+    // One slow noise statement that returns SHORT: the window is finished (so
+    // noiseStep returns true) but the tick's time budget is gone.
+    vi.spyOn(retentionDb, 'deleteNoiseBatch').mockImplementation(() => {
+      const end = performance.now() + 60;
+      while (performance.now() < end) {
+        /* blow the budget */
+      }
+      return 0;
+    });
+    const gcListing = vi.spyOn(retentionDb, 'listGcEligibleBuffers');
+
+    await runRetentionTick({
+      ...OPTS,
+      noiseIntervalMs: 0,
+      maxTickMs: 20, // less than the noise statement above
+    });
+
+    expect(gcListing).not.toHaveBeenCalled();
+  });
+
   it('still deletes when the boundary probe alone exhausts the tick budget', async () => {
     const b = seedBuffer('pace-livelock', 30);
     setUserSetting(b.userId, 'data.retention.lines', 10);

@@ -429,6 +429,13 @@ export async function runRetentionTick(
     while (noisePendingUsers.length > 0 && !outOfBudget()) {
       const userId = noisePendingUsers[0];
       if (!(await noiseStep(userId))) break;
+      // Re-check between the two: noiseStep can finish its window (returning
+      // true) on the statement that spent the rest of the budget, and gcStep's
+      // listing + guaranteed drain + row delete is exactly the synchronous work
+      // maxTickMs exists to stop. The user stays at the head, so their GC runs
+      // first thing next tick — by which point their noise window is clear and
+      // noiseStep is cheap.
+      if (outOfBudget()) break;
       if (!(await gcStep(userId))) break;
       noisePendingUsers.shift();
     }
