@@ -41,7 +41,9 @@ interface Put {
 
 let puts: Put[] = [];
 /** Objects the stub bucket is holding, by request path. */
-let objects = new Map<string, { body: Buffer; contentType: string }>();
+let objects = new Map<string, { body: Buffer; contentType: string; storedAt?: number }>();
+/** Flip to make the bucket omit Last-Modified, so a cold read cannot date the object. */
+let bucketOmitsLastModified = false;
 /** Flip to make every write fail, without changing anything else. */
 let bucketRejects = false;
 /** Flip to serve reads without a Content-Length, as a proxy in front of a bucket
@@ -110,6 +112,7 @@ beforeAll(async () => {
         objects.set(req.url || '', {
           body,
           contentType: String(req.headers['content-type'] || ''),
+          storedAt: Date.now(),
         });
         res.writeHead(200).end();
         return;
@@ -137,9 +140,15 @@ beforeAll(async () => {
           res.end(held.body);
           return;
         }
+        // ⚠ `Last-Modified` on every GET, because S3 and R2 both send one and `lookup`'s
+        // cold read fails CLOSED without it — a stub that omits it would make the cold
+        // path untestable and, worse, would pass a build that never reads the header.
         res.writeHead(200, {
           'content-type': held.contentType,
           'content-length': String(held.body.length),
+          ...(bucketOmitsLastModified
+            ? {}
+            : { 'last-modified': new Date(held.storedAt ?? Date.now()).toUTCString() }),
         });
         res.end(held.body);
         return;
@@ -206,14 +215,30 @@ beforeEach(async () => {
   objects = new Map();
   bucketRejects = false;
   bucketOmitsLength = false;
+  bucketOmitsLastModified = false;
   bucketStallsAfterHeaders = false;
   const { default: db } = await import('../db/index.js');
   db.prepare('DELETE FROM preview_cache').run();
+  // ⚠ Module state, so it outlives the DB wipe — a key one case proved absent would stay
+  // memoised into the next, which is exactly the kind of cross-test leak that makes a
+  // cold-read assertion pass for the wrong reason.
+  const { resetAbsentMemoForTests } = await import('../services/previewCache/index.js');
+  resetAbsentMemoForTests();
 });
 
 /** The request path the stub bucket should have seen for one origin URL. */
 const keyPathFor = (originPath: string): string =>
   `/${BUCKET_NAME}/${PREFIX}/${byteCacheKey(`${base}${originPath}`)}`;
+
+/**
+ * The bucket requests that actually WROTE.
+ *
+ * ⚠ `puts` records every method, and a store is no longer the first thing the stub
+ * sees: `lookup` now probes the bucket before falling back to the origin, so an
+ * uncached URL costs a GET (404) and then a PUT. Indexing `puts[0]` would silently
+ * start asserting against the probe.
+ */
+const writes = (): Put[] => puts.filter((p) => p.method === 'PUT');
 
 describe('the s3 byte cache, end to end', () => {
   it('PUTs the object to <bucket>/<prefix>/<key>, signed, and records it', async () => {
@@ -223,8 +248,8 @@ describe('the s3 byte cache, end to end', () => {
     expect(Buffer.from(first.body).equals(PNG)).toBe(true);
     await whenStoresSettle();
 
-    expect(puts).toHaveLength(1);
-    const put = puts[0]!;
+    expect(writes()).toHaveLength(1);
+    const put = writes()[0]!;
     // ⚠ The METHOD is asserted. The pre-split suite never did, so changing PUT to
     // POST passed all five of its tests — a stub that records everything cannot
     // tell you it was written to wrongly unless you ask.
@@ -246,7 +271,7 @@ describe('the s3 byte cache, end to end', () => {
     await agent.get(`/api/link-preview/media/${tokenFor('/headers.png')}`);
     await whenStoresSettle();
 
-    const put = puts[0]!;
+    const put = writes()[0]!;
     expect(put.headers['content-disposition']).toBe('inline');
     // ⚠ NOT the uploader's `public, max-age=31536000, immutable`. A URL-keyed cache
     // legitimately points at different bytes over time, and a year at the edge would
@@ -376,8 +401,8 @@ describe('the s3 byte cache, end to end', () => {
     // request reaching us. Objects are deleted by a 30-day bucket lifecycle rule the
     // cell does not run and cannot observe, so a row that outlived its object would
     // have the descriptor handing every user a public URL that 404s — with nothing
-    // arriving at the cell to notice. Seven days against thirty is the margin that
-    // makes the row provably the shorter-lived of the two.
+    // arriving at the cell to notice. Twenty-five days against thirty is the margin
+    // that makes the row provably the shorter-lived of the two.
     servePng();
     const imageUrl = `${base}/ageing.png`;
     await agent.get(`/api/link-preview/media/${mintProxyToken(imageUrl)}`);
@@ -386,9 +411,9 @@ describe('the s3 byte cache, end to end', () => {
     const warm = await agent.post('/api/link-preview/resolve').send({ urls: [imageUrl] });
     expect(warm.body.previews[0].src).toBe(`${CDN}/${PREFIX}/${byteCacheKey(imageUrl)}`);
 
-    // Age the row past the bound. Eight days: the bound is seven.
+    // Age the row past the bound. Thirty days: the bound is twenty-five.
     const { default: db } = await import('../db/index.js');
-    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare('UPDATE preview_cache SET created_at = ?').run(old);
 
     const stale = await agent.post('/api/link-preview/resolve').send({ urls: [imageUrl] });
@@ -566,5 +591,230 @@ describe('resource bounds and diagnostics', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+/**
+ * ⚠⚠ The state this whole group is about: an object in the bucket that the index
+ * cannot name. It is not an edge case — it is the ORDINARY state of every object
+ * between the row's age bound (7 d) and the bucket's lifecycle rule (30 d), and of
+ * every object on every cell that did not personally store it. lurker#776.
+ */
+describe('finding cached bytes the index cannot name', () => {
+  it('serves an object whose row has aged out, without going back to the origin', async () => {
+    servePng();
+    expect((await agent.get(`/api/link-preview/media/${tokenFor('/aged.png')}`)).status).toBe(200);
+    await whenStoresSettle();
+    expect(countCached()).toBe(1);
+    const settled = originHits;
+
+    // Age the ROW only. The object is deliberately left where it is — that
+    // asymmetry is the bug: `MAX_AGE_MS` is 7 days precisely so the row is
+    // provably shorter-lived than the object, and we then treated the row's
+    // expiry as proof the object was gone.
+    const { default: db } = await import('../db/index.js');
+    db.prepare(
+      `UPDATE preview_cache SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')`,
+    ).run();
+
+    const again = await agent.get(`/api/link-preview/media/${tokenFor('/aged.png')}`);
+    expect(again.status).toBe(200);
+    expect(Buffer.from(again.body).equals(PNG)).toBe(true);
+    // ⚠⚠ THE POINT. Measured on app.lurker.chat as a byte-identical re-upload of a
+    // GitHub og:image 18 days after it was first stored — and a permanently broken
+    // card whenever the origin refused that pointless re-fetch.
+    expect(originHits).toBe(settled);
+  });
+
+  it('serves an object another cell stored, for which this cell has no row at all', async () => {
+    // The fleet shares one bucket but every cell keeps its own SQLite index, so
+    // "no row, object present" is the normal state for every cell that did not do
+    // the storing. Before this the shared bucket deduplicated writes and shared
+    // nothing on reads: each cell paid its own origin fetch for every image.
+    objects.set(keyPathFor('/foreign.png'), { body: PNG, contentType: 'image/png' });
+    expect(countCached()).toBe(0);
+    servePng();
+    const before = originHits;
+
+    const res = await agent.get(`/api/link-preview/media/${tokenFor('/foreign.png')}`);
+    expect(res.status).toBe(200);
+    expect(Buffer.from(res.body).equals(PNG)).toBe(true);
+    expect(originHits).toBe(before);
+  });
+
+  it('does NOT record a row for a cold hit', async () => {
+    objects.set(keyPathFor('/norow.png'), { body: PNG, contentType: 'image/png' });
+    expect((await agent.get(`/api/link-preview/media/${tokenFor('/norow.png')}`)).status).toBe(200);
+    await whenStoresSettle();
+    // ⚠⚠ `recordCached` stamps `created_at` with NOW, and a cold read does not know
+    // the object's real age. A day-25 object would get a row expiring at day 32 —
+    // past the lifecycle deletion — and `publicByteUrl` would then mint a public URL
+    // that 404s for every viewer with no request reaching us to notice. Serving the
+    // bytes needs no row; minting a URL for them does.
+    expect(countCached()).toBe(0);
+  });
+
+  it('falls through to the origin when the bucket really does not have it', async () => {
+    servePng();
+    const before = originHits;
+    const res = await agent.get(`/api/link-preview/media/${tokenFor('/absent.png')}`);
+    expect(res.status).toBe(200);
+    // A genuine 404 is the ONLY thing that means gone, and it still costs exactly
+    // one origin fetch — the probe must not turn a miss into two.
+    expect(originHits).toBe(before + 1);
+  });
+
+  it('refuses a cold object past the age bound, judged on the object itself', async () => {
+    // ⚠⚠ The staleness ceiling has to survive the cold path, and the row cannot carry it
+    // there — there is no row. `Last-Modified` is the object's own account of its age, and
+    // it is what stops "serve what the index cannot name" from quietly meaning "serve it
+    // for as long as the bucket keeps it": 30 days under the recommended lifecycle rule,
+    // and forever on a self-hosted bucket that has none.
+    objects.set(keyPathFor('/ancient.png'), {
+      body: PNG,
+      contentType: 'image/png',
+      storedAt: Date.now() - 30 * 24 * 60 * 60 * 1000,
+    });
+    servePng();
+    const before = originHits;
+
+    const res = await agent.get(`/api/link-preview/media/${tokenFor('/ancient.png')}`);
+    expect(res.status).toBe(200);
+    // Refused as a hit, so the origin supplies a fresh copy — which is the whole point of
+    // having a bound at all.
+    expect(originHits).toBe(before + 1);
+  });
+
+  it('refuses a cold object the bucket will not date', async () => {
+    // ⚠ Fails CLOSED. A store that does not send Last-Modified leaves the age unknowable,
+    // and an unknowable age must not be read as "fresh" — that is the same mistake as
+    // treating an absent row as "gone", pointed the other way. S3 and R2 both send it, so
+    // the closed direction costs nothing real.
+    bucketOmitsLastModified = true;
+    objects.set(keyPathFor('/undated.png'), { body: PNG, contentType: 'image/png' });
+    servePng();
+    const before = originHits;
+
+    expect((await agent.get(`/api/link-preview/media/${tokenFor('/undated.png')}`)).status).toBe(
+      200,
+    );
+    expect(originHits).toBe(before + 1);
+  });
+
+  it('does not re-probe the bucket for a key it has already said it lacks', async () => {
+    // ⚠⚠ Without a memo the cold read is a PERMANENT extra round trip for every URL that
+    // will never be stored — an origin sending `no-store`, a body over the cap, a bucket
+    // refusing writes. Each request would pay a bucket 404 on top of the origin fetch it
+    // was always going to pay, on the one path that is already the slow one.
+    // ⚠ An origin that forbids storing, so no row is ever written and the memo is the
+    // ONLY thing that can stop the second request probing again. Using a storable image
+    // here tests nothing: the first request creates a row, and the second request's bucket
+    // GET is an ordinary cache hit rather than a re-probe. (It did, and it was.)
+    handler = (_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'content-length': String(PNG.length),
+        'cache-control': 'no-store',
+      });
+      res.end(PNG);
+    };
+    const gets = (): number =>
+      puts.filter((p) => p.method === 'GET' && p.url === keyPathFor('/nostore.png')).length;
+
+    await agent.get(`/api/link-preview/media/${tokenFor('/nostore.png')}`);
+    await whenStoresSettle();
+    expect(countCached()).toBe(0);
+    expect(gets()).toBe(1);
+
+    await agent.get(`/api/link-preview/media/${tokenFor('/nostore.png')}`);
+    await whenStoresSettle();
+    expect(gets()).toBe(1);
+  });
+
+  it('refuses cold bytes that are not an image, however the object is labelled', async () => {
+    // ⚠⚠ With no row to vouch for them the stored Content-Type is a CLAIM by
+    // whatever wrote the key, and there is no recorded size to cross-check against
+    // either — so the signature is the whole of the evidence. The store path gates
+    // on it for the same reason; this is the same gate on the way back out.
+    objects.set(keyPathFor('/liar.png'), {
+      body: Buffer.from('<!doctype html><script>alert(1)</script>'),
+      contentType: 'image/png',
+    });
+    servePng();
+    const before = originHits;
+
+    const res = await agent.get(`/api/link-preview/media/${tokenFor('/liar.png')}`);
+    // Refused as a hit, so the origin answers — and what the client gets is the
+    // origin's PNG, never the bucket's HTML.
+    expect(originHits).toBe(before + 1);
+    expect(Buffer.from(res.body).equals(PNG)).toBe(true);
+  });
+});
+
+/**
+ * ⚠⚠ A 200 carrying real image bytes is not permission to KEEP them. Every other guard in
+ * the cache tests what the bytes ARE — signature, length, framing — and an origin can pass
+ * all of them while saying plainly not to keep the result.
+ *
+ * ⚠ The GitHub placeholder that prompted this (a 200 + valid PNG under `max-age=0`) is not
+ * reachable through the pipeline as it stands — the repo behind it 404s from github.com, so
+ * the resolver never mints an image URL — so these pin a general rule rather than a
+ * reproduction. See `originPermitsStoring`.
+ */
+describe('the origin’s own caching instruction', () => {
+  /** An origin that serves `body` with an explicit Cache-Control. */
+  const serveWith = (cacheControl: string, body = PNG): void => {
+    handler = (_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'content-length': String(body.length),
+        'cache-control': cacheControl,
+      });
+      res.end(body);
+    };
+  };
+
+  it('serves but does not store a placeholder the origin marked max-age=0', async () => {
+    serveWith('public, max-age=0');
+    const res = await agent.get(`/api/link-preview/media/${tokenFor('/placeholder.png')}`);
+    // ⚠ SERVED — refusing to keep it is not refusing to show it. The reader still gets
+    // whatever the origin sent; we simply do not hold it for a week afterwards.
+    expect(res.status).toBe(200);
+    expect(Buffer.from(res.body).equals(PNG)).toBe(true);
+
+    await whenStoresSettle();
+    expect(writes()).toHaveLength(0);
+    expect(countCached()).toBe(0);
+  });
+
+  it.each(['no-store', 'no-cache', 'private, max-age=600'])(
+    'does not store under %s',
+    async (cc) => {
+      serveWith(cc);
+      await agent.get(`/api/link-preview/media/${tokenFor(`/${cc.replace(/\W/g, '')}.png`)}`);
+      await whenStoresSettle();
+      expect(countCached()).toBe(0);
+    },
+  );
+
+  it('still stores what the origin says is cacheable', async () => {
+    // ⚠ The positive control, and it is the half that matters most: a guard that refuses
+    // everything passes every test above while quietly turning the cache off.
+    serveWith('public, max-age=21600, immutable');
+    expect((await agent.get(`/api/link-preview/media/${tokenFor('/real.png')}`)).status).toBe(200);
+    await whenStoresSettle();
+    expect(writes()).toHaveLength(1);
+    expect(countCached()).toBe(1);
+  });
+
+  it('still stores when the origin says nothing at all', async () => {
+    // ⚠ Silence is permission. Plenty of image hosts send no Cache-Control, and treating
+    // absence as prohibition would switch the cache off for most of the web.
+    servePng();
+    expect((await agent.get(`/api/link-preview/media/${tokenFor('/silent.png')}`)).status).toBe(
+      200,
+    );
+    await whenStoresSettle();
+    expect(countCached()).toBe(1);
   });
 });

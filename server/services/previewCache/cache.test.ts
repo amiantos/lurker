@@ -221,18 +221,23 @@ describe('preview byte cache — local', () => {
     expect(Math.abs(Date.now() - Date.parse(row!.created_at))).toBeLessThan(60_000);
   });
 
-  it('stops serving an entry once it is older than the metadata TTL', async () => {
+  it('stops serving an entry once it is past the age bound', async () => {
     // ⚠ Eviction is by PRESSURE, so without an age bound an image at a stable
     // address that changed underneath us — an avatar, a `latest.png` — is served
-    // from disk indefinitely under `max-age=86400, immutable`, long after the
-    // metadata row for it has re-resolved. Before this cache existed the staleness
-    // window was a day; unbounded is a regression, not a feature.
+    // from disk indefinitely under `max-age=86400, immutable`. Before this cache
+    // existed the staleness window was a day; unbounded is a regression, not a
+    // feature.
+    //
+    // ⚠ The bound is no longer the METADATA TTL, and the decoupling is the point: a
+    // page's title changes, and image bytes at the content-addressed URLs most
+    // og:images use do not. It is set against the bucket lifecycle rule instead —
+    // see MAX_AGE_MS.
     const key = '7'.repeat(64);
     await mod.store(key, bytes(64), 'image/png');
     expect(await mod.lookup(key)).not.toBeNull();
 
     const { default: db } = await import('../../db/index.js');
-    db.prepare(`UPDATE preview_cache SET created_at = datetime('now', '-8 days')`).run();
+    db.prepare(`UPDATE preview_cache SET created_at = datetime('now', '-30 days')`).run();
 
     expect(await mod.lookup(key)).toBeNull();
     // ...and it is cleared out rather than re-checked on every future request.

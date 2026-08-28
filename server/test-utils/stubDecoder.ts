@@ -205,6 +205,13 @@ function relayFetch(res: http.ServerResponse, url: string, range: string | undef
     if (chunkedOrigin || Number.isFinite(declared)) {
       head['x-lurker-origin-framed'] = '1';
     }
+    // Forwarded so the cell's STORE decision can consult it, exactly as the real decoder
+    // does. GitHub marks the placeholder it serves for a card it could not render
+    // `cache-control: public, max-age=0` — the only thing distinguishing it from a real
+    // card, since the bytes are a perfectly valid PNG either way.
+    if (origin.headers['cache-control']) {
+      head['cache-control'] = String(origin.headers['cache-control']);
+    }
     // The decoder's advertisement rule, faithfully: a 206, or a TOKEN match on the
     // origin's (possibly comma-joined) Accept-Ranges — never an echo of the raw value.
     const upstreamRanges =
