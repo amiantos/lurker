@@ -7,7 +7,7 @@
 // tables. Batch/budget constants are INJECTED tiny — test cost must never
 // scale with the production constants.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -23,6 +23,8 @@ let addBookmark: typeof import('../db/bookmarks.js').addBookmark;
 let setUserSetting: typeof import('../db/settings.js').setUserSetting;
 let runRetentionTick: typeof import('./retentionSweeper.js').runRetentionTick;
 let takeDirtyBuffers: typeof import('../db/retention.js').takeDirtyBuffers;
+let retentionDb: typeof import('../db/retention.js');
+let resetSweepPacingForTests: typeof import('./retentionSweeper.js').resetSweepPacingForTests;
 
 beforeAll(async () => {
   ({ default: db } = await import('../db/index.js'));
@@ -33,17 +35,32 @@ beforeAll(async () => {
   ({ setUserSetting } = await import('../db/settings.js'));
   ({ runRetentionTick } = await import('./retentionSweeper.js'));
   ({ takeDirtyBuffers } = await import('../db/retention.js'));
+  retentionDb = await import('../db/retention.js');
+  ({ resetSweepPacingForTests } = await import('./retentionSweeper.js'));
 });
 
 afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+// The pacing controller is module-global and carried across ticks on purpose,
+// so without this a test inherits whatever size the previous one settled on —
+// silently running at someone else's batch size rather than its own.
+beforeEach(() => {
+  resetSweepPacingForTests();
+});
+
 // Tiny knobs so the budget/backlog behavior is exercised with dozens of rows,
 // not hundreds of thousands. noiseIntervalMs Infinity keeps the noise clock
 // out of the count-sweep tests; the noise tests pass 0 to force it.
+// Pacing is OFF here on purpose: these tests assert the statement-count budget,
+// and a wall-clock budget would make them depend on how fast the box is. The
+// pacing behaviour has its own describe block, which sets the knobs it needs.
 const OPTS = {
   batchRows: 4,
+  minBatchRows: 4, // == batchRows: pacing fully inert for the legacy tests
+  targetStatementMs: Infinity,
+  maxTickMs: Infinity,
   maxBatchesPerTick: 100,
   idleDelayMs: 0,
   busyDelayMs: 0,
@@ -618,5 +635,272 @@ describe('runRetentionTick', () => {
     deleteJob(job.id);
     await runRetentionTick(OPTS);
     expect(rowIds(bufferId)).toEqual(ids.slice(7));
+  });
+});
+
+// The 2026-08-28 incident: the statement-count budget assumes each statement is
+// cheap, and on a cold start it is not — one 500-row delete cascading into the
+// FTS triggers blocked the loop for ~800ms a second on a 2.1 GB database. These
+// pin what makes the measured budget hold: which statements may size the batch,
+// in which direction, and that neither an unbatchable probe nor a finished
+// noise window can spend a tick's time budget on something else.
+describe('pacing', () => {
+  /**
+   * Replace the delete with one that blocks for `ms(rows)` of REAL synchronous
+   * time and records the size it was handed. Burning wall-clock is the point —
+   * it is what the sweeper measures. `full` decides whether it reports a full
+   * batch (the loop continues) or a short one (the buffer's tail is done).
+   * The boundary probe is pinned cheap and constant so these assertions are
+   * about the DELETE path and cannot flake on a loaded box.
+   */
+  function mockDelete(ms: (rows: number) => number, full = true): number[] {
+    const seen: number[] = [];
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockReturnValue(1);
+    vi.spyOn(retentionDb, 'deleteRetentionBatch').mockImplementation(
+      (_b: number, _bound: number, _owner: number, limit: number) => {
+        seen.push(limit);
+        const end = performance.now() + ms(limit);
+        while (performance.now() < end) {
+          /* block the loop the way a real slow statement does */
+        }
+        return full ? limit : Math.max(0, limit - 1);
+      },
+    );
+    return seen;
+  }
+
+  const PACED = {
+    ...OPTS,
+    batchRows: 64,
+    minBatchRows: 1,
+    targetStatementMs: 10,
+    maxBatchesPerTick: 60,
+  };
+
+  /** A capped, over-cap buffer that stays dirty under a full-batch mock. */
+  function capped(name: string, rows = 40): number {
+    const b = seedBuffer(name, rows);
+    setUserSetting(b.userId, 'data.retention.lines', 10);
+    return b.bufferId;
+  }
+
+  /** Run cheap full batches until the size has climbed to `batchRows`. */
+  async function warmUpToMax(): Promise<void> {
+    mockDelete(() => 0);
+    await runRetentionTick(PACED);
+    vi.restoreAllMocks();
+  }
+
+  /** Seed a capped buffer, then warm the size up to `batchRows` on it. */
+  async function warmUpToMaxOn(name: string): Promise<void> {
+    capped(name);
+    await warmUpToMax();
+  }
+
+  beforeEach(() => {
+    // Drop dirty buffers left by earlier tests BEFORE seeding this one, so the
+    // deliberately tiny budgets below are spent on the buffer under test.
+    takeDirtyBuffers();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('starts at the floor and earns its way up', async () => {
+    capped('pace-floorstart');
+    const seen = mockDelete(() => 0);
+
+    await runRetentionTick(PACED);
+
+    // Nothing has been measured yet, so the first statement must NOT assume the
+    // maximum works — that assumption is what this file exists to stop making,
+    // and boot re-marks every buffer dirty so it would be re-paid every restart.
+    expect(seen[0]).toBe(PACED.minBatchRows);
+    expect(seen.at(-1)!).toBeGreaterThan(seen[0]);
+    expect(Math.max(...seen)).toBeLessThanOrEqual(PACED.batchRows);
+  });
+
+  it('halves a full batch that overruns the target', async () => {
+    capped('pace-shrink');
+    await warmUpToMax();
+
+    const seen = mockDelete(() => 30); // every full batch overruns 10ms
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 6 });
+
+    expect(seen[0]).toBe(64);
+    for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeLessThan(seen[i - 1]);
+    expect(seen.at(-1)!).toBeLessThanOrEqual(16);
+  });
+
+  it('never shrinks below minBatchRows', async () => {
+    capped('pace-floor');
+    await warmUpToMax();
+
+    const seen = mockDelete(() => 30);
+    await runRetentionTick({ ...PACED, minBatchRows: 8, maxBatchesPerTick: 30 });
+
+    expect(Math.min(...seen)).toBe(8);
+  });
+
+  it('pins at batchRows when targetStatementMs is Infinity', async () => {
+    capped('pace-off');
+    const seen = mockDelete(() => 30);
+
+    await runRetentionTick({ ...PACED, targetStatementMs: Infinity });
+
+    // Nothing can overrun Infinity, so it only ever grows — up to the ceiling.
+    expect(seen.at(-1)).toBe(64);
+    expect(Math.max(...seen)).toBe(64);
+  });
+
+  it('does not let a short batch grow the size', async () => {
+    capped('pace-short-seed');
+    await warmUpToMax();
+    // Shrink off the ceiling so growth would be visible.
+    mockDelete(() => 30);
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 4 });
+    vi.restoreAllMocks();
+
+    // A tickful of buffers that each end on ONE cheap short batch. Short means
+    // it deleted almost nothing, so it proves nothing about the size — if it
+    // grew it, boot (every buffer dirty, most over cap by a handful of rows)
+    // would ratchet straight back to the maximum.
+    const seen = mockDelete(() => 0, false);
+    for (let i = 0; i < 6; i++) capped(`pace-short-${i}`, 30);
+    await runRetentionTick(PACED);
+
+    expect(seen.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(seen).size).toBe(1);
+  });
+
+  it('does not let a SLOW short batch shrink the size', async () => {
+    await warmUpToMaxOn('pace-slowshort-seed');
+
+    // The terminal deleteNoiseBatch of a user's window matches nothing, so its
+    // LIMIT never trips and it scans the whole time range of an index that has
+    // no user_id — slow for reasons no batch size can change. Shrinking on it
+    // would walk the line-cap sweep down to the floor for free.
+    const seen = mockDelete(() => 30, false);
+    for (let i = 0; i < 6; i++) capped(`pace-slowshort-${i}`, 30);
+    await runRetentionTick(PACED);
+
+    expect(seen.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(seen).size).toBe(1);
+    expect(seen[0]).toBe(64);
+  });
+
+  it('does not let a cheap unsized statement grow the size', async () => {
+    capped('pace-nogrow', 60);
+    await warmUpToMax();
+
+    const seen = mockDelete(() => 30);
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 4 });
+    const shrunk = seen.at(-1)!;
+    expect(shrunk).toBeLessThan(64);
+
+    // The mocked delete always reports a full batch, so the buffer is still
+    // dirty and the next tick re-probes it. That probe is instant and takes no
+    // row limit — it must teach the controller NOTHING.
+    seen.length = 0;
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 4 });
+
+    // Not `shrunk`: the controller halved again after that last statement.
+    // A probe that grew it would land ABOVE this, which is the regression.
+    expect(seen[0]).toBe(shrunk / 2);
+  });
+
+  it('does not enter closed-buffer GC on a tick the noise clock already exhausted', async () => {
+    // outOfBudget() is only consulted at the TOP of the per-user queue loop, so
+    // a noiseStep that finishes its window while blowing maxTickMs would still
+    // be followed by gcStep — whose listing, guaranteed drain and row delete
+    // are exactly the synchronous work the backstop exists to stop.
+    const user = createUser('gc-after-noise');
+    const net = createNetwork(user.id, {
+      name: 'gc-after-noise',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'gc-after-noise',
+    })!;
+    insertMessage({
+      networkId: net.id,
+      target: '#chan',
+      time: new Date(Date.now() - 10 * 24 * 3_600_000).toISOString(),
+      type: 'join',
+      nick: 'someone',
+      text: null,
+      self: false,
+    });
+    setUserSetting(user.id, 'data.retention.event_hours', 24);
+    setUserSetting(user.id, 'data.retention.closed_buffer_days', 7); // GC ON
+
+    // One slow noise statement that returns SHORT: the window is finished (so
+    // noiseStep returns true) but the tick's time budget is gone.
+    vi.spyOn(retentionDb, 'deleteNoiseBatch').mockImplementation(() => {
+      const end = performance.now() + 60;
+      while (performance.now() < end) {
+        /* blow the budget */
+      }
+      return 0;
+    });
+    const gcListing = vi.spyOn(retentionDb, 'listGcEligibleBuffers');
+
+    await runRetentionTick({
+      ...OPTS,
+      noiseIntervalMs: 0,
+      maxTickMs: 20, // less than the noise statement above
+    });
+
+    expect(gcListing).not.toHaveBeenCalled();
+  });
+
+  it('still deletes when the boundary probe alone exhausts the tick budget', async () => {
+    const b = seedBuffer('pace-livelock', 30);
+    setUserSetting(b.userId, 'data.retention.lines', 10);
+    // The probe is O(cap) and cannot be batched. If it can spend the whole tick
+    // budget by itself, a pre-test delete loop runs ZERO times, the buffer is
+    // re-marked dirty, and the next tick repeats it — pruning stops forever
+    // while still blocking the loop every busyDelayMs.
+    const realBoundary = retentionDb.retentionBoundaryId;
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockImplementation((buf: number, cap: number) => {
+      const end = performance.now() + 60;
+      while (performance.now() < end) {
+        /* a probe that costs more than the whole tick */
+      }
+      return realBoundary(buf, cap);
+    });
+
+    const r = await runRetentionTick({
+      ...OPTS,
+      batchRows: 4,
+      minBatchRows: 4,
+      targetStatementMs: Infinity,
+      maxTickMs: 50, // less than the probe above
+      maxBatchesPerTick: 500,
+    });
+
+    expect(r.rowsDeleted).toBeGreaterThan(0);
+    expect(rowIds(b.bufferId).length).toBeLessThan(30);
+    expect(r.backlog).toBe(true); // still more to do, but it MOVED
+  });
+
+  it('ends a tick on elapsed statement time even with batches to spare', async () => {
+    capped('pace-tick', 30);
+    const seen = mockDelete(() => 30);
+
+    // 500 batches available, but only ~90ms of statement time allowed: the
+    // statement COUNT cannot end this tick, so only the time budget can.
+    const result = await runRetentionTick({
+      ...OPTS,
+      batchRows: 4,
+      minBatchRows: 4,
+      targetStatementMs: Infinity,
+      maxTickMs: 90,
+      maxBatchesPerTick: 500,
+    });
+
+    expect(seen.length).toBeLessThan(10); // ~3 x 30ms, nowhere near 500
+    expect(result.backlog).toBe(true);
   });
 });
