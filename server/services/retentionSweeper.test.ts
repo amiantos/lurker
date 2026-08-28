@@ -43,6 +43,13 @@ afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+// The pacing controller is module-global and carried across ticks on purpose,
+// so without this a test inherits whatever size the previous one settled on —
+// silently running at someone else's batch size rather than its own.
+beforeEach(() => {
+  __resetSweepPacing();
+});
+
 // Tiny knobs so the budget/backlog behavior is exercised with dozens of rows,
 // not hundreds of thousands. noiseIntervalMs Infinity keeps the noise clock
 // out of the count-sweep tests; the noise tests pass 0 to force it.
@@ -642,6 +649,11 @@ describe('pacing', () => {
    *  measures, and a mock that returned instantly would prove nothing. */
   function slowDelete(ms: number): number[] {
     const seen: number[] = [];
+    // The first charged statement of a tick is the real boundary probe. Pin it
+    // cheap and constant: otherwise a probe that happens to exceed
+    // targetStatementMs on a loaded CI box halves the batch before the first
+    // delete, and these assertions are about the DELETE path.
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockReturnValue(1);
     vi.spyOn(retentionDb, 'deleteRetentionBatch').mockImplementation(
       (_b: number, _bound: number, _owner: number, limit: number) => {
         seen.push(limit);
@@ -656,7 +668,9 @@ describe('pacing', () => {
   }
 
   beforeEach(() => {
-    __resetSweepPacing();
+    // Drop dirty buffers left by earlier tests BEFORE seeding this one, so the
+    // deliberately tiny budgets below are spent on the buffer under test.
+    takeDirtyBuffers();
   });
 
   afterEach(() => {
@@ -707,6 +721,64 @@ describe('pacing', () => {
     await runRetentionTick({ ...OPTS, batchRows: 64, maxBatchesPerTick: 5 });
 
     expect(new Set(seen)).toEqual(new Set([64]));
+  });
+
+  it('does not let a cheap unsized statement grow the batch back', async () => {
+    const { userId } = seedBuffer('pace-nogrow', 60);
+    setUserSetting(userId, 'data.retention.lines', 10);
+    const seen = slowDelete(30);
+    const PACED = {
+      ...OPTS,
+      batchRows: 64,
+      minBatchRows: 1,
+      targetStatementMs: 10,
+      maxBatchesPerTick: 4,
+    };
+
+    await runRetentionTick(PACED); // slow deletes shrink the batch
+    const shrunk = seen.at(-1)!;
+    expect(shrunk).toBeLessThan(64);
+
+    // The mocked delete always reports a full batch, so the buffer is still
+    // dirty and the next tick re-probes it. That probe is instant and takes no
+    // row limit — it must teach the controller NOTHING, or boot (which seeds
+    // every buffer dirty) re-inflates the batch and the ~800ms block returns.
+    seen.length = 0;
+    await runRetentionTick(PACED);
+
+    // Not `shrunk`: the controller halved again after that last statement.
+    // A probe that grew it would land ABOVE this, which is the regression.
+    expect(seen[0]).toBe(shrunk / 2);
+  });
+
+  it('still deletes when the boundary probe alone exhausts the tick budget', async () => {
+    const { userId, bufferId } = seedBuffer('pace-livelock', 30);
+    setUserSetting(userId, 'data.retention.lines', 10);
+    // The probe is O(cap) and cannot be batched. If it can spend the whole
+    // tick budget by itself, a pre-test delete loop runs ZERO times, the
+    // buffer is re-marked dirty, and the next tick repeats it — pruning stops
+    // forever while still blocking the loop every busyDelayMs.
+    const realBoundary = retentionDb.retentionBoundaryId;
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockImplementation((b: number, cap: number) => {
+      const end = performance.now() + 60;
+      while (performance.now() < end) {
+        /* a probe that costs more than the whole tick */
+      }
+      return realBoundary(b, cap);
+    });
+
+    const r = await runRetentionTick({
+      ...OPTS,
+      batchRows: 4,
+      minBatchRows: 4,
+      targetStatementMs: Infinity,
+      maxTickMs: 50, // less than the probe above
+      maxBatchesPerTick: 500,
+    });
+
+    expect(r.rowsDeleted).toBeGreaterThan(0);
+    expect(rowIds(bufferId).length).toBeLessThan(30);
+    expect(r.backlog).toBe(true); // still more to do, but it MOVED
   });
 
   it('ends a tick on elapsed statement time even with batches to spare', async () => {

@@ -131,42 +131,50 @@ export function __resetSweepPacing(): void {
 
 /** The batch size to use right now, clamped into the option's own range. */
 function pacedBatchRows(opts: RetentionSweepOptions): number {
-  return Math.max(opts.minBatchRows, Math.min(opts.batchRows, adaptedBatchRows));
+  // The ceiling wins a contradictory pair: `batchRows` is documented as the
+  // MAXIMUM, so a floor above it must not silently raise the batch past it.
+  // And never 0 — a zero-row delete removes nothing while still costing a
+  // charged statement, and `deleted < rows` (0 < 0) is false, so the loop
+  // would not even recognise it as a short batch.
+  const floor = Math.max(1, Math.min(opts.minBatchRows, opts.batchRows));
+  return Math.max(floor, Math.min(opts.batchRows, adaptedBatchRows));
+}
+
+/** Run a statement, reporting how long it blocked the loop. */
+function measure<T>(run: () => T): { value: T; ms: number } {
+  const started = performance.now();
+  const value = run();
+  return { value, ms: performance.now() - started };
 }
 
 /**
- * Run one bounded statement, charging what it cost to the tick and feeding the
- * measurement back into the batch size. Halve on an overrun, step back up
- * gently when we are inside budget — slow to trust, quick to back off, so a
- * single expensive buffer cannot re-saturate the loop for a whole tick.
+ * Feed ONE row-limited statement's cost back into the batch size. Halve on an
+ * overrun, step back up gently when inside budget — slow to trust, quick to
+ * back off, so a single expensive buffer cannot re-saturate the loop.
+ *
+ * Only ever called for statements whose cost is a function of `rows`. The
+ * boundary probe (O(cap)), the GC listing (fixed limit) and the closed-buffer
+ * delete take no row limit, so shrinking the batch cannot make them cheaper:
+ * letting them shrink it punishes the delete path for a cost it cannot
+ * reduce, and — the one that defeats the whole fix — letting a FAST one grow
+ * it proves nothing about delete cost. Boot seeds every buffer dirty, so a
+ * handful of quick within-cap probes would otherwise re-inflate the batch to
+ * the maximum before the noise pass ran, and the ~800ms block would be back.
+ *
+ * Both bounds live in pacedBatchRows, the only reader — clamping here too
+ * would leave a mutation to either one behaviour-neutral, i.e. untestable.
+ * A targetStatementMs of Infinity needs no special case: nothing can overrun
+ * it, so the size only grows and pins to `batchRows`.
  */
-function timedStatement<T>(opts: RetentionSweepOptions, run: () => T): { value: T; ms: number } {
-  const started = performance.now();
-  const value = run();
-  const ms = performance.now() - started;
-  // Both bounds live in pacedBatchRows, which is the only reader — clamping
-  // here too would mean two places to get the range right, and a mutation to
-  // either one would leave the behaviour unchanged and untestable.
-  // A targetStatementMs of Infinity needs no special case: nothing can overrun
-  // it, so the size only ever grows and pins to `batchRows`.
+function adaptToStatement(opts: RetentionSweepOptions, ms: number): void {
   const current = pacedBatchRows(opts);
   if (ms > opts.targetStatementMs) {
     adaptedBatchRows = Math.floor(current / 2);
   } else if (ms < opts.targetStatementMs / 2) {
     adaptedBatchRows = Math.max(current + 1, Math.ceil(current * 1.25));
   }
-  return { value, ms };
 }
 
-// Noise-clock scheduling state. `lastNoiseSweepMs = 0` makes the first tick
-// after boot start a pass; the settings listener forces one with -Infinity
-// (due under ANY interval, Infinity included). `noisePendingUsers` is the
-// pass's cursor ACROSS ticks: a budget-exhausted tick leaves the unfinished
-// user at the head and the next tick resumes there — without it the pass
-// restarts from the first user every tick, and once noise-enabled users
-// outnumber the budget the tail is never reached and the sweeper busy-loops
-// forever (the same livelock class the count sweep's drained dirty set
-// exists to prevent).
 let lastNoiseSweepMs = 0;
 let noisePendingUsers: number[] | null = null;
 // A settings change that lands while a pass is mid-flight asks for a fresh
@@ -212,10 +220,19 @@ export async function runRetentionTick(
   let syncMsSpent = 0;
   const outOfBudget = (): boolean =>
     batchesSpent >= opts.maxBatchesPerTick || syncMsSpent >= opts.maxTickMs;
+  // Charge the tick, but teach the controller nothing: see adaptToStatement.
   const charge = <T>(run: () => T): T => {
-    const { value, ms } = timedStatement(opts, run);
+    const { value, ms } = measure(run);
     syncMsSpent += ms;
     batchesSpent++;
+    return value;
+  };
+  // Charge the tick AND size the next batch from what this one cost.
+  const chargeSized = <T>(run: () => T): T => {
+    const { value, ms } = measure(run);
+    syncMsSpent += ms;
+    batchesSpent++;
+    adaptToStatement(opts, ms);
     return value;
   };
 
@@ -253,17 +270,25 @@ export async function runRetentionTick(
       // "Done" is a short delete batch, NOT an exhausted budget: keying the
       // re-mark on the budget livelocks — with a small budget every capped
       // buffer ends its visit at the limit and reports a backlog forever.
+      // do/while, NOT while: the probe above is O(cap) and unbatchable, so on
+      // a large cap it can spend the whole tick budget by itself. A pre-test
+      // loop would then run zero times, re-mark the buffer dirty and repeat
+      // the same probe every busyDelayMs — blocking the loop forever while
+      // deleting nothing. Progress per visit is guaranteed instead, at an
+      // overshoot of one statement (the same trade gcStep's drain makes).
       let tailDone = false;
-      while (!outOfBudget()) {
+      do {
         const rows = pacedBatchRows(opts);
-        const deleted = charge(() => deleteRetentionBatch(bufferId, boundaryId, ownerId, rows));
+        const deleted = chargeSized(() =>
+          deleteRetentionBatch(bufferId, boundaryId, ownerId, rows),
+        );
         result.rowsDeleted += deleted;
         if (deleted < rows) {
           tailDone = true; // (or only bookmarks left below the boundary)
           break;
         }
         await yieldToLoop();
-      }
+      } while (!outOfBudget());
       if (!tailDone) {
         // Budget died mid-buffer — re-check soon.
         markBufferDirty(bufferId);
@@ -295,10 +320,14 @@ export async function runRetentionTick(
     const cutoffIso = new Date(Date.now() - hours * 3_600_000).toISOString();
     const sinceIso = getNoiseCursor(userId);
     if (sinceIso >= cutoffIso) return true; // nothing has aged past the cutoff since last pass
-    while (!outOfBudget()) {
+    // do/while for the same reason as the count sweep above: this step is
+    // only entered with budget left, and it must delete at least one batch
+    // when it is, or a user whose turn always begins on an exhausted budget
+    // never progresses.
+    do {
       await yieldToLoop();
       const rows = pacedBatchRows(opts);
-      const deleted = charge(() => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows));
+      const deleted = chargeSized(() => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows));
       result.noiseRowsDeleted += deleted;
       if (deleted < rows) {
         // Window clear (survivors are bookmarked). Compare-and-advance, not a
@@ -307,7 +336,7 @@ export async function runRetentionTick(
         advanceNoiseCursor(userId, sinceIso, cutoffIso);
         return true;
       }
-    }
+    } while (!outOfBudget());
     return false; // budget died mid-user
   };
 
@@ -336,7 +365,7 @@ export async function runRetentionTick(
         do {
           await yieldToLoop();
           const rows = pacedBatchRows(opts);
-          const deleted = charge(() => drainBufferBatch(userId, bufferId, daysNow, rows));
+          const deleted = chargeSized(() => drainBufferBatch(userId, bufferId, daysNow, rows));
           result.gcRowsDeleted += deleted;
           if (deleted < rows) {
             drained = true; // empty — or reopened / re-closed / bookmarked, all refused below
