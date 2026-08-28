@@ -53,16 +53,19 @@ import settingsService from './settingsService.js';
 import * as systemLog from './systemLog.js';
 
 export interface RetentionSweepOptions {
-  /** MAXIMUM rows per DELETE statement. The batch actually used is adapted
-   *  down from here toward `minBatchRows` whenever a statement blocks the loop
-   *  for longer than `targetStatementMs` — see `pacedBatchRows`. */
+  /** CEILING on the rows per DELETE statement — not the size used. The sweep
+   *  starts at `minBatchRows` and climbs toward this while full batches stay
+   *  inside `targetStatementMs`, halving back down when one does not. See
+   *  `pacedBatchRows`. */
   batchRows: number;
-  /** Floor for the adapted batch size. Below this the per-statement overhead
-   *  dominates and the sweep stops making useful progress. */
+  /** Both the floor for the adapted size AND where a cold process starts:
+   *  nothing has been measured yet, so assume the least. Below this the
+   *  per-statement overhead dominates and the sweep stops making progress. */
   minBatchRows: number;
-  /** How long ONE bounded statement may block the event loop before the batch
-   *  size is cut. Infinity disables adaptation (tests, and anyone who wants
-   *  the old fixed-size behaviour). */
+  /** How long one FULL batch may block the event loop before the size is
+   *  halved. Only full batches count, in either direction — see
+   *  `adaptToStatement`. Infinity means nothing can ever overrun, so the size
+   *  only climbs and pins at `batchRows`. */
   targetStatementMs: number;
   /** Total time a tick may spend INSIDE synchronous statements before handing
    *  the rest to the next one. A backstop on top of `maxBatchesPerTick`, which

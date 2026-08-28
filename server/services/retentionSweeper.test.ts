@@ -640,11 +640,10 @@ describe('runRetentionTick', () => {
 
 // The 2026-08-28 incident: the statement-count budget assumes each statement is
 // cheap, and on a cold start it is not — one 500-row delete cascading into the
-// FTS triggers blocked the loop for ~800ms a second. These pin the two things
-// that stop a statement count from being the only guard.
-// The 2026-08-28 incident: the statement-count budget assumes each statement is
-// cheap, and on a cold start it is not — one 500-row delete cascading into the
-// FTS triggers blocked the loop for ~800ms a second on a 2.1 GB database.
+// FTS triggers blocked the loop for ~800ms a second on a 2.1 GB database. These
+// pin what makes the measured budget hold: which statements may size the batch,
+// in which direction, and that neither an unbatchable probe nor a finished
+// noise window can spend a tick's time budget on something else.
 describe('pacing', () => {
   /**
    * Replace the delete with one that blocks for `ms(rows)` of REAL synchronous
