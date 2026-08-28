@@ -276,6 +276,35 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_invite_tokens_unused
       ON invite_tokens(token) WHERE used_by_user_id IS NULL;
 
+    -- Admin-issued account recovery links (#855). A member locked out of an
+    -- account redeems one to set a password or enroll a fresh passkey; there is
+    -- no email address to run a self-service reset against.
+    --
+    -- Only the SHA-256 of the token is stored. The raw value exists solely in
+    -- the link the admin hands over, so a read of this table cannot recover an
+    -- account -- unlike invite_tokens, which stores its token raw because an
+    -- invite only creates a NEW account rather than taking over an existing one.
+    --
+    -- user_id is UNIQUE: issuing a link replaces any outstanding one, so there
+    -- is at most one row per account and 'invalidate the others' costs nothing.
+    -- Redemption DELETEs the row, which is what makes a link single-use.
+    --
+    -- created_by is SET NULL rather than CASCADE because the link belongs to the
+    -- account being recovered, not to the admin who issued it -- an admin
+    -- leaving must not strand a member mid-recovery. The #590 resurrection trap
+    -- that made invite_tokens.used_by_user_id CASCADE cannot recur here:
+    -- liveness reads expires_at only, and a spent row is gone rather than
+    -- flagged, so no nulled column can turn a dead link live again.
+    CREATE TABLE IF NOT EXISTS account_recovery_tokens (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL UNIQUE,
+      created_by INTEGER,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS webauthn_credentials (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,

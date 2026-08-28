@@ -247,6 +247,19 @@ export function deleteById(id: number, userId: number): void {
   db.prepare('DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?').run(id, userId);
 }
 
+/**
+ * Drop every push registration for a user, returning how many went.
+ *
+ * For account recovery (#855). A subscription is keyed on user_id alone with no
+ * link to the session that created it, so a device that held the account keeps
+ * receiving the member's incoming message content long after its session and
+ * socket are gone. The member re-enables notifications on their own devices,
+ * which is the right trade against leaking messages to one declared hostile.
+ */
+export function deleteAllForUser(userId: number): number {
+  return db.prepare('DELETE FROM push_subscriptions WHERE user_id = ?').run(userId).changes;
+}
+
 export function touchSubscription(id: number): void {
   // strftime with Z suffix so the value parses back as UTC on the client.
   // SQLite's bare datetime('now') returns 'YYYY-MM-DD HH:MM:SS' with no TZ

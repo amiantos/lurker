@@ -28,10 +28,12 @@ const AUTH_RECOVERY_FLAG = 'lurker:authRecoveryAttempted';
 
 // Public routes that render without a session (mirror router.ts). A background
 // 401 while sitting on one of these is the expected "not signed in yet" state,
-// NOT a stale session — bouncing would eject an invite/sign-in visitor to
-// `/login?next=/` before their page can even mount.
+// NOT a stale session — bouncing would eject an invite/recovery/sign-in visitor
+// to `/login?next=/` before their page can even mount.
 function isPublicPath(pathname: string): boolean {
-  return pathname === '/login' || pathname.startsWith('/invite/');
+  return (
+    pathname === '/login' || pathname.startsWith('/invite/') || pathname.startsWith('/recover/')
+  );
 }
 
 // Pure decision (exported for tests): a 401 from a normal authed call means the

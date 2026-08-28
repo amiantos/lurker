@@ -20,6 +20,11 @@ import {
   getInvite,
   isInviteSpent,
 } from '../db/invites.js';
+import {
+  createRecoveryToken,
+  deleteRecoveryTokensForUser,
+  listRecoveryExpiries,
+} from '../db/accountRecovery.js';
 import ircManager from '../services/ircManager.js';
 import { presenceDiagnostics } from '../services/wsHub.js';
 import { isIdentdEnabled, isOidentdFileEnabled } from '../services/identd.js';
@@ -100,6 +105,10 @@ router.get('/users', (_req: Request, res: Response) => {
     const key = effectiveIdent(u).toLowerCase();
     identCounts.set(key, (identCounts.get(key) ?? 0) + 1);
   }
+  // One query for the whole roster rather than one per row — same shape as the
+  // ident tally above. Per-user lookups here meant an instance with 200 accounts
+  // prepared and ran 200 statements on every load of this screen.
+  const recoveryExpiries = listRecoveryExpiries();
   res.json({
     users: all.map((u) => ({
       id: u.id,
@@ -116,6 +125,11 @@ router.get('/users', (_req: Request, res: Response) => {
       // Another account answers this same ident — neither is attributable until
       // the operator assigns one of them something else.
       identConflict: (identCounts.get(effectiveIdent(u).toLowerCase()) ?? 0) > 1,
+      // Whether an unredeemed recovery link is outstanding for this account
+      // (#855). The token itself is never returned — only its hash is stored,
+      // so re-showing a link is impossible by construction; an admin who lost
+      // the URL issues a new one, which invalidates the old.
+      recoveryExpiresAt: recoveryExpiries.get(u.id) ?? null,
     })),
     // Whether either ident mode is running. When neither is, the idents above
     // are inert — the UI says so rather than implying networks see them. (The
@@ -291,6 +305,63 @@ router.post('/users/:id/resume', (req: Request, res: Response) => {
   }
   setUserPaused(id, false);
   ircManager.resumeUser(id);
+  res.json({ ok: true });
+});
+
+// Issue a single-use recovery link for an account (#855). Accounts carry no
+// email address, so this is the whole password-reset story: the admin hands the
+// URL to the member over a channel they already trust, and redeeming it sets a
+// password or enrolls a passkey.
+//
+// The response is the ONLY time this URL exists anywhere — only its hash is
+// stored — so an admin who loses it issues a new one, which invalidates the old.
+//
+// Standalone only, like pause/resume. On a hosted cell the control plane owns
+// sign-in (it holds cp_session and injects lurker_session) and has its own
+// email-based reset, so a cell-local password set here is not what hosted login
+// consults — and redeeming would drop CP-injected session rows the control
+// plane still believes are live.
+router.post('/users/:id/recovery', (req: Request, res: Response) => {
+  if (isNodeMode()) {
+    res.status(409).json({ error: 'sign-in is managed by the control plane in node edition' });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const user = findUserById(id);
+  if (!user) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  const { token, expiresAt } = createRecoveryToken(user.id, req.user!.id);
+  res.json({
+    recovery: {
+      username: user.username,
+      url: `${originFromRequest(req)}/recover/${token}`,
+      expiresAt,
+    },
+  });
+});
+
+// Revoke an outstanding link — the admin's undo for one sent to the wrong
+// person, or one no longer needed.
+router.delete('/users/:id/recovery', (req: Request, res: Response) => {
+  if (isNodeMode()) {
+    res.status(409).json({ error: 'sign-in is managed by the control plane in node edition' });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  if (!deleteRecoveryTokensForUser(id)) {
+    res.status(404).json({ error: 'no outstanding recovery link' });
+    return;
+  }
   res.json({ ok: true });
 });
 

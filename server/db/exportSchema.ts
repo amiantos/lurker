@@ -550,6 +550,14 @@ export const EXPORT_TABLES = Object.freeze({
     reason: 'admin/instance-scoped invitation state, not user data',
   },
 
+  account_recovery_tokens: {
+    mode: 'skip',
+    reason:
+      'a live credential for one account on THIS instance — carrying it to another would ' +
+      'hand the archive holder a way in, and it is stored hashed so it could not be redeemed ' +
+      'anywhere anyway',
+  },
+
   api_tokens: {
     mode: 'skip',
     reason:

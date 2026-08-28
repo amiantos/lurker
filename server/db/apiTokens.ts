@@ -74,6 +74,12 @@ const revokeStmt = db.prepare(`
    WHERE id = ? AND user_id = ? AND revoked_at IS NULL
 `);
 
+const revokeAllForUserStmt = db.prepare(`
+  UPDATE api_tokens
+     SET revoked_at = datetime('now')
+   WHERE user_id = ? AND revoked_at IS NULL
+`);
+
 // Mirror users.touchUserLastSeen: throttle in SQL so a busy client doesn't
 // rewrite the row on every call. No in-memory Map needed.
 const touchStmt = db.prepare(`
@@ -117,6 +123,19 @@ export function listForUser(userId: number): ApiTokenSummary[] {
 
 export function revoke(id: number, userId: number): boolean {
   return revokeStmt.run(id, userId).changes > 0;
+}
+
+/**
+ * Revoke every live token for a user, returning how many were revoked.
+ *
+ * For account recovery (#855): an API token is an independent bearer credential
+ * that outlives any session, so someone who held the account could mint one and
+ * keep read-write REST/MCP/IRC access straight through a recovery. "Every
+ * session predating the recovery is assumed hostile" has to include these.
+ * Soft-revokes, like revoke() — the row stays as a record of what was cut off.
+ */
+export function revokeAllForUser(userId: number): number {
+  return revokeAllForUserStmt.run(userId).changes;
 }
 
 export function touchLastUsed(id: number): void {

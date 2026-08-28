@@ -1977,9 +1977,25 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   for (const session of set) session.deliverSelfEcho(type, target, text, time);
 }
 
-function dropSessionsForUser(userId: number, reason: string): void {
+/**
+ * Close every attached bouncer session for a user.
+ *
+ * Exported for account recovery (#855), which has to reach past the web client:
+ * a bouncer session authenticates once at login and then carries its userId in
+ * the session object — the same "checked once, never re-checked" shape as a
+ * WebSocket. Without this, an attached IRC client keeps receiving playback and
+ * sending as the member after the account has been recovered. A no-op when the
+ * bouncer isn't running, since `sessions` is then empty.
+ */
+export function dropSessionsForUser(userId: number, reason: string): void {
   for (const session of sessions) {
-    if (session.userId === userId && session.isRegistered()) session.closeWithError(reason);
+    // Deliberately NOT gated on isRegistered(). userId is assigned at PASS-time
+    // auth, but a session isn't "registered" until NICK/USER completes — and it
+    // gets a 60s grace to get there. Skipping those left a hole: authenticate,
+    // stall before NICK/USER, wait out the recovery, then finish registering and
+    // arrive attached to an account that was just recovered. The isRegistered()
+    // filter belongs to the count/dispatch callers, not to revocation.
+    if (session.userId === userId) session.closeWithError(reason);
   }
 }
 

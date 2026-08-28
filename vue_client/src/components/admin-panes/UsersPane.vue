@@ -56,6 +56,13 @@
             duplicate
           </span>
           <span
+            v-if="u.recoveryExpiresAt"
+            class="recovery-tag"
+            :title="`recovery link issued, unused, expires ${u.recoveryExpiresAt}`"
+          >
+            recovery pending
+          </span>
+          <span
             class="last-seen"
             :title="`joined ${u.createdAt}${u.lastSeenAt ? ` · last seen ${u.lastSeenAt}` : ''}`"
           >
@@ -97,6 +104,27 @@
           </small>
         </form>
 
+        <!-- Shown once, under the row it belongs to. Only the hash is stored, so
+             there is no later screen that can show this URL again — an admin who
+             loses it issues another, which kills this one. -->
+        <div v-if="freshRecovery && freshRecovery.userId === u.id" class="recovery-fresh">
+          <code>{{ freshRecovery.url }}</code>
+          <button class="link" @click="onCopyRecovery(freshRecovery.url)">
+            {{ freshRecovery.copied ? 'copied' : 'copy' }}
+          </button>
+          <small class="muted">
+            Send this to {{ u.username }} over a channel you trust. Single use, expires in 24 hours,
+            and shown only now.
+          </small>
+          <!-- Said out loud rather than swallowed: the clipboard API is absent
+               outside a secure context, which includes plain-HTTP LAN installs.
+               Elsewhere a failed copy costs a convenience; here it is the only
+               copy of a value nothing can re-fetch. -->
+          <small v-if="freshRecovery.copyFailed" class="error">
+            clipboard unavailable — select and copy the link above manually
+          </small>
+        </div>
+
         <div class="row-actions">
           <button
             v-if="canAssignIdents"
@@ -121,6 +149,24 @@
             @click="u.isPaused ? onResumeUser(u) : onPauseUser(u)"
           >
             {{ u.isPaused ? 'resume' : 'pause' }}
+          </button>
+          <button
+            v-if="!config.isNode"
+            class="link"
+            :disabled="adminBusy"
+            title="issue a single-use link that lets this member set a password or add a passkey"
+            @click="onIssueRecovery(u)"
+          >
+            {{ u.recoveryExpiresAt ? 'reissue recovery' : 'recovery link' }}
+          </button>
+          <button
+            v-if="!config.isNode && u.recoveryExpiresAt"
+            class="link"
+            :disabled="adminBusy"
+            title="revoke the outstanding recovery link"
+            @click="onRevokeRecovery(u)"
+          >
+            revoke recovery
           </button>
           <button
             class="link danger"
@@ -172,6 +218,16 @@ const adminBusy = ref(false);
 const editingIdentFor = ref<number | null>(null);
 const identDraft = ref('');
 
+// The one recovery link minted this session, if any. Held in the component
+// rather than the store because it is not state — it is a value that exists for
+// exactly as long as this screen is open, and nothing can fetch it back.
+const freshRecovery = ref<{
+  userId: number;
+  url: string;
+  copied: boolean;
+  copyFailed: boolean;
+} | null>(null);
+
 function onEditIdent(user: AdminUser) {
   adminError.value = '';
   // Seed with the override only — showing the derived value would make "save"
@@ -203,6 +259,64 @@ onMounted(() => {
     adminError.value = e.message;
   });
 });
+
+async function onIssueRecovery(user: AdminUser) {
+  // Reissuing is destructive to a link that may already be in the member's
+  // hands, so say so — the copy names what breaks rather than asking "are you
+  // sure".
+  if (
+    user.recoveryExpiresAt &&
+    !confirm(`Issue a new recovery link for ${user.username}? The one already sent stops working.`)
+  )
+    return;
+  adminError.value = '';
+  adminBusy.value = true;
+  freshRecovery.value = null;
+  try {
+    const recovery = await adminStore.createRecoveryLink(user.id);
+    freshRecovery.value = { userId: user.id, url: recovery.url, copied: false, copyFailed: false };
+    // Speculative: `reportFailure: false` because this copy runs after an
+    // awaited network call, and Safari (and anything else enforcing transient
+    // user activation) revokes activation across that await — writeText rejects
+    // with NotAllowedError even though the clipboard is perfectly available. A
+    // scary "clipboard unavailable" here would be wrong, and the copy button
+    // below, which calls writeText synchronously inside its own click, works.
+    await onCopyRecovery(recovery.url, false);
+  } catch (e: any) {
+    adminError.value = e.message || 'failed to issue recovery link';
+  } finally {
+    adminBusy.value = false;
+  }
+}
+
+async function onRevokeRecovery(user: AdminUser) {
+  if (!confirm(`Revoke ${user.username}'s recovery link? Anyone holding it can no longer use it.`))
+    return;
+  adminError.value = '';
+  adminBusy.value = true;
+  try {
+    await adminStore.revokeRecoveryLink(user.id);
+    if (freshRecovery.value?.userId === user.id) freshRecovery.value = null;
+  } catch (e: any) {
+    adminError.value = e.message || 'failed to revoke recovery link';
+  } finally {
+    adminBusy.value = false;
+  }
+}
+
+async function onCopyRecovery(url: string, reportFailure = true) {
+  if (!freshRecovery.value) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    freshRecovery.value.copied = true;
+    freshRecovery.value.copyFailed = false;
+  } catch (_) {
+    freshRecovery.value.copied = false;
+    // Only a copy the admin actually clicked is worth an error. That one is a
+    // real signal — no activation excuse, and this URL cannot be re-fetched.
+    if (reportFailure) freshRecovery.value.copyFailed = true;
+  }
+}
 
 async function onDeleteUser(user: AdminUser) {
   if (!confirm(`Delete user ${user.username}? This is irreversible.`)) return;
@@ -280,6 +394,21 @@ async function onResumeUser(user: AdminUser) {
   border: 1px solid currentcolor;
   padding: 0 var(--space-2);
   text-transform: uppercase;
+}
+.user-row .recovery-tag {
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  padding: 0 var(--space-2);
+  text-transform: uppercase;
+}
+.user-row .recovery-fresh {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.user-row .recovery-fresh code {
+  overflow-wrap: anywhere;
 }
 .user-row .paused-tag {
   color: var(--warn);

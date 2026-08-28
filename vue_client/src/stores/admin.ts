@@ -18,6 +18,19 @@ export interface AdminUser {
   effectiveIdent?: string;
   /** Another account answers this same ident — neither one attributes anything. */
   identConflict?: boolean;
+  /**
+   * Expiry of this account's outstanding recovery link, or null for none (#855).
+   * The link itself is never returned — only its hash is stored — so this can
+   * say one exists but can never re-show it.
+   */
+  recoveryExpiresAt?: string | null;
+}
+
+/** A freshly minted recovery link. The URL is shown once and never again. */
+export interface AdminRecoveryLink {
+  username: string;
+  url: string;
+  expiresAt: string;
 }
 
 export interface AdminInvite {
@@ -140,6 +153,22 @@ export const useAdminStore = defineStore('admin', {
         this.error = '';
       });
       return res as { ident: string | null; effectiveIdent: string };
+    },
+    // Mint a single-use recovery link for an account (#855). The response is the
+    // only place the URL exists, so the caller must surface it immediately —
+    // re-reading the store later can only tell you that one is outstanding.
+    async createRecoveryLink(id: number) {
+      const { recovery } = await api(`/api/admin/users/${id}/recovery`, { method: 'POST' });
+      this.usersFetchSeq++;
+      const u = this.users.find((x) => x.id === id);
+      if (u) u.recoveryExpiresAt = recovery.expiresAt;
+      return recovery as AdminRecoveryLink;
+    },
+    async revokeRecoveryLink(id: number) {
+      await api(`/api/admin/users/${id}/recovery`, { method: 'DELETE' });
+      this.usersFetchSeq++;
+      const u = this.users.find((x) => x.id === id);
+      if (u) u.recoveryExpiresAt = null;
     },
     async fetchInvites() {
       const seq = ++this.invitesFetchSeq;

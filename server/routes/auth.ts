@@ -26,6 +26,11 @@ import {
   setPasswordHash,
 } from '../db/users.js';
 import { inviteStatus, consumeInvite } from '../db/invites.js';
+import {
+  findLiveRecoveryToken,
+  spendRecoveryAndEnroll,
+  spendRecoveryAndSetPassword,
+} from '../db/accountRecovery.js';
 import { isValidUsername, isValidLoginUsername } from '../../shared/username.js';
 import {
   listForUser as listCredentialsForUser,
@@ -37,7 +42,12 @@ import {
   updateLabel,
   deleteById as deleteCredentialById,
 } from '../db/webauthnCredentials.js';
-import { createSession, deleteSession } from '../db/sessions.js';
+import { createSession, deleteSession, deleteSessionsForUser } from '../db/sessions.js';
+import { closeSocketsForUser } from '../services/wsHub.js';
+import { isNodeMode } from '../utils/edition.js';
+import { dropSessionsForUser as dropBouncerSessionsForUser } from '../services/bouncer.js';
+import { revokeAllForUser as revokeApiTokensForUser } from '../db/apiTokens.js';
+import { deleteAllForUser as deletePushSubscriptionsForUser } from '../db/pushSubscriptions.js';
 import { SESSION_COOKIE, getCookieOptions, requireAuth, bearerToken } from '../middleware/auth.js';
 import { rpConfig, saveChallenge, consumeChallenge, userIdToHandle } from '../services/webauthn.js';
 import {
@@ -402,6 +412,243 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
   const { token: sessionToken } = createSession(user.id);
   res.cookie(SESSION_COOKIE, sessionToken, getCookieOptions());
   res.json({ user: { id: user.id, username: user.username, role: user.role } });
+});
+
+// ---------- account recovery ----------
+
+// Redemption of an admin-issued recovery link (#855). An account has no email
+// address, so there is no self-service reset to build: an admin issues a link
+// for one account and hands it over out of band, and redeeming it adds a
+// sign-in method back to an account its owner is locked out of.
+//
+// Every path here ends in finishRecovery(), which signs the account out
+// everywhere before minting the new session: the lockout that made recovery
+// necessary is indistinguishable from a takeover, so any session predating the
+// recovery is assumed hostile, so redeeming leaves exactly ONE way into the
+// account: the credential just established. Everything else goes — session rows,
+// open WebSockets, attached bouncer sessions, API tokens, push registrations,
+// the old password, and every previously enrolled passkey. Each of those either
+// authenticates once and is never re-checked, or is a credential an attacker
+// could have planted; changing a password is worthless while a passkey they
+// enrolled still opens the door, and clearing passkeys is worthless while they
+// still know a password.
+
+// A cell's sign-in is the control plane's: it holds cp_session, injects
+// lurker_session, and has its own email-based reset. Issuing already refuses
+// there (routes/admin.ts), but redemption has to refuse independently — a link
+// minted before an instance became a cell, or by the CLI shipped in the same
+// image, would otherwise be redeemable and would drop CP-injected session rows
+// the control plane still believes are live.
+function recoveryUnavailableInNodeMode(res: Response): boolean {
+  if (!isNodeMode()) return false;
+  res.status(404).json({ error: 'account recovery is managed by the control plane' });
+  return true;
+}
+
+function finishRecovery(res: Response, user: { id: number; username: string; role: string }): void {
+  // "Signed out everywhere" means every door, not just the web session. Each of
+  // these is a credential that authenticates ONCE and is then never re-checked
+  // against the session table, so dropping rows alone leaves all of them open to
+  // whoever held the account — which is precisely who this flow assumes is on
+  // the other end.
+  deleteSessionsForUser(user.id);
+  // Checked at the /ws upgrade and never again; the handler reads its user from
+  // the socket's own closure. Runs before the new session is minted — the
+  // recovering device has no socket yet and reconnects with the new cookie.
+  closeSocketsForUser(user.id, 'account recovered');
+  // Same shape one layer down: a bouncer session authenticates at login and then
+  // carries its userId for the life of the TCP connection.
+  dropBouncerSessionsForUser(user.id, 'Account recovered');
+  // Independent bearer credentials that outlive every session — an attacker who
+  // minted one would otherwise keep read-write access straight through recovery.
+  revokeApiTokensForUser(user.id);
+  // Keyed on user_id with no session linkage, so an evicted device would keep
+  // receiving the member's incoming messages as push content.
+  deletePushSubscriptionsForUser(user.id);
+  const { token: sessionToken } = createSession(user.id);
+  res.cookie(SESSION_COOKIE, sessionToken, getCookieOptions());
+  res.json({ user: { id: user.id, username: user.username, role: user.role } });
+}
+
+// Public status probe for the landing page. An expired link and a token that
+// was never real answer identically — the page is the same dead end either way,
+// and distinguishing them would confirm a token had once existed. The username
+// comes back because the page needs to name the account being recovered, and
+// whoever holds this link can already take that account over.
+router.get('/recovery/:token', (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
+  const info = findLiveRecoveryToken(req.params.token);
+  const user = info ? findUserById(info.userId) : null;
+  if (!user) {
+    res.json({ valid: false });
+    return;
+  }
+  res.json({
+    valid: true,
+    username: user.username,
+    expiresAt: info!.expiresAt,
+    // Whether the page offers "set a password" or "change your password".
+    hasPassword: userHasPassword(user.id),
+  });
+});
+
+// Set a password with a recovery link. The password is validated BEFORE the
+// token is spent, so a too-short one doesn't burn a single-use link.
+//
+// NO guardCredentialAttempt here, unlike the login routes, and that is the
+// point: its 429 pre-check turns away an IP already in login backoff — which is
+// exactly the person recovering, since failing at sign-in is how they got here.
+// (Behind a proxy without LURKER_TRUST_PROXY the key is the proxy's address, so
+// one member's failed logins would lock everyone else out of recovery too.) It
+// would buy nothing either way: the token is 32 random bytes, so there is
+// nothing to brute-force, and the router-wide limitRequests(authRequestThrottle)
+// above already bounds how fast anyone can probe this surface. The passkey half
+// of this flow is unguarded for the same reason; the two now agree.
+router.post('/recovery/:token/password', (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
+  const password: unknown = req.body?.password;
+  if (!isValidPassword(password)) {
+    res.status(400).json({ error: passwordRequirementsMessage() });
+    return;
+  }
+  // Spend, wipe every other credential, and set the new password in one
+  // transaction — a half-applied recovery would leave the account either
+  // unreachable or still open to whoever held it.
+  const userId = spendRecoveryAndSetPassword(req.params.token, hashPassword(password as string));
+  if (userId === null) {
+    res.status(400).json({ error: 'that recovery link is invalid or has expired' });
+    return;
+  }
+  const user = findUserById(userId);
+  if (!user) {
+    // The row CASCADEs with the account, so this means the account was deleted
+    // between the consume and this read.
+    res.status(404).json({ error: 'that account no longer exists' });
+    return;
+  }
+  finishRecovery(res, user);
+});
+
+// Enroll a fresh passkey with a recovery link — the half of this feature a
+// password-only reset would miss, since a passkey-only member who lost their
+// phone has no password to reset. Mirrors /passkeys/options, but authorized by
+// the link instead of a session.
+router.post('/recovery/:token/options', async (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
+  const info = findLiveRecoveryToken(req.params.token);
+  const user = info ? findUserById(info.userId) : null;
+  if (!user) {
+    res.status(404).json({ error: 'invalid or expired recovery link' });
+    return;
+  }
+  const { rpID, rpName } = rpConfig();
+  // listCredentialsForUser is untyped — credentials are any[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const existing = listCredentialsForUser(user.id) as any[];
+  const options = await generateRegistrationOptions({
+    rpName,
+    rpID,
+    userName: user.username,
+    userID: new Uint8Array(userIdToHandle(user.id)),
+    userDisplayName: user.username,
+    attestationType: 'none',
+    authenticatorSelection: {
+      residentKey: 'required',
+      userVerification: 'preferred',
+    },
+    // The authenticators already on the account. Redeeming removes all of them
+    // anyway, so this is not a security boundary — it just stops a browser from
+    // silently re-registering a key it can see is already enrolled, which would
+    // be a confusing no-op prompt rather than an error.
+    excludeCredentials: existing.map((c) => ({
+      id: c.credentialId,
+      transports: c.transports,
+    })),
+  });
+  const token = saveChallenge({
+    purpose: 'recovery',
+    challenge: options.challenge,
+    userId: user.id,
+    recoveryToken: req.params.token,
+  });
+  setChallengeCookie(res, token);
+  res.json({ options, username: user.username });
+});
+
+router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, res: Response) => {
+  if (recoveryUnavailableInNodeMode(res)) return;
+  const challengeToken = req.signedCookies?.[CHALLENGE_COOKIE];
+  const entry = consumeChallenge(challengeToken);
+  clearChallengeCookie(res);
+  if (!entry || entry.purpose !== 'recovery' || entry.recoveryToken !== req.params.token) {
+    res.status(400).json({ error: 'no pending recovery' });
+    return;
+  }
+  const { rpID, expectedOrigin } = rpConfig();
+  let verification: VerifiedRegistrationResponse;
+  try {
+    verification = await verifyRegistrationResponse({
+      response: req.body?.response,
+      expectedChallenge: entry.challenge as string,
+      expectedOrigin,
+      expectedRPID: rpID,
+      requireUserVerification: false,
+    });
+  } catch (err) {
+    const e = err as { message?: string };
+    res.status(400).json({ error: e.message || 'verification failed' });
+    return;
+  }
+  if (!verification.verified || !verification.registrationInfo) {
+    res.status(400).json({ error: 'verification failed' });
+    return;
+  }
+
+  // Spend the link only once the authenticator has answered, so a failed or
+  // abandoned ceremony leaves it usable.
+  //
+  // Spend and enroll go in ONE transaction. webauthn_credentials.credential_id
+  // is globally UNIQUE while excludeCredentials only excludes THIS account's
+  // keys, so an authenticator already enrolled on a different account of the
+  // same instance (a shared machine, or one person with two accounts) clears the
+  // ceremony and then fails the insert. Outside a transaction that 500s with the
+  // token already deleted: no credential written, one link burned, member still
+  // locked out.
+  const entryUserId = entry.userId as number;
+  let userId: number | null = null;
+  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  try {
+    userId = spendRecoveryAndEnroll(req.params.token, entryUserId, {
+      credentialId: credential.id,
+      publicKey: Buffer.from(credential.publicKey),
+      counter: credential.counter,
+      transports: credential.transports || [],
+      deviceType: credentialDeviceType,
+      backedUp: credentialBackedUp,
+      label,
+    });
+  } catch (err) {
+    // ONLY a duplicate credential means what this 409 says. A SQLITE_BUSY or a
+    // full disk would otherwise be reported as "already registered", sending a
+    // locked-out member off to try authenticator after authenticator against
+    // what is actually a server fault. Anything else rethrows to the 500 path,
+    // where it gets logged. The rollback happened either way, so the link
+    // survives and a retry is safe.
+    if ((err as { code?: string }).code !== 'SQLITE_CONSTRAINT_UNIQUE') throw err;
+    res.status(409).json({ error: 'that passkey is already registered on this server' });
+    return;
+  }
+  if (userId === null) {
+    res.status(409).json({ error: 'that recovery link is no longer valid' });
+    return;
+  }
+  const user = findUserById(userId);
+  if (!user) {
+    res.status(404).json({ error: 'that account no longer exists' });
+    return;
+  }
+  finishRecovery(res, user);
 });
 
 // ---------- login ----------

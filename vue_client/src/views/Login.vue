@@ -73,6 +73,20 @@
             {{ working && loginMode === 'password' ? 'Signing in…' : 'Sign in with password' }}
           </button>
         </form>
+
+        <!-- There is no self-service reset to link to: accounts here carry no
+             email address, so nothing could verify the request. Recovery runs
+             through the admin (#855).
+             Shown by DEFAULT and hidden once /api/config resolves as node, not
+             the other way round: `edition` defaults to 'standalone', so a cell
+             flashes this line for the length of that fetch. Deliberate — gating
+             on config.checked would instead hide it on every standalone login,
+             which is the common case and the one that needs it. A hosted cell
+             signs in through the control plane anyway. -->
+        <p v-if="!config.isNode" class="hint">
+          Locked out? Accounts here have no email address — ask your instance admin for a recovery
+          link.
+        </p>
       </template>
 
       <p v-if="auth.error" class="error">{{ auth.error }}</p>
@@ -85,6 +99,7 @@ import { ref, computed, onMounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import type { SetupStatus } from '../stores/auth.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import WordBackdrop from '../components/WordBackdrop.vue';
 import { USERNAME_PATTERN, MAX_USERNAME_LENGTH } from '../../../shared/username.js';
 
@@ -97,6 +112,9 @@ const password = ref('');
 const working = ref(false);
 const loadingStatus = ref(true);
 const auth = useAuthStore();
+// Defaults to standalone, so a config fetch that hasn't landed shows the line —
+// the right default, since standalone is the only edition that self-hosts.
+const config = useConfigStore();
 const router = useRouter();
 const route = useRoute();
 const setup = ref<SetupStatus | null>(null);

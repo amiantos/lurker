@@ -85,6 +85,25 @@ describe('purgeExpiredSessions', () => {
   });
 });
 
+describe('deleteSessionsForUser', () => {
+  it('drops every session for one user and leaves other accounts alone', () => {
+    const u = createUser('s-revoke');
+    const other = createUser('s-revoke-bystander');
+    const { token: a } = sessions.createSession(u.id);
+    const { token: b } = sessions.createSession(u.id);
+    const { token: theirs } = sessions.createSession(other.id);
+    expect(sessions.deleteSessionsForUser(u.id)).toBe(2);
+    expect(sessions.findSession(a)).toBeNull();
+    expect(sessions.findSession(b)).toBeNull();
+    expect(sessions.findSession(theirs)).toBeTruthy();
+  });
+
+  it('is a no-op for an account with no sessions', () => {
+    const u = createUser('s-revoke-empty');
+    expect(sessions.deleteSessionsForUser(u.id)).toBe(0);
+  });
+});
+
 describe('FK cascade', () => {
   it('deleting a user wipes their sessions', () => {
     const u = createUser('s-cascade');

@@ -10,6 +10,7 @@ import type { MessageEvent } from '../db/messages.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import { asPageUnit } from '../../shared/eventFilter.js';
 import { isChannelTarget } from '../../shared/channels.js';
+import { WS_CLOSE_SESSION_REVOKED } from '../../shared/wsCloseCodes.js';
 import { WebSocketServer } from 'ws';
 import cookie from 'cookie';
 import cookieParser from 'cookie-parser';
@@ -127,6 +128,14 @@ interface LurkerWebSocket extends WebSocket {
   // visible=true) and userHasVisibleClient() stays true forever, permanently
   // suppressing auto-away.
   isAlive?: boolean;
+  // Set by closeSocketsForUser. `ws.close()` only sends a close FRAME and moves
+  // to CLOSING; the `ws` library keeps dispatching inbound frames until the peer
+  // echoes it (or its 30s CLOSE_TIMEOUT fires), and neither the library nor our
+  // message handler checks readyState. A revoked socket is assumed to be held by
+  // an attacker, and one that simply never replies to the close would otherwise
+  // keep sending messages as the recovered account for that whole window. The
+  // message handler drops everything once this is set.
+  revoked?: boolean;
   // The current no-progress streak on this socket's outbound queue, or undefined
   // when it isn't over MAX_BUFFERED_BYTES. `since` is when the streak began,
   // `at` when we last looked, `floor` the lowest bufferedAmount seen during it.
@@ -1451,9 +1460,14 @@ function announceOpen(
 }
 
 // Per-user socket bookkeeping lives at module scope so the verb registry can
-// reach into fanOut without importing the WSS instance. The state is still
-// owned by attachWsHub at runtime (it's the only writer to socketsByUser via
-// addSocket/removeSocket); the registry just reads through it.
+// reach into fanOut without importing the WSS instance. attachWsHub owns the
+// state at runtime — addSocket/removeSocket are the only mutators — and
+// everything else reads through it. closeSocketsForUser is the one outside
+// caller that acts on the sockets themselves: it does NOT touch this map — it
+// closes the sockets and lets removeSocket do the bookkeeping — but it does set
+// `ws.revoked` on each, which the message handler checks. That flag is what
+// closes the close-handshake window, so it is load-bearing rather than
+// incidental; don't drop it while tidying.
 const socketsByUser = new Map<number, Set<LurkerWebSocket>>();
 
 // How many bytes of un-drained outbound frames a socket may hold before it
@@ -1584,6 +1598,71 @@ function fanOut(userId: number, payload: WsPayload, opts: FanOutOpts = {}): void
 // the private fanOut; named to make the cross-module call site read clearly.
 export function fanOutToUser(userId: number, payload: WsPayload, opts: FanOutOpts = {}): void {
   fanOut(userId, payload, opts);
+}
+
+/**
+ * Close every open socket for a user, so a revoked session stops streaming.
+ *
+ * Session checks happen at the /ws upgrade and nowhere after it — the handler
+ * reads its user off the socket's own closure — so deleting the session rows
+ * alone leaves an ALREADY-OPEN socket reading backlog and sending messages as
+ * that account for as long as its holder cares to keep it open. Account
+ * recovery (#855) is exactly the case where that matters: the lockout it
+ * answers is indistinguishable from a takeover, so "signed out everywhere" has
+ * to mean the sockets too, not just the rows behind future requests.
+ *
+ * Deliberately NOT the 'user-disposed' path, which is for a deleted account: it
+ * also tears down IRC connections and drops the system log. Here the account
+ * lives on and is expected to reconnect immediately.
+ *
+ * Closes with WS_CLOSE_SESSION_REVOKED rather than a plain 1000 so the client
+ * can tell this apart from an ordinary drop. It cannot infer the difference, and
+ * reconnecting is futile — the session row is gone, so /ws will 401 forever —
+ * so a 1000 leaves the evicted tab in an endless backoff loop showing stale
+ * content with nothing telling the user they've been signed out.
+ *
+ * Returns the number of sockets closed.
+ */
+// Grace for a cooperative client to acknowledge the close frame before the
+// socket is torn down under it. Long enough that a normal browser closes itself
+// first, short enough that a peer refusing to answer isn't left holding a
+// half-open connection to a recovered account.
+const REVOKED_TERMINATE_MS = 2000;
+
+export function closeSocketsForUser(userId: number, reason = 'session revoked'): number {
+  const set = socketsByUser.get(userId);
+  if (!set) return 0;
+  let closed = 0;
+  for (const ws of set) {
+    try {
+      // Flag BEFORE closing: from here on the message handler drops anything
+      // this socket sends, so the close handshake window is not an authenticated
+      // one. A cooperative client goes away on the frame; a hostile one is cut
+      // off by the terminate below rather than waiting out ws's 30s timeout.
+      ws.revoked = true;
+      ws.close(WS_CLOSE_SESSION_REVOKED, reason);
+      const kill = setTimeout(() => {
+        try {
+          ws.terminate();
+        } catch (_) {
+          /* already gone */
+        }
+      }, REVOKED_TERMINATE_MS);
+      kill.unref?.();
+      closed++;
+    } catch (_) {
+      /* already tearing down; the close handler prunes it either way */
+    }
+  }
+  // Deliberately NOT socketsByUser.delete(userId) here. removeSocket() bails out
+  // early when the entry is already gone, so deleting it first makes every close
+  // handler a no-op and evaluatePresence() never runs: the account would sit
+  // with nobody connected and auto-away never armed, so its IRC connections
+  // would stay non-away indefinitely. Letting each close handler prune normally
+  // keeps presence honest, and the heartbeat reaps any socket whose close never
+  // fires. ('user-disposed' can afford the eager delete because it clears the
+  // auto-away timer itself and the account is going away regardless.)
+  return closed;
 }
 
 // Push the user's current ignore list for one scope to all their open tabs.
@@ -2335,6 +2414,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     sendSnapshot(ws, user.id);
 
     ws.on('message', (raw) => {
+      // This socket's session was revoked mid-connection (account recovery).
+      // `ws.close()` does not stop inbound dispatch — it only sends a frame —
+      // so without this, a peer that declines to answer keeps acting as the
+      // account for the whole close-handshake window.
+      if (ws.revoked) return;
       // #574: per-socket flood control, checked before JSON.parse so a flood
       // pays no parse cost. Exhausting the bucket closes the socket (1008 policy
       // violation) rather than dropping silently — a client at this rate is

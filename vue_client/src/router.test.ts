@@ -16,6 +16,17 @@ import router from './router.js';
 // vue-router warned (R0102) and navigation misbehaved — pushes landed back on
 // `/` — but resolve() still worked, so a hand-copied table looked fine.
 
+describe('public routes', () => {
+  it('serves account recovery without an auth requirement', () => {
+    // A recovery link is redeemed by someone who by definition cannot sign in,
+    // so a requiresAuth here would bounce every visitor to /login.
+    const recover = router.getRoutes().find((r) => r.name === 'recover');
+    expect(recover?.path).toBe('/recover/:token');
+    expect(recover?.meta?.requiresAuth).toBeUndefined();
+    expect(router.resolve('/recover/tok123').params).toEqual({ token: 'tok123' });
+  });
+});
+
 describe('chat routes', () => {
   it('gives each chat screen its own named record', () => {
     const byName = new Map(router.getRoutes().map((r) => [r.name, r.path]));

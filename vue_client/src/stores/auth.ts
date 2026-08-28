@@ -249,6 +249,53 @@ export const useAuthStore = defineStore('auth', {
         throw err;
       }
     },
+    // --- account recovery (#855) ---
+    // An admin-issued link for an account its owner is locked out of. Both
+    // redemption paths mint a fresh session and, server-side, sign every other
+    // device out.
+    async fetchRecoveryStatus(token: string) {
+      // Public endpoint, never throws on a dead token — { valid: false } covers
+      // "expired", "already used" and "never existed" alike.
+      return await api(`/api/auth/recovery/${encodeURIComponent(token)}`);
+    },
+    async recoverWithPassword({ token, password }: { token?: string; password?: string } = {}) {
+      this.error = null;
+      try {
+        const { user } = await api(`/api/auth/recovery/${encodeURIComponent(token!)}/password`, {
+          method: 'POST',
+          body: { password },
+        });
+        // A different account may have been signed in on this browser — wipe
+        // its state before the new session takes over, as invite redemption does.
+        this.user = null;
+        resetSession();
+        this.adoptSession(user);
+        return user as AuthUser;
+      } catch (err: any) {
+        this.error = friendlyError(err, 'account recovery failed');
+        throw err;
+      }
+    },
+    async recoverWithPasskey({ token, label }: { token?: string; label?: string } = {}) {
+      this.error = null;
+      try {
+        const { options } = await api(`/api/auth/recovery/${encodeURIComponent(token!)}/options`, {
+          method: 'POST',
+        });
+        const response = await startRegistration({ optionsJSON: options });
+        const { user } = await api(`/api/auth/recovery/${encodeURIComponent(token!)}/verify`, {
+          method: 'POST',
+          body: { response, label },
+        });
+        this.user = null;
+        resetSession();
+        this.adoptSession(user);
+        return user as AuthUser;
+      } catch (err: any) {
+        this.error = friendlyError(err, 'account recovery failed');
+        throw err;
+      }
+    },
     async addPasskey({ label }: { label?: string } = {}) {
       const { options } = await api('/api/auth/passkeys/options', { method: 'POST' });
       const response = await startRegistration({ optionsJSON: options });

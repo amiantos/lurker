@@ -10,6 +10,7 @@ This chapter walks you from a fresh account to chatting in your first channel.
 
 - Hosted: creating an account at [app.lurker.chat](https://app.lurker.chat).
 - Self-hosted: the invite flow and first-run setup.
+- Locked out: self-hosted accounts carry no email address, so your instance admin issues a one-time recovery link instead. See [Account recovery](/SELF_HOSTING#account-recovery).
 
 ## Connecting to a network
 
