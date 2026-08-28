@@ -723,6 +723,50 @@ describe('pacing', () => {
     expect(new Set(seen)).toEqual(new Set([64]));
   });
 
+  /** Deletes that return one row SHORT of the batch — the shape that ends a
+   *  buffer's loop — instantly. Records the size each was handed. */
+  function shortDelete(): number[] {
+    const seen: number[] = [];
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockReturnValue(1);
+    vi.spyOn(retentionDb, 'deleteRetentionBatch').mockImplementation(
+      (_b: number, _bound: number, _owner: number, limit: number) => {
+        seen.push(limit);
+        return Math.max(0, limit - 1); // short: the tail is "done"
+      },
+    );
+    return seen;
+  }
+
+  it('does not let a short batch grow the size back', async () => {
+    const PACED = {
+      ...OPTS,
+      batchRows: 64,
+      minBatchRows: 1,
+      targetStatementMs: 10,
+      maxBatchesPerTick: 4,
+    };
+    const big = seedBuffer('pace-short-big', 60);
+    setUserSetting(big.userId, 'data.retention.lines', 10);
+
+    slowDelete(30);
+    await runRetentionTick(PACED); // full+slow batches shrink the size
+
+    // Now a tickful of buffers that each end on ONE cheap short batch. A short
+    // batch is cheap because it deleted almost nothing, so it proves nothing
+    // about the size — if it grew it, boot (every buffer dirty, most over cap
+    // by a handful of rows) would ratchet straight back to the maximum.
+    vi.restoreAllMocks();
+    const seen = shortDelete();
+    for (let i = 0; i < 6; i++) {
+      const b = seedBuffer(`pace-short-${i}`, 30);
+      setUserSetting(b.userId, 'data.retention.lines', 10);
+    }
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 100 });
+
+    expect(seen.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(seen).size).toBe(1); // every buffer used the same size
+  });
+
   it('does not let a cheap unsized statement grow the batch back', async () => {
     const { userId } = seedBuffer('pace-nogrow', 60);
     setUserSetting(userId, 'data.retention.lines', 10);

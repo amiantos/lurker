@@ -166,11 +166,19 @@ function measure<T>(run: () => T): { value: T; ms: number } {
  * A targetStatementMs of Infinity needs no special case: nothing can overrun
  * it, so the size only grows and pins to `batchRows`.
  */
-function adaptToStatement(opts: RetentionSweepOptions, ms: number): void {
+function adaptToStatement(opts: RetentionSweepOptions, ms: number, full: boolean): void {
   const current = pacedBatchRows(opts);
   if (ms > opts.targetStatementMs) {
+    // An overrun shrinks whatever the batch was: a SHORT statement that still
+    // blew the budget is the worst news there is about the size.
     adaptedBatchRows = Math.floor(current / 2);
-  } else if (ms < opts.targetStatementMs / 2) {
+  } else if (full && ms < opts.targetStatementMs / 2) {
+    // Growth requires a FULL batch. A short one is the last of a buffer or
+    // user and is cheap because it deleted almost nothing — it never showed
+    // that `rows` rows fit in the budget. Boot seeds every buffer dirty and
+    // most are over cap by a handful of rows, so counting those would be one
+    // growth step each and no shrink steps: ~14 small buffers would ratchet
+    // 25 back to 500 and hand the next big buffer the ~800ms block again.
     adaptedBatchRows = Math.max(current + 1, Math.ceil(current * 1.25));
   }
 }
@@ -227,12 +235,14 @@ export async function runRetentionTick(
     batchesSpent++;
     return value;
   };
-  // Charge the tick AND size the next batch from what this one cost.
-  const chargeSized = <T>(run: () => T): T => {
+  // Charge the tick AND size the next batch from what this one cost. Every
+  // caller is a row-limited delete returning how many rows it removed, so
+  // `deleted >= rows` is what "the batch was full" means.
+  const chargeSized = (rows: number, run: () => number): number => {
     const { value, ms } = measure(run);
     syncMsSpent += ms;
     batchesSpent++;
-    adaptToStatement(opts, ms);
+    adaptToStatement(opts, ms, value >= rows);
     return value;
   };
 
@@ -278,8 +288,14 @@ export async function runRetentionTick(
       // overshoot of one statement (the same trade gcStep's drain makes).
       let tailDone = false;
       do {
+        // Yield FIRST, like every other guaranteed-progress loop here. The
+        // probe above is the one statement the batch size cannot shrink, and
+        // the delete below now runs even when that probe alone spent the whole
+        // budget — without this the two are one unbroken block, and maxTickMs
+        // cannot help because it is only consulted between statements.
+        await yieldToLoop();
         const rows = pacedBatchRows(opts);
-        const deleted = chargeSized(() =>
+        const deleted = chargeSized(rows, () =>
           deleteRetentionBatch(bufferId, boundaryId, ownerId, rows),
         );
         result.rowsDeleted += deleted;
@@ -287,7 +303,6 @@ export async function runRetentionTick(
           tailDone = true; // (or only bookmarks left below the boundary)
           break;
         }
-        await yieldToLoop();
       } while (!outOfBudget());
       if (!tailDone) {
         // Budget died mid-buffer — re-check soon.
@@ -327,7 +342,7 @@ export async function runRetentionTick(
     do {
       await yieldToLoop();
       const rows = pacedBatchRows(opts);
-      const deleted = chargeSized(() => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows));
+      const deleted = chargeSized(rows, () => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows));
       result.noiseRowsDeleted += deleted;
       if (deleted < rows) {
         // Window clear (survivors are bookmarked). Compare-and-advance, not a
@@ -365,7 +380,9 @@ export async function runRetentionTick(
         do {
           await yieldToLoop();
           const rows = pacedBatchRows(opts);
-          const deleted = chargeSized(() => drainBufferBatch(userId, bufferId, daysNow, rows));
+          const deleted = chargeSized(rows, () =>
+            drainBufferBatch(userId, bufferId, daysNow, rows),
+          );
           result.gcRowsDeleted += deleted;
           if (deleted < rows) {
             drained = true; // empty — or reopened / re-closed / bookmarked, all refused below
