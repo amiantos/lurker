@@ -200,12 +200,129 @@ Other things worth checking:
 
 ---
 
-## Running without Docker
+## Running without Docker {#running-without-docker}
 
-The same two processes, on one host. Run the engine with `node_modules/.bin/tsx server/engine.ts`, sharing `LURKER_ENGINE_SECRET` with the app, and point the app at it:
+The same two processes on one host, kept up by systemd. This assumes the layout most bare-metal installs already have — a checkout at `/opt/lurker` owned by a `lurker` user, started with `npm start` from a unit — and walks the same switch in the same order. Nothing here needs Docker.
 
+`npm start` is `tsx server/server.ts`; `npm run engine` is `tsx server/engine.ts`, the other entrypoint in the same checkout: same `node_modules`, no build step, no database, nothing under `data/`. The two share nothing but `LURKER_ENGINE_SECRET`, and on one host they can share it the easy way: both read `.env` from their working directory, so one file serves both.
+
+### Step 1 — the engine unit
+
+```ini
+# /etc/systemd/system/lurker-engine.service
+[Unit]
+Description=Lurker IRC engine
+After=network.target
+
+[Service]
+Type=simple
+User=lurker
+Group=lurker
+WorkingDirectory=/opt/lurker
+# The engine's `npm start`.
+ExecStart=/usr/bin/npm run engine
+Restart=on-failure
+RestartSec=10
+Environment=NODE_ENV=production
+# Only if you answer ident: the engine binds :113 now, not the app.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
 ```
-LURKER_ENGINE_URL=tcp://127.0.0.1:8016
+
+### Step 2 — the app unit
+
+Two changes to the unit you already have: the engine starts first, and the capability moves.
+
+```ini
+# /etc/systemd/system/lurker.service
+[Unit]
+Description=Lurker IRC
+# Wants, not Requires: start the engine if it is down, but never stop or
+# restart it because the app did — that is the whole feature.
+Wants=lurker-engine.service
+After=network.target lurker-engine.service
+
+[Service]
+Type=simple
+User=lurker
+Group=lurker
+WorkingDirectory=/opt/lurker
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=10
+Environment=NODE_ENV=production
+# CAP_NET_BIND_SERVICE was here for :113. It belongs to the engine now; keep it
+# on the app only if the app itself binds a port below 1024 (PORT=80).
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-The engine binds `127.0.0.1:8016` by default, so it is not reachable from another machine unless you say so with `LURKER_ENGINE_LISTEN`. ⚠ Use `127.0.0.1` in the URL rather than `localhost`, which can resolve to `::1` first and be refused by a loopback-v4 bind. If you put the engine on a _different_ host, you must widen the bind — and then that secret is doing real work across a real network, so give it a private network or a tunnel, never the open internet.
+### Step 3 — `.env`
+
+```bash
+cd /opt/lurker
+echo "LURKER_ENGINE_SECRET=$(openssl rand -hex 32)" >> .env
+echo "LURKER_ENGINE_URL=tcp://127.0.0.1:8016" >> .env
+```
+
+Both units run from `/opt/lurker`, so both read this file; the engine ignores the URL and the app ignores the engine-only settings. Three things worth knowing:
+
+- **Leave `LURKER_ENGINE_LISTEN` unset.** The engine binds `127.0.0.1:8016` by default, which is what you want here. The `0.0.0.0:8016` in the compose overlay is for containers, which cannot reach each other's loopback — on a host it would put the engine on every interface with the secret as its only lock. ⚠ Use `127.0.0.1` in the URL rather than `localhost`, which can resolve to `::1` first and be refused.
+- **identd needs no moving.** `LURKER_IDENTD_ENABLED` / `LURKER_OIDENTD_FILE` in `.env` are read by both processes: the app ignores them while an engine is configured, and the engine acts on them. What moves is the capability, in Step 2. (An `Environment=` line in a unit wins over `.env` — the file never overrides a variable that is already set — so ident settings that live in the unit rather than the file have to be copied to the engine unit.)
+- **A different host** means widening the bind, and then a private network or a tunnel — see [Self-Hosting](/SELF_HOSTING#irc-engine-upgrade-without-dropping-irc).
+
+### Step 4 — bring it up
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl stop lurker
+sudo systemctl enable --now lurker-engine
+sudo systemctl start lurker
+```
+
+The stop and start are the one reconnect. The order matters if you answer ident: the engine binds `:113` once, at boot, and does not try again, so the app has to have let go of it first — an engine started beside a running app finds the port taken, and once the app restarts nobody is answering. From here on, `systemctl restart lurker` leaves the engine alone.
+
+### Step 5 — prove it
+
+```bash
+curl -s http://127.0.0.1:8016/healthz          # {"ok":true,"held":2}
+journalctl -u lurker -n 50 --no-pager          # "[lurker] engine mode: attached to 127.0.0.1:8016 (…)"
+journalctl -u lurker-engine -n 50 --no-pager   # "[identd] listening on :113", if you answer ident
+```
+
+`[engine] ident: built-in identd on :113` says only which mode the engine resolved; `[identd] listening on :113` is the bind succeeding. `[identd] failed to listen on :113: … EACCES` means the capability is still on the wrong unit, and `EADDRINUSE` that the app was still holding the port when the engine started — the Step 4 order. Either way the engine carries on without ident rather than dying, and putting it right means restarting the engine, which drops IRC. Then the test that matters: `sudo systemctl restart lurker` while watching your IRC client — nick unchanged, channels intact, no `Quit`/`Join`.
+
+### Living with it
+
+An upgrade is what it was, plus nothing:
+
+```bash
+cd /opt/lurker && git pull
+npm run install:all && npm run client:build
+sudo systemctl restart lurker
+```
+
+The engine keeps running the code it started with — files changing on disk underneath it are the bare-metal equivalent of the `engine-1` tag standing still. Restart it only when a release's notes say the engine changed, and for one that needs `engine-2`, stop it first:
+
+```bash
+sudo systemctl stop lurker-engine
+cd /opt/lurker && git pull && npm run install:all && npm run client:build
+sudo systemctl start lurker-engine && sudo systemctl restart lurker
+```
+
+**Turning it off:** first put the app unit back the way it was — drop the `Wants=` and `After=lurker-engine.service` lines, or the next restart of the app starts the engine straight back up, disabled or not, and restore the capability if you answer ident. Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl disable --now lurker-engine
+sudo sed -i '/^LURKER_ENGINE_URL=/d' /opt/lurker/.env
+sudo systemctl restart lurker
+```
+
+The failures in [If something is wrong](#if-something-is-wrong) read the same here, from `journalctl -u lurker` instead of `docker compose logs lurker` — with one twist for **Refused**. The app then answers ident itself, and without the capability it gave up in Step 2 that shows up in the app's log as `[identd] failed to listen on :113: … EACCES`. That is the refusal talking, not the capability: fix `LURKER_ENGINE_SECRET` and restart the app.
+
+This path is exercised end to end by `tools/manual-install-qa/run.sh` in the repository: a throwaway systemd container and a local IRC server, the install above, and the units, `.env` lines, bring-up and turn-off run straight out of this page, with a client sitting in the channel to confirm that a restart of `lurker` drops nothing. So it is a supported way to run Lurker, not merely a possible one.

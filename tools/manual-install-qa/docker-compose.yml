@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Brad Root
+# SPDX-License-Identifier: MPL-2.0
+#
+# The two machines of the manual-install QA rig — see run.sh, which drives it.
+# Never `docker compose up` this beside your own Lurker: run.sh gives it its
+# own project name so it cannot touch your stack.
+services:
+  host:
+    build: .
+    # systemd as PID 1 needs a writable cgroup tree; privileged is the one
+    # switch that reliably gives it one on every Docker, Desktop included.
+    privileged: true
+    volumes:
+      # The checkout, read-only. qa.sh COPIES it to /opt/lurker like an operator
+      # would, minus node_modules, data/ and .env — nothing of yours is touched.
+      - ../..:/src:ro
+      - .:/qa:ro
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+    stop_grace_period: 15s
+  ergo:
+    # A stock ergo. Its generated default config listens plaintext on :6667 on
+    # every interface, needs no SASL, and does no ident lookups — a network
+    # that asks nothing, which is all the rig needs of it. Pinned by digest
+    # (what `:stable` resolved to on 2026-08-28) so a failure of this rig is
+    # never "did ergo change?"; bump deliberately.
+    image: ghcr.io/ergochat/ergo@sha256:72db5b93b437ea0512fb79d9d4d035f0916ccba07ed736dec19e8d5b5a73f972
