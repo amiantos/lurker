@@ -1463,8 +1463,11 @@ function announceOpen(
 // reach into fanOut without importing the WSS instance. attachWsHub owns the
 // state at runtime — addSocket/removeSocket are the only mutators — and
 // everything else reads through it. closeSocketsForUser is the one outside
-// caller that acts on the sockets themselves, and it deliberately mutates
-// nothing: it closes them and lets removeSocket do the bookkeeping.
+// caller that acts on the sockets themselves: it does NOT touch this map — it
+// closes the sockets and lets removeSocket do the bookkeeping — but it does set
+// `ws.revoked` on each, which the message handler checks. That flag is what
+// closes the close-handshake window, so it is load-bearing rather than
+// incidental; don't drop it while tidying.
 const socketsByUser = new Map<number, Set<LurkerWebSocket>>();
 
 // How many bytes of un-drained outbound frames a socket may hold before it

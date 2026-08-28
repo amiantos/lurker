@@ -76,8 +76,13 @@
 
         <!-- There is no self-service reset to link to: accounts here carry no
              email address, so nothing could verify the request. Recovery runs
-             through the admin (#855). Hidden on a hosted cell, where the control
-             plane holds an email and does have its own reset. -->
+             through the admin (#855).
+             Shown by DEFAULT and hidden once /api/config resolves as node, not
+             the other way round: `edition` defaults to 'standalone', so a cell
+             flashes this line for the length of that fetch. Deliberate — gating
+             on config.checked would instead hide it on every standalone login,
+             which is the common case and the one that needs it. A hosted cell
+             signs in through the control plane anyway. -->
         <p v-if="!config.isNode" class="hint">
           Locked out? Accounts here have no email address — ask your instance admin for a recovery
           link.

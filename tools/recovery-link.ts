@@ -42,7 +42,9 @@ import { parseRecoveryLinkArgs } from './recoveryLinkArgs.js';
 
 const argv = process.argv.slice(2);
 
-function usage(): never {
+// exitCode 0 for an explicit --help, 1 when the invocation was simply wrong —
+// a script or an operator checking $? has to be able to tell those apart.
+function usage(exitCode = 0): never {
   console.log(
     [
       'Mint a single-use account recovery link.',
@@ -57,10 +59,13 @@ function usage(): never {
       'DATABASE_PATH selects the database.',
     ].join('\n'),
   );
-  process.exit(0);
+  process.exit(exitCode);
 }
 
-if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) usage();
+if (argv.includes('--help') || argv.includes('-h')) usage(0);
+// No arguments is the same class of mistake as a flag with no username: the tool
+// cannot do anything without one, so $? has to say so.
+if (argv.length === 0) usage(1);
 
 const { username, origin, error } = parseRecoveryLinkArgs(argv, process.env);
 // Error first: a malformed flag deserves the specific complaint, not the usage
@@ -70,7 +75,7 @@ if (error) {
   console.error(error);
   process.exit(1);
 }
-if (!username) usage();
+if (!username) usage(1);
 
 // A cell's sign-in belongs to the control plane, which has its own email-based
 // reset — the admin routes refuse there for the same reason. The CLI ships in
