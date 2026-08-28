@@ -170,7 +170,9 @@ export class EngineServer {
   // the refusing holder, or null when the way is clear; logs either way.
   //
   // "Not newer" deliberately includes the SAME generation, which is a
-  // predecessor link of the same process — the app never keeps two alive. That
+  // predecessor link of the same process — the app never keeps two alive, and
+  // no two processes share a generation (the app's is its start time with a
+  // pid tiebreak, engineLink.ts). That
   // is the case that bites (#849): a Disconnect issued while the link was down
   // is flushed on the replacement link, and under load the engine can read
   // that link's hello and close before it has processed the dead socket's EOF

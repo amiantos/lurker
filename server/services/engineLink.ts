@@ -25,8 +25,12 @@ import { instanceId } from '../db/instanceId.js';
 import type { AppToEngine, EngineToApp } from '../engine/protocol.js';
 import { APP_VERSION } from '../utils/userAgent.js';
 
-// This process's generation, for the engine's newest-wins rule (protocol.ts).
-const PROCESS_STARTED_AT = Date.now();
+// This process's generation, for the engine's newest-wins rule (protocol.ts):
+// the start time, with the pid as a sub-millisecond tiebreak. The engine reads
+// an EQUAL generation as "another link of the same process" (its predecessor,
+// which it may supersede), so two processes must never share one — and two
+// started in the same millisecond otherwise would.
+const PROCESS_GENERATION = Date.now() * 1000 + (process.pid % 1000);
 
 // The id the engine knows a network's socket by. One definition, so the two
 // sides of every comparison agree.
@@ -324,7 +328,7 @@ export class EngineLink extends EventEmitter {
           protocol: PROTOCOL_MAJOR,
           secret: this.opts.secret,
           instance: instanceId(),
-          app: { version: APP_VERSION, startedAt: PROCESS_STARTED_AT },
+          app: { version: APP_VERSION, startedAt: PROCESS_GENERATION },
         }),
       );
     });

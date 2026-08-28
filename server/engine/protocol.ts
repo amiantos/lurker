@@ -55,7 +55,8 @@ export interface ConnectionInfo {
 }
 
 export type AppToEngine =
-  // `startedAt` is the app process's generation: when two processes overlap
+  // `startedAt` is the app process's generation — its start time in ms, times
+  // 1000, plus a pid tiebreak, so no two processes share one: when two processes overlap
   // (a rolling deploy), a connection goes to the NEWER one and an older one is
   // refused rather than allowed to steal it back.
   // `instance` identifies the Lurker DATABASE this app speaks for, and it is
