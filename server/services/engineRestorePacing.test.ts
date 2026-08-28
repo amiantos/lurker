@@ -165,6 +165,82 @@ describe('engine restore pacing', () => {
     }
     expect(peak).toBeLessThanOrEqual(4);
   }, 20000);
+  it('a snapshot and a `names` say which channels have not heard NAMES since the re-attach (#863)', async () => {
+    // Same six channels, the app "restarts" again — this time the previous
+    // session was ircManager's, so shutdown() is what lets go.
+    ircManager.shutdown();
+    // #p3's TOPIC is held: its step stays in flight, but its NAMES is answered.
+    // #p5's NAMES is held: the restore asks once, so nothing answers it — not
+    // even the deadline.
+    ircd.hold = (cmd, p) => {
+      const chan = (p[0] ?? '').toLowerCase();
+      return (cmd === 'TOPIC' && chan === '#p3') || (cmd === 'NAMES' && chan === '#p5');
+    };
+    // Every `names` the manager fans out, to see the flag ride republishes too.
+    const names: Array<Record<string, unknown>> = [];
+    const onEvent = (e: Record<string, unknown>) => {
+      if (e.type === 'names') names.push(e);
+    };
+    ircManager.on('event', onEvent);
+    wire.length = 0;
+    try {
+      const conn = ircManager.startNetwork(userId, network.id)!;
+      harness.tap(conn, 'pace');
+      await until(() => conn.state === 'connected', 5000, 'reattached');
+      const pending = (chan: string): boolean | undefined =>
+        conn.snapshot().channels.find((c) => c.name.toLowerCase() === chan)?.membersPending;
+      const lastNamesFor = (chan: string) =>
+        [...names].reverse().find((e) => String(e.target).toLowerCase() === chan);
+      const asked = (chan: string) => wire.some((w) => w.dir === '>' && w.line === `NAMES ${chan}`);
+
+      // #p3 in flight, TOPIC owed: the step is not over, but its NAMES was
+      // heard — pending is about NAMES, not the step. #p4 has not been asked.
+      await until(
+        () => pending('#p3') === undefined && pending('#p4') === true,
+        5000,
+        '#p3 step in flight',
+      );
+      expect(pending('#p1')).toBeUndefined();
+      expect(pending('#p2')).toBeUndefined();
+      expect(pending('#p6')).toBe(true);
+
+      // #p5 asked and unanswered: pending by construction, not by timing.
+      await until(() => asked('#p5'), DEADLINE_MS + 5000, 'NAMES #p5 on the wire');
+      expect(pending('#p5')).toBe(true);
+      // A republish in that window — here a mode on ourselves — carries the
+      // flag: the client keeping its real list must not take this one.
+      names.length = 0;
+      ircd.sendRaw('pace', ':oper!~oper@peer.fake MODE #p5 +o pace');
+      await until(() => lastNamesFor('#p5') !== undefined, 5000, 'names republished for #p5');
+      expect(lastNamesFor('#p5')).toMatchObject({ membersPending: true });
+
+      // The deadline moves the restore on and every other channel clears —
+      // #p5 does not: nothing answered, so nothing is known.
+      await until(
+        () => CHANNELS.filter((ch) => ch !== '#p5').every((ch) => pending(ch) === undefined),
+        DEADLINE_MS + 5000,
+        'restore moved on',
+      );
+      expect(pending('#p5')).toBe(true);
+
+      // A real NAMES — injected here, as a reply replayed from the engine's
+      // backlog or a later /names would be — clears it the moment it lands.
+      names.length = 0;
+      ircd.sendRaw('pace', ':irc.fake 353 pace = #p5 :@pace');
+      ircd.sendRaw('pace', ':irc.fake 366 pace #p5 :End of /NAMES list.');
+      await until(() => lastNamesFor('#p5') !== undefined, 5000, 'names from the injected reply');
+      expect(lastNamesFor('#p5')).not.toHaveProperty('membersPending');
+      expect(pending('#p5')).toBeUndefined();
+      // …and a republish after that is definitive too.
+      names.length = 0;
+      ircd.sendRaw('pace', ':oper!~oper@peer.fake MODE #p5 -o pace');
+      await until(() => lastNamesFor('#p5') !== undefined, 5000, 'names republished for #p5 again');
+      expect(lastNamesFor('#p5')).not.toHaveProperty('membersPending');
+    } finally {
+      ircManager.off('event', onEvent);
+      ircd.hold = null;
+    }
+  }, 20000);
 });
 
 function numericFor(line: string, numeric: string, chan: string): boolean {

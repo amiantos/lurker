@@ -743,6 +743,9 @@ export class IrcConnection {
   // requests (MODE → 324/329, TOPIC → 331/332/333; '*' → our umode 221), kept
   // out of the server buffer until they arrive or the deadline passes.
   private restoreQuiet: Map<string, { until: number; mode: boolean; topic: boolean }>;
+  // Folded channel keys whose NAMES this connection has heard since it last
+  // connected or attached — the one fact membersPending reads.
+  private namesHeard: Set<string>;
 
   constructor({
     network,
@@ -857,6 +860,7 @@ export class IrcConnection {
     this.engineTransport = null;
     this.engineSocketAlive = false;
     this.restoreQuiet = new Map();
+    this.namesHeard = new Set();
     this.bind();
   }
 
@@ -2680,11 +2684,7 @@ export class IrcConnection {
         time: event.time,
       });
       if (memberModesChanged && ch) {
-        this.publish({
-          type: 'names',
-          target: ch.name,
-          members: Array.from(ch.members.values()).map(memberSnapshot),
-        });
+        this.publishNames(ch);
       }
       if (chanModesChanged && ch) this.publishChannelModes(ch);
     });
@@ -2750,11 +2750,8 @@ export class IrcConnection {
           account: carry.account,
         });
       }
-      this.publish({
-        type: 'names',
-        target: eventChannel,
-        members: Array.from(ch.members.values()).map(memberSnapshot),
-      });
+      this.namesHeard.add(foldTargetFor(this.network.id, eventChannel));
+      this.publishNames(ch);
       // Issue a WHO so we learn the current away state for everyone in the
       // channel. away-notify keeps it live after this initial sync. Mark it so
       // the 'wholist' handler consumes the reply silently instead of echoing
@@ -2864,11 +2861,7 @@ export class IrcConnection {
         }
       }
       if (changed) {
-        this.publish({
-          type: 'names',
-          target: ch.name,
-          members: Array.from(ch.members.values()).map(memberSnapshot),
-        });
+        this.publishNames(ch);
       }
       const ms = Date.now() - tHandler;
       if (IRC_HANDLER_WARN_MS > 0 && ms >= IRC_HANDLER_WARN_MS) {
@@ -3697,11 +3690,7 @@ export class IrcConnection {
       if (!m) continue;
       if (m.away === next) continue;
       m.away = next;
-      this.publish({
-        type: 'names',
-        target: ch.name,
-        members: Array.from(ch.members.values()).map(memberSnapshot),
-      });
+      this.publishNames(ch);
     }
   }
 
@@ -4141,6 +4130,7 @@ export class IrcConnection {
     this.restoreQueue = [];
     this.endRestoreStep();
     this.restoreQuiet.clear();
+    this.namesHeard.clear();
   }
 
   // The step is over — answered, timed out, or abandoned (resetRestoreState
@@ -4155,6 +4145,34 @@ export class IrcConnection {
     const slot = this.restoreSlot;
     this.restoreSlot = null;
     slot?.release();
+  }
+
+  // True while this connection has not heard NAMES for the channel since it
+  // last connected or attached (#863). After an engine re-attach every channel
+  // starts that way: the replay's JOINs rebuild it with ourselves and whatever
+  // has landed since, and the members arrive with the restore's own NAMES, one
+  // channel at a time — or with a real 353/366 replayed from the engine's
+  // backlog, which counts the moment it lands. Read from that one fact rather
+  // than from the restore queue's position: a channel waiting its turn at the
+  // restoreGate cap is in neither the queue nor the in-flight step, and a
+  // step the deadline ended without a reply has still not heard anything.
+  private membersPending(name: string): boolean {
+    return !this.namesHeard.has(foldTargetFor(this.network.id, name));
+  }
+
+  // The one `names` publish — a full nicklist replace — flagged while the
+  // channel's NAMES is still unheard: a mode on ourselves, our own away flip
+  // or a WHO backfill can republish the incomplete list in that window, and a
+  // client keeping the real list must not take it for the truth. The userlist
+  // handler records the NAMES before it publishes, so that one is never
+  // flagged.
+  private publishNames(ch: ChannelState): void {
+    this.publish({
+      type: 'names',
+      target: ch.name,
+      members: Array.from(ch.members.values()).map(memberSnapshot),
+      ...(this.membersPending(ch.name) ? { membersPending: true } : {}),
+    });
   }
 
   // One channel in flight. The next channel's three requests go out when this
@@ -6303,6 +6321,8 @@ export class IrcConnection {
         topic: ch.topic,
         modes: [...(ch.modes || [])].join(''),
         members: Array.from(ch.members.values()).map(memberSnapshot),
+        // See membersPending (#863).
+        ...(this.membersPending(ch.name) ? { membersPending: true } : {}),
       })),
       // Object keyed by lowercase nick → { nick, state, stateAt }. Lands
       // directly on states[networkId].peerPresence on snapshot apply, same

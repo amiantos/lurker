@@ -45,6 +45,33 @@ beforeEach(() => {
   vi.mocked(socketSend).mockClear();
 });
 
+describe('setMembers provisional (#863)', () => {
+  const alice = { nick: 'alice', modes: [], away: false };
+  const bob = { nick: 'bob', modes: ['o'], away: false };
+  const me = { nick: 'me', modes: [], away: false };
+
+  it('keeps a list it already holds when the server says its own is provisional', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [alice, bob, me]);
+    // A re-attach snapshot: the channel rebuilt from the replay's JOIN — just us.
+    store.setMembers(1, '#chan', [me], { provisional: true });
+    expect(store.byKey('1::#chan')!.members.map((m) => m.nick)).toEqual(['alice', 'bob', 'me']);
+  });
+
+  it('takes a provisional list when it holds none — something beats nothing', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#fresh', [me], { provisional: true });
+    expect(store.byKey('1::#fresh')!.members.map((m) => m.nick)).toEqual(['me']);
+  });
+
+  it('a definitive list still replaces, however short', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [alice, bob, me]);
+    store.setMembers(1, '#chan', [me]);
+    expect(store.byKey('1::#chan')!.members.map((m) => m.nick)).toEqual(['me']);
+  });
+});
+
 describe('applyReadState', () => {
   // Regression for #319: mark-all-read fans out a read-state for every target
   // with history, including closed buffers (absent from the store). Applying

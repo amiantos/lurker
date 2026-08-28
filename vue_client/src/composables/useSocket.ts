@@ -274,7 +274,11 @@ function applyEvent(event: any): void {
       buffers.pushMessage(event);
       break;
     case 'names':
-      buffers.setMembers(event.networkId, event.target, event.members);
+      // Provisional while an engine re-attach has not heard the channel's
+      // NAMES yet (#863): keep the list already held, see setMembers.
+      buffers.setMembers(event.networkId, event.target, event.members, {
+        provisional: !!event.membersPending,
+      });
       break;
     // Incremental nicklist patch — not persisted, so no pushMessage/dedupe.
     case 'member-update':
@@ -602,7 +606,9 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
           ? { nick: m, modes: [], away: false }
           : { nick: m.nick, modes: m.modes || [], away: !!m.away },
       );
-      buffers.setMembers(net.networkId, ch.name, normalized);
+      buffers.setMembers(net.networkId, ch.name, normalized, {
+        provisional: !!ch.membersPending,
+      });
       buffers.setTopic(net.networkId, ch.name, ch.topic);
       buffers.setChannelModes(net.networkId, ch.name, ch.modes || '');
     }
