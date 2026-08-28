@@ -16,3 +16,10 @@ npm-debug.log
 .DS_Store
 .vscode
 .idea
+
+# Test files never run in the image. `**/` is load-bearing: .dockerignore
+# patterns are anchored at the build context root, so a bare `*.test.ts` matches
+# only top-level files and would leave every server/ and tools/ test in the
+# runtime layer.
+**/*.test.ts
+**/*.spec.ts

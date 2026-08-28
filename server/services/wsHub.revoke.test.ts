@@ -7,6 +7,17 @@
 // its user in its own closure, so nothing about deleting session rows can be
 // observed from inside the hub. A function-level assertion would pass even if
 // the socket kept streaming, which is the exact failure it exists to rule out.
+//
+// NOT covered here: a peer that refuses the close handshake. `ws.close()` sends
+// a frame and moves to CLOSING while inbound frames keep dispatching, so a
+// hostile client could act as the account until ws's 30s CLOSE_TIMEOUT — which
+// is why the message handler drops everything once `ws.revoked` is set, and why
+// closeSocketsForUser follows the close with a terminate. Every attempt to test
+// it from out here failed to DISCRIMINATE rather than failing to pass: a client
+// whose socket is paused (the only way to make it non-cooperative) observes
+// neither the close frame nor the FIN, so it looks identical whether the server
+// terminated or not. The guard is the first statement in the handler, ahead of
+// any parsing, so it holds by construction.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'http';

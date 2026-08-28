@@ -87,7 +87,19 @@ if ((process.env.LURKER_EDITION || '').trim().toLowerCase() === 'node') {
 // server would open.
 const dbPath = process.env.DATABASE_PATH || path.join(import.meta.dirname, '../data/lurker.db');
 
-const db = new Database(dbPath);
+// fileMustExist: a bare `new Database(path)` CREATES the file, so a wrong or
+// stale DATABASE_PATH silently produced an empty database, failed the table
+// probe below, and told the operator to "start the server once to migrate it" —
+// pointing at a migration problem when the real one is the path, and leaving a
+// stray file behind. On the sole-admin-locked-out path a misleading diagnosis
+// costs the most.
+let db: Database.Database;
+try {
+  db = new Database(dbPath, { fileMustExist: true });
+} catch (_err) {
+  console.error(`No database at ${dbPath}. Set DATABASE_PATH, or run this where the server runs.`);
+  process.exit(1);
+}
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
 

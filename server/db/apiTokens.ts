@@ -74,6 +74,12 @@ const revokeStmt = db.prepare(`
    WHERE id = ? AND user_id = ? AND revoked_at IS NULL
 `);
 
+const revokeAllForUserStmt = db.prepare(`
+  UPDATE api_tokens
+     SET revoked_at = datetime('now')
+   WHERE user_id = ? AND revoked_at IS NULL
+`);
+
 // Mirror users.touchUserLastSeen: throttle in SQL so a busy client doesn't
 // rewrite the row on every call. No in-memory Map needed.
 const touchStmt = db.prepare(`
@@ -129,11 +135,7 @@ export function revoke(id: number, userId: number): boolean {
  * Soft-revokes, like revoke() — the row stays as a record of what was cut off.
  */
 export function revokeAllForUser(userId: number): number {
-  return db
-    .prepare(
-      `UPDATE api_tokens SET revoked_at = datetime('now') WHERE user_id = ? AND revoked_at IS NULL`,
-    )
-    .run(userId).changes;
+  return revokeAllForUserStmt.run(userId).changes;
 }
 
 export function touchLastUsed(id: number): void {
