@@ -146,7 +146,22 @@ export function objectKey(cfg: S3CacheConfig, key: string): string {
  * unnameable and unbilled-for by anything that could clean them up.
  */
 export type S3Read =
-  | { kind: 'ok'; body: Buffer; contentType: string }
+  | {
+      kind: 'ok';
+      body: Buffer;
+      contentType: string;
+      /**
+       * When the object was written, from `Last-Modified`, in epoch ms — or null
+       * when the store did not say.
+       *
+       * ⚠ Carried because it is the only HONEST age for these bytes. The index row's
+       * `created_at` is this cell's record of its own store, and the bucket is shared:
+       * a row can be absent (another cell wrote the object) or long expired while the
+       * object itself was rewritten yesterday. `lookup` needs the object's age, not
+       * ours, before it will serve one the index cannot vouch for.
+       */
+      storedAt: number | null;
+    }
   | { kind: 'missing' }
   | { kind: 'error' };
 
@@ -200,10 +215,15 @@ export async function readRemote(
     }
     const body = Buffer.from(await res.arrayBuffer());
     if (body.length > maxBytes) return { kind: 'error' };
+    // ⚠ `Date.parse` on an HTTP-date, and NaN is normalised to null rather than left
+    // to poison an arithmetic comparison — a bucket that omits the header or sends
+    // something unparseable must read as "age unknown", which the caller fails closed on.
+    const modified = Date.parse(res.headers.get('last-modified') ?? '');
     return {
       kind: 'ok',
       body,
       contentType: res.headers.get('content-type') || 'application/octet-stream',
+      storedAt: Number.isFinite(modified) ? modified : null,
     };
   } catch {
     return { kind: 'error' };

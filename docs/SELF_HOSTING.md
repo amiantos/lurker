@@ -439,6 +439,11 @@ not re-fetching popular images:
   ships zero bytes for an image it has already fetched. This one has real
   operational requirements — the objects are publicly readable, the base URL
   must be https, and **you** own eviction via a lifecycle rule on the bucket.
+  Thirty days is the recommendation: Lurker serves a stored object for up to 25
+  days (judged on the object's own `Last-Modified`), so a rule comfortably above
+  that keeps it from ever pointing a browser at an object you have deleted. That
+  25 days is also the staleness ceiling for an image that changes at a fixed URL,
+  so shorten the rule — but not below 25 days — if you want them refreshed sooner.
 
 Posters work under `local` or `s3` — the gate is "a cache exists", not `local`
 specifically.

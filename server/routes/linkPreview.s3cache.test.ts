@@ -41,7 +41,9 @@ interface Put {
 
 let puts: Put[] = [];
 /** Objects the stub bucket is holding, by request path. */
-let objects = new Map<string, { body: Buffer; contentType: string }>();
+let objects = new Map<string, { body: Buffer; contentType: string; storedAt?: number }>();
+/** Flip to make the bucket omit Last-Modified, so a cold read cannot date the object. */
+let bucketOmitsLastModified = false;
 /** Flip to make every write fail, without changing anything else. */
 let bucketRejects = false;
 /** Flip to serve reads without a Content-Length, as a proxy in front of a bucket
@@ -110,6 +112,7 @@ beforeAll(async () => {
         objects.set(req.url || '', {
           body,
           contentType: String(req.headers['content-type'] || ''),
+          storedAt: Date.now(),
         });
         res.writeHead(200).end();
         return;
@@ -137,9 +140,15 @@ beforeAll(async () => {
           res.end(held.body);
           return;
         }
+        // ⚠ `Last-Modified` on every GET, because S3 and R2 both send one and `lookup`'s
+        // cold read fails CLOSED without it — a stub that omits it would make the cold
+        // path untestable and, worse, would pass a build that never reads the header.
         res.writeHead(200, {
           'content-type': held.contentType,
           'content-length': String(held.body.length),
+          ...(bucketOmitsLastModified
+            ? {}
+            : { 'last-modified': new Date(held.storedAt ?? Date.now()).toUTCString() }),
         });
         res.end(held.body);
         return;
@@ -206,9 +215,15 @@ beforeEach(async () => {
   objects = new Map();
   bucketRejects = false;
   bucketOmitsLength = false;
+  bucketOmitsLastModified = false;
   bucketStallsAfterHeaders = false;
   const { default: db } = await import('../db/index.js');
   db.prepare('DELETE FROM preview_cache').run();
+  // ⚠ Module state, so it outlives the DB wipe — a key one case proved absent would stay
+  // memoised into the next, which is exactly the kind of cross-test leak that makes a
+  // cold-read assertion pass for the wrong reason.
+  const { resetAbsentMemoForTests } = await import('../services/previewCache/index.js');
+  resetAbsentMemoForTests();
 });
 
 /** The request path the stub bucket should have seen for one origin URL. */
@@ -386,8 +401,8 @@ describe('the s3 byte cache, end to end', () => {
     // request reaching us. Objects are deleted by a 30-day bucket lifecycle rule the
     // cell does not run and cannot observe, so a row that outlived its object would
     // have the descriptor handing every user a public URL that 404s — with nothing
-    // arriving at the cell to notice. Seven days against thirty is the margin that
-    // makes the row provably the shorter-lived of the two.
+    // arriving at the cell to notice. Twenty-five days against thirty is the margin
+    // that makes the row provably the shorter-lived of the two.
     servePng();
     const imageUrl = `${base}/ageing.png`;
     await agent.get(`/api/link-preview/media/${mintProxyToken(imageUrl)}`);
@@ -396,9 +411,9 @@ describe('the s3 byte cache, end to end', () => {
     const warm = await agent.post('/api/link-preview/resolve').send({ urls: [imageUrl] });
     expect(warm.body.previews[0].src).toBe(`${CDN}/${PREFIX}/${byteCacheKey(imageUrl)}`);
 
-    // Age the row past the bound. Eight days: the bound is seven.
+    // Age the row past the bound. Thirty days: the bound is twenty-five.
     const { default: db } = await import('../db/index.js');
-    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare('UPDATE preview_cache SET created_at = ?').run(old);
 
     const stale = await agent.post('/api/link-preview/resolve').send({ urls: [imageUrl] });
@@ -647,6 +662,73 @@ describe('finding cached bytes the index cannot name', () => {
     // A genuine 404 is the ONLY thing that means gone, and it still costs exactly
     // one origin fetch — the probe must not turn a miss into two.
     expect(originHits).toBe(before + 1);
+  });
+
+  it('refuses a cold object past the age bound, judged on the object itself', async () => {
+    // ⚠⚠ The staleness ceiling has to survive the cold path, and the row cannot carry it
+    // there — there is no row. `Last-Modified` is the object's own account of its age, and
+    // it is what stops "serve what the index cannot name" from quietly meaning "serve it
+    // for as long as the bucket keeps it": 30 days under the recommended lifecycle rule,
+    // and forever on a self-hosted bucket that has none.
+    objects.set(keyPathFor('/ancient.png'), {
+      body: PNG,
+      contentType: 'image/png',
+      storedAt: Date.now() - 30 * 24 * 60 * 60 * 1000,
+    });
+    servePng();
+    const before = originHits;
+
+    const res = await agent.get(`/api/link-preview/media/${tokenFor('/ancient.png')}`);
+    expect(res.status).toBe(200);
+    // Refused as a hit, so the origin supplies a fresh copy — which is the whole point of
+    // having a bound at all.
+    expect(originHits).toBe(before + 1);
+  });
+
+  it('refuses a cold object the bucket will not date', async () => {
+    // ⚠ Fails CLOSED. A store that does not send Last-Modified leaves the age unknowable,
+    // and an unknowable age must not be read as "fresh" — that is the same mistake as
+    // treating an absent row as "gone", pointed the other way. S3 and R2 both send it, so
+    // the closed direction costs nothing real.
+    bucketOmitsLastModified = true;
+    objects.set(keyPathFor('/undated.png'), { body: PNG, contentType: 'image/png' });
+    servePng();
+    const before = originHits;
+
+    expect((await agent.get(`/api/link-preview/media/${tokenFor('/undated.png')}`)).status).toBe(
+      200,
+    );
+    expect(originHits).toBe(before + 1);
+  });
+
+  it('does not re-probe the bucket for a key it has already said it lacks', async () => {
+    // ⚠⚠ Without a memo the cold read is a PERMANENT extra round trip for every URL that
+    // will never be stored — an origin sending `no-store`, a body over the cap, a bucket
+    // refusing writes. Each request would pay a bucket 404 on top of the origin fetch it
+    // was always going to pay, on the one path that is already the slow one.
+    // ⚠ An origin that forbids storing, so no row is ever written and the memo is the
+    // ONLY thing that can stop the second request probing again. Using a storable image
+    // here tests nothing: the first request creates a row, and the second request's bucket
+    // GET is an ordinary cache hit rather than a re-probe. (It did, and it was.)
+    handler = (_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'image/png',
+        'content-length': String(PNG.length),
+        'cache-control': 'no-store',
+      });
+      res.end(PNG);
+    };
+    const gets = (): number =>
+      puts.filter((p) => p.method === 'GET' && p.url === keyPathFor('/nostore.png')).length;
+
+    await agent.get(`/api/link-preview/media/${tokenFor('/nostore.png')}`);
+    await whenStoresSettle();
+    expect(countCached()).toBe(0);
+    expect(gets()).toBe(1);
+
+    await agent.get(`/api/link-preview/media/${tokenFor('/nostore.png')}`);
+    await whenStoresSettle();
+    expect(gets()).toBe(1);
   });
 
   it('refuses cold bytes that are not an image, however the object is labelled', async () => {

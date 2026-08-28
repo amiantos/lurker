@@ -454,21 +454,39 @@ router.get('/poster/:token', async (req: Request, res: Response) => {
   // ⚠⚠ Cache or nothing, BY DESIGN. A poster is the one preview image with no origin URL —
   // these bytes were decoded by this instance and exist nowhere else — so there is no
   // proxy-path fallback, and a miss (evicted, cache turned off, a restored backup) is an
-  // honest 404: the card renders without its poster, which is a supported state. The
-  // deliberately-unpooled read is fine at this size: posters are ≤640px q4 JPEGs, and the
-  // shared throttle above bounds the rate.
+  // honest 404: the card renders without its poster, which is a supported state.
   if (!cacheEnabled()) {
     res.status(404).end();
     return;
   }
-  const hit = await lookup(key);
-  if (!hit) {
-    res.status(404).end();
+
+  // ⚠⚠ POOLED, and it did not used to be. The reasoning for leaving it out was that a
+  // poster miss is a pure SQLite read — no I/O worth bounding, and the per-user throttle
+  // above caps the rate. That stopped being true when `lookup` gained its cold read: a
+  // miss can now issue an outbound bucket GET, and `mediaThrottle` is PER ACCOUNT, so
+  // nothing bounded these in aggregate. A fleet of clients re-rendering cards on reconnect
+  // — after a sweep has dropped a cell's poster rows, which happens to every row at once —
+  // is precisely the burst that shape produces.
+  if (!(await mediaPool.acquire())) {
+    res.set('Retry-After', '5');
+    res.status(503).end();
     return;
   }
-  applyMediaHeaders(res, hit.contentType);
-  res.setHeader('Content-Length', String(hit.body.length));
-  res.status(200).end(hit.body);
+  try {
+    const hit = await lookup(key);
+    if (!hit) {
+      res.status(404).end();
+      return;
+    }
+    applyMediaHeaders(res, hit.contentType);
+    res.setHeader('Content-Length', String(hit.body.length));
+    res.status(200).end(hit.body);
+  } finally {
+    // ⚠ `finally`, not a `close` listener as the media route uses: this response is
+    // `end()`ed synchronously with a buffer already in hand, so the slot is done with when
+    // the block is. A listener would hold it until the socket drained, for nothing.
+    mediaPool.release();
+  }
 });
 
 export default router;

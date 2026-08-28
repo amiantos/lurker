@@ -35,8 +35,15 @@ import {
 import { kindForContentType, MAX_IMAGE_PROXY_BYTES } from '../previewShared.js';
 import { imageSignatureOf, SIGNATURE_BYTES } from '../../utils/imageSignature.js';
 import { cacheConfig, cacheEnabled, expired, MAX_AGE_MS } from './config.js';
-import { evictLocal, objectPath, openLocalWrite, readLocal, removeLocal } from './local.js';
-import { openS3Write, readS3, removeS3, type S3Writer } from './s3.js';
+import {
+  evictLocal,
+  objectPath,
+  openLocalWrite,
+  readLocal,
+  removeLocal,
+  type LocalRead,
+} from './local.js';
+import { openS3Write, readS3, removeS3, type S3Read, type S3Writer } from './s3.js';
 import { openDropperWrite, readDropper } from './dropper.js';
 
 export type { CacheConfig, CacheMode } from './config.js';
@@ -203,10 +210,65 @@ function originPermitsStoring(cacheControl: string | undefined): boolean {
   ) {
     return false;
   }
-  // ⚠ Zero freshness is the placeholder's own tell. Read from BOTH forms, and only an
-  // explicit zero — a missing or unparseable max-age says nothing either way, and
-  // guessing from it would start refusing perfectly cacheable images.
-  return !directives.some((d) => /^(?:s-maxage|max-age)=0+$/.test(d));
+  // ⚠⚠ A positive `s-maxage` DECIDES, overriding `max-age` (RFC 9111 §5.2.2.10), because
+  // this is a shared cache — which the `private` refusal above already asserts.
+  // `public, max-age=0, s-maxage=86400` is the ordinary CDN spelling of "browsers
+  // revalidate, shared caches may keep this for a day": a Next.js `opengraph-image` route
+  // and a large slice of Cloudflare/Fastly-fronted image endpoints send exactly that.
+  // Reading `max-age` alone refused every one of them — no stored object, no minted CDN
+  // URL, every view relayed through the cell, for origins that had explicitly said yes.
+  const shared = directives.find((d) => /^s-maxage=\d+$/.test(d));
+  if (shared) return Number(shared.slice('s-maxage='.length)) > 0;
+  // ⚠ Zero freshness is the placeholder's own tell, and only an EXPLICIT zero — a missing
+  // or unparseable max-age says nothing either way, and guessing from it would start
+  // refusing perfectly cacheable images.
+  return !directives.some((d) => /^max-age=0+$/.test(d));
+}
+
+/**
+ * Keys a remote backend has told us it does not hold, and until when (epoch ms).
+ *
+ * ⚠⚠ Bounds the cost of the cold read, which without it re-probes forever for exactly
+ * the URLs that will never be stored. An origin sending `no-store`, a body over the cap,
+ * a bucket refusing writes — each leaves nothing behind, so every request would pay a
+ * bucket 404 on top of the decoder fetch it was always going to pay. A permanent extra
+ * round trip, added to the one path that is already the slow one.
+ *
+ * ⚠ Deliberately SHORT, and never consulted while a row exists: this remembers a fact
+ * about the BUCKET, not about the URL. A minute collapses the burst of viewers arriving
+ * at one message, and is far too short to hide a store that has just landed.
+ */
+const absentFromBackend = new Map<string, number>();
+const ABSENT_MEMO_MS = 60_000;
+
+function noteAbsent(key: string, now = Date.now()): void {
+  // ⚠ Swept here rather than on a timer — the same discipline as the decoder's origin
+  // cooldowns. Misses are the rare path, an O(n) pass costs microseconds, and there is no
+  // interval to own, unref, or remember to clear in a test.
+  for (const [seen, until] of absentFromBackend) {
+    if (until <= now) absentFromBackend.delete(seen);
+  }
+  absentFromBackend.set(key, now + ABSENT_MEMO_MS);
+}
+
+/** A store landed: whatever we remembered about this key being absent is now wrong. */
+function forgetAbsent(key: string): void {
+  absentFromBackend.delete(key);
+}
+
+function recentlyAbsent(key: string, now = Date.now()): boolean {
+  const until = absentFromBackend.get(key);
+  if (until === undefined) return false;
+  if (until <= now) {
+    absentFromBackend.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/** Test seam. The memo is module state and would otherwise leak between cases. */
+export function resetAbsentMemoForTests(): void {
+  absentFromBackend.clear();
 }
 
 /**
@@ -272,10 +334,18 @@ export async function lookup(key: string): Promise<CacheHit | null> {
 
     // ⚠ An AGE bound as well as a size one. Eviction is by pressure, so without this
     // an entry at a stable URL that changes underneath it — an avatar, a
-    // `latest.png` — is served from disk indefinitely under `max-age=86400,
-    // immutable`, long after the metadata row has re-resolved. Before the cache
-    // existed the staleness window was a day; unbounded is a regression, not a
-    // feature. Matched to the metadata cache's own OK_TTL so the two agree.
+    // `latest.png` — is served indefinitely under `max-age=86400, immutable`, long
+    // after the metadata row has re-resolved. Before the cache existed the staleness
+    // window was a day; unbounded is a regression, not a feature.
+    //
+    // ⚠⚠ The ROW's age is a cheap PROXY for the object's, and when it says "too old"
+    // the object itself is asked rather than assumed. The two genuinely differ on a
+    // shared bucket — the row records this cell's own store, and another cell may
+    // have rewritten the object yesterday — so `MAX_AGE_MS` is enforced on the
+    // object's `Last-Modified` down in the cold branch. Dropping the bound entirely
+    // for the remote backends was the first version of this change, and it quietly
+    // turned a 7-day staleness ceiling into "however long the bucket keeps it",
+    // which on a self-hosted bucket with no lifecycle rule is forever.
     if (entry && expired(entry.createdAt)) {
       // ⚠ `local` is the cell's OWN volume: it runs the eviction, it owns the
       // lifetime, and an expired object is one it should reclaim. There is nothing
@@ -294,13 +364,26 @@ export async function lookup(key: string): Promise<CacheHit | null> {
     // purpose; resurrecting it would undo an eviction and desync the size ceiling
     // the rows are the accounting for.
     if (!entry && cfg.mode === 'local') return null;
+    // ⚠ Only with NO row. An expired row is evidence that something was once stored
+    // under this key, which is worth one probe; the memo is for keys nothing vouches for.
+    if (!entry && recentlyAbsent(key)) return null;
 
-    const read =
-      cfg.mode === 'local'
-        ? await readLocal(cfg, key)
-        : cfg.mode === 's3'
+    // ⚠ The remote result is held SEPARATELY as well as in `read`, because the cold
+    // branch below needs two things `readLocal` has no way to report — the object's age
+    // and its content type — and a ternary over all three backends collapses to a union
+    // the compiler will not re-correlate with `cfg.mode`. Branching says the same thing
+    // in a form it can follow, without a cast standing in for the argument.
+    let read: LocalRead | S3Read;
+    let remote: S3Read | null = null;
+    if (cfg.mode === 'local') {
+      read = await readLocal(cfg, key);
+    } else {
+      remote =
+        cfg.mode === 's3'
           ? await readS3(cfg, key, MAX_IMAGE_PROXY_BYTES)
           : await readDropper(cfg, key, MAX_IMAGE_PROXY_BYTES);
+      read = remote;
+    }
     // ⚠⚠ Only a GENUINELY MISSING object forgets its row. `readLocal` used to
     // collapse every errno to null, so a transient EMFILE — 24 concurrent reads is
     // within this pool's own budget — or an EACCES after a permissions change
@@ -311,6 +394,9 @@ export async function lookup(key: string): Promise<CacheHit | null> {
     // read as "the lifecycle rule took it".
     if (read.kind === 'missing') {
       forget(key);
+      // ⚠ Remembered only for the remote backends. `local` has no cold path to spare a
+      // round trip on, and its "read" is a stat on a volume this process owns.
+      if (cfg.mode !== 'local') noteAbsent(key);
       return null;
     }
     if (read.kind === 'error') return null;
@@ -329,15 +415,22 @@ export async function lookup(key: string): Promise<CacheHit | null> {
     }
 
     // A cold hit: no row vouches for these bytes, so they must vouch for
-    // themselves. The stored Content-Type is a CLAIM by whatever wrote the key —
-    // the same reasoning as the store path's own gate — and with no recorded size
-    // to cross-check, the signature is what stands in for it.
-    // ⚠ `in` rather than a cast. `readLocal` has no content type to report, and the
-    // guard above already makes this branch remote-only — but the compiler cannot
-    // see that correlation, and a cast would paper over it rather than state it.
-    const declared =
-      'contentType' in read && typeof read.contentType === 'string' ? read.contentType : '';
-    const contentType = declared.split(';')[0].trim().toLowerCase();
+    // themselves — age, type and signature, in that order.
+    //
+    // ⚠⚠ THE AGE IS CHECKED AGAINST THE OBJECT, and failing CLOSED when the store
+    // does not say. `MAX_AGE_MS` is the only staleness ceiling this cache has, and a
+    // cold read is precisely the path with no row to enforce it from; without this,
+    // serving an object the index cannot name means serving it for as long as the
+    // bucket keeps it — 30 days under the recommended lifecycle rule, and forever on
+    // a self-hosted bucket that has none. S3 and R2 both send `Last-Modified` on
+    // every GET, so the closed direction costs nothing real and is the safe one.
+    // ⚠ `remote.kind` re-checked, not assumed. The missing/error returns above narrowed
+    // `read`, and the compiler does not know `remote` is the same object — asserting that
+    // would be a cast, and the honest version costs one comparison.
+    if (!remote || remote.kind !== 'ok') return null;
+    if (remote.storedAt === null || Date.now() - remote.storedAt > MAX_AGE_MS) return null;
+
+    const contentType = remote.contentType.split(';')[0].trim().toLowerCase();
     if (kindForContentType(contentType) !== 'image') return null;
     if (!imageSignatureOf(read.body.subarray(0, SIGNATURE_BYTES))) return null;
     return { kind: 'buffer', body: read.body, contentType };
@@ -512,6 +605,10 @@ export async function beginStore(key: string, expected: number): Promise<StoreWr
             return false;
           }
           if (!(await writer.commit(contentType))) return false;
+          // The bucket now holds it, so anything remembered about it being absent is
+          // wrong. Cheap insurance: a row also exists, and `lookup` consults the memo
+          // only when one does not.
+          forgetAbsent(key);
           try {
             recordCached({ key, backend: cfg.mode, contentType, size });
           } catch {

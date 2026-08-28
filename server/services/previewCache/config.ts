@@ -287,23 +287,39 @@ function defaultWarn(msg: string): void {
 }
 
 /**
+ * The bucket lifecycle rule this cache is designed against, in days.
+ *
+ * ⚠ Documented here because `MAX_AGE_MS` is only meaningful RELATIVE to it, and the
+ * cell can neither run the rule nor observe it. Hosted sets 30 days on the `previews/`
+ * prefix (LINK_PREVIEWS_CACHE_PLAN.md); a self-hoster's `s3` bucket is their own to
+ * configure, and .env.example says so.
+ */
+const LIFECYCLE_DAYS = 30;
+
+/**
  * How long a cached object may be served before it is re-fetched.
  *
- * ⚠ Deliberately the same seven days as `link_previews`' OK_TTL. The two caches
- * describe the same URL, and letting the bytes outlive the metadata means an image
- * that changed at a stable address — an avatar, a `latest.png` — is served from
- * disk long after the record for it was re-resolved. Eviction is by PRESSURE, so
- * without an age bound the staleness window is unbounded; before this cache
- * existed it was a day.
+ * ⚠⚠ A CORRECTNESS bound first and a freshness one second, and the correctness half
+ * is what fixes the number. Objects in a bucket are deleted by a lifecycle rule the
+ * cell does not run and cannot observe, and a row outliving its object would have
+ * `publicByteUrl` mint a public URL that 404s for every user — fetched by the browser
+ * directly, so the 404 never reaches us to notice. Staying strictly under
+ * `LIFECYCLE_DAYS` is what makes the row provably the shorter-lived of the two.
  *
- * ⚠⚠ For `s3` it is also a CORRECTNESS bound, not a freshness one. Objects there
- * are deleted by a bucket lifecycle rule the cell does not run and cannot observe
- * (30 days, per LINK_PREVIEWS_CACHE_PLAN.md), and a row that outlived its object
- * would have `publicByteUrl` mint a public URL that 404s for every user with no
- * request reaching us to notice. Seven against thirty is the margin that makes the
- * row provably the shorter-lived of the two.
+ * ⚠⚠ NO LONGER TIED TO `link_previews`' OK_TTL, and the coupling was the mistake. The
+ * two answer different questions: OK_TTL governs a page's TITLE, which genuinely
+ * changes, while this governs IMAGE BYTES, which at the content-addressed URLs most
+ * og:images use cannot change at all. Matching them meant every image was re-fetched
+ * from its origin every seven days for no reason — measured on app.lurker.chat as a
+ * byte-identical re-upload of a GitHub og:image, same ETag, 18 days on — and when the
+ * origin refused that re-fetch the card broke (lurker#776). Five days of margin under
+ * the lifecycle rule is plenty for a clock skew and a sweep interval.
+ *
+ * ⚠ The freshness half survives, and it is enforced on the OBJECT rather than only on
+ * the row: an image that changed at a stable address — an avatar, a `latest.png` — is
+ * bounded by this figure whether or not the index still remembers it. See `lookup`.
  */
-export const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const MAX_AGE_MS = (LIFECYCLE_DAYS - 5) * 24 * 60 * 60 * 1000;
 
 /** Past the age bound, and therefore not to be served or minted. */
 export function expired(createdAt: string): boolean {

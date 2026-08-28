@@ -336,8 +336,8 @@ describe('the dropper byte cache, end to end', () => {
   });
 
   it('does not mint a CDN URL for a row past its age bound', async () => {
-    // Seven days against the bucket rule's thirty is the margin that makes the
-    // row provably the shorter-lived of the two — same bound, same reasoning,
+    // Twenty-five days against the bucket rule's thirty is the margin that makes
+    // the row provably the shorter-lived of the two — same bound, same reasoning,
     // same test as s3, because the dropper's objects die by the same rule.
     servePng();
     const imageUrl = `${base}/ageing.png`;
@@ -348,7 +348,7 @@ describe('the dropper byte cache, end to end', () => {
     expect(warm.body.previews[0].src).toBe(`${CDN}/${byteCacheKey(imageUrl)}`);
 
     const { default: db } = await import('../db/index.js');
-    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare('UPDATE preview_cache SET created_at = ?').run(old);
 
     const stale = await agent.post('/api/link-preview/resolve').send({ urls: [imageUrl] });
