@@ -1,0 +1,24 @@
+# The unit a bare-metal operator already has BEFORE the switch — the rig's
+# starting state, not the doc's claim. This is a real operator's unit, as sent
+# in: identd on the app, so the capability lives here. The doc's Step 2 shows
+# what it becomes.
+[Unit]
+Description=Lurker IRC
+After=network.target
+
+[Service]
+Type=simple
+User=lurker
+Group=lurker
+# Grant the ability to bind to privileged ports (< 1024)
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+WorkingDirectory=/opt/lurker
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=10
+# Standardises the environment to production
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

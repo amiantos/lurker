@@ -15,6 +15,7 @@
     "docs:build": "npm run build --prefix docs",
     "install:all": "npm install && npm install --prefix vue_client && npm install --prefix docs",
     "start": "tsx server/server.ts",
+    "engine": "tsx server/engine.ts",
     "recovery-link": "tsx tools/recovery-link.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
