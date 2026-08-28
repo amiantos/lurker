@@ -53,8 +53,22 @@ import settingsService from './settingsService.js';
 import * as systemLog from './systemLog.js';
 
 export interface RetentionSweepOptions {
-  /** Rows per DELETE statement. */
+  /** MAXIMUM rows per DELETE statement. The batch actually used is adapted
+   *  down from here toward `minBatchRows` whenever a statement blocks the loop
+   *  for longer than `targetStatementMs` — see `pacedBatchRows`. */
   batchRows: number;
+  /** Floor for the adapted batch size. Below this the per-statement overhead
+   *  dominates and the sweep stops making useful progress. */
+  minBatchRows: number;
+  /** How long ONE bounded statement may block the event loop before the batch
+   *  size is cut. Infinity disables adaptation (tests, and anyone who wants
+   *  the old fixed-size behaviour). */
+  targetStatementMs: number;
+  /** Total time a tick may spend INSIDE synchronous statements before handing
+   *  the rest to the next one. A backstop on top of `maxBatchesPerTick`, which
+   *  counts statements and so cannot bound a tick whose statements are slow.
+   *  Infinity disables it. */
+  maxTickMs: number;
   /** Bounded statements (boundary probes + delete batches) a single tick may
    *  spend before handing the rest to the next one. */
   maxBatchesPerTick: number;
@@ -70,6 +84,13 @@ export interface RetentionSweepOptions {
 
 export const RETENTION_SWEEP_DEFAULTS: RetentionSweepOptions = {
   batchRows: 500,
+  minBatchRows: 25,
+  // 50ms is the budget for ONE statement, not for the tick: the yields between
+  // statements are what keep sockets breathing, so many short blocks are fine
+  // where one long one is not. Sized against the ~120s IRC ping timeout with
+  // three orders of magnitude to spare.
+  targetStatementMs: 50,
+  maxTickMs: 1000,
   maxBatchesPerTick: 20,
   idleDelayMs: 60 * 1000,
   busyDelayMs: 5 * 1000,
@@ -89,6 +110,53 @@ export interface RetentionTickResult {
 }
 
 const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+// ─── Pacing ────────────────────────────────────────────────────────────────
+// The budget above counts STATEMENTS, which silently assumes each one is
+// cheap. On a cold start it is not: a first noise pass walks a user's history
+// from epoch, and a 500-row delete cascading into the FTS triggers blocked the
+// loop for ~800ms a second on a 2.1 GB hosted database (2026-08-28). The
+// statement count cannot express that — so measure the block and shrink the
+// batch until it fits, then grow back while it does.
+//
+// Deliberately module-level, i.e. carried ACROSS ticks: the whole point is
+// that a tick which found the work expensive hands that knowledge to the next
+// one. Reset between tests with `__resetSweepPacing`.
+let adaptedBatchRows = Number.POSITIVE_INFINITY;
+
+/** Test-only: forget what the last tick learned about statement cost. */
+export function __resetSweepPacing(): void {
+  adaptedBatchRows = Number.POSITIVE_INFINITY;
+}
+
+/** The batch size to use right now, clamped into the option's own range. */
+function pacedBatchRows(opts: RetentionSweepOptions): number {
+  return Math.max(opts.minBatchRows, Math.min(opts.batchRows, adaptedBatchRows));
+}
+
+/**
+ * Run one bounded statement, charging what it cost to the tick and feeding the
+ * measurement back into the batch size. Halve on an overrun, step back up
+ * gently when we are inside budget — slow to trust, quick to back off, so a
+ * single expensive buffer cannot re-saturate the loop for a whole tick.
+ */
+function timedStatement<T>(opts: RetentionSweepOptions, run: () => T): { value: T; ms: number } {
+  const started = performance.now();
+  const value = run();
+  const ms = performance.now() - started;
+  // Both bounds live in pacedBatchRows, which is the only reader — clamping
+  // here too would mean two places to get the range right, and a mutation to
+  // either one would leave the behaviour unchanged and untestable.
+  // A targetStatementMs of Infinity needs no special case: nothing can overrun
+  // it, so the size only ever grows and pins to `batchRows`.
+  const current = pacedBatchRows(opts);
+  if (ms > opts.targetStatementMs) {
+    adaptedBatchRows = Math.floor(current / 2);
+  } else if (ms < opts.targetStatementMs / 2) {
+    adaptedBatchRows = Math.max(current + 1, Math.ceil(current * 1.25));
+  }
+  return { value, ms };
+}
 
 // Noise-clock scheduling state. `lastNoiseSweepMs = 0` makes the first tick
 // after boot start a pass; the settings listener forces one with -Infinity
@@ -139,12 +207,23 @@ export async function runRetentionTick(
   // Per-tick cap cache: one settings read per owner, not per buffer.
   const capByUser = new Map<number, number>();
   let batchesSpent = 0;
+  // Time spent INSIDE statements, not wall-clock: the awaits between them are
+  // exactly what we are trying to leave room for, so they must not count.
+  let syncMsSpent = 0;
+  const outOfBudget = (): boolean =>
+    batchesSpent >= opts.maxBatchesPerTick || syncMsSpent >= opts.maxTickMs;
+  const charge = <T>(run: () => T): T => {
+    const { value, ms } = timedStatement(opts, run);
+    syncMsSpent += ms;
+    batchesSpent++;
+    return value;
+  };
 
   const pending = takeDirtyBuffers();
   for (let i = 0; i < pending.length; i++) {
     const bufferId = pending[i];
     try {
-      if (batchesSpent >= opts.maxBatchesPerTick) {
+      if (outOfBudget()) {
         // Out of budget — put the rest back for the (soon) next tick.
         markBufferDirty(bufferId);
         result.backlog = true;
@@ -168,19 +247,18 @@ export async function runRetentionTick(
 
       // The OFFSET walk is O(cap) index entries — real work, charged like a
       // delete batch.
-      const boundaryId = retentionBoundaryId(bufferId, cap);
-      batchesSpent++;
+      const boundaryId = charge(() => retentionBoundaryId(bufferId, cap));
       if (boundaryId === undefined) continue; // within cap
 
       // "Done" is a short delete batch, NOT an exhausted budget: keying the
       // re-mark on the budget livelocks — with a small budget every capped
       // buffer ends its visit at the limit and reports a backlog forever.
       let tailDone = false;
-      while (batchesSpent < opts.maxBatchesPerTick) {
-        const deleted = deleteRetentionBatch(bufferId, boundaryId, ownerId, opts.batchRows);
-        batchesSpent++;
+      while (!outOfBudget()) {
+        const rows = pacedBatchRows(opts);
+        const deleted = charge(() => deleteRetentionBatch(bufferId, boundaryId, ownerId, rows));
         result.rowsDeleted += deleted;
-        if (deleted < opts.batchRows) {
+        if (deleted < rows) {
           tailDone = true; // (or only bookmarks left below the boundary)
           break;
         }
@@ -217,12 +295,12 @@ export async function runRetentionTick(
     const cutoffIso = new Date(Date.now() - hours * 3_600_000).toISOString();
     const sinceIso = getNoiseCursor(userId);
     if (sinceIso >= cutoffIso) return true; // nothing has aged past the cutoff since last pass
-    while (batchesSpent < opts.maxBatchesPerTick) {
+    while (!outOfBudget()) {
       await yieldToLoop();
-      const deleted = deleteNoiseBatch(userId, sinceIso, cutoffIso, opts.batchRows);
-      batchesSpent++;
+      const rows = pacedBatchRows(opts);
+      const deleted = charge(() => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows));
       result.noiseRowsDeleted += deleted;
-      if (deleted < opts.batchRows) {
+      if (deleted < rows) {
         // Window clear (survivors are bookmarked). Compare-and-advance, not a
         // blind set: an insert-side rewind can land during the awaits above,
         // and this pass's window never covered it.
@@ -248,8 +326,8 @@ export async function runRetentionTick(
     for (;;) {
       const days = effectiveClosedBufferDays(userId);
       if (days <= 0) return true; // GC off for this user
-      const eligible = listGcEligibleBuffers(userId, days, GC_LIST_LIMIT);
-      batchesSpent++; // the listing (with its bookmark subquery) is a real statement
+      // the listing (with its bookmark subquery) is a real statement
+      const eligible = charge(() => listGcEligibleBuffers(userId, days, GC_LIST_LIMIT));
       if (eligible.length === 0) return true;
       for (const bufferId of eligible) {
         const daysNow = effectiveClosedBufferDays(userId);
@@ -257,20 +335,21 @@ export async function runRetentionTick(
         let drained = false;
         do {
           await yieldToLoop();
-          const deleted = drainBufferBatch(userId, bufferId, daysNow, opts.batchRows);
-          batchesSpent++;
+          const rows = pacedBatchRows(opts);
+          const deleted = charge(() => drainBufferBatch(userId, bufferId, daysNow, rows));
           result.gcRowsDeleted += deleted;
-          if (deleted < opts.batchRows) {
+          if (deleted < rows) {
             drained = true; // empty — or reopened / re-closed / bookmarked, all refused below
             break;
           }
-        } while (batchesSpent < opts.maxBatchesPerTick);
+        } while (!outOfBudget());
         if (!drained) return false; // budget died mid-drain; re-listed next pass
-        batchesSpent++; // the row delete cascades into eight tables — real work
-        if (gcDeleteClosedBuffer(userId, bufferId, daysNow)) result.buffersCollected++;
+        // the row delete cascades into eight tables — real work
+        if (charge(() => gcDeleteClosedBuffer(userId, bufferId, daysNow)))
+          result.buffersCollected++;
         // A refusal (reopened, re-closed recently, or a bookmark landed) is
         // simply left alone; the next pass re-derives eligibility from scratch.
-        if (batchesSpent >= opts.maxBatchesPerTick) return false; // user stays at head
+        if (outOfBudget()) return false; // user stays at head
       }
       if (eligible.length < GC_LIST_LIMIT) return true; // that was everything
     }
@@ -278,7 +357,7 @@ export async function runRetentionTick(
 
   if (noisePendingUsers !== null || Date.now() - lastNoiseSweepMs >= opts.noiseIntervalMs) {
     if (noisePendingUsers === null) noisePendingUsers = listUserIds();
-    while (noisePendingUsers.length > 0 && batchesSpent < opts.maxBatchesPerTick) {
+    while (noisePendingUsers.length > 0 && !outOfBudget()) {
       const userId = noisePendingUsers[0];
       if (!(await noiseStep(userId))) break;
       if (!(await gcStep(userId))) break;
