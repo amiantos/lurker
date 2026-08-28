@@ -108,6 +108,14 @@ const passwordLabel = computed(() => {
 });
 
 onMounted(async () => {
+  // auth.error is shared store state that survives in-app navigation, and this
+  // page renders it unconditionally. Reachable: a dead link sends you to sign-in
+  // via the link below, a failed login sets the error, and the browser Back
+  // button returns here — greeting you with "invalid username or password" on a
+  // page you haven't touched yet. The store's actions each clear it when they
+  // run, so the stale window is only between mount and the first attempt; this
+  // closes it.
+  auth.error = null;
   try {
     status.value = await auth.fetchRecoveryStatus(token.value);
   } catch (_) {
