@@ -664,7 +664,9 @@ export class IrcConnection {
   // for takeCtcpIssuer's "which came last" rule. A sequence, not the wall
   // clock: two moves can share a millisecond (a scripted client's frames land
   // in one chunk and wsHub dispatches them in one tick), and a clock can step
-  // backwards. `sentAt`/`at` stay for the duration windows, which are durations.
+  // backwards. It fixes ORDER only. `sentAt`/`at` stay for the attribution and
+  // TTL windows, which are still Date.now() deltas — a backward step stretches
+  // those, as it always did; it just can no longer reorder anything.
   moveSeq = 0;
   // The raw 001–005 registration burst as the server sent it, captured by the
   // 'raw' handler (reset on each 001). The bouncer replays these verbatim
