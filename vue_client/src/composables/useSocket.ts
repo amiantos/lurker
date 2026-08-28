@@ -1051,7 +1051,14 @@ function open() {
       // cycle (useSessionReset imports resetSocket from this module).
       if (ev.code === WS_CLOSE_SESSION_REVOKED) {
         auth.user = null;
-        window.location.assign('/');
+        // ...except in the tab doing the recovering. The server closes sockets
+        // BEFORE it mints the new session, so on a browser that was still signed
+        // in to this account the close frame beats the redemption response —
+        // navigating here would cancel that in-flight fetch and throw away the
+        // Set-Cookie, dumping the member at /login with their single-use link
+        // already spent. That tab routes itself to `/` on success anyway, so
+        // leaving it alone costs nothing.
+        if (!window.location.pathname.startsWith('/recover/')) window.location.assign('/');
         return;
       }
       if (auth.user) {

@@ -38,6 +38,7 @@ import {
   hashRecoveryToken,
   recoveryExpiresAt,
 } from '../server/db/accountRecoveryToken.js';
+import { parseRecoveryLinkArgs } from './recoveryLinkArgs.js';
 
 const argv = process.argv.slice(2);
 
@@ -61,21 +62,14 @@ function usage(): never {
 
 if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) usage();
 
-// Both spellings. Accepting only the space-separated form meant `--url=https://x`
-// fell through the flag filter, silently fell back to WEBAUTHN_ORIGIN, and
-// handed a locked-out admin a link pointing at the wrong host — after the token
-// was already written, so recovering from it costs a reissue.
-const inlineUrl = argv.find((a) => a.startsWith('--url='));
-const urlIndex = argv.indexOf('--url');
-const originArg = inlineUrl ? inlineUrl.slice('--url='.length) : (argv[urlIndex + 1] ?? null);
-if ((urlIndex !== -1 || inlineUrl) && !originArg) {
-  console.error('--url needs a value, e.g. --url https://lurker.example.com');
+const { username, origin, error } = parseRecoveryLinkArgs(argv, process.env);
+// Error first: a malformed flag deserves the specific complaint, not the usage
+// dump. `--url` with nothing after it yields no username either, so checking
+// username first would swallow the useful message.
+if (error) {
+  console.error(error);
   process.exit(1);
 }
-// Only skip the NEXT argv slot when --url took a separate value; with --url=…
-// there is no separate slot, and urlIndex + 1 would otherwise eat the username.
-const skipIndex = urlIndex === -1 ? -1 : urlIndex + 1;
-const username = argv.filter((a, i) => !a.startsWith('--') && i !== skipIndex)[0];
 if (!username) usage();
 
 // A cell's sign-in belongs to the control plane, which has its own email-based
@@ -85,14 +79,6 @@ if (!username) usage();
 if ((process.env.LURKER_EDITION || '').trim().toLowerCase() === 'node') {
   console.error(
     'This is a hosted cell — sign-in is managed by the control plane, which has its own password reset.',
-  );
-  process.exit(1);
-}
-
-const origin = (originArg || (process.env.WEBAUTHN_ORIGIN || '').split(',')[0] || '').trim();
-if (!origin) {
-  console.error(
-    'No base URL: pass --url https://lurker.example.com, or set WEBAUTHN_ORIGIN in the environment.',
   );
   process.exit(1);
 }
@@ -142,6 +128,6 @@ db.prepare(
 console.log('');
 console.log(`Recovery link for ${user.username} (expires in 24 hours, single use):`);
 console.log('');
-console.log(`  ${origin.replace(/\/+$/, '')}/recover/${token}`);
+console.log(`  ${origin}/recover/${token}`);
 console.log('');
 console.log('This is the only time it is shown. Any previous link for this account is now dead.');

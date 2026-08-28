@@ -275,7 +275,13 @@ async function onIssueRecovery(user: AdminUser) {
   try {
     const recovery = await adminStore.createRecoveryLink(user.id);
     freshRecovery.value = { userId: user.id, url: recovery.url, copied: false, copyFailed: false };
-    await onCopyRecovery(recovery.url);
+    // Speculative: `reportFailure: false` because this copy runs after an
+    // awaited network call, and Safari (and anything else enforcing transient
+    // user activation) revokes activation across that await — writeText rejects
+    // with NotAllowedError even though the clipboard is perfectly available. A
+    // scary "clipboard unavailable" here would be wrong, and the copy button
+    // below, which calls writeText synchronously inside its own click, works.
+    await onCopyRecovery(recovery.url, false);
   } catch (e: any) {
     adminError.value = e.message || 'failed to issue recovery link';
   } finally {
@@ -298,7 +304,7 @@ async function onRevokeRecovery(user: AdminUser) {
   }
 }
 
-async function onCopyRecovery(url: string) {
+async function onCopyRecovery(url: string, reportFailure = true) {
   if (!freshRecovery.value) return;
   try {
     await navigator.clipboard.writeText(url);
@@ -306,7 +312,9 @@ async function onCopyRecovery(url: string) {
     freshRecovery.value.copyFailed = false;
   } catch (_) {
     freshRecovery.value.copied = false;
-    freshRecovery.value.copyFailed = true;
+    // Only a copy the admin actually clicked is worth an error. That one is a
+    // real signal — no activation excuse, and this URL cannot be re-fetched.
+    if (reportFailure) freshRecovery.value.copyFailed = true;
   }
 }
 
