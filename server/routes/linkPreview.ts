@@ -331,7 +331,12 @@ router.get('/media/:token', async (req: Request, res: Response) => {
     // never a reason for the bytes to sit in RSS on the way there. `declared` when the
     // decoder gave one, the cap when it did not: the writer reserves room before the first
     // byte, and under-reserving is how the ceiling gets crossed.
-    const wantCache = cacheable(contentType, isRange) && upstream.status !== 206;
+    // ⚠ The origin's own Cache-Control is forwarded across the seam by the decoder and
+    // consulted HERE, at the store decision. See `originPermitsStoring` — GitHub marks its
+    // unrendered-card placeholder `max-age=0`, and we used to keep it for a week.
+    const wantCache =
+      cacheable(contentType, isRange, upstream.headers['cache-control'] as string | undefined) &&
+      upstream.status !== 206;
     const writer = wantCache
       ? await beginStore(cacheKey, Number.isFinite(declared) ? declared : cap)
       : null;
