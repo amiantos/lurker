@@ -662,9 +662,10 @@ describe('review findings', () => {
 // — the dead predecessor link of the same process, and an older process; the
 // third, a newer holder refusing, is in 'review findings' above.
 describe('a close over a stale claim (#849)', () => {
+  // Label = who sends the close, relative to the holder.
   it.each([
-    ['the same process', 5000, 5000],
-    ['an older process', 1000, 2000],
+    ['a replacement link of the same process', 5000, 5000],
+    ['a newer process over an older holder', 1000, 2000],
   ])(
     'a close from %s ends a socket the holder still claims',
     async (_what, holderGen, closerGen) => {
