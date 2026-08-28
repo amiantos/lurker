@@ -25,8 +25,18 @@ import { instanceId } from '../db/instanceId.js';
 import type { AppToEngine, EngineToApp } from '../engine/protocol.js';
 import { APP_VERSION } from '../utils/userAgent.js';
 
-// This process's generation, for the engine's newest-wins rule (protocol.ts).
-const PROCESS_STARTED_AT = Date.now();
+// This process's generation, for the engine's newest-wins rule (protocol.ts):
+// the start time in milliseconds — the unit every app version has sent, so a
+// rollback still orders against what it replaces — with the pid as a
+// sub-millisecond tiebreak in the fraction. The engine reads an EQUAL
+// generation as "another link of the same process" (its predecessor, which it
+// may supersede), so two processes must never share one, and two started in
+// the same millisecond otherwise would. A thousandth is the finest step a
+// double resolves cleanly at this magnitude; what it cannot separate is two
+// processes of ONE database started in the same millisecond with pids equal
+// mod 1000 — two apps on one database is a misconfiguration before it is a
+// collision, and an exact per-pid encoding would need a wider field.
+const PROCESS_GENERATION = Date.now() + (process.pid % 1000) / 1000;
 
 // The id the engine knows a network's socket by. One definition, so the two
 // sides of every comparison agree.
@@ -324,7 +334,7 @@ export class EngineLink extends EventEmitter {
           protocol: PROTOCOL_MAJOR,
           secret: this.opts.secret,
           instance: instanceId(),
-          app: { version: APP_VERSION, startedAt: PROCESS_STARTED_AT },
+          app: { version: APP_VERSION, startedAt: PROCESS_GENERATION },
         }),
       );
     });
