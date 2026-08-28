@@ -124,6 +124,19 @@ describe('IrcConnection through the engine', () => {
     expect(ircd.registrations.filter((r) => r.nick === 'lurk')).toHaveLength(1);
     expect(stateEvents(events)).toContain('connected');
 
+    // A join provokes MODE #chan (the join handler) and, after 366, WHO #chan
+    // (away sync) — and the WHOs go out one at a time, the second a round trip
+    // after the first. They are still crossing app → link → engine → ircd when
+    // the joins are seen here; let the LAST of them land before the wire is
+    // sampled, or it counts as sent by the dead process below (and a late
+    // MODE #stay as a fourth #stay state line on re-attach). The socket is
+    // ordered, so a landed WHO #gone implies everything before it landed.
+    await until(
+      () => ['WHO #stay', 'WHO #gone'].every((l) => sentBy('lurk').includes(l)),
+      5000,
+      'join MODEs and WHOs on the wire',
+    );
+
     // The app "shuts down": detach, never QUIT.
     rowsBeforeDetach = rows().length;
     sentBeforeDetach = sentBy('lurk').length;
@@ -133,7 +146,7 @@ describe('IrcConnection through the engine', () => {
     expect(ircd.client('lurk')).toBeDefined();
     // Nothing more went to the wire from the dead process — in particular no QUIT.
     expect(sentBy('lurk').slice(sentBeforeDetach)).toEqual([]);
-  }, 20000);
+  }, 30000);
 
   it('a new IrcConnection re-attaches with no new history and no re-registration', async () => {
     // Life while the app is away.
@@ -148,14 +161,13 @@ describe('IrcConnection through the engine', () => {
     expect(conn).toBeTruthy();
     await until(() => conn.state === 'connected', 5000, 'reattached');
     await until(() => rows().length >= rowsBeforeDetach + 3, 5000, 'backlog persisted');
-    await new Promise((r) => setTimeout(r, 50));
 
     // The gap's messages — the deterministic part — persisted once each, in
     // order, with no re-registration and no duplication. (Two things here are
     // deliberately NOT pinned, because they race on a sub-second window and are
-    // covered elsewhere: whether the restore re-requests channel state and
-    // surfaces transient MODE/WHO `motd` rows, exactly as a normal reconnect
-    // does; and whether the self-KICK for #gone persists a row, which depends on
+    // covered elsewhere: whether the restore's MODE/WHO replies surface as
+    // transient `motd` rows, exactly as a normal reconnect's do; and whether
+    // the self-KICK for #gone persists a row, which depends on
     // whether the engine had already reconciled #gone out of the replay when the
     // app attached. What must never happen — the #829 property — is a duplicate.)
     const added = rows().slice(rowsBeforeDetach);
@@ -179,19 +191,28 @@ describe('IrcConnection through the engine', () => {
     expect(stateEvents(managerEvents)).toContain('connected');
     expect(stateEvents(managerEvents)).not.toContain('disconnected');
 
+    // The wire. The restore's channel-state requests go out the instant the
+    // replay ends, but "went out" here means what the ircd RECEIVED, three
+    // socket hops (app → link → engine → ircd) later — so wait for them, not a
+    // clock. Then, once `live` has run its callbacks (the manager's rejoin),
+    // say something: the PRIVMSG is written after anything a regression could
+    // have written — a JOIN at `live`, a re-run connect command — on the same
+    // ordered socket, so its arrival bounds the negative checks below.
+    const since = () => sentBy('lurk').slice(sentBeforeDetach);
+    const stateRequests = () => since().filter((l) => /^(MODE|NAMES|TOPIC) #stay$/.test(l));
+    await until(() => stateRequests().length >= 3, 5000, 'channel-state requests on the wire');
+    await until(() => !conn.catchingUp, 5000, 'live');
+    conn.say('#stay', 'back');
+    await ircd.waitForLine((l) => /^PRIVMSG #stay :?back$/.test(l));
+
     // The network saw: MODE/NAMES/TOPIC for the synthesised join, nothing else.
     // No registration, no connect command, no JOIN of the autojoin list.
     expect(ircd.registrations.filter((r) => r.nick === 'lurk')).toHaveLength(1);
-    const since = sentBy('lurk').slice(sentBeforeDetach);
-    expect(since.some((l) => /^(NICK|USER|CAP|JOIN) /.test(l))).toBe(false);
-    expect(since.filter((l) => /^(MODE|NAMES|TOPIC) #stay$/.test(l))).toHaveLength(3);
-    expect(since.filter((l) => l === 'PING connectcmd')).toHaveLength(0);
+    expect(since().some((l) => /^(NICK|USER|CAP|JOIN) /.test(l))).toBe(false);
+    expect(stateRequests().sort()).toEqual(['MODE #stay', 'NAMES #stay', 'TOPIC #stay']);
+    expect(since().filter((l) => l === 'PING connectcmd')).toHaveLength(0);
     expect(ircd.client('lurk')!.channels.has('#gone')).toBe(false);
-
-    // And it is a working connection.
-    conn.say('#stay', 'back');
-    await ircd.waitForLine((l) => /^PRIVMSG #stay :?back$/.test(l));
-  }, 20000);
+  }, 30000);
 
   it('losing the link to the engine re-attaches without a disconnect', async () => {
     const conn = ircManager.getConnection(userId, network.id)!;
