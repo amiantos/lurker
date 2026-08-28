@@ -132,7 +132,7 @@ describe('IrcConnection through the engine', () => {
     // MODE #stay as a fourth #stay state line on re-attach). The socket is
     // ordered, so a landed WHO #gone implies everything before it landed.
     await until(
-      () => sentBy('lurk').filter((l) => /^WHO #(stay|gone)$/.test(l)).length >= 2,
+      () => ['WHO #stay', 'WHO #gone'].every((l) => sentBy('lurk').includes(l)),
       5000,
       'join MODEs and WHOs on the wire',
     );
@@ -209,7 +209,7 @@ describe('IrcConnection through the engine', () => {
     // No registration, no connect command, no JOIN of the autojoin list.
     expect(ircd.registrations.filter((r) => r.nick === 'lurk')).toHaveLength(1);
     expect(since().some((l) => /^(NICK|USER|CAP|JOIN) /.test(l))).toBe(false);
-    expect(stateRequests()).toHaveLength(3);
+    expect(stateRequests().sort()).toEqual(['MODE #stay', 'NAMES #stay', 'TOPIC #stay']);
     expect(since().filter((l) => l === 'PING connectcmd')).toHaveLength(0);
     expect(ircd.client('lurk')!.channels.has('#gone')).toBe(false);
   }, 30000);
