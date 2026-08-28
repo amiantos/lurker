@@ -367,7 +367,8 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   multilineLimits,
   away: { active, since, message, autoSet, backAt } | null,
   channels: [ { name, topic, modes,
-                members: [ { nick, modes: [], away, user, host, account } ] } ],
+                members: [ { nick, modes: [], away, user, host, account } ],
+                membersPending?: true } ],   // NAMES not heard yet — see §9.1
   peerPresence: { "<lowercased nick>": { nick, state, stateAt, awayMessage } },
   pinned: [], collapsedNicklists: {}, channelNotify: {},
   ignoredMasks: [], nickNotes: [], relayBots: [] }
@@ -943,6 +944,15 @@ these signals:
   arrives as a normal `irc` event and materializes the buffer via the DM rule.
 - **`channel-parted` → resolve, never materialize**: mark parted, clear members,
   keep the buffer and history. If you have no such buffer, ignore it.
+- **`membersPending` (on a snapshot channel, or on a `names` event) → keep the
+  members you already hold.** The server has not heard the channel's NAMES
+  since it last connected or attached — after an engine re-attach that is every
+  channel until the restore asks, one at a time — so the list it sends is only
+  the members learned so far, at least yourselves; rendering it looks like
+  everyone left. Take that list only if you hold none. Normally a definitive
+  `names` follows within seconds; a restore step whose NAMES the server never
+  answers sends nothing further, and the flag stays until a later `/names` or
+  rejoin.
 - **Never materialize from ambient signals:** `typing`, `member-update`, and
   `read-state` for unknown buffers must resolve-or-drop. (`mark-all-read` fans
   out `read-state` for _closed_ buffers too — resurrecting them in the sidebar

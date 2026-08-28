@@ -1082,8 +1082,17 @@ export const useBuffersStore = defineStore('buffers', {
       const buf = ensureBuffer(this, networkId, target);
       buf.loadingHistory = loading;
     },
-    setMembers(networkId: number | string, target: string, members: BufferMember[]) {
+    // `provisional`: the server says this list is incomplete (`membersPending`,
+    // CLIENT_PROTOCOL §9.1). A list already held is the better one; keep it. A
+    // buffer with none takes the provisional list — something beats nothing.
+    setMembers(
+      networkId: number | string,
+      target: string,
+      members: BufferMember[],
+      opts: { provisional?: boolean } = {},
+    ) {
       const buf = ensureBuffer(this, networkId, target);
+      if (opts.provisional && buf.members.length > 0) return;
       buf.members = members;
     },
 
