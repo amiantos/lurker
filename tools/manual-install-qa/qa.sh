@@ -57,8 +57,12 @@ engine_active() { systemctl is-active --quiet lurker-engine; }
 # Bystander events since a line-count mark: since <mark> <regex>
 mark() { wc -l <"$WATCH"; }
 since() { tail -n +"$(($1 + 1))" "$WATCH" | grep -qE "$2"; }
-loopback_only() { ss -ltn | grep -q '127.0.0.1:8016' && ! ss -ltn | grep -qE '(0\.0\.0\.0|\*|\[::\]):8016'; }
-nothing_on_8016() { ! ss -ltn | grep -q ':8016'; }
+# One matcher for "something listens on :8016", anchored to the whole port (an
+# IPv6 hextet or another port must not count), used both ways: seen while the
+# engine is up, gone after it is turned off — so a regex that never matches
+# cannot pass the negative check by accident.
+on_8016() { ss -ltn | grep -qE '[]:]8016( |$)'; }
+loopback_only() { ss -ltn | grep -qE '127\.0\.0\.1:8016( |$)' && ! ss -ltn | grep -qE '(0\.0\.0\.0|\*|\[::\]):8016( |$)'; }
 search_has() { curl -fsS -b "$JAR" "$API/api/search?q=$1" | grep -q "$1"; }
 # Anything gitignored that reached the copy — secrets and dependency trees at ANY depth.
 leaked() {
@@ -153,6 +157,7 @@ check "app: 'engine mode: attached to 127.0.0.1:8016'" wait_for 10 journal_has l
 check "engine: 'ident: built-in identd on :113'" journal_has lurker-engine 'ident: built-in identd on :113'
 check "engine: identd actually bound :113 (capability on the engine unit, app let go first)" journal_has lurker-engine '\[identd\] listening on :113'
 check "engine: no 'failed to listen'" not journal_has lurker-engine 'failed to listen'
+check "something listens on :8016" on_8016
 check "engine listens on loopback only" loopback_only
 check "the switch cost one reconnect: the bystander saw a QUIT…" wait_for 60 since "$M" "QUIT $NICK"
 check "…and a JOIN" wait_for 60 since "$M" "JOIN $NICK"
@@ -189,7 +194,7 @@ wait_for 60 app_up || die "the app never came back after turning the engine off"
 check "one reconnect: a QUIT when the engine stopped…" wait_for 60 since "$M" "QUIT $NICK"
 check "…and a JOIN when the app dialled itself" wait_for 60 since "$M" "JOIN $NICK"
 check "the engine stayed down through the app's restart" not engine_active
-check "nothing listens on :8016" nothing_on_8016
+check "nothing listens on :8016" not on_8016
 check "app is not in engine mode" not journal_has lurker 'engine mode'
 check "app binds :113 again" wait_for 10 journal_has lurker '\[identd\] listening on :113'
 
