@@ -121,12 +121,21 @@ const yieldToLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
 //
 // Deliberately module-level, i.e. carried ACROSS ticks: the whole point is
 // that a tick which found the work expensive hands that knowledge to the next
-// one. Reset between tests with `__resetSweepPacing`.
-let adaptedBatchRows = Number.POSITIVE_INFINITY;
+// one. Reset between tests with `resetSweepPacingForTests`.
+//
+// 0 means "nothing measured yet", which pacedBatchRows floors to minBatchRows:
+// start at the FLOOR and earn the way up. Starting at `batchRows` would assume
+// the maximum works, which is the assumption this whole file exists to stop
+// making — and boot re-marks every buffer dirty, so that assumption would be
+// re-made, and paid for, on every single restart.
+// One constant for both the initial value and the reset, so a process start
+// and a test reset can never disagree about what "nothing measured" means.
+const UNMEASURED = 0;
+let adaptedBatchRows = UNMEASURED;
 
 /** Test-only: forget what the last tick learned about statement cost. */
-export function __resetSweepPacing(): void {
-  adaptedBatchRows = Number.POSITIVE_INFINITY;
+export function resetSweepPacingForTests(): void {
+  adaptedBatchRows = UNMEASURED;
 }
 
 /** The batch size to use right now, clamped into the option's own range. */
@@ -167,12 +176,23 @@ function measure<T>(run: () => T): { value: T; ms: number } {
  * it, so the size only grows and pins to `batchRows`.
  */
 function adaptToStatement(opts: RetentionSweepOptions, ms: number, full: boolean): void {
+  // ONLY a full batch says anything about per-row cost, in EITHER direction —
+  // a full batch is row-bound by construction, because the LIMIT is what
+  // stopped the walk.
+  //
+  // A short one is not, and shrinking on it is actively wrong: the terminal
+  // `deleteNoiseBatch` of a user's window matches nothing, so the LIMIT never
+  // trips and it scans the whole [since, cutoff) range of
+  // `idx_messages_noise_time` — an index on (time, buffer_id) with no user_id,
+  // so that range is every OTHER user's noise, the bookmarked rows, and the
+  // entire backlog of anyone with event_hours = 0. It is slow for reasons no
+  // batch size can change, once per user per pass, and letting it shrink would
+  // walk the line-cap sweep down to the floor for free.
+  if (!full) return;
   const current = pacedBatchRows(opts);
   if (ms > opts.targetStatementMs) {
-    // An overrun shrinks whatever the batch was: a SHORT statement that still
-    // blew the budget is the worst news there is about the size.
     adaptedBatchRows = Math.floor(current / 2);
-  } else if (full && ms < opts.targetStatementMs / 2) {
+  } else if (ms < opts.targetStatementMs / 2) {
     // Growth requires a FULL batch. A short one is the last of a buffer or
     // user and is cheap because it deleted almost nothing — it never showed
     // that `rows` rows fit in the budget. Boot seeds every buffer dirty and
@@ -361,8 +381,11 @@ export async function runRetentionTick(
   // trigger per row synchronously. Every statement re-checks the world
   // (state, age, bookmarks — see db/retention.ts), and the user's setting is
   // re-read per buffer so switching GC off mid-tick stops it at the next
-  // buffer. Progress is GUARANTEED per step: the listing and the first drain
-  // batch run even on an exhausted budget (overshooting by ≤2 statements),
+  // buffer. Progress is GUARANTEED per step: the listing, the first drain
+  // batch and the row delete run even on an exhausted budget — an overshoot of
+  // 3 statements, and of maxTickMs by their duration, since the budget is only
+  // consulted between statements. Bounded in practice because the drain uses
+  // the paced batch size, which by then reflects what a statement costs here.
   // otherwise a small budget could be spent entirely on the noise probe and
   // the listing every tick and never reach a drain — a busy-cadence livelock.
   const GC_LIST_LIMIT = 50;
