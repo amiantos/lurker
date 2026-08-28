@@ -93,6 +93,7 @@ jobs:
               changed=true
             elif ! git diff --quiet "$prev" "$GITHUB_REF_NAME" -- \
                 server/engine ':(exclude)server/engine/*.test.ts' \
+                ':(exclude)server/engine/*.spec.ts' \
                 server/engine.ts server/services/identd.ts \
                 server/utils/processGuards.ts server/utils/userAgent.ts \
                 Dockerfile 'tsconfig*.json'; then
@@ -102,9 +103,13 @@ jobs:
               [ "$(dep "$prev")" = "$(dep "$GITHUB_REF_NAME")" ] || changed=true
             fi
             echo "engine files changed since ${prev:-<none>}: $changed"
-            # Match on whole words so `v2.2.0` in the list cannot pin `v2.2.01`.
+            # Match whole ENTRIES, not substrings or words: `grep -w` treats `-`
+            # and `.` as word boundaries, so a `v2.2.0-rc1` entry would also pin
+            # `v2.2.0` — failing in the direction that leaves a genuinely changed
+            # engine unpublished, with nothing but a misleading log line to say so.
             if [ "$changed" = "true" ] && \
-               grep -qwF -- "$GITHUB_REF_NAME" <<<"${ENGINE_TAG_PINNED_RELEASES:-}"; then
+               tr ' \t' '\n\n' <<<"${ENGINE_TAG_PINNED_RELEASES:-}" \
+                 | grep -qxF -- "$GITHUB_REF_NAME"; then
               changed=false
               echo "engine tag PINNED for ${GITHUB_REF_NAME} by ENGINE_TAG_PINNED_RELEASES"
             fi
