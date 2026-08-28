@@ -173,13 +173,13 @@ export class EngineServer {
   // predecessor link of the same process — the app never keeps two alive, and
   // no two processes share a generation (the app's is its start time with a
   // pid tiebreak, engineLink.ts). That is the case that bites (#849): a
-  // Disconnect issued while the link was down
-  // is flushed on the replacement link, and under load the engine can read
-  // that link's hello and close before it has processed the dead socket's EOF
-  // — both are ready in the same poll batch, and the poll does not order them
-  // by time. Refusing the close then loses the user's Disconnect for good: the
-  // app has already forgotten it, and nobody holds the socket but a link that
-  // will be reaped a moment later.
+  // Disconnect issued while the link was down is flushed on the replacement
+  // link, and under load the engine can read that link's hello and close
+  // before it has processed the dead socket's EOF — both are ready in the same
+  // poll batch, and the poll does not order them by time. Refusing the close
+  // then loses the user's Disconnect for good: the app has already forgotten
+  // it, and nobody holds the socket but a link that will be reaped a moment
+  // later.
   private contest(link: AppLink, u: EngineUpstream, verb: 'attach' | 'close'): AppLink | null {
     const other = this.holderOf(u, link);
     if (!other) return null;
