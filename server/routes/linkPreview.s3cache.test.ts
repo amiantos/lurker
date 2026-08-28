@@ -752,11 +752,14 @@ describe('finding cached bytes the index cannot name', () => {
 });
 
 /**
- * ⚠⚠ A 200 carrying real image bytes is not permission to KEEP them. GitHub's og:image
- * service answers a card it could not render with a 200 and a valid PNG — the dark
- * Octocat placeholder — marked `cache-control: public, max-age=0`, while a card it DID
- * render comes back `max-age=21600, immutable`. The bytes are indistinguishable; the
- * header is the whole of the difference, and nothing on either side of the seam read it.
+ * ⚠⚠ A 200 carrying real image bytes is not permission to KEEP them. Every other guard in
+ * the cache tests what the bytes ARE — signature, length, framing — and an origin can pass
+ * all of them while saying plainly not to keep the result.
+ *
+ * ⚠ The GitHub placeholder that prompted this (a 200 + valid PNG under `max-age=0`) is not
+ * reachable through the pipeline as it stands — the repo behind it 404s from github.com, so
+ * the resolver never mints an image URL — so these pin a general rule rather than a
+ * reproduction. See `originPermitsStoring`.
  */
 describe('the origin’s own caching instruction', () => {
   /** An origin that serves `body` with an explicit Cache-Control. */

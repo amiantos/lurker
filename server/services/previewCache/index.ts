@@ -179,15 +179,20 @@ export function cacheable(
 /**
  * Whether the ORIGIN permits us to keep a copy.
  *
- * ⚠⚠ A 200 carrying real image bytes is not the same as permission to KEEP them, and
- * until this nothing here asked. `opengraph.githubassets.com` answers a card it cannot
- * render with a 200 and a perfectly valid PNG — the dark Octocat placeholder — under
- * `cache-control: public, max-age=0`; a card it DID render comes back `max-age=21600,
- * immutable`. The placeholder passed every guard this module has (real PNG signature,
- * honest Content-Length, cleanly framed) and was then stored and re-served under our own
- * `private, max-age=86400, immutable` for the full seven days, long after GitHub had
- * started rendering the real card. The one thing that distinguished the two was a header
- * we never read.
+ * ⚠⚠ A 200 carrying real image bytes is not the same as permission to KEEP them, and until
+ * this nothing here asked. Every other guard in this module tests what the bytes ARE — the
+ * signature, the length, the framing — and an origin can satisfy all of them while telling
+ * us plainly not to hold on to the result.
+ *
+ * ⚠ The case that prompted it is NOT one this pipeline can currently reach, and that is
+ * worth stating so nobody "fixes" it back out. `opengraph.githubassets.com` answers a card
+ * it cannot render with a 200 and a perfectly valid PNG — the dark Octocat placeholder —
+ * under `cache-control: public, max-age=0`, where a real card is `max-age=21600, immutable`;
+ * the bytes are indistinguishable and the header is the only tell. But a repo that would
+ * produce that placeholder is a 404 from github.com, so the resolver calls the URL dead and
+ * never mints an image URL for it at all, and an exhausted render budget answers 429 rather
+ * than a placeholder. So this guards a real origin behaviour by a route nothing takes today
+ * — kept because it is general and costs one header read, not because it was observed.
  *
  * ⚠ Silence is PERMISSION, not prohibition: plenty of image hosts send no Cache-Control
  * at all, and refusing those would turn the cache off for most of the web.
