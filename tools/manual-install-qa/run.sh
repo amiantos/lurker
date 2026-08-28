@@ -9,8 +9,8 @@
 #   tools/manual-install-qa/run.sh          # build, run, tear down; exit 0 = every check passed
 #   tools/manual-install-qa/run.sh --keep   # leave the containers up afterwards, to poke at
 #
-# Boots a throwaway Debian 12 container with systemd as PID 1 and Node 24 from
-# NodeSource (the "bare host") plus a stock ergo IRC server, then runs qa.sh
+# Boots a throwaway Debian 12 container with systemd as PID 1 and Node 24 at
+# /usr/bin (the "bare host") plus a stock ergo IRC server, then runs qa.sh
 # inside the host. qa.sh installs Lurker FROM THIS CHECKOUT exactly the way the
 # docs say — a lurker user, /opt/lurker, `npm run install:all`, `npm run
 # client:build`, `npm start` from a unit — creates an admin and a network over

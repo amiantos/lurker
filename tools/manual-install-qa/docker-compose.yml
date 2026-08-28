@@ -23,5 +23,7 @@ services:
   ergo:
     # A stock ergo. Its generated default config listens plaintext on :6667 on
     # every interface, needs no SASL, and does no ident lookups — a network
-    # that asks nothing, which is all the rig needs of it.
-    image: ghcr.io/ergochat/ergo:stable
+    # that asks nothing, which is all the rig needs of it. Pinned by digest
+    # (what `:stable` resolved to on 2026-08-28) so a failure of this rig is
+    # never "did ergo change?"; bump deliberately.
+    image: ghcr.io/ergochat/ergo@sha256:72db5b93b437ea0512fb79d9d4d035f0916ccba07ed736dec19e8d5b5a73f972

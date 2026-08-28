@@ -19,8 +19,19 @@
 import net from 'node:net';
 import fs from 'node:fs';
 
-const [mode, host, port, channel, ...rest] = process.argv.slice(2);
-if (!mode || !host || !port || !channel || rest.length < 1) {
+const [mode, host, portArg, channel, ...rest] = process.argv.slice(2);
+// Validated once: net.connect throws synchronously on a bad port, before any
+// 'error' handler is attached, which would read as a crash rather than usage.
+const port = Number(portArg);
+if (
+  !mode ||
+  !host ||
+  !Number.isInteger(port) ||
+  port < 1 ||
+  port > 65535 ||
+  !channel ||
+  rest.length < 1
+) {
   console.error(
     'usage: watcher.mjs watch <host> <port> <channel> <nick> <logfile> | say <host> <port> <channel> <text>',
   );
@@ -53,7 +64,7 @@ function parse(line) {
 }
 
 function connect(nick, handler) {
-  const sock = net.connect(Number(port), host);
+  const sock = net.connect(port, host);
   let buf = '';
   sock.setEncoding('utf8');
   sock.on('connect', () => sock.write(`NICK ${nick}\r\nUSER ${nick} 0 * :${nick}\r\n`));
