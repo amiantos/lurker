@@ -167,7 +167,8 @@ export class EngineServer {
   // well as for an attach, since its transport reads `closed` as a network
   // drop and would re-dial the same id through the engine, undoing the close,
   // while `detached` is the path that disposes without reconnecting. Returns
-  // the refusing holder, or null when the way is clear; logs either way.
+  // the refusing holder, or null when the way is clear; a refusal and a
+  // takeover are both logged, an uncontested socket is not.
   //
   // "Not newer" deliberately includes the SAME generation, which is a
   // predecessor link of the same process — the app never keeps two alive, and
