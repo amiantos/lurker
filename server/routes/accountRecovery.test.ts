@@ -297,26 +297,27 @@ describe('POST /api/auth/recovery/:token/password', () => {
     expect(push.listAllForUser(u.id)).toHaveLength(0);
   });
 
-  it('leaves existing passkeys alone', async () => {
-    // Recovery restores a way in; it is not a way to strip someone's
-    // credentials out from under them.
-    const u = createUser('redeem-keeps-passkeys');
+  it('removes every existing passkey, which an attacker could have planted', async () => {
+    // Changing the password is worthless while a passkey someone else enrolled
+    // still opens the door. Redeeming leaves exactly the credential just set.
+    const u = createUser('redeem-wipes-passkeys');
     const { insertCredential, countForUser } = await import('../db/webauthnCredentials.js');
     insertCredential({
       userId: u.id,
-      credentialId: 'cred-kept-through-recovery',
+      credentialId: 'cred-planted-by-attacker',
       publicKey: Buffer.from('key'),
       counter: 0,
       transports: ['internal'],
       deviceType: 'singleDevice',
       backedUp: false,
-      label: 'old laptop',
+      label: 'attacker laptop',
     });
     const { token } = await issue(u.id);
-    await testRequest(app)
+    const res = await testRequest(app)
       .post(`/api/auth/recovery/${token}/password`)
       .send({ password: 'passwordalongside' });
-    expect(countForUser(u.id)).toBe(1);
+    expect(res.status).toBe(200);
+    expect(countForUser(u.id)).toBe(0);
   });
 });
 
@@ -390,6 +391,79 @@ describe('spendRecoveryAndEnroll', () => {
         label: null,
       }),
     ).toBeNull();
+    expect(recovery.findLiveRecoveryToken(token)).toMatchObject({ userId: u.id });
+  });
+});
+
+describe('recovering with a passkey clears the password', () => {
+  it('leaves an attacker who SET a password unable to sign back in', async () => {
+    // The takeover this feature exists for: someone sets a password on the
+    // account. Alice, whose only credential was a passkey on a lost phone,
+    // recovers with a new passkey. If the password survived, they are back in
+    // seconds — and a password is pure knowledge, so the "can't be used without
+    // the authenticator" argument that spares a passkey does not cover it.
+    const u = createUser('passkey-clears-password');
+    setPasswordHash(u.id, hashPassword('theattackerspassword'));
+    const { token } = await issue(u.id);
+    expect(
+      recovery.spendRecoveryAndEnroll(token, u.id, {
+        credentialId: 'cred-alices-new-phone',
+        publicKey: Buffer.from('key'),
+        counter: 0,
+        transports: ['internal'],
+        deviceType: 'singleDevice',
+        backedUp: false,
+        label: 'new phone',
+      }),
+    ).toBe(u.id);
+    // Asserted on the stored hash rather than through POST /login/password: the
+    // throttle test above deliberately trips this IP's login backoff, so a login
+    // here would 429 and prove nothing about the credential.
+    expect(getPasswordHash(u.id)).toBeNull();
+    expect(verifyPassword('theattackerspassword', getPasswordHash(u.id))).toBe(false);
+  });
+
+  it('rolls the credential wipe back when the enroll fails', async () => {
+    // A failed ceremony must not cost the member their existing credentials on
+    // top of leaving them locked out.
+    const other = createUser('wipe-rollback-owner');
+    const u = createUser('wipe-rollback');
+    const { insertCredential, countForUser } = await import('../db/webauthnCredentials.js');
+    setPasswordHash(u.id, hashPassword('thememberspassword'));
+    insertCredential({
+      userId: u.id,
+      credentialId: 'cred-the-member-still-has',
+      publicKey: Buffer.from('key'),
+      counter: 0,
+      transports: ['internal'],
+      deviceType: 'singleDevice',
+      backedUp: false,
+      label: null,
+    });
+    insertCredential({
+      userId: other.id,
+      credentialId: 'cred-clashing',
+      publicKey: Buffer.from('key'),
+      counter: 0,
+      transports: ['internal'],
+      deviceType: 'singleDevice',
+      backedUp: false,
+      label: null,
+    });
+    const { token } = await issue(u.id);
+    expect(() =>
+      recovery.spendRecoveryAndEnroll(token, u.id, {
+        credentialId: 'cred-clashing',
+        publicKey: Buffer.from('key'),
+        counter: 0,
+        transports: ['internal'],
+        deviceType: 'singleDevice',
+        backedUp: false,
+        label: null,
+      }),
+    ).toThrow(/UNIQUE constraint failed/);
+    expect(countForUser(u.id)).toBe(1);
+    expect(getPasswordHash(u.id)).toBeTruthy();
     expect(recovery.findLiveRecoveryToken(token)).toMatchObject({ userId: u.id });
   });
 });

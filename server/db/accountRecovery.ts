@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
-import { insertCredential } from './webauthnCredentials.js';
+import { insertCredential, deleteAllForUser as deleteAllPasskeys } from './webauthnCredentials.js';
+import { setPasswordHash } from './users.js';
 import type { InsertCredentialFields } from './webauthnCredentials.js';
 import {
   generateRecoveryToken,
@@ -103,8 +104,39 @@ export function consumeRecoveryToken(token: string, now = Date.now()): number | 
 }
 
 /**
+ * Spend a recovery link, clear every OTHER credential on the account, and set
+ * the new password — all atomically. Returns the user id, or null if the link
+ * was already gone.
+ *
+ * The credential wipe is the point, not housekeeping. Recovery exists because an
+ * account may have been taken over, and an attacker who enrolled a passkey keeps
+ * a way in that a password change cannot touch. Redeeming therefore leaves
+ * exactly one credential: the one just established.
+ */
+export function spendRecoveryAndSetPassword(
+  token: string,
+  passwordHash: string,
+  now = Date.now(),
+): number | null {
+  const run = db.transaction((): number | null => {
+    const userId = consumeRecoveryToken(token, now);
+    if (userId === null) return null;
+    deleteAllPasskeys(userId);
+    setPasswordHash(userId, passwordHash);
+    return userId;
+  });
+  return run();
+}
+
+/**
  * Spend a recovery link and enroll a passkey as ONE atomic step, returning the
  * user id on success or null if the link was already gone.
+ *
+ * Also clears the password and every pre-existing passkey, for the same reason
+ * as above: an attacker who took the account over by SETTING a password would
+ * otherwise still know it and be back in seconds. A password is pure knowledge,
+ * so the "can't be used without the authenticator" argument that once exempted
+ * credentials here does not cover it.
  *
  * They cannot be separate statements. `webauthn_credentials.credential_id` is
  * UNIQUE across the whole instance, while the ceremony's excludeCredentials only
@@ -135,7 +167,11 @@ export function spendRecoveryAndEnroll(
     if (!info || info.userId !== expectedUserId) return null;
     const userId = consumeRecoveryToken(token, now);
     if (userId === null) return null;
-    // The one statement that can fail. Its throw is what rolls the consume back.
+    // Before the insert, so a duplicate-credential throw rolls the wipe back too
+    // and the member keeps everything they had.
+    deleteAllPasskeys(userId);
+    setPasswordHash(userId, null);
+    // The one statement that can fail. Its throw is what rolls all of this back.
     insertCredential({ ...credential, userId });
     return userId;
   });

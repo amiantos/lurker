@@ -36,12 +36,14 @@ Lurker accounts have no email address, so there is no "forgot my password" email
 
 Opening it lets them set a password _or_ enroll a new passkey. Both matter: a member whose only credential was a passkey on a lost phone has no password to reset.
 
+Either way, the account ends up with **exactly one** sign-in method — the one they just chose. Recovery assumes the account may have been taken over, and a password an attacker set or a passkey they enrolled would otherwise survive it.
+
 A few things worth knowing:
 
 - **The URL is shown once.** Only its hash is stored, so nothing can display it again. Lost it? Issue another — that invalidates the first.
 - **Single use, 24 hours.** Redeeming it or letting it expire ends it; **revoke recovery** ends it early.
 - **Redeeming cuts off every other way in.** A lockout is indistinguishable from a takeover, so recovery assumes one: web sessions, open connections, attached bouncer clients, API tokens, and push registrations for that account all go. The member will need to sign in again on their other devices, re-issue any API tokens, and re-enable notifications.
-- **Existing passkeys survive.** Recovery adds a way in; it never removes one.
+- **Every other credential is replaced.** The old password and all previously enrolled passkeys stop working, so a member with several passkeys re-enrolls the ones they still have.
 
 ### When the only admin is locked out
 
@@ -186,7 +188,7 @@ environment:
 
 Restart Lurker, log in with your password, then visit **Settings → Passkeys** and register one. Passkeys require HTTPS for any non-localhost hostname — browsers won't allow the WebAuthn ceremony otherwise.
 
-**Lost your passkey?** Just log in with your password and remove the dead passkey from the settings panel.
+**Lost your passkey?** Just log in with your password and remove the dead passkey from the settings panel. If it was your only way in, ask your admin for a [recovery link](#account-recovery).
 
 ### Web Push notifications
 

@@ -28,8 +28,8 @@ import {
 import { inviteStatus, consumeInvite } from '../db/invites.js';
 import {
   findLiveRecoveryToken,
-  consumeRecoveryToken,
   spendRecoveryAndEnroll,
+  spendRecoveryAndSetPassword,
 } from '../db/accountRecovery.js';
 import { isValidUsername, isValidLoginUsername } from '../../shared/username.js';
 import {
@@ -424,12 +424,14 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
 // Every path here ends in finishRecovery(), which signs the account out
 // everywhere before minting the new session: the lockout that made recovery
 // necessary is indistinguishable from a takeover, so any session predating the
-// recovery is assumed hostile: session rows, open WebSockets, attached bouncer
-// sessions, API tokens, and push registrations all go, because every one of them
-// authenticates once and is never re-checked afterwards. Existing passkeys are
-// the deliberate exception — recovery restores a way in, it is not a way to
-// strip someone's credentials, and a passkey cannot be used without the
-// authenticator itself.
+// recovery is assumed hostile, so redeeming leaves exactly ONE way into the
+// account: the credential just established. Everything else goes — session rows,
+// open WebSockets, attached bouncer sessions, API tokens, push registrations,
+// the old password, and every previously enrolled passkey. Each of those either
+// authenticates once and is never re-checked, or is a credential an attacker
+// could have planted; changing a password is worthless while a passkey they
+// enrolled still opens the door, and clearing passkeys is worthless while they
+// still know a password.
 
 // A cell's sign-in is the control plane's: it holds cp_session, injects
 // lurker_session, and has its own email-based reset. Issuing already refuses
@@ -509,7 +511,10 @@ router.post('/recovery/:token/password', (req: Request<{ token: string }>, res: 
     res.status(400).json({ error: passwordRequirementsMessage() });
     return;
   }
-  const userId = consumeRecoveryToken(req.params.token);
+  // Spend, wipe every other credential, and set the new password in one
+  // transaction — a half-applied recovery would leave the account either
+  // unreachable or still open to whoever held it.
+  const userId = spendRecoveryAndSetPassword(req.params.token, hashPassword(password as string));
   if (userId === null) {
     res.status(400).json({ error: 'that recovery link is invalid or has expired' });
     return;
@@ -521,7 +526,6 @@ router.post('/recovery/:token/password', (req: Request<{ token: string }>, res: 
     res.status(404).json({ error: 'that account no longer exists' });
     return;
   }
-  setPasswordHash(user.id, hashPassword(password as string));
   finishRecovery(res, user);
 });
 
@@ -552,9 +556,10 @@ router.post('/recovery/:token/options', async (req: Request<{ token: string }>, 
       residentKey: 'required',
       userVerification: 'preferred',
     },
-    // The authenticators already on the account. Usually none of them are the
-    // one in the member's hand — that's why they're here — but excluding them
-    // keeps a still-enrolled device from silently registering itself twice.
+    // The authenticators already on the account. Redeeming removes all of them
+    // anyway, so this is not a security boundary — it just stops a browser from
+    // silently re-registering a key it can see is already enrolled, which would
+    // be a confusing no-op prompt rather than an error.
     excludeCredentials: existing.map((c) => ({
       id: c.credentialId,
       transports: c.transports,

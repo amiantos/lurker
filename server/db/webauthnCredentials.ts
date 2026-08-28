@@ -139,6 +139,19 @@ export function updateLabel(id: number, userId: number, label: string | null): b
   return result.changes > 0;
 }
 
+/**
+ * Remove every passkey on an account, returning how many went.
+ *
+ * For account recovery (#855), which assumes the account was taken over: a
+ * passkey the attacker enrolled is a way back in that survives a password
+ * change, and nothing distinguishes it from the member's own. Note this has no
+ * last-credential guard, unlike deleteById — the recovery path re-establishes a
+ * credential in the same transaction, so the account is never left unreachable.
+ */
+export function deleteAllForUser(userId: number): number {
+  return db.prepare('DELETE FROM webauthn_credentials WHERE user_id = ?').run(userId).changes;
+}
+
 export function deleteById(id: number, userId: number): boolean {
   const result = db
     .prepare('DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?')

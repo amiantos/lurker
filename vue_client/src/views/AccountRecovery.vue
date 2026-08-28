@@ -12,6 +12,10 @@
   passkey. A member whose only credential was a passkey on a lost phone has no
   password to reset, so offering only the password half would strand exactly the
   case this exists for.
+
+  Either way the account ends up with exactly ONE credential — the one chosen
+  here. Recovery assumes the account may have been taken over, and a password an
+  attacker set or a passkey they enrolled would otherwise outlive it.
 -->
 
 <template>
@@ -37,7 +41,10 @@
           Recovering <strong>{{ status.username }}</strong
           >.
         </p>
-        <p class="warning">Signing back in here signs that account out on every other device.</p>
+        <p class="warning">
+          This replaces every way into the account. Other devices are signed out, and any existing
+          password and passkeys stop working.
+        </p>
 
         <form @submit.prevent="onSetPassword">
           <label>
@@ -62,9 +69,7 @@
         <button class="btn-primary" :disabled="working" @click="onAddPasskey">
           {{ mode === 'passkey' && working ? 'Waiting for passkey…' : 'Register a passkey' }}
         </button>
-        <p class="hint">
-          Adds a new passkey to the account. Any passkeys already on it are left alone.
-        </p>
+        <p class="hint">This becomes the account's only sign-in method.</p>
 
         <p v-if="auth.error" class="error">{{ auth.error }}</p>
       </template>
