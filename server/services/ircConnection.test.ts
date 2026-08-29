@@ -3801,12 +3801,21 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
   });
 
-  it('recognises non-NickServ services identification in connect_commands', () => {
-    // QuakeNet's Q, GameSurge's AuthServ — same race, different bot name.
-    const conn = makeScriptedConn(
-      'script-quakenet',
-      'PRIVMSG Q@CServe.quakenet.org :AUTH me hunter2',
-    );
+  // Every services flavour has to read as "wait", because a miss here is the
+  // dangerous direction: it unsubscribes someone mid-race. Matched as a family
+  // (any *Serv) plus the identification verbs, since the two networks whose
+  // services are not named *Serv — QuakeNet's Q, Undernet's X — are reachable
+  // only through the verb.
+  it.each([
+    ['NickServ', 'PRIVMSG NickServ :IDENTIFY me hunter2'],
+    ['SaslServ', 'PRIVMSG SaslServ :IDENTIFY me hunter2'],
+    ['SaslServ, no verb', 'PRIVMSG SaslServ :HELP'],
+    ['HostServ', 'MSG HostServ ON'],
+    ['GameSurge AuthServ', 'PRIVMSG AuthServ@services.gamesurge.net :AUTH me hunter2'],
+    ['QuakeNet Q', 'PRIVMSG Q@CServe.quakenet.org :AUTH me hunter2'],
+    ['Undernet X', 'PRIVMSG X@channels.undernet.org :LOGIN me hunter2'],
+  ])('treats %s in connect_commands as a services wait', (label, commands) => {
+    const conn = makeScriptedConn(`script-${label.replace(/\W+/g, '-')}`, commands);
     ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
       kind: 'channel',
       autojoin: true,

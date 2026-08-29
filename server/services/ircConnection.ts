@@ -6599,12 +6599,19 @@ const JOIN_REJECTION_MESSAGES: Record<string, string> = {
   '477': 'This channel requires a registered nickname.', // ERR_NEEDREGGEDNICK
 };
 
-// Does a connect_commands script look like it identifies to services? Covers
-// the shapes people actually write: `PRIVMSG NickServ :IDENTIFY pw`, `NS
-// IDENTIFY pw`, QuakeNet's `PRIVMSG Q@CServe... :AUTH u pw`, GameSurge's
-// AuthServ. Ordinary uses — `JOIN #foo`, `PING connectcmd`, `MODE me +x` —
-// carry none of this vocabulary and correctly read as "nothing to wait for".
-const SERVICES_IDENTIFY_HINT = /\b(?:nickserv|authserv|identify|auth)\b/i;
+// Does a connect_commands script look like it talks to services? Matched as a
+// FAMILY, not a list of bot names — an enumeration keeps missing entries
+// (SaslServ, HostServ, and Undernet's `X ... LOGIN`, which uses none of the
+// usual verbs). Any `*Serv` pseudo-client counts, plus the identification
+// verbs, which is what catches the two networks whose services aren't named
+// that way: QuakeNet's `PRIVMSG Q@CServe... :AUTH` and Undernet's X.
+//
+// Deliberately over-inclusive: `PRIVMSG ChanServ :OP #foo` isn't
+// identification, but a script talking to services at all is a script that
+// probably identified first, and waiting costs nothing but a retry. Ordinary
+// uses — `JOIN #foo`, `PING connectcmd`, `MODE me +x` — carry none of this and
+// correctly read as "nothing to wait for".
+const SERVICES_IDENTIFY_HINT = /\b(?:\w*serv|identify|auth|login|sasl)\b/i;
 
 // The subset of join rejections that say something durable about US and this
 // channel, rather than about the moment. These are the ones worth cancelling
