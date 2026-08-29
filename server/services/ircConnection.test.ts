@@ -3567,6 +3567,133 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     ).toHaveLength(0);
   });
 
+  // A join the server durably refuses must stop replaying on every reconnect.
+  // The reported case: an invite-only channel seeded as a network default, so
+  // the join never echoed, no buffer was ever surfaced, and the rejection
+  // repeated on every connect with nothing on screen to cancel it.
+  it('473 stops auto-joining an invite-only channel and says so', () => {
+    const conn = makeConn('inviteonly-stop');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: `:server:${conn.network.id}`,
+        text: 'Stopped auto-joining #marco because it is invite-only (+i). Use /join #marco to try again.',
+      }),
+    );
+  });
+
+  it('473 clears a config-seeded default channel without surfacing its buffer', () => {
+    // seedDefaultChannel's row is 'closed' with a NULL closed_at — the "never
+    // surfaced" shape. Cancelling the rejoin must not turn it into a visible
+    // empty buffer; the point is that it stops trying, silently, in the sidebar.
+    const conn = makeConn('inviteonly-seed');
+    seedAutojoinChannel(conn.network.user_id, conn.network.id, '#marco');
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    const row = getBuffer(conn.network.user_id, conn.network.id, '#marco')!;
+    expect(row.autojoin).toBe(false);
+    expect(row.state).toBe('closed');
+    expect(row.closedAt).toBeNull();
+  });
+
+  it('474 stops auto-joining a channel we are banned from', () => {
+    const conn = makeConn('banned-stop');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'banned_from_channel',
+      channel: '#apple',
+      reason: 'Cannot join channel (+b)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
+  });
+
+  it('471 leaves autojoin alone — a full channel is a state of the moment', () => {
+    // The guard that keeps this from becoming a silent unsubscribe. Same for
+    // 405, and for 477 (which races SASL identification and would hit every
+    // channel on a slow-identify reconnect).
+    const conn = makeConn('full-keeps');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'channel_is_full',
+      channel: '#apple',
+      reason: 'Cannot join channel (+l)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(true);
+  });
+
+  it('473 on a channel we never auto-joined announces nothing', () => {
+    // A manual `/join #private` persists nothing (joinChannel writes on the
+    // echo, never the request), so there is no subscription to cancel — and
+    // claiming to have stopped one would be a lie.
+    const conn = makeConn('inviteonly-manual');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#private',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#private')).toBeUndefined();
+    expect(publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ target: `:server:${conn.network.id}` }),
+    );
+  });
+
+  it('473 still shows the join-error toast on the channel (#260)', () => {
+    const conn = makeConn('inviteonly-toast');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const ephemeral = vi.fn<(event: unknown) => void>();
+    conn.publishEphemeral = ephemeral;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(ephemeral).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'join-error',
+        target: '#marco',
+        text: 'This channel is invite-only.',
+      }),
+    );
+  });
+
   it('442 corrects a stale autojoin row even when the channel is not in the joined set', () => {
     // The in-memory set and the persisted row can disagree — after a restart
     // the row survives while this.channels is empty. The row is what

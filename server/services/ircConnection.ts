@@ -19,6 +19,7 @@ import {
   getBuffer,
   ensureExists as ensureBufferExists,
   setAutojoin as setBufferAutojoin,
+  isAutojoin as isBufferAutojoin,
   setChannelKey as setBufferChannelKey,
   deleteBuffer,
   listOpenDms,
@@ -3085,6 +3086,27 @@ export class IrcConnection {
         // Falls through to the generic server-buffer line below: 442 is rare
         // and worth showing, and the eviction above is silent on its own.
       }
+      // A rejection the server will keep giving us: stop replaying the join on
+      // every reconnect. Without this an auto-rejoin the ircd always refuses
+      // retries forever, and for a channel whose buffer is closed (or was
+      // never surfaced — a config-seeded default channel that has not had its
+      // first join echo) there is nothing on screen to cancel it: the user
+      // sees a rejection scroll past on every connect with no affordance
+      // attached to it.
+      //
+      // ONLY the durable three. 471 (+l full) and 405 (too many channels) are
+      // states of the moment, and 477 (needs a registered nick) is the classic
+      // race where the rejoin fires before SASL/NickServ identification lands
+      // — dropping autojoin on those would quietly unsubscribe people from
+      // channels they are perfectly able to join. (477 arrives on a different
+      // event entirely, so it is excluded structurally, not just by this map.)
+      //
+      // Lowering is not destructive: autojoin is raised again by the next join
+      // ECHO, so a channel that becomes joinable again is one /join away from
+      // being restored. That is what makes acting on a single rejection safe.
+      if (rejectChannel && PERMANENT_JOIN_REJECTION_TAGS.has(tag)) {
+        this.stopAutojoining(rejectChannel, tag);
+      }
       const rejectMsg = rejectChannel ? joinRejectionMessageByTag(tag) : null;
       if (rejectChannel && rejectMsg) {
         this.publishEphemeral({
@@ -3692,6 +3714,38 @@ export class IrcConnection {
       m.away = next;
       this.publishNames(ch);
     }
+  }
+
+  /** Cancel the reconnect rejoin for a channel the server durably refuses, and
+   *  say so where the user is already watching the refusal (#868).
+   *
+   *  Gated on the row ALREADY being an autojoin: a manual `/join #private` that
+   *  gets a 473 persisted nothing in the first place (joinChannel writes on the
+   *  echo, never the request), so there is no subscription to cancel and no
+   *  reason to announce one. Only a row that claims we belong here — a real
+   *  membership the ircd has now locked us out of, or a config-seeded default
+   *  channel that has never managed its first join — reaches the write.
+   *
+   *  Deliberately does NOT touch the buffer's open/closed state or its history.
+   *  The channel may well become joinable again; what stops is the retrying. */
+  private stopAutojoining(name: string, tag: string): void {
+    const canonical = canonicalChannelTarget(name, this.channels) ?? name;
+    try {
+      if (!isBufferAutojoin(this.network.user_id, this.network.id, canonical)) return;
+      setBufferAutojoin(this.network.user_id, this.network.id, canonical, false);
+    } catch (_) {
+      return;
+    }
+    const why = PERMANENT_JOIN_REJECTION_REASONS[tag] ?? 'the server refused the join';
+    this.publish({
+      type: 'notice',
+      target: this.serverTarget(),
+      nick: 'lurker',
+      notable: false, // a status line, not unread-worthy — same as the nick-fallback notice
+      text:
+        `Stopped auto-joining ${canonical} because ${why}. ` +
+        `Use /join ${canonical} to try again.`,
+    });
   }
 
   // Forget a channel the server has told us we are not on, outside the normal
@@ -6494,6 +6548,26 @@ const JOIN_REJECTION_MESSAGES: Record<string, string> = {
   '475': 'This channel requires a key (password).', // ERR_BADCHANNELKEY (+k)
   '476': 'Bad channel mask.', // ERR_BADCHANMASK
   '477': 'This channel requires a registered nickname.', // ERR_NEEDREGGEDNICK
+};
+
+// The subset of join rejections that say something durable about US and this
+// channel, rather than about the moment. These are the ones worth cancelling
+// an auto-rejoin over — see stopAutojoining for why the others are excluded
+// and why acting on one rejection is safe.
+const PERMANENT_JOIN_REJECTION_TAGS = new Set([
+  'invite_only_channel', // 473 (+i) — we are not on the invex
+  'banned_from_channel', // 474 (+b) — and retrying reads as ban evasion to ops
+  'bad_channel_key', // 475 (+k) — the key we hold is wrong; it will stay wrong
+]);
+
+// Why each is durable enough to act on, in one line: for 473 the invex is the
+// thing that would let us in and we are not on it; for 474 the ban is; for 475
+// the stored key is, and MODE -k is what clears it. None of the three resolves
+// by waiting, which is exactly what an auto-rejoin does.
+const PERMANENT_JOIN_REJECTION_REASONS: Record<string, string> = {
+  invite_only_channel: 'it is invite-only (+i)',
+  banned_from_channel: 'you are banned from it (+b)',
+  bad_channel_key: 'the saved channel key is wrong (+k)',
 };
 
 // irc-framework's 'irc error' event reports a short string tag instead of the
