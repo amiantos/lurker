@@ -3409,6 +3409,27 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     return new IrcConnection({ network, onEvent: () => {} });
   }
 
+  /** A SASL network. SASL completes before 001, so this is identified by the
+   *  time the rejoin goes out — but only if it succeeded. */
+  function makeSaslConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: 'me',
+      sasl_password: 'hunter2',
+      connect_commands: null,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
   /** A network that identifies to services via NickServ — the case where a
    *  join rejection can arrive before identification has landed. */
   function makeNickServConn(name: string): IrcConnection {
@@ -3828,6 +3849,35 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     });
 
     expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+  });
+
+  it('a SASL network waits too, so a failed SASL cannot look like a durable refusal', () => {
+    // SASL lands before 001, so in the normal case RPL_LOGGEDIN has already
+    // arrived by the time the rejoin goes out and this gate costs nothing.
+    // It earns its keep when SASL FAILED: we are unidentified, the invex will
+    // not match, and every autojoined +i channel would otherwise be dropped
+    // in one pass.
+    const conn = makeSaslConn('sasl-unidentified');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+
+    // Once SASL has confirmed us, the same rejection is durable.
+    conn.client.emit('loggedin', {});
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
   });
 
   it('475 tells the user to supply the key, since a bare /join will not resend it', () => {
