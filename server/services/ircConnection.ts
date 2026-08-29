@@ -3780,9 +3780,21 @@ export class IrcConnection {
 
   /** Whether this connection is configured to identify to services but hasn't
    *  been confirmed yet. SASL lands before 001; NickServ via connect_commands
-   *  lands whenever it lands. */
+   *  lands whenever it lands.
+   *
+   *  connect_commands is a general-purpose script (people put `JOIN #foo` and
+   *  `MODE me +x` in it), so its mere presence says nothing — gating on that
+   *  would disable this feature outright for anyone using it for ordinary
+   *  things on a server that never sends 900. Look for identification
+   *  vocabulary instead.
+   *
+   *  A heuristic, and deliberately a generous one: a false positive costs a
+   *  channel that keeps retrying (the status quo), while a false negative
+   *  un-subscribes someone mid-race. When in doubt, wait. */
   private awaitingIdentification(): boolean {
-    return !!this.network.sasl_account || !!this.network.connect_commands;
+    if (this.network.sasl_account) return true;
+    const commands = this.network.connect_commands;
+    return !!commands && SERVICES_IDENTIFY_HINT.test(commands);
   }
 
   // Forget a channel the server has told us we are not on, outside the normal
@@ -6586,6 +6598,13 @@ const JOIN_REJECTION_MESSAGES: Record<string, string> = {
   '476': 'Bad channel mask.', // ERR_BADCHANMASK
   '477': 'This channel requires a registered nickname.', // ERR_NEEDREGGEDNICK
 };
+
+// Does a connect_commands script look like it identifies to services? Covers
+// the shapes people actually write: `PRIVMSG NickServ :IDENTIFY pw`, `NS
+// IDENTIFY pw`, QuakeNet's `PRIVMSG Q@CServe... :AUTH u pw`, GameSurge's
+// AuthServ. Ordinary uses — `JOIN #foo`, `PING connectcmd`, `MODE me +x` —
+// carry none of this vocabulary and correctly read as "nothing to wait for".
+const SERVICES_IDENTIFY_HINT = /\b(?:nickserv|authserv|identify|auth)\b/i;
 
 // The subset of join rejections that say something durable about US and this
 // channel, rather than about the moment. These are the ones worth cancelling

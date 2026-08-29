@@ -3388,6 +3388,27 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     return new IrcConnection({ network, onEvent: () => {} });
   }
 
+  /** A network whose connect_commands do something ordinary — connect_commands
+   *  is a general-purpose script, not an identification marker. */
+  function makeScriptedConn(name: string, connect_commands: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
   /** A network that identifies to services via NickServ — the case where a
    *  join rejection can arrive before identification has landed. */
   function makeNickServConn(name: string): IrcConnection {
@@ -3759,6 +3780,45 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     });
 
     expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+  });
+
+  it('connect_commands that do not identify are not treated as a services wait', () => {
+    // connect_commands is a general-purpose script. Gating on its presence
+    // alone would disable this fix entirely for anyone using it for ordinary
+    // things on a server that never sends 900.
+    const conn = makeScriptedConn('script-nonauth', 'JOIN #foo\nMODE me +x');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+  });
+
+  it('recognises non-NickServ services identification in connect_commands', () => {
+    // QuakeNet's Q, GameSurge's AuthServ — same race, different bot name.
+    const conn = makeScriptedConn(
+      'script-quakenet',
+      'PRIVMSG Q@CServe.quakenet.org :AUTH me hunter2',
+    );
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
   });
 
   it('475 tells the user to supply the key, since a bare /join will not resend it', () => {
