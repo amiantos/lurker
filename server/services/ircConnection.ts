@@ -604,6 +604,11 @@ export class IrcConnection {
   // permission may have changed: on RPL_LOGGEDIN, on (re)registration, and when
   // we (re)join the channel — so a /part + /join or a reconnect resumes typing.
   unsendableTargets: Set<string>;
+  // RPL_LOGGEDIN (900) seen on this connection — the server considers us
+  // identified to services. Only used to decide whether a join rejection is
+  // durable (see stopAutojoining); the send-permission logic re-probes instead
+  // of consulting a flag.
+  identifiedToServices: boolean;
   // Last time the user sent a real PRIVMSG/NOTICE/ACTION to a target (lowercase
   // key → epoch ms). Lets the send-rejection handler tell an actual failed
   // message (surface it inline) from an automated TAGMSG/typing bounce (stay
@@ -833,6 +838,7 @@ export class IrcConnection {
     this.regainNick = null;
     this.pendingRegainSetup = false;
     this.identdId = null;
+    this.identifiedToServices = false;
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.autoWhoTargets = new Set();
@@ -1249,6 +1255,10 @@ export class IrcConnection {
     // or SASL). That's exactly what +R/+M channels were waiting on, so drop the
     // unsendable set and let the next message re-probe — typing resumes too (#283).
     c.on('loggedin', () => {
+      // Also the gate stopAutojoining waits on: account-based channel access
+      // (+I/+e $a:) only starts matching once the server considers us
+      // identified, so a join rejection before this point says nothing durable.
+      this.identifiedToServices = true;
       this.unsendableTargets.clear();
     });
 
@@ -3729,6 +3739,23 @@ export class IrcConnection {
    *  Deliberately does NOT touch the buffer's open/closed state or its history.
    *  The channel may well become joinable again; what stops is the retrying. */
   private stopAutojoining(name: string, tag: string): void {
+    // The identification race, which is the same one 477 is excluded for.
+    // Account-based channel access is the NORMAL way it is granted — +i with
+    // an invex `+I $a:account`, +b with an exempt `+e $a:account` — and both
+    // only start matching once the server considers us identified. Our
+    // connect_commands (the NickServ IDENTIFY) and the autojoin batch both
+    // fire on 'registered', in the same tick; the WAIT verb exists precisely
+    // because services lag that. So a 473/474 arriving before RPL_LOGGEDIN
+    // may just be "NickServ hasn't caught up", and acting on it would
+    // unsubscribe someone from a channel they belong to.
+    //
+    // SASL completes before 001, so a SASL network is already identified by
+    // the time the rejoin goes out and this costs it nothing. A network with
+    // no credentials configured has nothing to wait for, so a rejection there
+    // is as durable as it will ever be. The one deliberately conservative case
+    // is a NickServ network whose server never sends 900: we simply never act,
+    // which is the right way to be wrong.
+    if (!this.identifiedToServices && this.awaitingIdentification()) return;
     const canonical = canonicalChannelTarget(name, this.channels) ?? name;
     try {
       if (!isBufferAutojoin(this.network.user_id, this.network.id, canonical)) return;
@@ -3737,15 +3764,25 @@ export class IrcConnection {
       return;
     }
     const why = PERMANENT_JOIN_REJECTION_REASONS[tag] ?? 'the server refused the join';
+    // The retry has to name a key for +k: joinChannel coerces an absent key to
+    // undefined and passes that straight to client.join, so a bare `/join #x`
+    // does NOT resend the stored one. Telling a user to run the command that
+    // reproduces their failure is worse than saying nothing.
+    const retry = tag === 'bad_channel_key' ? `/join ${canonical} <key>` : `/join ${canonical}`;
     this.publish({
       type: 'notice',
       target: this.serverTarget(),
       nick: 'lurker',
       notable: false, // a status line, not unread-worthy — same as the nick-fallback notice
-      text:
-        `Stopped auto-joining ${canonical} because ${why}. ` +
-        `Use /join ${canonical} to try again.`,
+      text: `Stopped auto-joining ${canonical} because ${why}. Use ${retry} to try again.`,
     });
+  }
+
+  /** Whether this connection is configured to identify to services but hasn't
+   *  been confirmed yet. SASL lands before 001; NickServ via connect_commands
+   *  lands whenever it lands. */
+  private awaitingIdentification(): boolean {
+    return !!this.network.sasl_account || !!this.network.connect_commands;
   }
 
   // Forget a channel the server has told us we are not on, outside the normal

@@ -3388,6 +3388,27 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     return new IrcConnection({ network, onEvent: () => {} });
   }
 
+  /** A network that identifies to services via NickServ — the case where a
+   *  join rejection can arrive before identification has landed. */
+  function makeNickServConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: 'PRIVMSG NickServ :IDENTIFY hunter2',
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
   it('self-join echo mints the registry row with autojoin and the stashed key', () => {
     const conn = makeConn('echo-mints');
     conn.client.user.nick = 'me';
@@ -3690,6 +3711,76 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
         type: 'join-error',
         target: '#marco',
         text: 'This channel is invite-only.',
+      }),
+    );
+  });
+
+  // The identification race. Account-based access (+I/$a:, +e/$a:) only starts
+  // matching once services consider us identified, and connect_commands and the
+  // autojoin batch both fire on 'registered' — so an early 473/474 can mean
+  // "NickServ hasn't caught up", not "you don't belong here".
+  it('473 before RPL_LOGGEDIN leaves autojoin alone on a NickServ network', () => {
+    const conn = makeNickServConn('inviteonly-race');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    // Still in the rejoin list: the next reconnect gets to try again once
+    // NickServ has landed, instead of the channel silently disappearing.
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+    expect(publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ target: `:server:${conn.network.id}` }),
+    );
+  });
+
+  it('473 after RPL_LOGGEDIN does stop auto-joining on a NickServ network', () => {
+    // Same network, same rejection — but now services have confirmed us, so
+    // the invex would already have matched. The refusal is durable.
+    const conn = makeNickServConn('inviteonly-identified');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    conn.client.emit('loggedin', {});
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+  });
+
+  it('475 tells the user to supply the key, since a bare /join will not resend it', () => {
+    // joinChannel coerces an absent key to undefined and passes it straight to
+    // client.join, so `/join #x` on a +k channel reproduces the failure.
+    const conn = makeConn('badkey-remedy');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'bad_channel_key',
+      channel: '#marco',
+      reason: 'Cannot join channel (+k)',
+    });
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'Stopped auto-joining #marco because the saved channel key is wrong (+k). Use /join #marco <key> to try again.',
       }),
     );
   });
