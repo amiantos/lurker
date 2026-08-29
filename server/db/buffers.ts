@@ -249,6 +249,11 @@ const closedFoldedForNetworkStmt = db.prepare(`
   SELECT target_folded FROM buffers WHERE network_id = ? AND state = 'closed'
 `);
 
+const autojoinFlagStmt = db.prepare(`
+  SELECT autojoin FROM buffers
+  WHERE user_id = ? AND IFNULL(network_id, 0) = IFNULL(?, 0) AND target_folded = ?
+`);
+
 /** Folded state lookup without materializing the record: 'open', 'closed', or
  *  undefined when no row exists. */
 export function getState(
@@ -304,6 +309,17 @@ export function closedFoldedSetForNetwork(networkId: number): Set<string> {
  *  and could disagree with the folded snapshot filter about the same buffer. */
 export function isClosed(userId: number, networkId: number | null, target: string): boolean {
   return getState(userId, networkId, target) === 'closed';
+}
+
+/** Folded autojoin check (#868), decrypt-free for the same reason as getState: a
+ *  channel whose stored +k key was written under a since-rotated key-id would
+ *  make getBuffer's decryptSecret THROW, and this runs inside the IRC error
+ *  handler. False for a row that doesn't exist. */
+export function isAutojoin(userId: number, networkId: number | null, target: string): boolean {
+  const row = autojoinFlagStmt.get(userId, networkId, foldTargetFor(networkId, target)) as
+    | { autojoin: number }
+    | undefined;
+  return !!row?.autojoin;
 }
 
 export interface EnsureResult {

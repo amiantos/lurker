@@ -3388,6 +3388,69 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     return new IrcConnection({ network, onEvent: () => {} });
   }
 
+  /** A network whose connect_commands do something ordinary — connect_commands
+   *  is a general-purpose script, not an identification marker. */
+  function makeScriptedConn(name: string, connect_commands: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  /** A SASL network. SASL completes before 001, so this is identified by the
+   *  time the rejoin goes out — but only if it succeeded. */
+  function makeSaslConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: 'me',
+      sasl_password: 'hunter2',
+      connect_commands: null,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  /** A network that identifies to services via NickServ — the case where a
+   *  join rejection can arrive before identification has landed. */
+  function makeNickServConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: 'PRIVMSG NickServ :IDENTIFY hunter2',
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
   it('self-join echo mints the registry row with autojoin and the stashed key', () => {
     const conn = makeConn('echo-mints');
     conn.client.user.nick = 'me';
@@ -3565,6 +3628,280 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     expect(
       listBufferRowsForNetwork(conn.network.id).filter((b) => b.kind !== 'server'),
     ).toHaveLength(0);
+  });
+
+  // A join the server durably refuses must stop replaying on every reconnect.
+  // The reported case: an invite-only channel seeded as a network default, so
+  // the join never echoed, no buffer was ever surfaced, and the rejection
+  // repeated on every connect with nothing on screen to cancel it.
+  it('473 stops auto-joining an invite-only channel and says so', () => {
+    const conn = makeConn('inviteonly-stop');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: `:server:${conn.network.id}`,
+        text: 'Stopped auto-joining #marco because it is invite-only (+i). Use /join #marco to try again.',
+      }),
+    );
+  });
+
+  it('473 clears a config-seeded default channel without surfacing its buffer', () => {
+    // seedDefaultChannel's row is 'closed' with a NULL closed_at — the "never
+    // surfaced" shape. Cancelling the rejoin must not turn it into a visible
+    // empty buffer; the point is that it stops trying, silently, in the sidebar.
+    const conn = makeConn('inviteonly-seed');
+    seedAutojoinChannel(conn.network.user_id, conn.network.id, '#marco');
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    const row = getBuffer(conn.network.user_id, conn.network.id, '#marco')!;
+    expect(row.autojoin).toBe(false);
+    expect(row.state).toBe('closed');
+    expect(row.closedAt).toBeNull();
+  });
+
+  it('474 stops auto-joining a channel we are banned from', () => {
+    const conn = makeConn('banned-stop');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'banned_from_channel',
+      channel: '#apple',
+      reason: 'Cannot join channel (+b)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
+  });
+
+  it('471 leaves autojoin alone — a full channel is a state of the moment', () => {
+    // The guard that keeps this from becoming a silent unsubscribe. Same for
+    // 405, and for 477 (which races SASL identification and would hit every
+    // channel on a slow-identify reconnect).
+    const conn = makeConn('full-keeps');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'channel_is_full',
+      channel: '#apple',
+      reason: 'Cannot join channel (+l)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(true);
+  });
+
+  it('473 on a channel we never auto-joined announces nothing', () => {
+    // A manual `/join #private` persists nothing (joinChannel writes on the
+    // echo, never the request), so there is no subscription to cancel — and
+    // claiming to have stopped one would be a lie.
+    const conn = makeConn('inviteonly-manual');
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#private',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#private')).toBeUndefined();
+    expect(publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ target: `:server:${conn.network.id}` }),
+    );
+  });
+
+  it('473 still shows the join-error toast on the channel (#260)', () => {
+    const conn = makeConn('inviteonly-toast');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const ephemeral = vi.fn<(event: unknown) => void>();
+    conn.publishEphemeral = ephemeral;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(ephemeral).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'join-error',
+        target: '#marco',
+        text: 'This channel is invite-only.',
+      }),
+    );
+  });
+
+  // The identification race. Account-based access (+I/$a:, +e/$a:) only starts
+  // matching once services consider us identified, and connect_commands and the
+  // autojoin batch both fire on 'registered' — so an early 473/474 can mean
+  // "NickServ hasn't caught up", not "you don't belong here".
+  it('473 before RPL_LOGGEDIN leaves autojoin alone on a NickServ network', () => {
+    const conn = makeNickServConn('inviteonly-race');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    // Still in the rejoin list: the next reconnect gets to try again once
+    // NickServ has landed, instead of the channel silently disappearing.
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+    expect(publish).not.toHaveBeenCalledWith(
+      expect.objectContaining({ target: `:server:${conn.network.id}` }),
+    );
+  });
+
+  it('473 after RPL_LOGGEDIN does stop auto-joining on a NickServ network', () => {
+    // Same network, same rejection — but now services have confirmed us, so
+    // the invex would already have matched. The refusal is durable.
+    const conn = makeNickServConn('inviteonly-identified');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    conn.client.emit('loggedin', {});
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+  });
+
+  it('connect_commands that do not identify are not treated as a services wait', () => {
+    // connect_commands is a general-purpose script. Gating on its presence
+    // alone would disable this fix entirely for anyone using it for ordinary
+    // things on a server that never sends 900.
+    const conn = makeScriptedConn('script-nonauth', 'JOIN #foo\nMODE me +x');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+  });
+
+  // Every services flavour has to read as "wait", because a miss here is the
+  // dangerous direction: it unsubscribes someone mid-race. Matched as a family
+  // (any *Serv) plus the identification verbs, since the two networks whose
+  // services are not named *Serv — QuakeNet's Q, Undernet's X — are reachable
+  // only through the verb.
+  it.each([
+    ['NickServ', 'PRIVMSG NickServ :IDENTIFY me hunter2'],
+    ['SaslServ', 'PRIVMSG SaslServ :IDENTIFY me hunter2'],
+    ['SaslServ, no verb', 'PRIVMSG SaslServ :HELP'],
+    ['HostServ', 'MSG HostServ ON'],
+    ['GameSurge AuthServ', 'PRIVMSG AuthServ@services.gamesurge.net :AUTH me hunter2'],
+    ['QuakeNet Q', 'PRIVMSG Q@CServe.quakenet.org :AUTH me hunter2'],
+    ['Undernet X', 'PRIVMSG X@channels.undernet.org :LOGIN me hunter2'],
+  ])('treats %s in connect_commands as a services wait', (label, commands) => {
+    const conn = makeScriptedConn(`script-${label.replace(/\W+/g, '-')}`, commands);
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+  });
+
+  it('a SASL network waits too, so a failed SASL cannot look like a durable refusal', () => {
+    // SASL lands before 001, so in the normal case RPL_LOGGEDIN has already
+    // arrived by the time the rejoin goes out and this gate costs nothing.
+    // It earns its keep when SASL FAILED: we are unidentified, the invex will
+    // not match, and every autojoined +i channel would otherwise be dropped
+    // in one pass.
+    const conn = makeSaslConn('sasl-unidentified');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+
+    // Once SASL has confirmed us, the same rejection is durable.
+    conn.client.emit('loggedin', {});
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(false);
+  });
+
+  it('475 tells the user to supply the key, since a bare /join will not resend it', () => {
+    // joinChannel coerces an absent key to undefined and passes it straight to
+    // client.join, so `/join #x` on a +k channel reproduces the failure.
+    const conn = makeConn('badkey-remedy');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.client.emit('irc error', {
+      error: 'bad_channel_key',
+      channel: '#marco',
+      reason: 'Cannot join channel (+k)',
+    });
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'Stopped auto-joining #marco because the saved channel key is wrong (+k). Use /join #marco <key> to try again.',
+      }),
+    );
   });
 
   it('442 corrects a stale autojoin row even when the channel is not in the joined set', () => {

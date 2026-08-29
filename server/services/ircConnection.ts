@@ -19,6 +19,7 @@ import {
   getBuffer,
   ensureExists as ensureBufferExists,
   setAutojoin as setBufferAutojoin,
+  isAutojoin as isBufferAutojoin,
   setChannelKey as setBufferChannelKey,
   deleteBuffer,
   listOpenDms,
@@ -603,6 +604,11 @@ export class IrcConnection {
   // permission may have changed: on RPL_LOGGEDIN, on (re)registration, and when
   // we (re)join the channel — so a /part + /join or a reconnect resumes typing.
   unsendableTargets: Set<string>;
+  // RPL_LOGGEDIN (900) seen on this connection — the server considers us
+  // identified to services. Only used to decide whether a join rejection is
+  // durable (see stopAutojoining); the send-permission logic re-probes instead
+  // of consulting a flag.
+  identifiedToServices: boolean;
   // Last time the user sent a real PRIVMSG/NOTICE/ACTION to a target (lowercase
   // key → epoch ms). Lets the send-rejection handler tell an actual failed
   // message (surface it inline) from an automated TAGMSG/typing bounce (stay
@@ -832,6 +838,7 @@ export class IrcConnection {
     this.regainNick = null;
     this.pendingRegainSetup = false;
     this.identdId = null;
+    this.identifiedToServices = false;
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.autoWhoTargets = new Set();
@@ -1248,6 +1255,10 @@ export class IrcConnection {
     // or SASL). That's exactly what +R/+M channels were waiting on, so drop the
     // unsendable set and let the next message re-probe — typing resumes too (#283).
     c.on('loggedin', () => {
+      // Also the gate stopAutojoining waits on: account-based channel access
+      // (+I/+e $a:) only starts matching once the server considers us
+      // identified, so a join rejection before this point says nothing durable.
+      this.identifiedToServices = true;
       this.unsendableTargets.clear();
     });
 
@@ -3085,6 +3096,27 @@ export class IrcConnection {
         // Falls through to the generic server-buffer line below: 442 is rare
         // and worth showing, and the eviction above is silent on its own.
       }
+      // A rejection the server will keep giving us: stop replaying the join on
+      // every reconnect. Without this an auto-rejoin the ircd always refuses
+      // retries forever, and for a channel whose buffer is closed (or was
+      // never surfaced — a config-seeded default channel that has not had its
+      // first join echo) there is nothing on screen to cancel it: the user
+      // sees a rejection scroll past on every connect with no affordance
+      // attached to it.
+      //
+      // ONLY the durable three. 471 (+l full) and 405 (too many channels) are
+      // states of the moment, and 477 (needs a registered nick) is the classic
+      // race where the rejoin fires before SASL/NickServ identification lands
+      // — dropping autojoin on those would quietly unsubscribe people from
+      // channels they are perfectly able to join. (477 arrives on a different
+      // event entirely, so it is excluded structurally, not just by this map.)
+      //
+      // Lowering is not destructive: autojoin is raised again by the next join
+      // ECHO, so a channel that becomes joinable again is one /join away from
+      // being restored. That is what makes acting on a single rejection safe.
+      if (rejectChannel && PERMANENT_JOIN_REJECTION_TAGS.has(tag)) {
+        this.stopAutojoining(rejectChannel, tag);
+      }
       const rejectMsg = rejectChannel ? joinRejectionMessageByTag(tag) : null;
       if (rejectChannel && rejectMsg) {
         this.publishEphemeral({
@@ -3692,6 +3724,77 @@ export class IrcConnection {
       m.away = next;
       this.publishNames(ch);
     }
+  }
+
+  /** Cancel the reconnect rejoin for a channel the server durably refuses, and
+   *  say so where the user is already watching the refusal (#868).
+   *
+   *  Gated on the row ALREADY being an autojoin: a manual `/join #private` that
+   *  gets a 473 persisted nothing in the first place (joinChannel writes on the
+   *  echo, never the request), so there is no subscription to cancel and no
+   *  reason to announce one. Only a row that claims we belong here — a real
+   *  membership the ircd has now locked us out of, or a config-seeded default
+   *  channel that has never managed its first join — reaches the write.
+   *
+   *  Deliberately does NOT touch the buffer's open/closed state or its history.
+   *  The channel may well become joinable again; what stops is the retrying. */
+  private stopAutojoining(name: string, tag: string): void {
+    // The identification race, which is the same one 477 is excluded for.
+    // Account-based channel access is the NORMAL way it is granted — +i with
+    // an invex `+I $a:account`, +b with an exempt `+e $a:account` — and both
+    // only start matching once the server considers us identified. Our
+    // connect_commands (the NickServ IDENTIFY) and the autojoin batch both
+    // fire on 'registered', in the same tick; the WAIT verb exists precisely
+    // because services lag that. So a 473/474 arriving before RPL_LOGGEDIN
+    // may just be "NickServ hasn't caught up", and acting on it would
+    // unsubscribe someone from a channel they belong to.
+    //
+    // SASL completes before 001, so a SASL network is already identified by
+    // the time the rejoin goes out and this costs it nothing. A network with
+    // no credentials configured has nothing to wait for, so a rejection there
+    // is as durable as it will ever be. The one deliberately conservative case
+    // is a NickServ network whose server never sends 900: we simply never act,
+    // which is the right way to be wrong.
+    if (!this.identifiedToServices && this.awaitingIdentification()) return;
+    const canonical = canonicalChannelTarget(name, this.channels) ?? name;
+    try {
+      if (!isBufferAutojoin(this.network.user_id, this.network.id, canonical)) return;
+      setBufferAutojoin(this.network.user_id, this.network.id, canonical, false);
+    } catch (_) {
+      return;
+    }
+    const why = PERMANENT_JOIN_REJECTION_REASONS[tag] ?? 'the server refused the join';
+    // The retry has to name a key for +k: joinChannel coerces an absent key to
+    // undefined and passes that straight to client.join, so a bare `/join #x`
+    // does NOT resend the stored one. Telling a user to run the command that
+    // reproduces their failure is worse than saying nothing.
+    const retry = tag === 'bad_channel_key' ? `/join ${canonical} <key>` : `/join ${canonical}`;
+    this.publish({
+      type: 'notice',
+      target: this.serverTarget(),
+      nick: 'lurker',
+      notable: false, // a status line, not unread-worthy — same as the nick-fallback notice
+      text: `Stopped auto-joining ${canonical} because ${why}. Use ${retry} to try again.`,
+    });
+  }
+
+  /** Whether this connection is configured to identify to services but hasn't
+   *  been confirmed yet. SASL lands before 001; NickServ via connect_commands
+   *  lands whenever it lands.
+   *
+   *  connect_commands is a general-purpose script (people put `JOIN #foo` and
+   *  `MODE me +x` in it), so its mere presence says nothing — gating on that
+   *  would disable this feature outright for anyone using it for ordinary
+   *  things on a server that never sends 900. Look for identification
+   *  vocabulary instead.
+   *
+   *  A heuristic, and deliberately a generous one: a false positive costs a
+   *  channel that keeps retrying (the status quo), while a false negative
+   *  un-subscribes someone mid-race. When in doubt, wait. */
+  private awaitingIdentification(): boolean {
+    if (this.network.sasl_account) return true;
+    const commands = this.network.connect_commands;
+    return !!commands && SERVICES_IDENTIFY_HINT.test(commands);
   }
 
   // Forget a channel the server has told us we are not on, outside the normal
@@ -6494,6 +6597,40 @@ const JOIN_REJECTION_MESSAGES: Record<string, string> = {
   '475': 'This channel requires a key (password).', // ERR_BADCHANNELKEY (+k)
   '476': 'Bad channel mask.', // ERR_BADCHANMASK
   '477': 'This channel requires a registered nickname.', // ERR_NEEDREGGEDNICK
+};
+
+// Does a connect_commands script look like it talks to services? Matched as a
+// FAMILY, not a list of bot names — an enumeration keeps missing entries
+// (SaslServ, HostServ, and Undernet's `X ... LOGIN`, which uses none of the
+// usual verbs). Any `*Serv` pseudo-client counts, plus the identification
+// verbs, which is what catches the two networks whose services aren't named
+// that way: QuakeNet's `PRIVMSG Q@CServe... :AUTH` and Undernet's X.
+//
+// Deliberately over-inclusive: `PRIVMSG ChanServ :OP #foo` isn't
+// identification, but a script talking to services at all is a script that
+// probably identified first, and waiting costs nothing but a retry. Ordinary
+// uses — `JOIN #foo`, `PING connectcmd`, `MODE me +x` — carry none of this and
+// correctly read as "nothing to wait for".
+const SERVICES_IDENTIFY_HINT = /\b(?:\w*serv|identify|auth|login|sasl)\b/i;
+
+// The subset of join rejections that say something durable about US and this
+// channel, rather than about the moment. These are the ones worth cancelling
+// an auto-rejoin over — see stopAutojoining for why the others are excluded
+// and why acting on one rejection is safe.
+const PERMANENT_JOIN_REJECTION_TAGS = new Set([
+  'invite_only_channel', // 473 (+i) — we are not on the invex
+  'banned_from_channel', // 474 (+b) — and retrying reads as ban evasion to ops
+  'bad_channel_key', // 475 (+k) — the key we hold is wrong; it will stay wrong
+]);
+
+// Why each is durable enough to act on, in one line: for 473 the invex is the
+// thing that would let us in and we are not on it; for 474 the ban is; for 475
+// the stored key is, and MODE -k is what clears it. None of the three resolves
+// by waiting, which is exactly what an auto-rejoin does.
+const PERMANENT_JOIN_REJECTION_REASONS: Record<string, string> = {
+  invite_only_channel: 'it is invite-only (+i)',
+  banned_from_channel: 'you are banned from it (+b)',
+  bad_channel_key: 'the saved channel key is wrong (+k)',
 };
 
 // irc-framework's 'irc error' event reports a short string tag instead of the
