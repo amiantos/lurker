@@ -2901,9 +2901,17 @@ export class IrcConnection {
     // irc-framework aggregates RPL_WHOIS* (311/312/317/319/330/...) into a
     // single 'whois' event when RPL_ENDOFWHOIS arrives. We fan it out as a
     // structured `whois_result` event so the client can render it in the
-    // user-profile modal (issue #92). `error: 'not_found'` surfaces here too
-    // (irc-framework synthesizes a whois event with that shape on
-    // ERR_NOSUCHNICK) so the modal can flip to its empty state.
+    // user-profile modal (issue #92). `error: 'not_found'` surfaces here too so
+    // the modal can flip to its empty state.
+    //
+    // ⚠ It is synthesized at RPL_ENDOFWHOIS when the preceding numerics filled
+    // nothing in (irc-framework `handlers/user.js`), NOT at ERR_NOSUCHNICK —
+    // that numeric is mapped to a different event entirely (`irc error`, with
+    // `error: 'no_such_nick'`) and never touches the whois reply. The two look
+    // identical in practice, because a conforming server sends the 401 and then
+    // the 318. They differ for anything that waits: a 401 with no 318 following
+    // it produces no signal at all. (This comment said ERR_NOSUCHNICK for a
+    // year and misled a reviewer into reading the protocol docs as wrong.)
     //
     // The server buffer gets the *raw* whois lines instead — every numeric is
     // rendered straight off the wire by the default-show 'raw' handler (#281,
