@@ -384,6 +384,13 @@ sigils (`~ & @ % +`). Map to sigils yourself for display. That letter list is a
 display ordering, not a classification set — don't reuse it to decide what a
 mode letter _means_ on a given network (§7.4).
 
+`nickNotes` rows are `{nick, note, updatedAt}` — the account's own free-form
+notes about people, per network (the same nick on two networks is two rows,
+because it may be two people). Live changes arrive as `nick-note-updated` with
+that shape plus `networkId`, from any of the user's devices. ⚠ **An empty `note`
+is a delete**, in both directions: `set-nick-note` with `''` removes the row and
+echoes back `note: ''`, so a clear and a write are one verb and one frame shape.
+
 ### 5.2 Buffers
 
 A buffer is one conversation: `kind ∈ channel | dm | server | system`. **The
@@ -699,6 +706,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `peer-presence`               | E   | `nick, state ∈ online\|offline\|away\|back, stateAt, awayMessage, cameOnline` |
 | `typing`                      | E   | `nick, state ∈ active\|paused\|done`                                          |
 | `lag`                         | E   | `lagMs`                                                                       |
+| `whois_result`                | E   | `whois{…}` — a WHOIS reply, **no `target`**. See §7.5                          |
 | `ctcp`                        | E   | CTCP request/reply status text                                                |
 | `chghost`                     | P   | `newIdent, newHost` — render only; the nicklist patch rides `member-update`   |
 | `e2e`                         | E   | RPE2E status, `level` + `text`                                                |
@@ -713,6 +721,9 @@ Route them to that network's `:server:` buffer. `motd` is deliberately the
 catch-all for all "server voice" text that has no better home — don't build a
 taxonomy on top of it. `system` events (with `networkId:null`) belong to
 `:system:`.
+
+⚠ `whois_result` also arrives with no `target` and is **not** one of these — it
+is not server text and does not belong in a buffer. See §7.5.
 
 ### 7.4 `mode` events: the `modes[]` entry shape
 
@@ -752,6 +763,62 @@ Clients use this to decide what counts as presence churn. Lurker's own rule, in
 `shared/modes.ts`: a mode row is churn only if **every** entry in it is `prefix`
 with a `param` — one ban or channel flag anywhere in the message and the whole
 row is shown, since a row renders as a single line and can't be half-hidden.
+
+### 7.5 `whois_result`: a WHOIS reply
+
+```
+{ kind: 'irc', type: 'whois_result', networkId, whois: { nick, ... } }
+```
+
+Ephemeral, and one of the few `irc` events with **no `target`** that is not
+server text (`own-nick` is the other): it is about a person on a network, not
+about a conversation, so it belongs to whatever screen asked rather than to a
+buffer. A client that recognises events only below a target guard will drop it
+silently — which iOS did, for its whole life, until lurker-ios#12.
+
+Ask with the ordinary `raw` verb — `WHOIS <nick>`. There is no dedicated verb.
+The network's raw numerics *also* render into `:server:` through the default-show
+`raw` path (§7.3); both happen, and this event is not a substitute for that.
+
+**The `whois` object is passed through from irc-framework verbatim**, which
+aggregates RPL_WHOIS\* (311/312/317/319/330/…) and emits once at
+RPL_ENDOFWHOIS. The server does not reshape it, so the field names are
+irc-framework's:
+
+| field                                             | meaning                                                  |
+| ------------------------------------------------- | -------------------------------------------------------- |
+| `nick`                                            | always present, on a miss too                             |
+| `ident`, `hostname`                               | the two halves of the hostmask                            |
+| `real_name`                                       | GECOS                                                     |
+| `actual_hostname`, `actual_ip`                    | RPL_WHOISACTUALLY — opers and self only                   |
+| `server`, `server_info`                           | which server they're on                                   |
+| `account`                                         | services account (RPL_WHOISACCOUNT)                       |
+| `channels`                                        | see below                                                 |
+| `modes`                                           | user modes, when disclosed                                |
+| `operator`, `helpop`, `bot`, `registered_nick`    | the numeric's trailing **text**, not a boolean            |
+| `secure`                                          | boolean `true` — the one genuinely boolean flag           |
+| `certfp`                                          | certificate fingerprint                                   |
+| `away`                                            | away reason, only if they were away when the whois ran    |
+| `idle`, `logon`                                   | see below                                                 |
+| `error`                                           | `'not_found'` — see below                                 |
+
+⚠⚠ **`channels` is one space-separated string**, not an array:
+`"@#foo +#bar #baz"`, accumulated across repeated numerics. Peel the membership
+sigils to get a joinable name — but **not greedily**: `&` and `+` are membership
+glyphs *and* channel sigils (RFC 2811 §2.1), so a greedy `[~&@%+]*` turns `@&chan`
+into `chan`, a channel that does not exist. Peel only as far as the remainder is
+still a channel name.
+
+⚠⚠ **`idle` and `logon` are numeric-valued strings**, not numbers — they are
+assigned straight off the IRC parameters, which are text. `logon` is Unix
+seconds. Accept either form; don't assume a JSON number.
+
+⚠⚠ **`error: 'not_found'` does not come from ERR_NOSUCHNICK.** That numeric
+produces no whois event at all. The miss is *synthesized* at RPL_ENDOFWHOIS when
+nothing filled the reply, so it arrives with a nick and little else. The
+corollary matters for any client that shows a spinner: a server that answers 401
+and then sends no 318 produces **no signal at all**, and a lookup waiting on one
+waits forever. Neither first-party client has a timeout today.
 
 ---
 
