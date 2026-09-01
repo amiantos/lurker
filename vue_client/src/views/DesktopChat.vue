@@ -134,6 +134,50 @@
                parity with the mobile topic bar. The server buffer has no
                per-buffer scope, so it's excluded. -->
           <template v-if="!isServerBuffer">
+            <!-- Live translation (device-local). Only rendered when a backend is
+                 configured — a switch with no service behind it is worse than
+                 none. Reading = overlay incoming; posting = translate-approve
+                 outgoing. Per-conversation, off by default. -->
+            <template v-if="translateStore.enabled && activeBufId != null">
+              <button
+                type="button"
+                class="link"
+                :class="{ 'tr-on': translateStore.readingEnabled(activeBufId) }"
+                :title="
+                  translateStore.readingEnabled(activeBufId)
+                    ? 'Stop translating incoming messages'
+                    : 'Translate incoming messages'
+                "
+                aria-label="Toggle incoming translation"
+                @click="
+                  translateStore.setReading(
+                    activeBufId,
+                    !translateStore.readingEnabled(activeBufId),
+                  )
+                "
+              >
+                <i class="fa-solid fa-language"></i>
+              </button>
+              <button
+                type="button"
+                class="link"
+                :class="{ 'tr-on': translateStore.postingEnabled(activeBufId) }"
+                :title="
+                  translateStore.postingEnabled(activeBufId)
+                    ? 'Stop translating outgoing messages'
+                    : 'Translate outgoing messages (with approval)'
+                "
+                aria-label="Toggle outgoing translation"
+                @click="
+                  translateStore.setPosting(
+                    activeBufId,
+                    !translateStore.postingEnabled(activeBufId),
+                  )
+                "
+              >
+                <i class="fa-solid fa-pen-to-square"></i>
+              </button>
+            </template>
             <button
               type="button"
               class="link"
@@ -346,6 +390,7 @@ import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
+import { useTranslateStore } from '../stores/translate.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -394,6 +439,12 @@ const joinChannelModal = reactive(useJoinChannelModal());
 const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
 const navHistory = useNavHistoryStore();
+const translateStore = useTranslateStore();
+// The active buffer's server id — what the per-conversation translate switches
+// key on. Null for an optimistic buffer the server hasn't acknowledged.
+const activeBufId = computed<number | null>(
+  () => (activeBuf.value as { id?: number } | null)?.id ?? null,
+);
 const showBookmarks = ref(false);
 const showTopic = ref(false);
 const showUploads = ref(false);
@@ -947,5 +998,10 @@ button.topic-text:focus-visible {
 .topic .member-count {
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* Translate toggles: accent when live for this conversation. */
+.topic-actions .link.tr-on {
+  color: var(--accent);
 }
 </style>

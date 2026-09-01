@@ -12,6 +12,20 @@
     @dragleave.prevent="onDragLeave"
     @drop.prevent="onDrop"
   >
+    <!-- Outgoing-translation preview (rule 7): the user must SEE what they are
+         about to send in a language they may not read, and approve it with a
+         second Send. On failure the strip explains and the next Send bypasses
+         with the original as typed — a broken translator must never block
+         speech. -->
+    <div v-if="trPreview != null" class="tr-preview" aria-live="polite">
+      <i class="fa-solid fa-language" aria-hidden="true"></i>
+      <span class="tr-text">{{ trPreview }}</span>
+      <span class="tr-hint">Send again to confirm · Esc to cancel</span>
+    </div>
+    <div v-else-if="trBypass" class="tr-preview tr-failed" aria-live="polite">
+      <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+      <span class="tr-text">Translation failed — Send again to send the original text.</span>
+    </div>
     <span class="prompt"
       ><template v-if="!isMobile"
         >{{ promptLabelNoModes }}<span v-if="promptModes" class="modes">{{ promptModes }}</span
@@ -181,6 +195,8 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 import { useDccStore, percentReceived, type DccTransfer } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
+import { useTranslateStore } from '../stores/translate.js';
+import { isNoise, genuinelyChanged } from '../lib/translate/rules.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
@@ -248,6 +264,20 @@ const auth = useAuthStore();
 const inputHistory = useInputHistoryStore();
 const drafts = useDraftStore();
 const settings = useSettingsStore();
+const translate = useTranslateStore();
+// Outgoing-translation state (rule 7). Cleared on any edit: a preview of text
+// the user has since changed would approve the WRONG message.
+const trPreview = ref<string | null>(null);
+const trBusy = ref(false);
+const trBypass = ref(false);
+// The active buffer's server id — the key the per-conversation switches use.
+// Null for optimistic buffers the server hasn't acknowledged yet.
+const activeBufferId = computed<number | null>(() => {
+  const a = active.value;
+  if (!a) return null;
+  const b = buffers.byKey(bufferKey(a.networkId, a.target));
+  return (b?.id as number | undefined) ?? null;
+});
 const config = useConfigStore();
 const uploads = useUploadsStore();
 const dcc = useDccStore();
@@ -1097,6 +1127,14 @@ function onKeydown(e: KeyboardEvent): void {
       return;
     }
   }
+  // A pending outgoing-translation preview owns Escape: cancelling the
+  // preview must not also close pickers or clear other state.
+  if (e.key === 'Escape' && (trPreview.value != null || trBypass.value)) {
+    e.preventDefault();
+    trPreview.value = null;
+    trBypass.value = false;
+    return;
+  }
   if (e.key === 'Escape' && overlay.colorPickerOpen) {
     e.preventDefault();
     closeColorPicker();
@@ -1784,6 +1822,10 @@ function onHistorySelect(entry: string): void {
 // and running the pipeline for it would fire a typing notification and a draft
 // flush for a no-op edit.
 function syncModelFromDom() {
+  if (trPreview.value != null || trBypass.value) {
+    trPreview.value = null;
+    trBypass.value = false;
+  }
   const el = inputEl.value;
   if (!el || el.value === text.value) return;
   text.value = el.value;
@@ -2326,7 +2368,53 @@ async function submit() {
   // Rewrite `||spoiler||` into IRC spoiler codes on the way out. History keeps
   // the typed `||…||` form (commitInput is given `raw`), so up-arrow
   // round-trips the editable text rather than raw control codes.
-  const wireText = applySpoilerMarkup(escapedSlash ? raw.slice(1) : raw);
+  // Outgoing translation (rules 7 + 9). Sits AFTER slash-command handling —
+  // commands are protocol, not prose — and BEFORE the wire so the preview shows
+  // exactly what would be sent. No confidence gate on this path (rule 9): the
+  // user picked the target language; detection has no veto.
+  const plainOut = escapedSlash ? raw.slice(1) : raw;
+  if (
+    translate.enabled &&
+    activeBufferId.value != null &&
+    translate.postingEnabled(activeBufferId.value) &&
+    !trBypass.value &&
+    !isNoise(plainOut)
+  ) {
+    if (trPreview.value != null) {
+      // Second press: approved. Send the PREVIEWED text; history keeps `raw`
+      // (what the user typed), so up-arrow round-trips their own words.
+      const approved = trPreview.value;
+      trPreview.value = null;
+      return sendWire(applySpoilerMarkup(approved), raw, networkId, target);
+    }
+    try {
+      trBusy.value = true;
+      const out = await translate.translateOutgoing(plainOut);
+      trBusy.value = false;
+      // Identical result skips approval (rule 7) — nothing to inspect.
+      if (!genuinelyChanged(plainOut, out)) {
+        /* fall through and send the original below */
+      } else {
+        trPreview.value = out;
+        return; // first press: show, don't send
+      }
+    } catch (e: unknown) {
+      trBusy.value = false;
+      trBypass.value = true; // rule 7: next Send sends the original as typed
+      toasts.push({
+        title: 'Translation failed',
+        body:
+          (e instanceof Error ? e.message : 'translator unreachable') +
+          ' — Send again to send your original text.',
+        kind: 'warn',
+        ttlMs: 8000,
+      });
+      return;
+    }
+  }
+  trBypass.value = false;
+
+  const wireText = applySpoilerMarkup(plainOut);
   const pending = socketSendWithAck({ type: 'send', networkId, target, text: wireText });
   if (!pending) {
     // Socket isn't open — don't clear the input, don't pollute history. The
@@ -2343,6 +2431,30 @@ async function submit() {
     toastSendFailure(result.error ?? 'unknown', raw);
     restoreFailedSend(networkId, target, raw);
   }
+}
+
+/** The final leg of a plain-message send — socket, typing reset, history,
+ *  ACK — shared by the direct path and the approved-translation path so the
+ *  two can never drift. `historyText` is what commitInput records (always what
+ *  the user TYPED, so up-arrow round-trips their own words even when the wire
+ *  carried a translation). */
+async function sendWire(
+  wireText: string,
+  historyText: string,
+  networkId: number,
+  target: string,
+): Promise<void> {
+  const pending = socketSendWithAck({ type: 'send', networkId, target, text: wireText });
+  if (!pending) {
+    toastSendFailure('disconnected', historyText);
+    return;
+  }
+  typingState = null;
+  typingTarget = null;
+  clearInactivityTimer();
+  commitInput(historyText, networkId, target, { isChatMessage: true });
+  const result = await pending;
+  if (!result.ok) toastSendFailure(result.error ?? 'unknown', historyText);
 }
 
 async function onLongMessageConfirm() {
@@ -3994,5 +4106,33 @@ textarea:focus {
 textarea::placeholder {
   color: var(--fg-muted);
   font-style: italic;
+}
+
+/* Outgoing-translation preview strip (rule 7). Sits above the composer row;
+   grid-area inherit keeps it inside the input cell in both shells. */
+.tr-preview {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.9em;
+  color: var(--fg-muted);
+  border-bottom: 1px dashed var(--border);
+}
+.tr-preview .tr-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+.tr-preview .tr-hint {
+  white-space: nowrap;
+}
+.tr-preview.tr-failed {
+  color: var(--bad);
+}
+.tr-preview.tr-failed .tr-text {
+  color: var(--bad);
 }
 </style>

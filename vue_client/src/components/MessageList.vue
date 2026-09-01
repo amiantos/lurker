@@ -142,7 +142,13 @@
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
               @nick-click="onMentionMenu"
-            />
+            /><span
+              v-if="translationFor(row.m)"
+              class="tr-overlay"
+              :title="'Translated from ' + badgeLang(translationFor(row.m)?.srcLang)"
+              ><span class="tr-badge">{{ badgeLang(translationFor(row.m)?.srcLang) }}→</span
+              >{{ translationFor(row.m)?.text }}</span
+            >
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
         </template>
@@ -305,6 +311,13 @@
                  every event row from an edit site giving no hint the two were connected.
                  They now render inside MessageBody, which IS the chain's first branch, so the
                  hazard is gone rather than avoided. -->
+            <span
+              v-if="translationFor(row.m)"
+              class="tr-overlay"
+              :title="'Translated from ' + badgeLang(translationFor(row.m)?.srcLang)"
+              ><span class="tr-badge">{{ badgeLang(translationFor(row.m)?.srcLang) }}→</span
+              >{{ translationFor(row.m)?.text }}</span
+            >
           </span>
         </template>
         <div
@@ -349,6 +362,8 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
+import { useTranslateStore } from '../stores/translate.js';
+import { badgeLang } from '../lib/translate/rules.js';
 import { socketSend } from '../composables/useSocket.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useViewport } from '../composables/useViewport.js';
@@ -496,6 +511,29 @@ const config = useConfigStore();
 const ignores = useIgnoresStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
+const translateStore = useTranslateStore();
+
+// Render-time translation overlay (rules 5, 11, 12). Asking is idempotent and
+// rule-gated in the store; the REQUEST outlives this row (a virtualized list
+// recycles rows constantly, and a row-owned request would be cancelled
+// mid-flight — the confirmed rule-11 bug from the Android client). The stored
+// message text is never touched, so links/highlights/search keep scanning the
+// original by construction (rule 5). Hangs off row.m, so every message in a
+// stacked sender group carries its own badge (rule 12).
+function translationFor(m: unknown): { text: string; srcLang: string | null } | null {
+  if (!m || !translateStore.enabled) return null;
+  const bufId = (buffer.value?.id as number | undefined) ?? null;
+  if (!translateStore.readingEnabled(bufId)) return null;
+  const msg = m as {
+    id?: number | null;
+    text?: unknown;
+    self?: unknown;
+    e2e?: unknown;
+    type?: string;
+  };
+  translateStore.request(msg);
+  return translateStore.overlayFor(bufId, msg.id ?? null);
+}
 const nicks = useNickColors();
 const { isMobile, canHover } = useViewport();
 
@@ -2837,5 +2875,22 @@ watch(
 }
 .cleared-undo:hover {
   color: var(--accent);
+}
+
+/* Translation overlay: a second line under the original (which stays exactly
+   as sent — the overlay is display-only). Muted + small badge so it reads as
+   an annotation, not as the message. */
+.tr-overlay {
+  display: block;
+  color: var(--fg-muted);
+  font-size: 0.92em;
+}
+.tr-overlay .tr-badge {
+  font-size: 0.85em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+  margin-right: var(--space-1);
+  color: var(--fg-muted);
 }
 </style>
