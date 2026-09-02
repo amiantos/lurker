@@ -98,6 +98,7 @@ const config = useConfigStore();
 const toggles = computed(() => ({
   inlineMedia: config.linkPreviews && settings.effective('chat.inline_media.enabled') === true,
   linkPreviews: config.linkPreviews && settings.effective('chat.link_previews.enabled') === true,
+  hideInlineUrls: settings.effective('chat.inline_media.hide_urls') === true,
 }));
 
 const urls = computed(() => previewableUrls(props.text, toggles.value));
@@ -257,5 +258,9 @@ const hiddenUrls = computed(() =>
   hideableUrls(props.text, new Set(visible.value.filter(rendersInline).map((p) => p.url))),
 );
 
-const shownSegments = computed(() => segmentsWithoutUrls(props.segments, hiddenUrls.value));
+const shownSegments = computed(() =>
+  toggles.value.hideInlineUrls
+    ? segmentsWithoutUrls(props.segments, hiddenUrls.value)
+    : props.segments,
+);
 </script>

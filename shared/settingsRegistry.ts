@@ -1121,6 +1121,18 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'like any other link.',
   },
   {
+    key: 'chat.inline_media.hide_urls',
+    label: 'Hide inline media URLs',
+    category: 'chat',
+    group: 'viewing',
+    type: 'bool',
+    default: true,
+    description:
+      'When enabled, URLs that are rendered as inline media will be hidden from the message ' +
+      'and will instead appear as a button in the inline media modal. ' +
+      'When disabled, URLs will render normally as part of the message like link preview cards.',
+  },
+  {
     key: 'chat.link_previews.enabled',
     requiresFeature: 'linkPreviews',
     label: 'Link previews',
