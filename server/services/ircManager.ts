@@ -354,8 +354,17 @@ class IrcManager extends EventEmitter {
       // presented) never retries, and the fix is an edit to the network row —
       // so the object built from the OLD row must not outlive the refusal.
       onNeedsRebuild: () => {
-        if (this.connectionsForUser(userId).get(networkId) === conn) {
-          this.connectionsForUser(userId).delete(networkId);
+        if (this.connectionsForUser(userId).get(networkId) !== conn) return;
+        this.connectionsForUser(userId).delete(networkId);
+        // Disposed, not just dropped, for the same reason onTakenOver does it:
+        // once nothing holds a reference, stopNetwork/disposeNetwork can't
+        // reach it — and a refused RECONNECT (an engine rolled back below the
+        // certificate field) leaves a connection that still owns DCC sockets,
+        // resume timers and a lag pinger.
+        try {
+          conn?.dispose('client certificate cannot be presented');
+        } catch (_) {
+          /* ignore */
         }
       },
       onTakenOver: () => {

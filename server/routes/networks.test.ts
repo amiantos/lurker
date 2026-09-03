@@ -557,6 +557,26 @@ describe('client certificate', () => {
     expect(listed.client_key).toBeUndefined();
   });
 
+  // Half a pair refuses every dial too, so it must not read as a healthy
+  // fingerprint (a Download link that 404s, next to a network that won't
+  // connect) or as no certificate at all (nothing on screen to remove).
+  it('calls half a stored pair unusable, whichever half is missing', async () => {
+    const db = (await import('../db/index.js')).default;
+    const read = async (id: number) =>
+      (await aliceAgent.get('/api/networks')).body.networks.find((n: { id: number }) => n.id === id)
+        .client_cert;
+
+    const { id } = await netWithCert();
+    db.prepare('UPDATE networks SET client_key = NULL WHERE id = ?').run(id);
+    expect(await read(id)).toEqual({ unusable: true });
+
+    const other = await netWithCert();
+    db.prepare('UPDATE networks SET client_cert = NULL WHERE id = ?').run(other.id);
+    expect(await read(other.id)).toEqual({ unusable: true });
+    // ...and the export route agrees there is nothing to hand over.
+    expect((await aliceAgent.get(`/api/networks/${other.id}/certificate/export`)).status).toBe(404);
+  });
+
   it('rejects an unknown mode rather than silently doing nothing', async () => {
     const id = (await makeNet(aliceAgent, { name: 'bad-mode' })).body.network.id;
     const res = await aliceAgent.post(`/api/networks/${id}/certificate`).send({ mode: 'rotate' });

@@ -3116,7 +3116,11 @@ async function runNetwork(
         return reply(`moved ${net.name} to position ${landed}`);
       }
       case 'cert':
-        return runNetworkCert(cmd.action, net, reply);
+        // `return await`, not `return`: a promise returned out of a try block
+        // settles after the block has exited, so its rejection would skip the
+        // catch below — and the sole caller is `void runNetwork(...)`, so the
+        // user would get no output at all when the server said no.
+        return await runNetworkCert(cmd.action, net, reply);
     }
   } catch (err) {
     reply(`/network ${cmd.kind} failed: ${err instanceof Error ? err.message : 'unknown error'}`);

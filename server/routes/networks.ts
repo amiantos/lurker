@@ -59,7 +59,14 @@ function parseChannelList(raw: unknown): string[] {
 // would leave the user looking at a network that says it has no certificate and
 // refuses to connect because of one. Say it is unusable instead, and let the UI
 // offer the one thing that helps — removing it.
-function safeDescribe(certPem: string): ReturnType<typeof describeClientCert> | { unusable: true } {
+function describeStoredPair(
+  certPem: string | null,
+  keyPem: string | null,
+): ReturnType<typeof describeClientCert> | { unusable: true } | null {
+  if (!certPem && !keyPem) return null;
+  // Half a pair can't complete a handshake, so the dial refuses on it just as
+  // it does on one that won't parse. Same answer here, for the same reason.
+  if (!certPem || !keyPem) return { unusable: true };
   try {
     return describeClientCert(certPem);
   } catch {
@@ -74,9 +81,10 @@ function networkPayload(
   isAllowed: (host: string) => boolean = isNetworkHostAllowed,
 ): Record<string, unknown> | null {
   if (!network) return null;
-  // client_key is destructured only to keep it OUT of `safe` — the private key
-  // leaves the server through exactly one route, and never in a listing.
-  const { server_password, sasl_password, client_cert, client_key: _key, ...safe } = network;
+  // client_key is destructured to keep it OUT of `safe` — the private key leaves
+  // the server through exactly one route, and never in a listing — and because
+  // whether it is THERE decides what the payload says about the pair.
+  const { server_password, sasl_password, client_cert, client_key, ...safe } = network;
   return {
     ...safe,
     tls: !!network.tls,
@@ -89,7 +97,7 @@ function networkPayload(
     // paste at NickServ. `null` means no certificate; `{unusable: true}` means
     // there is one and it doesn't parse (archive import writes these columns
     // verbatim, so that is reachable without anyone pasting anything).
-    client_cert: client_cert ? safeDescribe(client_cert) : null,
+    client_cert: describeStoredPair(client_cert, client_key),
     // Channel rows in the retired channels-table wire shape (`joined` is the
     // autojoin flag), sourced from the buffers registry.
     channels: listChannelsForNetwork(network.id).map((b) => ({
