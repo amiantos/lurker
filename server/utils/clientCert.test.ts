@@ -76,6 +76,17 @@ describe('generateClientCert', () => {
     expect(describeClientCert((await generateClientCert(',,==')).cert).subject).toContain('lurker');
   });
 
+  // The DN parser reads a leading '#' as "hex-encoded DER follows", so a
+  // channel-shaped nick threw out of the encoder rather than naming anything.
+  it('survives a nick that starts like a channel', async () => {
+    expect(describeClientCert((await generateClientCert('#chat')).cert).subject).toBe('CN=chat');
+    expect(describeClientCert((await generateClientCert('#')).cert).subject).toBe('CN=lurker');
+  });
+
+  it('keeps a # that is not leading', async () => {
+    expect(describeClientCert((await generateClientCert('a#b')).cert).subject).toBe('CN=a#b');
+  });
+
   it('mints a distinct key each time', async () => {
     const [a, b] = await Promise.all([generateClientCert('a'), generateClientCert('b')]);
     expect(describeClientCert(a.cert).sha256).not.toBe(describeClientCert(b.cert).sha256);

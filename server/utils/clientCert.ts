@@ -59,6 +59,11 @@ function safeCommonName(raw: string): string {
     .join('')
     .replace(/\s+/g, ' ')
     .trim()
+    // A leading '#' means "what follows is hex-encoded DER" to the DN parser,
+    // so a nick like `#chat` throws ("not HEX encoded") instead of naming
+    // anything — the same unexplained 500, by a different route.
+    .replace(/^#+/, '')
+    .trim()
     .slice(0, 64);
   return cleaned || 'lurker';
 }

@@ -514,6 +514,17 @@ describe('client certificate', () => {
     ).toBe(null);
   });
 
+  // A certificate is presented during a TLS handshake; a plaintext network has
+  // none, so attaching one would hand the user a fingerprint to register that
+  // the network is never shown.
+  it('refuses to attach a certificate to a plaintext network', async () => {
+    const id = (await makeNet(aliceAgent, { name: 'plaintext', tls: false, port: 6667 })).body
+      .network.id;
+    const res = await aliceAgent.post(`/api/networks/${id}/certificate`).send({ mode: 'generate' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/TLS/);
+  });
+
   it('rejects an unknown mode rather than silently doing nothing', async () => {
     const id = (await makeNet(aliceAgent, { name: 'bad-mode' })).body.network.id;
     const res = await aliceAgent.post(`/api/networks/${id}/certificate`).send({ mode: 'rotate' });
