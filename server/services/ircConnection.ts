@@ -1281,9 +1281,17 @@ export class IrcConnection {
         // Promoted to terminal at 'close' once the streak runs out; see
         // maybePromoteSaslFailure.
         this.saslFailureStreak += 1;
+        // Which credential to go and look at depends on which one was offered:
+        // under EXTERNAL there is no password to check, and the fix is at
+        // NickServ, where the fingerprint has to be registered before the
+        // network will recognise it. (#459)
+        const usingCert = !!this.network.client_cert && !this.network.sasl_password;
+        const advice = usingCert
+          ? " — the network didn't recognise your client certificate. Register its fingerprint with /msg NickServ CERT ADD while connected"
+          : " — check the network's account credentials";
         this.pendingSaslFailure = `SASL authentication failed${
           reason && reason !== 'fail' ? ` (${reason})` : ''
-        } — check the network's account credentials`;
+        }${advice}`;
       }
     });
 
@@ -3801,6 +3809,11 @@ export class IrcConnection {
    *  un-subscribes someone mid-race. When in doubt, wait. */
   private awaitingIdentification(): boolean {
     if (this.network.sasl_account) return true;
+    // A CertFP network identifies on the certificate, which means SASL EXTERNAL
+    // leaves sasl_account empty — and a NickServ that recognises the fingerprint
+    // passively needs no account field at all. Either way identification is
+    // pending, and a +R channel's rejoin must wait for it. (#459)
+    if (this.network.client_cert) return true;
     const commands = this.network.connect_commands;
     return !!commands && SERVICES_IDENTIFY_HINT.test(commands);
   }
@@ -4037,6 +4050,15 @@ export class IrcConnection {
     const account = sasl_password
       ? { account: sasl_account || nick, password: sasl_password }
       : undefined;
+    // CertFP (#459). The certificate is presented whenever one is attached: a
+    // network may recognise it passively (NickServ identifies you on the spot),
+    // which works alongside a SASL password rather than instead of it. The
+    // MECHANISM is what the password decides — PLAIN when there is one,
+    // EXTERNAL when the certificate is the only credential there is. EXTERNAL
+    // carries no account name: the fingerprint is the identity, and the network
+    // maps it to whichever account it was registered on.
+    const clientCert = this.clientCertificate();
+    const saslMechanism = clientCert && !sasl_password ? ('EXTERNAL' as const) : undefined;
     // In engine mode the notice waits for the engine to say it is dialing — a
     // CONNECT it answers with ATTACH connects nothing (see onEnginePhase).
     if (!engineConfigured()) this.announceConnecting();
@@ -4051,6 +4073,8 @@ export class IrcConnection {
       gecos: this.network.realname || nick,
       password: this.network.server_password || undefined,
       account,
+      client_certificate: clientCert,
+      sasl_mechanism: saslMechanism,
       // Lurker owns the reconnect policy (scheduleReconnectIfWarranted), so
       // irc-framework's built-in is disabled outright. Its heuristic only retries
       // a connection that was healthy for >5s and died cleanly, ~3 times — which
@@ -4084,6 +4108,15 @@ export class IrcConnection {
       outgoing_addr: outgoingAddr(),
       ...this.engineConnectOptions(),
     });
+  }
+
+  /** The attached CertFP pair in irc-framework's shape, or undefined. Both
+   *  halves or neither: a certificate without its key cannot complete a
+   *  handshake, and passing one alone makes tls.connect throw. */
+  private clientCertificate(): { certificate: string; private_key: string } | undefined {
+    const { client_cert, client_key } = this.network;
+    if (!client_cert || !client_key) return undefined;
+    return { certificate: client_cert, private_key: client_key };
   }
 
   private announceConnecting(): void {

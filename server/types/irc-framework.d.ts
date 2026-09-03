@@ -21,6 +21,15 @@ declare module 'irc-framework' {
     gecos?: string;
     password?: string;
     account?: { account: string; password: string };
+    /** SASL mechanism. irc-framework defaults to PLAIN when an `account` is set;
+     *  'EXTERNAL' authenticates with the TLS client certificate instead and
+     *  carries no credential. Compared case-SENSITIVELY in two of the three
+     *  places the library reads it, so it must be spelled exactly. */
+    sasl_mechanism?: 'PLAIN' | 'EXTERNAL';
+    /** TLS client certificate presented on the handshake (CertFP, #459).
+     *  Forwarded to tls.connect as {key, cert} by the net transport; in engine
+     *  mode EngineTransport relays it to the engine, which dials. */
+    client_certificate?: { certificate: string; private_key: string };
     auto_reconnect?: boolean;
     auto_reconnect_max_retries?: number;
     enable_chghost?: boolean;

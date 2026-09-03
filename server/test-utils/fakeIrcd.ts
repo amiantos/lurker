@@ -40,6 +40,13 @@ export interface FakeIrcdOptions {
   burstNickTo?: string;
   serverName?: string;
   network?: string;
+  // Ask every TLS client for a certificate and record what it presents, the way
+  // an ircd doing CertFP does — it hashes what you show it rather than
+  // verifying a chain, so anything is accepted. Meaningless without `tls`.
+  requestClientCert?: boolean;
+  // Offer SASL: advertises `sasl=<mechanisms>` in CAP LS and answers
+  // AUTHENTICATE. Defaults to PLAIN + EXTERNAL when passed `true`.
+  sasl?: boolean | { mechanisms: string[] };
 }
 
 export interface FakeClient {
@@ -51,6 +58,14 @@ export interface FakeClient {
   caps: Set<string>;
   capNegotiating: boolean;
   channels: Set<string>;
+  // The SHA-256 of the certificate this client presented, bare lowercase hex —
+  // the form services want it registered in. null when it presented none (or
+  // the listener isn't asking).
+  certfp: string | null;
+  // The SASL mechanism in flight, between AUTHENTICATE <mech> and the outcome.
+  saslMech: string | null;
+  // The account this client authenticated as, once SASL has succeeded.
+  account: string | null;
   // Every line this client sent, in order.
   sent: string[];
 }
@@ -69,10 +84,30 @@ const DEFAULT_CAPS = [
   'echo-message',
 ];
 
+// `sasl=PLAIN,EXTERNAL` → `sasl`.
+function capName(cap: string): string {
+  return cap.split('=')[0];
+}
+
+// The SHA-256 of a peer's certificate as services want it registered: bare
+// lowercase hex. Null for a plain socket, or a TLS one that presented nothing.
+function peerCertFingerprint(socket: net.Socket): string | null {
+  if (!(socket instanceof tls.TLSSocket)) return null;
+  const peer = socket.getPeerCertificate();
+  if (!peer || !peer.fingerprint256) return null;
+  return peer.fingerprint256.replace(/:/g, '').toLowerCase();
+}
+
 export class FakeIrcd extends EventEmitter {
   readonly clients: FakeClient[] = [];
   readonly registrations: Array<{ nick: string; at: number }> = [];
   readonly topics = new Map<string, string>();
+  // Fingerprint → account, i.e. what `/msg NickServ CERT ADD` leaves behind.
+  // SASL EXTERNAL succeeds for a client whose presented certfp is in here and
+  // fails for one whose isn't, which is the whole of CertFP as a client sees it.
+  readonly certfpAccounts = new Map<string, string>();
+  // account → password, for SASL PLAIN.
+  readonly saslAccounts = new Map<string, string>();
   // Test hook: return true to swallow a client command — no reply of any kind —
   // for a test of what the client does when a reply never comes.
   hold: ((cmd: string, params: string[], c: FakeClient) => boolean) | null = null;
@@ -85,7 +120,14 @@ export class FakeIrcd extends EventEmitter {
 
   private constructor(private readonly opts: FakeIrcdOptions) {
     super();
-    this.caps = opts.caps ?? DEFAULT_CAPS;
+    this.caps = [...(opts.caps ?? DEFAULT_CAPS)];
+    if (opts.sasl) {
+      const mechanisms =
+        typeof opts.sasl === 'object' ? opts.sasl.mechanisms : ['PLAIN', 'EXTERNAL'];
+      // Advertised with its value, as SASL 3.2 does: irc-framework reads the
+      // mechanism list off the cap and refuses to try one that isn't there.
+      this.caps.push(`sasl=${mechanisms.join(',')}`);
+    }
     this.serverName = opts.serverName ?? 'fake.test';
     this.network = opts.network ?? 'FakeNet';
   }
@@ -106,7 +148,17 @@ export class FakeIrcd extends EventEmitter {
           },
         ],
       });
-      ircd.server = tls.createServer({ key: pems.private, cert: pems.cert }, (s) => ircd.accept(s));
+      ircd.server = tls.createServer(
+        {
+          key: pems.private,
+          cert: pems.cert,
+          requestCert: !!opts.requestClientCert,
+          // A CertFP client cert is self-signed by definition; verifying it
+          // would reject every one of them.
+          rejectUnauthorized: false,
+        },
+        (s) => ircd.accept(s),
+      );
     } else {
       ircd.server = net.createServer((s) => ircd.accept(s));
     }
@@ -230,6 +282,9 @@ export class FakeIrcd extends EventEmitter {
       caps: new Set(),
       capNegotiating: false,
       channels: new Set(),
+      certfp: peerCertFingerprint(socket),
+      saslMech: null,
+      account: null,
       sent: [],
     };
     this.clients.push(client);
@@ -310,6 +365,8 @@ export class FakeIrcd extends EventEmitter {
         return this.maybeRegister(c);
       case 'PASS':
         return;
+      case 'AUTHENTICATE':
+        return this.onAuthenticate(c, p[0] ?? '');
       case 'PING':
         return this.raw(c, `:${this.serverName} PONG ${this.serverName} :${p[p.length - 1] ?? ''}`);
       case 'PONG':
@@ -434,7 +491,10 @@ export class FakeIrcd extends EventEmitter {
       }
     } else if (sub === 'REQ') {
       const wanted = (p[1] ?? '').split(' ').filter(Boolean);
-      const ok = wanted.every((w) => this.caps.includes(w.replace(/^-/, '')));
+      // Match on the cap NAME: an advertised cap may carry a value (`sasl=PLAIN`),
+      // and a client REQs the bare name.
+      const offered = new Set(this.caps.map(capName));
+      const ok = wanted.every((w) => offered.has(capName(w.replace(/^-/, ''))));
       if (ok) {
         for (const w of wanted) {
           if (w.startsWith('-')) c.caps.delete(w.slice(1));
@@ -448,6 +508,62 @@ export class FakeIrcd extends EventEmitter {
       c.capNegotiating = false;
       this.maybeRegister(c);
     }
+  }
+
+  // SASL, as much of it as a client can tell apart: the mechanism is offered or
+  // it isn't, the credential is right or it isn't. EXTERNAL is the one that
+  // matters here — it carries no credential at all, so the answer turns entirely
+  // on the certificate presented back at the handshake.
+  private onAuthenticate(c: FakeClient, arg: string): void {
+    const mechanisms = this.saslMechanisms();
+    if (!mechanisms.length) return this.num(c, '904', 'SASL authentication failed');
+    if (!c.saslMech) {
+      const mech = arg.toUpperCase();
+      if (!mechanisms.includes(mech)) {
+        return this.num(c, '904', 'SASL authentication failed');
+      }
+      c.saslMech = mech;
+      // '+' means "go ahead": the client answers with its payload, or with a
+      // bare '+' for EXTERNAL, which has none.
+      return this.raw(c, 'AUTHENTICATE +');
+    }
+    const mech = c.saslMech;
+    c.saslMech = null;
+    if (mech === 'EXTERNAL') {
+      const account = c.certfp ? this.certfpAccounts.get(c.certfp) : undefined;
+      if (!account) {
+        // What an ircd says to a certificate nobody registered — and, just as
+        // importantly, to a client that presented none at all.
+        return this.num(c, '904', 'SASL authentication failed');
+      }
+      return this.saslSucceeded(c, account);
+    }
+    // PLAIN: authzid\0authcid\0password
+    const [, authcid, password] = Buffer.from(arg === '+' ? '' : arg, 'base64')
+      .toString('utf8')
+      .split('\u0000');
+    if (!authcid || this.saslAccounts.get(authcid) !== password) {
+      return this.num(c, '904', 'SASL authentication failed');
+    }
+    return this.saslSucceeded(c, authcid);
+  }
+
+  private saslSucceeded(c: FakeClient, account: string): void {
+    c.account = account;
+    this.num(
+      c,
+      '900',
+      `${c.nick ?? '*'}!${c.user ?? 'u'}@127.0.0.1`,
+      account,
+      `You are now logged in as ${account}`,
+    );
+    this.num(c, '903', 'SASL authentication successful');
+  }
+
+  private saslMechanisms(): string[] {
+    const advertised = this.caps.find((cap) => capName(cap) === 'sasl');
+    if (!advertised) return [];
+    return (advertised.split('=')[1] ?? '').split(',').filter(Boolean);
   }
 
   private maybeRegister(c: FakeClient): void {

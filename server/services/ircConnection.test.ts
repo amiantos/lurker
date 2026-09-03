@@ -2335,6 +2335,28 @@ describe('auto-reconnect controller', () => {
     ).toBe(true);
   });
 
+  // The give-up message is the one place a SASL rejection is actually spoken to
+  // the user, so it has to name the credential that was offered. Under EXTERNAL
+  // there is no password to go and check — the fingerprint has to be registered
+  // at NickServ, which is a different action in a different place. (#459)
+  it('tells a CertFP network what to fix, not to check a password it never sent', () => {
+    vi.useFakeTimers();
+    const { conn, events } = makeConn('rc-sasl-certfp');
+    conn.network.client_cert = 'cert-pem';
+    conn.network.client_key = 'key-pem';
+    for (let i = 0; i < 3; i += 1) {
+      conn.client.emit('sasl failed', { reason: 'fail' });
+      conn.client.emit('close', true);
+      vi.runAllTimers();
+    }
+    const text = String(
+      events.find((e) => e.type === 'error' && /SASL authentication failed/i.test(String(e.text)))
+        ?.text,
+    );
+    expect(text).toMatch(/NickServ CERT ADD/);
+    expect(text).not.toMatch(/account credentials/);
+  });
+
   // #617: a single rejection is not proof the credentials killed THIS socket. On
   // a network where SASL is optional the server keeps us, so a later drop (a
   // stalled registration timing out, a blip) is unrelated and must still retry —
@@ -3810,6 +3832,29 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     expect(publish).not.toHaveBeenCalledWith(
       expect.objectContaining({ target: `:server:${conn.network.id}` }),
     );
+  });
+
+  // A CertFP network identifies on the certificate: SASL EXTERNAL sends no
+  // account name, and passive NickServ CertFP sends nothing at all — so the
+  // sasl_account this gate used to read is empty on exactly the networks that
+  // ARE waiting for services. (#459)
+  it('473 before RPL_LOGGEDIN leaves autojoin alone on a CertFP network', () => {
+    const conn = makeNickServConn('inviteonly-certfp');
+    conn.network.connect_commands = null; // the cert is the only credential
+    conn.network.client_cert = 'cert-pem';
+    conn.network.client_key = 'key-pem';
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
   });
 
   it('473 after RPL_LOGGEDIN does stop auto-joining on a NickServ network', () => {
