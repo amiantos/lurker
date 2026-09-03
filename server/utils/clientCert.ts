@@ -38,23 +38,46 @@ export interface ClientCertInfo {
 
 const TEN_YEARS_MS = 3650 * 24 * 60 * 60 * 1000;
 
+// A distinguished name is a comma-separated list of `type=value` pairs, and the
+// generator hands ours to the X.509 encoder verbatim: an unescaped separator in
+// a nick doesn't produce a cert with a funny name, it produces a DIFFERENT DN
+// ("O=evil,CN=admin" becomes two RDNs) or an outright throw ("a,b=c" → "Cannot
+// get OID for name type"), which reaches the user as an unexplained 500 on a
+// nick the network itself accepted. Nothing downstream depends on the CN — the
+// fingerprint is the identity — so the separators are dropped rather than
+// escaped, and a name left with nothing to say falls back to the default.
+const DN_SEPARATORS = ',+="<>;\\/';
+
+function safeCommonName(raw: string): string {
+  const cleaned = [...(raw || '')]
+    .map((ch) => (DN_SEPARATORS.includes(ch) || ch.codePointAt(0)! < 0x20 ? ' ' : ch))
+    .join('')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 64);
+  return cleaned || 'lurker';
+}
+
 /** Mint a self-signed client cert. `commonName` is cosmetic — services key on
  *  the fingerprint — but it is what shows up in the cert list of whatever other
  *  client the user exports this into, so it carries the nick. */
 export async function generateClientCert(commonName: string): Promise<ClientCertPair> {
   const notBeforeDate = new Date();
   const notAfterDate = new Date(notBeforeDate.getTime() + TEN_YEARS_MS);
-  const pems = await generateSelfSigned([{ name: 'commonName', value: commonName || 'lurker' }], {
-    notBeforeDate,
-    notAfterDate,
-    keySize: 2048,
-    algorithm: 'sha256',
-    extensions: [
-      { name: 'basicConstraints', cA: false },
-      { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
-      { name: 'extKeyUsage', clientAuth: true },
-    ],
-  });
+  const pems = await generateSelfSigned(
+    [{ name: 'commonName', value: safeCommonName(commonName) }],
+    {
+      notBeforeDate,
+      notAfterDate,
+      keySize: 2048,
+      algorithm: 'sha256',
+      extensions: [
+        { name: 'basicConstraints', cA: false },
+        { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
+        { name: 'extKeyUsage', clientAuth: true },
+      ],
+    },
+  );
   return { cert: pems.cert, key: pems.private };
 }
 

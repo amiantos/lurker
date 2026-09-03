@@ -54,6 +54,25 @@ describe('generateClientCert', () => {
     expect(describeClientCert((await generateClientCert('')).cert).subject).toContain('lurker');
   });
 
+  // A nick is free-form and reaches this as the CN. The DN grammar treats `,`
+  // and `=` as structure, so an unescaped one either rewrites the name into
+  // extra RDNs or throws out of the encoder — which surfaces as a 500 on a nick
+  // the network itself was happy with.
+  it('does not let a nick rewrite the distinguished name', async () => {
+    const info = describeClientCert((await generateClientCert('O=evil,CN=admin')).cert);
+    expect(info.subject).toBe('CN=O evil CN admin');
+  });
+
+  it('generates rather than throwing for a nick the DN encoder chokes on', async () => {
+    // `a,b=c` throws "Cannot get OID for name type" straight out of the encoder.
+    const info = describeClientCert((await generateClientCert('a,b=c')).cert);
+    expect(info.subject).toBe('CN=a b c');
+  });
+
+  it('falls back when a nick is nothing but separators', async () => {
+    expect(describeClientCert((await generateClientCert(',,==')).cert).subject).toContain('lurker');
+  });
+
   it('mints a distinct key each time', async () => {
     const [a, b] = await Promise.all([generateClientCert('a'), generateClientCert('b')]);
     expect(describeClientCert(a.cert).sha256).not.toBe(describeClientCert(b.cert).sha256);

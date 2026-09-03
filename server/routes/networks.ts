@@ -306,6 +306,9 @@ router.get('/:id/certificate/export', (req: Request, res: Response) => {
     return;
   }
   res.type('application/x-pem-file');
+  // A 200 carrying an unencrypted private key must not sit in a disk cache (or
+  // in any intermediary in front of a cell that terminates TLS upstream).
+  res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Disposition', `attachment; filename="lurker-${id}-client.pem"`);
   res.send(clientCertBundle({ cert: network.client_cert, key: network.client_key }));
 });
