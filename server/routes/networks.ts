@@ -54,11 +54,16 @@ function parseChannelList(raw: unknown): string[] {
   return out;
 }
 
-function safeDescribe(certPem: string): ReturnType<typeof describeClientCert> | null {
+// A stored certificate that won't parse is NOT the same as no certificate: the
+// dial path refuses to connect while one is attached, so rendering it as null
+// would leave the user looking at a network that says it has no certificate and
+// refuses to connect because of one. Say it is unusable instead, and let the UI
+// offer the one thing that helps — removing it.
+function safeDescribe(certPem: string): ReturnType<typeof describeClientCert> | { unusable: true } {
   try {
     return describeClientCert(certPem);
   } catch {
-    return null;
+    return { unusable: true };
   }
 }
 
@@ -81,9 +86,9 @@ function networkPayload(
     has_sasl_password: !!sasl_password,
     // CertFP (#459). Neither PEM is in the payload: the key is a secret, and the
     // certificate on its own is of no use to the UI, which needs the digests to
-    // paste at NickServ. `null` when no cert is attached — and also when a
-    // stored cert can't be parsed, which is unreachable through the routes below
-    // (they validate before writing) but must not take out the whole listing.
+    // paste at NickServ. `null` means no certificate; `{unusable: true}` means
+    // there is one and it doesn't parse (archive import writes these columns
+    // verbatim, so that is reachable without anyone pasting anything).
     client_cert: client_cert ? safeDescribe(client_cert) : null,
     // Channel rows in the retired channels-table wire shape (`joined` is the
     // autojoin flag), sourced from the buffers registry.
@@ -207,7 +212,20 @@ router.patch('/:id', (req: Request, res: Response) => {
     res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
     return;
   }
-  const updated = updateNetwork(id, req.user!.id, req.body || {});
+  // Turning TLS off on a network that carries a client certificate would leave
+  // it permanently unconnectable — there is no handshake to present the
+  // certificate in, so every dial is refused — and the certificate cannot be
+  // cleared through this route (it isn't on the allowlist). Refuse the edit and
+  // name the order to do it in.
+  const body = req.body || {};
+  if ('tls' in body && !body.tls && existing.client_cert) {
+    res.status(400).json({
+      error:
+        'remove this network’s client certificate before turning TLS off — a certificate can only be presented over TLS',
+    });
+    return;
+  }
+  const updated = updateNetwork(id, req.user!.id, body);
   res.json({ network: networkPayload(updated) });
 });
 

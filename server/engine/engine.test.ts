@@ -59,7 +59,13 @@ async function link(startedAt?: number): Promise<TestLink> {
 let counter = 0;
 function connectFrame(
   id: string,
-  extra: Partial<{ tls: boolean; rejectUnauthorized: boolean; ident: string; port: number }> = {},
+  extra: Partial<{
+    tls: boolean;
+    rejectUnauthorized: boolean;
+    ident: string;
+    port: number;
+    clientCert: { cert: string; key: string };
+  }> = {},
 ) {
   return {
     op: 'connect' as const,
@@ -69,6 +75,7 @@ function connectFrame(
     tls: extra.tls ?? false,
     rejectUnauthorized: extra.rejectUnauthorized ?? false,
     ...(extra.ident ? { ident: extra.ident } : {}),
+    ...(extra.clientCert ? { clientCert: extra.clientCert } : {}),
   };
 }
 
@@ -420,6 +427,106 @@ describe('TLS and identd', () => {
         (f) => f.op === 'closed' && f.id === strict,
       );
       expect(closed.error).toMatch(/self.signed|certificate/i);
+    } finally {
+      await secure.close();
+    }
+  });
+
+  // CertFP (#459). The engine is handed a private key over the wire and must
+  // treat it as untrusted input: tls.connect throws SYNCHRONOUSLY on a key it
+  // can't parse or one that doesn't match its certificate, and an uncaught
+  // throw here is every held socket in the process.
+  it('presents a client certificate, and refuses an unusable pair without dying', async () => {
+    const { generateClientCert, describeClientCert } = await import('../utils/clientCert.js');
+    const secure = await FakeIrcd.start({ tls: true, requestClientCert: true });
+    try {
+      const l = await link();
+      const healthy = `certfp-healthy:${++counter}`;
+      const pair = await generateClientCert('enginecert');
+      l.send(
+        connectFrame(healthy, {
+          port: secure.port,
+          tls: true,
+          rejectUnauthorized: false,
+          clientCert: { cert: pair.cert, key: pair.key },
+        }),
+      );
+      await l.waitFor((f) => f.op === 'open' && f.id === healthy);
+      l.send({ op: 'write', id: healthy, line: 'NICK certy' });
+      l.send({ op: 'write', id: healthy, line: 'USER certy 0 * :c' });
+      await l.waitForLine(healthy, / 001 /);
+      expect(secure.client('certy')!.certfp).toBe(describeClientCert(pair.cert).sha256);
+
+      // A key that doesn't parse, and a pair that doesn't match: both refused
+      // as frames, neither reaching tls.connect.
+      const other = await generateClientCert('someone-else');
+      for (const bad of [
+        { cert: pair.cert, key: 'not a key' },
+        { cert: pair.cert, key: other.key },
+        { cert: pair.cert, key: '' },
+      ]) {
+        l.send(
+          connectFrame(`certfp-bad:${++counter}`, {
+            port: secure.port,
+            tls: true,
+            rejectUnauthorized: false,
+            clientCert: bad,
+          }),
+        );
+        expect(await l.waitFor((f) => f.op === 'error')).toMatchObject({
+          message: expect.stringMatching(/clientCert/),
+        });
+      }
+
+      // Still here, still holding the good one, still relaying.
+      expect(engine.held()).toContain(healthy);
+      secure.say('peer', 'certy', 'alive');
+      await l.waitForLine(healthy, /alive/);
+    } finally {
+      await secure.close();
+    }
+  });
+
+  // The engine holds a socket for days, and a heap snapshot walks whatever is
+  // still reachable. The handshake is the only thing that needs the private
+  // key, so nothing keeps a reference past it — the certificate stays, because
+  // matchesDial compares it to tell this session from a new one.
+  it('stops holding the client key once the handshake has it', async () => {
+    const { generateClientCert } = await import('../utils/clientCert.js');
+    const { EngineUpstream } = await import('./upstream.js');
+    const { ByteBudget } = await import('./lineBuffer.js');
+    const secure = await FakeIrcd.start({ tls: true, requestClientCert: true });
+    try {
+      const pair = await generateClientCert('dropkey');
+      const upstream = new EngineUpstream(
+        {
+          id: `drop:${++counter}`,
+          instance: 'test',
+          host: '127.0.0.1',
+          port: secure.port,
+          tls: true,
+          rejectUnauthorized: false,
+          clientCert: { cert: pair.cert, key: pair.key },
+        },
+        64 * 1024,
+        new ByteBudget(1024 * 1024),
+      );
+      upstream.dial();
+
+      expect(upstream.opts.clientCert?.key).toBe('');
+      expect(upstream.opts.clientCert?.cert).toBe(pair.cert);
+      // Still able to answer the question the certificate is kept for.
+      expect(
+        upstream.matchesDial({
+          host: '127.0.0.1',
+          port: secure.port,
+          tls: true,
+          clientCert: { cert: pair.cert, key: pair.key },
+        }),
+      ).toBe(true);
+      // And a second dial is a loud error rather than a keyless handshake.
+      expect(() => upstream.dial()).toThrow(/once per instance/);
+      upstream.close();
     } finally {
       await secure.close();
     }

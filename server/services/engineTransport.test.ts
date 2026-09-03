@@ -407,4 +407,33 @@ describe('engine answers to a bad CONNECT', () => {
     );
     expect(String((t.closes[0] as Error)?.message)).toMatch(/invalid port/);
   });
+
+  // CertFP (#459). ircConnection refuses earlier when it can, but on a cold
+  // start the first dial can outrun the engine's hello — and an engine below
+  // minor 2 would ignore the certificate field silently, leaving the app to
+  // authenticate with something it never presented. This is the check that
+  // cannot race: it runs where the link is known to be ready.
+  it('does not send a certificate to an engine that predates the field', async () => {
+    const l = newLink();
+    const id = `t:${++counter}`;
+    const { t } = makeClient(l, id, 'skewy');
+    // Wait out the hello: it is what sets engineMinor, so pinning the minor
+    // before the link is ready would just be overwritten by the real one.
+    await until(
+      () => l.state === 'ready',
+      'the link to be ready',
+      () => t.events,
+    );
+    const opts = (t.transport as unknown as { options: Record<string, unknown> }).options;
+    opts.client_certificate = { certificate: 'cert-pem', private_key: 'key-pem' };
+    l.engineMinor = 1;
+    // Re-dial now that the options say a certificate is required.
+    (t.transport as unknown as { connect(): void }).connect();
+    await until(
+      () => t.events.some((e) => e.startsWith('socket close:')),
+      'a refused dial',
+      () => t.events,
+    );
+    expect(String((t.closes[0] as Error)?.message)).toMatch(/cannot present a client certificate/);
+  });
 });

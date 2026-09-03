@@ -525,6 +525,38 @@ describe('client certificate', () => {
     expect(res.body.error).toMatch(/TLS/);
   });
 
+  // Turning TLS off would strand the network: every dial is then refused
+  // because the certificate can't be presented, and PATCH can't clear it.
+  it('refuses to turn TLS off while a certificate is attached', async () => {
+    const { id } = await netWithCert();
+    const res = await aliceAgent.patch(`/api/networks/${id}`).send({ tls: false });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/remove/i);
+    // Still TLS, still connectable.
+    const after = (await aliceAgent.get('/api/networks')).body.networks.find(
+      (n: { id: number }) => n.id === id,
+    );
+    expect(after.tls).toBe(true);
+    // And the order that does work.
+    expect((await aliceAgent.delete(`/api/networks/${id}/certificate`)).status).toBe(200);
+    expect((await aliceAgent.patch(`/api/networks/${id}`).send({ tls: false })).status).toBe(200);
+  });
+
+  // Archive import writes both columns verbatim, so a stored certificate that
+  // doesn't parse is reachable without anyone pasting one. Reading as "no
+  // certificate" would leave the user looking at a network that claims to have
+  // none and refuses to connect because of one.
+  it('says a stored certificate is unusable rather than pretending there is none', async () => {
+    const { id } = await netWithCert();
+    const db = (await import('../db/index.js')).default;
+    db.prepare('UPDATE networks SET client_cert = ? WHERE id = ?').run('not a pem', id);
+    const listed = (await aliceAgent.get('/api/networks')).body.networks.find(
+      (n: { id: number }) => n.id === id,
+    );
+    expect(listed.client_cert).toEqual({ unusable: true });
+    expect(listed.client_key).toBeUndefined();
+  });
+
   it('rejects an unknown mode rather than silently doing nothing', async () => {
     const id = (await makeNet(aliceAgent, { name: 'bad-mode' })).body.network.id;
     const res = await aliceAgent.post(`/api/networks/${id}/certificate`).send({ mode: 'rotate' });

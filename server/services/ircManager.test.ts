@@ -73,6 +73,40 @@ describe('ircManager pause linchpin', () => {
 // #616: the gate the auto-reconnect controller now asks before each retry. Same
 // implementation startNetwork uses, so the two can't drift apart — which is the
 // whole point, since the reconnect path used to skip both checks entirely.
+// #459. A dial refused because the network's client certificate cannot be
+// presented opens no socket, so nothing ever schedules a retry — and
+// startNetwork is a documented no-op when a connection object already exists.
+// Leaving the refused one in the map would make /connect answer ok and do
+// nothing, forever, even after the user removes the certificate.
+describe('ircManager and a connection refused over its certificate', () => {
+  it('drops the refused connection so a later /connect builds a working one', async () => {
+    const { setNetworkClientCert } = await import('../db/networks.js');
+    const user = createUser('certfp-corpse');
+    const network = createNetwork(user.id, {
+      name: 'certfp-corpse-net',
+      host: 'irc.example.test',
+      port: 6697,
+      tls: true,
+      nick: 'nick',
+      autoconnect: false,
+    })!;
+    // Half a pair — what a hand-edited archive plants, and one of the reasons
+    // the dial is refused outright.
+    setNetworkClientCert(network.id, user.id, { cert: 'cert-only', key: '' });
+
+    expect(ircManager.startNetwork(user.id, network.id)).not.toBe(null);
+    // Refused, and gone: not a corpse the next call would hand back.
+    expect(ircManager.getConnection(user.id, network.id)).toBeFalsy();
+
+    // The user fixes it the only way the UI offers.
+    setNetworkClientCert(network.id, user.id, null);
+    const revived = ircManager.startNetwork(user.id, network.id);
+    expect(revived).not.toBe(null);
+    expect(ircManager.getConnection(user.id, network.id)).toBe(revived);
+    ircManager.disposeNetwork(user.id, network.id, 'test over');
+  });
+});
+
 describe('ircManager.connectGate', () => {
   let seq = 0;
   function gateUserNet(host = 'irc.example.invalid') {

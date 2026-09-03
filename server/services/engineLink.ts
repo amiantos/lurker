@@ -82,6 +82,9 @@ export function parseEngineUrl(raw: string | undefined): { host: string; port: n
 
 let disabledReason: string | null = null;
 
+// Protocol minor at which `connect` learned to carry a client certificate (#459).
+export const CLIENT_CERT_MINOR = 2;
+
 export function engineConfigured(): boolean {
   return disabledReason === null && parseEngineUrl(process.env.LURKER_ENGINE_URL) !== null;
 }
@@ -124,6 +127,10 @@ const DEFAULT_HEARTBEAT_MS = 15_000;
 export class EngineLink extends EventEmitter {
   state: LinkState = 'idle';
   engineVersion: string | null = null;
+  // The engine's protocol MINOR, as of its last hello. null until one arrives.
+  // Minors are additive by contract, so this only ever answers "does the engine
+  // already know about X" — never "is it too new".
+  engineMinor: number | null = null;
   refusedReason: string | null = null;
 
   private socket: net.Socket | null = null;
@@ -197,6 +204,14 @@ export class EngineLink extends EventEmitter {
 
   holds(id: string): boolean {
     return this.heldSet.has(id);
+  }
+
+  /** Can this engine present a TLS client certificate on a connection it dials
+   *  (#459)? False until a hello has been seen: an engine we know nothing about
+   *  is one that cannot be trusted to carry the key, and answering optimistically
+   *  would authenticate the user with a certificate that never went out. */
+  supportsClientCert(): boolean {
+    return this.engineMinor !== null && this.engineMinor >= CLIENT_CERT_MINOR;
   }
 
   start(): void {
@@ -356,6 +371,8 @@ export class EngineLink extends EventEmitter {
             this.heldSet.clear();
             for (const id of frame.held) this.heldSet.add(id);
             this.engineVersion = frame.engine.version;
+            // Older engines predate the field; absent means minor 1.
+            this.engineMinor = typeof frame.minor === 'number' ? frame.minor : 1;
             if (this.everReady) {
               this.log(`link restored to ${this.address} after ${this.attempt} attempt(s)`);
             }

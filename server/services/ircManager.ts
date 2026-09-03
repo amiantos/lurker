@@ -350,6 +350,14 @@ class IrcManager extends EventEmitter {
       // (and tear its timers down — the transport is already dead, so the QUIT
       // dispose() sends goes nowhere) so the next /connect builds afresh
       // instead of finding it and doing nothing.
+      // A dial refused over configuration (a client certificate that cannot be
+      // presented) never retries, and the fix is an edit to the network row —
+      // so the object built from the OLD row must not outlive the refusal.
+      onNeedsRebuild: () => {
+        if (this.connectionsForUser(userId).get(networkId) === conn) {
+          this.connectionsForUser(userId).delete(networkId);
+        }
+      },
       onTakenOver: () => {
         if (this.connectionsForUser(userId).get(networkId) === conn) {
           this.connectionsForUser(userId).delete(networkId);

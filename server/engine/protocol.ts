@@ -17,7 +17,11 @@
 // new op is a minor change; renaming or re-meaning one is a major.
 
 export const PROTOCOL_MAJOR = 1;
-export const PROTOCOL_MINOR = 1;
+// minor 2 (#459): `connect` carries an optional client certificate. An app that
+// needs one refuses to dial through an engine below this rather than connecting
+// as an unrecognised stranger — an older engine would ignore the field, and
+// silence is indistinguishable from success on the app side.
+export const PROTOCOL_MINOR = 2;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -96,6 +100,13 @@ export type AppToEngine =
       // the app because it is derived from the account, which the engine never
       // sees.
       ident?: string;
+      // CertFP (#459): the TLS client certificate to present on the handshake.
+      // The private key crosses this link, which is the same trust boundary the
+      // link already carries PASS and AUTHENTICATE lines across — but the engine
+      // must never log it, and must validate the pair before dialing, because
+      // tls.connect throws SYNCHRONOUSLY on a malformed key and an uncaught
+      // throw there is every held socket in the process.
+      clientCert?: { cert: string; key: string };
     }
   | { op: 'write'; id: string; line: string }
   // Everything up to and including `seq` has been persisted; the engine may

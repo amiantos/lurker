@@ -141,6 +141,45 @@ describe('CertFP over a real TLS socket', () => {
     }
   });
 
+  // Not every network offers EXTERNAL. irc-framework refuses to try a mechanism
+  // the server didn't advertise, so this costs one 904 and nothing else — the
+  // connection registers, and the certificate is still on the handshake for a
+  // NickServ that recognises it passively.
+  it('survives a network whose SASL list has no EXTERNAL in it', async () => {
+    const plainOnly = await FakeIrcd.start({
+      tls: true,
+      requestClientCert: true,
+      sasl: { mechanisms: ['PLAIN'] },
+    });
+    try {
+      const pair = await generateClientCert('noextuser');
+      const network = setNetworkClientCert(
+        createNetwork(userId, {
+          name: `certfp-noext-${seq++}`,
+          host: '127.0.0.1',
+          port: plainOnly.port,
+          tls: true,
+          trusted_certificates: false,
+          nick: 'noextuser',
+          autoconnect: false,
+        })!.id,
+        userId,
+        pair,
+      )!;
+      const { conn } = connect(network);
+      try {
+        await until(() => conn.state === 'connected', 5000, 'connected');
+        const client = plainOnly.client('noextuser')!;
+        expect(client.sent).not.toContain('AUTHENTICATE EXTERNAL');
+        expect(client.certfp).toBe(describeClientCert(pair.cert).sha256);
+      } finally {
+        conn.dispose();
+      }
+    } finally {
+      await plainOnly.close();
+    }
+  });
+
   it('presents nothing, and asks for nothing, when no certificate is attached', async () => {
     const { conn } = connect(makeNetwork('barecert'));
     try {

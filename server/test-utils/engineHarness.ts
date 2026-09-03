@@ -11,6 +11,7 @@ import { EngineLink, engineConfigured } from '../services/engineLink.js';
 import ircManager from '../services/ircManager.js';
 import type { IrcConnection } from '../services/ircConnection.js';
 import { FakeIrcd } from './fakeIrcd.js';
+import type { FakeIrcdOptions } from './fakeIrcd.js';
 import { setEnvAll } from './env.js';
 import { until } from './until.js';
 
@@ -50,8 +51,11 @@ export async function startEngineHarness(opts: {
   secret: string;
   // Per-test knobs (LURKER_RESTORE_*, …), set alongside the engine ones.
   env?: Record<string, string>;
+  // What the engine dials. Defaults to a plaintext ircd; a CertFP test wants
+  // TLS and a listener that asks for a client certificate.
+  ircd?: FakeIrcdOptions;
 }): Promise<EngineHarness> {
-  const ircd = await FakeIrcd.start();
+  const ircd = await FakeIrcd.start(opts.ircd);
   const wire: WireLine[] = [];
   ircd.on('sent', (line: string, c: { nick: string | null }) =>
     wire.push({ t: Date.now(), dir: '<', nick: c.nick ?? '?', line }),

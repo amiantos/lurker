@@ -56,6 +56,11 @@ export interface UpstreamOptions {
   rejectUnauthorized: boolean;
   outgoingAddr?: string;
   ident?: string;
+  // CertFP (#459): the client certificate to present on the TLS handshake. The
+  // caller has already checked that the pair parses and matches — tls.connect
+  // throws synchronously on a malformed key, and this dial runs inside the
+  // process holding every other session.
+  clientCert?: { cert: string; key: string };
   // How long a dial (TCP + TLS handshake) may take before it is given up on.
   dialTimeoutMs?: number;
 }
@@ -113,6 +118,7 @@ function prefixNick(prefix: string | undefined): string {
 export class EngineUpstream extends EventEmitter {
   readonly id: string;
   state: 'dialing' | 'open' | 'closed' = 'dialing';
+  private dialed = false;
   // `close()`/`quit()` were called: the socket is on its way out. Not a state
   // of its own because `open`-specific bookkeeping still applies until 'close'
   // fires, but every entry point treats it as gone.
@@ -184,19 +190,37 @@ export class EngineUpstream extends EventEmitter {
   // Is this the same session a CONNECT with these parameters would open? A
   // changed host/port/TLS/source address means the user edited the network and
   // wants a fresh dial, not the old socket under new settings.
-  matchesDial(frame: { host: string; port: number; tls: boolean; outgoingAddr?: string }): boolean {
+  matchesDial(frame: {
+    host: string;
+    port: number;
+    tls: boolean;
+    outgoingAddr?: string;
+    clientCert?: { cert: string; key: string };
+  }): boolean {
     return (
       this.opts.host === frame.host &&
       this.opts.port === frame.port &&
       this.opts.tls === !!frame.tls &&
-      (this.opts.outgoingAddr || '') === (frame.outgoingAddr || '')
+      (this.opts.outgoingAddr || '') === (frame.outgoingAddr || '') &&
+      // A changed client certificate is a changed IDENTITY: this socket is
+      // still presenting the old one, and services still know the user by the
+      // old fingerprint. Re-attaching would make the new certificate look
+      // applied while nothing about the connection had changed. (#459)
+      (this.opts.clientCert?.cert || '') === (frame.clientCert?.cert || '')
     );
   }
 
   // May throw synchronously (Node validates the port and the bind address
   // before it ever touches the network); the caller owns that.
   dial(): void {
-    const { host, port, outgoingAddr, rejectUnauthorized } = this.opts;
+    // Once per upstream, and the engine only ever calls it once (a socket that
+    // died is forgotten; a fresh CONNECT builds a new upstream). Stated as a
+    // throw because the client key is dropped below on the way out: a second
+    // dial would otherwise handshake without one and fail somewhere far less
+    // obvious than here.
+    if (this.dialed) throw new Error('EngineUpstream.dial() is once per instance');
+    this.dialed = true;
+    const { host, port, outgoingAddr, rejectUnauthorized, clientCert } = this.opts;
     const onConnect = () => this.onOpen();
     const base = {
       host,
@@ -214,11 +238,22 @@ export class EngineUpstream extends EventEmitter {
             // SNI only for a name — an IP literal is not a valid server name.
             servername: net.isIP(host) ? undefined : host,
             rejectUnauthorized,
+            key: clientCert?.key,
+            cert: clientCert?.cert,
           },
           onConnect,
         )
       : net.connect(base, onConnect);
     this.socket = socket;
+    // The handshake has the key now — TLS keeps its own copy in native memory
+    // for the life of the socket — so stop holding one here. This upstream can
+    // live for days, and a heap snapshot walks what is still reachable. It is
+    // not an erasure: JS strings are immutable, so this makes the key
+    // collectible rather than gone. The certificate stays, because matchesDial
+    // compares it to decide whether a CONNECT is this session or a new one.
+    if (this.opts.clientCert) {
+      this.opts.clientCert = { cert: this.opts.clientCert.cert, key: '' };
+    }
     // utf8 with a StringDecoder underneath, so a multibyte character split across
     // chunks reassembles correctly. Lurker never negotiates another encoding.
     socket.setEncoding('utf8');

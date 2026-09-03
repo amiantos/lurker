@@ -16,7 +16,6 @@
 // on-disk lifecycle.
 
 import crypto from 'crypto';
-import { generate as generateSelfSigned } from 'selfsigned';
 
 /** A cert and the private key that completes its handshake. Never separated. */
 export interface ClientCertPair {
@@ -74,6 +73,11 @@ function safeCommonName(raw: string): string {
 export async function generateClientCert(commonName: string): Promise<ClientCertPair> {
   const notBeforeDate = new Date();
   const notAfterDate = new Date(notBeforeDate.getTime() + TEN_YEARS_MS);
+  // Imported here rather than at module scope so the IRC engine — which imports
+  // this module only to check that a pair it was handed is dialable — doesn't
+  // pull a certificate generator (and its crypto dependency tree) into a
+  // process whose whole job is holding sockets.
+  const { generate: generateSelfSigned } = await import('selfsigned');
   const pems = await generateSelfSigned(
     [{ name: 'commonName', value: safeCommonName(commonName) }],
     {
@@ -123,6 +127,19 @@ function splitCombinedPem(pem: string): { cert: string; key: string } | null {
   return cert && key ? { cert, key } : null;
 }
 
+/** Will tls.connect accept this pair? Structural only — no opinion on whether
+ *  any network knows the fingerprint. Crypto-only (no certificate generator in
+ *  the import graph) so the IRC engine can ask the same question of a pair that
+ *  arrived over its wire before handing it to tls.connect, where a bad key
+ *  throws synchronously. */
+export function isDialableCertPair(certPem: string, keyPem: string): boolean {
+  try {
+    return new crypto.X509Certificate(certPem).checkPrivateKey(crypto.createPrivateKey(keyPem));
+  } catch {
+    return false;
+  }
+}
+
 /** A rejected pair, with a message meant for the person who pasted it. */
 export interface ClientCertProblem {
   error: string;
@@ -166,7 +183,13 @@ export function validateClientCertPair(
         : 'the certificate must be PEM, starting with -----BEGIN CERTIFICATE-----',
     };
   }
-  if (/ENCRYPTED PRIVATE KEY-----/.test(key)) {
+  // Two spellings: PKCS#8 says so in the label, while the traditional PKCS#1
+  // form (what `openssl genrsa -aes256` writes, and what sits in a lot of
+  // existing HexChat/WeeChat setups) keeps its ordinary label and announces the
+  // encryption in a header. Without the second test that key falls through to
+  // "could not be parsed as PEM" — the exact misdiagnosis this branch exists to
+  // prevent.
+  if (/ENCRYPTED PRIVATE KEY-----/.test(key) || /Proc-Type:\s*4,\s*ENCRYPTED/.test(key)) {
     return {
       error:
         'passphrase-protected keys are not supported — decrypt it first with: openssl rsa -in key.pem -out key-decrypted.pem',

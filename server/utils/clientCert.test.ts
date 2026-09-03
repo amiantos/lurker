@@ -147,6 +147,17 @@ describe('validateClientCertPair', () => {
     expect(isClientCertProblem(result) && result.error).toMatch(/no certificate in it/);
   });
 
+  // The traditional PKCS#1 form keeps the ordinary label and announces the
+  // encryption in a header — what `openssl genrsa -aes256` writes, and what a
+  // lot of existing HexChat/WeeChat setups have on disk.
+  it('recognises a passphrase-protected key in its other spelling', () => {
+    const result = validateClientCertPair(
+      '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----',
+      '-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,00\n\nx\n-----END RSA PRIVATE KEY-----',
+    );
+    expect(isClientCertProblem(result) && result.error).toMatch(/openssl rsa/);
+  });
+
   it('rejects an empty, absent, or non-string field', async () => {
     const pair = await generateClientCert('alice');
     for (const bad of ['', '   ', undefined, null, 42, { cert: 'x' }]) {
