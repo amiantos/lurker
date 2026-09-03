@@ -476,14 +476,38 @@ describe('client certificate refusals', () => {
   // Engine mode dials in another process, which cannot be handed the
   // certificate yet. Presenting nothing while the app still asks for SASL
   // EXTERNAL fails registration and blames the wrong thing.
-  it('does not dial through an engine that cannot present it', () => {
+  it('does not dial through an engine too old to present it', async () => {
+    const { EngineLink } = await import('./engineLink.js');
+    const link = EngineLink.shared();
+    const realMinor = link.engineMinor;
     process.env.LURKER_ENGINE_URL = 'tcp://127.0.0.1:9999';
+    link.engineMinor = 1; // predates the certificate field
     try {
       const { dialed, published } = attempt();
       expect(dialed).not.toHaveBeenCalled();
       expect(refusal(published)).toMatch(/engine/);
     } finally {
       delete process.env.LURKER_ENGINE_URL;
+      link.engineMinor = realMinor;
+    }
+  });
+
+  // An engine that has not said hello yet has an unknown minor, and this check
+  // is deliberately quiet about those: the transport makes the same call again
+  // at frame-build time, after the link is ready, so a cold-start dial that
+  // outruns the hello is caught there rather than guessed at here.
+  it('leaves an engine of unknown vintage to the transport', async () => {
+    const { EngineLink } = await import('./engineLink.js');
+    const link = EngineLink.shared();
+    const realMinor = link.engineMinor;
+    process.env.LURKER_ENGINE_URL = 'tcp://127.0.0.1:9999';
+    link.engineMinor = null;
+    try {
+      const { dialed } = attempt();
+      expect(dialed).toHaveBeenCalled();
+    } finally {
+      delete process.env.LURKER_ENGINE_URL;
+      link.engineMinor = realMinor;
     }
   });
 

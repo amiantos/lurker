@@ -23,6 +23,7 @@ import {
   encodeFrame,
 } from './protocol.js';
 import type { AppToEngine, EngineToApp } from './protocol.js';
+import { isDialableCertPair } from '../utils/clientCert.js';
 
 export interface EngineServerOptions {
   secret: string;
@@ -417,6 +418,23 @@ export class EngineServer {
         id,
       );
     }
+    // Validated HERE, before any upstream exists: tls.connect throws
+    // SYNCHRONOUSLY on a key it can't parse or one that doesn't match its
+    // certificate, and an uncaught throw in this process takes every held
+    // socket with it. The app validates too, but the app is not the only thing
+    // that can put a certificate in a database (archive import writes the
+    // columns verbatim), and an engine does not get to trust its callers.
+    if (frame.clientCert !== undefined) {
+      const { cert, key } = frame.clientCert ?? {};
+      if (typeof cert !== 'string' || typeof key !== 'string' || !cert || !key) {
+        return link.fail('connect: clientCert needs both a cert and a key', id);
+      }
+      if (!isDialableCertPair(cert, key)) {
+        // Deliberately says nothing about the key itself — not its length, not
+        // where parsing stopped. The engine logs this line.
+        return link.fail('connect: clientCert is not a usable certificate/key pair', id);
+      }
+    }
     let u = this.upstreams.get(id);
     // Belt and braces over the `<instance>:…` id prefix. If a session under this
     // id belongs to someone else's database, this app does not get to attach to
@@ -438,7 +456,13 @@ export class EngineServer {
     }
     if (
       u &&
-      !u.matchesDial({ host: frame.host, port, tls: !!frame.tls, outgoingAddr: frame.outgoingAddr })
+      !u.matchesDial({
+        host: frame.host,
+        port,
+        tls: !!frame.tls,
+        outgoingAddr: frame.outgoingAddr,
+        clientCert: frame.clientCert,
+      })
     ) {
       // Same id, different destination: the user edited the network. That is a
       // new session, not this one under new settings.
@@ -506,6 +530,7 @@ export class EngineServer {
         rejectUnauthorized: frame.rejectUnauthorized !== false,
         outgoingAddr: frame.outgoingAddr || undefined,
         ident: frame.ident || undefined,
+        clientCert: frame.clientCert,
         dialTimeoutMs: this.opts.dialTimeoutMs,
       },
       this.opts.bufferBytes,

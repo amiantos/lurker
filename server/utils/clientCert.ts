@@ -16,7 +16,6 @@
 // on-disk lifecycle.
 
 import crypto from 'crypto';
-import { generate as generateSelfSigned } from 'selfsigned';
 
 /** A cert and the private key that completes its handshake. Never separated. */
 export interface ClientCertPair {
@@ -74,6 +73,11 @@ function safeCommonName(raw: string): string {
 export async function generateClientCert(commonName: string): Promise<ClientCertPair> {
   const notBeforeDate = new Date();
   const notAfterDate = new Date(notBeforeDate.getTime() + TEN_YEARS_MS);
+  // Imported here rather than at module scope so the IRC engine — which imports
+  // this module only to check that a pair it was handed is dialable — doesn't
+  // pull a certificate generator (and its crypto dependency tree) into a
+  // process whose whole job is holding sockets.
+  const { generate: generateSelfSigned } = await import('selfsigned');
   const pems = await generateSelfSigned(
     [{ name: 'commonName', value: safeCommonName(commonName) }],
     {
@@ -121,6 +125,19 @@ function splitCombinedPem(pem: string): { cert: string; key: string } | null {
     pem,
   )?.[0];
   return cert && key ? { cert, key } : null;
+}
+
+/** Will tls.connect accept this pair? Structural only — no opinion on whether
+ *  any network knows the fingerprint. Crypto-only (no certificate generator in
+ *  the import graph) so the IRC engine can ask the same question of a pair that
+ *  arrived over its wire before handing it to tls.connect, where a bad key
+ *  throws synchronously. */
+export function isDialableCertPair(certPem: string, keyPem: string): boolean {
+  try {
+    return new crypto.X509Certificate(certPem).checkPrivateKey(crypto.createPrivateKey(keyPem));
+  } catch {
+    return false;
+  }
 }
 
 /** A rejected pair, with a message meant for the person who pasted it. */

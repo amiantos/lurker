@@ -4158,11 +4158,15 @@ export class IrcConnection {
     if (!this.network.tls) {
       return 'a client certificate can only be presented over TLS — enable TLS for this network, or remove the certificate';
     }
-    if (engineConfigured()) {
-      // Engine mode dials in another process, which has no way to be handed
-      // the certificate yet (protocol minor 1). Presenting nothing while the
-      // app still asks for SASL EXTERNAL is the worst of both worlds.
-      return 'the IRC engine this deployment connects through cannot present a client certificate yet — update the engine, or remove the certificate';
+    const link = EngineLink.shared();
+    if (engineConfigured() && link.engineMinor !== null && !link.supportsClientCert()) {
+      // Engine mode dials in ANOTHER process. An engine below protocol minor 2
+      // has no field to carry the certificate in and would ignore it silently,
+      // so the app would ask for SASL EXTERNAL over a socket that presented
+      // nothing. Only refuse once the engine has actually said hello — before
+      // that its minor is unknown, and the transport makes the same check again
+      // at frame-build time, where readiness is guaranteed.
+      return 'the IRC engine this deployment connects through cannot present a client certificate — update the engine, or remove the certificate';
     }
     return null;
   }

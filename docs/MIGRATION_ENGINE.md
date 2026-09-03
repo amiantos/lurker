@@ -167,6 +167,17 @@ Only `lurker` is replaced. `pull` fetches nothing new for the engine, and `up -d
   An old engine that refuses the new app would otherwise hold every session open while the app dials its own and collides with its ghosts. (Sessions no app claims for an hour are ended — `LURKER_ENGINE_ORPHAN_MS` — but that is a backstop, not a procedure.)
 - Rebooting the host, obviously.
 
+**Features that need a newer engine.** The wire between app and engine is
+versioned separately from either one, and it only ever gains optional fields — so
+a newer app talks to an older engine happily, right up to a feature that needs a
+field the engine has never heard of. Today that is one thing: **CertFP** (a TLS
+client certificate on a network) needs an engine from Lurker 2.2.2 or later,
+because the engine is what dials and so the engine is what presents it. An app
+that finds itself pointed at an older engine refuses to connect that network and
+says so, rather than connecting without the certificate — which would log the
+user in as nobody. Pull the engine image (its tag doesn't move; its contents do)
+and restart it.
+
 **While the app is down**, the engine keeps what arrives: 4 MiB per connection, 256 MiB in total, tunable with `LURKER_ENGINE_BUFFER_BYTES` and `LURKER_ENGINE_BUFFER_TOTAL_BYTES`. Past the cap the oldest lines go and the app notes where the hole is. Deploys take seconds; the buffer covers hours of ordinary traffic.
 
 ---

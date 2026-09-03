@@ -56,6 +56,11 @@ export interface UpstreamOptions {
   rejectUnauthorized: boolean;
   outgoingAddr?: string;
   ident?: string;
+  // CertFP (#459): the client certificate to present on the TLS handshake. The
+  // caller has already checked that the pair parses and matches — tls.connect
+  // throws synchronously on a malformed key, and this dial runs inside the
+  // process holding every other session.
+  clientCert?: { cert: string; key: string };
   // How long a dial (TCP + TLS handshake) may take before it is given up on.
   dialTimeoutMs?: number;
 }
@@ -184,19 +189,30 @@ export class EngineUpstream extends EventEmitter {
   // Is this the same session a CONNECT with these parameters would open? A
   // changed host/port/TLS/source address means the user edited the network and
   // wants a fresh dial, not the old socket under new settings.
-  matchesDial(frame: { host: string; port: number; tls: boolean; outgoingAddr?: string }): boolean {
+  matchesDial(frame: {
+    host: string;
+    port: number;
+    tls: boolean;
+    outgoingAddr?: string;
+    clientCert?: { cert: string; key: string };
+  }): boolean {
     return (
       this.opts.host === frame.host &&
       this.opts.port === frame.port &&
       this.opts.tls === !!frame.tls &&
-      (this.opts.outgoingAddr || '') === (frame.outgoingAddr || '')
+      (this.opts.outgoingAddr || '') === (frame.outgoingAddr || '') &&
+      // A changed client certificate is a changed IDENTITY: this socket is
+      // still presenting the old one, and services still know the user by the
+      // old fingerprint. Re-attaching would make the new certificate look
+      // applied while nothing about the connection had changed. (#459)
+      (this.opts.clientCert?.cert || '') === (frame.clientCert?.cert || '')
     );
   }
 
   // May throw synchronously (Node validates the port and the bind address
   // before it ever touches the network); the caller owns that.
   dial(): void {
-    const { host, port, outgoingAddr, rejectUnauthorized } = this.opts;
+    const { host, port, outgoingAddr, rejectUnauthorized, clientCert } = this.opts;
     const onConnect = () => this.onOpen();
     const base = {
       host,
@@ -214,6 +230,8 @@ export class EngineUpstream extends EventEmitter {
             // SNI only for a name — an IP literal is not a valid server name.
             servername: net.isIP(host) ? undefined : host,
             rejectUnauthorized,
+            key: clientCert?.key,
+            cert: clientCert?.cert,
           },
           onConnect,
         )
