@@ -19,6 +19,7 @@ process.env.LURKER_SECRET_KEY = Buffer.alloc(32, 5).toString('base64');
 let db: typeof import('../db/index.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
+let setNetworkClientCert: typeof import('../db/networks.js').setNetworkClientCert;
 let getNetwork: typeof import('../db/networks.js').getNetwork;
 let buffers: typeof import('../db/buffers.js');
 let isEncrypted: typeof import('../utils/secretCrypto.js').isEncrypted;
@@ -31,12 +32,11 @@ const SECRETS = {
   sasl_password: 'sasl-secret',
   connect_commands: 'PRIVMSG NickServ :identify supersecret',
 };
-const SECRET_COLS = Object.keys(SECRETS) as (keyof typeof SECRETS)[];
 
 beforeAll(async () => {
   db = (await import('../db/index.js')).default;
   ({ createUser } = await import('../db/users.js'));
-  ({ createNetwork, getNetwork } = await import('../db/networks.js'));
+  ({ createNetwork, getNetwork, setNetworkClientCert } = await import('../db/networks.js'));
   buffers = await import('../db/buffers.js');
   ({ isEncrypted } = await import('../utils/secretCrypto.js'));
   ({ buildExportZip } = await import('./exportService.js'));
@@ -87,12 +87,26 @@ describe('network secret export/import round-trip (key configured)', () => {
       nick: 'alice',
       ...SECRETS,
     })!;
+    // The CertFP pair (#459) doesn't travel through createNetwork — it's written
+    // by its own validated path — but it's the same at-rest contract, and the
+    // private key is the one secret here that is a credential all by itself.
+    const { generateClientCert } = await import('../utils/clientCert.js');
+    const pair = await generateClientCert('alice');
+    setNetworkClientCert(net.id, alice.id, pair);
+    const expected: Record<string, string> = {
+      ...SECRETS,
+      client_cert: pair.cert,
+      client_key: pair.key,
+    };
+    const expectedCols = Object.keys(expected);
+
     // Stored encrypted at rest.
     const aliceRaw = db.prepare('SELECT * FROM networks WHERE id = ?').get(net.id) as Record<
       string,
       string | null
     >;
     expect(isEncrypted(aliceRaw.server_password)).toBe(true);
+    expect(isEncrypted(aliceRaw.client_key)).toBe(true);
 
     // ---- export carries plaintext ----
     const buf = await exportToBuffer(alice.id);
@@ -100,8 +114,8 @@ describe('network secret export/import round-trip (key configured)', () => {
       networks: Record<string, string>[];
     };
     const exported = data.networks[0];
-    for (const col of SECRET_COLS) {
-      expect(exported[col]).toBe(SECRETS[col]);
+    for (const col of expectedCols) {
+      expect(exported[col]).toBe(expected[col]);
     }
 
     // ---- import re-encrypts on a fresh, keyed account ----
@@ -111,12 +125,12 @@ describe('network secret export/import round-trip (key configured)', () => {
       string,
       string | null
     >;
-    for (const col of SECRET_COLS) {
+    for (const col of expectedCols) {
       expect(isEncrypted(bobNet[col])).toBe(true);
     }
     const bobFetched = getNetwork(bobNet.id as unknown as number, bob.id)!;
-    for (const col of SECRET_COLS) {
-      expect(bobFetched[col]).toBe(SECRETS[col]);
+    for (const col of expectedCols) {
+      expect(bobFetched[col as keyof typeof bobFetched]).toBe(expected[col]);
     }
   });
 

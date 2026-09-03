@@ -12,7 +12,15 @@ import {
   updateNetwork,
   deleteNetwork,
   reorderNetworks,
+  setNetworkClientCert,
 } from '../db/networks.js';
+import {
+  generateClientCert,
+  describeClientCert,
+  validateClientCertPair,
+  isClientCertProblem,
+  clientCertBundle,
+} from '../utils/clientCert.js';
 import { listChannelsForNetwork, seedAutojoinChannel } from '../db/buffers.js';
 import ircManager from '../services/ircManager.js';
 import { isNetworkHostAllowed, hostAllowedChecker } from '../services/networkPolicy.js';
@@ -46,6 +54,14 @@ function parseChannelList(raw: unknown): string[] {
   return out;
 }
 
+function safeDescribe(certPem: string): ReturnType<typeof describeClientCert> | null {
+  try {
+    return describeClientCert(certPem);
+  } catch {
+    return null;
+  }
+}
+
 // `isAllowed` is injectable so a caller mapping over several networks can resolve
 // the (instance-global) policy once instead of re-reading it per row.
 function networkPayload(
@@ -53,7 +69,9 @@ function networkPayload(
   isAllowed: (host: string) => boolean = isNetworkHostAllowed,
 ): Record<string, unknown> | null {
   if (!network) return null;
-  const { server_password, sasl_password, ...safe } = network;
+  // client_key is destructured only to keep it OUT of `safe` — the private key
+  // leaves the server through exactly one route, and never in a listing.
+  const { server_password, sasl_password, client_cert, client_key: _key, ...safe } = network;
   return {
     ...safe,
     tls: !!network.tls,
@@ -61,6 +79,12 @@ function networkPayload(
     autoconnect: !!network.autoconnect,
     has_password: !!server_password,
     has_sasl_password: !!sasl_password,
+    // CertFP (#459). Neither PEM is in the payload: the key is a secret, and the
+    // certificate on its own is of no use to the UI, which needs the digests to
+    // paste at NickServ. `null` when no cert is attached — and also when a
+    // stored cert can't be parsed, which is unreachable through the routes below
+    // (they validate before writing) but must not take out the whole listing.
+    client_cert: client_cert ? safeDescribe(client_cert) : null,
     // Channel rows in the retired channels-table wire shape (`joined` is the
     // autojoin flag), sourced from the buffers registry.
     channels: listChannelsForNetwork(network.id).map((b) => ({
@@ -203,6 +227,87 @@ router.delete('/:id', (req: Request, res: Response) => {
   renumberFavorites(req.user!.id);
   fanOutToUser(req.user!.id, favoritesChangedFrame(req.user!.id));
   res.json({ ok: true });
+});
+
+// CertFP (#459). The cert is a validated PEM pair, so it moves through these
+// dedicated routes rather than the PATCH allowlist — nothing that hasn't been
+// parsed and pair-checked can reach the dialer (or, in engine mode, the engine's
+// tls.connect, where a malformed key throws synchronously).
+//
+// A change takes effect on the next connect: the certificate is presented during
+// the TLS handshake, so there is nothing to renegotiate on a live socket. The
+// client says so; reconnecting is the user's call, the same as for every other
+// network edit.
+// Not an async handler: Express 5 turns a rejection out of one into an
+// unhandled rejection rather than a response, so the async body answers its own
+// failures and the promise handed back here never rejects.
+router.post('/:id/certificate', (req: Request, res: Response) => {
+  void attachCertificate(req, res);
+});
+
+async function attachCertificate(req: Request, res: Response): Promise<void> {
+  try {
+    await attachCertificateInner(req, res);
+  } catch (err) {
+    console.error('[lurker] client certificate write failed:', err);
+    res.status(500).json({ error: 'failed to store the client certificate' });
+  }
+}
+
+async function attachCertificateInner(req: Request, res: Response): Promise<void> {
+  const id = Number(req.params.id);
+  const network = getNetwork(id, req.user!.id);
+  if (!network) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  const mode = (req.body || {}).mode;
+  let pair;
+  if (mode === 'generate') {
+    pair = await generateClientCert(network.nick || network.name);
+  } else if (mode === 'import') {
+    const result = validateClientCertPair((req.body || {}).cert, (req.body || {}).key);
+    if (isClientCertProblem(result)) {
+      res.status(400).json({ error: result.error });
+      return;
+    }
+    pair = result;
+  } else {
+    res.status(400).json({ error: "mode must be 'generate' or 'import'" });
+    return;
+  }
+  const updated = setNetworkClientCert(id, req.user!.id, pair);
+  res.json({ network: networkPayload(updated), certificate: describeClientCert(pair.cert) });
+}
+
+router.delete('/:id/certificate', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!getNetwork(id, req.user!.id)) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  const updated = setNetworkClientCert(id, req.user!.id, null);
+  res.json({ network: networkPayload(updated) });
+});
+
+// The pair in the single-file form other clients keep on disk (HexChat's
+// client.pem, WeeChat's ssl.crt). Its own route, never part of a listing: a
+// certificate you can't take with you is lock-in, but a private key must be
+// asked for explicitly rather than shipped with every sidebar refresh.
+router.get('/:id/certificate/export', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const network = getNetwork(id, req.user!.id);
+  if (!network) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  if (!network.client_cert || !network.client_key) {
+    res.status(404).json({ error: 'this network has no client certificate' });
+    return;
+  }
+  res.type('application/x-pem-file');
+  res.setHeader('Content-Disposition', `attachment; filename="lurker-${id}-client.pem"`);
+  res.send(clientCertBundle({ cert: network.client_cert, key: network.client_key }));
 });
 
 router.post('/:id/connect', (req: Request, res: Response) => {

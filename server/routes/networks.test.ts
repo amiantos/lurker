@@ -458,3 +458,114 @@ describe('instance network lockdown', () => {
     });
   });
 });
+
+// CertFP (#459). The cert deliberately does NOT ride the PATCH allowlist, so
+// these routes are the whole write surface — and the private key must never
+// leave through any of the read ones.
+describe('client certificate', () => {
+  async function netWithCert(agent: LurkerTestAgent = aliceAgent) {
+    const id = (await makeNet(agent, { name: `cert-${Math.random()}`, nick: 'certnick' })).body
+      .network.id;
+    const res = await agent.post(`/api/networks/${id}/certificate`).send({ mode: 'generate' });
+    expect(res.status).toBe(200);
+    return { id, res };
+  }
+
+  it('generates a pair and reports its fingerprint', async () => {
+    const { res } = await netWithCert();
+    expect(res.body.certificate.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(res.body.network.client_cert.sha256).toBe(res.body.certificate.sha256);
+    // CN borrows the nick so the cert is recognisable in another client's list.
+    expect(res.body.certificate.subject).toContain('certnick');
+  });
+
+  it('never ships the private key with a network payload', async () => {
+    const { id } = await netWithCert();
+    const listing = await aliceAgent.get('/api/networks');
+    const mine = listing.body.networks.find((n: { id: number }) => n.id === id);
+    expect(mine.client_cert.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(mine.client_key).toBeUndefined();
+    expect(JSON.stringify(listing.body)).not.toContain('PRIVATE KEY');
+  });
+
+  it('imports an existing pair, keeping the fingerprint services already know', async () => {
+    const { generateClientCert, describeClientCert } = await import('../utils/clientCert.js');
+    const pair = await generateClientCert('elsewhere');
+    const id = (await makeNet(aliceAgent, { name: 'import-me' })).body.network.id;
+    const res = await aliceAgent
+      .post(`/api/networks/${id}/certificate`)
+      .send({ mode: 'import', cert: pair.cert, key: pair.key });
+    expect(res.status).toBe(200);
+    expect(res.body.certificate.sha256).toBe(describeClientCert(pair.cert).sha256);
+  });
+
+  it('rejects a mismatched pair with a message, not a stack trace', async () => {
+    const { generateClientCert } = await import('../utils/clientCert.js');
+    const [mine, theirs] = await Promise.all([generateClientCert('a'), generateClientCert('b')]);
+    const id = (await makeNet(aliceAgent, { name: 'bad-import' })).body.network.id;
+    const res = await aliceAgent
+      .post(`/api/networks/${id}/certificate`)
+      .send({ mode: 'import', cert: mine.cert, key: theirs.key });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/doesn't match/);
+    expect(
+      (await aliceAgent.get('/api/networks')).body.networks.find((n: { id: number }) => n.id === id)
+        .client_cert,
+    ).toBe(null);
+  });
+
+  it('rejects an unknown mode rather than silently doing nothing', async () => {
+    const id = (await makeNet(aliceAgent, { name: 'bad-mode' })).body.network.id;
+    const res = await aliceAgent.post(`/api/networks/${id}/certificate`).send({ mode: 'rotate' });
+    expect(res.status).toBe(400);
+  });
+
+  it('exports the pair as the single file other clients keep on disk', async () => {
+    const { id, res: gen } = await netWithCert();
+    const res = await aliceAgent.get(`/api/networks/${id}/certificate/export`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-disposition']).toContain('.pem');
+    expect(res.text).toContain('BEGIN PRIVATE KEY');
+    expect(res.text).toContain('BEGIN CERTIFICATE');
+    const { describeClientCert } = await import('../utils/clientCert.js');
+    const cert = res.text.slice(res.text.indexOf('-----BEGIN CERTIFICATE-----'));
+    expect(describeClientCert(cert).sha256).toBe(gen.body.certificate.sha256);
+  });
+
+  it('has nothing to export before a cert is attached', async () => {
+    const id = (await makeNet(aliceAgent, { name: 'no-cert' })).body.network.id;
+    expect((await aliceAgent.get(`/api/networks/${id}/certificate/export`)).status).toBe(404);
+  });
+
+  it('clears the pair on delete', async () => {
+    const { id } = await netWithCert();
+    const res = await aliceAgent.delete(`/api/networks/${id}/certificate`);
+    expect(res.status).toBe(200);
+    expect(res.body.network.client_cert).toBe(null);
+    expect((await aliceAgent.get(`/api/networks/${id}/certificate/export`)).status).toBe(404);
+  });
+
+  // Ownership, on every verb: a fingerprint identifies its owner to services,
+  // and the key IS the credential.
+  it("refuses another user's network on every verb", async () => {
+    const { id } = await netWithCert();
+    expect(
+      (await bobAgent.post(`/api/networks/${id}/certificate`).send({ mode: 'generate' })).status,
+    ).toBe(404);
+    expect((await bobAgent.get(`/api/networks/${id}/certificate/export`)).status).toBe(404);
+    expect((await bobAgent.delete(`/api/networks/${id}/certificate`)).status).toBe(404);
+    // ...and alice still has hers.
+    expect((await aliceAgent.get(`/api/networks/${id}/certificate/export`)).status).toBe(200);
+  });
+
+  it('ignores a cert smuggled through a PATCH body', async () => {
+    const id = (await makeNet(aliceAgent, { name: 'patch-smuggle' })).body.network.id;
+    const res = await aliceAgent
+      .patch(`/api/networks/${id}`)
+      .send({ client_cert: 'not a pem', client_key: 'not a key', name: 'renamed' });
+    expect(res.status).toBe(200);
+    expect(res.body.network.name).toBe('renamed');
+    expect(res.body.network.client_cert).toBe(null);
+    expect((await aliceAgent.get(`/api/networks/${id}/certificate/export`)).status).toBe(404);
+  });
+});

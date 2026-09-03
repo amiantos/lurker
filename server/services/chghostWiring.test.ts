@@ -29,6 +29,8 @@ beforeAll(() => {
 function makeConn(): IrcConnection {
   return new IrcConnection({
     network: {
+      client_cert: null,
+      client_key: null,
       id: 1,
       user_id: 1,
       name: 'n',
