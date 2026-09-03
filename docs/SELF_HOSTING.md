@@ -523,12 +523,14 @@ Point your IRC client at the host/port with a **server password** of:
 - `username:secret` — when you have one network configured
 - `username/networkname:secret` — to pick one of several (the network's name as shown in the web UI, or its numeric id)
 
+Logging in as just `username` when you have several networks is not an error — you land on an idle connection that isn't attached to anything, and Lurker sends a notice naming the networks you can pick from. Reconnect with `username/networkname` to attach one. An account with no networks yet lands on that same idle connection with a notice telling you to add one in the web UI first; networks are created there, not from an IRC client.
+
 The secret can be your Lurker account password, but a **read-write API token** (web UI → **Settings → API tokens**) is the better choice — IRC clients store the server password in plaintext config files, and a token can be revoked without changing your password.
 
 Modern IRCv3 clients (Halloy, gamja, Goguma, …) get more than the server-password floor above:
 
 - **SASL** — log in with the same credential via SASL PLAIN instead of a server password.
-- **Network discovery** (`soju.im/bouncer-networks`) — the client lists and binds your networks itself, so you don't hardcode `username/networkname`; connect as just `username` and pick from the list.
+- **Network discovery** (`soju.im/bouncer-networks`) — the client lists and binds your networks itself, so you don't hardcode `username/networkname`; connect as just `username` and pick from the list. This is what the idle connection above is for.
 - **On-demand scrollback** (`draft/chathistory`) — page back through history on demand instead of relying only on the fixed replay-on-attach.
 
 These are negotiated automatically; plain clients that don't support them keep working over the server-password path.

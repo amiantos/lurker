@@ -24,6 +24,12 @@
 // (for now) ignored. Multi-upstream `*` is deliberately unsupported (soju
 // removed it too) — attach one network per connection.
 //
+// A login that names no network registers as a *control* connection rather
+// than failing (soju parity — its register() never rejects a missing network
+// name). A bouncer-networks client uses that to enumerate and BIND; a client
+// without the cap gets a NOTICE naming its networks. The exception is the ZNC
+// floor above: no cap, no selector, exactly one network → attach it.
+//
 // Design notes / v1 limitations, all deliberate:
 // - Upstream→client traffic is relayed as the RAW wire lines the network sent
 //   (minus registration/PING plumbing), so semantics stay exact. That means
@@ -443,6 +449,36 @@ export function buildNamesLines(nick: string, channel: string, names: string[]):
   return lines;
 }
 
+/**
+ * Join network names onto `head`, dropping the tail as `+N more` so the result
+ * fits `budget` bytes.
+ *
+ * Network names are unbounded TEXT (no length cap on create, unlike API token
+ * names) and an account may hold any number of them, so a bare join can push
+ * these lines past the 512-byte wire cap — where clients truncate or drop them,
+ * defeating the point of listing the networks at all. Same hazard buildNamesLines
+ * chunks NAMES to avoid; one line suffices here because this is advice, not data.
+ * Counted in bytes, not code units: names can be multi-byte and the wire cap is
+ * bytes. The trailing trim is the backstop for a single pathological name.
+ */
+export function withNetworkList(head: string, names: string[], budget: number): string {
+  let out = head;
+  let shown = 0;
+  for (const name of names) {
+    const piece = shown === 0 ? name : `, ${name}`;
+    const hidden = names.length - shown - 1;
+    const tail = hidden > 0 ? `, +${hidden} more` : '';
+    if (shown > 0 && Buffer.byteLength(out + piece + tail) > budget) break;
+    out += piece;
+    shown += 1;
+  }
+  if (names.length > shown) out += `, +${names.length - shown} more`;
+  while (Buffer.byteLength(out) > budget && out.length > head.length + 1) {
+    out = out.slice(0, -1);
+  }
+  return out;
+}
+
 function toIrcTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
@@ -649,6 +685,15 @@ class BouncerSession {
   private numeric(code: string, params: string): void {
     const nick = this.currentNick() || this.clientNick || '*';
     this.write(`:${SERVER_NAME} ${code} ${nick} ${params}`);
+  }
+
+  // Bytes of message text that still fit on one 512-byte IRC line after this
+  // session's `:<server> <verb> <nick> :` prefix. Measured against the widest
+  // verb these list lines use (NOTICE), so it also covers the shorter 464.
+  // 480 leaves the same headroom for CRLF and prefix drift as buildNamesLines.
+  private wireTextBudget(): number {
+    const nick = this.currentNick() || this.clientNick || '*';
+    return Math.max(64, 480 - Buffer.byteLength(`:${SERVER_NAME} NOTICE ${nick} :`));
   }
 
   private notice(text: string): void {
@@ -939,8 +984,8 @@ class BouncerSession {
   }
 
   // Called at CAP END / registration completion. Resolves the target network
-  // (BIND id > username selector > single-network default), or drops into
-  // control mode for a bouncer-networks client that named no network.
+  // (BIND id > username selector > capless single-network default), or drops
+  // into control mode for any client that named no network.
   private completeAttach(user: User, networkSel: string | null): void {
     if (user.is_paused) {
       this.failRegistration('Account is paused');
@@ -963,15 +1008,26 @@ class BouncerSession {
       return;
     }
 
-    // Control (unbound) mode: a bouncer-networks-aware client that named no
-    // network manages its networks via BOUNCER instead of attaching to one.
+    // Control (unbound) mode. A bouncer-networks-aware client that named no
+    // network manages its networks via BOUNCER instead of attaching to one —
+    // and soju parity means a client that named no network registers even when
+    // it *can't* do that (soju's register() never fails on a missing network
+    // name), rather than eating a 464 mid-onboarding. Goguma is the case that
+    // forced this: its first-run registration negotiates nothing but sasl and
+    // carries no network selector, so it used to hit the "multiple networks"
+    // 464 below and could never get far enough to discover them.
+    //
+    // The one exception is the documented ZNC floor (`PASS user:secret` with a
+    // single network): a client with no bouncer-networks cap can't do anything
+    // useful in our control mode, which carries no channel traffic, so keep
+    // auto-binding its only network.
     const hasSelector = this.boundNetId !== null || !!networkSel;
-    if (!hasSelector && this.caps.has(CAP_BOUNCER_NETWORKS)) {
-      this.registerControl(user);
+    const networks = listNetworksForUser(user.id);
+    if (!hasSelector && (this.caps.has(CAP_BOUNCER_NETWORKS) || networks.length !== 1)) {
+      this.registerControl(user, networks);
       return;
     }
 
-    const networks = listNetworksForUser(user.id);
     if (networks.length === 0) {
       this.failRegistration('No IRC networks configured — add one in the web UI first');
       return;
@@ -993,19 +1049,17 @@ class BouncerSession {
       network = networks.find((n) => n.name.toLowerCase() === sel || String(n.id) === sel);
       if (!network) {
         this.failRegistration(
-          `Unknown network '${networkSel}' — available: ${networks.map((n) => n.name).join(', ')}`,
+          withNetworkList(
+            `Unknown network '${networkSel}' — available: `,
+            networks.map((n) => n.name),
+            this.wireTextBudget(),
+          ),
         );
         return;
       }
-    } else if (networks.length === 1) {
-      network = networks[0];
     } else {
-      this.failRegistration(
-        `Multiple networks — log in as ${user.username}/<network>. Available: ${networks
-          .map((n) => n.name)
-          .join(', ')}`,
-      );
-      return;
+      // Selector-less and capless: the guard above leaves exactly one network.
+      network = networks[0];
     }
     this.bindNetwork(user, network);
   }
@@ -1045,19 +1099,36 @@ class BouncerSession {
     });
   }
 
+  // True if the client speaks the bouncer-networks extension at all. BIND needs
+  // the base cap, but for *explaining* an unbound connection either cap means
+  // the client can read the BOUNCER NETWORK lines and doesn't need the prose.
+  private knowsBouncerNetworks(): boolean {
+    return this.caps.has(CAP_BOUNCER_NETWORKS) || this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY);
+  }
+
   // Register a control (unbound) connection: authenticated, bound to no network.
   // It lives only in the global `sessions` set (no per-network registry); state
   // notifications reach it via the user-scoped fan-out in dispatchIrcEvent.
-  private registerControl(user: User): void {
+  private registerControl(user: User, networks: Network[]): void {
     this.userId = user.id;
     this.isControl = true;
     this.registered = true;
     this.clearRegTimer();
-    this.sendControlBurst();
+    this.sendControlBurst(user, networks);
+    // failRegistration used to console.warn the reason for the commonest
+    // misconfiguration (bare username, several networks). It no longer fails,
+    // so record the reason where an operator debugging "it connects but shows
+    // nothing" will look.
+    const reason =
+      networks.length === 0
+        ? 'no networks configured'
+        : this.caps.has(CAP_BOUNCER_NETWORKS)
+          ? 'client picks a network itself'
+          : `no network named, ${networks.length} available`;
     systemLog.log({
       userId: this.userId,
       scope: 'bouncer',
-      text: `Bouncer control connection from ${this.remoteIp}`,
+      text: `Bouncer control connection from ${this.remoteIp} (${reason})`,
     });
   }
 
@@ -1164,12 +1235,29 @@ class BouncerSession {
   // Minimal welcome for a control connection: it binds no network, so no
   // registrationLines / JOIN / playback / relay. The bouncer-scoped ISUPPORT
   // omits BOUNCER_NETID (its absence is how a client detects control mode).
-  private sendControlBurst(): void {
+  private sendControlBurst(user: User, networks: Network[]): void {
     const nick = this.clientNick || 'user';
     this.writeWelcomeNumerics(nick);
     this.write(
       `:${SERVER_NAME} 005 ${nick} NETWORK=${APP_NAME} CASEMAPPING=ascii :are supported by this server`,
     );
+    // Say why nothing is here, ahead of the MOTD-missing line that closes the
+    // burst. A bouncer-networks client with networks to pick from needs no
+    // explanation (it's about to LISTNETWORKS/BIND), but an empty account gives
+    // it an empty list, and a client that knows nothing of the extension has
+    // landed somewhere it can't act on at all — that used to be a 464 carrying
+    // this same advice, so keep the advice now that registration succeeds.
+    if (networks.length === 0) {
+      this.notice('No IRC networks configured yet — add one in the web UI, then reconnect.');
+    } else if (!this.knowsBouncerNetworks()) {
+      this.notice(
+        withNetworkList(
+          `Not attached to a network — log in as ${user.username}/<network> to attach. Available: `,
+          networks.map((n) => n.name),
+          this.wireTextBudget(),
+        ),
+      );
+    }
     this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
     // A -notify client gets the full network list up-front as a batch.
     if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();

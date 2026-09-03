@@ -234,3 +234,116 @@ describe('bouncer-networks-notify', () => {
     c.close();
   });
 });
+
+// A login that names no network registers as a control connection instead of
+// failing, matching soju's register() (which never rejects a missing network
+// name). Goguma is why: its first-run registration negotiates no caps beyond
+// sasl and carries no selector, so a 464 here left it unable to onboard at all.
+describe('selector-less registration (soju parity)', () => {
+  it('registers a capless client with several networks as a control connection', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl1', networkName: 'alpha' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'beta', nick: 'sl1b' });
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl'); // no soju.im/bouncer-networks
+    c.send('CAP END');
+    const welcome = await c.waitForCommand('005');
+    expect(welcome).not.toContain('BOUNCER_NETID');
+    expect(harnessMod.attachedFor(acct)).toBe(0);
+  });
+
+  it('names the available networks in a NOTICE when the client cannot discover them', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl2', networkName: 'alpha' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'beta', nick: 'sl2b' });
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl');
+    c.send('CAP END');
+    const notice = await c.waitForCommand('NOTICE');
+    expect(notice).toContain(`${acct.user.username}/<network>`);
+    expect(notice).toContain('alpha');
+    expect(notice).toContain('beta');
+  });
+
+  it('stays quiet for a bouncer-networks client, which discovers them itself', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl3', networkName: 'alpha' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'beta', nick: 'sl3b' });
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl soju.im/bouncer-networks');
+    c.send('CAP END');
+    // The notice precedes 422 in the burst, so seeing 422 is a sufficient
+    // barrier for asserting its absence — no arrival race here.
+    await c.waitForCommand('422');
+    expect(c.lines.some((l) => harnessMod.commandOf(l) === 'NOTICE')).toBe(false);
+  });
+
+  it('stays quiet for a -notify-only client, which still reads BOUNCER NETWORK', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl6', networkName: 'alpha' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'beta', nick: 'sl6b' });
+    const c = await harness.connect();
+    // Requesting -notify without the base cap is a client error, but the advice
+    // would flatly contradict the network dump that follows it.
+    await negotiate(c, acct, 'sasl soju.im/bouncer-networks-notify');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    expect(c.lines.some((l) => harnessMod.commandOf(l) === 'NOTICE')).toBe(false);
+    await c.waitFor((l) => l.includes('BOUNCER NETWORK') && l.includes('name=alpha'));
+  });
+
+  it('keeps the advice under the wire cap when the account has many networks', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl7', networkName: 'a-long-network-name-00' });
+    for (let i = 1; i < 25; i++) {
+      harnessMod.seedNetwork(acct.user, {
+        networkName: `a-long-network-name-${String(i).padStart(2, '0')}`,
+        nick: `sl7n${i}`,
+      });
+    }
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl');
+    c.send('CAP END');
+    const notice = await c.waitForCommand('NOTICE');
+    // Names are unbounded TEXT, so a bare join would run past 512 bytes and the
+    // client would truncate or drop the very advice it needs.
+    expect(Buffer.byteLength(notice + '\r\n')).toBeLessThanOrEqual(512);
+    expect(notice).toContain('a-long-network-name-00');
+    expect(notice).toMatch(/\+\d+ more$/);
+  });
+
+  it('still auto-binds the only network for a capless client (ZNC floor)', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl4', networkName: 'solo' });
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    expect(harnessMod.attachedFor(acct)).toBe(1);
+  });
+
+  it('registers an account with no networks and says why it is empty', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl5' });
+    harnessMod.dropNetworks(acct.user);
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl'); // capless: this pairing used to 464
+    c.send('CAP END');
+    const notice = await c.waitForCommand('NOTICE');
+    expect(notice).toContain('No IRC networks configured yet');
+    await c.waitForCommand('422');
+  });
+
+  it("registers Goguma's pipelined first-run burst, which waits for nothing", async () => {
+    const acct = harnessMod.seedAccount({ nick: 'gog', networkName: 'alpha' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'beta', nick: 'gogb' });
+    const c = await harness.connect();
+    // Goguma sends registration in one shot without reading CAP LS first, so it
+    // requests only sasl and its AUTHENTICATE precedes our `AUTHENTICATE +`.
+    c.send('CAP LS 302');
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    c.send('CAP REQ :sasl');
+    c.send('AUTHENTICATE PLAIN');
+    c.send(`AUTHENTICATE ${saslPlain(acct.user.username, acct.password)}`);
+    c.send('CAP END');
+    await c.waitForCommand('903');
+    await c.waitForCommand('001');
+    await c.waitForCommand('422');
+    expect(c.lines.some((l) => harnessMod.commandOf(l) === '464')).toBe(false);
+    expect(harnessMod.attachedFor(acct)).toBe(0); // control mode, not a blind bind
+  });
+});
