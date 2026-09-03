@@ -288,6 +288,25 @@ describe('selector-less registration (soju parity)', () => {
     await c.waitFor((l) => l.includes('BOUNCER NETWORK') && l.includes('name=alpha'));
   });
 
+  it('keeps the advice under the wire cap when the account has many networks', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl7', networkName: 'a-long-network-name-00' });
+    for (let i = 1; i < 25; i++) {
+      harnessMod.seedNetwork(acct.user, {
+        networkName: `a-long-network-name-${String(i).padStart(2, '0')}`,
+        nick: `sl7n${i}`,
+      });
+    }
+    const c = await harness.connect();
+    await negotiate(c, acct, 'sasl');
+    c.send('CAP END');
+    const notice = await c.waitForCommand('NOTICE');
+    // Names are unbounded TEXT, so a bare join would run past 512 bytes and the
+    // client would truncate or drop the very advice it needs.
+    expect(Buffer.byteLength(notice + '\r\n')).toBeLessThanOrEqual(512);
+    expect(notice).toContain('a-long-network-name-00');
+    expect(notice).toMatch(/\+\d+ more$/);
+  });
+
   it('still auto-binds the only network for a capless client (ZNC floor)', async () => {
     const acct = harnessMod.seedAccount({ nick: 'sl4', networkName: 'solo' });
     const c = await harness.connect();

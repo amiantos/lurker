@@ -16,6 +16,7 @@ let rewriteNumericTarget: typeof import('./bouncer.js').rewriteNumericTarget;
 let filterRelayLine: typeof import('./bouncer.js').filterRelayLine;
 let memberPrefixSymbol: typeof import('./bouncer.js').memberPrefixSymbol;
 let buildNamesLines: typeof import('./bouncer.js').buildNamesLines;
+let withNetworkList: typeof import('./bouncer.js').withNetworkList;
 let isServicesNick: typeof import('./bouncer.js').isServicesNick;
 let escapeTagValue: typeof import('./bouncer.js').escapeTagValue;
 let buildNetworkAttrs: typeof import('./bouncer.js').buildNetworkAttrs;
@@ -35,6 +36,7 @@ beforeAll(async () => {
   filterRelayLine = mod.filterRelayLine;
   memberPrefixSymbol = mod.memberPrefixSymbol;
   buildNamesLines = mod.buildNamesLines;
+  withNetworkList = mod.withNetworkList;
   isServicesNick = mod.isServicesNick;
   escapeTagValue = mod.escapeTagValue;
   buildNetworkAttrs = mod.buildNetworkAttrs;
@@ -451,6 +453,55 @@ describe('buildNamesLines', () => {
       .split(' ');
     expect(all).toHaveLength(200);
     expect(new Set(all).size).toBe(200);
+  });
+});
+
+describe('withNetworkList', () => {
+  const head = 'Available: ';
+
+  it('joins a short list verbatim', () => {
+    expect(withNetworkList(head, ['alpha', 'beta'], 400)).toBe('Available: alpha, beta');
+  });
+
+  it('handles an empty list', () => {
+    expect(withNetworkList(head, [], 400)).toBe(head);
+  });
+
+  it('drops the tail as "+N more" and stays inside the budget', () => {
+    const names = Array.from({ length: 60 }, (_, i) => `network-number-${i}`);
+    const out = withNetworkList(head, names, 200);
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(200);
+    expect(out).toContain('network-number-0');
+    expect(out).toMatch(/\+\d+ more$/);
+    // The count must name every network actually dropped, not a rounded guess.
+    const hidden = Number(out.match(/\+(\d+) more$/)![1]);
+    const shown = out.slice(head.length).split(', ').length - 1;
+    expect(shown + hidden).toBe(names.length);
+  });
+
+  it('budgets in bytes, not code units, for multi-byte names', () => {
+    const names = Array.from({ length: 20 }, () => '日本語ネットワーク'); // 3 bytes/char
+    const out = withNetworkList(head, names, 120);
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(120);
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('trims a single name that cannot fit at all', () => {
+    const out = withNetworkList(head, ['x'.repeat(500)], 200);
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(200);
+    expect(out.startsWith(head)).toBe(true);
+  });
+
+  it('keeps a whole NOTICE under the 512-byte wire cap', () => {
+    const names = Array.from({ length: 40 }, (_, i) => `some-fairly-long-network-name-${i}`);
+    const budget = Math.max(64, 480 - Buffer.byteLength(':lurker.bouncer NOTICE someuser :'));
+    const text = withNetworkList(
+      'Not attached to a network — log in as someuser/<network> to attach. Available: ',
+      names,
+      budget,
+    );
+    const line = `:lurker.bouncer NOTICE someuser :${text}\r\n`;
+    expect(Buffer.byteLength(line)).toBeLessThanOrEqual(512);
   });
 });
 

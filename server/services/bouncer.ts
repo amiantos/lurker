@@ -449,6 +449,36 @@ export function buildNamesLines(nick: string, channel: string, names: string[]):
   return lines;
 }
 
+/**
+ * Join network names onto `head`, dropping the tail as `+N more` so the result
+ * fits `budget` bytes.
+ *
+ * Network names are unbounded TEXT (no length cap on create, unlike API token
+ * names) and an account may hold any number of them, so a bare join can push
+ * these lines past the 512-byte wire cap — where clients truncate or drop them,
+ * defeating the point of listing the networks at all. Same hazard buildNamesLines
+ * chunks NAMES to avoid; one line suffices here because this is advice, not data.
+ * Counted in bytes, not code units: names can be multi-byte and the wire cap is
+ * bytes. The trailing trim is the backstop for a single pathological name.
+ */
+export function withNetworkList(head: string, names: string[], budget: number): string {
+  let out = head;
+  let shown = 0;
+  for (const name of names) {
+    const piece = shown === 0 ? name : `, ${name}`;
+    const hidden = names.length - shown - 1;
+    const tail = hidden > 0 ? `, +${hidden} more` : '';
+    if (shown > 0 && Buffer.byteLength(out + piece + tail) > budget) break;
+    out += piece;
+    shown += 1;
+  }
+  if (names.length > shown) out += `, +${names.length - shown} more`;
+  while (Buffer.byteLength(out) > budget && out.length > head.length + 1) {
+    out = out.slice(0, -1);
+  }
+  return out;
+}
+
 function toIrcTime(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
@@ -655,6 +685,15 @@ class BouncerSession {
   private numeric(code: string, params: string): void {
     const nick = this.currentNick() || this.clientNick || '*';
     this.write(`:${SERVER_NAME} ${code} ${nick} ${params}`);
+  }
+
+  // Bytes of message text that still fit on one 512-byte IRC line after this
+  // session's `:<server> <verb> <nick> :` prefix. Measured against the widest
+  // verb these list lines use (NOTICE), so it also covers the shorter 464.
+  // 480 leaves the same headroom for CRLF and prefix drift as buildNamesLines.
+  private wireTextBudget(): number {
+    const nick = this.currentNick() || this.clientNick || '*';
+    return Math.max(64, 480 - Buffer.byteLength(`:${SERVER_NAME} NOTICE ${nick} :`));
   }
 
   private notice(text: string): void {
@@ -1010,7 +1049,11 @@ class BouncerSession {
       network = networks.find((n) => n.name.toLowerCase() === sel || String(n.id) === sel);
       if (!network) {
         this.failRegistration(
-          `Unknown network '${networkSel}' — available: ${networks.map((n) => n.name).join(', ')}`,
+          withNetworkList(
+            `Unknown network '${networkSel}' — available: `,
+            networks.map((n) => n.name),
+            this.wireTextBudget(),
+          ),
         );
         return;
       }
@@ -1208,9 +1251,11 @@ class BouncerSession {
       this.notice('No IRC networks configured yet — add one in the web UI, then reconnect.');
     } else if (!this.knowsBouncerNetworks()) {
       this.notice(
-        `Not attached to a network — log in as ${user.username}/<network> to attach. Available: ${networks
-          .map((n) => n.name)
-          .join(', ')}`,
+        withNetworkList(
+          `Not attached to a network — log in as ${user.username}/<network> to attach. Available: `,
+          networks.map((n) => n.name),
+          this.wireTextBudget(),
+        ),
       );
     }
     this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
