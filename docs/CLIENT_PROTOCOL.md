@@ -1196,9 +1196,12 @@ add `key`/`code`/`status`). Exact multipart field names matter.
 CertFP: a network may carry a TLS client certificate, presented on the handshake
 so services identify the user by its fingerprint — passively (NickServ CertFP) or
 as SASL EXTERNAL. The network payload's `client_cert` is a **description, never a
-PEM**: `{sha256, sha1, subject, validFrom, validTo}`, or `null` when none is
-attached. Both digests are bare lowercase hex, the form
-`/msg NickServ CERT ADD <fingerprint>` takes. `client_key` never appears in any
+PEM**: `{sha256, sha1, sha512, subject, validFrom, validTo}`, or `null` when none
+is attached. All three digests are bare lowercase hex, the form
+`/msg NickServ CERT ADD <fingerprint>` takes — which one a network wants is the
+network's own business (Libera requires SHA-512 and rejects the others by
+length), so carry all three rather than picking one. `CERT ADD` with no argument
+takes it from the live connection instead, which sidesteps the question. `client_key` never appears in any
 payload. A change takes effect on the next connect — a certificate is presented
 during the TLS handshake, so there is nothing to renegotiate on a live socket.
 

@@ -41,6 +41,9 @@ describe('generateClientCert', () => {
     const info = describeClientCert((await generateClientCert('alice')).cert);
     expect(info.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(info.sha1).toMatch(/^[0-9a-f]{40}$/);
+    // 128 characters, which is what Libera checks for by length before it will
+    // even look at the value.
+    expect(info.sha512).toMatch(/^[0-9a-f]{128}$/);
     expect(info.subject).toContain('alice');
   });
 

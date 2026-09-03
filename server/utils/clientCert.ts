@@ -31,6 +31,11 @@ export interface ClientCertInfo {
   sha256: string;
   /** Same, SHA-1. Older ratbox-family networks (Rizon) still hash that way. */
   sha1: string;
+  /** Same, SHA-512 — 128 characters. Libera refuses anything else
+   *  ("Fingerprints on this network must be SHA2-512 digests"), and it is not
+   *  derivable from the others, so all three are carried rather than picking a
+   *  favourite: which one a network wants is the network's business. */
+  sha512: string;
   subject: string;
   validFrom: string;
   validTo: string;
@@ -88,6 +93,7 @@ export function describeClientCert(certPem: string): ClientCertInfo {
   return {
     sha256: bare(x509.fingerprint256),
     sha1: bare(x509.fingerprint),
+    sha512: bare(x509.fingerprint512),
     subject: x509.subject.replace(/\n/g, ', '),
     validFrom: new Date(x509.validFrom).toISOString(),
     validTo: new Date(x509.validTo).toISOString(),
