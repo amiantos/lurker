@@ -152,17 +152,24 @@
                 Connect, then run <code>/msg NickServ CERT ADD</code> — with no fingerprint, so
                 services take it from the connection itself. Expires {{ certExpiry }}.
               </small>
-              <p v-for="fp in fingerprints" :key="fp.label" class="cert-line">
-                <span class="cert-algo">{{ fp.label }}</span>
-                <code>{{ fp.value }}</code>
-                <button type="button" class="clear-link" @click="copyFingerprint(fp.value)">
-                  {{ copied === fp.value ? 'copied' : 'copy' }}
+              <p class="cert-actions">
+                <button
+                  v-for="fp in fingerprints"
+                  :key="fp.label"
+                  type="button"
+                  class="btn-secondary"
+                  @click="copyFingerprint(fp.value)"
+                >
+                  {{ copied === fp.value ? 'Copied' : `Copy ${fp.label}` }}
                 </button>
               </p>
               <small>
-                Only needed if you have to paste one — networks differ on which they accept, and say
-                so when you get it wrong.
+                Only if you have to paste one — networks differ on which digest they accept.
               </small>
+              <!-- A fingerprint the clipboard refused; see copyFingerprint. -->
+              <p v-if="revealed" class="cert-line">
+                <code>{{ revealed }}</code>
+              </p>
               <p class="cert-actions">
                 <a :href="`/api/networks/${props.network?.id}/certificate/export`" download>
                   Download for another client
@@ -338,6 +345,8 @@ const importKey = ref('');
 // The fingerprint most recently copied, so the confirmation lands on the row
 // that was clicked rather than on all of them.
 const copied = ref('');
+// A fingerprint the clipboard refused, shown so it can be selected by hand.
+const revealed = ref('');
 
 const certUnusable = computed(() => !!cert.value && 'unusable' in cert.value);
 // The readable variant, or null — `v-if="cert"` can't narrow the union in a
@@ -403,9 +412,14 @@ async function copyFingerprint(value: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(value);
     copied.value = value;
+    revealed.value = '';
     setTimeout(() => (copied.value = ''), 1500);
   } catch {
-    /* a clipboard the browser won't give us is not worth an error banner */
+    // Show it instead. `navigator.clipboard` is undefined outside a secure
+    // context, so this is the normal path for a self-host reached over plain
+    // http:// — not an edge case, and not something to swallow when the
+    // fingerprint appears nowhere else.
+    revealed.value = value;
   }
 }
 
@@ -746,15 +760,14 @@ label small {
 .cert-line code {
   word-break: break-all;
 }
-.cert-algo {
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
 .cert-actions {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin: 0;
+  /* Three copy buttons plus a download link don't fit a narrow modal in one
+     line. */
+  flex-wrap: wrap;
 }
 .cert-import {
   display: flex;
