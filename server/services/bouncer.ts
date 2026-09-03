@@ -974,7 +974,7 @@ class BouncerSession {
     // and soju parity means a client that named no network registers even when
     // it *can't* do that (soju's register() never fails on a missing network
     // name), rather than eating a 464 mid-onboarding. Goguma is the case that
-    // forced this: its first-run registration negotiates no caps at all and
+    // forced this: its first-run registration negotiates nothing but sasl and
     // carries no network selector, so it used to hit the "multiple networks"
     // 464 below and could never get far enough to discover them.
     //
@@ -1056,6 +1056,13 @@ class BouncerSession {
     });
   }
 
+  // True if the client speaks the bouncer-networks extension at all. BIND needs
+  // the base cap, but for *explaining* an unbound connection either cap means
+  // the client can read the BOUNCER NETWORK lines and doesn't need the prose.
+  private knowsBouncerNetworks(): boolean {
+    return this.caps.has(CAP_BOUNCER_NETWORKS) || this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY);
+  }
+
   // Register a control (unbound) connection: authenticated, bound to no network.
   // It lives only in the global `sessions` set (no per-network registry); state
   // notifications reach it via the user-scoped fan-out in dispatchIrcEvent.
@@ -1065,10 +1072,20 @@ class BouncerSession {
     this.registered = true;
     this.clearRegTimer();
     this.sendControlBurst(user, networks);
+    // failRegistration used to console.warn the reason for the commonest
+    // misconfiguration (bare username, several networks). It no longer fails,
+    // so record the reason where an operator debugging "it connects but shows
+    // nothing" will look.
+    const reason =
+      networks.length === 0
+        ? 'no networks configured'
+        : this.caps.has(CAP_BOUNCER_NETWORKS)
+          ? 'client picks a network itself'
+          : `no network named, ${networks.length} available`;
     systemLog.log({
       userId: this.userId,
       scope: 'bouncer',
-      text: `Bouncer control connection from ${this.remoteIp}`,
+      text: `Bouncer control connection from ${this.remoteIp} (${reason})`,
     });
   }
 
@@ -1181,21 +1198,22 @@ class BouncerSession {
     this.write(
       `:${SERVER_NAME} 005 ${nick} NETWORK=${APP_NAME} CASEMAPPING=ascii :are supported by this server`,
     );
-    this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
-    // Say why nothing is here. A bouncer-networks client with networks to pick
-    // from needs no explanation (it's about to LISTNETWORKS/BIND), but an empty
-    // account gives it an empty list, and a client without the cap has landed
-    // somewhere it can't act on at all — that used to be a 464 carrying this
-    // same advice, so keep the advice now that registration succeeds.
+    // Say why nothing is here, ahead of the MOTD-missing line that closes the
+    // burst. A bouncer-networks client with networks to pick from needs no
+    // explanation (it's about to LISTNETWORKS/BIND), but an empty account gives
+    // it an empty list, and a client that knows nothing of the extension has
+    // landed somewhere it can't act on at all — that used to be a 464 carrying
+    // this same advice, so keep the advice now that registration succeeds.
     if (networks.length === 0) {
       this.notice('No IRC networks configured yet — add one in the web UI, then reconnect.');
-    } else if (!this.caps.has(CAP_BOUNCER_NETWORKS)) {
+    } else if (!this.knowsBouncerNetworks()) {
       this.notice(
         `Not attached to a network — log in as ${user.username}/<network> to attach. Available: ${networks
           .map((n) => n.name)
           .join(', ')}`,
       );
     }
+    this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
     // A -notify client gets the full network list up-front as a batch.
     if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();
   }

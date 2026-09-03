@@ -523,7 +523,7 @@ Point your IRC client at the host/port with a **server password** of:
 - `username:secret` — when you have one network configured
 - `username/networkname:secret` — to pick one of several (the network's name as shown in the web UI, or its numeric id)
 
-Logging in as just `username` when you have several networks (or none yet) is not an error — you land on an idle connection that isn't attached to anything, and Lurker sends a notice naming the networks you can pick from. Reconnect with `username/networkname` to attach one.
+Logging in as just `username` when you have several networks is not an error — you land on an idle connection that isn't attached to anything, and Lurker sends a notice naming the networks you can pick from. Reconnect with `username/networkname` to attach one. An account with no networks yet lands on that same idle connection with a notice telling you to add one in the web UI first; networks are created there, not from an IRC client.
 
 The secret can be your Lurker account password, but a **read-write API token** (web UI → **Settings → API tokens**) is the better choice — IRC clients store the server password in plaintext config files, and a token can be revoked without changing your password.
 

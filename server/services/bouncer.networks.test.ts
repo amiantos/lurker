@@ -269,8 +269,23 @@ describe('selector-less registration (soju parity)', () => {
     const c = await harness.connect();
     await negotiate(c, acct, 'sasl soju.im/bouncer-networks');
     c.send('CAP END');
+    // The notice precedes 422 in the burst, so seeing 422 is a sufficient
+    // barrier for asserting its absence — no arrival race here.
     await c.waitForCommand('422');
     expect(c.lines.some((l) => harnessMod.commandOf(l) === 'NOTICE')).toBe(false);
+  });
+
+  it('stays quiet for a -notify-only client, which still reads BOUNCER NETWORK', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sl6', networkName: 'alpha' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'beta', nick: 'sl6b' });
+    const c = await harness.connect();
+    // Requesting -notify without the base cap is a client error, but the advice
+    // would flatly contradict the network dump that follows it.
+    await negotiate(c, acct, 'sasl soju.im/bouncer-networks-notify');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    expect(c.lines.some((l) => harnessMod.commandOf(l) === 'NOTICE')).toBe(false);
+    await c.waitFor((l) => l.includes('BOUNCER NETWORK') && l.includes('name=alpha'));
   });
 
   it('still auto-binds the only network for a capless client (ZNC floor)', async () => {
