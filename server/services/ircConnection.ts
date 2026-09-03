@@ -713,6 +713,10 @@ export class IrcConnection {
   // us from its map so a later /connect builds a fresh IrcConnection instead of
   // finding this corpse and doing nothing.
   private readonly onTakenOver: (() => void) | undefined;
+  // Called when a dial is refused for a reason only a config change can fix, so
+  // the owner can drop this object rather than keep a corpse that will never
+  // retry (see clientCertBlockedReason).
+  private readonly onNeedsRebuild: (() => void) | undefined;
   // Engine mode (services/engineTransport.ts): the IRC socket lives in the
   // engine process and this Client is attached to it over a link.
   //
@@ -759,16 +763,19 @@ export class IrcConnection {
     onEvent,
     reconnectGate,
     onTakenOver,
+    onNeedsRebuild,
   }: {
     network: Network;
     onEvent: (event: EnrichedEvent) => void;
     reconnectGate?: ReconnectGate;
     onTakenOver?: () => void;
+    onNeedsRebuild?: () => void;
   }) {
     this.network = network;
     this.onEvent = onEvent;
     this.reconnectGate = reconnectGate;
     this.onTakenOver = onTakenOver;
+    this.onNeedsRebuild = onNeedsRebuild;
     // ALL CTCP handling lives in our 'ctcp request' handler (VERSION/PING/TIME/
     // SOURCE/CLIENTINFO, rate-limited + surfaced), so irc-framework's built-in
     // VERSION auto-reply is disabled with `version: false`. That MUST go in the
@@ -1287,8 +1294,11 @@ export class IrcConnection {
         // NickServ, where the fingerprint has to be registered before the
         // network will recognise it. (#459)
         const usingCert = !!this.network.client_cert && !this.network.sasl_password;
+        // Deliberately not "register it while connected": on a network that
+        // REQUIRES SASL this rejection is what stops you connecting, so that
+        // advice is a closed loop. Name the way out of it too.
         const advice = usingCert
-          ? " — the network didn't recognise your client certificate. Register its fingerprint with /msg NickServ CERT ADD while connected"
+          ? " — this network doesn't recognise your client certificate. Register its fingerprint with NickServ (CERT ADD); if that means getting in first, remove the certificate here"
           : " — check the network's account credentials";
         this.pendingSaslFailure = `SASL authentication failed${
           reason && reason !== 'fail' ? ` (${reason})` : ''
@@ -4078,6 +4088,14 @@ export class IrcConnection {
       });
       this.logNet(`Connect blocked: ${certBlocked}`, 'warn');
       this.setState('disconnected');
+      // Nothing here will retry — no socket opened, so no 'close' to schedule
+      // one from — and every one of these reasons is fixed by editing the
+      // network. Ask to be dropped, or the manager's map keeps a connection
+      // that no longer matches the row: startNetwork is a documented no-op when
+      // one already exists, so /connect would answer ok having done nothing,
+      // forever, even after the certificate is removed. Same reasoning as
+      // gateReconnect's delete (#616).
+      this.onNeedsRebuild?.();
       return;
     }
     const clientCert = this.clientCertificate();

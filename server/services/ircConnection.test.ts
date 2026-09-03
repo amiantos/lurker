@@ -2497,8 +2497,11 @@ describe('auto-reconnect controller', () => {
       events.find((e) => e.type === 'error' && /SASL authentication failed/i.test(String(e.text)))
         ?.text,
     );
-    expect(text).toMatch(/NickServ CERT ADD/);
+    expect(text).toMatch(/CERT ADD/);
     expect(text).not.toMatch(/account credentials/);
+    // And a way out of the loop: on a network that requires SASL, this
+    // rejection is exactly what stops you connecting to run that command.
+    expect(text).toMatch(/remove the certificate/);
   });
 
   // #617: a single rejection is not proof the credentials killed THIS socket. On

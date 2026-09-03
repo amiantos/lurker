@@ -183,7 +183,13 @@ export function validateClientCertPair(
         : 'the certificate must be PEM, starting with -----BEGIN CERTIFICATE-----',
     };
   }
-  if (/ENCRYPTED PRIVATE KEY-----/.test(key)) {
+  // Two spellings: PKCS#8 says so in the label, while the traditional PKCS#1
+  // form (what `openssl genrsa -aes256` writes, and what sits in a lot of
+  // existing HexChat/WeeChat setups) keeps its ordinary label and announces the
+  // encryption in a header. Without the second test that key falls through to
+  // "could not be parsed as PEM" — the exact misdiagnosis this branch exists to
+  // prevent.
+  if (/ENCRYPTED PRIVATE KEY-----/.test(key) || /Proc-Type:\s*4,\s*ENCRYPTED/.test(key)) {
     return {
       error:
         'passphrase-protected keys are not supported — decrypt it first with: openssl rsa -in key.pem -out key-decrypted.pem',
