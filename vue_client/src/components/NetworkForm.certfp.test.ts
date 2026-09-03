@@ -17,6 +17,7 @@ vi.mock('../composables/useSocket.js', () => ({
 }));
 
 import { useNetworksStore, type Network } from '../stores/networks.js';
+import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import NetworkForm from './NetworkForm.vue';
 
 const CERT_PEM = '-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----';
@@ -62,7 +63,9 @@ function network(extra: Record<string, unknown> = {}): Network {
 }
 
 function open(extra: Record<string, unknown> = {}) {
-  return mount(NetworkForm, { props: { network: network(extra) } });
+  const form = mount(NetworkForm, { props: { network: network(extra) } });
+  mounted.push(form);
+  return form;
 }
 
 // The block lives under Advanced, which stays collapsed for a network with
@@ -76,7 +79,13 @@ async function openWithAdvanced(extra: Record<string, unknown> = {}) {
 }
 
 describe('NetworkForm — client certificate', () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    // The add flow opens on the network picker, which fetches the instance's
+    // presets on mount. There is no server here, and a request that outlives
+    // its test resolves into a component nobody is watching any more.
+    vi.spyOn(useNetworkPresetsStore(), 'fetchAll').mockResolvedValue(undefined);
+  });
 
   // A stubbed clipboard is a defineProperty, which restoreAllMocks doesn't
   // undo — and one left as `undefined` would send another file's copy path
