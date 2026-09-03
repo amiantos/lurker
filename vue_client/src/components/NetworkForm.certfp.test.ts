@@ -29,6 +29,7 @@ const DIGEST = {
 };
 
 const originalClipboard = navigator.clipboard;
+let mounted: ReturnType<typeof mount>[] = [];
 
 function network(extra: Record<string, unknown> = {}): Network {
   return {
@@ -65,6 +66,8 @@ describe('NetworkForm — client certificate', () => {
   // undo — and one left as `undefined` would send another file's copy path
   // down the reveal branch.
   afterEach(() => {
+    for (const wrapper of mounted) wrapper.unmount();
+    mounted = [];
     Object.defineProperty(navigator, 'clipboard', {
       value: originalClipboard,
       configurable: true,
@@ -75,8 +78,12 @@ describe('NetworkForm — client certificate', () => {
   // intent the create request carries — and the server mints it before the
   // first dial, because "connect with it, then register it from that
   // connection" is what every network's instructions say.
-  it('offers to mint one while adding a network, before it has ever connected', async () => {
+  // The add flow offers the SAME two choices as editing. Only the timing
+  // differs, and it has to: there is no network to write to yet, so the choice
+  // rides along with the create request.
+  async function openAddForm() {
     const form = mount(NetworkForm, { props: { network: null } });
+    mounted.push(form);
     // The add flow opens on the network picker; the form is the second step.
     await form
       .findAll('button')
@@ -84,15 +91,75 @@ describe('NetworkForm — client certificate', () => {
       .trigger('click');
     const toggle = form.findAll('button').find((b) => b.text().includes('Advanced options'));
     if (toggle) await toggle.trigger('click');
+    return form;
+  }
 
-    expect(form.text()).toContain('Client certificate');
-    expect(form.text()).toContain('Generate one for this network');
-    // TLS is on by default, so the offer is live.
-    expect(form.find('.certfp input[type="checkbox"]').attributes('disabled')).toBeUndefined();
-    // And none of the states that need a network to exist.
+  it('offers both generate and import while adding a network', async () => {
+    const form = await openAddForm();
     const labels = form.findAll('button').map((b) => b.text());
+    expect(form.text()).toContain('Client certificate');
+    expect(labels).toContain('Generate');
+    expect(labels).toContain('Import');
+    // None of the states that need a network to exist.
     expect(labels).not.toContain('Download');
-    expect(labels).not.toContain('Generate');
+  });
+
+  it('queues a generated certificate onto the create request', async () => {
+    const store = useNetworksStore();
+    const create = vi.spyOn(store, 'create').mockResolvedValue({ id: 9 } as never);
+    const form = await openAddForm();
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Generate')!
+      .trigger('click');
+
+    // Said plainly, and undoable — nothing has been created yet.
+    expect(form.text()).toContain('will be created with this network');
+    await form.find('form').trigger('submit');
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ generate_client_cert: true, client_cert: '' }),
+    );
+  });
+
+  it('carries a pasted pair onto the create request instead', async () => {
+    const store = useNetworksStore();
+    const create = vi.spyOn(store, 'create').mockResolvedValue({ id: 9 } as never);
+    const form = await openAddForm();
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Import')!
+      .trigger('click');
+    const areas = form.findAll('textarea');
+    await areas[areas.length - 2].setValue('-----BEGIN CERTIFICATE-----x');
+    await areas[areas.length - 1].setValue('-----BEGIN PRIVATE KEY-----y');
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Use this certificate')!
+      .trigger('click');
+
+    expect(form.text()).toContain('will be attached to this network');
+    await form.find('form').trigger('submit');
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client_cert: '-----BEGIN CERTIFICATE-----x',
+        client_key: '-----BEGIN PRIVATE KEY-----y',
+        generate_client_cert: false,
+      }),
+    );
+  });
+
+  it('lets a queued certificate be undone before saving', async () => {
+    const form = await openAddForm();
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Generate')!
+      .trigger('click');
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'undo')!
+      .trigger('click');
+    expect(form.text()).not.toContain('will be created with this network');
+    expect(form.findAll('button').map((b) => b.text())).toContain('Generate');
   });
 
   // v-if / v-else-if / v-else is one chain: an element inserted into the middle

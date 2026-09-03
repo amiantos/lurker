@@ -613,6 +613,49 @@ describe('client certificate', () => {
     expect(fakeManager.certAtDial).toContain('BEGIN CERTIFICATE');
   });
 
+  // Someone arriving from another client already has a pair, and their
+  // fingerprint is already registered — making them create the network first,
+  // connect once without it, then attach, wastes exactly the connect this is
+  // all about.
+  it('takes an existing pair at create, and has it stored before the dial', async () => {
+    const { generateClientCert, describeClientCert } = await import('../utils/clientCert.js');
+    const pair = await generateClientCert('from-elsewhere');
+    const res = await makeNet(aliceAgent, {
+      name: 'born-imported',
+      client_cert: pair.cert,
+      client_key: pair.key,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.network.client_cert.sha512).toBe(describeClientCert(pair.cert).sha512);
+    expect(fakeManager.certAtDial).toContain('BEGIN CERTIFICATE');
+  });
+
+  it('rejects a bad pair at create, and creates nothing', async () => {
+    const { generateClientCert } = await import('../utils/clientCert.js');
+    const [mine, theirs] = await Promise.all([generateClientCert('a'), generateClientCert('b')]);
+    const before = (await aliceAgent.get('/api/networks')).body.networks.length;
+    const res = await makeNet(aliceAgent, {
+      name: 'bad-pair-born',
+      client_cert: mine.cert,
+      client_key: theirs.key,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/doesn't match/);
+    expect((await aliceAgent.get('/api/networks')).body.networks).toHaveLength(before);
+  });
+
+  it('refuses to be told to both mint and import', async () => {
+    const { generateClientCert } = await import('../utils/clientCert.js');
+    const pair = await generateClientCert('both');
+    const res = await makeNet(aliceAgent, {
+      name: 'both-born',
+      generate_client_cert: true,
+      client_cert: pair.cert,
+      client_key: pair.key,
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('refuses to mint one for a plaintext network, and creates nothing', async () => {
     const before = (await aliceAgent.get('/api/networks')).body.networks.length;
     const res = await makeNet(aliceAgent, {

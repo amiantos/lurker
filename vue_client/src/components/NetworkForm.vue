@@ -145,10 +145,10 @@
                 remove
               </button>
             </span>
-            <label v-if="!isEdit" class="check">
-              <input v-model="form.generate_client_cert" type="checkbox" :disabled="!form.tls" />
-              <span>Generate one for this network</span>
-            </label>
+            <p v-if="pendingCert" class="cert-pending">
+              {{ pendingCert }}
+              <button type="button" class="clear-link" @click="clearPendingCert">undo</button>
+            </p>
             <p v-else-if="certUnusable" class="cert-bad">
               This certificate can’t be read, and the network won’t connect while it’s attached.
               Remove it, then generate a new one.
@@ -230,7 +230,7 @@
                   :disabled="certBusy"
                   @click="importCertificate"
                 >
-                  Attach
+                  {{ isEdit ? 'Attach' : 'Use this certificate' }}
                 </button>
               </div>
             </template>
@@ -329,6 +329,9 @@ const form = reactive({
   // it, then register it from that connection", so a certificate attached
   // afterwards misses the one connect that matters.
   generate_client_cert: false,
+  // An imported pair waiting on the create request, same idea.
+  client_cert: '',
+  client_key: '',
 });
 
 // Auto-expand advanced when editing a row that already has any advanced value
@@ -393,13 +396,33 @@ async function runCertAction(action: () => Promise<void>): Promise<void> {
   }
 }
 
+// Generate and Import mean the same two things in both flows; only the timing
+// differs, and it has to — while adding, there is no network to write to yet,
+// so the choice rides along with the create request and the server applies it
+// BEFORE the first dial (which is the connect the user registers the
+// fingerprint from).
 function generateCertificate(): Promise<void> {
+  if (!isEdit.value) {
+    form.generate_client_cert = true;
+    form.client_cert = '';
+    form.client_key = '';
+    return Promise.resolve();
+  }
   return runCertAction(async () => {
     cert.value = await networks.attachCertificate(props.network!.id, { mode: 'generate' });
   });
 }
 
 function importCertificate(): Promise<void> {
+  if (!isEdit.value) {
+    // Not validated here: parsing PEM needs the server's crypto, and the create
+    // request answers 400 with the specific problem if the pair is wrong.
+    form.client_cert = importCert.value.trim();
+    form.client_key = importKey.value.trim();
+    form.generate_client_cert = false;
+    showImport.value = false;
+    return Promise.resolve();
+  }
   return runCertAction(async () => {
     cert.value = await networks.attachCertificate(props.network!.id, {
       mode: 'import',
@@ -410,6 +433,22 @@ function importCertificate(): Promise<void> {
     importKey.value = '';
     showImport.value = false;
   });
+}
+
+// What the add flow has queued up, in words, or '' when nothing is.
+const pendingCert = computed(() => {
+  if (isEdit.value) return '';
+  if (form.generate_client_cert) return 'A certificate will be created with this network.';
+  if (form.client_cert) return 'Your certificate will be attached to this network.';
+  return '';
+});
+
+function clearPendingCert(): void {
+  form.generate_client_cert = false;
+  form.client_cert = '';
+  form.client_key = '';
+  importCert.value = '';
+  importKey.value = '';
 }
 
 function removeCertificate(): Promise<void> {
@@ -809,6 +848,12 @@ label small {
 .cert-bad {
   margin: 0;
   color: var(--bad);
+}
+.cert-pending {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin: 0;
 }
 .cert-note {
   color: var(--fg-muted);

@@ -156,8 +156,13 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
     // CertFP at creation (#459). Every network's instructions are the same
     // shape — connect with the certificate, then register it from that
     // connection — so a certificate attached after the fact means the first
-    // connect is the one connect that can't do the registering.
+    // connect is the one connect that can't do the registering. Both ways of
+    // getting one are offered here for that reason, not just minting: someone
+    // arriving from another client has a pair already, and making them create
+    // the network first would waste the same connect.
     generate_client_cert,
+    client_cert,
+    client_key,
   } = req.body || {};
   if (!name || !host || !nick) {
     res.status(400).json({ error: 'name, host, and nick are required' });
@@ -169,11 +174,27 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
   }
   // Checked before anything is written: a network that exists but couldn't be
   // given the certificate that was asked for is a worse answer than no network.
-  if (generate_client_cert && !tls) {
+  const importing = !!(client_cert || client_key);
+  if (generate_client_cert && importing) {
+    res
+      .status(400)
+      .json({ error: 'send either generate_client_cert or a cert/key pair, not both' });
+    return;
+  }
+  if ((generate_client_cert || importing) && !tls) {
     res.status(400).json({
       error: 'a client certificate can only be used on a TLS network — enable TLS first',
     });
     return;
+  }
+  let imported: { cert: string; key: string } | null = null;
+  if (importing) {
+    const validated = validateClientCertPair(client_cert, client_key);
+    if (isClientCertProblem(validated)) {
+      res.status(400).json({ error: validated.error });
+      return;
+    }
+    imported = validated;
   }
 
   const network = createNetwork(req.user!.id, {
@@ -198,12 +219,11 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
   // BEFORE startNetwork, deliberately: the certificate is presented during the
   // TLS handshake, so one attached after the dial would miss the very connect
   // the user needs it on.
-  const withCert = generate_client_cert
-    ? (setNetworkClientCert(
-        network.id,
-        req.user!.id,
-        await generateClientCert(network.nick || network.name),
-      ) ?? network)
+  const pair =
+    imported ??
+    (generate_client_cert ? await generateClientCert(network.nick || network.name) : null);
+  const withCert = pair
+    ? (setNetworkClientCert(network.id, req.user!.id, pair) ?? network)
     : network;
   for (const channel of parseChannelList(default_channel)) {
     seedAutojoinChannel(req.user!.id, network.id, channel);
