@@ -118,6 +118,7 @@ function prefixNick(prefix: string | undefined): string {
 export class EngineUpstream extends EventEmitter {
   readonly id: string;
   state: 'dialing' | 'open' | 'closed' = 'dialing';
+  private dialed = false;
   // `close()`/`quit()` were called: the socket is on its way out. Not a state
   // of its own because `open`-specific bookkeeping still applies until 'close'
   // fires, but every entry point treats it as gone.
@@ -212,6 +213,13 @@ export class EngineUpstream extends EventEmitter {
   // May throw synchronously (Node validates the port and the bind address
   // before it ever touches the network); the caller owns that.
   dial(): void {
+    // Once per upstream, and the engine only ever calls it once (a socket that
+    // died is forgotten; a fresh CONNECT builds a new upstream). Stated as a
+    // throw because the client key is dropped below on the way out: a second
+    // dial would otherwise handshake without one and fail somewhere far less
+    // obvious than here.
+    if (this.dialed) throw new Error('EngineUpstream.dial() is once per instance');
+    this.dialed = true;
     const { host, port, outgoingAddr, rejectUnauthorized, clientCert } = this.opts;
     const onConnect = () => this.onOpen();
     const base = {
@@ -237,6 +245,15 @@ export class EngineUpstream extends EventEmitter {
         )
       : net.connect(base, onConnect);
     this.socket = socket;
+    // The handshake has the key now — TLS keeps its own copy in native memory
+    // for the life of the socket — so stop holding one here. This upstream can
+    // live for days, and a heap snapshot walks what is still reachable. It is
+    // not an erasure: JS strings are immutable, so this makes the key
+    // collectible rather than gone. The certificate stays, because matchesDial
+    // compares it to decide whether a CONNECT is this session or a new one.
+    if (this.opts.clientCert) {
+      this.opts.clientCert = { cert: this.opts.clientCert.cert, key: '' };
+    }
     // utf8 with a StringDecoder underneath, so a multibyte character split across
     // chunks reassembles correctly. Lurker never negotiates another encoding.
     socket.setEncoding('utf8');

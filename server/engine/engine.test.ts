@@ -487,6 +487,51 @@ describe('TLS and identd', () => {
     }
   });
 
+  // The engine holds a socket for days, and a heap snapshot walks whatever is
+  // still reachable. The handshake is the only thing that needs the private
+  // key, so nothing keeps a reference past it — the certificate stays, because
+  // matchesDial compares it to tell this session from a new one.
+  it('stops holding the client key once the handshake has it', async () => {
+    const { generateClientCert } = await import('../utils/clientCert.js');
+    const { EngineUpstream } = await import('./upstream.js');
+    const { ByteBudget } = await import('./lineBuffer.js');
+    const secure = await FakeIrcd.start({ tls: true, requestClientCert: true });
+    try {
+      const pair = await generateClientCert('dropkey');
+      const upstream = new EngineUpstream(
+        {
+          id: `drop:${++counter}`,
+          instance: 'test',
+          host: '127.0.0.1',
+          port: secure.port,
+          tls: true,
+          rejectUnauthorized: false,
+          clientCert: { cert: pair.cert, key: pair.key },
+        },
+        64 * 1024,
+        new ByteBudget(1024 * 1024),
+      );
+      upstream.dial();
+
+      expect(upstream.opts.clientCert?.key).toBe('');
+      expect(upstream.opts.clientCert?.cert).toBe(pair.cert);
+      // Still able to answer the question the certificate is kept for.
+      expect(
+        upstream.matchesDial({
+          host: '127.0.0.1',
+          port: secure.port,
+          tls: true,
+          clientCert: { cert: pair.cert, key: pair.key },
+        }),
+      ).toBe(true);
+      // And a second dial is a loud error rather than a keyless handshake.
+      expect(() => upstream.dial()).toThrow(/once per instance/);
+      upstream.close();
+    } finally {
+      await secure.close();
+    }
+  });
+
   it('registers the ident on the raw TCP connect — before the TLS handshake — and releases it on close', async () => {
     process.env.LURKER_IDENTD_ENABLED = '1';
     const identd = createIdentdServer({ graceMs: 50, graceStepMs: 10 });
