@@ -16,6 +16,7 @@
 // on-disk lifecycle.
 
 import crypto from 'crypto';
+import { splitCombinedPem } from '../../shared/clientCertPem.js';
 
 /** A cert and the private key that completes its handshake. Never separated. */
 export interface ClientCertPair {
@@ -114,17 +115,6 @@ export function describeClientCert(certPem: string): ClientCertInfo {
 // `/msg NickServ CERT LIST` echoes back.
 function bare(fingerprint: string): string {
   return fingerprint.replace(/:/g, '').toLowerCase();
-}
-
-// One PEM blob holding both halves → the two of them; null when it isn't that.
-// Takes the FIRST block of each kind deliberately: a bundle carrying a chain
-// presents the leaf, which is the certificate whose fingerprint services hold.
-function splitCombinedPem(pem: string): { cert: string; key: string } | null {
-  const cert = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/.exec(pem)?.[0];
-  const key = /-----BEGIN ([A-Z ]*)PRIVATE KEY-----[\s\S]*?-----END \1PRIVATE KEY-----/.exec(
-    pem,
-  )?.[0];
-  return cert && key ? { cert, key } : null;
 }
 
 /** Will tls.connect accept this pair? Structural only — no opinion on whether

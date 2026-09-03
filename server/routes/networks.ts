@@ -59,7 +59,14 @@ function parseChannelList(raw: unknown): string[] {
 // would leave the user looking at a network that says it has no certificate and
 // refuses to connect because of one. Say it is unusable instead, and let the UI
 // offer the one thing that helps — removing it.
-function safeDescribe(certPem: string): ReturnType<typeof describeClientCert> | { unusable: true } {
+function describeStoredPair(
+  certPem: string | null,
+  keyPem: string | null,
+): ReturnType<typeof describeClientCert> | { unusable: true } | null {
+  if (!certPem && !keyPem) return null;
+  // Half a pair can't complete a handshake, so the dial refuses on it just as
+  // it does on one that won't parse. Same answer here, for the same reason.
+  if (!certPem || !keyPem) return { unusable: true };
   try {
     return describeClientCert(certPem);
   } catch {
@@ -74,9 +81,10 @@ function networkPayload(
   isAllowed: (host: string) => boolean = isNetworkHostAllowed,
 ): Record<string, unknown> | null {
   if (!network) return null;
-  // client_key is destructured only to keep it OUT of `safe` — the private key
-  // leaves the server through exactly one route, and never in a listing.
-  const { server_password, sasl_password, client_cert, client_key: _key, ...safe } = network;
+  // client_key is destructured to keep it OUT of `safe` — the private key leaves
+  // the server through exactly one route, and never in a listing — and because
+  // whether it is THERE decides what the payload says about the pair.
+  const { server_password, sasl_password, client_cert, client_key, ...safe } = network;
   return {
     ...safe,
     tls: !!network.tls,
@@ -89,7 +97,7 @@ function networkPayload(
     // paste at NickServ. `null` means no certificate; `{unusable: true}` means
     // there is one and it doesn't parse (archive import writes these columns
     // verbatim, so that is reachable without anyone pasting anything).
-    client_cert: client_cert ? safeDescribe(client_cert) : null,
+    client_cert: describeStoredPair(client_cert, client_key),
     // Channel rows in the retired channels-table wire shape (`joined` is the
     // autojoin flag), sourced from the buffers registry.
     channels: listChannelsForNetwork(network.id).map((b) => ({
@@ -114,7 +122,22 @@ router.get('/', (req: Request, res: Response) => {
   res.json({ networks });
 });
 
+// Not an async handler, for the reason attachCertificate documents: the async
+// body answers its own failures so the promise handed back never rejects.
 router.post('/', (req: Request, res: Response) => {
+  void createAndConnect(req, res);
+});
+
+async function createAndConnect(req: Request, res: Response): Promise<void> {
+  try {
+    await createAndConnectInner(req, res);
+  } catch (err) {
+    console.error('[lurker] network create failed:', err);
+    res.status(500).json({ error: 'failed to create the network' });
+  }
+}
+
+async function createAndConnectInner(req: Request, res: Response): Promise<void> {
   const {
     name,
     host,
@@ -130,6 +153,16 @@ router.post('/', (req: Request, res: Response) => {
     sasl_password,
     default_channel,
     connect_commands,
+    // CertFP at creation (#459). Every network's instructions are the same
+    // shape — connect with the certificate, then register it from that
+    // connection — so a certificate attached after the fact means the first
+    // connect is the one connect that can't do the registering. Both ways of
+    // getting one are offered here for that reason, not just minting: someone
+    // arriving from another client has a pair already, and making them create
+    // the network first would waste the same connect.
+    generate_client_cert,
+    client_cert,
+    client_key,
   } = req.body || {};
   if (!name || !host || !nick) {
     res.status(400).json({ error: 'name, host, and nick are required' });
@@ -138,6 +171,30 @@ router.post('/', (req: Request, res: Response) => {
   if (!isNetworkHostAllowed(host)) {
     res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
     return;
+  }
+  // Checked before anything is written: a network that exists but couldn't be
+  // given the certificate that was asked for is a worse answer than no network.
+  const importing = !!(client_cert || client_key);
+  if (generate_client_cert && importing) {
+    res
+      .status(400)
+      .json({ error: 'send either generate_client_cert or a cert/key pair, not both' });
+    return;
+  }
+  if ((generate_client_cert || importing) && !tls) {
+    res.status(400).json({
+      error: 'a client certificate can only be used on a TLS network — enable TLS first',
+    });
+    return;
+  }
+  let imported: { cert: string; key: string } | null = null;
+  if (importing) {
+    const validated = validateClientCertPair(client_cert, client_key);
+    if (isClientCertProblem(validated)) {
+      res.status(400).json({ error: validated.error });
+      return;
+    }
+    imported = validated;
   }
 
   const network = createNetwork(req.user!.id, {
@@ -159,6 +216,15 @@ router.post('/', (req: Request, res: Response) => {
     res.status(500).json({ error: 'failed to create network' });
     return;
   }
+  // BEFORE startNetwork, deliberately: the certificate is presented during the
+  // TLS handshake, so one attached after the dial would miss the very connect
+  // the user needs it on.
+  const pair =
+    imported ??
+    (generate_client_cert ? await generateClientCert(network.nick || network.name) : null);
+  const withCert = pair
+    ? (setNetworkClientCert(network.id, req.user!.id, pair) ?? network)
+    : network;
   for (const channel of parseChannelList(default_channel)) {
     seedAutojoinChannel(req.user!.id, network.id, channel);
   }
@@ -168,8 +234,8 @@ router.post('/', (req: Request, res: Response) => {
   // ircManager.initAll) and on un-pause resume — not whether this initial,
   // user-initiated setup connects.
   ircManager.startNetwork(req.user!.id, network.id);
-  res.status(201).json({ network: networkPayload(network) });
-});
+  res.status(201).json({ network: networkPayload(withCert) });
+}
 
 // Rewrite sidebar order for the caller. Body: { ids: [n1, n2, ...] } in the
 // new order. Must match the user's current set exactly — partial reorders

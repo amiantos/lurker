@@ -17,6 +17,43 @@ This chapter walks you from a fresh account to chatting in your first channel.
 - Adding a network (server, port, TLS).
 - Choosing a nick and authenticating (SASL / NickServ).
 
+### Client certificates (CertFP)
+
+Most networks let you identify with a TLS client certificate instead of a
+password: the server hashes the certificate you present and matches it against
+your services account. Lurker holds one per network, under **Advanced** in the
+network's settings.
+
+1. **Generate**, or **Import** and pick the `.pem` you already use in another
+   client — Lurker sorts the halves out (select both files if your key is
+   separate). Both are offered when you add a network as well as when you edit
+   one; asked for while adding, the certificate is in place before the first
+   connect.
+2. Reconnect, so the certificate is actually presented — not needed if you asked
+   for it while adding the network, since it was there from the start.
+3. `/msg NickServ CERT ADD` — with **no fingerprint**. Services read it off the
+   connection you are on, which is why this form works everywhere.
+
+Some networks want the fingerprint spelled out instead — ergo requires it, and
+you need it in hand if you are registering from another client.
+`/network cert <network>` prints all three digests, because networks disagree
+about which they accept: Libera takes **SHA-512** and rejects the others
+outright, most other Atheme networks and ergo want **SHA-256**, and older
+ratbox-family networks still use **SHA-1**.
+
+From then on that network knows you by the certificate. If you have no password
+set, Lurker authenticates with SASL EXTERNAL; with a password set it keeps using
+SASL PLAIN and presents the certificate as well, which is what NickServ's own
+CertFP recognises.
+
+`/network cert <network>` prints those fingerprints, `… new` replaces the
+certificate, and `… remove` detaches it. **Download for another client** gives you the pair as one
+`client.pem`, the shape HexChat and WeeChat keep on disk.
+
+A certificate is presented during the TLS handshake, so a change takes effect on
+the next connect — and a network with one attached won't connect over plaintext,
+since there is no handshake to present it in.
+
 ## Joining channels
 
 - Joining by name and using the channel browser.

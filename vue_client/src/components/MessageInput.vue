@@ -157,7 +157,12 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
-import { useNetworksStore, type Network } from '../stores/networks.js';
+import {
+  useNetworksStore,
+  type ClientCertDigest,
+  type ClientCertInfo,
+  type Network,
+} from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
@@ -3086,6 +3091,14 @@ async function runNetwork(
       const tls = cmd.input.tls ? ' (tls)' : '';
       // create() is an explicit "save & connect" server-side, so it dials now.
       reply(`added ${net.name} — ${cmd.input.host}:${cmd.input.port}${tls}, connecting…`);
+      // Minted before that dial, so it is already on the wire — print it here
+      // rather than making the user go and ask for it.
+      const minted = (net as Record<string, unknown>).client_cert as ClientCertInfo | null;
+      if (minted && !('unusable' in minted)) {
+        reply('client certificate:');
+        printFingerprints(minted, reply);
+        reply('once connected: /msg NickServ CERT ADD');
+      }
     } catch (err) {
       reply(`/network add failed: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
@@ -3115,10 +3128,61 @@ async function runNetwork(
         const landed = await moveNetwork(net, cmd.position);
         return reply(`moved ${net.name} to position ${landed}`);
       }
+      case 'cert':
+        // `return await`, not `return`: a promise returned out of a try block
+        // settles after the block has exited, so its rejection would skip the
+        // catch below — and the sole caller is `void runNetwork(...)`, so the
+        // user would get no output at all when the server said no.
+        return await runNetworkCert(cmd.action, net, reply);
     }
   } catch (err) {
     reply(`/network ${cmd.kind} failed: ${err instanceof Error ? err.message : 'unknown error'}`);
   }
+}
+
+// CertFP (#459). The fingerprint is the whole point of the command: it is what
+// the user pastes into `/msg NickServ CERT ADD`, and it only exists once the
+// pair has been written.
+async function runNetworkCert(
+  action: 'show' | 'generate' | 'remove',
+  net: Network,
+  reply: (msg: string) => void,
+): Promise<void> {
+  if (action === 'remove') {
+    await networks.removeCertificate(net.id);
+    return reply(`removed the client certificate from ${net.name}`);
+  }
+  if (action === 'generate') {
+    const cert = await networks.attachCertificate(net.id, { mode: 'generate' });
+    reply(`new client certificate for ${net.name}`);
+    printFingerprints(cert, reply);
+    // No fingerprint on the command: services take it from the connection
+    // itself, which is the one form that works on every network regardless of
+    // which digest it wants.
+    return reply('reconnect, then: /msg NickServ CERT ADD');
+  }
+  const stored = (net as Record<string, unknown>).client_cert as ClientCertInfo | null | undefined;
+  if (!stored) {
+    return reply(`${net.name} has no client certificate — /network cert ${net.name} new`);
+  }
+  if ('unusable' in stored) {
+    return reply(
+      `${net.name}'s client certificate can't be read — it blocks connecting; /network cert ${net.name} remove`,
+    );
+  }
+  reply(
+    `${net.name} client certificate — expires ${new Date(stored.validTo).toLocaleDateString()}`,
+  );
+  printFingerprints(stored, reply);
+}
+
+// All three digests, because which one a network accepts is its own business —
+// Libera takes SHA-512 only, ergo and most Atheme networks SHA-256, older
+// ratbox-family ones SHA-1 — and none is derivable from another.
+function printFingerprints(cert: ClientCertDigest, reply: (msg: string) => void): void {
+  reply(`  sha512 ${cert.sha512}`);
+  reply(`  sha256 ${cert.sha256}`);
+  reply(`  sha1   ${cert.sha1}`);
 }
 
 // Whether a registry option is exposed to /set, /get, and the listing — the
