@@ -533,7 +533,7 @@ Modern IRCv3 clients (Halloy, gamja, Goguma, …) get more than the server-passw
 
 These are negotiated automatically; plain clients that don't support them keep working over the server-password path.
 
-#### TLS
+#### Bouncer TLS
 
 Plain-text IRC would send that credential across the wire in the clear, so **the bouncer speaks TLS by default** — you don't have to do anything to get an encrypted connection. Connect in your IRC client's **TLS/SSL** mode. There are three ways the cert is sourced:
 
@@ -549,7 +549,7 @@ Plain-text IRC would send that credential across the wire in the clear, so **the
 
   Note the bouncer is raw IRC over TCP, so your **HTTP reverse proxy (Caddy/Cloudflare) can't front it** — the bouncer terminates its own TLS. Lurker re-reads the cert files periodically and hot-swaps a renewed cert, so certbot renewals need no restart.
 
-- **Plain-text (opt-in, private networks only).** If — and only if — you keep the listener private (`LURKER_BOUNCER_BIND=127.0.0.1` behind an SSH tunnel, or a VPN/Tailscale interface), you can turn TLS off with `LURKER_BOUNCER_TLS=off`. On a non-loopback bind without TLS, Lurker logs a loud security warning. Don't do this on a public address.
+- **TLS via a reverse proxy.** If you're hiding Lurker behind a reverse proxy where you're handling TLS termination yourself, you'll want to set `LURKER_BOUNCER_BIND=<ip address>` and turn off Lurker's TLS with `LURKER_BOUNCER_TLS=off`.
 
 Repeated failed logins from an address are throttled automatically.
 
