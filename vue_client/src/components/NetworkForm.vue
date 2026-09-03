@@ -115,6 +115,7 @@
             <input v-model="form.default_channel" :placeholder="channelPlaceholder" />
             <small>Comma-separated, e.g. #lurker, #libera</small>
           </label>
+          <hr class="divider" />
           <label>
             <span>Commands to run on connect</span>
             <textarea
@@ -130,6 +131,7 @@
               <code>WAIT 15</code> pauses that many seconds before the next one.</small
             >
           </label>
+          <hr v-if="isEdit" class="divider" />
           <div v-if="isEdit" class="certfp">
             <span class="field-label">
               <span>Client certificate (CertFP)</span>
@@ -148,10 +150,6 @@
               Remove it, then generate a new one.
             </p>
             <template v-else-if="certInfo">
-              <small>
-                Connect, then run <code>/msg NickServ CERT ADD</code> — with no fingerprint, so
-                services take it from the connection itself. Expires {{ certExpiry }}.
-              </small>
               <p class="cert-actions">
                 <button
                   v-for="fp in fingerprints"
@@ -162,25 +160,17 @@
                 >
                   {{ copied === fp.value ? 'Copied' : `Copy ${fp.label}` }}
                 </button>
+                <button type="button" class="btn-secondary" @click="downloadCertificate">
+                  Download
+                </button>
               </p>
-              <small>
-                Only if you have to paste one — networks differ on which digest they accept.
-              </small>
               <!-- A fingerprint the clipboard refused; see copyFingerprint. -->
               <p v-if="revealed" class="cert-line">
                 <code>{{ revealed }}</code>
               </p>
-              <p class="cert-actions">
-                <a :href="`/api/networks/${props.network?.id}/certificate/export`" download>
-                  Download for another client
-                </a>
-              </p>
+              <small>Expires {{ certExpiry }}</small>
             </template>
             <template v-else>
-              <small>
-                Identifies you to services by the certificate’s fingerprint instead of a password —
-                on its own, or as SASL EXTERNAL. Takes effect on the next connect.
-              </small>
               <p class="cert-actions">
                 <button
                   type="button"
@@ -231,6 +221,7 @@
             </template>
             <p v-if="certError" class="error">{{ certError }}</p>
           </div>
+          <hr class="divider" />
           <label class="check">
             <input v-model="form.autoconnect" type="checkbox" />
             <span>Reconnect automatically</span>
@@ -406,6 +397,18 @@ function removeCertificate(): Promise<void> {
     await networks.removeCertificate(props.network!.id);
     cert.value = null;
   });
+}
+
+// A button rather than a link, to sit with the copy row. The server names the
+// file in its Content-Disposition; the anchor exists only to start the download
+// without navigating away from the form.
+function downloadCertificate(): void {
+  const link = document.createElement('a');
+  link.href = `/api/networks/${props.network!.id}/certificate/export`;
+  link.download = '';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 async function copyFingerprint(value: string): Promise<void> {
@@ -744,10 +747,19 @@ label small {
   color: var(--bad);
   margin: 0;
 }
+.divider {
+  height: 1px;
+  width: 100%;
+  border: 0;
+  margin: 0;
+  background: var(--border);
+}
+/* Same internal rhythm as the <label> blocks it sits between: the label row,
+   then the control, then the small note. */
 .certfp {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 .cert-line {
   display: flex;

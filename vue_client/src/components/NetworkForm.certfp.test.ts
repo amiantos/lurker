@@ -78,14 +78,8 @@ describe('NetworkForm — client certificate', () => {
     expect(text).toContain('Import');
   });
 
-  it('offers every digest to copy, and leads with the command that needs none', () => {
+  it('offers every digest to copy, and the pair to download', () => {
     const form = open({ client_cert: DIGEST });
-    const text = form.text();
-    // The command is the whole point: a fingerprint nobody registers does
-    // nothing at all — and this form of it works whatever digest the network
-    // wants, which is why it leads.
-    expect(text).toContain('NickServ CERT ADD');
-    expect(text).toContain('with no fingerprint');
     // All three, because networks disagree: Libera takes SHA-512 and rejects
     // the rest, most Atheme networks and ergo want SHA-256, older
     // ratbox-family ones SHA-1.
@@ -93,8 +87,33 @@ describe('NetworkForm — client certificate', () => {
     expect(labels).toContain('Copy SHA-512');
     expect(labels).toContain('Copy SHA-256');
     expect(labels).toContain('Copy SHA-1');
+    expect(labels).toContain('Download');
     // The hex itself is behind the buttons, not on the page.
-    expect(text).not.toContain(DIGEST.sha512);
+    expect(form.text()).not.toContain(DIGEST.sha512);
+    // Expiry is the one thing here worth reading, because it is data about
+    // this certificate rather than instructions about certificates.
+    expect(form.text()).toMatch(/Expires \d/);
+  });
+
+  // Downloading is a button among the copy buttons, not a link off on its own,
+  // and it must not navigate the form away — the anchor is a transient.
+  it('downloads the pair without leaving the form', async () => {
+    const form = open({ client_cert: DIGEST });
+    const clicked: string[] = [];
+    const realClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+      clicked.push(this.getAttribute('href') || '');
+    };
+    try {
+      await form
+        .findAll('button')
+        .find((b) => b.text() === 'Download')!
+        .trigger('click');
+    } finally {
+      HTMLAnchorElement.prototype.click = realClick;
+    }
+    expect(clicked).toEqual(['/api/networks/7/certificate/export']);
+    expect(document.querySelectorAll('a[href*="certificate/export"]')).toHaveLength(0);
   });
 
   it('copies the digest whose button was pressed', async () => {
