@@ -24,9 +24,10 @@ password: the server hashes the certificate you present and matches it against
 your services account. Lurker holds one per network, under **Advanced** in the
 network's settings.
 
-1. **Generate** (or **Import**, if you already use one in another client). Both
-   are offered when you add a network as well as when you edit one; asked for
-   while adding, the certificate is in place before the first connect.
+1. **Generate** (or **Import**, if you already use one in another client — pick
+   the `.pem` file and Lurker sorts the halves out, or paste them). Both are
+   offered when you add a network as well as when you edit one; asked for while
+   adding, the certificate is in place before the first connect.
 2. Reconnect, so the certificate is actually presented — not needed if you asked
    for it while adding the network, since it was there from the start.
 3. `/msg NickServ CERT ADD` — with **no fingerprint**. Services read it off the

@@ -191,6 +191,21 @@
                 <span v-if="!form.tls" class="cert-note">TLS only.</span>
               </p>
               <div v-if="showImport" class="cert-import">
+                <!-- A .pem is what the Download button hands out and what every
+                     other client keeps on disk, so taking one back is the
+                     symmetric thing to do. Several files are allowed because a
+                     cert and its key are as often two files as one; they are
+                     concatenated and the blocks picked out of the result, so
+                     either shape lands in the right boxes. -->
+                <label class="cert-file">
+                  <span>From a file</span>
+                  <input
+                    type="file"
+                    accept=".pem,.crt,.cer,.key,.txt,application/x-pem-file,text/plain"
+                    multiple
+                    @change="onCertFiles"
+                  />
+                </label>
                 <label>
                   <span>Certificate</span>
                   <textarea
@@ -268,6 +283,7 @@ import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
+import { partsFromPem } from '../../../shared/clientCertPem.js';
 import {
   FALLBACK_CHANNEL,
   LURKER_CHANNEL,
@@ -378,6 +394,24 @@ function generateCertificate(): Promise<void> {
   return runCertAction(async () => {
     cert.value = await networks.attachCertificate(props.network!.id, { mode: 'generate' });
   });
+}
+
+// Fills the two fields from whatever was picked, rather than sending the file
+// straight off: the user sees what will be sent, and can fix it if their file
+// held something unexpected. The server splits again on arrival — it does not
+// trust this — and is the only thing that decides whether the pair is usable.
+async function onCertFiles(event: Event): Promise<void> {
+  const files = Array.from((event.target as HTMLInputElement).files ?? []);
+  if (!files.length) return;
+  certError.value = '';
+  const text = (await Promise.all(files.map((f) => f.text()))).join('\n');
+  const { cert, key } = partsFromPem(text);
+  if (!cert && !key) {
+    certError.value = "that file doesn't contain a certificate or a private key";
+    return;
+  }
+  if (cert) importCert.value = cert;
+  if (key) importKey.value = key;
 }
 
 function importCertificate(): Promise<void> {
@@ -787,6 +821,10 @@ label small {
 }
 .cert-import textarea {
   font-family: var(--font-mono);
+}
+.cert-file input {
+  padding: 0;
+  border: 0;
 }
 .cert-bad {
   margin: 0;

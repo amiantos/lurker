@@ -19,6 +19,23 @@ vi.mock('../composables/useSocket.js', () => ({
 import { useNetworksStore, type Network } from '../stores/networks.js';
 import NetworkForm from './NetworkForm.vue';
 
+const CERT_PEM = '-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----';
+const KEY_PEM = '-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----';
+
+// Drive the file input the way a picker would: attach the files and fire
+// `change`, which is the event the component listens for.
+async function pickFiles(form: ReturnType<typeof mount>, contents: string[]): Promise<void> {
+  const input = form.find('.cert-file input[type="file"]');
+  const files = contents.map(
+    (text, i) => new File([text], `part-${i}.pem`, { type: 'text/plain' }),
+  );
+  Object.defineProperty(input.element, 'files', { value: files, configurable: true });
+  await input.trigger('change');
+  // The handler reads the files asynchronously.
+  await new Promise((r) => setTimeout(r, 0));
+  await form.vm.$nextTick();
+}
+
 const DIGEST = {
   sha256: 'a'.repeat(64),
   sha1: 'b'.repeat(40),
@@ -248,6 +265,45 @@ describe('NetworkForm — client certificate', () => {
     // The block is in its attached state without a refetch — the certificate
     // exists only once written, and the form has to reflect that immediately.
     expect(form.findAll('button').map((b) => b.text())).toContain('Download');
+  });
+
+  // We hand out a .pem from the Download button; asking for it back as two
+  // text boxes means a trip through a text editor to split a file we produced.
+  it('fills both fields from a picked .pem file', async () => {
+    const form = await openWithAdvanced();
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Import')!
+      .trigger('click');
+    await pickFiles(form, [`${KEY_PEM}\n${CERT_PEM}\n`]);
+
+    const areas = form.findAll('textarea');
+    expect((areas[areas.length - 2].element as HTMLTextAreaElement).value).toBe(CERT_PEM);
+    expect((areas[areas.length - 1].element as HTMLTextAreaElement).value).toBe(KEY_PEM);
+  });
+
+  // A certificate and its key are as often two files as one.
+  it('takes the two halves from two files', async () => {
+    const form = await openWithAdvanced();
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Import')!
+      .trigger('click');
+    await pickFiles(form, [CERT_PEM, KEY_PEM]);
+
+    const areas = form.findAll('textarea');
+    expect((areas[areas.length - 2].element as HTMLTextAreaElement).value).toBe(CERT_PEM);
+    expect((areas[areas.length - 1].element as HTMLTextAreaElement).value).toBe(KEY_PEM);
+  });
+
+  it('says so when the file holds neither half', async () => {
+    const form = await openWithAdvanced();
+    await form
+      .findAll('button')
+      .find((b) => b.text() === 'Import')!
+      .trigger('click');
+    await pickFiles(form, ['just some text']);
+    expect(form.text()).toContain("doesn't contain a certificate");
   });
 
   it('reports a rejected import where the user pasted it', async () => {
