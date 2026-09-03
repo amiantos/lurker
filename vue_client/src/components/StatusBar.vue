@@ -7,7 +7,7 @@
   <div v-if="active" class="status-bar">
     <div class="bar" :class="{ compact }">
       <div class="bar-main">
-        <span v-if="!compact" class="seg clock">{{ clock }}</span>
+        <span v-if="!compact && clock" class="seg clock">{{ clock }}</span>
         <span class="seg buffer"
           ><template v-if="targetLabel"
             ><span v-if="networkLabel" class="net">{{ networkLabel }}/</span
@@ -387,9 +387,7 @@ const lagClass = computed(() => {
 
 // Clock lives in the status bar now. Same 1s tick + same format setting as
 // the input bar used to have, so existing look.bar.time_format keeps working.
-const tsFormat = computed(
-  () => (settings.effective('look.bar.time_format') as string) || 'HH:mm:ss',
-);
+const tsFormat = computed(() => settings.effective('look.bar.time_format') as string);
 const now = ref(new Date());
 let clockTimer: ReturnType<typeof setInterval> | null = null;
 let clockAlignTimeout: ReturnType<typeof setTimeout> | null = null;
