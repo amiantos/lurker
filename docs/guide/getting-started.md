@@ -35,11 +35,11 @@ network's settings.
    connection you are on, which is why this form works everywhere.
 
 Some networks want the fingerprint spelled out instead — ergo requires it, and
-you need it in hand if you are registering from another client. `/network cert
-<network>` prints all three digests, because networks disagree about which they
-accept: Libera takes **SHA-512** and rejects the others outright, most other
-Atheme networks and ergo want **SHA-256**, and older ratbox-family networks
-still use **SHA-1**.
+you need it in hand if you are registering from another client.
+`/network cert <network>` prints all three digests, because networks disagree
+about which they accept: Libera takes **SHA-512** and rejects the others
+outright, most other Atheme networks and ergo want **SHA-256**, and older
+ratbox-family networks still use **SHA-1**.
 
 From then on that network knows you by the certificate. If you have no password
 set, Lurker authenticates with SASL EXTERNAL; with a password set it keeps using
