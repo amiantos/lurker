@@ -84,9 +84,9 @@ describe('NetworkForm — client certificate', () => {
     // the rest, most Atheme networks and ergo want SHA-256, older
     // ratbox-family ones SHA-1.
     const labels = form.findAll('button').map((b) => b.text());
-    expect(labels).toContain('Copy SHA-512');
-    expect(labels).toContain('Copy SHA-256');
-    expect(labels).toContain('Copy SHA-1');
+    expect(labels).toContain('SHA-512');
+    expect(labels).toContain('SHA-256');
+    expect(labels).toContain('SHA-1');
     expect(labels).toContain('Download');
     // The hex itself is behind the buttons, not on the page.
     expect(form.text()).not.toContain(DIGEST.sha512);
@@ -121,14 +121,14 @@ describe('NetworkForm — client certificate', () => {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
 
     const form = open({ client_cert: DIGEST });
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Copy SHA-512')!
-      .trigger('click');
+    const button = form.findAll('button').find((b) => b.text() === 'SHA-512')!;
+    await button.trigger('click');
     await new Promise((r) => setTimeout(r, 0));
 
     expect(writeText).toHaveBeenCalledWith(DIGEST.sha512);
-    expect(form.findAll('button').map((b) => b.text())).toContain('Copied');
+    // The tick lands on the button that was pressed, and only that one.
+    expect(button.attributes('aria-label')).toBe('copied');
+    expect(form.find('button[aria-label="copy SHA-256 fingerprint"]').exists()).toBe(true);
   });
 
   // navigator.clipboard is undefined outside a secure context — which is how a
@@ -140,7 +140,7 @@ describe('NetworkForm — client certificate', () => {
     const form = open({ client_cert: DIGEST });
     await form
       .findAll('button')
-      .find((b) => b.text() === 'Copy SHA-256')!
+      .find((b) => b.text() === 'SHA-256')!
       .trigger('click');
     await new Promise((r) => setTimeout(r, 0));
 
@@ -185,7 +185,7 @@ describe('NetworkForm — client certificate', () => {
     // what the user has to go and register.
     await form
       .findAll('button')
-      .find((b) => b.text() === 'Copy SHA-256')!
+      .find((b) => b.text() === 'SHA-256')!
       .trigger('click');
     await new Promise((r) => setTimeout(r, 0));
     expect(writeText).toHaveBeenCalledWith(minted.sha256);

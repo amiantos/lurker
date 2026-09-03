@@ -156,11 +156,22 @@
                   :key="fp.label"
                   type="button"
                   class="btn-secondary"
-                  @click="copyFingerprint(fp.value)"
+                  :title="clipboard.isCopied(fp.label) ? 'copied' : `copy ${fp.label} fingerprint`"
+                  :aria-label="
+                    clipboard.isCopied(fp.label) ? 'copied' : `copy ${fp.label} fingerprint`
+                  "
+                  @click="copyFingerprint(fp)"
                 >
-                  {{ copied === fp.value ? 'Copied' : `Copy ${fp.label}` }}
+                  <i
+                    :class="
+                      clipboard.isCopied(fp.label) ? 'fa-solid fa-check' : 'fa-regular fa-copy'
+                    "
+                    aria-hidden="true"
+                  ></i>
+                  {{ fp.label }}
                 </button>
                 <button type="button" class="btn-secondary" @click="downloadCertificate">
+                  <i class="fa-solid fa-download" aria-hidden="true"></i>
                   Download
                 </button>
               </p>
@@ -268,6 +279,7 @@ import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
+import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import {
   FALLBACK_CHANNEL,
   LURKER_CHANNEL,
@@ -333,9 +345,7 @@ const certError = ref('');
 const showImport = ref(false);
 const importCert = ref('');
 const importKey = ref('');
-// The fingerprint most recently copied, so the confirmation lands on the row
-// that was clicked rather than on all of them.
-const copied = ref('');
+const clipboard = useCopyFeedback();
 // A fingerprint the clipboard refused, shown so it can be selected by hand.
 const revealed = ref('');
 
@@ -411,19 +421,17 @@ function downloadCertificate(): void {
   link.remove();
 }
 
-async function copyFingerprint(value: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(value);
-    copied.value = value;
-    revealed.value = '';
-    setTimeout(() => (copied.value = ''), 1500);
-  } catch {
-    // Show it instead. `navigator.clipboard` is undefined outside a secure
-    // context, so this is the normal path for a self-host reached over plain
-    // http:// — not an edge case, and not something to swallow when the
-    // fingerprint appears nowhere else.
-    revealed.value = value;
-  }
+// useCopyFeedback owns the tick and its timer; the key is the digest name, so
+// only the button that was pressed confirms.
+//
+// It answers false rather than throwing when the clipboard is unavailable —
+// undefined outside a secure context, which is how a self-host reached over
+// plain http:// on a LAN runs. Its own callers treat that as a failed
+// convenience, but here copy is the ONLY route to a value that appears nowhere
+// else on the page, so reveal it to be selected by hand.
+async function copyFingerprint(fp: { label: string; value: string }): Promise<void> {
+  if (await clipboard.copy(fp.value, fp.label)) revealed.value = '';
+  else revealed.value = fp.value;
 }
 
 // Add-flow opens on the network picker (#169); editing jumps straight to the
@@ -628,13 +636,18 @@ async function remove(): Promise<void> {
   margin: 0 calc(-1 * var(--card-pad-x));
   padding: 0 var(--card-pad-x) var(--space-7);
 }
-label {
+/* .certfp labels a GROUP of buttons rather than one control, so it is a <div>
+   and not a <label> — and has to opt into the field styling every other title
+   in the form gets for free, or it reads as body text among them. */
+label,
+.certfp {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   color: var(--fg-muted);
 }
-label span {
+label span,
+.certfp > .field-label > span {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -754,13 +767,7 @@ label small {
   margin: 0;
   background: var(--border);
 }
-/* Same internal rhythm as the <label> blocks it sits between: the label row,
-   then the control, then the small note. */
-.certfp {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
+
 .cert-line {
   display: flex;
   align-items: center;
