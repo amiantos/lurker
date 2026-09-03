@@ -27,7 +27,7 @@ import {
 import { createUser, setPasswordHash } from '../db/users.js';
 import { hashPassword } from '../services/password.js';
 import { createToken } from '../db/apiTokens.js';
-import { createNetwork } from '../db/networks.js';
+import { createNetwork, deleteNetwork, listNetworksForUser } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import type { User } from '../db/users.js';
 
@@ -155,6 +155,14 @@ export function seedAccount(
   ircManager.connectionsForUser(user.id).set(network.id, upstream as never);
 
   return { user, network, password, token, upstream };
+}
+
+/** Remove every network an account owns, leaving it with an empty bouncer. */
+export function dropNetworks(user: User): void {
+  for (const network of listNetworksForUser(user.id)) {
+    ircManager.connectionsForUser(user.id).delete(network.id);
+    deleteNetwork(network.id, user.id);
+  }
 }
 
 /** Registered bouncer sessions currently attached to an account's network. */

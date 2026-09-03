@@ -24,6 +24,12 @@
 // (for now) ignored. Multi-upstream `*` is deliberately unsupported (soju
 // removed it too) — attach one network per connection.
 //
+// A login that names no network registers as a *control* connection rather
+// than failing (soju parity — its register() never rejects a missing network
+// name). A bouncer-networks client uses that to enumerate and BIND; a client
+// without the cap gets a NOTICE naming its networks. The exception is the ZNC
+// floor above: no cap, no selector, exactly one network → attach it.
+//
 // Design notes / v1 limitations, all deliberate:
 // - Upstream→client traffic is relayed as the RAW wire lines the network sent
 //   (minus registration/PING plumbing), so semantics stay exact. That means
@@ -939,8 +945,8 @@ class BouncerSession {
   }
 
   // Called at CAP END / registration completion. Resolves the target network
-  // (BIND id > username selector > single-network default), or drops into
-  // control mode for a bouncer-networks client that named no network.
+  // (BIND id > username selector > capless single-network default), or drops
+  // into control mode for any client that named no network.
   private completeAttach(user: User, networkSel: string | null): void {
     if (user.is_paused) {
       this.failRegistration('Account is paused');
@@ -963,15 +969,26 @@ class BouncerSession {
       return;
     }
 
-    // Control (unbound) mode: a bouncer-networks-aware client that named no
-    // network manages its networks via BOUNCER instead of attaching to one.
+    // Control (unbound) mode. A bouncer-networks-aware client that named no
+    // network manages its networks via BOUNCER instead of attaching to one —
+    // and soju parity means a client that named no network registers even when
+    // it *can't* do that (soju's register() never fails on a missing network
+    // name), rather than eating a 464 mid-onboarding. Goguma is the case that
+    // forced this: its first-run registration negotiates no caps at all and
+    // carries no network selector, so it used to hit the "multiple networks"
+    // 464 below and could never get far enough to discover them.
+    //
+    // The one exception is the documented ZNC floor (`PASS user:secret` with a
+    // single network): a client with no bouncer-networks cap can't do anything
+    // useful in our control mode, which carries no channel traffic, so keep
+    // auto-binding its only network.
     const hasSelector = this.boundNetId !== null || !!networkSel;
-    if (!hasSelector && this.caps.has(CAP_BOUNCER_NETWORKS)) {
-      this.registerControl(user);
+    const networks = listNetworksForUser(user.id);
+    if (!hasSelector && (this.caps.has(CAP_BOUNCER_NETWORKS) || networks.length !== 1)) {
+      this.registerControl(user, networks);
       return;
     }
 
-    const networks = listNetworksForUser(user.id);
     if (networks.length === 0) {
       this.failRegistration('No IRC networks configured — add one in the web UI first');
       return;
@@ -997,15 +1014,9 @@ class BouncerSession {
         );
         return;
       }
-    } else if (networks.length === 1) {
-      network = networks[0];
     } else {
-      this.failRegistration(
-        `Multiple networks — log in as ${user.username}/<network>. Available: ${networks
-          .map((n) => n.name)
-          .join(', ')}`,
-      );
-      return;
+      // Selector-less and capless: the guard above leaves exactly one network.
+      network = networks[0];
     }
     this.bindNetwork(user, network);
   }
@@ -1048,12 +1059,12 @@ class BouncerSession {
   // Register a control (unbound) connection: authenticated, bound to no network.
   // It lives only in the global `sessions` set (no per-network registry); state
   // notifications reach it via the user-scoped fan-out in dispatchIrcEvent.
-  private registerControl(user: User): void {
+  private registerControl(user: User, networks: Network[]): void {
     this.userId = user.id;
     this.isControl = true;
     this.registered = true;
     this.clearRegTimer();
-    this.sendControlBurst();
+    this.sendControlBurst(user, networks);
     systemLog.log({
       userId: this.userId,
       scope: 'bouncer',
@@ -1164,13 +1175,27 @@ class BouncerSession {
   // Minimal welcome for a control connection: it binds no network, so no
   // registrationLines / JOIN / playback / relay. The bouncer-scoped ISUPPORT
   // omits BOUNCER_NETID (its absence is how a client detects control mode).
-  private sendControlBurst(): void {
+  private sendControlBurst(user: User, networks: Network[]): void {
     const nick = this.clientNick || 'user';
     this.writeWelcomeNumerics(nick);
     this.write(
       `:${SERVER_NAME} 005 ${nick} NETWORK=${APP_NAME} CASEMAPPING=ascii :are supported by this server`,
     );
     this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
+    // Say why nothing is here. A bouncer-networks client with networks to pick
+    // from needs no explanation (it's about to LISTNETWORKS/BIND), but an empty
+    // account gives it an empty list, and a client without the cap has landed
+    // somewhere it can't act on at all — that used to be a 464 carrying this
+    // same advice, so keep the advice now that registration succeeds.
+    if (networks.length === 0) {
+      this.notice('No IRC networks configured yet — add one in the web UI, then reconnect.');
+    } else if (!this.caps.has(CAP_BOUNCER_NETWORKS)) {
+      this.notice(
+        `Not attached to a network — log in as ${user.username}/<network> to attach. Available: ${networks
+          .map((n) => n.name)
+          .join(', ')}`,
+      );
+    }
     // A -notify client gets the full network list up-front as a batch.
     if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();
   }
