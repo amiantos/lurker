@@ -32,18 +32,20 @@ network's settings.
 3. `/msg NickServ CERT ADD` — with **no fingerprint**. Services read it off the
    connection you are on, which is why this form works everywhere.
 
-If you do have to paste one, Lurker shows all three digests, because networks
-disagree about which they accept: Libera takes **SHA-512** and rejects the
-others outright, most other Atheme networks and ergo want **SHA-256**, and older
-ratbox-family networks still use **SHA-1**.
+Some networks want the fingerprint spelled out instead — ergo requires it, and
+you need it in hand if you are registering from another client. `/network cert
+<network>` prints all three digests, because networks disagree about which they
+accept: Libera takes **SHA-512** and rejects the others outright, most other
+Atheme networks and ergo want **SHA-256**, and older ratbox-family networks
+still use **SHA-1**.
 
 From then on that network knows you by the certificate. If you have no password
 set, Lurker authenticates with SASL EXTERNAL; with a password set it keeps using
 SASL PLAIN and presents the certificate as well, which is what NickServ's own
 CertFP recognises.
 
-`/network cert <network>` prints the fingerprint, `… new` replaces it, and
-`… remove` detaches it. **Download for another client** gives you the pair as one
+`/network cert <network>` prints those fingerprints, `… new` replaces the
+certificate, and `… remove` detaches it. **Download for another client** gives you the pair as one
 `client.pem`, the shape HexChat and WeeChat keep on disk.
 
 A certificate is presented during the TLS handshake, so a change takes effect on

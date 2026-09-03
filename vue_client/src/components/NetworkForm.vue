@@ -154,34 +154,19 @@
               Remove it, then generate a new one.
             </p>
             <template v-else-if="certInfo">
+              <!-- No fingerprints here on purpose. `CERT ADD` with no argument,
+                   from the connection the certificate is on, is what nearly
+                   every network wants — TheLounge shows none for the same
+                   reason. The exceptions (ergo requires the argument;
+                   registering from another client is the only way onto a
+                   network that refuses unauthenticated connections) are served
+                   by `/network cert <network>`, which prints all three the way
+                   soju's `certfp fingerprint` does. -->
               <p class="cert-actions">
-                <button
-                  v-for="fp in fingerprints"
-                  :key="fp.label"
-                  type="button"
-                  class="btn-secondary"
-                  :title="clipboard.isCopied(fp.label) ? 'copied' : `copy ${fp.label} fingerprint`"
-                  :aria-label="
-                    clipboard.isCopied(fp.label) ? 'copied' : `copy ${fp.label} fingerprint`
-                  "
-                  @click="copyFingerprint(fp)"
-                >
-                  <i
-                    :class="
-                      clipboard.isCopied(fp.label) ? 'fa-solid fa-check' : 'fa-regular fa-copy'
-                    "
-                    aria-hidden="true"
-                  ></i>
-                  {{ fp.label }}
-                </button>
                 <button type="button" class="btn-secondary" @click="downloadCertificate">
                   <i class="fa-solid fa-download" aria-hidden="true"></i>
                   Download
                 </button>
-              </p>
-              <!-- A fingerprint the clipboard refused; see copyFingerprint. -->
-              <p v-if="revealed" class="cert-line">
-                <code>{{ revealed }}</code>
               </p>
               <small>Expires {{ certExpiry }}</small>
             </template>
@@ -283,7 +268,6 @@ import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
-import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import {
   FALLBACK_CHANNEL,
   LURKER_CHANNEL,
@@ -358,9 +342,6 @@ const certError = ref('');
 const showImport = ref(false);
 const importCert = ref('');
 const importKey = ref('');
-const clipboard = useCopyFeedback();
-// A fingerprint the clipboard refused, shown so it can be selected by hand.
-const revealed = ref('');
 
 const certUnusable = computed(() => !!cert.value && 'unusable' in cert.value);
 // The readable variant, or null — `v-if="cert"` can't narrow the union in a
@@ -369,20 +350,6 @@ const certInfo = computed(() => (cert.value && !('unusable' in cert.value) ? cer
 const certExpiry = computed(() =>
   certInfo.value ? new Date(certInfo.value.validTo).toLocaleDateString() : '',
 );
-// All three, because which one a network accepts is the network's business:
-// Libera refuses anything but SHA-512 (by length, before it even looks at the
-// value), ergo and most Atheme networks want SHA-256, and the older
-// ratbox-family ones still hash SHA-1. SHA-512 leads because Libera is where
-// most people doing this will be.
-const fingerprints = computed(() => {
-  const c = certInfo.value;
-  if (!c) return [];
-  return [
-    { label: 'SHA-512', value: c.sha512 },
-    { label: 'SHA-256', value: c.sha256 },
-    { label: 'SHA-1', value: c.sha1 },
-  ];
-});
 
 async function runCertAction(action: () => Promise<void>): Promise<void> {
   certBusy.value = true;
@@ -468,19 +435,6 @@ function downloadCertificate(): void {
   document.body.appendChild(link);
   link.click();
   link.remove();
-}
-
-// useCopyFeedback owns the tick and its timer; the key is the digest name, so
-// only the button that was pressed confirms.
-//
-// It answers false rather than throwing when the clipboard is unavailable —
-// undefined outside a secure context, which is how a self-host reached over
-// plain http:// on a LAN runs. Its own callers treat that as a failed
-// convenience, but here copy is the ONLY route to a value that appears nowhere
-// else on the page, so reveal it to be selected by hand.
-async function copyFingerprint(fp: { label: string; value: string }): Promise<void> {
-  if (await clipboard.copy(fp.value, fp.label)) revealed.value = '';
-  else revealed.value = fp.value;
 }
 
 // Add-flow opens on the network picker (#169); editing jumps straight to the
@@ -817,17 +771,6 @@ label small {
   background: var(--border);
 }
 
-.cert-line {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin: 0;
-}
-/* A fingerprint is 40 to 128 hex characters and the user has to compare it
-   against what NickServ echoes back, so it wraps rather than truncating. */
-.cert-line code {
-  word-break: break-all;
-}
 .cert-actions {
   display: flex;
   align-items: center;

@@ -28,7 +28,6 @@ const DIGEST = {
   validTo: '2036-01-01T00:00:00.000Z',
 };
 
-const originalClipboard = navigator.clipboard;
 let mounted: ReturnType<typeof mount>[] = [];
 
 function network(extra: Record<string, unknown> = {}): Network {
@@ -68,10 +67,6 @@ describe('NetworkForm — client certificate', () => {
   afterEach(() => {
     for (const wrapper of mounted) wrapper.unmount();
     mounted = [];
-    Object.defineProperty(navigator, 'clipboard', {
-      value: originalClipboard,
-      configurable: true,
-    });
   });
 
   // The add flow has no network to write to yet, so the certificate is an
@@ -181,20 +176,20 @@ describe('NetworkForm — client certificate', () => {
     expect(text).toContain('Import');
   });
 
-  it('offers every digest to copy, and the pair to download', () => {
+  // No fingerprints in the form, deliberately: `CERT ADD` with no argument is
+  // what nearly every network wants, and the exceptions are served by
+  // `/network cert <network>`. TheLounge shows none for the same reason; soju
+  // puts them behind a command. Asserted, not just absent, so putting them back
+  // is a decision rather than a drift.
+  it('offers the pair to download, and no fingerprints to paste', () => {
     const form = open({ client_cert: DIGEST });
-    // All three, because networks disagree: Libera takes SHA-512 and rejects
-    // the rest, most Atheme networks and ergo want SHA-256, older
-    // ratbox-family ones SHA-1.
     const labels = form.findAll('button').map((b) => b.text());
-    expect(labels).toContain('SHA-512');
-    expect(labels).toContain('SHA-256');
-    expect(labels).toContain('SHA-1');
     expect(labels).toContain('Download');
-    // The hex itself is behind the buttons, not on the page.
+    expect(labels).not.toContain('SHA-512');
     expect(form.text()).not.toContain(DIGEST.sha512);
-    // Expiry is the one thing here worth reading, because it is data about
-    // this certificate rather than instructions about certificates.
+    expect(form.text()).not.toContain(DIGEST.sha256);
+    expect(form.text()).not.toContain(DIGEST.sha1);
+    // Expiry stays: data about this certificate, not instructions.
     expect(form.text()).toMatch(/Expires \d/);
   });
 
@@ -219,37 +214,6 @@ describe('NetworkForm — client certificate', () => {
     expect(document.querySelectorAll('a[href*="certificate/export"]')).toHaveLength(0);
   });
 
-  it('copies the digest whose button was pressed', async () => {
-    const writeText = vi.fn<(v: string) => Promise<void>>(() => Promise.resolve());
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-
-    const form = open({ client_cert: DIGEST });
-    const button = form.findAll('button').find((b) => b.text() === 'SHA-512')!;
-    await button.trigger('click');
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(writeText).toHaveBeenCalledWith(DIGEST.sha512);
-    // The tick lands on the button that was pressed, and only that one.
-    expect(button.attributes('aria-label')).toBe('copied');
-    expect(form.find('button[aria-label="copy SHA-256 fingerprint"]').exists()).toBe(true);
-  });
-
-  // navigator.clipboard is undefined outside a secure context — which is how a
-  // self-host reached over plain http:// on a LAN runs. Copy is then the only
-  // route to a value that appears nowhere else on the page.
-  it('reveals the fingerprint when the clipboard refuses', async () => {
-    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
-
-    const form = open({ client_cert: DIGEST });
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'SHA-256')!
-      .trigger('click');
-    await new Promise((r) => setTimeout(r, 0));
-
-    expect(form.text()).toContain(DIGEST.sha256);
-  });
-
   // The section is buried under Advanced, which stays collapsed by default —
   // but a certificate the user cannot see is one they cannot remove, and two of
   // its states block connecting.
@@ -272,8 +236,6 @@ describe('NetworkForm — client certificate', () => {
     const store = useNetworksStore();
     const minted = { ...DIGEST, sha256: 'c'.repeat(64) };
     const attach = vi.spyOn(store, 'attachCertificate').mockResolvedValue(minted);
-    const writeText = vi.fn<(v: string) => Promise<void>>(() => Promise.resolve());
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
 
     const form = await openWithAdvanced();
     const generate = form
@@ -283,15 +245,9 @@ describe('NetworkForm — client certificate', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(attach).toHaveBeenCalledWith(7, { mode: 'generate' });
-    // The block is in its attached state without a refetch, and what it copies
-    // is the pair that was just minted — it only exists once written, and it is
-    // what the user has to go and register.
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'SHA-256')!
-      .trigger('click');
-    await new Promise((r) => setTimeout(r, 0));
-    expect(writeText).toHaveBeenCalledWith(minted.sha256);
+    // The block is in its attached state without a refetch — the certificate
+    // exists only once written, and the form has to reflect that immediately.
+    expect(form.findAll('button').map((b) => b.text())).toContain('Download');
   });
 
   it('reports a rejected import where the user pasted it', async () => {
