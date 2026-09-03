@@ -25,7 +25,7 @@ const KEY_PEM = '-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----';
 // Drive the file input the way a picker would: attach the files and fire
 // `change`, which is the event the component listens for.
 async function pickFiles(form: ReturnType<typeof mount>, contents: string[]): Promise<void> {
-  const input = form.find('.cert-file input[type="file"]');
+  const input = form.find('input[type="file"]');
   const files = contents.map(
     (text, i) => new File([text], `part-${i}.pem`, { type: 'text/plain' }),
   );
@@ -112,6 +112,7 @@ describe('NetworkForm — client certificate', () => {
     expect(form.text()).toContain('Client certificate');
     expect(labels).toContain('Generate');
     expect(labels).toContain('Import');
+    expect(form.find('input[type="file"]').exists()).toBe(true);
     // None of the states that need a network to exist.
     expect(labels).not.toContain('Download');
   });
@@ -133,28 +134,18 @@ describe('NetworkForm — client certificate', () => {
     );
   });
 
-  it('carries a pasted pair onto the create request instead', async () => {
+  it('carries a picked pair onto the create request instead', async () => {
     const store = useNetworksStore();
     const create = vi.spyOn(store, 'create').mockResolvedValue({ id: 9 } as never);
     const form = await openAddForm();
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Import')!
-      .trigger('click');
-    const areas = form.findAll('textarea');
-    await areas[areas.length - 2].setValue('-----BEGIN CERTIFICATE-----x');
-    await areas[areas.length - 1].setValue('-----BEGIN PRIVATE KEY-----y');
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Use this certificate')!
-      .trigger('click');
+    await pickFiles(form, [`${KEY_PEM}\n${CERT_PEM}`]);
 
     expect(form.text()).toContain('will be attached to this network');
     await form.find('form').trigger('submit');
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
-        client_cert: '-----BEGIN CERTIFICATE-----x',
-        client_key: '-----BEGIN PRIVATE KEY-----y',
+        client_cert: CERT_PEM,
+        client_key: KEY_PEM,
         generate_client_cert: false,
       }),
     );
@@ -267,65 +258,52 @@ describe('NetworkForm — client certificate', () => {
     expect(form.findAll('button').map((b) => b.text())).toContain('Download');
   });
 
-  // We hand out a .pem from the Download button; asking for it back as two
-  // text boxes means a trip through a text editor to split a file we produced.
-  it('fills both fields from a picked .pem file', async () => {
+  // We hand out a .pem from the Download button, and every guide to CertFP —
+  // weechat's and irssi's included — hands the user one file. Picking it is the
+  // whole import: no textareas, no second click.
+  it('imports a picked .pem in one step', async () => {
+    const store = useNetworksStore();
+    const attach = vi.spyOn(store, 'attachCertificate').mockResolvedValue(DIGEST);
     const form = await openWithAdvanced();
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Import')!
-      .trigger('click');
     await pickFiles(form, [`${KEY_PEM}\n${CERT_PEM}\n`]);
 
-    const areas = form.findAll('textarea');
-    expect((areas[areas.length - 2].element as HTMLTextAreaElement).value).toBe(CERT_PEM);
-    expect((areas[areas.length - 1].element as HTMLTextAreaElement).value).toBe(KEY_PEM);
+    expect(attach).toHaveBeenCalledWith(7, { mode: 'import', cert: CERT_PEM, key: KEY_PEM });
+    // Straight to the attached state — no Attach button to hunt for.
+    expect(form.findAll('button').map((b) => b.text())).toContain('Download');
   });
 
-  // A certificate and its key are as often two files as one.
-  it('takes the two halves from two files', async () => {
+  // irssi documents the key as a separate file "if not included in the
+  // certificate file", and ergo's own openssl instructions produce two.
+  it('takes the two halves from two files at once', async () => {
+    const store = useNetworksStore();
+    const attach = vi.spyOn(store, 'attachCertificate').mockResolvedValue(DIGEST);
     const form = await openWithAdvanced();
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Import')!
-      .trigger('click');
     await pickFiles(form, [CERT_PEM, KEY_PEM]);
+    expect(attach).toHaveBeenCalledWith(7, { mode: 'import', cert: CERT_PEM, key: KEY_PEM });
+  });
 
-    const areas = form.findAll('textarea');
-    expect((areas[areas.length - 2].element as HTMLTextAreaElement).value).toBe(CERT_PEM);
-    expect((areas[areas.length - 1].element as HTMLTextAreaElement).value).toBe(KEY_PEM);
+  it('names the missing half rather than sending an unusable pair', async () => {
+    const store = useNetworksStore();
+    const attach = vi.spyOn(store, 'attachCertificate');
+    const form = await openWithAdvanced();
+    await pickFiles(form, [CERT_PEM]);
+    expect(form.text()).toContain('no private key');
+    expect(attach).not.toHaveBeenCalled();
   });
 
   it('says so when the file holds neither half', async () => {
     const form = await openWithAdvanced();
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Import')!
-      .trigger('click');
     await pickFiles(form, ['just some text']);
-    expect(form.text()).toContain("doesn't contain a certificate");
+    expect(form.text()).toContain("doesn't hold a certificate");
   });
 
-  it('reports a rejected import where the user pasted it', async () => {
+  it('reports a rejected import where the server refused it', async () => {
     const store = useNetworksStore();
     vi.spyOn(store, 'attachCertificate').mockRejectedValue({
       data: { error: "that private key doesn't match that certificate" },
     });
-
     const form = await openWithAdvanced();
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Import')!
-      .trigger('click');
-    const areas = form.findAll('textarea');
-    await areas[areas.length - 2].setValue('-----BEGIN CERTIFICATE-----');
-    await areas[areas.length - 1].setValue('-----BEGIN PRIVATE KEY-----');
-    await form
-      .findAll('button')
-      .find((b) => b.text() === 'Attach')!
-      .trigger('click');
-    await new Promise((r) => setTimeout(r, 0));
-
+    await pickFiles(form, [`${CERT_PEM}\n${KEY_PEM}`]);
     expect(form.text()).toContain("doesn't match");
   });
 

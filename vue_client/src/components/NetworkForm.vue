@@ -184,55 +184,25 @@
                   type="button"
                   class="btn-secondary"
                   :disabled="certBusy || !form.tls"
-                  @click="showImport = !showImport"
+                  @click="certFile?.click()"
                 >
                   Import
                 </button>
                 <span v-if="!form.tls" class="cert-note">TLS only.</span>
+                <!-- Picking the file IS the import: every guide to CertFP hands
+                     you one .pem, and weechat and irssi both take exactly that.
+                     `multiple` covers the other shape irssi documents ("the
+                     private key, if not included in the certificate file") and
+                     that ergo's own openssl instructions produce. -->
+                <input
+                  ref="certFile"
+                  type="file"
+                  accept=".pem,.crt,.cer,.key,.txt,application/x-pem-file,text/plain"
+                  multiple
+                  hidden
+                  @change="onCertFiles"
+                />
               </p>
-              <div v-if="showImport" class="cert-import">
-                <!-- A .pem is what the Download button hands out and what every
-                     other client keeps on disk, so taking one back is the
-                     symmetric thing to do. Several files are allowed because a
-                     cert and its key are as often two files as one; they are
-                     concatenated and the blocks picked out of the result, so
-                     either shape lands in the right boxes. -->
-                <label class="cert-file">
-                  <span>From a file</span>
-                  <input
-                    type="file"
-                    accept=".pem,.crt,.cer,.key,.txt,application/x-pem-file,text/plain"
-                    multiple
-                    @change="onCertFiles"
-                  />
-                </label>
-                <label>
-                  <span>Certificate</span>
-                  <textarea
-                    v-model="importCert"
-                    rows="3"
-                    spellcheck="false"
-                    placeholder="-----BEGIN CERTIFICATE-----"
-                  />
-                </label>
-                <label>
-                  <span>Private key</span>
-                  <textarea
-                    v-model="importKey"
-                    rows="3"
-                    spellcheck="false"
-                    placeholder="-----BEGIN PRIVATE KEY-----"
-                  />
-                </label>
-                <button
-                  type="button"
-                  class="btn-secondary"
-                  :disabled="certBusy"
-                  @click="importCertificate"
-                >
-                  {{ isEdit ? 'Attach' : 'Use this certificate' }}
-                </button>
-              </div>
             </template>
             <p v-if="certError" class="error">{{ certError }}</p>
           </div>
@@ -355,9 +325,7 @@ const showAdvanced = ref(
 const cert = ref<ClientCertInfo | null>((netRaw?.client_cert as ClientCertInfo | null) ?? null);
 const certBusy = ref(false);
 const certError = ref('');
-const showImport = ref(false);
-const importCert = ref('');
-const importKey = ref('');
+const certFile = ref<HTMLInputElement | null>(null);
 
 const certUnusable = computed(() => !!cert.value && 'unusable' in cert.value);
 // The readable variant, or null — `v-if="cert"` can't narrow the union in a
@@ -396,43 +364,46 @@ function generateCertificate(): Promise<void> {
   });
 }
 
-// Fills the two fields from whatever was picked, rather than sending the file
-// straight off: the user sees what will be sent, and can fix it if their file
-// held something unexpected. The server splits again on arrival — it does not
-// trust this — and is the only thing that decides whether the pair is usable.
+// Picking the file is the whole import. The halves are pulled out here so a
+// file missing one can be named on the spot rather than at save time; the
+// server splits and validates again on arrival, and stays the only thing that
+// decides whether the pair actually works.
 async function onCertFiles(event: Event): Promise<void> {
-  const files = Array.from((event.target as HTMLInputElement).files ?? []);
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = ''; // so picking the same file again still fires
   if (!files.length) return;
   certError.value = '';
   const text = (await Promise.all(files.map((f) => f.text()))).join('\n');
-  const { cert, key } = partsFromPem(text);
-  if (!cert && !key) {
-    certError.value = "that file doesn't contain a certificate or a private key";
+  const parts = partsFromPem(text);
+  if (!parts.cert && !parts.key) {
+    certError.value = "that file doesn't hold a certificate or a private key";
     return;
   }
-  if (cert) importCert.value = cert;
-  if (key) importKey.value = key;
+  if (!parts.cert || !parts.key) {
+    certError.value = parts.cert
+      ? 'that file has no private key in it — pick the .pem holding both, or both files at once'
+      : 'that file has no certificate in it — pick the .pem holding both, or both files at once';
+    return;
+  }
+  await importCertificate(parts.cert, parts.key);
 }
 
-function importCertificate(): Promise<void> {
+function importCertificate(certPem: string, keyPem: string): Promise<void> {
   if (!isEdit.value) {
-    // Not validated here: parsing PEM needs the server's crypto, and the create
-    // request answers 400 with the specific problem if the pair is wrong.
-    form.client_cert = importCert.value.trim();
-    form.client_key = importKey.value.trim();
+    // No network to write to yet, so it rides along with the create request,
+    // which validates it the same way and applies it before the first dial.
+    form.client_cert = certPem;
+    form.client_key = keyPem;
     form.generate_client_cert = false;
-    showImport.value = false;
     return Promise.resolve();
   }
   return runCertAction(async () => {
     cert.value = await networks.attachCertificate(props.network!.id, {
       mode: 'import',
-      cert: importCert.value,
-      key: importKey.value,
+      cert: certPem,
+      key: keyPem,
     });
-    importCert.value = '';
-    importKey.value = '';
-    showImport.value = false;
   });
 }
 
@@ -448,8 +419,7 @@ function clearPendingCert(): void {
   form.generate_client_cert = false;
   form.client_cert = '';
   form.client_key = '';
-  importCert.value = '';
-  importKey.value = '';
+  certError.value = '';
 }
 
 function removeCertificate(): Promise<void> {
@@ -813,18 +783,6 @@ label small {
   /* Three copy buttons plus a download link don't fit a narrow modal in one
      line. */
   flex-wrap: wrap;
-}
-.cert-import {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.cert-import textarea {
-  font-family: var(--font-mono);
-}
-.cert-file input {
-  padding: 0;
-  border: 0;
 }
 .cert-bad {
   margin: 0;
