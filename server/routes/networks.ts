@@ -231,8 +231,10 @@ router.delete('/:id', (req: Request, res: Response) => {
 
 // CertFP (#459). The cert is a validated PEM pair, so it moves through these
 // dedicated routes rather than the PATCH allowlist — nothing that hasn't been
-// parsed and pair-checked can reach the dialer (or, in engine mode, the engine's
-// tls.connect, where a malformed key throws synchronously).
+// parsed and pair-checked can reach tls.connect, where a malformed key throws
+// synchronously. The routes are not the only writer, though (archive import
+// inserts the columns verbatim), so the dial path re-validates before it
+// presents anything.
 //
 // A change takes effect on the next connect: the certificate is presented during
 // the TLS handshake, so there is nothing to renegotiate on a live socket. The
@@ -259,6 +261,15 @@ async function attachCertificateInner(req: Request, res: Response): Promise<void
   const network = getNetwork(id, req.user!.id);
   if (!network) {
     res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  // A certificate is presented during a TLS handshake. On a plaintext network
+  // there is no handshake to present it in, so attaching one would hand the
+  // user a fingerprint to register that the network is never shown.
+  if (!network.tls) {
+    res.status(400).json({
+      error: 'a client certificate can only be used on a TLS network — enable TLS first',
+    });
     return;
   }
   const mode = (req.body || {}).mode;

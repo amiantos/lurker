@@ -39,9 +39,12 @@ export interface Network {
   connect_commands: string | null;
   /** CertFP (#459): the PEM certificate + private key this network presents on
    *  the TLS handshake, so services identify the user by its fingerprint. Always
-   *  written as a pair — see setNetworkClientCert, which is the ONLY writer.
-   *  Deliberately absent from NetworkFields: a cert is a validated pair, not a
-   *  free-text field, so it can't ride a PATCH body onto the dialer. */
+   *  written as a pair — see setNetworkClientCert, the only writer that
+   *  validates. Deliberately absent from NetworkFields: a cert is a validated
+   *  pair, not a free-text field, so it can't ride a PATCH body onto the
+   *  dialer. Archive import DOES write both columns verbatim (exportSchema
+   *  drives its column list), which is why the dial path re-checks the pair
+   *  before presenting it rather than trusting what is stored. */
   client_cert: string | null;
   client_key: string | null;
   position: number;

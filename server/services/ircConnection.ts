@@ -50,6 +50,7 @@ import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
 import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../../shared/ident.js';
+import { validateClientCertPair, isClientCertProblem } from '../utils/clientCert.js';
 import { classifyModeChange, modeLetter } from '../../shared/modes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
@@ -1281,9 +1282,17 @@ export class IrcConnection {
         // Promoted to terminal at 'close' once the streak runs out; see
         // maybePromoteSaslFailure.
         this.saslFailureStreak += 1;
+        // Which credential to go and look at depends on which one was offered:
+        // under EXTERNAL there is no password to check, and the fix is at
+        // NickServ, where the fingerprint has to be registered before the
+        // network will recognise it. (#459)
+        const usingCert = !!this.network.client_cert && !this.network.sasl_password;
+        const advice = usingCert
+          ? " — the network didn't recognise your client certificate. Register its fingerprint with /msg NickServ CERT ADD while connected"
+          : " — check the network's account credentials";
         this.pendingSaslFailure = `SASL authentication failed${
           reason && reason !== 'fail' ? ` (${reason})` : ''
-        } — check the network's account credentials`;
+        }${advice}`;
       }
     });
 
@@ -3800,7 +3809,18 @@ export class IrcConnection {
    *  channel that keeps retrying (the status quo), while a false negative
    *  un-subscribes someone mid-race. When in doubt, wait. */
   private awaitingIdentification(): boolean {
-    if (this.network.sasl_account) return true;
+    // sasl_password, not just sasl_account: connect() attempts SASL whenever a
+    // PASSWORD is set, falling back to the nick as the authcid — so keying only
+    // on the account missed a password-only setup entirely. It matters because
+    // identifiedToServices is set by RPL_LOGGEDIN (900) alone, and a server may
+    // answer a successful SASL with 903 and no 900 at all; the gate is then the
+    // only thing standing between an early 473 and a durable unsubscribe.
+    if (this.network.sasl_account || this.network.sasl_password) return true;
+    // A CertFP network identifies on the certificate, which means SASL EXTERNAL
+    // leaves sasl_account empty — and a NickServ that recognises the fingerprint
+    // passively needs no account field at all. Either way identification is
+    // pending, and a +R channel's rejoin must wait for it. (#459)
+    if (this.network.client_cert) return true;
     const commands = this.network.connect_commands;
     return !!commands && SERVICES_IDENTIFY_HINT.test(commands);
   }
@@ -4037,6 +4057,31 @@ export class IrcConnection {
     const account = sasl_password
       ? { account: sasl_account || nick, password: sasl_password }
       : undefined;
+    // CertFP (#459). The certificate is presented whenever one is attached: a
+    // network may recognise it passively (NickServ identifies you on the spot),
+    // which works alongside a SASL password rather than instead of it. The
+    // MECHANISM is what the password decides — PLAIN when there is one,
+    // EXTERNAL when the certificate is the only credential there is. EXTERNAL
+    // carries no account name: the fingerprint is the identity, and the network
+    // maps it to whichever account it was registered on.
+    const certBlocked = this.clientCertBlockedReason();
+    if (certBlocked) {
+      // Never dial past this. Connecting without the certificate is not a
+      // degraded version of what the user asked for, it is a different
+      // identity: they arrive as an unrecognised stranger, +R channels refuse
+      // them, and under EXTERNAL the registration fails with a SASL error that
+      // points at the wrong thing entirely.
+      this.publish({
+        type: 'error',
+        target: this.serverTarget(),
+        text: `Not connecting: ${certBlocked}.`,
+      });
+      this.logNet(`Connect blocked: ${certBlocked}`, 'warn');
+      this.setState('disconnected');
+      return;
+    }
+    const clientCert = this.clientCertificate();
+    const saslMechanism = clientCert && !sasl_password ? ('EXTERNAL' as const) : undefined;
     // In engine mode the notice waits for the engine to say it is dialing — a
     // CONNECT it answers with ATTACH connects nothing (see onEnginePhase).
     if (!engineConfigured()) this.announceConnecting();
@@ -4051,6 +4096,8 @@ export class IrcConnection {
       gecos: this.network.realname || nick,
       password: this.network.server_password || undefined,
       account,
+      client_certificate: clientCert,
+      sasl_mechanism: saslMechanism,
       // Lurker owns the reconnect policy (scheduleReconnectIfWarranted), so
       // irc-framework's built-in is disabled outright. Its heuristic only retries
       // a connection that was healthy for >5s and died cleanly, ~3 times — which
@@ -4084,6 +4131,49 @@ export class IrcConnection {
       outgoing_addr: outgoingAddr(),
       ...this.engineConnectOptions(),
     });
+  }
+
+  /** Why an attached CertFP pair cannot be presented on this connect, or null
+   *  when there is nothing attached or nothing wrong. Checked before dialing:
+   *  every case here would otherwise become a connection that looks fine and
+   *  authenticates as nobody.
+   *
+   *  The PEMs are re-validated on each connect rather than trusted from the
+   *  write path, because the routes are not the only writer — archive import
+   *  inserts both columns verbatim (exportSchema drives its column list), so a
+   *  hand-edited or truncated archive can plant half a pair or an unparseable
+   *  key. An unparseable key reaching tls.connect throws SYNCHRONOUSLY out of
+   *  client.connect(), and on a backoff retry that is an uncaught exception in
+   *  a shared process. */
+  private clientCertBlockedReason(): string | null {
+    const { client_cert, client_key } = this.network;
+    if (!client_cert && !client_key) return null;
+    if (!client_cert || !client_key) {
+      return 'this network has half a client certificate — a certificate and its key are only usable together';
+    }
+    const pair = validateClientCertPair(client_cert, client_key);
+    if (isClientCertProblem(pair)) {
+      return `this network's client certificate is unusable (${pair.error})`;
+    }
+    if (!this.network.tls) {
+      return 'a client certificate can only be presented over TLS — enable TLS for this network, or remove the certificate';
+    }
+    if (engineConfigured()) {
+      // Engine mode dials in another process, which has no way to be handed
+      // the certificate yet (protocol minor 1). Presenting nothing while the
+      // app still asks for SASL EXTERNAL is the worst of both worlds.
+      return 'the IRC engine this deployment connects through cannot present a client certificate yet — update the engine, or remove the certificate';
+    }
+    return null;
+  }
+
+  /** The attached CertFP pair in irc-framework's shape, or undefined. Only ever
+   *  reached once clientCertBlockedReason() has passed, so both halves are
+   *  present and parse. */
+  private clientCertificate(): { certificate: string; private_key: string } | undefined {
+    const { client_cert, client_key } = this.network;
+    if (!client_cert || !client_key) return undefined;
+    return { certificate: client_cert, private_key: client_key };
   }
 
   private announceConnecting(): void {

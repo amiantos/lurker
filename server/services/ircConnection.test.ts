@@ -35,6 +35,7 @@ import connectScheduler from './connectScheduler.js';
 import { getRecent } from './systemLog.js';
 import { createUser } from '../db/users.js';
 import { createNetwork, getNetwork } from '../db/networks.js';
+import type { Network } from '../db/networks.js';
 import {
   getBuffer,
   ensureOpen as ensureBufferOpen,
@@ -375,6 +376,125 @@ describe('resolveChannelContext (#439)', () => {
     const channels = new Map([['#christian', { name: '#Christian' }]]);
     expect(resolveChannelContext({ '+draft/channel-context': '&nope' }, 'x', channels)).toBe(null);
     expect(resolveChannelContext(undefined, '[+nope] hi', channels)).toBe(null);
+  });
+});
+
+// CertFP (#459): every way an attached certificate can fail to reach the wire.
+// The rule is the same in all of them — a connection that presents no
+// certificate is not a degraded version of what the user configured, it is a
+// different identity, so the dial is refused and says why.
+describe('client certificate refusals', () => {
+  // One real pair for the whole block: the refusals under test are about
+  // everything AROUND the certificate, so an invalid one would just trip the
+  // validity check first and prove nothing.
+  let pair: { cert: string; key: string };
+  beforeAll(async () => {
+    pair = await (await import('../utils/clientCert.js')).generateClientCert('nick');
+  });
+
+  function makeCertConn(fields: Partial<Network> = {}): { conn: IrcConnection } {
+    const conn = new IrcConnection({
+      network: {
+        client_cert: pair.cert,
+        client_key: pair.key,
+        id: 1,
+        user_id: 1,
+        name: 'certfail',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates: 0,
+        nick: 'nick',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        casemapping: null,
+        created_at: new Date().toISOString(),
+        ...fields,
+      },
+      onEvent: () => {},
+    });
+    return { conn };
+  }
+
+  // publish() is stubbed rather than read through onEvent: these networks are
+  // synthetic rows that no buffer registry knows, and the real publish writes
+  // history.
+  function attempt(fields: Partial<Network> = {}): {
+    dialed: ReturnType<typeof vi.fn>;
+    published: Record<string, unknown>[];
+    conn: IrcConnection;
+  } {
+    const { conn } = makeCertConn(fields);
+    const published: Record<string, unknown>[] = [];
+    conn.publish = (event: unknown) => {
+      published.push(event as Record<string, unknown>);
+    };
+    const dialed = vi.fn<(options: ConnectOptions) => void>();
+    conn.client.connect = dialed;
+    conn.connect();
+    return { dialed, published, conn };
+  }
+
+  const refusal = (published: Record<string, unknown>[]) =>
+    String(
+      published.find((e) => e.type === 'error' && /Not connecting/.test(String(e.text)))?.text,
+    );
+
+  it('does not dial when the network is plaintext', () => {
+    const { dialed, published } = attempt({ tls: 0, port: 6667 });
+    expect(dialed).not.toHaveBeenCalled();
+    expect(refusal(published)).toMatch(/only be presented over TLS/);
+  });
+
+  // Archive import inserts client_cert/client_key verbatim (exportSchema drives
+  // its column list), so an edited or truncated archive is a real source of
+  // half a pair — and of a key that tls.connect throws on, SYNCHRONOUSLY,
+  // inside client.connect().
+  it('does not dial on half a pair', () => {
+    const { dialed, published } = attempt({ client_key: null });
+    expect(dialed).not.toHaveBeenCalled();
+    expect(refusal(published)).toMatch(/half a client certificate/);
+  });
+
+  it('does not hand an unparseable pair to tls.connect', () => {
+    const { dialed, published } = attempt({ client_cert: 'not a pem', client_key: 'not a key' });
+    expect(dialed).not.toHaveBeenCalled();
+    expect(refusal(published)).toMatch(/unusable/);
+  });
+
+  it('leaves the network disconnected rather than pinned on connecting', () => {
+    const { conn } = attempt({ tls: 0 });
+    expect(conn.state).toBe('disconnected');
+  });
+
+  // Engine mode dials in another process, which cannot be handed the
+  // certificate yet. Presenting nothing while the app still asks for SASL
+  // EXTERNAL fails registration and blames the wrong thing.
+  it('does not dial through an engine that cannot present it', () => {
+    process.env.LURKER_ENGINE_URL = 'tcp://127.0.0.1:9999';
+    try {
+      const { dialed, published } = attempt();
+      expect(dialed).not.toHaveBeenCalled();
+      expect(refusal(published)).toMatch(/engine/);
+    } finally {
+      delete process.env.LURKER_ENGINE_URL;
+    }
+  });
+
+  it('dials normally once the pair is valid and nothing is in the way', () => {
+    const { dialed } = attempt();
+    expect(dialed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sasl_mechanism: 'EXTERNAL',
+        client_certificate: { certificate: pair.cert, private_key: pair.key },
+      }),
+    );
   });
 });
 
@@ -2335,6 +2455,28 @@ describe('auto-reconnect controller', () => {
     ).toBe(true);
   });
 
+  // The give-up message is the one place a SASL rejection is actually spoken to
+  // the user, so it has to name the credential that was offered. Under EXTERNAL
+  // there is no password to go and check — the fingerprint has to be registered
+  // at NickServ, which is a different action in a different place. (#459)
+  it('tells a CertFP network what to fix, not to check a password it never sent', () => {
+    vi.useFakeTimers();
+    const { conn, events } = makeConn('rc-sasl-certfp');
+    conn.network.client_cert = 'cert-pem';
+    conn.network.client_key = 'key-pem';
+    for (let i = 0; i < 3; i += 1) {
+      conn.client.emit('sasl failed', { reason: 'fail' });
+      conn.client.emit('close', true);
+      vi.runAllTimers();
+    }
+    const text = String(
+      events.find((e) => e.type === 'error' && /SASL authentication failed/i.test(String(e.text)))
+        ?.text,
+    );
+    expect(text).toMatch(/NickServ CERT ADD/);
+    expect(text).not.toMatch(/account credentials/);
+  });
+
   // #617: a single rejection is not proof the credentials killed THIS socket. On
   // a network where SASL is optional the server keeps us, so a later drop (a
   // stalled registration timing out, a blip) is unrelated and must still retry —
@@ -3810,6 +3952,53 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     expect(publish).not.toHaveBeenCalledWith(
       expect.objectContaining({ target: `:server:${conn.network.id}` }),
     );
+  });
+
+  // connect() attempts SASL on a PASSWORD, using the nick as the authcid when no
+  // account is set — so a password-only network is mid-identification too. It
+  // bites where identifiedToServices never gets set: that flag comes from
+  // RPL_LOGGEDIN (900) alone, and a server may answer a successful SASL with 903
+  // and nothing else.
+  it('473 before RPL_LOGGEDIN leaves autojoin alone on a password-only SASL network', () => {
+    const conn = makeNickServConn('inviteonly-saslpw');
+    conn.network.connect_commands = null; // no NickServ script to hint off
+    conn.network.sasl_account = null; // authcid falls back to the nick
+    conn.network.sasl_password = 'hunter2';
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+  });
+
+  // A CertFP network identifies on the certificate: SASL EXTERNAL sends no
+  // account name, and passive NickServ CertFP sends nothing at all — so the
+  // sasl_account this gate used to read is empty on exactly the networks that
+  // ARE waiting for services. (#459)
+  it('473 before RPL_LOGGEDIN leaves autojoin alone on a CertFP network', () => {
+    const conn = makeNickServConn('inviteonly-certfp');
+    conn.network.connect_commands = null; // the cert is the only credential
+    conn.network.client_cert = 'cert-pem';
+    conn.network.client_key = 'key-pem';
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
   });
 
   it('473 after RPL_LOGGEDIN does stop auto-joining on a NickServ network', () => {
