@@ -3954,6 +3954,30 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     );
   });
 
+  // connect() attempts SASL on a PASSWORD, using the nick as the authcid when no
+  // account is set — so a password-only network is mid-identification too. It
+  // bites where identifiedToServices never gets set: that flag comes from
+  // RPL_LOGGEDIN (900) alone, and a server may answer a successful SASL with 903
+  // and nothing else.
+  it('473 before RPL_LOGGEDIN leaves autojoin alone on a password-only SASL network', () => {
+    const conn = makeNickServConn('inviteonly-saslpw');
+    conn.network.connect_commands = null; // no NickServ script to hint off
+    conn.network.sasl_account = null; // authcid falls back to the nick
+    conn.network.sasl_password = 'hunter2';
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#marco', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('irc error', {
+      error: 'invite_only_channel',
+      channel: '#marco',
+      reason: 'Cannot join channel (+i)',
+    });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#marco')?.autojoin).toBe(true);
+  });
+
   // A CertFP network identifies on the certificate: SASL EXTERNAL sends no
   // account name, and passive NickServ CertFP sends nothing at all — so the
   // sasl_account this gate used to read is empty on exactly the networks that

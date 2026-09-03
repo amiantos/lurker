@@ -3809,7 +3809,13 @@ export class IrcConnection {
    *  channel that keeps retrying (the status quo), while a false negative
    *  un-subscribes someone mid-race. When in doubt, wait. */
   private awaitingIdentification(): boolean {
-    if (this.network.sasl_account) return true;
+    // sasl_password, not just sasl_account: connect() attempts SASL whenever a
+    // PASSWORD is set, falling back to the nick as the authcid — so keying only
+    // on the account missed a password-only setup entirely. It matters because
+    // identifiedToServices is set by RPL_LOGGEDIN (900) alone, and a server may
+    // answer a successful SASL with 903 and no 900 at all; the gate is then the
+    // only thing standing between an early 473 and a durable unsubscribe.
+    if (this.network.sasl_account || this.network.sasl_password) return true;
     // A CertFP network identifies on the certificate, which means SASL EXTERNAL
     // leaves sasl_account empty — and a NickServ that recognises the fingerprint
     // passively needs no account field at all. Either way identification is
