@@ -1084,6 +1084,13 @@ ensureColumn('messages', 'userhost', 'TEXT');
 ensureColumn('networks', 'sasl_account', 'TEXT');
 ensureColumn('networks', 'sasl_password', 'TEXT');
 ensureColumn('networks', 'trusted_certificates', 'INTEGER NOT NULL DEFAULT 1');
+// CertFP (#459): the TLS client certificate this network presents, so services
+// can recognise the user by its fingerprint — passively (NickServ CertFP) or
+// through SASL EXTERNAL. Stored as a pair because a cert without its key can't
+// complete a handshake; both are written together or not at all, and both are
+// encrypted at rest (see exportSchema encryptedColumns).
+ensureColumn('networks', 'client_cert', 'TEXT');
+ensureColumn('networks', 'client_key', 'TEXT');
 // Newline-delimited raw IRC commands fired after RPL_WELCOME, IRCCloud-style.
 // Supports `WAIT <seconds>` lines that pause before the next command.
 ensureColumn('networks', 'connect_commands', 'TEXT');

@@ -382,6 +382,8 @@ describe('tls certificate trust setting', () => {
   function makeConn(trusted_certificates: number): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -442,6 +444,8 @@ describe('addPeerWatch live presence seed (#302)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -501,6 +505,8 @@ describe('nick-regain MONITOR teardown gating (#384)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -793,6 +799,8 @@ describe('refused-message handler routing (#283)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -1450,6 +1458,8 @@ describe('built-in identd registration', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -1550,6 +1560,8 @@ describe('disconnect quit message (#324)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -1628,6 +1640,8 @@ describe('cancelled-reconnect notice (#785)', () => {
   function makeConn(events: unknown[]): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -1696,6 +1710,8 @@ describe('self nick updates the input bar (#362)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -1796,6 +1812,8 @@ describe('capability negotiation (#310)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -2418,6 +2436,8 @@ describe('IRCv3 draft/multiline (#381)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -2681,6 +2701,8 @@ describe('inbound INVITE handler (#261)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -2779,6 +2801,8 @@ describe('invite channel lines + dedup (#261)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -2867,6 +2891,8 @@ describe('channel mode display (status bar)', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',
@@ -3310,6 +3336,8 @@ describe('join key forwarding', () => {
   function makeConn(): IrcConnection {
     return new IrcConnection({
       network: {
+        client_cert: null,
+        client_key: null,
         id: 1,
         user_id: 1,
         name: 'n',

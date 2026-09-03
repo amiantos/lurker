@@ -37,6 +37,13 @@ export interface Network {
   sasl_account: string | null;
   sasl_password: string | null;
   connect_commands: string | null;
+  /** CertFP (#459): the PEM certificate + private key this network presents on
+   *  the TLS handshake, so services identify the user by its fingerprint. Always
+   *  written as a pair — see setNetworkClientCert, which is the ONLY writer.
+   *  Deliberately absent from NetworkFields: a cert is a validated pair, not a
+   *  free-text field, so it can't ride a PATCH body onto the dialer. */
+  client_cert: string | null;
+  client_key: string | null;
   position: number;
   /** ISUPPORT CASEMAPPING as last declared by the server (#707); null until
    *  the network first connects to one that declares it. Server-captured
@@ -182,6 +189,21 @@ export function updateNetwork(
   db.prepare(`UPDATE networks SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ?`).run(
     ...params,
   );
+  return getNetwork(id, userId);
+}
+
+/** Attach a CertFP pair to a network, or clear it (both null). The caller
+ *  validates the PEMs first (utils/clientCert.validateClientCertPair) — this is
+ *  storage, not a parser. Written together so a cert can never outlive the key
+ *  that has to complete its handshake. */
+export function setNetworkClientCert(
+  id: number,
+  userId: number,
+  pair: { cert: string; key: string } | null,
+): Network | undefined {
+  db.prepare(
+    'UPDATE networks SET client_cert = ?, client_key = ? WHERE id = ? AND user_id = ?',
+  ).run(encryptSecret(pair ? pair.cert : null), encryptSecret(pair ? pair.key : null), id, userId);
   return getNetwork(id, userId);
 }
 

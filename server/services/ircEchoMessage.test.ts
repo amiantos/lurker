@@ -40,6 +40,8 @@ afterEach(() => {
 function makeConn(onEvent: (event: unknown) => void = () => {}): IrcConnection {
   const conn = new IrcConnection({
     network: {
+      client_cert: null,
+      client_key: null,
       id: networkId,
       user_id: userId,
       name: 'echonet',
