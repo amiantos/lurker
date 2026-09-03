@@ -17,6 +17,33 @@ This chapter walks you from a fresh account to chatting in your first channel.
 - Adding a network (server, port, TLS).
 - Choosing a nick and authenticating (SASL / NickServ).
 
+### Client certificates (CertFP)
+
+Most networks let you identify with a TLS client certificate instead of a
+password: the server hashes the certificate you present and matches it against
+your services account. Lurker holds one per network, under **Advanced** in the
+network's settings.
+
+1. **Generate** (or **Import**, if you already use one in another client).
+2. Copy the SHA-256 fingerprint shown, and reconnect so the certificate is
+   presented.
+3. `/msg NickServ CERT ADD` — from the connection itself, which is how services
+   learn the fingerprint you just connected with. Some networks want it spelled
+   out: `/msg NickServ CERT ADD <fingerprint>`.
+
+From then on that network knows you by the certificate. If you have no password
+set, Lurker authenticates with SASL EXTERNAL; with a password set it keeps using
+SASL PLAIN and presents the certificate as well, which is what NickServ's own
+CertFP recognises.
+
+`/network cert <network>` prints the fingerprint, `… new` replaces it, and
+`… remove` detaches it. **Download for another client** gives you the pair as one
+`client.pem`, the shape HexChat and WeeChat keep on disk.
+
+A certificate is presented during the TLS handshake, so a change takes effect on
+the next connect — and a network with one attached won't connect over plaintext,
+since there is no handshake to present it in.
+
 ## Joining channels
 
 - Joining by name and using the channel browser.

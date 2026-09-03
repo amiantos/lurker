@@ -157,7 +157,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
-import { useNetworksStore, type Network } from '../stores/networks.js';
+import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
@@ -3115,10 +3115,43 @@ async function runNetwork(
         const landed = await moveNetwork(net, cmd.position);
         return reply(`moved ${net.name} to position ${landed}`);
       }
+      case 'cert':
+        return runNetworkCert(cmd.action, net, reply);
     }
   } catch (err) {
     reply(`/network ${cmd.kind} failed: ${err instanceof Error ? err.message : 'unknown error'}`);
   }
+}
+
+// CertFP (#459). The fingerprint is the whole point of the command: it is what
+// the user pastes into `/msg NickServ CERT ADD`, and it only exists once the
+// pair has been written.
+async function runNetworkCert(
+  action: 'show' | 'generate' | 'remove',
+  net: Network,
+  reply: (msg: string) => void,
+): Promise<void> {
+  if (action === 'remove') {
+    await networks.removeCertificate(net.id);
+    return reply(`removed the client certificate from ${net.name}`);
+  }
+  if (action === 'generate') {
+    const cert = await networks.attachCertificate(net.id, { mode: 'generate' });
+    reply(`new client certificate for ${net.name} — sha256 ${cert.sha256}`);
+    return reply('reconnect, then: /msg NickServ CERT ADD');
+  }
+  const stored = (net as Record<string, unknown>).client_cert as ClientCertInfo | null | undefined;
+  if (!stored) {
+    return reply(`${net.name} has no client certificate — /network cert ${net.name} new`);
+  }
+  if ('unusable' in stored) {
+    return reply(
+      `${net.name}'s client certificate can't be read — it blocks connecting; /network cert ${net.name} remove`,
+    );
+  }
+  const { sha256, sha1, validTo } = stored;
+  reply(`${net.name} client certificate — sha256 ${sha256}`);
+  reply(`  sha1 ${sha1} · expires ${new Date(validTo).toLocaleDateString()}`);
 }
 
 // Whether a registry option is exposed to /set, /get, and the listing — the

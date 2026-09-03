@@ -45,6 +45,11 @@ export type NetworkCommand =
   | { kind: 'connect'; ref: string }
   | { kind: 'disconnect'; ref: string }
   | { kind: 'move'; ref: string; position: number }
+  // CertFP (#459). `show` prints the fingerprint to register with services;
+  // generate/remove write. Importing an existing PEM is deliberately NOT here —
+  // pasting a private key into a message composer is a bad place for it (the
+  // input has history), so that stays in the network form.
+  | { kind: 'cert'; ref: string; action: 'show' | 'generate' | 'remove' }
   | { kind: 'error'; message: string };
 
 // irssi-style options. Value flags consume the following token; bool flags
@@ -225,6 +230,22 @@ export function parseNetworkCommand(argLine: string): NetworkCommand {
       const ref = singleRef(rest, 'disconnect');
       if (typeof ref !== 'string') return { kind: 'error', message: ref.error };
       return { kind: 'disconnect', ref };
+    }
+
+    case 'cert': {
+      if (!rest.length) return { kind: 'error', message: '/network cert <network> [new|remove]' };
+      const action = (rest[1] ?? 'show').toLowerCase();
+      if (rest.length > 2) {
+        return { kind: 'error', message: '/network cert <network> [new|remove]' };
+      }
+      if (action === 'show') return { kind: 'cert', ref: rest[0], action: 'show' };
+      // "new" rather than "generate": it replaces whatever is there, and a
+      // replaced certificate has to be re-registered at NickServ.
+      if (action === 'new') return { kind: 'cert', ref: rest[0], action: 'generate' };
+      if (action === 'remove' || action === 'rm') {
+        return { kind: 'cert', ref: rest[0], action: 'remove' };
+      }
+      return { kind: 'error', message: `/network cert: unknown action "${rest[1]}"` };
     }
 
     case 'move': {

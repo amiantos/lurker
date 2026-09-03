@@ -195,6 +195,33 @@ describe('parseNetworkCommand', () => {
     });
   });
 
+  describe('cert', () => {
+    it('defaults to showing the fingerprint', () => {
+      expect(parseNetworkCommand('cert Libera')).toEqual({
+        kind: 'cert',
+        ref: 'Libera',
+        action: 'show',
+      });
+    });
+
+    it('takes new and remove', () => {
+      expect(parseNetworkCommand('cert Libera new')).toMatchObject({ action: 'generate' });
+      expect(parseNetworkCommand('cert Libera remove')).toMatchObject({ action: 'remove' });
+      expect(parseNetworkCommand('cert Libera rm')).toMatchObject({ action: 'remove' });
+      expect(parseNetworkCommand('cert Libera NEW')).toMatchObject({ action: 'generate' });
+    });
+
+    it('needs a network', () => {
+      expect(parseNetworkCommand('cert')).toMatchObject({ kind: 'error' });
+    });
+
+    it('rejects an action it does not have', () => {
+      // Importing a PEM is form-only on purpose — a composer keeps history.
+      expect(parseNetworkCommand('cert Libera import')).toMatchObject({ kind: 'error' });
+      expect(parseNetworkCommand('cert Libera new extra')).toMatchObject({ kind: 'error' });
+    });
+  });
+
   it('errors on an unknown subcommand', () => {
     expect(parseNetworkCommand('frobnicate Libera')).toMatchObject({ kind: 'error' });
   });

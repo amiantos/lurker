@@ -130,6 +130,96 @@
               <code>WAIT 15</code> pauses that many seconds before the next one.</small
             >
           </label>
+          <div v-if="isEdit" class="certfp">
+            <span class="field-label">
+              <span>Client certificate (CertFP)</span>
+              <button
+                v-if="cert"
+                type="button"
+                class="clear-link"
+                :disabled="certBusy"
+                @click="removeCertificate"
+              >
+                remove
+              </button>
+            </span>
+            <p v-if="certUnusable" class="cert-bad">
+              This certificate can’t be read, and the network won’t connect while it’s attached.
+              Remove it, then generate a new one.
+            </p>
+            <template v-else-if="certInfo">
+              <p class="cert-line">
+                <code>{{ certInfo.sha256 }}</code>
+                <button type="button" class="clear-link" @click="copyFingerprint">
+                  {{ copied ? 'copied' : 'copy' }}
+                </button>
+              </p>
+              <small>
+                Connect, then run <code>/msg NickServ CERT ADD</code> to register it. Older networks
+                want the SHA-1 form: <code>{{ certInfo.sha1 }}</code
+                >. Expires {{ certExpiry }}.
+              </small>
+              <p class="cert-actions">
+                <a :href="`/api/networks/${props.network?.id}/certificate/export`" download>
+                  Download for another client
+                </a>
+              </p>
+            </template>
+            <template v-else>
+              <small>
+                Identifies you to services by the certificate’s fingerprint instead of a password —
+                on its own, or as SASL EXTERNAL. Takes effect on the next connect.
+              </small>
+              <p class="cert-actions">
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  :disabled="certBusy || !form.tls"
+                  @click="generateCertificate"
+                >
+                  {{ certBusy ? 'Working…' : 'Generate' }}
+                </button>
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  :disabled="certBusy || !form.tls"
+                  @click="showImport = !showImport"
+                >
+                  Import
+                </button>
+                <span v-if="!form.tls" class="cert-note">TLS only.</span>
+              </p>
+              <div v-if="showImport" class="cert-import">
+                <label>
+                  <span>Certificate</span>
+                  <textarea
+                    v-model="importCert"
+                    rows="3"
+                    spellcheck="false"
+                    placeholder="-----BEGIN CERTIFICATE-----"
+                  />
+                </label>
+                <label>
+                  <span>Private key</span>
+                  <textarea
+                    v-model="importKey"
+                    rows="3"
+                    spellcheck="false"
+                    placeholder="-----BEGIN PRIVATE KEY-----"
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="btn-secondary"
+                  :disabled="certBusy"
+                  @click="importCertificate"
+                >
+                  Attach
+                </button>
+              </div>
+            </template>
+            <p v-if="certError" class="error">{{ certError }}</p>
+          </div>
           <label class="check">
             <input v-model="form.autoconnect" type="checkbox" />
             <span>Reconnect automatically</span>
@@ -174,7 +264,7 @@
 import { reactive, ref, computed } from 'vue';
 import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
-import { useNetworksStore, type Network } from '../stores/networks.js';
+import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
 import {
   FALLBACK_CHANNEL,
@@ -226,8 +316,80 @@ const showAdvanced = ref(
     (!!netRaw?.has_password ||
       !!netRaw?.connect_commands ||
       netRaw?.autoconnect === false ||
+      !!netRaw?.client_cert ||
       netRaw?.trusted_certificates === false),
 );
+
+// CertFP (#459). These four buttons write straight through to the server rather
+// than waiting for Save: a certificate is not a form field, it is a stored pair
+// with its own routes, and the fingerprint the user has to register only exists
+// once it has been written. Kept in a local ref so the block re-renders from
+// what the action returned, without depending on the parent refetching.
+const cert = ref<ClientCertInfo | null>((netRaw?.client_cert as ClientCertInfo | null) ?? null);
+const certBusy = ref(false);
+const certError = ref('');
+const showImport = ref(false);
+const importCert = ref('');
+const importKey = ref('');
+const copied = ref(false);
+
+const certUnusable = computed(() => !!cert.value && 'unusable' in cert.value);
+// The readable variant, or null — `v-if="cert"` can't narrow the union in a
+// template, and an attached-but-unparseable certificate has no digests to show.
+const certInfo = computed(() => (cert.value && !('unusable' in cert.value) ? cert.value : null));
+const certExpiry = computed(() =>
+  certInfo.value ? new Date(certInfo.value.validTo).toLocaleDateString() : '',
+);
+
+async function runCertAction(action: () => Promise<void>): Promise<void> {
+  certBusy.value = true;
+  certError.value = '';
+  try {
+    await action();
+  } catch (err: any) {
+    certError.value = err?.data?.error || err?.message || 'that did not work';
+  } finally {
+    certBusy.value = false;
+  }
+}
+
+function generateCertificate(): Promise<void> {
+  return runCertAction(async () => {
+    cert.value = await networks.attachCertificate(props.network!.id, { mode: 'generate' });
+  });
+}
+
+function importCertificate(): Promise<void> {
+  return runCertAction(async () => {
+    cert.value = await networks.attachCertificate(props.network!.id, {
+      mode: 'import',
+      cert: importCert.value,
+      key: importKey.value,
+    });
+    importCert.value = '';
+    importKey.value = '';
+    showImport.value = false;
+  });
+}
+
+function removeCertificate(): Promise<void> {
+  return runCertAction(async () => {
+    await networks.removeCertificate(props.network!.id);
+    cert.value = null;
+  });
+}
+
+async function copyFingerprint(): Promise<void> {
+  const c = cert.value;
+  if (!c || 'unusable' in c) return;
+  try {
+    await navigator.clipboard.writeText(c.sha256);
+    copied.value = true;
+    setTimeout(() => (copied.value = false), 1500);
+  } catch {
+    /* a clipboard the browser won't give us is not worth an error banner */
+  }
+}
 
 // Add-flow opens on the network picker (#169); editing jumps straight to the
 // form. Picking a built-in prefills the connection fields so the user only has
@@ -549,5 +711,42 @@ label small {
 .error {
   color: var(--bad);
   margin: 0;
+}
+.certfp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.cert-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+/* The fingerprint is 64 hex characters and the user has to compare it against
+   what NickServ echoes back, so it wraps rather than truncating. */
+.cert-line code {
+  word-break: break-all;
+}
+.cert-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+.cert-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.cert-import textarea {
+  font-family: var(--font-mono);
+}
+.cert-bad {
+  margin: 0;
+  color: var(--bad);
+}
+.cert-note {
+  color: var(--fg-muted);
 }
 </style>

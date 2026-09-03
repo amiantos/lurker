@@ -17,6 +17,19 @@ export interface Network {
   [key: string]: unknown;
 }
 
+/** What a network payload says about its CertFP pair (#459): digests to
+ *  register with services, never the PEM. `{unusable: true}` means a
+ *  certificate IS attached but doesn't parse — which blocks the connection, so
+ *  it must not read as "no certificate". */
+export interface ClientCertDigest {
+  sha256: string;
+  sha1: string;
+  subject: string;
+  validFrom: string;
+  validTo: string;
+}
+export type ClientCertInfo = ClientCertDigest | { unusable: true };
+
 export interface PeerPresenceEntry {
   nick: string;
   state: string | null;
@@ -155,6 +168,27 @@ export const useNetworksStore = defineStore('networks', {
         }
         throw err;
       }
+    },
+    // CertFP (#459). The pair itself never reaches the client: `mode` says
+    // whether the server mints one or takes the PEM the user already has, and
+    // what comes back is a description — the digests to register at NickServ.
+    async attachCertificate(
+      id: number,
+      payload: { mode: 'generate' } | { mode: 'import'; cert: string; key: string },
+    ) {
+      const { network, certificate } = await api(`/api/networks/${id}/certificate`, {
+        method: 'POST',
+        body: payload,
+      });
+      const idx = this.networks.findIndex((n) => n.id === id);
+      if (idx >= 0) this.networks[idx] = network;
+      // Always the readable variant: the route validated the pair on the way in.
+      return certificate as ClientCertDigest;
+    },
+    async removeCertificate(id: number) {
+      const { network } = await api(`/api/networks/${id}/certificate`, { method: 'DELETE' });
+      const idx = this.networks.findIndex((n) => n.id === id);
+      if (idx >= 0) this.networks[idx] = network;
     },
     async remove(id: number) {
       await api(`/api/networks/${id}`, { method: 'DELETE' });
