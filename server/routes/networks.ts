@@ -122,7 +122,22 @@ router.get('/', (req: Request, res: Response) => {
   res.json({ networks });
 });
 
+// Not an async handler, for the reason attachCertificate documents: the async
+// body answers its own failures so the promise handed back never rejects.
 router.post('/', (req: Request, res: Response) => {
+  void createAndConnect(req, res);
+});
+
+async function createAndConnect(req: Request, res: Response): Promise<void> {
+  try {
+    await createAndConnectInner(req, res);
+  } catch (err) {
+    console.error('[lurker] network create failed:', err);
+    res.status(500).json({ error: 'failed to create the network' });
+  }
+}
+
+async function createAndConnectInner(req: Request, res: Response): Promise<void> {
   const {
     name,
     host,
@@ -138,6 +153,11 @@ router.post('/', (req: Request, res: Response) => {
     sasl_password,
     default_channel,
     connect_commands,
+    // CertFP at creation (#459). Every network's instructions are the same
+    // shape — connect with the certificate, then register it from that
+    // connection — so a certificate attached after the fact means the first
+    // connect is the one connect that can't do the registering.
+    generate_client_cert,
   } = req.body || {};
   if (!name || !host || !nick) {
     res.status(400).json({ error: 'name, host, and nick are required' });
@@ -145,6 +165,14 @@ router.post('/', (req: Request, res: Response) => {
   }
   if (!isNetworkHostAllowed(host)) {
     res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
+    return;
+  }
+  // Checked before anything is written: a network that exists but couldn't be
+  // given the certificate that was asked for is a worse answer than no network.
+  if (generate_client_cert && !tls) {
+    res.status(400).json({
+      error: 'a client certificate can only be used on a TLS network — enable TLS first',
+    });
     return;
   }
 
@@ -167,6 +195,16 @@ router.post('/', (req: Request, res: Response) => {
     res.status(500).json({ error: 'failed to create network' });
     return;
   }
+  // BEFORE startNetwork, deliberately: the certificate is presented during the
+  // TLS handshake, so one attached after the dial would miss the very connect
+  // the user needs it on.
+  const withCert = generate_client_cert
+    ? (setNetworkClientCert(
+        network.id,
+        req.user!.id,
+        await generateClientCert(network.nick || network.name),
+      ) ?? network)
+    : network;
   for (const channel of parseChannelList(default_channel)) {
     seedAutojoinChannel(req.user!.id, network.id, channel);
   }
@@ -176,8 +214,8 @@ router.post('/', (req: Request, res: Response) => {
   // ircManager.initAll) and on un-pause resume — not whether this initial,
   // user-initiated setup connects.
   ircManager.startNetwork(req.user!.id, network.id);
-  res.status(201).json({ network: networkPayload(network) });
-});
+  res.status(201).json({ network: networkPayload(withCert) });
+}
 
 // Rewrite sidebar order for the caller. Body: { ids: [n1, n2, ...] } in the
 // new order. Must match the user's current set exactly — partial reorders

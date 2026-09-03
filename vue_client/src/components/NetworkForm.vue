@@ -131,8 +131,8 @@
               <code>WAIT 15</code> pauses that many seconds before the next one.</small
             >
           </label>
-          <hr v-if="isEdit" class="divider" />
-          <div v-if="isEdit" class="certfp">
+          <hr class="divider" />
+          <div class="certfp">
             <span class="field-label">
               <span>Client certificate (CertFP)</span>
               <button
@@ -145,7 +145,11 @@
                 remove
               </button>
             </span>
-            <p v-if="certUnusable" class="cert-bad">
+            <label v-if="!isEdit" class="check">
+              <input v-model="form.generate_client_cert" type="checkbox" :disabled="!form.tls" />
+              <span>Generate one for this network</span>
+            </label>
+            <p v-else-if="certUnusable" class="cert-bad">
               This certificate can’t be read, and the network won’t connect while it’s attached.
               Remove it, then generate a new one.
             </p>
@@ -319,6 +323,12 @@ const form = reactive({
   default_channel: LURKER_CHANNEL,
   autoconnect: netRaw ? !!netRaw.autoconnect : true,
   connect_commands: (netRaw?.connect_commands as string | undefined) ?? '',
+  // Add flow only: the routes need a network to write to, so at this point the
+  // certificate is an intent the create request carries. It is minted server
+  // side BEFORE the first dial — every network's instructions are "connect with
+  // it, then register it from that connection", so a certificate attached
+  // afterwards misses the one connect that matters.
+  generate_client_cert: false,
 });
 
 // Auto-expand advanced when editing a row that already has any advanced value

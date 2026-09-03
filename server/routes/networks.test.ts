@@ -22,9 +22,15 @@ const fakeManager = {
   calls: Array<unknown[]>(),
   reset() {
     this.calls = [];
+    this.certAtDial = null;
   },
   startNetwork(userId: number, networkId: number) {
     this.calls.push(['startNetwork', userId, networkId]);
+    // What the row looked like AT DIAL TIME. A certificate is presented during
+    // the TLS handshake, so one written after this point misses the connect it
+    // was created for — and that is the connect the user has to run
+    // `CERT ADD` from. (#459)
+    this.certAtDial = certOnRow(networkId);
   },
   stopNetwork(userId: number, networkId: number, reason: string) {
     this.calls.push(['stopNetwork', userId, networkId, reason]);
@@ -43,11 +49,22 @@ const fakeManager = {
     this.calls.push(['partChannel', userId, networkId, channel, reason]);
     return this.partReturn !== undefined ? this.partReturn : true;
   },
+  certAtDial: null as string | null,
   joinReturn: undefined as boolean | undefined,
   partReturn: undefined as boolean | undefined,
 };
 
 vi.mock('../services/ircManager.js', () => ({ default: fakeManager }));
+
+// Read straight from the row: the point is what was STORED by the time the dial
+// went out, not what an API response said afterwards.
+function certOnRow(networkId: number): string | null {
+  const row = dbRef?.prepare('SELECT client_cert FROM networks WHERE id = ?').get(networkId) as
+    | { client_cert: string | null }
+    | undefined;
+  return row?.client_cert ?? null;
+}
+let dbRef: typeof import('../db/index.js').default | null = null;
 
 let app: Express;
 let aliceAgent: LurkerTestAgent;
@@ -61,6 +78,7 @@ beforeAll(async () => {
 
   alice = createUser('net-alice');
   bob = createUser('net-bob');
+  dbRef = (await import('../db/index.js')).default;
   app = createTestApp({ '/api/networks': router });
   aliceAgent = await createAuthedAgent(app, alice.id);
   bobAgent = await createAuthedAgent(app, bob.id);
@@ -575,6 +593,42 @@ describe('client certificate', () => {
     expect(await read(other.id)).toEqual({ unusable: true });
     // ...and the export route agrees there is nothing to hand over.
     expect((await aliceAgent.get(`/api/networks/${other.id}/certificate/export`)).status).toBe(404);
+  });
+
+  // The reason this exists: every network's instructions are "connect with the
+  // certificate, then register it from that connection". A certificate attached
+  // after the network is created misses the first connect, which is the one the
+  // user is sitting in front of.
+  it('mints one during create, and has it stored before the dial goes out', async () => {
+    const res = await makeNet(aliceAgent, {
+      name: 'born-with-cert',
+      nick: 'certborn',
+      generate_client_cert: true,
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.network.client_cert.sha512).toMatch(/^[0-9a-f]{128}$/);
+    // The assertion that matters — not that the row has a certificate now, but
+    // that it had one when startNetwork ran.
+    expect(fakeManager.certAtDial).toBeTruthy();
+    expect(fakeManager.certAtDial).toContain('BEGIN CERTIFICATE');
+  });
+
+  it('refuses to mint one for a plaintext network, and creates nothing', async () => {
+    const before = (await aliceAgent.get('/api/networks')).body.networks.length;
+    const res = await makeNet(aliceAgent, {
+      name: 'plaintext-born',
+      tls: false,
+      port: 6667,
+      generate_client_cert: true,
+    });
+    expect(res.status).toBe(400);
+    expect((await aliceAgent.get('/api/networks')).body.networks).toHaveLength(before);
+  });
+
+  it('leaves a network without one when it was not asked for', async () => {
+    const res = await makeNet(aliceAgent, { name: 'no-cert-asked' });
+    expect(res.body.network.client_cert).toBe(null);
+    expect(fakeManager.certAtDial).toBe(null);
   });
 
   it('rejects an unknown mode rather than silently doing nothing', async () => {

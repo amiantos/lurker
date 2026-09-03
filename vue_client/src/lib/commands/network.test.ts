@@ -3,6 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseNetworkCommand } from './network.js';
+import type { NetworkCommand } from './network.js';
 
 describe('parseNetworkCommand', () => {
   it('treats no args and `list`/`ls` as a list', () => {
@@ -192,6 +193,31 @@ describe('parseNetworkCommand', () => {
 
     it('needs both a name and a position', () => {
       expect(parseNetworkCommand('move Libera')).toMatchObject({ kind: 'error' });
+    });
+  });
+
+  describe('-cert on add', () => {
+    it('asks for a certificate to be minted with the network', () => {
+      expect(parseNetworkCommand('add -host irc.x -nick n -cert Libera')).toMatchObject({
+        kind: 'add',
+        input: { generate_client_cert: true },
+      });
+    });
+
+    it('is absent unless asked for', () => {
+      const cmd = parseNetworkCommand('add -host irc.x -nick n Libera');
+      expect(cmd).toMatchObject({ kind: 'add' });
+      expect(
+        (cmd as Extract<NetworkCommand, { kind: 'add' }>).input.generate_client_cert,
+      ).toBeUndefined();
+    });
+
+    // Minting has to happen before the first dial, so it rides on creation
+    // only; replacing one later is a different command.
+    it('is refused on modify, and says what to use instead', () => {
+      const cmd = parseNetworkCommand('modify Libera -cert');
+      expect(cmd).toMatchObject({ kind: 'error' });
+      expect((cmd as { message: string }).message).toContain('/network cert Libera new');
     });
   });
 

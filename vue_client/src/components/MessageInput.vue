@@ -3091,6 +3091,14 @@ async function runNetwork(
       const tls = cmd.input.tls ? ' (tls)' : '';
       // create() is an explicit "save & connect" server-side, so it dials now.
       reply(`added ${net.name} — ${cmd.input.host}:${cmd.input.port}${tls}, connecting…`);
+      // Minted before that dial, so it is already on the wire — print it here
+      // rather than making the user go and ask for it.
+      const minted = (net as Record<string, unknown>).client_cert as ClientCertInfo | null;
+      if (minted && !('unusable' in minted)) {
+        reply('client certificate:');
+        printFingerprints(minted, reply);
+        reply('once connected: /msg NickServ CERT ADD');
+      }
     } catch (err) {
       reply(`/network add failed: ${err instanceof Error ? err.message : 'unknown error'}`);
     }

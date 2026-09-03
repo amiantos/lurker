@@ -71,6 +71,42 @@ describe('NetworkForm — client certificate', () => {
     });
   });
 
+  // The add flow has no network to write to yet, so the certificate is an
+  // intent the create request carries — and the server mints it before the
+  // first dial, because "connect with it, then register it from that
+  // connection" is what every network's instructions say.
+  it('offers to mint one while adding a network, before it has ever connected', async () => {
+    const form = mount(NetworkForm, { props: { network: null } });
+    // The add flow opens on the network picker; the form is the second step.
+    await form
+      .findAll('button')
+      .find((b) => b.text().includes('Enter details manually'))!
+      .trigger('click');
+    const toggle = form.findAll('button').find((b) => b.text().includes('Advanced options'));
+    if (toggle) await toggle.trigger('click');
+
+    expect(form.text()).toContain('Client certificate');
+    expect(form.text()).toContain('Generate one for this network');
+    // TLS is on by default, so the offer is live.
+    expect(form.find('.certfp input[type="checkbox"]').attributes('disabled')).toBeUndefined();
+    // And none of the states that need a network to exist.
+    const labels = form.findAll('button').map((b) => b.text());
+    expect(labels).not.toContain('Download');
+    expect(labels).not.toContain('Generate');
+  });
+
+  // v-if / v-else-if / v-else is one chain: an element inserted into the middle
+  // of it silently detaches the tail, and two states render at once.
+  it('renders exactly one certificate state at a time', () => {
+    const bad = open({ client_cert: { unusable: true } });
+    expect(bad.text()).toMatch(/can’t be read/);
+    expect(bad.findAll('button').map((b) => b.text())).not.toContain('Generate');
+
+    const good = open({ client_cert: DIGEST });
+    expect(good.text()).not.toMatch(/can’t be read/);
+    expect(good.findAll('button').map((b) => b.text())).not.toContain('Generate');
+  });
+
   it('offers to generate one when the network has none', async () => {
     const text = (await openWithAdvanced()).text();
     expect(text).toContain('Client certificate');
