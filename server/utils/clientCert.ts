@@ -107,6 +107,17 @@ function bare(fingerprint: string): string {
   return fingerprint.replace(/:/g, '').toLowerCase();
 }
 
+// One PEM blob holding both halves → the two of them; null when it isn't that.
+// Takes the FIRST block of each kind deliberately: a bundle carrying a chain
+// presents the leaf, which is the certificate whose fingerprint services hold.
+function splitCombinedPem(pem: string): { cert: string; key: string } | null {
+  const cert = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/.exec(pem)?.[0];
+  const key = /-----BEGIN ([A-Z ]*)PRIVATE KEY-----[\s\S]*?-----END \1PRIVATE KEY-----/.exec(
+    pem,
+  )?.[0];
+  return cert && key ? { cert, key } : null;
+}
+
 /** A rejected pair, with a message meant for the person who pasted it. */
 export interface ClientCertProblem {
   error: string;
@@ -120,14 +131,29 @@ export function validateClientCertPair(
   certPem: unknown,
   keyPem: unknown,
 ): ClientCertPair | ClientCertProblem {
-  const cert = typeof certPem === 'string' ? certPem.trim() : '';
-  const key = typeof keyPem === 'string' ? keyPem.trim() : '';
+  let cert = typeof certPem === 'string' ? certPem.trim() : '';
+  let key = typeof keyPem === 'string' ? keyPem.trim() : '';
+  // A combined client.pem — cert and key in one file — pasted into the
+  // certificate box with the key box left empty. It is the likeliest mistake
+  // (HexChat and WeeChat both keep the pair that way) and it is barely a
+  // mistake at all: that file is also exactly what clientCertBundle() below
+  // exports, so someone moving a certificate between two Lurker networks lands
+  // here. Split it rather than making them do it by hand.
+  if (!key && cert) {
+    const split = splitCombinedPem(cert);
+    if (split) ({ cert, key } = split);
+  }
   if (!cert || !key) {
+    // Only reached with genuinely nothing usable in hand, so name whichever
+    // half IS there rather than asking again for both.
+    if (cert && /PRIVATE KEY-----/.test(cert)) {
+      return {
+        error:
+          'that is a private key with no certificate in it — paste the certificate too, or both halves of your client.pem',
+      };
+    }
     return { error: 'a certificate and its private key are both required' };
   }
-  // A combined client.pem (cert and key in one file, the HexChat/WeeChat shape)
-  // pasted into the cert box alone is the single likeliest mistake, so name it
-  // instead of failing on "no key".
   if (!/-----BEGIN CERTIFICATE-----/.test(cert)) {
     return {
       error: /PRIVATE KEY-----/.test(cert)

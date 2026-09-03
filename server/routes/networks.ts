@@ -276,7 +276,15 @@ async function attachCertificateInner(req: Request, res: Response): Promise<void
     res.status(400).json({ error: "mode must be 'generate' or 'import'" });
     return;
   }
+  // The write can land on nothing: the network is looked up, then written, and
+  // another tab can delete it in between. Answering 200 with a certificate for
+  // a network that no longer exists is worse than the 404 the caller would have
+  // got a moment earlier.
   const updated = setNetworkClientCert(id, req.user!.id, pair);
+  if (!updated) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
   res.json({ network: networkPayload(updated), certificate: describeClientCert(pair.cert) });
 }
 
@@ -287,6 +295,10 @@ router.delete('/:id/certificate', (req: Request, res: Response) => {
     return;
   }
   const updated = setNetworkClientCert(id, req.user!.id, null);
+  if (!updated) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
   res.json({ network: networkPayload(updated) });
 });
 

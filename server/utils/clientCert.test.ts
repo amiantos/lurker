@@ -113,6 +113,29 @@ describe('validateClientCertPair', () => {
     expect(isClientCertProblem(result) && result.error).toMatch(/openssl rsa/);
   });
 
+  // The file HexChat and WeeChat keep on disk, and the file this module exports.
+  // Pasted whole into the certificate box, it is not really a mistake.
+  it('accepts a combined client.pem in the certificate field alone', async () => {
+    const pair = await generateClientCert('alice');
+    const result = validateClientCertPair(clientCertBundle(pair), '');
+    expect(isClientCertProblem(result)).toBe(false);
+    expect(describeClientCert((result as typeof pair).cert).sha256).toBe(
+      describeClientCert(pair.cert).sha256,
+    );
+    // And the key that came out of it really is the matching half.
+    expect(
+      isClientCertProblem(
+        validateClientCertPair((result as typeof pair).cert, (result as typeof pair).key),
+      ),
+    ).toBe(false);
+  });
+
+  it('still asks for the certificate when only a key was pasted', async () => {
+    const pair = await generateClientCert('alice');
+    const result = validateClientCertPair(pair.key, '');
+    expect(isClientCertProblem(result) && result.error).toMatch(/no certificate in it/);
+  });
+
   it('rejects an empty, absent, or non-string field', async () => {
     const pair = await generateClientCert('alice');
     for (const bad of ['', '   ', undefined, null, 42, { cert: 'x' }]) {
