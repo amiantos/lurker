@@ -24,6 +24,7 @@ export interface Network {
 export interface ClientCertDigest {
   sha256: string;
   sha1: string;
+  sha512: string;
   subject: string;
   validFrom: string;
   validTo: string;

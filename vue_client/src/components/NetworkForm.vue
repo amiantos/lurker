@@ -148,16 +148,20 @@
               Remove it, then generate a new one.
             </p>
             <template v-else-if="certInfo">
-              <p class="cert-line">
-                <code>{{ certInfo.sha256 }}</code>
-                <button type="button" class="clear-link" @click="copyFingerprint">
-                  {{ copied ? 'copied' : 'copy' }}
+              <small>
+                Connect, then run <code>/msg NickServ CERT ADD</code> — with no fingerprint, so
+                services take it from the connection itself. Expires {{ certExpiry }}.
+              </small>
+              <p v-for="fp in fingerprints" :key="fp.label" class="cert-line">
+                <span class="cert-algo">{{ fp.label }}</span>
+                <code>{{ fp.value }}</code>
+                <button type="button" class="clear-link" @click="copyFingerprint(fp.value)">
+                  {{ copied === fp.value ? 'copied' : 'copy' }}
                 </button>
               </p>
               <small>
-                Connect, then run <code>/msg NickServ CERT ADD</code> to register it. Older networks
-                want the SHA-1 form: <code>{{ certInfo.sha1 }}</code
-                >. Expires {{ certExpiry }}.
+                Only needed if you have to paste one — networks differ on which they accept, and say
+                so when you get it wrong.
               </small>
               <p class="cert-actions">
                 <a :href="`/api/networks/${props.network?.id}/certificate/export`" download>
@@ -331,7 +335,9 @@ const certError = ref('');
 const showImport = ref(false);
 const importCert = ref('');
 const importKey = ref('');
-const copied = ref(false);
+// The fingerprint most recently copied, so the confirmation lands on the row
+// that was clicked rather than on all of them.
+const copied = ref('');
 
 const certUnusable = computed(() => !!cert.value && 'unusable' in cert.value);
 // The readable variant, or null — `v-if="cert"` can't narrow the union in a
@@ -340,6 +346,20 @@ const certInfo = computed(() => (cert.value && !('unusable' in cert.value) ? cer
 const certExpiry = computed(() =>
   certInfo.value ? new Date(certInfo.value.validTo).toLocaleDateString() : '',
 );
+// All three, because which one a network accepts is the network's business:
+// Libera refuses anything but SHA-512 (by length, before it even looks at the
+// value), ergo and most Atheme networks want SHA-256, and the older
+// ratbox-family ones still hash SHA-1. SHA-512 leads because Libera is where
+// most people doing this will be.
+const fingerprints = computed(() => {
+  const c = certInfo.value;
+  if (!c) return [];
+  return [
+    { label: 'SHA-512', value: c.sha512 },
+    { label: 'SHA-256', value: c.sha256 },
+    { label: 'SHA-1', value: c.sha1 },
+  ];
+});
 
 async function runCertAction(action: () => Promise<void>): Promise<void> {
   certBusy.value = true;
@@ -379,13 +399,11 @@ function removeCertificate(): Promise<void> {
   });
 }
 
-async function copyFingerprint(): Promise<void> {
-  const c = cert.value;
-  if (!c || 'unusable' in c) return;
+async function copyFingerprint(value: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(c.sha256);
-    copied.value = true;
-    setTimeout(() => (copied.value = false), 1500);
+    await navigator.clipboard.writeText(value);
+    copied.value = value;
+    setTimeout(() => (copied.value = ''), 1500);
   } catch {
     /* a clipboard the browser won't give us is not worth an error banner */
   }
@@ -723,10 +741,14 @@ label small {
   gap: var(--space-3);
   margin: 0;
 }
-/* The fingerprint is 64 hex characters and the user has to compare it against
-   what NickServ echoes back, so it wraps rather than truncating. */
+/* A fingerprint is 40 to 128 hex characters and the user has to compare it
+   against what NickServ echoes back, so it wraps rather than truncating. */
 .cert-line code {
   word-break: break-all;
+}
+.cert-algo {
+  color: var(--fg-muted);
+  white-space: nowrap;
 }
 .cert-actions {
   display: flex;

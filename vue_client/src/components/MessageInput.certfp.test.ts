@@ -30,6 +30,7 @@ vi.mock('../composables/useSocket.js', () => ({
 const DIGEST = {
   sha256: 'd'.repeat(64),
   sha1: 'e'.repeat(40),
+  sha512: 'f'.repeat(128),
   subject: 'CN=me',
   validFrom: '2026-01-01T00:00:00.000Z',
   validTo: '2036-01-01T00:00:00.000Z',
@@ -96,7 +97,7 @@ describe('/network cert', () => {
     const { networks } = seed();
     vi.spyOn(networks, 'attachCertificate').mockResolvedValue(DIGEST);
     await run('/network cert testnet new');
-    expect(output()).toContain(DIGEST.sha256);
+    expect(output()).toContain(DIGEST.sha512);
     expect(output()).toContain('NickServ CERT ADD');
   });
 
@@ -106,6 +107,7 @@ describe('/network cert', () => {
     await run('/network cert testnet');
     expect(output()).toContain(DIGEST.sha256);
     expect(output()).toContain(DIGEST.sha1);
+    expect(output()).toContain(DIGEST.sha512);
     expect(attach).not.toHaveBeenCalled();
   });
 

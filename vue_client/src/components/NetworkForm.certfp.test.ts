@@ -22,6 +22,7 @@ import NetworkForm from './NetworkForm.vue';
 const DIGEST = {
   sha256: 'a'.repeat(64),
   sha1: 'b'.repeat(40),
+  sha512: '9'.repeat(128),
   subject: 'CN=nick',
   validFrom: '2026-01-01T00:00:00.000Z',
   validTo: '2036-01-01T00:00:00.000Z',
@@ -71,8 +72,14 @@ describe('NetworkForm — client certificate', () => {
     // The command is the whole point: a fingerprint nobody registers does
     // nothing at all.
     expect(text).toContain('NickServ CERT ADD');
-    // SHA-1 for the older ratbox-family networks that still hash that way.
+    // SHA-1 for the older ratbox-family networks that still hash that way, and
+    // SHA-512 because Libera rejects everything else — showing only SHA-256 is
+    // what sent a fingerprint Libera refused.
     expect(text).toContain(DIGEST.sha1);
+    expect(text).toContain(DIGEST.sha512);
+    // The form that needs no fingerprint at all leads, since it is the one that
+    // works whatever digest the network wants.
+    expect(text).toContain('with no fingerprint');
   });
 
   // The section is buried under Advanced, which stays collapsed by default —

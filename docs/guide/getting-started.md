@@ -25,11 +25,14 @@ your services account. Lurker holds one per network, under **Advanced** in the
 network's settings.
 
 1. **Generate** (or **Import**, if you already use one in another client).
-2. Copy the SHA-256 fingerprint shown, and reconnect so the certificate is
-   presented.
-3. `/msg NickServ CERT ADD` — from the connection itself, which is how services
-   learn the fingerprint you just connected with. Some networks want it spelled
-   out: `/msg NickServ CERT ADD <fingerprint>`.
+2. Reconnect, so the certificate is actually presented.
+3. `/msg NickServ CERT ADD` — with **no fingerprint**. Services read it off the
+   connection you are on, which is why this form works everywhere.
+
+If you do have to paste one, Lurker shows all three digests, because networks
+disagree about which they accept: Libera takes **SHA-512** and rejects the
+others outright, most other Atheme networks and ergo want **SHA-256**, and older
+ratbox-family networks still use **SHA-1**.
 
 From then on that network knows you by the certificate. If you have no password
 set, Lurker authenticates with SASL EXTERNAL; with a password set it keeps using

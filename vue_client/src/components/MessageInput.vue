@@ -157,7 +157,12 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
-import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
+import {
+  useNetworksStore,
+  type ClientCertDigest,
+  type ClientCertInfo,
+  type Network,
+} from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
@@ -3141,7 +3146,11 @@ async function runNetworkCert(
   }
   if (action === 'generate') {
     const cert = await networks.attachCertificate(net.id, { mode: 'generate' });
-    reply(`new client certificate for ${net.name} — sha256 ${cert.sha256}`);
+    reply(`new client certificate for ${net.name}`);
+    printFingerprints(cert, reply);
+    // No fingerprint on the command: services take it from the connection
+    // itself, which is the one form that works on every network regardless of
+    // which digest it wants.
     return reply('reconnect, then: /msg NickServ CERT ADD');
   }
   const stored = (net as Record<string, unknown>).client_cert as ClientCertInfo | null | undefined;
@@ -3153,9 +3162,19 @@ async function runNetworkCert(
       `${net.name}'s client certificate can't be read — it blocks connecting; /network cert ${net.name} remove`,
     );
   }
-  const { sha256, sha1, validTo } = stored;
-  reply(`${net.name} client certificate — sha256 ${sha256}`);
-  reply(`  sha1 ${sha1} · expires ${new Date(validTo).toLocaleDateString()}`);
+  reply(
+    `${net.name} client certificate — expires ${new Date(stored.validTo).toLocaleDateString()}`,
+  );
+  printFingerprints(stored, reply);
+}
+
+// All three digests, because which one a network accepts is its own business —
+// Libera takes SHA-512 only, ergo and most Atheme networks SHA-256, older
+// ratbox-family ones SHA-1 — and none is derivable from another.
+function printFingerprints(cert: ClientCertDigest, reply: (msg: string) => void): void {
+  reply(`  sha512 ${cert.sha512}`);
+  reply(`  sha256 ${cert.sha256}`);
+  reply(`  sha1   ${cert.sha1}`);
 }
 
 // Whether a registry option is exposed to /set, /get, and the listing — the
