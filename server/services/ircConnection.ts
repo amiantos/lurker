@@ -4590,6 +4590,10 @@ export class IrcConnection {
     try {
       if (!this.awayState.active) this.client.raw('AWAY');
       else if (this.awayState.message) this.client.raw('AWAY :' + this.awayState.message);
+      // Away with no message to put back: leave ours on the socket rather than
+      // send `AWAY :`, which some servers read as coming back. The user wants
+      // to be away and is; only the text is not theirs. setAwayAll never
+      // stores an empty message, so this is the shape of a row from elsewhere.
     } catch (_) {
       /* ignore */
     }
@@ -4635,7 +4639,7 @@ export class IrcConnection {
       if (numeric === '331' || numeric === '333') entry.topic = false;
       return true;
     }
-    if (!entry.mode && !entry.topic) this.restoreQuiet.delete(key);
+    if (!entry.mode && !entry.topic && !entry.away) this.restoreQuiet.delete(key);
     return false;
   }
 

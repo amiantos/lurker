@@ -1272,7 +1272,11 @@ describe('away while detached (#890)', () => {
       await new Promise((r) => setTimeout(r, 250));
 
       sweep(own);
-      await ircd.waitForLine((x) => x.startsWith('AWAY :Lurker is offline'));
+      // Scoped to this client: another test's session has sent this same line,
+      // and waitForLine scans every client the fake ircd has ever had.
+      await ircd.waitForLine(
+        (x, c) => c.nick === 'awayer' && x.startsWith('AWAY :Lurker is offline'),
+      );
       // A second sweep does not say it twice.
       sweep(own);
 
@@ -1298,6 +1302,44 @@ describe('away while detached (#890)', () => {
       c.send(connectFrame(id));
       const again = await c.waitFor<Attached>((f) => f.op === 'attached');
       expect(again.awaySetByEngine).toBe(false);
+    } finally {
+      await own.shutdown('done', 200);
+    }
+  });
+
+  it('does not keep waiting for a reply the server never sent', async () => {
+    const { own, port } = await engineWithAway(200);
+    try {
+      const id = `awaystuck:${++counter}`;
+      const a = await TestLink.connect(port, SECRET);
+      a.send(connectFrame(id));
+      await a.waitFor((f) => f.op === 'open' && f.id === id);
+      a.send({ op: 'write', id, line: 'NICK stuckaway' });
+      a.send({ op: 'write', id, line: 'USER stuckaway 0 * :s' });
+      await a.waitForLine(id, / 376 /);
+      ackAll(a, id);
+      a.kill();
+      await new Promise((r) => setTimeout(r, 250));
+
+      // A server that answers our AWAY with nothing at all.
+      ircd.hold = (cmd) => cmd === 'AWAY';
+      try {
+        sweep(own);
+        await ircd.waitForLine(
+          (x, c) => c.nick === 'stuckaway' && x.startsWith('AWAY :Lurker is offline'),
+        );
+      } finally {
+        ircd.hold = null;
+      }
+
+      const b = await TestLink.connect(port, SECRET);
+      b.send(connectFrame(id));
+      const att = await b.waitFor<Attached>((f) => f.op === 'attached');
+      expect(att.awaySetByEngine).toBe(true);
+      // The unanswered reply is not still owed: the user's own away is
+      // confirmed to them rather than eaten as ours.
+      b.send({ op: 'write', id, line: 'AWAY :mine now' });
+      await b.waitForLine(id, / 306 /);
     } finally {
       await own.shutdown('done', 200);
     }

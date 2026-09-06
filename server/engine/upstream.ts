@@ -178,7 +178,10 @@ export class EngineUpstream extends EventEmitter {
   // An AWAY we wrote is owed a reply. Ours to consume: the app is not attached
   // (that is why we sent it), and a numeric answering a command the app never
   // sent would be a line it has to explain — the same reasoning that keeps the
-  // PONGs we write off the wire to it.
+  // PONGs we write off the wire to it. Only ever consumed while detached, and
+  // dropped on attach: a server that answers our AWAY with something else, or
+  // with nothing at all, must not leave this latched to eat the user's own 306
+  // the next time they set one.
   private awayReplyOwed = false;
   // folded name → name as the server spelled it on JOIN
   private channels = new Map<string, string>();
@@ -379,7 +382,7 @@ export class EngineUpstream extends EventEmitter {
     if (command === 'CAP') this.trackCaps(msg.params);
     if (command === '306' || command === '305') {
       this.away = command === '306';
-      if (this.awayReplyOwed) {
+      if (this.awayReplyOwed && !this.sink) {
         this.awayReplyOwed = false;
         return;
       }
@@ -628,6 +631,9 @@ export class EngineUpstream extends EventEmitter {
   attach(sink: FrameSink): AttachedPayload | 'dialing' | 'unregistered' {
     this.sink = sink;
     this.stalled = false;
+    // Whatever the server did with the AWAY we wrote, it is not ours to wait
+    // for once an app is here to read the answer.
+    this.awayReplyOwed = false;
     const detachedForMs = this.detachedAt === null ? 0 : Date.now() - this.detachedAt;
     this.detachedAt = null;
     if (this.state !== 'open' || !this.local || !this.remote) {

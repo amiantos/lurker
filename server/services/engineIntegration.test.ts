@@ -601,6 +601,12 @@ describe('IrcConnection through the engine', () => {
     } finally {
       opts.awayAfterMs = 0;
     }
+    // The last process let go with a `MODE <nick>` in flight, so its 221s sit
+    // in the engine's backlog and are delivered right after the restore — the
+    // window in which the away flag on the shared '*' quiet entry has to
+    // outlive the mode half it shares that entry with.
+    ircd.sendRaw('lurk', ':fake.test 221 lurk +i');
+    ircd.sendRaw('lurk', ':fake.test 221 lurk +i');
 
     const back = ircManager.startNetwork(userId, network.id)!;
     await until(() => back.state === 'connected', 8000, 'reattached');
