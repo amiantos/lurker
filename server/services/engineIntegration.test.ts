@@ -607,6 +607,11 @@ describe('IrcConnection through the engine', () => {
     // outlive the mode half it shares that entry with.
     ircd.sendRaw('lurk', ':fake.test 221 lurk +i');
     ircd.sendRaw('lurk', ':fake.test 221 lurk +i');
+    // And an away numeric the engine did relay — its own 306 lands here when
+    // the app attaches between the AWAY and the answer, which is the ordinary
+    // case on a loaded box. Two of them reach one restore window, and BOTH
+    // have to be kept out of the buffer, not just whichever arrives first.
+    ircd.sendRaw('lurk', ':fake.test 306 lurk :You have been marked as being away');
 
     const back = ircManager.startNetwork(userId, network.id)!;
     await until(() => back.state === 'connected', 8000, 'reattached');

@@ -4621,14 +4621,16 @@ export class IrcConnection {
     }
     const isMode = numeric === '324' || numeric === '329' || numeric === '221';
     const isTopic = numeric === '331' || numeric === '332' || numeric === '333';
-    // The 305 or 306 answering the AWAY the restore sent to put back what the
-    // engine had done to the socket. The user is told neither: they did not
-    // ask to be away, or they asked minutes ago and already know. One reply,
-    // so the flag is spent on it. (#890)
-    if ((numeric === '305' || numeric === '306') && entry.away) {
-      entry.away = false;
-      return true;
-    }
+    // The away numerics around an away the ENGINE set: the 306 it earned for
+    // itself (relayed when the app attached between the AWAY and the answer,
+    // which is the ordinary case on a loaded box) and the 305 answering the
+    // clear the restore sent. The user is told about neither — they did not
+    // ask to be away, or they asked minutes ago and know.
+    //
+    // Deliberately NOT spent on the first one: both can land in one window,
+    // and whichever arrived second would otherwise render. The window is the
+    // bound. (#890)
+    if ((numeric === '305' || numeric === '306') && entry.away) return true;
     if (isMode && entry.mode) {
       // 324 is followed by 329 on most servers; 221 stands alone.
       if (numeric === '329' || numeric === '221') entry.mode = false;
