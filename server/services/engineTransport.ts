@@ -60,6 +60,7 @@ export interface EnginePhaseInfo {
   channels?: string[];
   replay?: number;
   unattended?: boolean;
+  awaySetByEngine?: boolean;
   swallowed?: string[];
   gap?: Gap;
 }
@@ -340,6 +341,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
       channels: frame.channels,
       replay: frame.replay.length,
       unattended: frame.unattended,
+      awaySetByEngine: frame.awaySetByEngine,
     });
     this.emit('extra', 'raw socket connected', {
       localAddress: frame.local.address,

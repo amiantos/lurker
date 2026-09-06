@@ -1237,6 +1237,103 @@ describe('orphan reaper', () => {
 // Lurker database, so two Lurker instances on one engine would both mint
 // `…:1:1` for unrelated people. `matchesDial` does not save you: two users on
 // the same popular network dial the identical host/port/tls.
+describe('away while detached (#890)', () => {
+  // Same shape as the orphan reaper's test: an engine of our own with the knob
+  // set, and the sweep driven directly — it runs every LINK_SILENCE_MS/3 (30 s)
+  // in production.
+  async function engineWithAway(awayAfterMs: number): Promise<{ own: EngineServer; port: number }> {
+    const own = new EngineServer({
+      secret: SECRET,
+      bufferBytes: 4096,
+      bufferTotalBytes: 65536,
+      version: 'test',
+      log: () => {},
+      awayAfterMs,
+    });
+    const { port } = await own.listen(0, '127.0.0.1');
+    return { own, port };
+  }
+  const sweep = (srv: EngineServer) =>
+    (srv as unknown as { markLongDetachedAway(): void }).markLongDetachedAway();
+
+  it('marks a long-detached socket away, tells the next app, and swallows its own reply', async () => {
+    const { own, port } = await engineWithAway(200);
+    try {
+      const id = `away:${++counter}`;
+      const a = await TestLink.connect(port, SECRET);
+      a.send(connectFrame(id));
+      await a.waitFor((f) => f.op === 'open' && f.id === id);
+      a.send({ op: 'write', id, line: 'NICK awayer' });
+      a.send({ op: 'write', id, line: 'USER awayer 0 * :a' });
+      await a.waitForLine(id, / 376 /);
+      ackAll(a, id);
+      const record = ircd.client('awayer')!;
+      a.kill();
+      await new Promise((r) => setTimeout(r, 250));
+
+      sweep(own);
+      await ircd.waitForLine((x) => x.startsWith('AWAY :Lurker is offline'));
+      // A second sweep does not say it twice.
+      sweep(own);
+
+      const b = await TestLink.connect(port, SECRET);
+      b.send(connectFrame(id));
+      const att = await b.waitFor<Attached>((f) => f.op === 'attached');
+      expect(att.awaySetByEngine).toBe(true);
+      await b.waitFor((f) => f.op === 'live' && f.id === id);
+      expect(record.sent.filter((x) => x.startsWith('AWAY'))).toEqual([
+        'AWAY :Lurker is offline — messages will be read when it returns',
+      ]);
+      // The 306 answers a command the app never sent, so it never sees it —
+      // the same reasoning that keeps our PONGs off its wire.
+      expect(b.lines(id).some((x) => / 306 /.test(x))).toBe(false);
+
+      // The app puts it back, and the 305 for THAT is its own business: it
+      // asked. The next attach has nothing of ours left to report.
+      b.send({ op: 'write', id, line: 'AWAY' });
+      await b.waitForLine(id, / 305 /);
+      ackAll(b, id);
+      b.kill();
+      const c = await TestLink.connect(port, SECRET);
+      c.send(connectFrame(id));
+      const again = await c.waitFor<Attached>((f) => f.op === 'attached');
+      expect(again.awaySetByEngine).toBe(false);
+    } finally {
+      await own.shutdown('done', 200);
+    }
+  });
+
+  it('never touches an away the user set themselves', async () => {
+    const { own, port } = await engineWithAway(200);
+    try {
+      const id = `awayown:${++counter}`;
+      const a = await TestLink.connect(port, SECRET);
+      a.send(connectFrame(id));
+      await a.waitFor((f) => f.op === 'open' && f.id === id);
+      a.send({ op: 'write', id, line: 'NICK ownaway' });
+      a.send({ op: 'write', id, line: 'USER ownaway 0 * :o' });
+      await a.waitForLine(id, / 376 /);
+      a.send({ op: 'write', id, line: 'AWAY :back in a bit' });
+      await a.waitForLine(id, / 306 /);
+      ackAll(a, id);
+      const record = ircd.client('ownaway')!;
+      a.kill();
+      await new Promise((r) => setTimeout(r, 250));
+
+      sweep(own);
+      const b = await TestLink.connect(port, SECRET);
+      b.send(connectFrame(id));
+      const att = await b.waitFor<Attached>((f) => f.op === 'attached');
+      // Their message is the one that means something, and it is still the
+      // only AWAY this socket has ever sent.
+      expect(record.sent.filter((x) => x.startsWith('AWAY'))).toEqual(['AWAY :back in a bit']);
+      expect(att.awaySetByEngine).toBe(false);
+    } finally {
+      await own.shutdown('done', 200);
+    }
+  });
+});
+
 describe('instance isolation', () => {
   const OTHER = 'test-instance-b';
 

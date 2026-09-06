@@ -17,6 +17,9 @@ export interface EngineConfig {
   // app that never comes back, or one this engine refused (a protocol-major
   // mismatch), whose sessions would otherwise sit on the network as ghosts.
   orphanMs: number;
+  // A session no app has claimed for this long is marked AWAY on the network,
+  // so someone messaging it gets an answer instead of silence. 0 disables.
+  awayAfterMs: number;
 }
 
 const MiB = 1024 * 1024;
@@ -69,5 +72,9 @@ export function loadEngineConfig(env: NodeJS.ProcessEnv = process.env): EngineCo
     bufferBytes,
     bufferTotalBytes: Math.max(bufferTotalBytes, bufferBytes),
     orphanMs: envMs('LURKER_ENGINE_ORPHAN_MS', 60 * 60 * 1000),
+    // Long enough that an ordinary deploy (seconds) never trips it, short
+    // enough that someone messaging into a dead app finds out in the same
+    // conversation. The sweep runs every 30 s, so that is the granularity.
+    awayAfterMs: envMs('LURKER_ENGINE_AWAY_AFTER_MS', 5 * 60 * 1000),
   };
 }

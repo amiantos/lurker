@@ -166,7 +166,7 @@ const MAX_CONSECUTIVE_SASL_FAILURES = 3;
 // synthesised one has to ask, and the server-buffer renderer would print each
 // answer as a line of history on every app restart. Kept quiet per channel for a
 // short window after the restore — see RESTORE_QUIET_MS.
-const RESTORE_QUIET_NUMERICS = new Set(['221', '324', '329', '331', '332', '333']);
+const RESTORE_QUIET_NUMERICS = new Set(['221', '305', '306', '324', '329', '331', '332', '333']);
 const RESTORE_QUIET_MS = 10_000;
 // The per-channel state requests after a restore go out one channel at a time,
 // and the next channel waits for this one's replies (drainRestoreQueue). This
@@ -745,6 +745,9 @@ export class IrcConnection {
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
   restoreUnattended: boolean;
+  // The engine marked this socket away while nobody was attached (#890). The
+  // restore undoes it — it is never set over an away of the user's own.
+  private restoreAwayByEngine: boolean;
   private restoredCallbacks: Array<() => void>;
   private restoreQueue: string[];
   private restoreTimer: ReturnType<typeof setTimeout> | null;
@@ -760,7 +763,10 @@ export class IrcConnection {
   // folded channel → the state replies still owed from the restore's own
   // requests (MODE → 324/329, TOPIC → 331/332/333; '*' → our umode 221), kept
   // out of the server buffer until they arrive or the deadline passes.
-  private restoreQuiet: Map<string, { until: number; mode: boolean; topic: boolean }>;
+  private restoreQuiet: Map<
+    string,
+    { until: number; mode: boolean; topic: boolean; away?: boolean }
+  >;
   // Folded channel keys whose NAMES this connection has heard since it last
   // connected or attached — the one fact membersPending reads.
   private namesHeard: Set<string>;
@@ -875,6 +881,7 @@ export class IrcConnection {
     this.restoring = false;
     this.catchingUp = false;
     this.restoreUnattended = false;
+    this.restoreAwayByEngine = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
     this.restoreTimer = null;
@@ -1203,7 +1210,12 @@ export class IrcConnection {
       if (isServerBufferDeniedNumeric(rawCommand)) return;
       if (
         RESTORE_QUIET_NUMERICS.has(rawCommand) &&
-        this.isRestoreQuiet(rawCommand, rawCommand === '221' ? '*' : msg?.params?.[1])
+        this.isRestoreQuiet(
+          rawCommand,
+          rawCommand === '221' || rawCommand === '305' || rawCommand === '306'
+            ? '*'
+            : msg?.params?.[1],
+        )
       ) {
         return;
       }
@@ -4263,6 +4275,7 @@ export class IrcConnection {
         this.restoring = true;
         this.catchingUp = true;
         this.restoreUnattended = !!info.unattended;
+        this.restoreAwayByEngine = !!info.awaySetByEngine;
         // The engine's channel set is the truth about the socket. Anything we
         // still think we are in but the engine doesn't (kicked or parted while
         // this process was cut off) is gone — and must not get NAMES/TOPIC
@@ -4298,9 +4311,11 @@ export class IrcConnection {
           until: Date.now() + RESTORE_QUIET_MS,
           mode: true,
           topic: false,
+          away: this.restoreAwayByEngine,
         });
         this.rawQuiet('MODE', this.currentNick);
         this.requestUnnegotiatedCaps();
+        this.restoreOwnAway();
         this.restoreQueue = [...this.channels.values()].map((ch) => ch.name);
         // Every queued channel is marked quiet now, not when its own step goes
         // out: the LAST process may have let go with a step in flight, and
@@ -4363,6 +4378,7 @@ export class IrcConnection {
     this.restoring = false;
     this.catchingUp = false;
     this.restoreUnattended = false;
+    this.restoreAwayByEngine = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
     this.endRestoreStep();
@@ -4559,6 +4575,26 @@ export class IrcConnection {
     }
   }
 
+  // Put the socket's away back the way the user has it, after the engine
+  // marked it away because nobody was attached (#890).
+  //
+  // Usually that means clearing it: the engine only ever marks a socket the
+  // user was NOT away on. The two drift when the app is cut off from the
+  // ENGINE rather than down — an /away issued during a link outage is
+  // persisted and applyAwayState never reaches the socket, so by the time we
+  // are back the engine's message is the one on it. Their message then goes
+  // over ours, which is what a real reconnect does with the same state.
+  private restoreOwnAway(): void {
+    if (!this.restoreAwayByEngine) return;
+    this.restoreAwayByEngine = false;
+    try {
+      if (!this.awayState.active) this.client.raw('AWAY');
+      else if (this.awayState.message) this.client.raw('AWAY :' + this.awayState.message);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   private rawQuiet(command: string, arg: string): void {
     try {
       this.client.raw(command, arg);
@@ -4581,6 +4617,14 @@ export class IrcConnection {
     }
     const isMode = numeric === '324' || numeric === '329' || numeric === '221';
     const isTopic = numeric === '331' || numeric === '332' || numeric === '333';
+    // The 305 or 306 answering the AWAY the restore sent to put back what the
+    // engine had done to the socket. The user is told neither: they did not
+    // ask to be away, or they asked minutes ago and already know. One reply,
+    // so the flag is spent on it. (#890)
+    if ((numeric === '305' || numeric === '306') && entry.away) {
+      entry.away = false;
+      return true;
+    }
     if (isMode && entry.mode) {
       // 324 is followed by 329 on most servers; 221 stands alone.
       if (numeric === '329' || numeric === '221') entry.mode = false;

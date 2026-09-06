@@ -569,6 +569,79 @@ describe('IrcConnection through the engine', () => {
     await until(() => fresh.state === 'connected', 8000, 'fresh connection for the next test');
   }, 30000);
 
+  // #890: while the app is down the user looks present — DMs land in the
+  // engine's buffer and the sender gets nothing back. The engine says so on
+  // the network, and the app puts it back on the way in.
+  it('undoes an away the engine set while nobody was attached', async () => {
+    const conn = ircManager.getConnection(userId, network.id)!;
+    expect(conn.state).toBe('connected');
+    expect(conn.awayState.active).toBe(false);
+    const rowsBefore = rows().length;
+    const awayLines = () => sentBy('lurk').filter((l) => l.startsWith('AWAY'));
+    expect(awayLines()).toEqual([]);
+
+    ircManager.shutdown();
+    await until(() => engine.held().includes(engineId), 5000, 'engine holds it');
+    // Drive the engine's sweep rather than wait for it: it runs every 30 s
+    // (LINK_SILENCE_MS / 3), and an armed threshold left on for the whole file
+    // could fire in the middle of another test's detach.
+    const opts = (engine as unknown as { opts: { awayAfterMs?: number } }).opts;
+    opts.awayAfterMs = 1;
+    try {
+      // Swept on each poll: the threshold is measured from the detach, which
+      // has only just happened.
+      await until(
+        () => {
+          (engine as unknown as { markLongDetachedAway(): void }).markLongDetachedAway();
+          return awayLines().length === 1;
+        },
+        5000,
+        'the engine marked it away',
+      );
+    } finally {
+      opts.awayAfterMs = 0;
+    }
+
+    const back = ircManager.startNetwork(userId, network.id)!;
+    await until(() => back.state === 'connected', 8000, 'reattached');
+    await until(() => awayLines().length === 2, 5000, 'the restore cleared it');
+    expect(awayLines()[1]).toBe('AWAY');
+    expect(back.awayState.active).toBe(false);
+
+    // And the user is told none of it: they never set an away, so a pair of
+    // numerics about one is noise. The 306 never reached the app at all — the
+    // engine keeps the answer to its own command — and the 305 for the clear
+    // is quieted like the restore's other replies.
+    const added = rows().slice(rowsBefore);
+    expect(added.filter((r) => (r.text ?? '').includes('marked as being away'))).toEqual([]);
+
+    // The other way round: the app is UP but cut off from the engine, so the
+    // user's /away is persisted and never reaches the socket — while the
+    // engine, seeing nobody attached, puts its own message on it. Theirs is
+    // the one that means something, so it goes back over ours.
+    EngineLink.shared().simulateLoss();
+    await until(() => back.state !== 'connected', 5000, 'noticed the loss');
+    ircManager.setAwayAll(userId, 'lunch');
+    expect(back.awayState.active).toBe(true);
+    opts.awayAfterMs = 1;
+    try {
+      await until(
+        () => {
+          (engine as unknown as { markLongDetachedAway(): void }).markLongDetachedAway();
+          return awayLines().length === 3;
+        },
+        8000,
+        'the engine marked it away again',
+      );
+    } finally {
+      opts.awayAfterMs = 0;
+    }
+    await until(() => back.state === 'connected', 8000, 'reattached again');
+    await until(() => awayLines().length === 4, 5000, "the user's own away went back on");
+    expect(awayLines()[3]).toBe('AWAY :lunch');
+    ircManager.clearAwayAll(userId);
+  }, 30000);
+
   it('ircManager.shutdown() detaches; dispose still QUITs', async () => {
     ircManager.shutdown();
     await new Promise((r) => setTimeout(r, 50));

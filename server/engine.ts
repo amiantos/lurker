@@ -54,6 +54,7 @@ const engine = new EngineServer({
   bufferBytes: config.bufferBytes,
   bufferTotalBytes: config.bufferTotalBytes,
   orphanMs: config.orphanMs,
+  awayAfterMs: config.awayAfterMs,
   version: APP_VERSION,
 });
 

@@ -35,7 +35,14 @@ export interface EngineServerOptions {
   dialTimeoutMs?: number;
   // End a session no link has claimed for this long. 0 disables.
   orphanMs?: number;
+  // Mark a session away once no link has claimed it for this long. 0 disables.
+  awayAfterMs?: number;
 }
+
+// What the network tells anyone who messages a socket whose app has been gone
+// a while. Short, because it is shown inline in a 301, and it says the thing
+// the sender actually needs: nobody is reading this right now.
+const AWAY_MESSAGE = 'Lurker is offline — messages will be read when it returns';
 
 // Past this much unsent data queued on a link the upstreams stop pushing and let
 // their buffers hold the backlog (see EngineUpstream.flush). Node would otherwise
@@ -104,6 +111,7 @@ export class EngineServer {
         const addr = this.server.address() as net.AddressInfo;
         this.sweepTimer = setInterval(() => {
           this.sweepSilentLinks();
+          this.markLongDetachedAway();
           this.reapOrphans();
         }, LINK_SILENCE_MS / 3);
         this.sweepTimer.unref();
@@ -125,6 +133,24 @@ export class EngineServer {
       if (since !== null && since < cutoff) {
         this.log(`${u.id}: no app has claimed it for ${limit}ms — ending the session`);
         u.quit('Lurker: no app returned for this connection');
+      }
+    }
+  }
+
+  // A deploy detaches for a few seconds and nobody needs to know. A crash
+  // loop, or an app that is simply down, detaches for minutes — and for all
+  // that time the user looks present: DMs land in the engine's buffer and the
+  // sender gets nothing back, not even an away reply. Say it on the network.
+  // The app puts it back the way the user had it when it returns (#890).
+  private markLongDetachedAway(): void {
+    const limit = this.opts.awayAfterMs ?? 0;
+    if (limit <= 0) return;
+    const cutoff = Date.now() - limit;
+    for (const u of this.upstreams.values()) {
+      const since = u.detachedSince;
+      if (since === null || since >= cutoff) continue;
+      if (u.markAwayWhileDetached(AWAY_MESSAGE)) {
+        this.log(`${u.id}: no app attached for ${limit}ms — marked away on the network`);
       }
     }
   }

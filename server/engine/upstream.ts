@@ -4,7 +4,7 @@
 // One held IRC socket. The engine's whole reason to exist is that this object
 // outlives the app process that asked for it.
 //
-// It understands exactly eight IRC things, and nothing else:
+// It understands exactly nine IRC things, and nothing else:
 //   1. PING       — answered here, always, never forwarded. A detached (or
 //                   stalled) app can't ping out because the app isn't in the loop.
 //   2. 001        — our nick, as the server confirmed it.
@@ -14,7 +14,9 @@
 //   6. RENAME — the same set, under the name the channel has now.
 //   7. CAP ACK / DEL — the caps that are on, which the burst alone stops
 //                   describing the moment one changes.
-//   8. own CHGHOST — the hostmask the synthesised JOINs carry.
+//   8. 305 / 306 — whether the socket is marked away, so a long detach can
+//                   say so on the network without overwriting the user's own.
+//   9. own CHGHOST — the hostmask the synthesised JOINs carry.
 // Every other line is bytes: numbered, buffered until acked, relayed.
 //
 // Re-attach is a replay: the recorded burst (verbatim — irc-framework walks it
@@ -85,6 +87,7 @@ export interface AttachedPayload {
   channels: string[];
   detachedForMs: number;
   unattended: boolean;
+  awaySetByEngine: boolean;
 }
 
 // IRCv3 caps a line at 8191 bytes including tags. This guard is deliberately
@@ -165,6 +168,18 @@ export class EngineUpstream extends EventEmitter {
   // The server's own name, off the 001 prefix, so a synthesised CAP line looks
   // like the ones around it.
   private serverName: string | null = null;
+  // Away as the SERVER has confirmed it, from the 306/305 replies to our own
+  // AWAY — the only honest signal about a socket nobody is watching. (#890)
+  private away = false;
+  // ...and whether it is away because WE said so, having been left detached.
+  // Handed to the app on attach so it can put the socket back the way the user
+  // had it; a user's own away is never touched, so this is never true over one.
+  awaySetByEngine = false;
+  // An AWAY we wrote is owed a reply. Ours to consume: the app is not attached
+  // (that is why we sent it), and a numeric answering a command the app never
+  // sent would be a line it has to explain — the same reasoning that keeps the
+  // PONGs we write off the wire to it.
+  private awayReplyOwed = false;
   // folded name → name as the server spelled it on JOIN
   private channels = new Map<string, string>();
 
@@ -362,6 +377,17 @@ export class EngineUpstream extends EventEmitter {
       this.serverName = msg.prefix || null;
     }
     if (command === 'CAP') this.trackCaps(msg.params);
+    if (command === '306' || command === '305') {
+      this.away = command === '306';
+      if (this.awayReplyOwed) {
+        this.awayReplyOwed = false;
+        return;
+      }
+      // Not ours, so the app has spoken for this socket since: it cleared what
+      // we set, or the user set an away of their own over it. Either way the
+      // away on this socket is no longer ours to report or to undo.
+      this.awaySetByEngine = false;
+    }
     // Own state is tracked from the first line on — a NICK forced on us between
     // 001 and 376, or a server that JOINs us to a channel during registration,
     // must not be missed just because the burst is still open.
@@ -445,6 +471,21 @@ export class EngineUpstream extends EventEmitter {
       if (off) this.caps.delete(name);
       else this.caps.add(name);
     }
+  }
+
+  // Mark the socket away because no app has been attached for a while. The
+  // server then answers DMs with a 301 instead of letting them land in a
+  // buffer nobody is reading. Answers whether it wrote anything.
+  //
+  // Never over the user's own away: their message is the one that means
+  // something, and replacing it would be a lie about a socket they set up.
+  markAwayWhileDetached(message: string): boolean {
+    if (this.attached || this.closing || this.state !== 'open' || !this.burstDone) return false;
+    if (this.away || this.awaySetByEngine) return false;
+    this.awaySetByEngine = true;
+    this.awayReplyOwed = true;
+    this.rawWrite(`AWAY :${message}`);
+    return true;
   }
 
   private isSelf(nick: string): boolean {
@@ -610,6 +651,7 @@ export class EngineUpstream extends EventEmitter {
       channels: [...this.channels.values()],
       detachedForMs,
       unattended: this.registeredUnattended,
+      awaySetByEngine: this.awaySetByEngine,
     };
   }
 

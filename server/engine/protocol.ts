@@ -21,12 +21,15 @@ export const PROTOCOL_MAJOR = 1;
 // needs one refuses to dial through an engine below this rather than connecting
 // as an unrecognised stranger — an older engine would ignore the field, and
 // silence is indistinguishable from success on the app side.
+// minor 4 (#890): `attached` says whether the engine marked the socket away
+// while no app was there, so the app can put it back rather than leaving a
+// user away for the rest of the session.
 // minor 3 (#889): the engine follows RENAME in its tracked channel set, so a
 // re-attach replays the name a channel has now. An engine below this replays
 // the name it had at the rename — silently, and for the life of the socket —
 // which is why the app half of draft/channel-rename (#858) has a minor to gate
 // on rather than having to assume.
-export const PROTOCOL_MINOR = 3;
+export const PROTOCOL_MINOR = 4;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -148,6 +151,11 @@ export type EngineToApp =
       nick: string | null;
       channels: string[];
       detachedForMs: number;
+      // The engine marked this socket away because nobody was attached for a
+      // while (LURKER_ENGINE_AWAY_AFTER_MS). Never true over an away the user
+      // set themselves — the engine leaves that alone — so the app can clear
+      // it without asking what it says. Absent from an engine below minor 4.
+      awaySetByEngine: boolean;
       // Registration completed while NO app was attached: the previous app
       // wrote NICK/USER and died before 001, so nothing ever ran the post-
       // registration steps (connect commands, autojoin). The app treats this
