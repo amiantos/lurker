@@ -64,6 +64,14 @@ declare module 'irc-framework' {
       onTransport?(transport: unknown): void;
       onPhase?(phase: string, info: Record<string, unknown>): void;
     };
+    /**
+     * Proxy this connection's socket through a SOCKS5 / HTTP CONNECT proxy
+     * (#303). Read by services/proxyTransport.ts, which is Lurker's own
+     * subclass of the net transport — NOT by irc-framework, whose built-in
+     * `socks` option is deliberately unused (SOCKS5 only, no HTTP CONNECT, and
+     * it drops `outgoing_addr` on the proxied branch).
+     */
+    proxy?: import('../../shared/proxy.js').ProxyConfig;
   }
 
   /** Options passed to the Client constructor. */
@@ -226,4 +234,41 @@ declare module 'irc-framework/src/linebreak.js' {
 
   /** Generator that yields chunks of `str` each fitting within `opts.bytes`. */
   export function lineBreak(str: string, opts: LineBreakOptions): IterableIterator<string>;
+}
+
+// irc-framework's built-in TCP/TLS transport, imported directly so
+// services/proxyTransport.ts can subclass it and override connect() alone —
+// everything else (writeLine, the line framing in onSocketData, disposeSocket,
+// close, setEncoding) is inherited unchanged.
+//
+// ⚠ This is an INTERNAL path with no published types, so the shape below is
+// hand-written from the source (irc-framework/src/transports/net.js) and is
+// only as true as the version in package.json. proxyTransport.test.ts pins the
+// members that matter, so an irc-framework bump that moves them fails a test
+// rather than failing at runtime on someone's connection.
+declare module 'irc-framework/src/transports/net.js' {
+  import type { EventEmitter } from 'node:events';
+  import type { Socket } from 'node:net';
+
+  export default class NetTransport extends EventEmitter {
+    constructor(options: Record<string, unknown>);
+    options: Record<string, unknown>;
+    socket: Socket | null;
+    /** 0 disconnected, 1 connecting, 2 connected. Module-private constants in
+     *  the source; the numbers are the contract. */
+    state: number;
+    requested_disconnect: boolean;
+    incoming_buffer: Buffer;
+    connect(): void;
+    close(force?: boolean): void;
+    disposeSocket(): void;
+    isConnected(): boolean;
+    setEncoding(encoding: string): boolean;
+    writeLine(line: string, cb?: () => void): void;
+    debugOut(out: string): void;
+    /** Binds every event the base class needs and handles a socket that is
+     *  already open — which is what a proxied dial hands back. */
+    _onSocketCreate(options: Record<string, unknown>, socket: Socket): void;
+    onSocketError(err: Error): void;
+  }
 }

@@ -53,7 +53,7 @@ afterEach(() => {
   }
 });
 
-function makeConn(): IrcConnection {
+function makeConn(networkFields: Record<string, unknown> = {}): IrcConnection {
   return new IrcConnection({
     network: {
       client_cert: null,
@@ -82,6 +82,7 @@ function makeConn(): IrcConnection {
       position: 0,
       casemapping: null,
       created_at: new Date().toISOString(),
+      ...networkFields,
     },
     onEvent: () => {},
   });
@@ -610,5 +611,55 @@ describe('pending-offer actions (phase 2)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // ⚠⚠ Proxied networks (#303). DCC leaves the tunnel in both directions — a
+  // receive is a bare net.connect and an offer advertises a reachable address —
+  // so it is refused. Gated at BOTH ends on purpose: the offer gate stops new
+  // ones, and the accept gate stops the backlog, because a row recorded while
+  // the network was direct is still sitting in the Transfers view after the
+  // user configures a proxy and reconnects.
+  describe('refused on a proxied network', () => {
+    const PROXIED = {
+      proxy_enabled: 1,
+      proxy_type: 'socks5',
+      proxy_host: '127.0.0.1',
+      proxy_port: 9050,
+    };
+
+    it('ignores an incoming offer and says why', () => {
+      enableDcc();
+      const conn = makeConn(PROXIED);
+      const published: Record<string, unknown>[] = [];
+      conn.publish = (event: unknown) => {
+        published.push(event as Record<string, unknown>);
+      };
+      conn.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: 'DCC SEND show.mkv 2130706433 5000 100',
+      });
+      expect(listDccTransfers(1)).toHaveLength(0);
+      expect(String(published.find((e) => e.type === 'error')?.text)).toMatch(/proxy/i);
+    });
+
+    it('fails an already-pending offer rather than dialling out', () => {
+      // The row is recorded on a DIRECT connection, then the user proxies the
+      // network. Accepting must not reach for the peer.
+      enableDcc();
+      const direct = makeConn();
+      direct.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: 'DCC SEND show.mkv 2130706433 5001 100',
+      });
+      const pending = listDccTransfers(1)[0];
+      expect(pending.state).toBe('pending_approval');
+
+      makeConn(PROXIED).acceptPendingDcc(pending);
+      const after = listDccTransfers(1).find((r) => r.id === pending.id)!;
+      expect(after.state).toBe('failed');
+      expect(String(after.error ?? '')).toMatch(/proxy/i);
+    });
   });
 });
