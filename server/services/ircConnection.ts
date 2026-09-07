@@ -4211,6 +4211,17 @@ export class IrcConnection {
     if (!mayUseProxy()) {
       return 'this server does not allow connecting through a proxy of your own';
     }
+    // ⚠⚠ Engine mode dials in ANOTHER process. An engine below protocol minor 5
+    // has no field to carry the proxy in and would ignore it silently — so the
+    // app would report a proxied network while the engine opened a direct
+    // socket carrying the user's real address. Worse than the certificate case
+    // at minor 2, which at least fails visibly. Only refuse once the engine has
+    // actually said hello; before that its minor is unknown, and the transport
+    // makes the same check again at frame-build time.
+    const link = EngineLink.shared();
+    if (engineConfigured() && link.engineMinor !== null && !link.supportsProxy()) {
+      return 'the IRC engine this deployment connects through cannot route a connection via a proxy — update the engine, or remove the proxy';
+    }
     return null;
   }
 
@@ -4303,13 +4314,16 @@ export class IrcConnection {
     else this.publish(connectingNotice);
   }
 
-  /** Direct mode: route this Client's own socket through the network's proxy.
-   *  Empty in engine mode — the socket is dialled in another process there, and
-   *  the proxy rides the CONNECT frame instead (PR 4). */
+  /** Route this network through its proxy (#303).
+   *
+   *  `proxy` goes out in BOTH modes — in engine mode the transport puts it on
+   *  the CONNECT frame and the engine dials through it. Only the transport
+   *  override is direct-mode-only: in engine mode this process opens no socket
+   *  at all, and engineConnectOptions (spread after this one) sets its own. */
   private proxyConnectOptions(): Partial<ConnectOptions> {
-    if (engineConfigured()) return {};
     const proxy = this.proxyConfig();
     if (!proxy) return {};
+    if (engineConfigured()) return { proxy };
     return { transport: ProxyTransport as unknown as ConnectOptions['transport'], proxy };
   }
 

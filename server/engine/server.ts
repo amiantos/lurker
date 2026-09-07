@@ -28,6 +28,7 @@ import {
 } from './protocol.js';
 import type { AppToEngine, ConnectionInfo, EngineToApp } from './protocol.js';
 import { isDialableCertPair } from '../utils/clientCert.js';
+import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
 
 export interface EngineServerOptions {
   secret: string;
@@ -484,6 +485,21 @@ export class EngineServer {
         return link.fail('connect: clientCert is not a usable certificate/key pair', id);
       }
     }
+    // Validated HERE, before any upstream exists, for the same reason the
+    // certificate is: an engine does not get to trust its callers. The app is
+    // not the only thing that can produce a connect frame, and a malformed
+    // proxy reaching the dialer is at best a wasted socket and at worst a
+    // request written to somewhere nobody meant to send one.
+    let proxy;
+    if (frame.proxy !== undefined) {
+      const checked = validateProxy(frame.proxy ?? {});
+      if (isProxyProblem(checked)) {
+        // Says what is wrong with the SHAPE, never echoing the credentials —
+        // the engine logs this line.
+        return link.fail(`connect: proxy is unusable (${checked.error})`, id);
+      }
+      proxy = checked;
+    }
     let u = this.upstreams.get(id);
     // Belt and braces over the `<instance>:…` id prefix. If a session under this
     // id belongs to someone else's database, this app does not get to attach to
@@ -511,6 +527,7 @@ export class EngineServer {
         tls: !!frame.tls,
         outgoingAddr: frame.outgoingAddr,
         clientCert: frame.clientCert,
+        proxy,
       })
     ) {
       // Same id, different destination: the user edited the network. That is a
@@ -580,6 +597,7 @@ export class EngineServer {
         outgoingAddr: frame.outgoingAddr || undefined,
         ident: frame.ident || undefined,
         clientCert: frame.clientCert,
+        proxy,
         dialTimeoutMs: this.opts.dialTimeoutMs,
       },
       this.opts.bufferBytes,
