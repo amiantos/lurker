@@ -248,6 +248,70 @@ describe('parseNetworkCommand', () => {
     });
   });
 
+  describe('-proxy / -noproxy (#303)', () => {
+    it('splits a URL into the stored columns and enables the proxy', () => {
+      // A URL is how a proxy is written everywhere else (ALL_PROXY, curl -x),
+      // so that is what the flag takes — the columns are parts because the
+      // server never hands the password back.
+      const cmd = parseNetworkCommand('modify Libera -proxy socks5://127.0.0.1:9050');
+      expect(cmd).toMatchObject({
+        kind: 'modify',
+        input: {
+          proxy_enabled: true,
+          proxy_type: 'socks5',
+          proxy_host: '127.0.0.1',
+          proxy_port: 9050,
+        },
+      });
+    });
+
+    it('carries credentials and defaults the port by scheme', () => {
+      expect(parseNetworkCommand('modify Libera -proxy http://u:p@proxy.example')).toMatchObject({
+        input: { proxy_type: 'http', proxy_port: 3128, proxy_username: 'u', proxy_password: 'p' },
+      });
+    });
+
+    it('-noproxy turns it off AND clears it, port included', () => {
+      // So "stop going through a proxy" does not leave credentials — or a
+      // stale port that would reappear as a default — behind.
+      expect(parseNetworkCommand('modify Libera -noproxy')).toMatchObject({
+        input: {
+          proxy_enabled: false,
+          proxy_type: '',
+          proxy_host: '',
+          proxy_port: null,
+          proxy_username: '',
+          proxy_password: '',
+        },
+      });
+    });
+
+    it('rejects a URL the dialer could not use', () => {
+      // The client says what is wrong before sending anything; the server
+      // checks again because it cannot trust that this happened.
+      expect(parseNetworkCommand('modify Libera -proxy socks4://10.0.0.5')).toMatchObject({
+        kind: 'error',
+      });
+      expect(parseNetworkCommand('modify Libera -proxy 127.0.0.1:9050')).toMatchObject({
+        kind: 'error',
+      });
+    });
+
+    it('refuses to both set and clear a proxy', () => {
+      expect(
+        parseNetworkCommand('modify Libera -proxy socks5://127.0.0.1:9050 -noproxy'),
+      ).toMatchObject({ kind: 'error' });
+    });
+
+    it('works on add too', () => {
+      expect(
+        parseNetworkCommand(
+          'add -host irc.libera.chat -nick n -proxy socks5://127.0.0.1:9050 Libera',
+        ),
+      ).toMatchObject({ kind: 'add', input: { proxy_enabled: true, proxy_port: 9050 } });
+    });
+  });
+
   it('errors on an unknown subcommand', () => {
     expect(parseNetworkCommand('frobnicate Libera')).toMatchObject({ kind: 'error' });
   });
