@@ -761,3 +761,207 @@ describe('client certificate', () => {
     expect((await aliceAgent.get(`/api/networks/${id}/certificate/export`)).status).toBe(404);
   });
 });
+
+// Proxy support (#303). Three things are being pinned here: the payload never
+// carries the password, the two write paths refuse identically, and a PATCH is
+// validated against the row it will PRODUCE rather than the body it received.
+describe('network proxy', () => {
+  const PROXY = {
+    proxy_enabled: true,
+    proxy_type: 'socks5',
+    proxy_host: '127.0.0.1',
+    proxy_port: 9050,
+    proxy_username: 'u',
+    proxy_password: 'sup3rsecret',
+  };
+
+  it('returns the proxy as parts with the password reduced to a boolean', async () => {
+    const res = await makeNet(aliceAgent, { name: 'proxied', ...PROXY });
+    expect(res.status).toBe(201);
+    expect(res.body.network.proxy).toEqual({
+      enabled: true,
+      type: 'socks5',
+      host: '127.0.0.1',
+      port: 9050,
+      username: 'u',
+      has_password: true,
+    });
+    // Parts, not a URL, is what makes "leave blank to keep" possible in the
+    // form — and the password must not survive the trip in any shape.
+    expect(JSON.stringify(res.body)).not.toContain('sup3rsecret');
+    expect(res.body.network.proxy_password).toBeUndefined();
+    expect(res.body.network.proxy_host).toBeUndefined();
+  });
+
+  it('reports no proxy as null', async () => {
+    const res = await makeNet(aliceAgent, { name: 'direct' });
+    expect(res.body.network.proxy).toBeNull();
+  });
+
+  it('refuses an unusable proxy on create', async () => {
+    const res = await makeNet(aliceAgent, {
+      name: 'bad-proxy',
+      ...PROXY,
+      proxy_type: 'socks4',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/SOCKS4|proxy type/i);
+  });
+
+  it('accepts proxy details while the network stays direct', async () => {
+    // A half-finished proxy is not an error: proxy_enabled is what decides, so
+    // saving the form with the box unticked must work like any other draft.
+    const res = await makeNet(aliceAgent, {
+      name: 'draft-proxy',
+      proxy_enabled: false,
+      proxy_type: 'socks5',
+      proxy_host: '',
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.network.proxy?.enabled ?? false).toBe(false);
+  });
+
+  it('refuses an unusable proxy on PATCH too', async () => {
+    // A rule enforced on create but not on edit is a rule you can edit your way
+    // around — the same reasoning the host lockdown's PATCH arm exists for.
+    const created = await makeNet(aliceAgent, { name: 'patch-proxy' });
+    const id = created.body.network.id;
+    const res = await aliceAgent
+      .patch(`/api/networks/${id}`)
+      .send({ proxy_enabled: true, proxy_type: 'socks5', proxy_host: 'has a space' });
+    expect(res.status).toBe(400);
+  });
+
+  // ⚠ A PATCH is partial. Switching a configured proxy back on sends only the
+  // flag, and validating the BODY alone would refuse it for having no type.
+  it('validates the row a PATCH will produce, not the body it received', async () => {
+    const created = await makeNet(aliceAgent, { name: 'toggle-proxy', ...PROXY });
+    const id = created.body.network.id;
+    expect(
+      (await aliceAgent.patch(`/api/networks/${id}`).send({ proxy_enabled: false })).status,
+    ).toBe(200);
+    const back = await aliceAgent.patch(`/api/networks/${id}`).send({ proxy_enabled: true });
+    expect(back.status).toBe(200);
+    expect(back.body.network.proxy).toMatchObject({ enabled: true, host: '127.0.0.1' });
+  });
+
+  it('leaves the stored password alone when a PATCH omits it', async () => {
+    // The whole reason the columns are parts rather than a URL: changing the
+    // port must not mean retyping a password the client was never given.
+    const created = await makeNet(aliceAgent, { name: 'keep-pw', ...PROXY });
+    const id = created.body.network.id;
+    const res = await aliceAgent.patch(`/api/networks/${id}`).send({ proxy_port: 1080 });
+    expect(res.status).toBe(200);
+    expect(res.body.network.proxy).toMatchObject({ port: 1080, has_password: true });
+  });
+
+  // ⚠⚠ The regression the first cut shipped: the form sends all six proxy
+  // columns on every save (it must — that is the only way it can send
+  // proxy_enabled:false), and gating the lockdown on key PRESENCE made every
+  // save 403 on a locked instance. It also trapped anyone whose stored proxy
+  // the connect path refuses, since turning it off is itself a body that
+  // mentions a proxy.
+  it('allows an unrelated save that repeats the stored proxy, even when locked down', async () => {
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const created = await makeNet(aliceAgent, { name: 'locked-repeat', ...PROXY });
+    const id = created.body.network.id;
+    setAllowUserDefinedNetworks(false);
+    try {
+      const res = await aliceAgent.patch(`/api/networks/${id}`).send({
+        name: 'renamed-under-lockdown',
+        proxy_enabled: true,
+        proxy_type: 'socks5',
+        proxy_host: '127.0.0.1',
+        proxy_port: 9050,
+        proxy_username: 'u',
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.network.name).toBe('renamed-under-lockdown');
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+
+  it('compares the proxy by meaning, so a restated port in another shape is not a change', async () => {
+    // validateProxy accepts a string port and any case of type, so a client
+    // may legitimately send either — and a raw !== would read that as a change
+    // and 403 a save that altered nothing.
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const created = await makeNet(aliceAgent, { name: 'locked-restate', ...PROXY });
+    const id = created.body.network.id;
+    setAllowUserDefinedNetworks(false);
+    try {
+      const res = await aliceAgent.patch(`/api/networks/${id}`).send({
+        name: 'restated',
+        proxy_enabled: true,
+        proxy_type: 'SOCKS5',
+        proxy_host: '127.0.0.1',
+        proxy_port: '9050',
+        proxy_username: 'u',
+      });
+      expect(res.status).toBe(200);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+
+  it('always allows turning a proxy OFF, even when locked down', async () => {
+    // Otherwise the network is both unconnectable and uneditable.
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const created = await makeNet(aliceAgent, { name: 'locked-off', ...PROXY });
+    const id = created.body.network.id;
+    setAllowUserDefinedNetworks(false);
+    try {
+      const res = await aliceAgent.patch(`/api/networks/${id}`).send({ proxy_enabled: false });
+      expect(res.status).toBe(200);
+      expect(res.body.network.proxy?.enabled).toBe(false);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+
+  it('allows creating an ordinary network under lockdown with empty proxy fields', async () => {
+    // What the add form sends for a network with no proxy configured.
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    setAllowUserDefinedNetworks(false);
+    try {
+      const res = await makeNet(aliceAgent, {
+        name: 'irc.libera.chat',
+        host: 'irc.libera.chat',
+        proxy_enabled: false,
+        proxy_type: 'socks5',
+        proxy_host: '',
+        proxy_port: 1080,
+      });
+      // Under lockdown with no presets the HOST allowlist refuses this first,
+      // which is correct and unrelated. The claim under test is that the empty
+      // proxy fields did NOT add a refusal of their own, so assert on WHICH
+      // refusal came back rather than on the status alone.
+      expect(res.body.error ?? '').not.toMatch(/proxy/i);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+
+  it('refuses a user-set proxy on a locked-down instance', async () => {
+    // On a locked instance a proxy is a second, unapproved destination that
+    // nothing else gates — the escape hatch the lockdown exists to close.
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const created = await makeNet(aliceAgent, { name: 'locked-proxy' });
+    const id = created.body.network.id;
+    setAllowUserDefinedNetworks(false);
+    try {
+      const patched = await aliceAgent.patch(`/api/networks/${id}`).send({ proxy_enabled: true });
+      expect(patched.status).toBe(403);
+      const posted = await makeNet(aliceAgent, { name: 'locked-new', ...PROXY });
+      expect(posted.status).toBe(403);
+      // A body that says nothing about the proxy is unaffected by the switch.
+      const renamed = await aliceAgent
+        .patch(`/api/networks/${id}`)
+        .send({ name: 'still-editable' });
+      expect(renamed.status).toBe(200);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+});

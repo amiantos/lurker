@@ -34,6 +34,26 @@ export function isNetworkHostAllowed(host: string): boolean {
   return hostAllowedChecker()(host);
 }
 
+// May a user route a network through a proxy of their own choosing? (#303)
+//
+// Tied to the same switch rather than given one of its own, because on a
+// LOCKED-DOWN instance a user-supplied proxy is an escape from exactly what the
+// lockdown closes: an arbitrary outbound TCP connection to an address the admin
+// never approved, carrying bytes the user chose. The ircd is still gated by
+// isNetworkHostAllowed, but the PROXY is a second destination, and nothing else
+// checks it.
+//
+// On an unlocked instance it grants nothing new — you can already point `host`
+// anywhere — which is why this needs no separate setting, and why the default
+// (open) leaves self-hosters and hosted customers exactly as they were.
+//
+// ⚠ Enforced on write AND re-checked on the connect path, the same shape
+// isNetworkHostAllowed has: a gate only on write is a formality once an admin
+// can flip the switch after the fact.
+export function mayUseProxy(): boolean {
+  return allowUserDefinedNetworks();
+}
+
 // The same predicate with the policy resolved ONCE, for callers testing several
 // hosts in a row (GET /api/networks maps it over every row). The policy is
 // instance-global, so re-reading instance_settings — and re-listing and

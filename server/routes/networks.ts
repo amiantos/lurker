@@ -23,7 +23,12 @@ import {
 } from '../utils/clientCert.js';
 import { listChannelsForNetwork, seedAutojoinChannel } from '../db/buffers.js';
 import ircManager from '../services/ircManager.js';
-import { isNetworkHostAllowed, hostAllowedChecker } from '../services/networkPolicy.js';
+import {
+  isNetworkHostAllowed,
+  hostAllowedChecker,
+  mayUseProxy,
+} from '../services/networkPolicy.js';
+import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
 import { fanOutToUser, favoritesChangedFrame } from '../services/wsHub.js';
 import { renumberFavorites } from '../db/favoriteBuffers.js';
 
@@ -76,6 +81,83 @@ function describeStoredPair(
 
 // `isAllowed` is injectable so a caller mapping over several networks can resolve
 // the (instance-global) policy once instead of re-reading it per row.
+/** Check a proxy arriving in a create or update body, and answer with the HTTP
+ *  status the route should send. `null` means nothing is wrong.
+ *
+ *  Shared by POST and PATCH because they must refuse identically: a rule
+ *  enforced on one and not the other is a rule you can edit your way around,
+ *  which is how the host lockdown was nearly bypassed before its PATCH arm was
+ *  added. */
+function proxyBodyProblem(
+  body: Record<string, unknown>,
+  existing?: Record<string, unknown>,
+): { status: number; error: string } | null {
+  const KEYS = [
+    'proxy_enabled',
+    'proxy_type',
+    'proxy_host',
+    'proxy_port',
+    'proxy_username',
+    'proxy_password',
+  ];
+  if (!KEYS.some((k) => k in body)) return null;
+  // ⚠ Validate the row as it WILL BE, not the body as it arrived. A PATCH is
+  // partial: `{proxy_enabled: true}` on a network whose host and type are
+  // already stored is the ordinary way to switch a configured proxy back on,
+  // and validating the body alone would refuse it for having no type.
+  const merged = (key: string): unknown => (key in body ? body[key] : existing?.[key]);
+
+  // ⚠⚠ The lockdown refuses a proxy being SET, not a body that merely mentions
+  // one. The network form sends all six columns on every save — it has to, since
+  // that is the only way it can send `proxy_enabled: false` — so gating on key
+  // presence made every save on a locked-down instance 403: renaming a network,
+  // changing a nick, creating one from an admin preset. Worse, it trapped a user
+  // whose stored proxy the connect path now refuses, because turning it off is
+  // itself a body that mentions a proxy. Two consequences fall out:
+  //
+  //   - a request that leaves the network UNPROXIED is always allowed. Turning
+  //     one off must never be the thing you are not permitted to do.
+  //   - a request that changes nothing about the proxy is allowed even when the
+  //     network is proxied, so an unrelated edit still saves. The dial is
+  //     refused separately (ircConnection.proxyBlockedReason), which is where
+  //     that policy belongs.
+  const enabling = !!merged('proxy_enabled');
+  // ⚠ Compared by MEANING, not by JS identity. A client may legitimately send
+  // the port as a string (validateProxy accepts one) and the type in any case
+  // (it lowercases), so a raw `!==` reads `'9050'` vs stored `9050` — or
+  // `'SOCKS5'` vs `'socks5'` — as a change, and under lockdown that 403s a save
+  // that altered nothing. `''` and null are likewise the same "not set" to the
+  // columns, so a form sending empty strings over nulls is not a change either.
+  const norm = (key: string, v: unknown): string => {
+    if (v === null || v === undefined) return '';
+    if (key === 'proxy_enabled') return v ? '1' : '';
+    if (key === 'proxy_port') return String(Number(v));
+    if (key === 'proxy_type') return String(v).toLowerCase();
+    return String(v);
+  };
+  const changed = KEYS.some((k) => k in body && norm(k, body[k]) !== norm(k, existing?.[k]));
+  if (enabling && changed && !mayUseProxy()) {
+    return {
+      status: 403,
+      error: 'this server does not allow connecting through a proxy of your own',
+    };
+  }
+
+  // Only validate what will actually be dialled through. Clearing the fields,
+  // or filling them in while leaving the network direct, is not an error — the
+  // form saves a half-finished proxy the same way it saves a half-finished
+  // anything, and `proxy_enabled` is what decides.
+  if (!enabling) return null;
+  const checked = validateProxy({
+    type: merged('proxy_type') as string | null,
+    host: merged('proxy_host') as string | null,
+    port: merged('proxy_port') as number | null,
+    username: merged('proxy_username') as string | null,
+    password: merged('proxy_password') as string | null,
+  });
+  return isProxyProblem(checked) ? { status: 400, error: checked.error } : null;
+}
+
 function networkPayload(
   network: Network | undefined | null,
   isAllowed: (host: string) => boolean = isNetworkHostAllowed,
@@ -84,7 +166,21 @@ function networkPayload(
   // client_key is destructured to keep it OUT of `safe` — the private key leaves
   // the server through exactly one route, and never in a listing — and because
   // whether it is THERE decides what the payload says about the pair.
-  const { server_password, sasl_password, client_cert, client_key, ...safe } = network;
+  const {
+    server_password,
+    sasl_password,
+    client_cert,
+    client_key,
+    // Destructured OUT of `safe` so the raw columns can never ride along: the
+    // password is a secret, and the rest is re-shaped below into one `proxy`
+    // object the client reads instead of six loose fields.
+    proxy_type,
+    proxy_host,
+    proxy_port,
+    proxy_username,
+    proxy_password,
+    ...safe
+  } = network;
   return {
     ...safe,
     tls: !!network.tls,
@@ -98,6 +194,21 @@ function networkPayload(
     // there is one and it doesn't parse (archive import writes these columns
     // verbatim, so that is reachable without anyone pasting anything).
     client_cert: describeStoredPair(client_cert, client_key),
+    // The proxy set (#303), with the password reduced to a boolean — the same
+    // contract server_password and sasl_password have. This is what makes the
+    // stored shape parts rather than a URL: with parts the form can offer
+    // "leave blank to keep", which a redacted URL cannot.
+    proxy:
+      proxy_host || proxy_type
+        ? {
+            enabled: !!network.proxy_enabled,
+            type: proxy_type,
+            host: proxy_host,
+            port: proxy_port,
+            username: proxy_username,
+            has_password: !!proxy_password,
+          }
+        : null,
     // Channel rows in the retired channels-table wire shape (`joined` is the
     // autojoin flag), sourced from the buffers registry.
     channels: listChannelsForNetwork(network.id).map((b) => ({
@@ -163,6 +274,12 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
     generate_client_cert,
     client_cert,
     client_key,
+    proxy_enabled,
+    proxy_type,
+    proxy_host,
+    proxy_port,
+    proxy_username,
+    proxy_password,
   } = req.body || {};
   if (!name || !host || !nick) {
     res.status(400).json({ error: 'name, host, and nick are required' });
@@ -170,6 +287,11 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
   }
   if (!isNetworkHostAllowed(host)) {
     res.status(403).json({ error: 'this server only allows the networks its admin has listed' });
+    return;
+  }
+  const proxyProblem = proxyBodyProblem(req.body || {});
+  if (proxyProblem) {
+    res.status(proxyProblem.status).json({ error: proxyProblem.error });
     return;
   }
   // Checked before anything is written: a network that exists but couldn't be
@@ -211,6 +333,12 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
     sasl_account,
     sasl_password,
     connect_commands,
+    proxy_enabled,
+    proxy_type,
+    proxy_host,
+    proxy_port,
+    proxy_username,
+    proxy_password,
   });
   if (!network) {
     res.status(500).json({ error: 'failed to create network' });
@@ -289,6 +417,11 @@ router.patch('/:id', (req: Request, res: Response) => {
       error:
         'remove this network’s client certificate before turning TLS off — a certificate can only be presented over TLS',
     });
+    return;
+  }
+  const proxyProblem = proxyBodyProblem(body, existing as unknown as Record<string, unknown>);
+  if (proxyProblem) {
+    res.status(proxyProblem.status).json({ error: proxyProblem.error });
     return;
   }
   const updated = updateNetwork(id, req.user!.id, body);

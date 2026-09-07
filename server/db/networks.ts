@@ -5,6 +5,8 @@ import db from './index.js';
 import { ensureServerBuffer, invalidateCasemappingCache } from './buffers.js';
 import { encryptSecret, decryptSecret } from '../utils/secretCrypto.js';
 import { ENCRYPTED_NETWORK_COLUMNS } from './exportSchema.js';
+import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
+import type { ProxyConfig, ProxyProblem } from '../../shared/proxy.js';
 
 // The list of encrypted network-secret columns lives in db/exportSchema.ts (a
 // db-singleton-free module) so the worker-safe export builder can import it
@@ -47,6 +49,19 @@ export interface Network {
    *  before presenting it rather than trusting what is stored. */
   client_cert: string | null;
   client_key: string | null;
+  /** SOCKS5 / HTTP CONNECT proxy for this network's IRC socket (#303).
+   *
+   *  ⚠ `proxy_enabled` is the only field the dial path asks about. Credentials
+   *  with the flag off means direct, deliberately: it lets someone go direct
+   *  without deleting what they configured, and makes "is this proxied" one
+   *  field rather than something inferred from a non-empty host. Use
+   *  `networkProxy()` rather than reading these six anywhere else. */
+  proxy_enabled: number;
+  proxy_type: string | null;
+  proxy_host: string | null;
+  proxy_port: number | null;
+  proxy_username: string | null;
+  proxy_password: string | null;
   position: number;
   /** ISUPPORT CASEMAPPING as last declared by the server (#707); null until
    *  the network first connects to one that declares it. Server-captured
@@ -79,6 +94,18 @@ export interface NetworkFields {
   sasl_account?: string | null;
   sasl_password?: string | null;
   connect_commands?: string | null;
+  /** The proxy set (#303). Unlike `client_cert`, these ride the ordinary
+   *  create/PATCH allowlist: they are short strings a user types, not a
+   *  validated key pair. The routes check them with `validateProxy` and the
+   *  dial path checks them again — archive import writes the columns
+   *  verbatim, so a stored value is never trusted on the strength of having
+   *  once passed a route. */
+  proxy_enabled?: boolean | number | null;
+  proxy_type?: string | null;
+  proxy_host?: string | null;
+  proxy_port?: number | null;
+  proxy_username?: string | null;
+  proxy_password?: string | null;
 }
 
 export function listNetworksForUser(userId: number): Network[] {
@@ -118,6 +145,12 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
     sasl_account,
     sasl_password,
     connect_commands,
+    proxy_enabled,
+    proxy_type,
+    proxy_host,
+    proxy_port,
+    proxy_username,
+    proxy_password,
   } = fields;
   const { next } = db
     .prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM networks WHERE user_id = ?')
@@ -125,8 +158,8 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
   const result = db
     .prepare(
       `
-    INSERT INTO networks (user_id, name, host, port, tls, trusted_certificates, nick, username, realname, server_password, autoconnect, sasl_account, sasl_password, connect_commands, position)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO networks (user_id, name, host, port, tls, trusted_certificates, nick, username, realname, server_password, autoconnect, sasl_account, sasl_password, connect_commands, proxy_enabled, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, position)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -148,6 +181,15 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
       encryptSecret(sasl_account || null),
       encryptSecret(sasl_password || null),
       encryptSecret(connect_commands || null),
+      // Off unless explicitly asked for. A network created with proxy details
+      // but no `proxy_enabled` is configured-but-direct, which is the same
+      // rule the update path and the dial path follow.
+      proxy_enabled ? 1 : 0,
+      proxy_type || null,
+      proxy_host || null,
+      proxy_port ?? null,
+      proxy_username || null,
+      encryptSecret(proxy_password || null),
       next,
     );
   // The network's `:server:` buffer is a real registry row (kind 'server',
@@ -176,13 +218,24 @@ export function updateNetwork(
     'sasl_account',
     'sasl_password',
     'connect_commands',
+    'proxy_enabled',
+    'proxy_type',
+    'proxy_host',
+    'proxy_port',
+    'proxy_username',
+    'proxy_password',
   ];
   const setClauses: string[] = [];
   const params: unknown[] = [];
   for (const key of allowed) {
     if (key in fields) {
       let value: unknown = fields[key];
-      if (key === 'tls' || key === 'autoconnect' || key === 'trusted_certificates') {
+      if (
+        key === 'tls' ||
+        key === 'autoconnect' ||
+        key === 'trusted_certificates' ||
+        key === 'proxy_enabled'
+      ) {
         // A null is "unset", as on create — and on an update, unset means
         // unchanged. Coercing it would switch the flag OFF, which for `tls` is
         // a client meaning "leave it" silently dropping the encryption.
@@ -258,4 +311,52 @@ export function reorderNetworks(userId: number, ids: unknown[]): number[] | null
   });
   tx();
   return [...numericIds];
+}
+
+/** This network's proxy, or null when it isn't going through one (#303).
+ *
+ *  The ONE reader of the six `proxy_*` columns outside storage. Two callers ask
+ *  it — the app's dial path and the engine connect-frame builder — and both
+ *  must get the same answer, including the same refusal.
+ *
+ *  Returns:
+ *    - `null` when `proxy_enabled` is off, or nothing is configured. Direct.
+ *    - a `ProxyConfig` when it is usable.
+ *    - a `ProxyProblem` when a proxy IS enabled and cannot be used.
+ *
+ *  ⚠⚠ The third case must never be treated as the first. A stored proxy that
+ *  does not validate is reachable without anyone typing it — archive import
+ *  writes these columns verbatim — and dialling direct because the setting is
+ *  unusable puts the user's real address on the wire while the UI says
+ *  otherwise. That is the failure this whole feature exists to prevent, so the
+ *  caller refuses the dial. See PROXY_PLAN.md §2. */
+export function networkProxy(network: {
+  proxy_enabled: number;
+  proxy_type: string | null;
+  proxy_host: string | null;
+  proxy_port: number | null;
+  proxy_username: string | null;
+  proxy_password: string | null;
+}): ProxyConfig | ProxyProblem | null {
+  if (!network.proxy_enabled) return null;
+  // Enabled with nothing filled in is "not configured", not "broken": it is the
+  // state a half-finished form leaves behind, and refusing to connect over it
+  // would be a puzzle rather than a warning.
+  if (!network.proxy_type && !network.proxy_host) return null;
+  return validateProxy({
+    type: network.proxy_type,
+    host: network.proxy_host,
+    port: network.proxy_port,
+    username: network.proxy_username,
+    password: network.proxy_password,
+  });
+}
+
+/** The usable proxy, or null — for callers that have already handled the
+ *  refusal case (or have no dial to refuse, like a payload builder). */
+export function usableNetworkProxy(
+  network: Parameters<typeof networkProxy>[0],
+): ProxyConfig | null {
+  const proxy = networkProxy(network);
+  return proxy && !isProxyProblem(proxy) ? proxy : null;
 }
