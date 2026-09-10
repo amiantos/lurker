@@ -264,6 +264,16 @@ describe('rewriteNumericTarget', () => {
       ':server 001 me :Welcome\r',
     );
   });
+
+  it('rewrites past a leading tag block, keeping the tags', () => {
+    expect(rewriteNumericTarget('@time=2026-09-06T05:04:37.800Z :server 001 old :Hi', 'me')).toBe(
+      '@time=2026-09-06T05:04:37.800Z :server 001 me :Hi',
+    );
+  });
+
+  it('leaves a tagged line with no prefix unchanged', () => {
+    expect(rewriteNumericTarget('@time=x PING :x', 'me')).toBe('@time=x PING :x');
+  });
 });
 
 describe('filterRelayLine', () => {
