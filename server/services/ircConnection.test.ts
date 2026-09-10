@@ -3770,6 +3770,74 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     expect(row?.key).toBe(null);
   });
 
+  // The PART echo lowers autojoin, not only ircManager.partChannel. That path
+  // is the app's own /part and buffer-close, so before this a PART Lurker did
+  // not originate left the row flagged for auto-rejoin and the next reconnect
+  // put the user back into a channel they had left — indistinguishable, from
+  // the client, from the part having failed.
+  it('self-part echo lowers autojoin, so a raw PART is not undone on reconnect', () => {
+    const conn = makeConn('part-echo-autojoin');
+    conn.client.user.nick = 'me';
+    conn.upsertChannel('#apple');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    // No partChannel call: this is /quote PART, another client on the bouncer,
+    // or a server forcing one — the echo is all Lurker ever sees.
+    conn.client.emit('part', { channel: '#apple', nick: 'me' });
+
+    expect(conn.channels.has('#apple')).toBe(false);
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
+  });
+
+  // The server echoes our nick with whatever casing it holds it in, which
+  // need not match c.user.nick. This branch lowers autojoin now, so the
+  // self-match has to be case-insensitive — as the self-kick branch already
+  // is — or a raw PART on such a server is silently undone on reconnect.
+  it('self-part echo matches our nick case-insensitively', () => {
+    const conn = makeConn('part-echo-nick-case');
+    conn.client.user.nick = 'Me';
+    conn.upsertChannel('#apple');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('part', { channel: '#apple', nick: 'me' });
+
+    expect(conn.channels.has('#apple')).toBe(false);
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
+  });
+
+  it("someone else's part leaves autojoin alone", () => {
+    const conn = makeConn('part-echo-other');
+    conn.client.user.nick = 'me';
+    conn.upsertChannel('#apple');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#apple', {
+      kind: 'channel',
+      autojoin: true,
+    });
+
+    conn.client.emit('part', { channel: '#apple', nick: 'stranger' });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(true);
+  });
+
+  // /part takes an arbitrary argument and is not gated on membership, so this
+  // reaches a channel there was no row for. setAutojoin is update-only and
+  // conjures nothing; the row that does appear is minted by persisting the part
+  // event, and what matters is that it carries no rejoin flag.
+  it('a self-part for a channel we had no row for is not flagged for rejoin', () => {
+    const conn = makeConn('part-echo-norow');
+    conn.client.user.nick = 'me';
+
+    conn.client.emit('part', { channel: '#nowhere', nick: 'me' });
+
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#nowhere')?.autojoin).toBe(false);
+  });
+
   it('470 deletes a history-less pre-existing row even when the server relays a different case', () => {
     const conn = makeConn('fwd-row');
     const netId = conn.network.id;

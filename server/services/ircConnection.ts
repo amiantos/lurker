@@ -2396,9 +2396,28 @@ export class IrcConnection {
         userhost: buildUserhost(event),
         time: event.time,
       });
-      if (eventNick === c.user.nick) {
+      // Case-insensitive self-match, like the self-kick branch below: this
+      // branch now lowers autojoin, so a server that echoes our nick in the
+      // PART prefix with different casing must not skip the correction.
+      if (c.user.nick && eventNick.toLowerCase() === c.user.nick.toLowerCase()) {
         this.channels.delete(eventChannel.toLowerCase());
         this.joinedFoldedCache = null;
+        // The echo lowers autojoin, not just ircManager.partChannel. That path
+        // is the app's own /part and buffer-close, so a PART Lurker did not
+        // originate — a raw /quote PART, another client on the bouncer, a
+        // script, a server forcing one — left the row flagged for auto-rejoin,
+        // and the next reconnect put the user back into a channel they had
+        // left. It reads as the part having silently failed. Nothing converged
+        // either: the restoring branch in the join handler that sends a late
+        // PART for exactly this case reads the same flag, so a row stuck at 1
+        // defeats the correction too. Same reasoning as the self-kick below.
+        // The second write on the app's own path is idempotent, and this is
+        // update-only, so a PART for a channel with no row conjures nothing.
+        try {
+          setBufferAutojoin(this.network.user_id, this.network.id, channel, false);
+        } catch (_) {
+          /* ignore */
+        }
         this.publish({ type: 'channel-parted', target: channel });
         // No system-buffer "Parted #x" line — symmetric with the join above; the
         // part already shows in the channel buffer (#355).
