@@ -4615,3 +4615,147 @@ describe('probePresence intent gate', () => {
     expect(tracked).toEqual([]);
   });
 });
+
+// Proxy refusals and wiring (#303), dial path A.
+//
+// ⚠⚠ Every case here is a REFUSAL, never a fallback to a direct dial. That is
+// the whole feature: connecting anyway hands the ircd the address the user was
+// specifically trying not to expose, silently, and the connection works — which
+// is the worst possible outcome. The assertion that matters in each test is
+// `dialed` NOT having been called.
+describe('proxy refusals and wiring', () => {
+  const PROXIED = {
+    proxy_enabled: 1,
+    proxy_type: 'socks5',
+    proxy_host: '127.0.0.1',
+    proxy_port: 9050,
+  };
+
+  function makeProxyConn(fields: Partial<Network> = {}): IrcConnection {
+    return new IrcConnection({
+      network: {
+        client_cert: null,
+        client_key: null,
+        proxy_enabled: 0,
+        proxy_type: null,
+        proxy_host: null,
+        proxy_port: null,
+        proxy_username: null,
+        proxy_password: null,
+        id: 1,
+        user_id: 1,
+        name: 'proxied',
+        host: 'irc.example.test',
+        port: 6697,
+        tls: 1,
+        trusted_certificates: 1,
+        nick: 'nick',
+        username: null,
+        realname: null,
+        server_password: null,
+        autoconnect: 1,
+        sasl_account: null,
+        sasl_password: null,
+        connect_commands: null,
+        position: 0,
+        casemapping: null,
+        created_at: new Date().toISOString(),
+        ...fields,
+      },
+      onEvent: () => {},
+    });
+  }
+
+  function attemptProxy(fields: Partial<Network> = {}): {
+    dialed: ReturnType<typeof vi.fn>;
+    published: Record<string, unknown>[];
+  } {
+    const conn = makeProxyConn(fields);
+    const published: Record<string, unknown>[] = [];
+    conn.publish = (event: unknown) => {
+      published.push(event as Record<string, unknown>);
+    };
+    const dialed = vi.fn<(options: ConnectOptions) => void>();
+    conn.client.connect = dialed;
+    conn.connect();
+    return { dialed, published };
+  }
+
+  const refusalText = (published: Record<string, unknown>[]) =>
+    String(
+      published.find((e) => e.type === 'error' && /Not connecting/.test(String(e.text)))?.text,
+    );
+
+  it('dials through the proxy transport when one is configured', () => {
+    const { dialed } = attemptProxy(PROXIED as Partial<Network>);
+    expect(dialed).toHaveBeenCalledOnce();
+    const options = dialed.mock.calls[0][0];
+    expect(options.proxy).toEqual({ type: 'socks5', host: '127.0.0.1', port: 9050 });
+    expect(options.transport).toBeDefined();
+  });
+
+  it('dials directly, with no transport override, when there is no proxy', () => {
+    const { dialed } = attemptProxy();
+    expect(dialed).toHaveBeenCalledOnce();
+    expect(dialed.mock.calls[0][0].proxy).toBeUndefined();
+    expect(dialed.mock.calls[0][0].transport).toBeUndefined();
+  });
+
+  it('dials DIRECTLY when a proxy is configured but disabled', () => {
+    // The affordance, and the one case where "configured" and "in effect"
+    // legitimately differ: proxy_enabled is what the dial path asks.
+    const { dialed } = attemptProxy({ ...PROXIED, proxy_enabled: 0 } as Partial<Network>);
+    expect(dialed).toHaveBeenCalledOnce();
+    expect(dialed.mock.calls[0][0].proxy).toBeUndefined();
+  });
+
+  // ⚠⚠ Archive import writes the proxy columns verbatim (exportSchema drives
+  // its column list), so an unusable stored proxy is reachable without anyone
+  // typing it. It must stop the dial, not quietly become a direct connection.
+  it('does not dial when an enabled proxy is unusable', () => {
+    const cases: Array<Partial<Network>> = [
+      { ...PROXIED, proxy_type: 'socks4' } as Partial<Network>,
+      { ...PROXIED, proxy_port: 0 } as Partial<Network>,
+      { ...PROXIED, proxy_host: '' } as Partial<Network>,
+      { ...PROXIED, proxy_password: 'orphan' } as Partial<Network>,
+    ];
+    const results = cases.map((fields) => {
+      const { dialed, published } = attemptProxy(fields);
+      return { dialedTimes: dialed.mock.calls.length, refusal: refusalText(published) };
+    });
+    expect(results.map((r) => r.dialedTimes)).toEqual([0, 0, 0, 0]);
+    for (const r of results) expect(r.refusal).toMatch(/proxy is unusable/);
+  });
+
+  it('does not dial a user-set proxy on a locked-down instance', async () => {
+    // The lockdown is re-checked on the connect path, not only on write — an
+    // admin who closes the instance has to close the connections it has.
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    setAllowUserDefinedNetworks(false);
+    try {
+      const { dialed, published } = attemptProxy(PROXIED as Partial<Network>);
+      expect(dialed).not.toHaveBeenCalled();
+      expect(refusalText(published)).toMatch(/does not allow connecting through a proxy/);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+});
+
+describe('formatSocketCloseErrorMessage with a proxy failure', () => {
+  it('names the proxy, not the ircd', () => {
+    // Without this arm the user reads "Connection failed
+    // (irc.libera.chat:6697): connection refused" when what refused was Tor on
+    // their own machine — and goes and debugs the wrong host.
+    const text = formatSocketCloseErrorMessage(
+      {
+        code: 'PROXY_UNREACHABLE',
+        message: 'the SOCKS5 proxy at socks5://127.0.0.1:9050: nothing is listening there',
+      },
+      'irc.libera.chat:6697',
+      true,
+    );
+    expect(text).toContain('127.0.0.1:9050');
+    expect(text).not.toContain('irc.libera.chat');
+  });
+});

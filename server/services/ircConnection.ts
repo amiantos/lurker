@@ -51,6 +51,11 @@ import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../../shared/ident.js';
 import { validateClientCertPair, isClientCertProblem } from '../utils/clientCert.js';
+import { networkProxy } from '../db/networks.js';
+import { isProxyProblem } from '../../shared/proxy.js';
+import type { ProxyConfig } from '../../shared/proxy.js';
+import { mayUseProxy } from './networkPolicy.js';
+import { ProxyTransport } from './proxyTransport.js';
 import { classifyModeChange, modeLetter } from '../../shared/modes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
@@ -1778,6 +1783,13 @@ export class IrcConnection {
         // In engine mode the engine holds the socket and registered the ident
         // when it dialed; this process serves no identd.
         if (engineConfigured()) return;
+        // ⚠ Through a proxy, identd is unanswerable and the entry would be a
+        // lie (#303). The ircd sends its RFC 1413 query to the address it SEES,
+        // which is the proxy's — it never reaches us, and the 4-tuple here is
+        // ours-to-the-proxy, so it could not match the query even if it did.
+        // Registering anyway would leave a map entry that looks configured and
+        // answers nothing.
+        if (this.proxyConfig()) return;
         // The full 4-tuple identifies the connection to the identd server; the
         // ports alone are ambiguous (see identd.ts). Both addresses and ports
         // are already populated at TCP connect.
@@ -4087,8 +4099,11 @@ export class IrcConnection {
     // EXTERNAL when the certificate is the only credential there is. EXTERNAL
     // carries no account name: the fingerprint is the identity, and the network
     // maps it to whichever account it was registered on.
-    const certBlocked = this.clientCertBlockedReason();
-    if (certBlocked) {
+    // ⚠ Checked BEFORE the certificate one only because the order has to be
+    // stable; both refuse the same way. A proxy that cannot be used stops the
+    // dial — see proxyBlockedReason.
+    const blocked = this.proxyBlockedReason() ?? this.clientCertBlockedReason();
+    if (blocked) {
       // Never dial past this. Connecting without the certificate is not a
       // degraded version of what the user asked for, it is a different
       // identity: they arrive as an unrecognised stranger, +R channels refuse
@@ -4097,9 +4112,9 @@ export class IrcConnection {
       this.publish({
         type: 'error',
         target: this.serverTarget(),
-        text: `Not connecting: ${certBlocked}.`,
+        text: `Not connecting: ${blocked}.`,
       });
-      this.logNet(`Connect blocked: ${certBlocked}`, 'warn');
+      this.logNet(`Connect blocked: ${blocked}`, 'warn');
       this.setState('disconnected');
       // Nothing here will retry — no socket opened, so no 'close' to schedule
       // one from — and every one of these reasons is fixed by editing the
@@ -4160,8 +4175,68 @@ export class IrcConnection {
       // network's RFC 1413 callback lands on the built-in identd rather than the
       // host's (outgoingAddr → irc-framework outgoing_addr → socket localAddress).
       outgoing_addr: outgoingAddr(),
+      // Route this network's socket through its proxy (#303). Spread BEFORE
+      // engineConnectOptions on purpose: in engine mode the dial happens in
+      // another process, so the engine's transport must win — it carries the
+      // proxy in its CONNECT frame instead (see engineConnectOptions).
+      ...this.proxyConnectOptions(),
       ...this.engineConnectOptions(),
     });
+  }
+
+  /** Why this network's proxy cannot be used, or null when there isn't one and
+   *  nothing is wrong.
+   *
+   *  ⚠⚠ EVERY answer here is a refusal to dial, never a fallback to a direct
+   *  connection. A proxy is not a preference that degrades gracefully: dialling
+   *  direct hands the ircd — and everyone running /whois on it — the address
+   *  the user was specifically trying not to expose, with no signal that
+   *  anything went wrong, and the connection WORKS, which is the worst possible
+   *  outcome. Same shape as clientCertBlockedReason, and for a stronger reason.
+   *
+   *  Re-validated on every connect rather than trusted from the write path,
+   *  because the routes are not the only writer: archive import inserts the
+   *  proxy columns verbatim (exportSchema drives its column list), so a
+   *  hand-edited archive can plant an unusable proxy that never passed a
+   *  route. */
+  private proxyBlockedReason(): string | null {
+    const proxy = networkProxy(this.network);
+    if (!proxy) return null;
+    if (isProxyProblem(proxy)) {
+      return `this network's proxy is unusable (${proxy.error})`;
+    }
+    // The instance lockdown applies on the connect path too, not only on write
+    // — an admin who closes the instance must close the connections it already
+    // has, the same way isNetworkHostAllowed is re-checked here.
+    if (!mayUseProxy()) {
+      return 'this server does not allow connecting through a proxy of your own';
+    }
+    return null;
+  }
+
+  /** This network's usable proxy, or undefined. Only ever reached once
+   *  proxyBlockedReason() has passed, so anything here is valid and allowed. */
+  private proxyConfig(): ProxyConfig | undefined {
+    const proxy = networkProxy(this.network);
+    return proxy && !isProxyProblem(proxy) ? proxy : undefined;
+  }
+
+  /** DCC cannot be used on a proxied network (#303).
+   *
+   *  ⚠⚠ DCC bypasses the tunnel completely and in both directions: a receive
+   *  dials the peer straight out (`dccReceiver.ts` is a bare `net.connect`),
+   *  and an offer advertises an address the peer must be able to reach. So on a
+   *  proxied network the first file transfer is the user's real address, out,
+   *  with no warning — while every IRC line they send is still going through
+   *  the proxy.
+   *
+   *  Refusing is the honest v1. Routing DCC properly needs passive DCC and
+   *  belongs to the DCC milestone, not here. Cheap today: DCC is off by default
+   *  and needs both a cell-wide switch and a per-user capability, so the
+   *  intersection is small — which is exactly why to close it before someone
+   *  ships an fserve on top of it. */
+  private dccBlockedByProxy(): boolean {
+    return !!this.proxyConfig();
   }
 
   /** Why an attached CertFP pair cannot be presented on this connect, or null
@@ -4226,6 +4301,16 @@ export class IrcConnection {
     // and manual connects (attempt 0) still persist their one "Connecting…" line.
     if (this.reconnectAttempt > 0) this.publishEphemeral(connectingNotice);
     else this.publish(connectingNotice);
+  }
+
+  /** Direct mode: route this Client's own socket through the network's proxy.
+   *  Empty in engine mode — the socket is dialled in another process there, and
+   *  the proxy rides the CONNECT frame instead (PR 4). */
+  private proxyConnectOptions(): Partial<ConnectOptions> {
+    if (engineConfigured()) return {};
+    const proxy = this.proxyConfig();
+    if (!proxy) return {};
+    return { transport: ProxyTransport as unknown as ConnectOptions['transport'], proxy };
   }
 
   // Engine mode: route this Client through the engine-backed transport. The id
@@ -4936,6 +5021,17 @@ export class IrcConnection {
     // probe path; when disabled, fall through so it surfaces as an ordinary
     // unsupported CTCP ("requested CTCP DCC (no reply)"), unchanged from today.
     if (type === 'DCC' && dccEnabledForUser(this.network.user_id)) {
+      // Say why, rather than letting it fall through to the generic
+      // "requested CTCP DCC (no reply)". Only reached when DCC is otherwise
+      // enabled for this user, so nobody who never had DCC sees a new line.
+      if (this.dccBlockedByProxy()) {
+        this.publish({
+          type: 'error',
+          target: this.serverTarget(),
+          text: `Ignored a DCC offer from ${nick}: DCC does not go through this network's proxy, and accepting it would connect directly from this server.`,
+        });
+        return;
+      }
       // DCC handling (parse + DB writes + socket setup) must never throw out of
       // the CTCP event path and disrupt the connection.
       try {
@@ -4962,7 +5058,7 @@ export class IrcConnection {
     // mentioned mid-sentence in ordinary conversation doesn't arm an auto-accept.
     const m = /^\s*xdcc\s+(?:send|get)\s+(#?\d+)/i.exec(text);
     if (!m) return;
-    if (!dccEnabledForUser(this.network.user_id)) return;
+    if (!dccEnabledForUser(this.network.user_id) || this.dccBlockedByProxy()) return;
     // ⚠ NOT a channel test (#724): `#` here is the XDCC PACK-NUMBER sigil.
     const pack = m[1].startsWith('#') ? m[1] : `#${m[1]}`;
     insertDccTransfer(this.network.user_id, {
@@ -5289,6 +5385,21 @@ export class IrcConnection {
   // stale (the bot stopped listening) — that surfaces as a connect failure.
   acceptPendingDcc(row: DccTransferRow): void {
     if (this.disposed) return;
+    // ⚠⚠ Gated HERE as well as at the offer, because a pending row outlives the
+    // setting that let it in: an offer recorded while the network was direct is
+    // still sitting in the Transfers view after the user configures a proxy and
+    // reconnects, and accepting it dials the peer with a bare net.connect —
+    // leaking exactly the address the proxy exists to hide. The offer-side gate
+    // stops new ones; this stops the backlog.
+    if (this.dccBlockedByProxy()) {
+      updateDccTransferState(
+        row.id,
+        'failed',
+        'this network goes through a proxy — a direct file transfer would reveal this server’s address',
+      );
+      this.publishDcc(row.id);
+      return;
+    }
     // Only an unsolicited offer still awaiting a decision can be accepted; a row
     // that already moved on (receiving/terminal) is a no-op.
     if (row.state !== 'pending_approval') return;
@@ -6683,6 +6794,13 @@ export function formatSocketCloseErrorMessage(
   const code = typeof err.code === 'string' ? err.code : '';
   const message =
     typeof err.message === 'string' && err.message.length > 0 ? err.message : 'unknown error';
+  // ⚠ A proxy failure must not be reported as an ircd failure (#303). Without
+  // this the user reads "Connection failed (irc.libera.chat:6697): connection
+  // refused" when what refused was Tor on their own machine, and they go and
+  // debug the wrong host. ProxyDialError already names the proxy and what it
+  // said, so it is passed through whole rather than wrapped in an address that
+  // was never dialled.
+  if (code.startsWith('PROXY_')) return `Connection failed: ${message}.`;
   if (onlyTrustedCertificates && isCertificateVerificationTlsError(code, message)) {
     return `Connection failed (${where}): The server certificate could not be verified. To connect anyway, uncheck "Only allow trusted certificates" in this network's settings and reconnect.`;
   }
