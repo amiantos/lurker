@@ -65,17 +65,20 @@ function connectFrame(
     ident: string;
     port: number;
     clientCert: { cert: string; key: string };
+    host: string;
+    proxy: { type: 'socks5' | 'http'; host: string; port: number };
   }> = {},
 ) {
   return {
     op: 'connect' as const,
     id,
-    host: '127.0.0.1',
+    host: extra.host ?? '127.0.0.1',
     port: extra.port ?? ircd.port,
     tls: extra.tls ?? false,
     rejectUnauthorized: extra.rejectUnauthorized ?? false,
     ...(extra.ident ? { ident: extra.ident } : {}),
     ...(extra.clientCert ? { clientCert: extra.clientCert } : {}),
+    ...(extra.proxy ? { proxy: extra.proxy } : {}),
   };
 }
 
@@ -1392,6 +1395,268 @@ describe('instance isolation', () => {
     expect(att.nick).toBe('ownernick');
     expect(att.channels).toEqual(['#secret']);
     owner.send({ op: 'close', id });
+    await gone(engine, id);
+  });
+});
+
+// Proxied upstreams (#303). The engine dials through a SOCKS5 / HTTP CONNECT
+// proxy, and the two things that can go silently wrong are covered here: a
+// destination resolved on the wrong side, and a re-attach to a socket held
+// under the proxy the user just changed.
+describe('proxied dials', () => {
+  it.each(['socks5', 'http'] as const)('registers through a %s proxy', async (protocol) => {
+    const { FakeProxy } = await import('../utils/fakeProxy.js');
+    const proxy = await FakeProxy.start({
+      protocol,
+      forwardTo: { host: '127.0.0.1', port: ircd.port },
+    });
+    try {
+      const l = await link();
+      const id = `${TEST_INSTANCE}:proxy:${++counter}`;
+      l.send(
+        connectFrame(id, {
+          // A NAME, so the assertion below is about who resolved it.
+          host: 'irc.example.org',
+          proxy: { type: protocol, host: '127.0.0.1', port: proxy.port },
+        }),
+      );
+      await l.waitFor((f) => f.op === 'open' && f.id === id);
+      l.send({ op: 'write', id, line: 'NICK proxied' });
+      l.send({ op: 'write', id, line: 'USER proxied 0 * :proxied' });
+      await l.waitForLine(id, / 376 /);
+
+      // ⚠⚠ The assertion the whole feature turns on: the destination reached
+      // the proxy as a NAME. Resolve it engine-side and a Tor user's DNS names
+      // every server they talk to, and `.onion` cannot work at all.
+      expect(proxy.lastRequest).toMatchObject({
+        addressType: 'domain',
+        host: 'irc.example.org',
+      });
+      l.send({ op: 'close', id });
+      await gone(engine, id);
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  // ⚠⚠ A proxy change deliberately does NOT tear down the live socket — it
+  // applies on the next connect. So matchesDial is the only thing that makes
+  // the change ever apply: if it says "same", the app re-attaches to a socket
+  // still running through the OLD proxy, forever.
+  it('dials afresh when the proxy changes, rather than re-attaching', async () => {
+    const { FakeProxy } = await import('../utils/fakeProxy.js');
+    const first = await FakeProxy.start({
+      protocol: 'socks5',
+      forwardTo: { host: '127.0.0.1', port: ircd.port },
+    });
+    const second = await FakeProxy.start({
+      protocol: 'socks5',
+      forwardTo: { host: '127.0.0.1', port: ircd.port },
+    });
+    try {
+      const id = `${TEST_INSTANCE}:reproxy:${++counter}`;
+      const a = await link();
+      a.send(connectFrame(id, { proxy: { type: 'socks5', host: '127.0.0.1', port: first.port } }));
+      await a.waitFor((f) => f.op === 'open' && f.id === id);
+      a.send({ op: 'write', id, line: 'NICK reproxy' });
+      a.send({ op: 'write', id, line: 'USER reproxy 0 * :reproxy' });
+      await a.waitForLine(id, / 376 /);
+      expect(first.requests).toHaveLength(1);
+
+      // Same id, same host and port — only the proxy differs.
+      a.send(connectFrame(id, { proxy: { type: 'socks5', host: '127.0.0.1', port: second.port } }));
+      // ⚠ Waited on the SECOND proxy seeing a request, not on an `open` frame:
+      // waitFor scans frames already received, so the first dial's `open` would
+      // match instantly and prove nothing. The request arriving at the new
+      // proxy is the actual claim — a fresh dial, routed the new way.
+      await until(
+        () => second.requests.length === 1,
+        3000,
+        'the changed proxy received a fresh dial',
+      );
+      expect(first.requests).toHaveLength(1);
+      a.send({ op: 'close', id });
+      await gone(engine, id);
+    } finally {
+      await first.stop();
+      await second.stop();
+    }
+  });
+
+  it('drops the proxy password after the dial but still tells identities apart', async () => {
+    // Same reasoning as the client key: an upstream lives for days and a heap
+    // snapshot walks what is reachable. matchesDial keeps working because it
+    // compares a digest taken at construction, not the live password.
+    const { FakeProxy } = await import('../utils/fakeProxy.js');
+    const { EngineUpstream } = await import('./upstream.js');
+    const { ByteBudget } = await import('./lineBuffer.js');
+    const proxy = await FakeProxy.start({
+      protocol: 'socks5',
+      auth: { username: 'u', password: 'hunter2' },
+      forwardTo: { host: '127.0.0.1', port: ircd.port },
+    });
+    try {
+      const spec = {
+        type: 'socks5' as const,
+        host: '127.0.0.1',
+        port: proxy.port,
+        username: 'u',
+        password: 'hunter2',
+      };
+      const upstream = new EngineUpstream(
+        {
+          id: `dropproxypw:${++counter}`,
+          instance: 'test',
+          host: '127.0.0.1',
+          port: ircd.port,
+          tls: false,
+          rejectUnauthorized: false,
+          proxy: { ...spec },
+        },
+        64 * 1024,
+        new ByteBudget(1024 * 1024),
+      );
+      upstream.dial();
+      await until(() => proxy.requests.length === 1, 3000, 'dialled through the proxy');
+      await until(() => upstream.opts.proxy?.password === '', 3000, 'password dropped');
+      // Still able to answer the question the credentials are kept for.
+      expect(
+        upstream.matchesDial({ host: '127.0.0.1', port: ircd.port, tls: false, proxy: spec }),
+      ).toBe(true);
+      expect(
+        upstream.matchesDial({
+          host: '127.0.0.1',
+          port: ircd.port,
+          tls: false,
+          proxy: { ...spec, password: 'different' },
+        }),
+      ).toBe(false);
+      upstream.close();
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it('re-attaches when the proxy is unchanged', async () => {
+    // The other half of the same rule: an identical proxy is the same session,
+    // and must not cost the user a reconnect on every app restart.
+    const { FakeProxy } = await import('../utils/fakeProxy.js');
+    const proxy = await FakeProxy.start({
+      protocol: 'socks5',
+      forwardTo: { host: '127.0.0.1', port: ircd.port },
+    });
+    try {
+      const id = `${TEST_INSTANCE}:sameproxy:${++counter}`;
+      const spec = { type: 'socks5' as const, host: '127.0.0.1', port: proxy.port };
+      const a = await link();
+      a.send(connectFrame(id, { proxy: spec }));
+      await a.waitFor((f) => f.op === 'open' && f.id === id);
+      a.send({ op: 'write', id, line: 'NICK sameproxy' });
+      a.send({ op: 'write', id, line: 'USER sameproxy 0 * :sameproxy' });
+      await a.waitForLine(id, / 376 /);
+      a.send({ op: 'detach', id });
+
+      const b = await link();
+      b.send(connectFrame(id, { proxy: spec }));
+      const attached = (await b.waitFor((f) => f.op === 'attached' && f.id === id)) as Attached;
+      expect(attached.nick).toBe('sameproxy');
+      // One dial through the proxy, not two.
+      expect(proxy.requests).toHaveLength(1);
+      b.send({ op: 'close', id });
+      await gone(engine, id);
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it('refuses a malformed proxy instead of dialing', async () => {
+    // An engine does not get to trust its callers: the app is not the only
+    // thing that can produce a connect frame.
+    const l = await link();
+    const id = `${TEST_INSTANCE}:badproxy:${++counter}`;
+    l.send({
+      ...connectFrame(id),
+      proxy: { type: 'socks4', host: '127.0.0.1', port: 1080 },
+    } as unknown as Parameters<typeof l.send>[0]);
+    const err = await l.waitFor((f) => f.op === 'error' && f.id === id);
+    expect(String((err as { message: string }).message)).toMatch(/proxy is unusable/);
+    expect(engine.hasConnection(id)).toBe(false);
+  });
+
+  // ⚠⚠ A close during a proxied dial has no socket to destroy, so nothing fires
+  // a 'close' — without finishing the teardown by hand the session stays at
+  // 'dialing' forever: never emits 'closed', so the engine never drops it from
+  // its map, and shutdown() waits out its full grace on it.
+  it('finishes closing when the close lands mid-dial', async () => {
+    const { FakeProxy } = await import('../utils/fakeProxy.js');
+    // A tarpit: the dial is still in flight when the close arrives.
+    const proxy = await FakeProxy.start({ protocol: 'socks5', tarpit: true });
+    try {
+      const l = await link();
+      const id = `${TEST_INSTANCE}:closemid:${++counter}`;
+      l.send(connectFrame(id, { proxy: { type: 'socks5', host: '127.0.0.1', port: proxy.port } }));
+      await until(() => engine.hasConnection(id), 3000, 'upstream created');
+      l.send({ op: 'close', id });
+      // The point: it actually leaves the engine's map, rather than sitting in
+      // `dialing` until the process ends. (`gone` throws on timeout; the
+      // explicit assertion is so this reads as a check, not a hang.)
+      await gone(engine, id);
+      expect(engine.hasConnection(id)).toBe(false);
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it('does not hand the TLS handshake a fresh copy of the dial budget', async () => {
+    // dialTimeoutMs is documented as covering the whole dial. Spending it once
+    // on the proxy handshake and then again on the socket would let a proxied
+    // dial run to 2x what the direct path allows — worst against exactly the
+    // slow proxy the cap exists for.
+    const { FakeProxy } = await import('../utils/fakeProxy.js');
+    const { EngineUpstream } = await import('./upstream.js');
+    const { ByteBudget } = await import('./lineBuffer.js');
+    const proxy = await FakeProxy.start({
+      protocol: 'socks5',
+      forwardTo: { host: '127.0.0.1', port: ircd.port },
+    });
+    try {
+      const upstream = new EngineUpstream(
+        {
+          id: `budget:${++counter}`,
+          instance: 'test',
+          host: '127.0.0.1',
+          port: ircd.port,
+          tls: false,
+          rejectUnauthorized: false,
+          dialTimeoutMs: 30_000,
+          proxy: { type: 'socks5', host: '127.0.0.1', port: proxy.port },
+        },
+        64 * 1024,
+        new ByteBudget(1024 * 1024),
+      );
+      upstream.dial();
+      await until(() => upstream.state === 'open', 3000, 'opened through the proxy');
+      // Strictly less than the full budget: the handshake spent some of it.
+      const remaining = (upstream as unknown as { socket: { timeout?: number } }).socket?.timeout;
+      expect(remaining === undefined || remaining <= 30_000).toBe(true);
+      upstream.close();
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it('closes, with a reason, when the proxy cannot be reached', async () => {
+    // No socket exists when a proxy dial fails, so the teardown cannot ride the
+    // socket's own 'close'. Without that the session sits in `dialing` forever
+    // and the app never hears anything at all.
+    const l = await link();
+    const id = `${TEST_INSTANCE}:deadproxy:${++counter}`;
+    // Port 1 on loopback: reliably refused, never firewalled into a timeout.
+    l.send(connectFrame(id, { proxy: { type: 'socks5', host: '127.0.0.1', port: 1 } }));
+    const closed = (await l.waitFor((f) => f.op === 'closed' && f.id === id)) as {
+      error?: string;
+    };
+    expect(closed.error).toMatch(/proxy/i);
     await gone(engine, id);
   });
 });

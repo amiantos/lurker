@@ -164,6 +164,18 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
       // dial can outrun the engine's hello — and an engine that predates
       // minor 2 would simply ignore the field, leaving the app to authenticate
       // with a certificate that was never presented.
+      // ⚠ The authoritative proxy check, for the same reason as the certificate
+      // one below: on a cold start the first dial can outrun the engine's
+      // hello, and an engine below minor 5 ignores the field and dials direct.
+      // Refusing late is still refusing; connecting is not recoverable.
+      if (o.proxy && !this.link.supportsProxy()) {
+        this.end(
+          new Error(
+            'the IRC engine this deployment connects through cannot route a connection via a proxy — update the engine, or remove the proxy from this network',
+          ),
+        );
+        return;
+      }
       if (o.client_certificate && !this.link.supportsClientCert()) {
         this.end(
           new Error(
@@ -189,6 +201,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
               },
             }
           : {}),
+        ...(o.proxy ? { proxy: o.proxy } : {}),
       });
       this.armReplyTimer();
     };

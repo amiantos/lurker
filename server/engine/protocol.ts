@@ -32,7 +32,14 @@ export const PROTOCOL_MAJOR = 1;
 // stayed unadopted (or, for a paused account, un-closed) until the orphan
 // reaper or the next restart. An engine below this still lists correctly at
 // hello; it just never says anything afterwards.
-export const PROTOCOL_MINOR = 4;
+// minor 5 (#303): `connect` carries an optional proxy. An app whose network is
+// proxied refuses to dial through an engine below this rather than connecting
+// direct — an older engine ignores the field, and a direct connection is not a
+// degraded version of a proxied one, it is the user's real address on the wire
+// while the UI says otherwise. Same shape as the client-certificate gate at
+// minor 2, and for a stronger reason: a missing certificate fails visibly, a
+// missing proxy succeeds.
+export const PROTOCOL_MINOR = 5;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -118,6 +125,24 @@ export type AppToEngine =
       // tls.connect throws SYNCHRONOUSLY on a malformed key and an uncaught
       // throw there is every held socket in the process.
       clientCert?: { cert: string; key: string };
+      // SOCKS5 / HTTP CONNECT proxy for this socket (#303). The app parses the
+      // user's setting into these parts; the engine validates the shape and
+      // never parses text of its own. The password crosses this link, which
+      // already carries PASS and AUTHENTICATE lines — but, like the client
+      // key, the engine must never log it.
+      //
+      // ⚠ `matchesDial` compares this. Without that, editing or removing a
+      // proxy re-attaches to the socket held under the OLD one, and since a
+      // proxy change deliberately takes effect on the next connect rather than
+      // tearing down the live socket, that comparison is the ONLY thing that
+      // makes the change ever apply.
+      proxy?: {
+        type: 'socks5' | 'http';
+        host: string;
+        port: number;
+        username?: string;
+        password?: string;
+      };
     }
   | { op: 'write'; id: string; line: string }
   // Everything up to and including `seq` has been persisted; the engine may

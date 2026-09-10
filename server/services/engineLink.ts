@@ -82,6 +82,8 @@ export function parseEngineUrl(raw: string | undefined): { host: string; port: n
 
 let disabledReason: string | null = null;
 
+// Protocol minor at which `connect` learned to carry a proxy (#303).
+const PROXY_MINOR = 5;
 // Protocol minor at which `connect` learned to carry a client certificate (#459).
 export const CLIENT_CERT_MINOR = 2;
 
@@ -223,6 +225,17 @@ export class EngineLink extends EventEmitter {
    *  would authenticate the user with a certificate that never went out. */
   supportsClientCert(): boolean {
     return this.engineMinor !== null && this.engineMinor >= CLIENT_CERT_MINOR;
+  }
+
+  /** Can this engine route a socket through a proxy? (#303)
+   *
+   *  ⚠⚠ An engine below this ignores the field and dials DIRECT, reporting
+   *  success. That is worse than the client-certificate case it mirrors: a
+   *  missing certificate fails visibly (services refuse you, SASL EXTERNAL
+   *  errors), while a missing proxy just works — with the user's real address
+   *  on the wire and the UI saying otherwise. */
+  supportsProxy(): boolean {
+    return this.engineMinor !== null && this.engineMinor >= PROXY_MINOR;
   }
 
   start(): void {

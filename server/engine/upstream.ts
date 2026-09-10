@@ -35,6 +35,7 @@
 // is held back at replay time for the same reason: see replaySet.
 
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 import tls from 'node:tls';
 import { EventEmitter } from 'node:events';
 import { ircLineParser } from 'irc-framework';
@@ -47,6 +48,9 @@ import {
   isIdentdEnabled,
   isOidentdFileEnabled,
 } from '../services/identd.js';
+import { dialThroughProxy } from '../utils/proxyDial.js';
+import { sameProxyRoute } from '../../shared/proxy.js';
+import type { ProxyConfig } from '../../shared/proxy.js';
 
 export interface UpstreamOptions {
   id: string;
@@ -68,6 +72,9 @@ export interface UpstreamOptions {
   clientCert?: { cert: string; key: string };
   // How long a dial (TCP + TLS handshake) may take before it is given up on.
   dialTimeoutMs?: number;
+  // Route this socket through a SOCKS5 / HTTP CONNECT proxy (#303). Validated
+  // by the engine's connect handler before this object is built.
+  proxy?: ProxyConfig;
 }
 
 // Where frames for the attached app go. `send` answers false when the link is
@@ -114,6 +121,17 @@ export const CLOSE_GRACE_MS = 10_000;
 
 const FALLBACK_USERHOST = '~lurker@engine.invalid';
 
+// A stable fingerprint of a proxy's credentials, so `matchesDial` can still tell
+// one identity from another after the password itself has been dropped (#303).
+// Equality is the only question ever asked of it, which is exactly what a digest
+// answers — see the note where the password is wiped.
+function proxyCredDigest(proxy: ProxyConfig | undefined): string {
+  if (!proxy) return '';
+  return createHash('sha256')
+    .update(`${proxy.username ?? ''}\u0000${proxy.password ?? ''}`)
+    .digest('hex');
+}
+
 function prefixNick(prefix: string | undefined): string {
   if (!prefix) return '';
   const bang = prefix.indexOf('!');
@@ -124,6 +142,12 @@ export class EngineUpstream extends EventEmitter {
   readonly id: string;
   state: 'dialing' | 'open' | 'closed' = 'dialing';
   private dialed = false;
+  /** The proxy credentials this socket was dialled with, as a digest. Survives
+   *  the password being dropped below; see matchesDial. */
+  private readonly proxyCred: string;
+  /** A proxy dial is in flight and has produced no socket yet. The window in
+   *  which `destroy()` has nothing to destroy. */
+  private proxyDialPending = false;
   // `close()`/`quit()` were called: the socket is on its way out. Not a state
   // of its own because `open`-specific bookkeeping still applies until 'close'
   // fires, but every entry point treats it as gone.
@@ -192,6 +216,7 @@ export class EngineUpstream extends EventEmitter {
     super();
     this.id = opts.id;
     this.buffer = new LineBuffer(bufferBytes, budget);
+    this.proxyCred = proxyCredDigest(opts.proxy);
   }
 
   get attached(): boolean {
@@ -216,6 +241,7 @@ export class EngineUpstream extends EventEmitter {
     tls: boolean;
     outgoingAddr?: string;
     clientCert?: { cert: string; key: string };
+    proxy?: ProxyConfig;
   }): boolean {
     return (
       this.opts.host === frame.host &&
@@ -226,7 +252,21 @@ export class EngineUpstream extends EventEmitter {
       // still presenting the old one, and services still know the user by the
       // old fingerprint. Re-attaching would make the new certificate look
       // applied while nothing about the connection had changed. (#459)
-      (this.opts.clientCert?.cert || '') === (frame.clientCert?.cert || '')
+      (this.opts.clientCert?.cert || '') === (frame.clientCert?.cert || '') &&
+      // ⚠⚠ A changed proxy is a changed ROUTE, and this comparison is the only
+      // thing that makes a proxy edit ever take effect. Editing a proxy
+      // deliberately does not tear down the live socket — it applies on the
+      // next connect (#303) — so if this says "same", that next connect
+      // re-attaches to the socket still running through the OLD proxy and the
+      // change never lands at all. (#459's certificate arm above is the same
+      // argument about identity; this one is about where the packets go.)
+      //
+      // Credentials count as part of the route — a proxy may accept one
+      // identity and refuse another — but they are compared as a DIGEST,
+      // because the password itself is dropped once the dial has it (see
+      // dialViaProxy). Equality is the only question ever asked here.
+      sameProxyRoute(this.opts.proxy ?? null, frame.proxy ?? null) &&
+      this.proxyCred === proxyCredDigest(frame.proxy)
     );
   }
 
@@ -240,6 +280,10 @@ export class EngineUpstream extends EventEmitter {
     // obvious than here.
     if (this.dialed) throw new Error('EngineUpstream.dial() is once per instance');
     this.dialed = true;
+    if (this.opts.proxy) {
+      this.dialViaProxy();
+      return;
+    }
     const { host, port, outgoingAddr, rejectUnauthorized, clientCert } = this.opts;
     const onConnect = () => this.onOpen();
     const base = {
@@ -291,6 +335,115 @@ export class EngineUpstream extends EventEmitter {
       this.lastError = err.message;
     });
     socket.on('close', () => this.onClose());
+  }
+
+  // The proxied half of dial(). Kept separate rather than branching inside the
+  // direct path because almost nothing is shared: there is no 'connect' event
+  // to wait for, no localAddress on the socket that means what it usually
+  // means, and no identd to register.
+  private dialViaProxy(): void {
+    const { host, port, outgoingAddr, rejectUnauthorized, clientCert, proxy } = this.opts;
+    if (!proxy) return;
+    const budget = this.opts.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS;
+    const startedAt = Date.now();
+    this.proxyDialPending = true;
+    void dialThroughProxy(
+      proxy,
+      { host, port },
+      { localAddress: outgoingAddr || undefined, deadlineMs: budget },
+    )
+      .then((tunnel) => {
+        this.proxyDialPending = false;
+        // `close()` can land while the dial is in flight. It has no socket to
+        // destroy yet — `destroy()` is `this.socket?.destroy()`, and there is
+        // no socket — so the tunnel would otherwise be an orphan holding an fd
+        // and its budget bytes forever.
+        //
+        // ⚠⚠ And the teardown has to be finished HERE. Destroying the tunnel
+        // produces no 'close' on a socket this upstream ever listened to, so
+        // without onClose() the session stays at state 'dialing' for good: it
+        // never emits 'closed', so EngineServer never drops it from
+        // `this.upstreams`, and shutdown() waits out its full grace on it. The
+        // direct path has no such hole because there `socket.destroy()` fires a
+        // real 'close'. Same reasoning as the .catch arm below.
+        if (this.closing || this.state === 'closed') {
+          tunnel.destroy();
+          if (this.state !== 'closed') this.onClose();
+          return;
+        }
+        const socket = this.opts.tls
+          ? tls.connect({
+              socket: tunnel,
+              // SNI only for a name — an IP literal is not a valid server name.
+              servername: net.isIP(host) ? undefined : host,
+              rejectUnauthorized,
+              key: clientCert?.key,
+              cert: clientCert?.cert,
+            })
+          : tunnel;
+        this.socket = socket;
+        if (this.opts.clientCert) {
+          this.opts.clientCert = { cert: this.opts.clientCert.cert, key: '' };
+        }
+        // Same reasoning as the client key above, and the same lifetime: this
+        // upstream can live for days and a heap snapshot walks what is still
+        // reachable. The tunnel has the credentials now, and the only later
+        // question — "is this the same proxy?" — is answered by proxyCred,
+        // which was taken at construction. Not an erasure (JS strings are
+        // immutable), just no longer reachable from here.
+        if (this.opts.proxy?.password) {
+          this.opts.proxy = { ...this.opts.proxy, password: '' };
+        }
+        socket.setEncoding('utf8');
+        socket.setKeepAlive(true, 60_000);
+        // ⚠ NO 'connect' listener and NO identd. The socket is already
+        // connected, so 'connect' will never fire again — and identd is
+        // unanswerable through a proxy anyway: the ircd sends its RFC 1413
+        // query to the address it SEES, which is the proxy's, and the 4-tuple
+        // here is ours-to-the-proxy. An entry would look configured and answer
+        // nothing.
+        //
+        // The endpoints recorded below are therefore the PROXY's, not the
+        // ircd's. That is the truth about this socket and it is reported as
+        // such: it is also the only way an operator can tell from the UI that
+        // the tunnel is really in use.
+        this.local = { address: socket.localAddress || '', port: socket.localPort || 0 };
+        this.remote = { address: socket.remoteAddress || '', port: socket.remotePort || 0 };
+        // ⚠ What is LEFT of the budget, not the whole of it again. The
+        // proxy handshake has already spent part of it, and `dialTimeoutMs` is
+        // documented as covering the dial — passing `budget` here would let a
+        // proxied dial take up to 2x what the direct path allows, which is
+        // exactly the case (a slow or tarpit proxy) where the cap matters.
+        // Floored at a second so a handshake that used the lot still gets a
+        // bounded, non-zero window rather than setTimeout(0) — which means "no
+        // timeout at all".
+        socket.setTimeout(Math.max(1000, budget - (Date.now() - startedAt)));
+        socket.on('timeout', () => {
+          if (this.state === 'dialing') this.dropPeer('dial timed out');
+        });
+        socket.on('data', (chunk: string) => this.onData(chunk));
+        socket.on('error', (err: Error) => {
+          this.lastError = err.message;
+        });
+        socket.on('close', () => this.onClose());
+        if (this.opts.tls) {
+          (socket as tls.TLSSocket).once('secureConnect', () => this.onOpen());
+        } else {
+          // Consistently asynchronous: a synchronous onOpen() here would emit
+          // 'open' before the caller that called dial() had returned.
+          setImmediate(() => this.onOpen());
+        }
+      })
+      .catch((err: unknown) => {
+        this.proxyDialPending = false;
+        // ⚠ NOT dropPeer(): that destroys `this.socket` and leaves the rest to
+        // the socket's own 'close' event, and here there is no socket — the
+        // dial failed before one existed. The session would sit in 'dialing'
+        // forever and the app would never hear `closed`. onClose() is the same
+        // teardown, called directly.
+        this.lastError = err instanceof Error ? err.message : String(err);
+        if (this.state !== 'closed') this.onClose();
+      });
   }
 
   // TCP is up (before any TLS handshake): the 4-tuple exists, so identd can be
@@ -699,6 +852,17 @@ export class EngineUpstream extends EventEmitter {
   destroy(): void {
     this.closing = true;
     this.socket?.destroy();
+    // ⚠⚠ A proxied dial has no socket until it resolves, so the line above is a
+    // no-op during it — and nothing else will ever fire a 'close', because
+    // there is no socket this upstream listened to. Without finishing here the
+    // session stays at state 'dialing' until the dial's own deadline (a MINUTE
+    // by default): it never emits 'closed', so EngineServer never drops it from
+    // its map, and shutdown() waits out its full grace on it.
+    //
+    // The tunnel itself is destroyed when the dial finally settles (the
+    // abandoned check in dialViaProxy), so at worst one fd outlives this by the
+    // remaining dial budget. The session's state does not.
+    if (this.proxyDialPending && this.state !== 'closed') this.onClose();
   }
 
   private onClose(): void {
