@@ -65,20 +65,37 @@ describe('PASS login (ZNC-compat floor)', () => {
   });
 });
 
-// #892. The attach burst replays the network's own 001–005 as they came off the
-// wire, so a server-time upstream hands us each one behind a tag block. Those
-// tags answer to this client's caps like any relayed line, and the numeric
-// still has to be pointed at the nick the client asked for.
+// #892. The attach burst replays the network's own 001–005, saved at
+// registration exactly as they came off the wire. Per-delivery tags on them are
+// stale by the time a client attaches, so, like ZNC, the replay keeps at most
+// `time`, and only for a server-time client. The numeric still has to be
+// pointed at the nick the client asked for.
 describe('replayed registration burst', () => {
   const TIME = '2026-09-06T05:04:37.800Z';
 
   function seedTaggedBurst(acct: import('../test-utils/bouncerHarness.js').HarnessAccount): void {
     const nick = acct.upstream.currentNick;
     acct.upstream.registrationLines = [
-      `@time=${TIME} :irc.example.test 001 ${nick} :Welcome to the Example IRC Network`,
-      `@time=${TIME} :irc.example.test 005 ${nick} CHANTYPES=# PREFIX=(ov)@+ :are supported by this server`,
+      `@time=${TIME};msgid=w1 :irc.example.test 001 ${nick} :Welcome to the Example IRC Network`,
+      `@time=${TIME};msgid=w5 :irc.example.test 005 ${nick} CHANTYPES=# PREFIX=(ov)@+ :are supported by this server`,
     ];
   }
+
+  it('keeps only the time tag for a message-tags client', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'livetags' });
+    seedTaggedBurst(acct);
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    c.send('CAP REQ :message-tags server-time');
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    expect(await c.waitForCommand('001')).toBe(
+      `@time=${TIME} :irc.example.test 001 client :Welcome to the Example IRC Network`,
+    );
+  });
 
   it('strips the tags for a client that requested no caps', async () => {
     const acct = harnessMod.seedAccount({ nick: 'livenick' });

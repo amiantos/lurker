@@ -1173,10 +1173,12 @@ class BouncerSession {
     // the network's own 001–005 when we have them so the client sees the real
     // ISUPPORT tokens (CHANTYPES/PREFIX/NETWORK drive its parsing).
     if (conn.state === 'connected' && conn.registrationLines.length > 0) {
-      // Stored with the upstream's tags, which answer to this client's caps
-      // like any relayed line (#892).
+      // Saved at registration with the upstream's tags, so any per-delivery tag
+      // on them (msgid, batch) is stale by now. Like ZNC, the replay keeps at
+      // most `time`, and only for a server-time client (#892).
+      const burstCaps = new Set(this.caps.has('server-time') ? ['server-time'] : []);
       for (const line of conn.registrationLines) {
-        const out = trimTagsForClient(line, this.caps);
+        const out = trimTagsForClient(line, burstCaps);
         if (out) this.write(rewriteNumericTarget(out, requested));
       }
     } else {
