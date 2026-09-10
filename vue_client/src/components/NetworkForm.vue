@@ -207,6 +207,72 @@
             <p v-if="certError" class="error">{{ certError }}</p>
           </div>
           <hr class="divider" />
+          <div class="proxy">
+            <label class="check">
+              <input v-model="form.proxy_enabled" type="checkbox" />
+              <span>Connect through a proxy</span>
+            </label>
+            <template v-if="form.proxy_enabled">
+              <label>
+                <span>Proxy type</span>
+                <select v-model="form.proxy_type">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http">HTTP CONNECT</option>
+                </select>
+              </label>
+              <label>
+                <span>Proxy address</span>
+                <span class="proxy-address">
+                  <input
+                    v-model.trim="form.proxy_host"
+                    placeholder="127.0.0.1"
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <span aria-hidden="true">:</span>
+                  <input
+                    v-model.number="form.proxy_port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    :placeholder="proxyPortPlaceholder"
+                    aria-label="Proxy port"
+                  />
+                </span>
+                <small>
+                  For Tor, that's <code>127.0.0.1</code> port <code>9050</code>. The server name is
+                  resolved by the proxy, not here — which is what makes
+                  <code>.onion</code> addresses work. File transfers (DCC) are turned off while a
+                  proxy is set, because they would connect directly and give away your address.
+                </small>
+              </label>
+              <label>
+                <span>Proxy username (optional)</span>
+                <input v-model.trim="form.proxy_username" autocomplete="off" />
+              </label>
+              <label>
+                <span class="field-label">
+                  <span>Proxy password (optional)</span>
+                  <button
+                    v-if="proxyHasPassword"
+                    type="button"
+                    class="clear-link"
+                    @click="toggleClearProxyPassword"
+                  >
+                    {{ clearProxyPassword ? 'keep' : 'clear' }}
+                  </button>
+                </span>
+                <input
+                  v-model="form.proxy_password"
+                  type="password"
+                  autocomplete="off"
+                  :disabled="clearProxyPassword"
+                  :placeholder="proxyHasPassword ? 'leave blank to keep saved password' : ''"
+                />
+              </label>
+            </template>
+          </div>
+          <hr class="divider" />
           <label class="check">
             <input v-model="form.autoconnect" type="checkbox" />
             <span>Reconnect automatically</span>
@@ -248,7 +314,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref, computed } from 'vue';
+import { reactive, ref, computed, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore, type ClientCertInfo, type Network } from '../stores/networks.js';
@@ -278,6 +344,9 @@ const isEdit = computed(() => !!props.network);
 // Cast to a loose record so we can read extra API fields not declared in
 // the typed Network interface (sasl_account, autoconnect, connect_commands, etc.).
 const netRaw = props.network as Record<string, unknown> | null;
+// The server sends the proxy as parts with the password reduced to a boolean —
+// never the password itself. See routes/networks.ts networkPayload.
+const proxyRaw = (netRaw?.proxy ?? null) as Record<string, unknown> | null;
 
 const form = reactive({
   name: props.network?.name ?? '',
@@ -302,6 +371,19 @@ const form = reactive({
   // An imported pair waiting on the create request, same idea.
   client_cert: '',
   client_key: '',
+  // Proxy (#303). Parts rather than a URL, because the server never hands the
+  // password back — with a single URL, changing the port would mean retyping
+  // the password. `proxy_enabled` is what the dial path asks: details can sit
+  // here saved while the network stays direct.
+  proxy_enabled: !!proxyRaw?.enabled,
+  proxy_type: (proxyRaw?.type as string | undefined) ?? 'socks5',
+  proxy_host: (proxyRaw?.host as string | undefined) ?? '',
+  proxy_port: (proxyRaw?.port as number | undefined) ?? 1080,
+  // ⚠ `proxy_port` is `number | ''` in practice: `v-model.number` on an emptied
+  // number input yields ''. Coerced at save (proxyPortValue) rather than
+  // guarded at every read.
+  proxy_username: (proxyRaw?.username as string | undefined) ?? '',
+  proxy_password: '',
 });
 
 // Auto-expand advanced when editing a row that already has any advanced value
@@ -314,8 +396,72 @@ const showAdvanced = ref(
       !!netRaw?.connect_commands ||
       netRaw?.autoconnect === false ||
       !!netRaw?.client_cert ||
+      !!proxyRaw ||
       netRaw?.trusted_certificates === false),
 );
+
+// "Leave blank to keep", the same contract server_password has: the field
+// starts empty because the server never sent the password, so an empty box
+// means "unchanged" and this button is the only way to actually remove one.
+const clearProxyPassword = ref(false);
+const proxyHasPassword = computed(() => !!proxyRaw?.has_password);
+function toggleClearProxyPassword(): void {
+  clearProxyPassword.value = !clearProxyPassword.value;
+  if (clearProxyPassword.value) form.proxy_password = '';
+}
+// Tor is the reason most people will use this, so the empty state is its
+// address rather than a generic example.
+const proxyPortPlaceholder = computed(() => (form.proxy_type === 'http' ? '3128' : '1080'));
+
+// The default follows the type, or picking "HTTP CONNECT" silently saves 1080
+// while the placeholder — which never shows, the field being pre-filled — says
+// 3128. Only rewrites an untouched default, never a port the user chose.
+watch(
+  () => form.proxy_type,
+  (next, prev) => {
+    const wasDefault = form.proxy_port === (prev === 'http' ? 3128 : 1080);
+    if (wasDefault) form.proxy_port = next === 'http' ? 3128 : 1080;
+  },
+);
+
+/** The port to send: an emptied number input gives '', which would otherwise be
+ *  written straight into an INTEGER column and only surface much later, when
+ *  the proxy is next enabled and validation calls it invalid. */
+function proxyPortValue(): number {
+  const n = Number(form.proxy_port);
+  return Number.isInteger(n) && n > 0 ? n : form.proxy_type === 'http' ? 3128 : 1080;
+}
+
+/** The proxy columns, but only when this save actually changes them.
+ *
+ *  ⚠⚠ Sending all six on every save made every save 403 on a locked-down
+ *  instance, because the server gated on the keys being PRESENT. The server now
+ *  gates on the proxy actually changing, so this is belt and braces — but it is
+ *  also just correct: a rename should not carry a proxy payload. */
+function proxyPatch(): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  const before = proxyRaw;
+  if (form.proxy_enabled !== !!before?.enabled) next.proxy_enabled = form.proxy_enabled;
+  if (form.proxy_type !== ((before?.type as string | undefined) ?? 'socks5')) {
+    next.proxy_type = form.proxy_type;
+  }
+  if (form.proxy_host !== ((before?.host as string | undefined) ?? '')) {
+    next.proxy_host = form.proxy_host;
+  }
+  // ⚠ Only when the network HAS a proxy, or the user is setting one up.
+  // Comparing the default against `undefined` on a network with no proxy sent
+  // `proxy_port` on every single save — a rename writing 1080 into an
+  // untouched column, which is exactly the churn this function exists to stop.
+  if ((before || form.proxy_enabled) && proxyPortValue() !== (before?.port as number | undefined)) {
+    next.proxy_port = proxyPortValue();
+  }
+  if (form.proxy_username !== ((before?.username as string | undefined) ?? '')) {
+    next.proxy_username = form.proxy_username;
+  }
+  if (form.proxy_password) next.proxy_password = form.proxy_password;
+  else if (clearProxyPassword.value) next.proxy_password = '';
+  return next;
+}
 
 // CertFP (#459). These four buttons write straight through to the server rather
 // than waiting for Save: a certificate is not a form field, it is a stored pair
@@ -582,13 +728,38 @@ async function submit(): Promise<void> {
       else if (clearServerPassword.value) patch.server_password = '';
       if (form.sasl_password) patch.sasl_password = form.sasl_password;
       else if (clearSaslPassword.value) patch.sasl_password = '';
+      Object.assign(patch, proxyPatch());
       // Saving only persists the row — it never cycles the live connection.
       // Connection-relevant edits (host/port/nick/credentials) take effect on
       // the next connect; the explicit "Reconnect" button below applies them
       // now if the user wants that.
       await networks.update(props.network.id, patch);
     } else {
-      await networks.create({ ...form });
+      // ⚠ The proxy columns are omitted entirely unless one was configured, so
+      // creating an ordinary network on a locked-down instance carries no proxy
+      // payload to be refused.
+      const {
+        proxy_enabled,
+        proxy_type,
+        proxy_host,
+        proxy_port,
+        proxy_username,
+        proxy_password,
+        ...rest
+      } = form;
+      await networks.create({
+        ...rest,
+        ...(proxy_enabled
+          ? {
+              proxy_enabled,
+              proxy_type,
+              proxy_host,
+              proxy_port: proxyPortValue(),
+              proxy_username,
+              proxy_password,
+            }
+          : {}),
+      });
     }
     emit('close');
   } catch (err: unknown) {
@@ -796,5 +967,23 @@ label small {
 }
 .cert-note {
   color: var(--fg-muted);
+}
+
+.proxy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.proxy-address {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.proxy-address input:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.proxy-address input[type='number'] {
+  flex: 0 0 6.5rem;
 }
 </style>

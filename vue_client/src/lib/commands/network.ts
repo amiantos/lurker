@@ -19,6 +19,7 @@
 // output.
 
 import { tokenizeArgs } from './tokenize.js';
+import { parseProxyUrl, isProxyProblem } from '../../../../shared/proxy.js';
 
 /** The network fields a /network add|modify can set, post-mapping from flags. */
 export interface NetworkInput {
@@ -37,6 +38,16 @@ export interface NetworkInput {
   connect_commands?: string;
   default_channel?: string;
   autoconnect?: boolean;
+  /** Proxy (#303). Written as a URL here because that is how a human types one
+   *  (`ALL_PROXY`, `curl -x`), and split into the stored parts by
+   *  parseProxyUrl — the columns are parts so the form can offer
+   *  "leave blank to keep" for the password. */
+  proxy_enabled?: boolean;
+  proxy_type?: string;
+  proxy_host?: string;
+  proxy_port?: number | null;
+  proxy_username?: string;
+  proxy_password?: string;
 }
 
 /** The parsed intent of a /network invocation. `error` carries a user message. */
@@ -68,8 +79,9 @@ const VALUE_FLAGS = new Set([
   'password',
   'autosendcmd',
   'channel',
+  'proxy',
 ]);
-const BOOL_FLAGS = new Set(['tls', 'notls', 'auto', 'noauto', 'cert']);
+const BOOL_FLAGS = new Set(['tls', 'notls', 'auto', 'noauto', 'cert', 'noproxy']);
 
 function isKnownFlag(name: string): boolean {
   return VALUE_FLAGS.has(name) || BOOL_FLAGS.has(name);
@@ -147,6 +159,40 @@ function buildInput(flags: Flags): NetworkInput | { error: string } {
   if (bools.has('notls')) input.tls = false;
 
   if (bools.has('cert')) input.generate_client_cert = true;
+
+  // A URL is how a proxy is written everywhere else, so that is what -proxy
+  // takes; the parser splits it into the stored columns.
+  //
+  // ⚠ A URL with a password in it goes through the composer, whose input has
+  // history — the same argument that kept CertFP *import* out of /network.
+  // Unlike a PEM this is one short token people genuinely will type, so it
+  // stays, but the form is the better place for one carrying a password.
+  if (values.proxy !== undefined && bools.has('noproxy')) {
+    return { error: 'cannot combine -proxy and -noproxy' };
+  }
+  if (values.proxy !== undefined) {
+    const parsed = parseProxyUrl(values.proxy);
+    if (isProxyProblem(parsed)) return { error: parsed.error };
+    input.proxy_enabled = true;
+    input.proxy_type = parsed.type;
+    input.proxy_host = parsed.host;
+    input.proxy_port = parsed.port;
+    input.proxy_username = parsed.username ?? '';
+    input.proxy_password = parsed.password ?? '';
+  }
+  // Turns the proxy OFF and clears it, so `-noproxy` reads as "stop going
+  // through a proxy" rather than leaving credentials behind.
+  if (bools.has('noproxy')) {
+    input.proxy_enabled = false;
+    input.proxy_type = '';
+    input.proxy_host = '';
+    // Cleared too, or "stop going through a proxy" leaves a stale port sitting
+    // in the column — inert, since the type and host are gone, but it would
+    // reappear as a default the next time someone enabled a proxy here.
+    input.proxy_port = null;
+    input.proxy_username = '';
+    input.proxy_password = '';
+  }
 
   if (bools.has('auto') && bools.has('noauto')) {
     return { error: 'cannot combine -auto and -noauto' };

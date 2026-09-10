@@ -54,6 +54,55 @@ A certificate is presented during the TLS handshake, so a change takes effect on
 the next connect — and a network with one attached won't connect over plaintext,
 since there is no handshake to present it in.
 
+### Connecting through a proxy (SOCKS5 / HTTP)
+
+A network can route its IRC connection through a SOCKS5 or HTTP CONNECT proxy,
+so the server sees the proxy's address instead of yours. It lives under
+**Advanced** in the network's settings: tick **Connect through a proxy**, pick
+the type, and give the address.
+
+For Tor, run a Tor daemon and point the network at **`127.0.0.1` port `9050`**
+with type SOCKS5. That is also what makes `.onion` addresses work: the server
+name is resolved _by the proxy_, never by Lurker, so an address that only exists
+inside Tor resolves where it can be resolved. It also means your own DNS lookups
+never name the servers you talk to.
+
+Username and password are optional and only sent if the proxy asks for them.
+The password is stored encrypted and never sent back to your browser, so when
+you edit a proxy the field is blank — leave it blank to keep the saved one, or
+use **clear** to remove it.
+
+From the composer:
+
+```
+/network modify Libera -proxy socks5://127.0.0.1:9050
+/network modify Libera -noproxy
+```
+
+`-noproxy` turns the proxy off and clears its details. A URL with a password in
+it will sit in your input history, so prefer the settings form for that.
+
+Two things worth knowing:
+
+- **A change takes effect on the next connect**, like every other network
+  setting. Reconnect to apply it.
+- **File transfers (DCC) are refused while a proxy is set.** DCC connects
+  directly, outside the tunnel, in both directions — so accepting one would give
+  away the address the proxy exists to hide. Lurker says so rather than doing it
+  quietly.
+
+If the proxy can't be used — it's unreachable, it rejects your credentials, or
+the details don't make sense — Lurker **refuses to connect** and says why. It
+never falls back to connecting directly, because that would put your real
+address on the wire while everything on screen said otherwise.
+
+::: tip Self-hosting without a proxy setting
+If you run Lurker behind the IRC engine, the engine is what dials — so it needs
+to be new enough to understand proxies (protocol minor 5). An older engine is
+refused rather than allowed to connect directly; update the engine image and
+restart it.
+:::
+
 ## Joining channels
 
 - Joining by name and using the channel browser.
