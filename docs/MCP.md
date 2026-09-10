@@ -35,13 +35,20 @@ Scopes are coarse on purpose. Per-verb scopes are not implemented because
 the threat model assumes the operator is the only person holding tokens for
 their own account.
 
-## Tokens are HTTP-only
+## API tokens and OAuth sign-in
 
-API tokens authenticate the HTTP endpoint (`/mcp` and `/api/api-tokens`). The
-WebSocket endpoint used by the browser is cookie-only and does not accept
-bearer tokens. There is no way to drive the browser-style stateful protocol
-(presence, drafts, snapshot resume) from an MCP client — that surface is
-deliberately out of scope.
+`/mcp` accepts two bearer credentials:
+
+- **An API token** from your settings, with the scope you chose. API tokens
+  don't open the WebSocket the browser uses.
+- **An OAuth access token.** An MCP client that looks for an OAuth server at
+  your Lurker's root can skip the token and sign in through your browser: it
+  finds the discovery document, registers itself, and you approve it. The token
+  is read-write here and works everywhere a password sign-in does. Its redirect
+  URI has to follow the rules in [OAuth for third-party clients](OAUTH.md).
+
+There is no way to drive the browser-style stateful protocol (presence, drafts,
+snapshot resume) from an MCP client — that surface is deliberately out of scope.
 
 ## Tools (MCP verbs)
 
@@ -288,6 +295,10 @@ row stays in the listing with a `revoked` marker (so you can see whether a
 specific name was previously issued and torn down). The token immediately
 stops authenticating against `/mcp`. There is no token rotation flow —
 revoke the old one and mint a new one.
+
+An MCP client that signed in with OAuth is revoked under **Settings →
+Authorized apps**. Its token stops working at once, and the client has to be
+approved again.
 
 ## What's not here
 

@@ -21,8 +21,9 @@ token. Hosted lurker.chat doesn't offer it.
 
 The access token:
 
-- **Access:** the same as a password sign-in — every REST route and the
-  WebSocket. There are no scopes; a `scope` parameter is ignored.
+- **Access:** the same as a password sign-in — every REST route, the WebSocket
+  and the MCP endpoint (`/mcp`, read-write). There are no scopes; a `scope`
+  parameter is ignored.
 - **Lifetime:** never expires. There are no refresh tokens; a token lasts until
   it's revoked.
 - **Clients:** public only. There are no client secrets, and PKCE with `S256` is

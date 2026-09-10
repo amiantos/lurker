@@ -140,6 +140,27 @@ describe('MCP server', () => {
     }
   });
 
+  // #891: an MCP client that signed in through OAuth holds an access token with
+  // the access of a password sign-in, which here means the read-write surface.
+  it('tools/list with an OAuth access token matches a read-write API token', async () => {
+    const oauth = await import('../db/oauth.js');
+    const oauthApp = oauth.createApp({
+      clientName: 'MCP client',
+      clientUri: null,
+      redirectUris: ['urn:ietf:wg:oauth:2.0:oob'],
+    });
+    const token = oauth.createToken(oauthApp.id, owner.id);
+
+    const viaOAuth = await rpc(token, { jsonrpc: '2.0', id: 30, method: 'tools/list' });
+    const viaApiToken = await rpc(rwToken.token, { jsonrpc: '2.0', id: 31, method: 'tools/list' });
+    expect(viaOAuth.status).toBe(200);
+    expect(viaOAuth.body.result.tools).toEqual(viaApiToken.body.result.tools);
+
+    oauth.deleteTokenByRaw(token);
+    const revoked = await rpc(token, { jsonrpc: '2.0', id: 32, method: 'tools/list' });
+    expect(revoked.status).toBe(401);
+  });
+
   it("tools/call list_networks returns the user's networks as a JSON text block", async () => {
     const res = await rpc(readToken.token, {
       jsonrpc: '2.0',

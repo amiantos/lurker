@@ -1313,9 +1313,10 @@ account_not_empty`). A mobile/TUI client can skip all of this.
 
 - `/api/admin/*` — admin panel (users, invites, presence, instance uploaders/
   networks). Admin-gated; build against it only if you're making an admin tool.
-- `/api/api-tokens` + `/mcp` (standalone only) — a _separate_ Bearer namespace
-  for MCP/automation. **Those tokens cannot open the WS**; don't confuse them
-  with session tokens or OAuth access tokens (§3.2).
+- `/api/api-tokens` + `/mcp` (standalone only) — API tokens are a _separate_
+  Bearer namespace for MCP/automation. **They cannot open the WS**; don't
+  confuse them with session tokens or with OAuth access tokens (§3.2), which
+  `/mcp` also accepts.
 - `/api/node/*` (node edition) — control-plane internal, fleet-secret gated.
 
 ---

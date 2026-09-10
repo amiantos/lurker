@@ -66,7 +66,8 @@ export function loadSession(req: Request): { session: Session; user: User } | nu
 // Both are 32 random bytes, and sessions are stored raw while OAuth tokens are
 // stored as SHA-256, so one can never be taken for the other; the order below
 // only decides which table is asked first. API tokens (middleware/apiAuth.ts)
-// are a third, separate namespace that only /mcp accepts.
+// are a third, separate namespace that only /mcp and the IRC bouncer accept;
+// /mcp takes OAuth tokens as well.
 export function bearerToken(authorization: string | undefined): string | null {
   const match = /^Bearer\s+(\S+)$/.exec(authorization ?? '');
   return match ? match[1] : null;
