@@ -46,36 +46,10 @@ import {
   setUploadFavorite,
 } from '../db/uploadHistory.js';
 import { reportUploadSoon } from '../services/moderationReport.js';
+import { publicBaseUrl } from '../utils/publicOrigin.js';
 
 const router = Router();
 router.use(requireAuth);
-
-// The absolute origin (scheme + host) a `local` upload's relative URL is prefixed
-// with so the pasted link works from IRC. PUBLIC_BASE_URL wins (explicit,
-// proxy-safe); otherwise derive from the request, honoring the reverse-proxy
-// forwarding headers a self-hoster's Caddy/nginx sets. Read here rather than via
-// a global `trust proxy` so the rest of the app's request handling is unchanged.
-// A forwarding header may be a list ("proto1, proto2"); take the first hop.
-function firstHeaderValue(v: unknown): string {
-  return String(v ?? '')
-    .split(',')[0]
-    .trim();
-}
-
-// A host is hostname[:port] or [ipv6][:port] — reject anything with characters
-// that could break out of the authority (slash, space, userinfo '@', etc.), so a
-// spoofed header can never inject path/scheme into the URL we construct + persist.
-const HOST_RE = /^[A-Za-z0-9.\-:[\]]+$/;
-
-function requestOrigin(req: Request): string {
-  // Only http/https are valid schemes; anything else (a spoofed "javascript" or
-  // garbage X-Forwarded-Proto) is ignored so it can never reach the built URL.
-  const rawProto = firstHeaderValue(req.headers['x-forwarded-proto']) || req.protocol;
-  const proto = rawProto === 'http' || rawProto === 'https' ? rawProto : 'https';
-  const rawHost = firstHeaderValue(req.headers['x-forwarded-host']) || req.get('host') || '';
-  const host = HOST_RE.test(rawHost) ? rawHost : '';
-  return host ? `${proto}://${host}` : '';
-}
 
 // Warn once (per process) the first time a local-upload link is built from
 // request headers because PUBLIC_BASE_URL isn't set. That fallback is the only
@@ -85,11 +59,11 @@ let warnedRequestOriginFallback = false;
 
 /** Absolutize a driver result URL. Drivers that store remotely already return an
  *  absolute URL; the local driver returns a root-relative path we prefix with the
- *  instance's public base (PUBLIC_BASE_URL, else the request origin). */
+ *  instance's public base (PUBLIC_BASE_URL, else the request origin — see
+ *  utils/publicOrigin). */
 function absolutizeUrl(url: string, storesRemotely: boolean, req: Request): string {
   if (storesRemotely || !url.startsWith('/')) return url;
-  const configured = process.env.PUBLIC_BASE_URL;
-  if (!configured && !warnedRequestOriginFallback) {
+  if (!process.env.PUBLIC_BASE_URL && !warnedRequestOriginFallback) {
     warnedRequestOriginFallback = true;
     console.warn(
       '[lurker] PUBLIC_BASE_URL is not set; local-upload links are derived from ' +
@@ -97,7 +71,7 @@ function absolutizeUrl(url: string, storesRemotely: boolean, req: Request): stri
         'PUBLIC_BASE_URL to this instance’s public origin for stable links.',
     );
   }
-  const base = (configured || requestOrigin(req)).replace(/\/+$/, '');
+  const base = publicBaseUrl(req);
   return base ? base + url : url;
 }
 

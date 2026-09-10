@@ -179,9 +179,16 @@ export type SubscriptionInput =
 // mixed cases are refused rather than reasoned about.
 //
 // Returns { ok, sub } on success or { ok: false, error } on a refused collision.
+//
+// `oauthTokenId` is the OAuth token the registration came through (#891), or null
+// for a session. The column cascades from oauth_tokens, so revoking an app deletes
+// the push registrations it made -- otherwise a revoked app would go on receiving
+// the member's message content. A re-registration takes the latest registrant's
+// value, the same way user_id does.
 export function upsertSubscription(
   userId: number,
   input: SubscriptionInput,
+  oauthTokenId: number | null = null,
 ): { ok: true; sub: PushSubscription | null } | { ok: false; error: string } {
   const { transport, endpoint, userAgent } = input;
   const p256dh = transport === 'webpush' ? input.p256dh : null;
@@ -200,22 +207,24 @@ export function upsertSubscription(
       UPDATE push_subscriptions
       SET user_id = ?, transport = ?, p256dh = ?, auth = ?,
           user_agent = COALESCE(?, user_agent),
+          oauth_token_id = ?,
           enabled = 1, fail_count = 0,
           last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE endpoint = ?
     `,
-    ).run(userId, transport, p256dh, auth, userAgent || null, endpoint);
+    ).run(userId, transport, p256dh, auth, userAgent || null, oauthTokenId, endpoint);
     return { ok: true, sub: getByEndpoint(endpoint) };
   }
   db.prepare(
     `
     INSERT INTO push_subscriptions
-      (user_id, endpoint, transport, p256dh, auth, user_agent, created_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?,
+      (user_id, endpoint, transport, p256dh, auth, user_agent, oauth_token_id,
+       created_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?,
       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   `,
-  ).run(userId, endpoint, transport, p256dh, auth, userAgent || null);
+  ).run(userId, endpoint, transport, p256dh, auth, userAgent || null, oauthTokenId);
   return { ok: true, sub: getByEndpoint(endpoint) };
 }
 

@@ -59,8 +59,10 @@ behind them, and the endpoints aren't mounted, so a toggle would do nothing.
 `linkPreviews` gates `chat.inline_media.enabled`, `chat.link_previews.enabled`,
 and the `/api/link-preview/*` endpoints.
 
-Node edition disables `/api/api-tokens`, `/mcp`, and `/uploads/*` static serving;
-standalone has no `/api/node/*`. The WS protocol itself is identical in both.
+Node edition disables `/api/api-tokens`, `/mcp`, the OAuth endpoints
+(`/api/oauth/*` and `/.well-known/oauth-authorization-server`), and `/uploads/*`
+static serving; standalone has no `/api/node/*`. The WS protocol itself is
+identical in both.
 Health check: `GET /api/health` → `{"status":"ok","time":"<ISO 8601>"}` (no
 auth, no version).
 
@@ -90,13 +92,15 @@ no feature flags on the socket.
 
 ## 3. Authentication
 
-Two credentials open every door (REST and WS); both resolve to the same
-`sessions` row:
+Three credentials open every door (REST and WS) with the same access. The cookie
+and the minted token resolve to the same `sessions` row; an OAuth access token
+belongs to an app the member approved:
 
-| Credential                      | Who uses it          | How                                                                                    |
-| ------------------------------- | -------------------- | -------------------------------------------------------------------------------------- |
-| Signed cookie `lurker_session`  | Browsers             | Set by the login endpoints; `httpOnly`, `SameSite=Lax`, 30-day                         |
-| `Authorization: Bearer <token>` | Native / TUI clients | Token from the mint endpoints below; sent on every REST call **and on the WS upgrade** |
+| Credential                             | Who uses it                      | How                                                                                    |
+| -------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------- |
+| Signed cookie `lurker_session`         | Browsers                         | Set by the login endpoints; `httpOnly`, `SameSite=Lax`, 30-day                         |
+| `Authorization: Bearer <token>`        | Native / TUI clients             | Token from the mint endpoints below; sent on every REST call **and on the WS upgrade** |
+| `Authorization: Bearer <access token>` | Third-party clients, self-hosted | Access token from the OAuth flow (§3.2); sent exactly like the minted token            |
 
 Browsers can't set headers on a WS upgrade, hence the cookie path. Native clients
 should use Bearer exclusively.
@@ -107,7 +111,7 @@ should use Bearer exclusively.
 POST /api/auth/login/token          (no auth; failure-throttled)
 { "username": "...", "password": "..." }
 → 200 { "token": "...", "expiresAt": "<ISO8601>", "user": { "id", "username", "role" } }
-→ 401 invalid credentials · 429 throttled (see §3.4)
+→ 401 invalid credentials · 429 throttled (see §3.5)
 ```
 
 The token is an opaque 32-byte base64url session token (`routes/auth.ts:558`,
@@ -125,7 +129,17 @@ The token is an opaque 32-byte base64url session token (`routes/auth.ts:558`,
   until it sets a password (`PUT /api/auth/password`). Surface that case: the
   mint endpoint just returns 401.
 
-### 3.2 Hosted (`app.lurker.chat`): mint at the control plane
+### 3.2 Self-hosted: OAuth for third-party clients
+
+A self-hosted server is also an OAuth 2 authorization server: the app registers
+itself, the member approves it in the browser, and the app exchanges a one-time
+code (PKCE `S256`) for an access token. The token has the same access as the
+minted token above and is sent the same way, but it never expires. The app never
+handles the password, so this is the recommended path for third-party clients,
+and it works for passkey-only accounts — see
+[OAuth for third-party clients](OAUTH.md).
+
+### 3.3 Hosted (`app.lurker.chat`): mint at the control plane
 
 ```
 POST https://app.lurker.chat/_cp/auth/app/login     (no auth)
@@ -141,7 +155,7 @@ reset invalidates every session, via the session epoch); there is no per-device
 revoke on hosted. After minting, use the token exactly as in §3.1 — same header,
 same endpoints — the control plane proxies you to the right cell transparently.
 
-### 3.3 Browser flows (for completeness)
+### 3.4 Browser flows (for completeness)
 
 WebAuthn/passkey and password login endpoints (`/api/auth/setup*`, `/invite/*`,
 `/login/options|verify|password`, `/passkeys*`) set the `lurker_session` cookie
@@ -150,12 +164,13 @@ them. `GET /api/auth/auth-methods` → `{passkey:boolean}` tells a login form wh
 to offer. `GET /api/auth/me` → `{user:{id,username,role,is_paused}}` validates a
 session.
 
-### 3.4 Cross-cutting auth behavior
+### 3.5 Cross-cutting auth behavior
 
 - **401 semantics:** any `401` from `/api/*` or a refused WS upgrade means _dead
   session_ — clear the stored token and return to login. The server deliberately
   never uses 401 for downstream failures (upload provider errors are 502/400),
-  so you can trust it.
+  so you can trust it. Exception: `401 invalid_client` from `/api/oauth/token`
+  or `/api/oauth/revoke` (§3.2) rejects the app's `client_id`, not the session.
 - **Rate limiting:** credential endpoints allow 10 failures / 15 min / IP →
   `429` + `Retry-After`; the whole `/api/auth` router is capped at 60 req/min/IP.
   Honor `Retry-After`.
@@ -1300,7 +1315,7 @@ account_not_empty`). A mobile/TUI client can skip all of this.
   networks). Admin-gated; build against it only if you're making an admin tool.
 - `/api/api-tokens` + `/mcp` (standalone only) — a _separate_ Bearer namespace
   for MCP/automation. **Those tokens cannot open the WS**; don't confuse them
-  with session tokens.
+  with session tokens or OAuth access tokens (§3.2).
 - `/api/node/*` (node edition) — control-plane internal, fleet-secret gated.
 
 ---

@@ -1215,29 +1215,49 @@ describe('eachUserBufferTarget / badge-vs-snapshot parity (#454)', () => {
 describe('authenticateUpgrade', () => {
   let authenticateUpgrade: typeof import('./wsHub.js').authenticateUpgrade;
   let createSession: typeof import('../db/sessions.js').createSession;
+  let oauth: typeof import('../db/oauth.js');
 
   beforeAll(async () => {
     ({ authenticateUpgrade } = await import('./wsHub.js'));
     ({ createSession } = await import('../db/sessions.js'));
+    oauth = await import('../db/oauth.js');
   });
 
   it('authenticates a browser via the signed session cookie', () => {
     const { token } = createSession(userId);
     const signed = encodeURIComponent('s:' + signCookie(token, TEST_SESSION_SECRET));
-    const user = authenticateUpgrade(
+    const auth = authenticateUpgrade(
       upgrade({ cookie: `lurker_session=${signed}` }),
       TEST_SESSION_SECRET,
     );
-    expect(user?.id).toBe(userId);
+    expect(auth?.user.id).toBe(userId);
+    expect(auth?.oauthTokenId).toBeNull();
   });
 
   it('authenticates a native client via a bearer session token', () => {
     const { token } = createSession(userId);
-    const user = authenticateUpgrade(
+    const auth = authenticateUpgrade(
       upgrade({ authorization: `Bearer ${token}` }),
       TEST_SESSION_SECRET,
     );
-    expect(user?.id).toBe(userId);
+    expect(auth?.user.id).toBe(userId);
+    expect(auth?.oauthTokenId).toBeNull();
+  });
+
+  it('authenticates a third-party app via its OAuth token, and says which token', () => {
+    // #891: the token id rides on the socket so revoking the app can find it.
+    const app = oauth.createApp({
+      clientName: 'Upgrade test app',
+      clientUri: null,
+      redirectUris: ['urn:ietf:wg:oauth:2.0:oob'],
+    });
+    const token = oauth.createToken(app.id, userId);
+    const auth = authenticateUpgrade(
+      upgrade({ authorization: `Bearer ${token}` }),
+      TEST_SESSION_SECRET,
+    );
+    expect(auth?.user.id).toBe(userId);
+    expect(auth?.oauthTokenId).toBe(oauth.findTokenByRaw(token)?.id);
   });
 
   it('rejects an upgrade with no credentials at all', () => {
@@ -1245,32 +1265,32 @@ describe('authenticateUpgrade', () => {
   });
 
   it('rejects an unknown bearer token', () => {
-    const user = authenticateUpgrade(
+    const auth = authenticateUpgrade(
       upgrade({ authorization: 'Bearer not-a-real-token' }),
       TEST_SESSION_SECRET,
     );
-    expect(user).toBeNull();
+    expect(auth).toBeNull();
   });
 
   it('rejects a raw (unsigned) session token in the cookie', () => {
     // The cookie path requires the 's:' signature prefix — a bearer token pasted
     // into the cookie must not authenticate.
     const { token } = createSession(userId);
-    const user = authenticateUpgrade(
+    const auth = authenticateUpgrade(
       upgrade({ cookie: `lurker_session=${token}` }),
       TEST_SESSION_SECRET,
     );
-    expect(user).toBeNull();
+    expect(auth).toBeNull();
   });
 
   it('rejects a cookie signed with a different secret', () => {
     const { token } = createSession(userId);
     const signed = encodeURIComponent('s:' + signCookie(token, 'some-other-secret'));
-    const user = authenticateUpgrade(
+    const auth = authenticateUpgrade(
       upgrade({ cookie: `lurker_session=${signed}` }),
       TEST_SESSION_SECRET,
     );
-    expect(user).toBeNull();
+    expect(auth).toBeNull();
   });
 });
 

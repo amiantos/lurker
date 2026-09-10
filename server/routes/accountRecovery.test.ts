@@ -279,6 +279,31 @@ describe('POST /api/auth/recovery/:token/password', () => {
     expect(apiTokens.listForUser(u.id).filter((t) => !t.revokedAt)).toHaveLength(0);
   });
 
+  it('revokes OAuth apps, including an approval not yet exchanged (#891)', async () => {
+    const u = createUser('redeem-oauth');
+    const oauth = await import('../db/oauth.js');
+    const oauthApp = oauth.createApp({
+      clientName: 'Attacker app',
+      clientUri: null,
+      redirectUris: ['urn:ietf:wg:oauth:2.0:oob'],
+    });
+    const accessToken = oauth.createToken(oauthApp.id, u.id);
+    // Approved moments before the recovery and not exchanged yet. Deleting tokens
+    // alone would let this mint a fresh one after the member took the account back.
+    const code = oauth.createCode({
+      appId: oauthApp.id,
+      userId: u.id,
+      redirectUri: 'urn:ietf:wg:oauth:2.0:oob',
+      codeChallenge: 'c'.repeat(43),
+    });
+    const { token } = await issue(u.id);
+    await testRequest(app)
+      .post(`/api/auth/recovery/${token}/password`)
+      .send({ password: 'revoketheapps' });
+    expect(oauth.findTokenByRaw(accessToken)).toBeNull();
+    expect(oauth.consumeCode(code)).toBeNull();
+  });
+
   it('drops push registrations, which leak message content to an evicted device', async () => {
     const u = createUser('redeem-push');
     const push = await import('../db/pushSubscriptions.js');

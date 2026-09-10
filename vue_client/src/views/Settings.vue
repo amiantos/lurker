@@ -61,6 +61,7 @@ import IgnoresPane from '../components/settings-panes/IgnoresPane.vue';
 import NetworksPane from '../components/settings-panes/NetworksPane.vue';
 import AccountPane from '../components/settings-panes/AccountPane.vue';
 import ApiTokensPane from '../components/settings-panes/ApiTokensPane.vue';
+import AuthorizedAppsPane from '../components/settings-panes/AuthorizedAppsPane.vue';
 import UploadsPane from '../components/settings-panes/UploadsPane.vue';
 import DataPane from '../components/settings-panes/DataPane.vue';
 import AboutPane from '../components/settings-panes/AboutPane.vue';
@@ -102,6 +103,7 @@ const BESPOKE_PANES: Record<string, Component> = {
   networks: NetworksPane,
   account: AccountPane,
   'api-tokens': ApiTokensPane,
+  'authorized-apps': AuthorizedAppsPane,
   uploads: UploadsPane,
   data: DataPane,
   about: AboutPane,

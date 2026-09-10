@@ -93,6 +93,25 @@ describe('buildApp route gating by edition', () => {
       expect(res.headers['content-type']).toMatch(/text\/html/);
       expect(res.text).toContain('id="app"');
     });
+
+    it.skipIf(!hasBuiltClient)(
+      'serves the OAuth approval page with headers that forbid framing it (#891)',
+      async () => {
+        const app = await buildFor('standalone');
+        // Every spelling the client router renders the page for, not just the canonical one.
+        for (const spelling of ['/oauth/authorize', '/oauth/authorize/', '/OAuth/Authorize']) {
+          const res = await testRequest(app).get(`${spelling}?client_id=x`);
+          expect(res.status).toBe(200);
+          expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+          expect(res.headers['x-frame-options']).toBe('DENY');
+          expect(res.headers['cache-control']).toBe('no-store');
+          expect(res.headers['referrer-policy']).toBe('no-referrer');
+        }
+        // …and only there: the rest of the app stays embeddable.
+        const settings = await testRequest(app).get('/settings');
+        expect(settings.headers['x-frame-options']).toBeUndefined();
+      },
+    );
   });
 
   describe('standalone edition', () => {
@@ -115,5 +134,63 @@ describe('buildApp route gating by edition', () => {
       const res = await testRequest(app).get('/api/node/status');
       expect(res.status).toBe(404);
     });
+  });
+});
+
+describe('OAuth (#891) mounting', () => {
+  it('is mounted in standalone: registration answers rather than 404ing', async () => {
+    const app = await buildFor('standalone');
+    const res = await testRequest(app).post('/api/oauth/register').send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_client_metadata');
+  });
+
+  it('is not mounted in node edition, where sign-in happens in front of the cell', async () => {
+    const app = await buildFor('node');
+    expect((await testRequest(app).post('/api/oauth/register').send({})).status).toBe(404);
+    expect((await testRequest(app).get('/api/oauth/apps')).status).toBe(404);
+    const discovery = await testRequest(app).get('/.well-known/oauth-authorization-server');
+    expect(discovery.headers['content-type'] ?? '').not.toMatch(/json/);
+  });
+
+  it('serves the discovery document as JSON, ahead of the SPA fallback', async () => {
+    const app = await buildFor('standalone');
+    const saved = process.env.PUBLIC_BASE_URL;
+    delete process.env.PUBLIC_BASE_URL;
+    try {
+      const res = await testRequest(app)
+        .get('/.well-known/oauth-authorization-server')
+        .set('Host', 'irc.example.com');
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        issuer: 'http://irc.example.com',
+        authorization_endpoint: 'http://irc.example.com/oauth/authorize',
+        registration_endpoint: 'http://irc.example.com/api/oauth/register',
+        token_endpoint_auth_methods_supported: ['none'],
+        code_challenge_methods_supported: ['S256'],
+      });
+    } finally {
+      if (saved !== undefined) process.env.PUBLIC_BASE_URL = saved;
+    }
+  });
+});
+
+describe('request body errors', () => {
+  it('answers a malformed body with 400 and never logs it', async () => {
+    // The parser attaches the raw body to its error, and that body can hold a
+    // password or an OAuth code verifier.
+    const app = await buildFor('standalone');
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await testRequest(app)
+        .post('/api/oauth/token')
+        .set('Content-Type', 'application/json')
+        .send('{"code_verifier":"do-not-log-me"');
+      expect(res.status).toBe(400);
+      expect(res.body).toEqual({ error: 'invalid_request' });
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
   });
 });

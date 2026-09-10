@@ -591,6 +591,23 @@ export const EXPORT_TABLES = Object.freeze({
       'bearer-token credentials bound to this instance; user re-issues tokens on the target instance',
   },
 
+  oauth_apps: {
+    mode: 'skip',
+    reason:
+      'third-party app registrations with this instance; an app registers itself with the target instance',
+  },
+
+  oauth_codes: {
+    mode: 'skip',
+    reason: 'one-time authorization codes that expire within minutes; nothing to carry over',
+  },
+
+  oauth_tokens: {
+    mode: 'skip',
+    reason:
+      'hashed access tokens for apps authorized on this instance; the user authorizes each app again on the target',
+  },
+
   peer_presence_state: {
     mode: 'skip',
     reason: 'transient cache; rebuilt by IRC events on next connect',

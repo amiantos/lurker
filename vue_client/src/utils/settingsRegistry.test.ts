@@ -47,6 +47,9 @@ describe('categoryVisible', () => {
   it('hides selfHostedOnly categories in node edition only', () => {
     expect(categoryVisible(cat('api-tokens'), standalone)).toBe(true);
     expect(categoryVisible(cat('api-tokens'), node)).toBe(false);
+    // The OAuth server (#891) exists in standalone edition only.
+    expect(categoryVisible(cat('authorized-apps'), standalone)).toBe(true);
+    expect(categoryVisible(cat('authorized-apps'), node)).toBe(false);
   });
 
   it('shows ordinary categories in both editions', () => {
