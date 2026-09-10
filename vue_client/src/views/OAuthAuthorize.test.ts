@@ -5,7 +5,9 @@
 
 // The OAuth approval page (#891). What matters here lives in what the page does
 // with a response, which no server test can see: framed, it shows and asks for
-// nothing; a rejected request stays on the page; and only a click navigates.
+// nothing; a rejected request stays on the page; only a click navigates; and the
+// member is told when the page is done with, but never while a redirect is
+// still leaving it.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
@@ -82,6 +84,7 @@ describe('OAuthAuthorize', () => {
       body: { ...PARAMS, decision: 'approve' },
     });
     expect(wrapper.find('code.code').text()).toBe('the-code');
+    expect(wrapper.text()).toContain('You can close this page after pasting it.');
     expect(assign).not.toHaveBeenCalled();
   });
 
@@ -98,7 +101,32 @@ describe('OAuthAuthorize', () => {
     await button(wrapper, 'Approve').trigger('click');
     await flushPromises();
     expect(assign).toHaveBeenCalledWith(redirect);
+    // This tab is the one navigating; closing it now would cancel the redirect.
+    expect(wrapper.text()).not.toContain('You can close this page');
+    expect(button(wrapper, 'Approve').attributes('disabled')).toBeDefined();
   });
+
+  it.each([
+    ['approve', 'Approved. You can close this page.'],
+    ['deny', 'Denied. You can close this page.'],
+  ])(
+    'says the page can be closed once an app-scheme redirect hands off (%s)',
+    async (decision, message) => {
+      const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+      const redirect = 'com.example.ivory:/oauth?state=s1';
+      serve({ kind: 'app', scheme: 'com.example.ivory' }, { redirect });
+
+      const wrapper = mount(OAuthAuthorize);
+      await flushPromises();
+      await button(wrapper, decision === 'approve' ? 'Approve' : 'Deny').trigger('click');
+      await flushPromises();
+
+      // Another app takes the redirect and this tab stays put, so it says it's done.
+      expect(assign).toHaveBeenCalledWith(redirect);
+      expect(wrapper.text()).toContain(message);
+      expect(wrapper.findAll('button')).toHaveLength(0);
+    },
+  );
 
   // Registration is open, so a rejected request's redirect could be anyone's.
   it('shows a rejected request on the page and never navigates', async () => {

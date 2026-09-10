@@ -69,6 +69,11 @@
           <button class="btn-secondary" @click="onCopy">{{ copied ? 'Copied' : 'Copy' }}</button>
         </div>
         <p v-if="copyError" class="error">{{ copyError }}</p>
+        <p class="hint">You can close this page after pasting it.</p>
+      </template>
+
+      <template v-else-if="state === 'approved'">
+        <p class="subtitle">Approved. You can close this page.</p>
       </template>
 
       <template v-else-if="state === 'denied'">
@@ -113,7 +118,7 @@ function isFramed(): boolean {
 }
 
 const framed = isFramed();
-const state = ref<'checking' | 'error' | 'approve' | 'code' | 'denied'>('checking');
+const state = ref<'checking' | 'error' | 'approve' | 'code' | 'approved' | 'denied'>('checking');
 const info = ref<AuthorizeInfo | null>(null);
 const errorText = ref('');
 const code = ref('');
@@ -155,9 +160,15 @@ async function decide(decision: 'approve' | 'deny') {
     return;
   }
   if (typeof result?.redirect === 'string') {
-    // The buttons stay disabled. A custom-scheme redirect opens an app and leaves
-    // this tab where it is, and a second click would only mint a second code.
     window.location.assign(result.redirect);
+    // A custom-scheme redirect hands off to another app and leaves this tab where
+    // it is, so say it's done. Web and loopback redirects navigate this tab away
+    // themselves; until they do, the buttons stay disabled rather than inviting a
+    // close that would cancel the redirect, or a second click that mints a second
+    // code.
+    if (info.value?.destination.kind === 'app') {
+      state.value = decision === 'approve' ? 'approved' : 'denied';
+    }
   } else if (typeof result?.code === 'string') {
     code.value = result.code;
     state.value = 'code';
