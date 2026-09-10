@@ -1094,6 +1094,24 @@ ensureColumn('networks', 'client_key', 'TEXT');
 // Newline-delimited raw IRC commands fired after RPL_WELCOME, IRCCloud-style.
 // Supports `WAIT <seconds>` lines that pause before the next command.
 ensureColumn('networks', 'connect_commands', 'TEXT');
+// SOCKS5 / HTTP CONNECT proxy for this network's IRC socket (#303). Stored as
+// parts rather than a URL because Lurker never hands a stored secret back to a
+// client: under one `socks5://user:pass@host:1080` string the form could only
+// ever show a redacted value, so changing the port would mean retyping the
+// password. See shared/proxy.ts (parsing + validation) and
+// server/utils/proxyDial.ts (the dial itself).
+//
+// ⚠ `proxy_enabled` is the ONLY thing the dial path asks. Credentials with the
+// flag off means direct, deliberately — it lets someone go direct for a minute
+// without deleting what they configured, and it gives "is this proxied" one
+// unambiguous field instead of something inferred from a non-empty host.
+ensureColumn('networks', 'proxy_enabled', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('networks', 'proxy_type', 'TEXT');
+ensureColumn('networks', 'proxy_host', 'TEXT');
+ensureColumn('networks', 'proxy_port', 'INTEGER');
+ensureColumn('networks', 'proxy_username', 'TEXT');
+// Encrypted at rest, like every other network secret (see exportSchema).
+ensureColumn('networks', 'proxy_password', 'TEXT');
 // Per-user sidebar order. Dense integers (0..n-1) maintained on every
 // create/reorder; ties fall back to id ASC so freshly migrated rows stay in
 // their original creation order. See schemaVersion < 6 backfill below.

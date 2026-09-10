@@ -42,6 +42,12 @@ function makeConn(onEvent: (event: unknown) => void = () => {}): IrcConnection {
     network: {
       client_cert: null,
       client_key: null,
+      proxy_enabled: 0,
+      proxy_type: null,
+      proxy_host: null,
+      proxy_port: null,
+      proxy_username: null,
+      proxy_password: null,
       id: networkId,
       user_id: userId,
       name: 'echonet',

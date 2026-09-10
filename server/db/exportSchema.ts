@@ -103,6 +103,9 @@ export const EXPORT_TABLES = Object.freeze({
     // the same reason as the passwords. client_cert rides along encrypted too:
     // the certificate itself is public, but splitting the pair across two
     // storage regimes buys nothing and makes the write path conditional.
+    // proxy_password is the only encrypted half of the proxy set (#303): the
+    // rest — type, host, port, username — is configuration, and the same
+    // reasoning that leaves `host` in the clear applies to `proxy_host`.
     encryptedColumns: [
       'server_password',
       'sasl_account',
@@ -110,6 +113,7 @@ export const EXPORT_TABLES = Object.freeze({
       'connect_commands',
       'client_cert',
       'client_key',
+      'proxy_password',
     ],
     columns: [
       'id',
@@ -131,6 +135,16 @@ export const EXPORT_TABLES = Object.freeze({
       'client_cert',
       'client_key',
       'position',
+      // The proxy set (#303). Exported whole, so a restored archive still routes
+      // where the user routed it — an archive that dropped these would silently
+      // move a deliberately proxied network onto a direct socket, which is the
+      // failure this feature exists to prevent.
+      'proxy_enabled',
+      'proxy_type',
+      'proxy_host',
+      'proxy_port',
+      'proxy_username',
+      'proxy_password',
       // Server-declared CASEMAPPING (#707): exported so an imported network's
       // registry folds don't churn (and case-twins don't merge) on the first
       // reconnect after a restore.
