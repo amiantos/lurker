@@ -360,36 +360,51 @@ export function parseBouncerCredentials(
   return { username: parsed.username, secret, network };
 }
 
-// Rewrite the target-nick param of a server numeric (`:prefix NNN nick …`).
+// Rewrite the target-nick param of a server numeric (`[@tags ]:prefix NNN nick …`).
 // Used to point the replayed registration burst at whatever nick the attaching
-// client asked for, ZNC-style, before we NICK it over to the live one.
+// client asked for, ZNC-style, before we NICK it over to the live one. The burst
+// is stored as it came off the wire, so a leading tag block is stepped over
+// rather than read as an unprefixed line (#892).
 export function rewriteNumericTarget(line: string, nick: string): string {
   // [\s\S] instead of `.` so a stray trailing CR can't stop the tail group
   // short of `$` and silently skip the rewrite.
-  const m = /^(:\S+ \S+ )\S+([\s\S]*)$/.exec(line);
+  const m = /^((?:@\S+ )?:\S+ \S+ )\S+([\s\S]*)$/.exec(line);
   if (!m) return line;
   return `${m[1]}${nick}${m[2]}`;
 }
 
+// Trim a line's IRCv3 tag block to what the client negotiated: everything for
+// message-tags, just `time` for server-time, nothing otherwise. Returns null for
+// a tag block with no message after it.
+function trimTagsForClient(line: string, caps: ReadonlySet<string>): string | null {
+  if (!line.startsWith('@')) return line;
+  const sp = line.indexOf(' ');
+  if (sp === -1) return null;
+  if (caps.has('message-tags')) return line;
+  const tags = line.slice(1, sp);
+  const rest = line.slice(sp + 1);
+  if (caps.has('server-time')) {
+    const time = tags.split(';').find((t) => t === 'time' || t.startsWith('time='));
+    if (time) return `@${time} ${rest}`;
+  }
+  return rest;
+}
+
 /**
  * Filter one raw upstream line for an attached client: drop connection
- * plumbing, drop tag-only commands the client can't parse, and strip message
- * tags down to what the client negotiated (everything for message-tags, just
- * `time` for server-time, nothing otherwise). Returns null to drop the line.
+ * plumbing, drop tag-only commands the client can't parse, and trim message
+ * tags to what the client negotiated. Returns null to drop the line.
  */
 export function filterRelayLine(line: string, caps: ReadonlySet<string>): string | null {
   // irc-framework's raw event line keeps its trailing CR — strip it so the
   // relayed copy doesn't carry a stray control char into our own CRLF framing.
   line = line.replace(/[\r\n]+$/, '');
-  let tags = '';
-  let rest = line;
-  if (rest.startsWith('@')) {
-    const sp = rest.indexOf(' ');
+  let afterPrefix = line;
+  if (afterPrefix.startsWith('@')) {
+    const sp = afterPrefix.indexOf(' ');
     if (sp === -1) return null;
-    tags = rest.slice(1, sp);
-    rest = rest.slice(sp + 1);
+    afterPrefix = afterPrefix.slice(sp + 1);
   }
-  let afterPrefix = rest;
   if (afterPrefix.startsWith(':')) {
     const sp = afterPrefix.indexOf(' ');
     if (sp === -1) return null;
@@ -398,13 +413,7 @@ export function filterRelayLine(line: string, caps: ReadonlySet<string>): string
   const command = (afterPrefix.split(' ', 1)[0] || '').toUpperCase();
   if (RELAY_DROP.has(command)) return null;
   if ((command === 'TAGMSG' || command === 'BATCH') && !caps.has('message-tags')) return null;
-  if (!tags) return line;
-  if (caps.has('message-tags')) return line;
-  if (caps.has('server-time')) {
-    const time = tags.split(';').find((t) => t === 'time' || t.startsWith('time='));
-    if (time) return `@${time} ${rest}`;
-  }
-  return rest;
+  return trimTagsForClient(line, caps);
 }
 
 // Default IRC prefix ladder, used when the network's ISUPPORT PREFIX isn't
@@ -1164,8 +1173,11 @@ class BouncerSession {
     // the network's own 001–005 when we have them so the client sees the real
     // ISUPPORT tokens (CHANTYPES/PREFIX/NETWORK drive its parsing).
     if (conn.state === 'connected' && conn.registrationLines.length > 0) {
+      // Stored with the upstream's tags, which answer to this client's caps
+      // like any relayed line (#892).
       for (const line of conn.registrationLines) {
-        this.write(rewriteNumericTarget(line, requested));
+        const out = trimTagsForClient(line, this.caps);
+        if (out) this.write(rewriteNumericTarget(out, requested));
       }
     } else {
       this.writeWelcomeNumerics(requested);

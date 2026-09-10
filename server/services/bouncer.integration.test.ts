@@ -65,6 +65,58 @@ describe('PASS login (ZNC-compat floor)', () => {
   });
 });
 
+// #892. The attach burst replays the network's own 001–005 as they came off the
+// wire, so a server-time upstream hands us each one behind a tag block. Those
+// tags answer to this client's caps like any relayed line, and the numeric
+// still has to be pointed at the nick the client asked for.
+describe('replayed registration burst', () => {
+  const TIME = '2026-09-06T05:04:37.800Z';
+
+  function seedTaggedBurst(acct: import('../test-utils/bouncerHarness.js').HarnessAccount): void {
+    const nick = acct.upstream.currentNick;
+    acct.upstream.registrationLines = [
+      `@time=${TIME} :irc.example.test 001 ${nick} :Welcome to the Example IRC Network`,
+      `@time=${TIME} :irc.example.test 005 ${nick} CHANTYPES=# PREFIX=(ov)@+ :are supported by this server`,
+    ];
+  }
+
+  it('strips the tags for a client that requested no caps', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'livenick' });
+    seedTaggedBurst(acct);
+    const c = await harness.connect();
+    // The reporter's exchange: list the caps, request none.
+    c.send('CAP LS 302');
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    expect(c.lines.filter((l) => l.startsWith('@'))).toEqual([]);
+    expect(await c.waitForCommand('001')).toBe(
+      ':irc.example.test 001 client :Welcome to the Example IRC Network',
+    );
+    expect(await c.waitForCommand('005')).toBe(
+      ':irc.example.test 005 client CHANTYPES=# PREFIX=(ov)@+ :are supported by this server',
+    );
+  });
+
+  it('keeps the time tag for a server-time client, and rewrites the nick past it', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'livetime' });
+    seedTaggedBurst(acct);
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    c.send('CAP REQ :server-time');
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    c.send('CAP END');
+    await c.waitForCommand('422');
+    expect(await c.waitForCommand('001')).toBe(
+      `@time=${TIME} :irc.example.test 001 client :Welcome to the Example IRC Network`,
+    );
+  });
+});
+
 function saslPlain(authcid: string, passwd: string, authzid = ''): string {
   const NUL = String.fromCharCode(0);
   return Buffer.from([authzid, authcid, passwd].join(NUL), 'utf8').toString('base64');
