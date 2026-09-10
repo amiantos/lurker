@@ -97,6 +97,8 @@ type Destination =
 interface AuthorizeInfo {
   app: { name: string; website: string | null };
   destination: Destination;
+  // The authorize request exactly as the server read and checked it.
+  request: Record<string, string>;
 }
 
 interface DecisionResult {
@@ -145,14 +147,18 @@ onMounted(async () => {
 });
 
 async function decide(decision: 'approve' | 'deny') {
-  if (working.value) return;
+  const request = info.value?.request;
+  if (working.value || !request) return;
   working.value = true;
   let result: DecisionResult | null;
   try {
-    const params = Object.fromEntries(new URLSearchParams(window.location.search));
+    // Post back the request the server described, never a fresh reading of this
+    // page's URL. A second parser can read a crafted query string differently
+    // (Express stops at 1000 keys, URLSearchParams doesn't), which would show one
+    // app and approve another.
     result = await api<DecisionResult | null>('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...params, decision },
+      body: { ...request, decision },
     });
   } catch (e) {
     working.value = false;

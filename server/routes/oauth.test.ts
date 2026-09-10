@@ -206,7 +206,7 @@ describe('GET /api/oauth/authorize', () => {
     member = await createAuthedAgent(app, createUser('oauth-authorize-get').id);
   });
 
-  it('describes the app and where the approval goes', async () => {
+  it('describes the app, where the approval goes, and the request it checked', async () => {
     const { client_id } = await register([APP_REDIRECT], {
       client_uri: 'https://client.example/about',
     });
@@ -217,6 +217,29 @@ describe('GET /api/oauth/authorize', () => {
     expect(res.body).toEqual({
       app: { name: 'Test Client', website: 'client.example' },
       destination: { kind: 'app', scheme: 'com.example.testclient' },
+      request: authorizeParams(flow),
+    });
+  });
+
+  it('echoes its own reading of a query padded past the parser limit', async () => {
+    // The attack from review: the shown app's parameters first, filler past
+    // Express's 1000-key limit, then a second app's. The page approves whatever
+    // this echoes, so it has to be the app the page showed.
+    const shown = await startFlow(APP_REDIRECT);
+    const hidden = await startFlow('https://evil.example/cb');
+    const filler = Array.from({ length: 1000 }, (_, i) => `f${i}=1`);
+    const query = [
+      new URLSearchParams(authorizeParams(shown)).toString(),
+      ...filler,
+      `client_id=${hidden.clientId}`,
+      `redirect_uri=${encodeURIComponent(hidden.redirectUri)}`,
+    ].join('&');
+    const res = await member.get(`/api/oauth/authorize?${query}`);
+    expect(res.status).toBe(200);
+    expect(res.body.destination).toEqual({ kind: 'app', scheme: 'com.example.testclient' });
+    expect(res.body.request).toMatchObject({
+      client_id: shown.clientId,
+      redirect_uri: APP_REDIRECT,
     });
   });
 

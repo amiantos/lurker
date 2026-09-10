@@ -30,12 +30,13 @@ const PARAMS = {
 };
 const QUERY = `?${new URLSearchParams(PARAMS)}`;
 
-// GET answers with the approval details; POST answers with `decision`.
+// GET answers with the approval details and the request it checked; POST answers
+// with `decision`.
 function serve(destination: object, decision: object) {
   h.api.mockImplementation(async (_url, opts) =>
     opts?.method === 'POST'
       ? decision
-      : { app: { name: 'Ivory', website: 'ivory.example' }, destination },
+      : { app: { name: 'Ivory', website: 'ivory.example' }, destination, request: PARAMS },
   );
 }
 
@@ -86,6 +87,25 @@ describe('OAuthAuthorize', () => {
     expect(wrapper.find('code.code').text()).toBe('the-code');
     expect(wrapper.text()).toContain('You can close this page after pasting it.');
     expect(assign).not.toHaveBeenCalled();
+  });
+
+  // A query string padded past Express's 1000-key limit reads as one app on the
+  // server and as another to URLSearchParams. The approval has to be for the app
+  // the page showed, so the page posts the server's reading back, not its own.
+  it('approves the request the server described, not its own reading of the URL', async () => {
+    const smuggled = `&client_id=other&redirect_uri=${encodeURIComponent('https://evil.example/cb')}`;
+    window.history.replaceState(null, '', `/oauth/authorize${QUERY}${smuggled}`);
+    serve({ kind: 'code' }, { code: 'the-code' });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+    await button(wrapper, 'Approve').trigger('click');
+    await flushPromises();
+
+    expect(h.api).toHaveBeenLastCalledWith('/api/oauth/authorize', {
+      method: 'POST',
+      body: { ...PARAMS, decision: 'approve' },
+    });
   });
 
   it('navigates to the redirect only after a click', async () => {

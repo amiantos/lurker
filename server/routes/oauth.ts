@@ -147,9 +147,22 @@ oauthRouter.get('/authorize', requireCookieSession, (req: Request, res: Response
     oauthError(res, 400, resolved.error, resolved.description);
     return;
   }
+  const { clientId, redirectUri, codeChallenge, state } = resolved.request;
   res.json({
     app: { name: resolved.app.clientName, website: hostOf(resolved.app.clientUri) },
-    destination: redirectDestination(resolved.request.redirectUri),
+    destination: redirectDestination(redirectUri),
+    // The request exactly as read and checked here. The page posts these values
+    // back on Approve or Deny instead of re-reading its own URL: a second parser
+    // can read a crafted query string differently (this one stops at 1000 keys,
+    // URLSearchParams doesn't), which would show one app and approve another.
+    request: {
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      ...(state !== undefined ? { state } : {}),
+    },
   });
 });
 
