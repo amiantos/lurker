@@ -95,6 +95,19 @@ describe('buildApp route gating by edition', () => {
     });
 
     it.skipIf(!hasBuiltClient)(
+      '404s a /.well-known URL nothing serves, rather than handing back the SPA',
+      async () => {
+        // A client probing for a discovery document (an MCP client asking for OAuth
+        // protected-resource metadata, #891) needs a 404 it can act on; the SPA's
+        // HTML with a 200 reads as a broken document instead.
+        const app = await buildFor('standalone');
+        const res = await testRequest(app).get('/.well-known/oauth-protected-resource/mcp');
+        expect(res.status).toBe(404);
+        expect(res.text ?? '').not.toContain('id="app"');
+      },
+    );
+
+    it.skipIf(!hasBuiltClient)(
       'serves the OAuth approval page with headers that forbid framing it (#891)',
       async () => {
         const app = await buildFor('standalone');

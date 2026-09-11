@@ -243,6 +243,15 @@ describe('GET /api/oauth/authorize', () => {
     });
   });
 
+  it('accepts a localhost redirect registered the way Claude Code registers one', async () => {
+    const flow = await startFlow('http://localhost:54321/callback');
+    const res = await member
+      .get('/api/oauth/authorize')
+      .query(authorizeParams({ ...flow, redirectUri: 'http://localhost:61000/callback' }));
+    expect(res.status).toBe(200);
+    expect(res.body.destination).toEqual({ kind: 'loopback' });
+  });
+
   it('accepts a loopback redirect on a port other than the registered one', async () => {
     const flow = await startFlow(LOOPBACK);
     const res = await member

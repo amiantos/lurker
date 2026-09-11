@@ -213,7 +213,21 @@ malformed envelope, unknown method, missing tool name.
 ### Claude Code
 
 Claude Code's MCP client speaks streamable HTTP natively, so the setup is a
-single command — no stdio bridge needed:
+single command — no stdio bridge needed. To sign in through your browser,
+add the server without a token:
+
+```sh
+claude mcp add --transport http lurker https://<your-lurker>/mcp
+```
+
+In a new session, run `/mcp`, pick `lurker` and choose **Authenticate**. Your
+browser opens Lurker's approval page; approve it and the tools load. If sign-in
+fails, check that `https://<your-lurker>/.well-known/oauth-authorization-server`
+gives your public URL as its `issuer`. Behind a reverse proxy that doesn't pass
+it through, set `PUBLIC_BASE_URL` (see [OAuth for third-party clients](OAUTH.md)).
+
+To use an API token instead, pass it as a header. Claude Code doesn't offer
+OAuth sign-in for a server that has an `Authorization` header set:
 
 ```sh
 claude mcp add --transport http lurker https://<your-lurker>/mcp \
@@ -221,8 +235,8 @@ claude mcp add --transport http lurker https://<your-lurker>/mcp \
 ```
 
 `claude mcp list` confirms the entry. MCP servers load at session start, so
-restart Claude Code (start a new session) before the eight Lurker tools
-appear in tool calls. To remove it later, `claude mcp remove lurker`.
+restart Claude Code (start a new session) before the Lurker tools appear in
+tool calls. To remove it later, `claude mcp remove lurker`.
 
 ### Claude Desktop
 
@@ -247,8 +261,8 @@ bridge to expose it as a local MCP stdio server:
 }
 ```
 
-After restarting Claude Desktop, the eight Lurker tools appear in the
-tool picker and can be invoked directly.
+After restarting Claude Desktop, the Lurker tools appear in the tool picker
+and can be invoked directly.
 
 ### curl roundtrip
 

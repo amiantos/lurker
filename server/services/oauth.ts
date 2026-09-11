@@ -26,7 +26,11 @@ export const MAX_STATE_LENGTH = 1024;
 // navigates to it. Refusing anything outside 0x21-0x7E closes that before the
 // parser gets a say.
 const PRINTABLE_ASCII = /^[\x21-\x7E]+$/;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]']);
+// Hosts a desktop or CLI app's local listener may use. RFC 8252 §8.3 prefers the
+// IP literals, but real clients register `localhost` (Claude Code's MCP sign-in
+// does), and browsers treat localhost as the loopback interface, so the code
+// still lands on the machine where the member clicked Approve.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost']);
 const SCHEME = /^[a-z][a-z0-9+.-]*$/;
 const CODE_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const CODE_VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
@@ -47,7 +51,7 @@ function hasUnsafeNameChar(name: string): boolean {
  * Whether a redirect URI may be registered. An allowlist of four shapes:
  *
  *   - `https:` — a claimed https link (Universal Links, App Links) or a web page
- *   - `http:` on 127.0.0.1 or [::1] — a desktop or CLI app listening locally
+ *   - `http:` on 127.0.0.1, [::1] or localhost — a desktop or CLI app listening locally
  *   - a reverse-DNS custom scheme such as `com.example.app:` (RFC 8252 §7.1),
  *     which also keeps out `mailto:`, `javascript:` and every other short scheme
  *   - the out-of-band URN
@@ -201,7 +205,7 @@ export function validateRegistration(body: unknown): RegistrationResult {
   }
   if (!redirectUris.every(isValidRedirectUri)) {
     return badRedirect(
-      `each redirect_uri must be https, http on 127.0.0.1 or [::1], a reverse-DNS app scheme, or ${OOB_REDIRECT_URI}`,
+      `each redirect_uri must be https, http on 127.0.0.1, [::1] or localhost, a reverse-DNS app scheme, or ${OOB_REDIRECT_URI}`,
     );
   }
 

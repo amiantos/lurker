@@ -175,9 +175,14 @@ export function buildApp(sessionSecret: string): Express {
   // index.html back with a 200 and Content-Type: text/html, so the browser
   // reports a confusing module-type refusal instead of a plain 404 — and the
   // client can't cleanly tell "chunk is gone" from "page is fine" (#571).
+  //
+  // `.well-known` is for machines, never a page. A client probing for a document
+  // this server doesn't publish (an MCP client asking for OAuth protected-resource
+  // metadata before falling back to the authorization-server document, #891)
+  // needs a 404 it can act on, not the SPA's HTML with a 200.
   const clientDist = path.join(import.meta.dirname, '../vue_client/dist');
   app.use(express.static(clientDist));
-  app.get(/^\/(?!api|ws|mcp|assets).*/, (req, res, next) => {
+  app.get(/^\/(?!api|ws|mcp|assets|[.]well-known).*/, (req, res, next) => {
     // The OAuth approval page (#891) must never render inside someone else's
     // frame, where an Approve click could be steered. Scoped to this one path so
     // self-hosters can keep embedding the rest of the app; the page's route forces

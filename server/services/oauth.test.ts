@@ -32,6 +32,8 @@ describe('isValidRedirectUri', () => {
     'http://127.0.0.1:8123/callback',
     'http://127.0.0.1/cb',
     'http://[::1]:9000/cb',
+    // How Claude Code registers its MCP sign-in callback.
+    'http://localhost:54321/callback',
     'com.example.spooky:/oauth',
     'com.example.spooky://oauth/callback',
     OOB_REDIRECT_URI,
@@ -41,7 +43,7 @@ describe('isValidRedirectUri', () => {
 
   it.each([
     ['plain http off loopback', 'http://example.com/cb'],
-    ['localhost by name', 'http://localhost:8123/cb'],
+    ['a host that only starts like localhost', 'http://localhost.evil.com/cb'],
     // The URL parser strips the tab, so a check on the raw string would see
     // "java<tab>script" while a browser navigating to it runs javascript:.
     ['a tab hidden inside javascript:', `java${TAB}script:alert(1)`],
@@ -70,10 +72,17 @@ describe('matchRedirectUri', () => {
     expect(matchRedirectUri(registered, 'http://127.0.0.1:53124/callback')).toBe(true);
   });
 
+  it('matches a localhost redirect on any port against a localhost registration', () => {
+    expect(
+      matchRedirectUri(['http://localhost:54321/callback'], 'http://localhost:61000/callback'),
+    ).toBe(true);
+  });
+
   it.each([
     ['a different loopback path', 'http://127.0.0.1:53124/other'],
     ['a different loopback query', 'http://127.0.0.1:53124/callback?x=1'],
     ['the other loopback address', 'http://[::1]:8000/callback'],
+    ['localhost against a 127.0.0.1 registration', 'http://localhost:8000/callback'],
     ['a host that starts with 127.0.0.1', 'http://127.0.0.1.evil.com:8000/callback'],
     ['userinfo in front of another host', 'http://127.0.0.1@evil.com:8000/callback'],
     ['an unregistered path on the app scheme', 'com.example.spooky:/other'],

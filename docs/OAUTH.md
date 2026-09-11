@@ -224,15 +224,15 @@ recovery revokes every app; a normal password change doesn't.
 
 Each registered redirect URI must take one of these forms:
 
-| Form                      | Example                                                | Notes                                                                                                 |
-| ------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| https                     | `https://myclient.example/oauth/callback`              |                                                                                                       |
-| Loopback http             | `http://127.0.0.1/callback` or `http://[::1]/callback` | At authorization the port may differ (RFC 8252 §7.3); host, path and query must match.                |
-| Reverse-DNS custom scheme | `com.example.myclient:/oauth`                          | The scheme must contain a dot.                                                                        |
-| Out-of-band               | `urn:ietf:wg:oauth:2.0:oob`                            | The approval page shows the code for the member to paste into the app. For TUIs over SSH and similar. |
+| Form                      | Example                                                                             | Notes                                                                                                 |
+| ------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| https                     | `https://myclient.example/oauth/callback`                                           |                                                                                                       |
+| Loopback http             | `http://127.0.0.1/callback`, `http://[::1]/callback` or `http://localhost/callback` | At authorization the port may differ (RFC 8252 §7.3); host, path and query must match.                |
+| Reverse-DNS custom scheme | `com.example.myclient:/oauth`                                                       | The scheme must contain a dot.                                                                        |
+| Out-of-band               | `urn:ietf:wg:oauth:2.0:oob`                                                         | The approval page shows the code for the member to paste into the app. For TUIs over SSH and similar. |
 
-Refused: fragments, userinfo, anything but printable ASCII, `localhost` by name,
-and plain `http` anywhere but loopback.
+Refused: fragments, userinfo, anything but printable ASCII, and plain `http`
+anywhere but loopback.
 
 At authorization, `redirect_uri` must match a registered URI exactly, except for
 the loopback port.
