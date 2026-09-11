@@ -16,6 +16,7 @@ import { listNetworksForUser, getNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import {
   ensureOpen as ensureOpenBuffer,
+  getBuffer,
   setAutojoin as setBufferAutojoin,
   setChannelKey as setBufferChannelKey,
   deleteBuffer,
@@ -527,6 +528,7 @@ class IrcManager extends EventEmitter {
     // rfc1459 network IS the already-in case — a raw map probe would miss it,
     // stash a key no echo will consume, and hand the orphaned stash to the
     // next join's echo (the exact hazard above).
+    let wireKey = safeKey;
     if (conn.isChannelJoined(name)) {
       ensureOpenBuffer(userId, networkId, name, {
         kind: 'channel',
@@ -535,8 +537,21 @@ class IrcManager extends EventEmitter {
       });
     } else if (safeKey !== undefined) {
       conn.stashJoinKey(name, safeKey);
+    } else {
+      // Keyless and not in the channel: send the key on file, as the reconnect
+      // rejoin does. A part or kick only clears autojoin, so without this the
+      // Join Channel menu item, the invite toast and a bare /join all draw a
+      // 475 on a parted +k channel (#873). ZNC does the same (CChan::JoinUser);
+      // soju joins keyless. Nothing to stash, since the row already holds it.
+      // decryptSecret throws on a key stored under a rotated key-id, and this
+      // is the unguarded ws path, so an unreadable key means a keyless JOIN.
+      try {
+        wireKey = getBuffer(userId, networkId, name)?.key || undefined;
+      } catch (_) {
+        /* unreadable key: join without one */
+      }
     }
-    conn.join(name, safeKey);
+    conn.join(name, wireKey);
     return true;
   }
 

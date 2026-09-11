@@ -145,8 +145,9 @@ accept the call and drop the line. Every write verb below uses the same gate.
 
 ### `join_channel` _(read-write)_
 
-Join a channel; optional `key` for +k channels. The channel buffer and its
-member list arrive asynchronously.
+Join a channel; optional `key` for +k channels. Without one, the channel's
+stored key is sent if Lurker has one. The channel buffer and its member list
+arrive asynchronously.
 
 ### `part_channel` _(read-write)_
 

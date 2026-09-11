@@ -519,6 +519,68 @@ describe('planChannelRejoins', () => {
     expect(conn.takeStashedJoinKey('#here')).toBeUndefined();
   });
 
+  it('joinChannel sends the stored key when rejoining a parted +k channel without one (#873)', () => {
+    // The Join Channel menu item, the invite toast and a bare /join send no key.
+    // A part only clears autojoin, so the row still holds the key the echo stored.
+    const user = createUser('irc-join-storedkey');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    const join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.join = join;
+    conn.client.part = vi.fn<(channel: string, reason?: string) => void>();
+
+    ircManager.joinChannel(user.id, net.id, '#secret', 'hunter2');
+    conn.client.user.nick = 'a';
+    conn.client.emit('join', { channel: '#secret', nick: 'a' });
+    ircManager.partChannel(user.id, net.id, '#secret');
+    conn.client.emit('part', { channel: '#secret', nick: 'a' });
+    expect(conn.isChannelJoined('#secret')).toBe(false);
+    expect(buffers.getBuffer(user.id, net.id, '#secret')!.key).toBe('hunter2');
+
+    join.mockClear();
+    ircManager.joinChannel(user.id, net.id, '#Secret');
+    expect(join).toHaveBeenCalledWith('#Secret', 'hunter2');
+    // Nothing stashed: the row already holds the key.
+    expect(conn.takeStashedJoinKey('#Secret')).toBeUndefined();
+
+    // A key the caller sends still wins.
+    join.mockClear();
+    ircManager.joinChannel(user.id, net.id, '#secret', 'newkey');
+    expect(join).toHaveBeenCalledWith('#secret', 'newkey');
+  });
+
+  it('joinChannel joins keyless when the stored key cannot be decrypted', async () => {
+    // A key stored under a rotated or unknown key-id makes decryptSecret throw,
+    // and joinChannel runs on the unguarded ws path.
+    const db = (await import('../db/index.js')).default;
+    const user = createUser('irc-join-badstoredkey');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    const join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.join = join;
+
+    buffers.ensureOpen(user.id, net.id, '#vault', { kind: 'channel' });
+    db.prepare(
+      "UPDATE buffers SET key = ? WHERE user_id = ? AND network_id = ? AND kind = 'channel'",
+    ).run('lk1.deadbeef.AAAAAAAA', user.id, net.id);
+    expect(() => buffers.getBuffer(user.id, net.id, '#vault')).toThrow(/secretCrypto/);
+
+    expect(() => ircManager.joinChannel(user.id, net.id, '#vault')).not.toThrow();
+    expect(join).toHaveBeenCalledWith('#vault', undefined);
+  });
+
   it('joinChannel drops a non-string key from an untrusted payload without throwing', () => {
     const user = createUser('irc-join-badkey');
     const net = createNetwork(user.id, {

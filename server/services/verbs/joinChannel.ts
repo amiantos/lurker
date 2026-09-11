@@ -14,7 +14,8 @@ interface VerbContext {
 registerVerb({
   name: 'join_channel',
   description:
-    'Join a channel on a network. Supply `key` for a +k (password-protected) channel. Returns ' +
+    'Join a channel on a network. Supply `key` for a +k (password-protected) channel; without ' +
+    "one, the channel's stored key is sent if Lurker has one. Returns " +
     '{ ok: false, error: "not-connected" } when the network is offline. The join and its member ' +
     'list arrive asynchronously — the channel buffer appears once the server confirms.',
   scope: 'read-write',
