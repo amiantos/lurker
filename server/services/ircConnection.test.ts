@@ -45,6 +45,7 @@ import {
 } from '../db/buffers.js';
 import { getPeerPresence, writePeerState } from '../db/peerPresence.js';
 import { setUserSetting, deleteUserSetting } from '../db/settings.js';
+import { typeCountsForUnread } from '../db/messages.js';
 
 // The bare IrcConnections built below carry user_id: 1, and their join/part
 // handlers write system_messages (FK → users.id). Seed user id 1 in the
@@ -1267,6 +1268,37 @@ describe('refused-message handler routing (#283)', () => {
     conn.client.emit('irc error', { error: 'no_such_nick', nick: 'someoneelse' });
 
     expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ target: '#anime' }));
+  });
+
+  it('reports an unclaimed 401 in the server buffer without badging it (#904)', () => {
+    // A /whois for someone who isn't online. Nothing claims the 401 — no
+    // channel command, no /ctcp, no DM history — and the profile modal already
+    // says they aren't on the network. Fed through irc-framework the way a
+    // socket line is, so both handlers see it: 'raw' first, then the library's
+    // own parsed 'irc error'.
+    const conn = makeConn();
+    conn.client.raw = vi.fn<(line: string) => void>();
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+
+    conn.raw('WHOIS fartbarf');
+    conn.client.connection.addReadBuffer(
+      ':irc.example.test 401 nick fartbarf :No such nick/channel',
+    );
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'motd',
+        target: ':server:1',
+        text: 'fartbarf No such nick/channel',
+      }),
+    );
+    // That raw line is the whole report. The generic handler used to add a
+    // second copy as an 'error' row, which the server buffer counts as unread.
+    const badging = publish.mock.calls
+      .map(([event]) => event as { type: string; target: string })
+      .filter((event) => typeCountsForUnread(event.target, event.type));
+    expect(badging).toEqual([]);
   });
 
   it('leaves a command aimed at a channel we are not in in the server buffer', () => {
