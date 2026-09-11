@@ -65,6 +65,22 @@ export default defineConfig(({ mode }) => {
           ws: true,
           changeOrigin: true,
         },
+        // The MCP server and OAuth discovery (#891), so an MCP client pointed at
+        // https://<dev host>:5173/mcp signs in the way it would against a real
+        // instance behind Caddy. xfwd sends X-Forwarded-Host and -Proto like Caddy
+        // does. The discovery document builds its issuer from them, and MCP clients
+        // refuse an issuer that isn't the origin they were given; without them it
+        // would read http://localhost:8010, the Host that changeOrigin sends.
+        '/mcp': {
+          target: apiBase,
+          changeOrigin: true,
+          xfwd: true,
+        },
+        '/.well-known': {
+          target: apiBase,
+          changeOrigin: true,
+          xfwd: true,
+        },
       },
     },
   };

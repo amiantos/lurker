@@ -45,15 +45,18 @@ function jsonRpcError(
   return { jsonrpc: '2.0', id, error };
 }
 
-// req.apiToken is attached by apiAuth middleware (still .js); cast through unknown
-// until that module is migrated.
-interface ApiToken {
-  scope: string;
-}
-
 router.post('/', (req: Request, res: Response) => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- apiAuth.js not yet migrated
-  const apiToken = (req as any).apiToken as ApiToken;
+  // requireApiAuth attaches one of two credentials. An API token carries its own
+  // scope; an OAuth access token (#891) has the access of a password sign-in,
+  // which on this surface is read-write.
+  const granted = req.apiToken?.scope ?? (req.oauthToken ? 'read-write' : null);
+  if (!granted) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  // A paused account can read but not change anything, whatever it signed in
+  // with. REST enforces that in requireAuth, which /mcp doesn't go through.
+  const apiToken = { scope: req.user?.is_paused ? 'read' : granted };
   const body = req.body as Record<string, unknown>;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     res.json(jsonRpcError(null, -32600, 'Invalid Request'));

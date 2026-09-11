@@ -3,10 +3,17 @@
 
 // @vitest-environment happy-dom
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { defineComponent, h, onMounted } from 'vue';
 import { mount } from '@vue/test-utils';
-import { createRouter, createMemoryHistory, RouterView } from 'vue-router';
+import {
+  createRouter,
+  createMemoryHistory,
+  RouterView,
+  START_LOCATION,
+  type RouteLocationNormalized,
+  type RouteLocationNormalizedLoaded,
+} from 'vue-router';
 import router from './router.js';
 
 // Shape assertions run against the REAL route table, not a copy. An earlier
@@ -24,6 +31,43 @@ describe('public routes', () => {
     expect(recover?.path).toBe('/recover/:token');
     expect(recover?.meta?.requiresAuth).toBeUndefined();
     expect(router.resolve('/recover/tok123').params).toEqual({ token: 'tok123' });
+  });
+});
+
+const oauthRoute = () => router.getRoutes().find((r) => r.name === 'oauth-authorize');
+
+// Runs the route's beforeEnter directly: navigating the real router would run the
+// global guard, which fetches /api/auth/me.
+function enterOAuthRoute(path: string, from: RouteLocationNormalizedLoaded) {
+  const guard = oauthRoute()?.beforeEnter;
+  if (typeof guard !== 'function') throw new Error('no beforeEnter on the oauth route');
+  const to = router.resolve(path) as unknown as RouteLocationNormalized;
+  return guard.call(undefined, to, from, () => {});
+}
+
+describe('oauth approval route (#891)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('requires a signed-in member', () => {
+    // The global guard turns this into /login?next=<fullPath> and back.
+    expect(oauthRoute()?.path).toBe('/oauth/authorize');
+    expect(oauthRoute()?.meta?.requiresAuth).toBe(true);
+    expect(router.resolve('/oauth/authorize?client_id=abc').name).toBe('oauth-authorize');
+  });
+
+  it('renders on a document load', () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+    expect(enterOAuthRoute('/oauth/authorize?client_id=abc', START_LOCATION)).toBe(true);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  // The frame-ancestors header only rides a document response, so an in-app
+  // navigation (Login.vue's `next` redirect) must become a real page load.
+  it('reloads instead of rendering when reached by in-app navigation', () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+    const from = router.resolve('/login') as unknown as RouteLocationNormalizedLoaded;
+    expect(enterOAuthRoute('/oauth/authorize?client_id=abc&state=xyz', from)).toBe(false);
+    expect(assign).toHaveBeenCalledWith('/oauth/authorize?client_id=abc&state=xyz');
   });
 });
 

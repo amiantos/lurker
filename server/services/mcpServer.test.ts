@@ -140,6 +140,83 @@ describe('MCP server', () => {
     }
   });
 
+  // #891: an MCP client that signed in through OAuth holds an access token with
+  // the access of a password sign-in, which here means the read-write surface.
+  it('tools/list with an OAuth access token matches a read-write API token', async () => {
+    const oauth = await import('../db/oauth.js');
+    const oauthApp = oauth.createApp({
+      clientName: 'MCP client',
+      clientUri: null,
+      redirectUris: ['urn:ietf:wg:oauth:2.0:oob'],
+    });
+    const token = oauth.createToken(oauthApp.id, owner.id);
+
+    const viaOAuth = await rpc(token, { jsonrpc: '2.0', id: 30, method: 'tools/list' });
+    const viaApiToken = await rpc(rwToken.token, { jsonrpc: '2.0', id: 31, method: 'tools/list' });
+    expect(viaOAuth.status).toBe(200);
+    expect(viaOAuth.body.result.tools).toEqual(viaApiToken.body.result.tools);
+
+    oauth.deleteTokenByRaw(token);
+    const revoked = await rpc(token, { jsonrpc: '2.0', id: 32, method: 'tools/list' });
+    expect(revoked.status).toBe(401);
+  });
+
+  // A paused account can read but not change anything. REST enforces that in
+  // requireAuth; /mcp doesn't go through requireAuth, so the MCP server applies it
+  // to API tokens and OAuth tokens alike. set_nick_note is a database write, so
+  // it would succeed without IRC and shows the gate rather than a dead connection.
+  it('a paused account gets the read surface, whichever credential it uses', async () => {
+    const { createUser, setUserPaused } = await import('../db/users.js');
+    const { createNetwork } = await import('../db/networks.js');
+    const { createToken } = await import('../db/apiTokens.js');
+    const oauth = await import('../db/oauth.js');
+    const member = createUser('mcp-paused');
+    const memberNet = createNetwork(member.id, {
+      name: 'libera',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'paused',
+    }) as Network;
+    const oauthApp = oauth.createApp({
+      clientName: 'MCP client',
+      clientUri: null,
+      redirectUris: ['urn:ietf:wg:oauth:2.0:oob'],
+    });
+    const credentials = [
+      createToken({ userId: member.id, name: 'rw', scope: 'read-write' }).token,
+      oauth.createToken(oauthApp.id, member.id),
+    ];
+    const readSurface = (
+      await rpc(readToken.token, { jsonrpc: '2.0', id: 40, method: 'tools/list' })
+    ).body.result.tools;
+    const fullSurface = (await rpc(rwToken.token, { jsonrpc: '2.0', id: 41, method: 'tools/list' }))
+      .body.result.tools;
+
+    setUserPaused(member.id, true);
+    for (const token of credentials) {
+      const list = await rpc(token, { jsonrpc: '2.0', id: 42, method: 'tools/list' });
+      expect(list.body.result.tools).toEqual(readSurface);
+      const write = await rpc(token, {
+        jsonrpc: '2.0',
+        id: 43,
+        method: 'tools/call',
+        params: {
+          name: 'set_nick_note',
+          arguments: { networkId: memberNet.id, nick: 'bob', note: 'denied' },
+        },
+      });
+      expect(write.body.result.isError).toBe(true);
+      expect(JSON.parse(write.body.result.content[0].text)).toMatchObject({ error: 'forbidden' });
+    }
+
+    setUserPaused(member.id, false);
+    for (const token of credentials) {
+      const list = await rpc(token, { jsonrpc: '2.0', id: 44, method: 'tools/list' });
+      expect(list.body.result.tools).toEqual(fullSurface);
+    }
+  });
+
   it("tools/call list_networks returns the user's networks as a JSON text block", async () => {
     const res = await rpc(readToken.token, {
       jsonrpc: '2.0',

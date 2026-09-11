@@ -4,6 +4,7 @@
 import type { CookieOptions, NextFunction, Request, Response } from 'express';
 import { findSession } from '../db/sessions.js';
 import type { Session } from '../db/sessions.js';
+import { findTokenByRaw, touchTokenLastUsed } from '../db/oauth.js';
 import { findUserById, touchUserLastSeen } from '../db/users.js';
 import type { User } from '../db/users.js';
 
@@ -46,40 +47,63 @@ export function loadSession(req: Request): { session: Session; user: User } | nu
   return { session, user };
 }
 
-// Native clients (iOS/Android) authenticate with `Authorization: Bearer <token>`
-// instead of a cookie — they can set headers on a WebSocket upgrade, which
-// browsers cannot, and that is exactly why the web client stays cookie-bound.
+// Native and third-party clients authenticate with `Authorization: Bearer
+// <token>` instead of a cookie — they can set headers on a WebSocket upgrade,
+// which browsers cannot, and that is exactly why the web client stays
+// cookie-bound.
 //
-// The bearer here IS a session token: the same opaque `sessions.token` the
-// cookie carries, just handed to the app in a response body rather than wrapped
-// in a Set-Cookie (see POST /api/auth/login/token). So this resolves through the
-// unmodified findSession path and a native session is a real session row —
-// revoking one is deleting a row, and expiry works as it always has.
+// Two kinds of token arrive this way, and both mean "signed in as this member":
 //
-// This does NOT collide with the API-token bearer (middleware/apiAuth.ts): that
-// one is mounted only on /mcp, so the two bearer namespaces never meet on the
-// same route.
+//   - A session token: the same opaque `sessions.token` the cookie carries,
+//     handed to the app in a response body by POST /api/auth/login/token. It
+//     resolves through the unmodified findSession path, so a native session is a
+//     real session row — revoking one is deleting a row, and expiry works as it
+//     always has.
+//   - An OAuth access token (#891), minted for an app the member approved in the
+//     browser. Stored hashed, never expires, and carries exactly the access a
+//     session does. Revoking the app deletes it.
+//
+// Both are 32 random bytes, and sessions are stored raw while OAuth tokens are
+// stored as SHA-256, so one can never be taken for the other; the order below
+// only decides which table is asked first. API tokens (middleware/apiAuth.ts)
+// are a third, separate namespace that only /mcp and the IRC bouncer accept;
+// /mcp takes OAuth tokens as well.
 export function bearerToken(authorization: string | undefined): string | null {
   const match = /^Bearer\s+(\S+)$/.exec(authorization ?? '');
   return match ? match[1] : null;
 }
 
-export function loadBearerSession(
-  authorization: string | undefined,
-): { session: Session; user: User } | null {
+/** Who a bearer token signs in as, and which credential it came through. */
+export interface BearerCredential {
+  user: User;
+  session: Session | null;
+  oauthToken: { id: number; appId: number } | null;
+}
+
+export function loadBearerCredential(authorization: string | undefined): BearerCredential | null {
   const token = bearerToken(authorization);
   if (!token) return null;
   const session = findSession(token);
-  if (!session) return null;
-  const user = findUserById(session.user_id);
+  if (session) {
+    const user = findUserById(session.user_id);
+    return user ? { user, session, oauthToken: null } : null;
+  }
+  const oauth = findTokenByRaw(token);
+  if (!oauth) return null;
+  const user = findUserById(oauth.userId);
   if (!user) return null;
-  return { session, user };
+  touchTokenLastUsed(oauth.id);
+  return { user, session: null, oauthToken: { id: oauth.id, appId: oauth.appId } };
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  // Cookie first (every web request), bearer second (native only) — so the hot
-  // path is unchanged and a native request costs one extra header regex.
-  const ctx = loadSession(req) ?? loadBearerSession(req.headers.authorization);
+  // Cookie first (every web request), bearer second (native and third-party
+  // clients) — so the hot path is unchanged and a bearer request costs one extra
+  // header regex.
+  const cookieCtx = loadSession(req);
+  const ctx: BearerCredential | null = cookieCtx
+    ? { user: cookieCtx.user, session: cookieCtx.session, oauthToken: null }
+    : loadBearerCredential(req.headers.authorization);
   if (!ctx) {
     // If the request carried a lurker_session we can't honor — a stale cookie
     // whose signature no longer verifies (cell SESSION_SECRET rotated on a
@@ -105,7 +129,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
   req.user = ctx.user;
-  req.session = ctx.session;
+  if (ctx.session) req.session = ctx.session;
+  if (ctx.oauthToken) req.oauthToken = ctx.oauthToken;
   // Paused accounts are read-only, enforced HERE (centrally) rather than per
   // router (#573): requireAuth guards every authed router, so folding the write
   // block in means no current or future router can forget it. GET/HEAD reads
@@ -115,6 +140,26 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   // (fleet-secret authed — the orchestrator must still flip the flag). Live IRC
   // writes are separately gated in the WS layer + the ircManager startNetwork
   // gate, so this covers only the HTTP write surface.
+  if (isPausedWrite(req)) {
+    res.status(403).json({ error: 'account paused' });
+    return;
+  }
+  touchUserLastSeen(ctx.user.id);
+  next();
+}
+
+// The browser's session cookie and nothing else, for the OAuth approval
+// endpoints (#891). Approving an app is the one step that has to happen in front
+// of the member, so no bearer credential — not even a password-login session —
+// can stand in for it. Same paused-account rule as requireAuth.
+export function requireCookieSession(req: Request, res: Response, next: NextFunction): void {
+  const ctx = loadSession(req);
+  if (!ctx) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  req.user = ctx.user;
+  req.session = ctx.session;
   if (isPausedWrite(req)) {
     res.status(403).json({ error: 'account paused' });
     return;

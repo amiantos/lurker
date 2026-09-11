@@ -109,7 +109,7 @@ import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject, validate } from './settingsRegistry.js';
 import { setBufferRetentionById } from '../db/bufferRetention.js';
 import { markBufferDirty } from '../db/retention.js';
-import { SESSION_COOKIE, loadBearerSession } from '../middleware/auth.js';
+import { SESSION_COOKIE, loadBearerCredential } from '../middleware/auth.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
 import { isAllowedBrowserOrigin } from '../utils/corsOrigins.js';
 import { callVerb } from './verbRegistry.js';
@@ -153,6 +153,10 @@ interface LurkerWebSocket extends WebSocket {
   // the first message; see allowInboundMessage.
   floodTokens?: number;
   floodRefilledAt?: number;
+  // The OAuth access token this socket authenticated with (#891), or undefined
+  // for a session. Access is identical either way; this exists only so revoking
+  // an app can find and close the sockets its token opened, and nothing else.
+  oauthTokenId?: number;
 }
 
 // #574: cap a single inbound WS frame. The library default is 100 MB; client→
@@ -1630,10 +1634,40 @@ export function fanOutToUser(userId: number, payload: WsPayload, opts: FanOutOpt
 const REVOKED_TERMINATE_MS = 2000;
 
 export function closeSocketsForUser(userId: number, reason = 'session revoked'): number {
+  return closeSocketsWhere(userId, reason, () => true);
+}
+
+/**
+ * Close only the sockets a member opened with particular OAuth access tokens
+ * (#891), leaving the rest — the web client, other apps — connected. Revoking an
+ * app deletes its tokens, but a socket authenticated at the upgrade is never
+ * checked again, so without this a revoked app would keep streaming. Same close
+ * code and teardown as closeSocketsForUser. Returns the number of sockets closed.
+ */
+export function closeSocketsForOAuthTokens(
+  userId: number,
+  tokenIds: Iterable<number>,
+  reason = 'app access revoked',
+): number {
+  const ids = new Set(tokenIds);
+  if (ids.size === 0) return 0;
+  return closeSocketsWhere(
+    userId,
+    reason,
+    (ws) => ws.oauthTokenId !== undefined && ids.has(ws.oauthTokenId),
+  );
+}
+
+function closeSocketsWhere(
+  userId: number,
+  reason: string,
+  matches: (ws: LurkerWebSocket) => boolean,
+): number {
   const set = socketsByUser.get(userId);
   if (!set) return 0;
   let closed = 0;
   for (const ws of set) {
+    if (!matches(ws)) continue;
     try {
       // Flag BEFORE closing: from here on the message handler drops anything
       // this socket sends, so the close handshake window is not an authenticated
@@ -1781,17 +1815,24 @@ export function startChanlistRefresh(networkId: number): void {
   chanlistDb.setMeta(networkId, { inProgress: true, totalCount: 0, fetchedAt: null });
 }
 
-// Authenticate a `/ws` upgrade. Two accepted credentials, in order:
+// Authenticate a `/ws` upgrade. Accepted credentials, in order:
 //
 //   1. the signed `lurker_session` cookie — every browser client, unchanged;
-//   2. `Authorization: Bearer <session token>` — native clients, which unlike
-//      browsers can set arbitrary headers on the upgrade request.
+//   2. `Authorization: Bearer <token>` — native and third-party clients, which
+//      unlike browsers can set arbitrary headers on the upgrade request. The
+//      token is a session token or an OAuth access token (#891); see
+//      loadBearerCredential.
 //
-// Both resolve to the same `sessions` row, so everything downstream of the
-// upgrade (and every WS verb) is identical regardless of how the client
-// authenticated. Lives at module scope rather than inside attachWsHub so it is
-// reachable from tests without standing up a real WebSocket server.
-export function authenticateUpgrade(req: IncomingMessage, sessionSecret: string): User | null {
+// Every credential signs in as the member with the same access, so everything
+// downstream of the upgrade (and every WS verb) is identical regardless of how
+// the client authenticated. `oauthTokenId` comes back only so the socket can be
+// found and closed when that app is revoked. Lives at module scope rather than
+// inside attachWsHub so it is reachable from tests without standing up a real
+// WebSocket server.
+export function authenticateUpgrade(
+  req: IncomingMessage,
+  sessionSecret: string,
+): { user: User; oauthTokenId: number | null } | null {
   const header = req.headers.cookie;
   if (header) {
     const cookies = cookie.parse(header);
@@ -1805,12 +1846,13 @@ export function authenticateUpgrade(req: IncomingMessage, sessionSecret: string)
         // all, so in practice only one credential is ever on the request.
         if (session) {
           const user = findUserById(session.user_id);
-          if (user) return user;
+          if (user) return { user, oauthTokenId: null };
         }
       }
     }
   }
-  return loadBearerSession(req.headers.authorization)?.user ?? null;
+  const bearer = loadBearerCredential(req.headers.authorization);
+  return bearer ? { user: bearer.user, oauthTokenId: bearer.oauthToken?.id ?? null } : null;
 }
 
 export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
@@ -2384,12 +2426,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       socket.destroy();
       return;
     }
-    const user = authenticateUpgrade(req, sessionSecret);
-    if (!user) {
+    const auth = authenticateUpgrade(req, sessionSecret);
+    if (!auth) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;
     }
+    const { user, oauthTokenId } = auth;
     // `?since=N` cursors the initial backlog: a reconnecting client passes the
     // highest event id it has, and the server ships only events newer than that
     // for each buffer. The first connect omits it (or sends 0), getting the
@@ -2405,6 +2448,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       lurkerWs.presence = { visible: false };
       lurkerWs.isAlive = true;
       lurkerWs.accountPaused = user.is_paused === 1;
+      if (oauthTokenId !== null) lurkerWs.oauthTokenId = oauthTokenId;
       addSocket(user.id, lurkerWs);
       onConnection(lurkerWs, user);
     });

@@ -156,6 +156,32 @@ describe('push_subscriptions rebuild (#490)', () => {
     ).toThrow(/UNIQUE/);
   });
 
+  it('ends with oauth_token_id, so an app’s subscriptions go with its token (#891)', () => {
+    // Added AFTER this rebuild on purpose: added before it, the rebuild's explicit
+    // column list would drop the column on exactly this kind of database.
+    expect(columns().some((c) => c.name === 'oauth_token_id')).toBe(true);
+    const appId = Number(
+      db
+        .prepare(`INSERT INTO oauth_apps (client_id, client_name, redirect_uris) VALUES (?, ?, ?)`)
+        .run('migration-app', 'Migration app', '[]').lastInsertRowid,
+    );
+    const tokenId = Number(
+      db
+        .prepare(`INSERT INTO oauth_tokens (token_hash, app_id, user_id) VALUES (?, ?, 2)`)
+        .run('migration-token-hash', appId).lastInsertRowid,
+    );
+    mod.upsertSubscription(
+      2,
+      { transport: 'webpush', endpoint: 'https://push.test/bob-app', p256dh: 'k', auth: 'a' },
+      tokenId,
+    );
+    expect(mod.getByEndpoint('https://push.test/bob-app')).not.toBeNull();
+    db.prepare(`DELETE FROM oauth_tokens WHERE id = ?`).run(tokenId);
+    expect(mod.getByEndpoint('https://push.test/bob-app')).toBeNull();
+    // Bob's own subscription from before the migration is untouched.
+    expect(mod.getByEndpoint('https://push.test/bob')).not.toBeNull();
+  });
+
   it('accepts a native subscription with no keys — the point of the rebuild', () => {
     const out = mod.upsertSubscription(1, {
       transport: 'apns',

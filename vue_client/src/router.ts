@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
+import { createRouter, createWebHistory, START_LOCATION, type RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from './stores/auth.js';
 import { useConfigStore } from './stores/config.js';
 import { useToastsStore } from './stores/toasts.js';
@@ -72,6 +72,21 @@ const routes: RouteRecordRaw[] = [
     name: 'admin',
     component: () => import('./views/Admin.vue'),
     meta: { requiresAuth: true, requiresAdmin: true },
+  },
+  {
+    // Approval page for a third-party app's OAuth sign-in (#891). The server
+    // sends frame-ancestors 'none' only on a real document load of this path, so
+    // the page must never render from an in-app navigation — and Login.vue's
+    // `next` redirect is one (router.replace). Reached that way, reload into it.
+    path: '/oauth/authorize',
+    name: 'oauth-authorize',
+    component: () => import('./views/OAuthAuthorize.vue'),
+    meta: { requiresAuth: true },
+    beforeEnter: (to, from) => {
+      if (from === START_LOCATION) return true;
+      window.location.assign(to.fullPath);
+      return false;
+    },
   },
 ];
 

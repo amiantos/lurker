@@ -77,11 +77,15 @@ router.post('/devices', (req: Request, res: Response) => {
     });
     return;
   }
-  const result = upsertSubscription(req.user!.id, {
-    transport,
-    endpoint: token,
-    userAgent: req.headers['user-agent'] || null,
-  });
+  const result = upsertSubscription(
+    req.user!.id,
+    {
+      transport,
+      endpoint: token,
+      userAgent: req.headers['user-agent'] || null,
+    },
+    req.oauthToken?.id ?? null,
+  );
   if (!result.ok || !result.sub) {
     // upsertSubscription rebinds rather than refusing for native, so !ok here is
     // not the cross-user case — it's a genuine storage failure.
@@ -130,13 +134,17 @@ router.post('/subscriptions', (req: Request, res: Response) => {
     res.status(400).json({ error: 'endpoint and keys.p256dh + keys.auth are required' });
     return;
   }
-  const result = upsertSubscription(req.user!.id, {
-    transport: 'webpush',
-    endpoint,
-    p256dh: keys.p256dh,
-    auth: keys.auth,
-    userAgent: userAgent || req.headers['user-agent'] || null,
-  });
+  const result = upsertSubscription(
+    req.user!.id,
+    {
+      transport: 'webpush',
+      endpoint,
+      p256dh: keys.p256dh,
+      auth: keys.auth,
+      userAgent: userAgent || req.headers['user-agent'] || null,
+    },
+    req.oauthToken?.id ?? null,
+  );
   if (!result.ok) {
     res.status(409).json({
       error:

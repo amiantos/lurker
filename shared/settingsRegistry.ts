@@ -1964,6 +1964,8 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   // per-cell proxy, so the server doesn't mount /api/api-tokens or /mcp there
   // (A7). Hide the whole category in the hosted edition.
   { id: 'api-tokens', label: 'API tokens', kind: 'bespoke', selfHostedOnly: true },
+  // Apps approved through OAuth sign-in (#891). Standalone edition only, like API tokens.
+  { id: 'authorized-apps', label: 'Authorized apps', kind: 'bespoke', selfHostedOnly: true },
   { id: 'data', label: 'Data', kind: 'bespoke' },
   { id: 'about', label: 'About', kind: 'bespoke' },
 ]);

@@ -26,6 +26,7 @@ import { nodeUploadConfigured } from './services/uploadProviders/nodeUpload.js';
 import * as systemLog from './services/systemLog.js';
 import { purgeExpiredSessions } from './db/sessions.js';
 import { purgeExpiredRecoveryTokens } from './db/accountRecovery.js';
+import { purgeOAuth } from './db/oauth.js';
 import { sweepExpiredPreviews } from './db/linkPreviews.js';
 import { sweepPreviewCache } from './services/previewCache/index.js';
 import { startRetentionSweeper } from './services/retentionSweeper.js';
@@ -149,6 +150,11 @@ setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
 // single slot and looking live in a table dump.
 purgeExpiredRecoveryTokens();
 setInterval(() => purgeExpiredRecoveryTokens(), 60 * 60 * 1000).unref();
+// OAuth (#891): expired authorization codes, and app registrations nobody
+// approved within the hour. The second half is what bounds a table the open
+// registration endpoint lets anyone write to.
+purgeOAuth();
+setInterval(() => purgeOAuth(), 60 * 60 * 1000).unref();
 
 // link_previews is a cache with a TTL, so lapsed rows have to actually go — without this it
 // only ever grows. Deliberately NOT gated on previewsEnabled(): an operator who turns the

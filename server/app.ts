@@ -35,25 +35,51 @@ import apiTokensRouter from './routes/apiTokens.js';
 import configRouter from './routes/config.js';
 import linkPreviewRouter from './routes/linkPreview.js';
 import nodeRouter from './routes/node.js';
+import { oauthRouter, wellKnownRouter } from './routes/oauth.js';
 import mcpRouter from './services/mcpServer.js';
 import { requireApiAuth } from './middleware/apiAuth.js';
 import { isNodeMode } from './utils/edition.js';
 import { previewsEnabled } from './utils/previews.js';
 import { allowedBrowserOrigins } from './utils/corsOrigins.js';
 
+// body-parser marks its own failures (malformed JSON or form data, a body over
+// the limit, an unsupported charset) with a `type` such as 'entity.parse.failed'
+// and a 4xx `status`.
+function isBodyParseError(err: unknown): err is { status: number } {
+  if (!err || typeof err !== 'object') return false;
+  const { type, status } = err as { type?: unknown; status?: unknown };
+  return typeof type === 'string' && typeof status === 'number' && status >= 400 && status < 500;
+}
+
 const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
+  // A body that didn't parse is the client's mistake, not a server fault. The
+  // parser attaches the raw body to the error, and that body can be a password or
+  // an OAuth code, so it is answered with its 4xx and never logged. This has to
+  // live here: the JSON parser runs app-wide, ahead of every router, so an error
+  // it raises never reaches a router's own handler.
+  if (isBodyParseError(err)) {
+    if (res.headersSent) return next(err);
+    res.status(err.status).json({ error: 'invalid_request' });
+    return;
+  }
   console.error('[lurker] error:', err);
   if (res.headersSent) return next(err);
   res.status(500).json({ error: 'internal error' });
 };
 
+export interface BuildAppOptions {
+  /** The built web client to serve. Defaults to vue_client/dist. */
+  clientDist?: string;
+}
+
 /**
  * Build the fully-wired Express app. `sessionSecret` keys cookie-parser for the
  * signed `lurker_session` cookie (the same secret server.ts hands to the WS
  * hub). Route gating reads the cached edition, so set LURKER_EDITION before the
- * first getEdition() call.
+ * first getEdition() call. Tests pass `clientDist` to serve a stand-in client,
+ * because CI runs the suite without building vue_client.
  */
-export function buildApp(sessionSecret: string): Express {
+export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): Express {
   const app = express();
 
   // CORS_ORIGIN is a comma-separated allowlist, normalized to URL origins (see
@@ -125,6 +151,15 @@ export function buildApp(sessionSecret: string): Express {
     app.use('/mcp', requireApiAuth, mcpRouter);
   }
 
+  // OAuth sign-in for third-party clients (#891). Standalone only: hosted sign-in
+  // happens in front of the cells, so a cell must not mint credentials of its own.
+  // Discovery sits under /.well-known and has to be mounted before express.static
+  // below, or the SPA fallback answers it with index.html.
+  if (!isNodeMode()) {
+    app.use('/api/oauth', oauthRouter);
+    app.use('/.well-known', wellKnownRouter);
+  }
+
   // Orchestrator-only control surface. Mounted exclusively in node edition so a
   // standalone self-hosted instance never exposes it at all.
   if (isNodeMode()) {
@@ -146,9 +181,28 @@ export function buildApp(sessionSecret: string): Express {
   // index.html back with a 200 and Content-Type: text/html, so the browser
   // reports a confusing module-type refusal instead of a plain 404 — and the
   // client can't cleanly tell "chunk is gone" from "page is fine" (#571).
-  const clientDist = path.join(import.meta.dirname, '../vue_client/dist');
+  //
+  // `.well-known` is for machines, never a page. A client probing for a document
+  // this server doesn't publish (an MCP client asking for OAuth protected-resource
+  // metadata before falling back to the authorization-server document, #891)
+  // needs a 404 it can act on, not the SPA's HTML with a 200.
+  const clientDist = options.clientDist ?? path.join(import.meta.dirname, '../vue_client/dist');
   app.use(express.static(clientDist));
-  app.get(/^\/(?!api|ws|mcp|assets).*/, (_req, res, next) => {
+  app.get(/^\/(?!api|ws|mcp|assets|[.]well-known).*/, (req, res, next) => {
+    // The OAuth approval page (#891) must never render inside someone else's
+    // frame, where an Approve click could be steered. Scoped to this one path so
+    // self-hosters can keep embedding the rest of the app; the page's route forces
+    // a full document load when reached client-side, so these always apply to it.
+    // Compared the way the client router matches routes (case-insensitive, trailing
+    // slash optional), or /OAuth/Authorize/ would render the page without them.
+    if (req.path.toLowerCase().replace(/\/+$/, '') === '/oauth/authorize') {
+      res.set({
+        'Content-Security-Policy': "frame-ancestors 'none'",
+        'X-Frame-Options': 'DENY',
+        'Cache-Control': 'no-store',
+        'Referrer-Policy': 'no-referrer',
+      });
+    }
     res.sendFile(path.join(clientDist, 'index.html'), (err) => {
       if (err) next();
     });
