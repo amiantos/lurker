@@ -12,7 +12,8 @@ MCP-aware client at your Lurker, and what tools are available.
 
 1. **Mint a token** in your settings (`/settings/api-tokens`). Choose
    read-only or read-write at creation time. The raw token is shown
-   exactly once; copy it now.
+   exactly once; copy it now. On lurker.chat there are no API tokens; sign
+   in with OAuth instead (see [below](#api-tokens-and-oauth-sign-in)).
 2. **Configure your MCP client** with the token and the endpoint
    (`https://<your-lurker>/mcp`). See [Claude Desktop](#claude-desktop)
    below for a worked example.
@@ -40,12 +41,14 @@ their own account.
 `/mcp` accepts two bearer credentials:
 
 - **An API token** from your settings, with the scope you chose. API tokens
-  don't open the WebSocket the browser uses.
+  don't open the WebSocket the browser uses. lurker.chat doesn't offer them.
 - **An OAuth access token.** An MCP client that looks for an OAuth server at
   your Lurker's root can skip the token and sign in through your browser: it
   finds the discovery document, registers itself, and you approve it. The token
   is read-write here and works everywhere a password sign-in does. Its redirect
-  URI has to follow the rules in [OAuth for third-party clients](OAUTH.md).
+  URI has to follow the rules in [OAuth for third-party clients](OAUTH.md). On
+  lurker.chat this is the only way in: use `https://app.lurker.chat/mcp` as the
+  endpoint.
 
 While an account is paused, either credential gets the read tools only.
 

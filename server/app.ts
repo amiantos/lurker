@@ -139,24 +139,26 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
     app.use('/api/link-preview', linkPreviewRouter);
   }
 
-  // The HTTP API-token feature and the MCP server are the two ends of the same
-  // bearer-token model: /api/api-tokens (session-cookie auth) mints the tokens,
-  // and /mcp (bearer auth) consumes them. The hosted service routes a customer
-  // to their cell by the cp_session cookie, but a bearer client carries no such
-  // cookie — so /mcp can't be addressed through the per-cell proxy, which makes
-  // the tokens unusable there. Disable both in node edition (A7); A3 hides the
-  // matching UI. Standalone keeps them fully featured.
+  // API tokens are minted in Settings and sent as a bearer. The hosted service
+  // routes a customer to their cell by the cp_session cookie, and nothing in an API
+  // token says which cell it belongs to, so node edition doesn't mount them (A7; A3
+  // hides the matching UI).
   if (!isNodeMode()) {
     app.use('/api/api-tokens', apiTokensRouter);
-    app.use('/mcp', requireApiAuth, mcpRouter);
   }
+  // The MCP server takes an API token or an OAuth access token. In node edition
+  // only the second exists, and it names the cell that issued it, so the hosted
+  // proxy can route it here.
+  app.use('/mcp', requireApiAuth, mcpRouter);
 
-  // OAuth sign-in for third-party clients (#891). Standalone only: hosted sign-in
-  // happens in front of the cells, so a cell must not mint credentials of its own.
-  // Discovery sits under /.well-known and has to be mounted before express.static
-  // below, or the SPA fallback answers it with index.html.
+  // OAuth sign-in for third-party clients (#891). A cell in node edition approves,
+  // exchanges and revokes exactly as a self-hosted server does, but registration and
+  // discovery belong to the orchestrator in front of the cells: one registration is
+  // valid on every cell, and discovery has to name the public origin (see
+  // routes/oauth.ts). Discovery sits under /.well-known and has to be mounted before
+  // express.static below, or the SPA fallback answers it with index.html.
+  app.use('/api/oauth', oauthRouter);
   if (!isNodeMode()) {
-    app.use('/api/oauth', oauthRouter);
     app.use('/.well-known', wellKnownRouter);
   }
 
@@ -170,10 +172,9 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
 
-  // SPA fallback for client-side routes. `mcp` joins `api`/`ws` in the exclusion
-  // so that in node edition — where /mcp isn't mounted — a stray GET /mcp 404s
-  // instead of being served index.html; it's a disabled endpoint, not a page.
-  // (In standalone the mounted /mcp middleware handles it before this anyway.)
+  // SPA fallback for client-side routes. `mcp` joins `api`/`ws` in the exclusion:
+  // it's an endpoint, never a page, and the mounted /mcp middleware answers it
+  // before this anyway.
   //
   // `assets` is excluded for a different reason: everything under it is a real
   // hashed build artifact served by express.static above, never a client route.

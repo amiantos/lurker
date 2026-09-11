@@ -1960,12 +1960,12 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'away', label: 'Away', kind: 'registry' },
   { id: 'networks', label: 'Networks', kind: 'bespoke' },
   { id: 'account', label: 'Account', kind: 'bespoke' },
-  // Disabled in node edition: bearer clients can't be routed through the
-  // per-cell proxy, so the server doesn't mount /api/api-tokens or /mcp there
-  // (A7). Hide the whole category in the hosted edition.
+  // Disabled in node edition: an API token can't be routed through the per-cell
+  // proxy, so the server doesn't mount /api/api-tokens there (A7). Hide the whole
+  // category in the hosted edition.
   { id: 'api-tokens', label: 'API tokens', kind: 'bespoke', selfHostedOnly: true },
-  // Apps approved through OAuth sign-in (#891). Standalone edition only, like API tokens.
-  { id: 'authorized-apps', label: 'Authorized apps', kind: 'bespoke', selfHostedOnly: true },
+  // Apps approved through OAuth sign-in (#891), in both editions.
+  { id: 'authorized-apps', label: 'Authorized apps', kind: 'bespoke' },
   { id: 'data', label: 'Data', kind: 'bespoke' },
   { id: 'about', label: 'About', kind: 'bespoke' },
 ]);

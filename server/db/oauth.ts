@@ -3,6 +3,7 @@
 
 import crypto from 'crypto';
 import db from './index.js';
+import { oauthRoutingPrefix } from '../utils/edition.js';
 
 // Storage for the OAuth 2 authorization server (#891). A third-party client
 // registers itself (RFC 7591), the member approves it in the browser, and the
@@ -11,7 +12,9 @@ import db from './index.js';
 //
 // Client ids are public. Every other secret here is 32 random bytes stored only
 // as its SHA-256 -- the api_tokens reasoning: unguessable input makes an
-// unsalted hash enough, and reading these tables yields nothing usable. Codes
+// unsalted hash enough, and reading these tables yields nothing usable. In node
+// edition a code or token also starts with the cell's name (oauthRoutingPrefix);
+// the hash covers the whole string, so looking one up needs nothing extra. Codes
 // and tokens are hard-deleted when spent or revoked, so liveness is simply "the
 // row exists" and no revoked-but-present state can be misread later.
 //
@@ -113,6 +116,28 @@ export function findAppByClientId(clientId: string): OAuthApp | null {
   );
 }
 
+/**
+ * Store an app registered with the orchestrator, for a cell in node edition. A cell
+ * takes no registrations there: one is valid on every cell, so the orchestrator
+ * keeps them and hands a cell each app a member is about to approve. An app that
+ * arrives again keeps the metadata it has. If it's still pending, its clock
+ * restarts, so the hourly purge can't delete it while the member is on the
+ * approval page.
+ */
+export function upsertAppFromFleet(
+  clientId: string,
+  input: { clientName: string; clientUri: string | null; redirectUris: string[] },
+  now = Date.now(),
+): OAuthApp {
+  db.prepare(
+    `INSERT INTO oauth_apps (client_id, client_name, client_uri, redirect_uris, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(client_id) DO UPDATE SET created_at = excluded.created_at
+      WHERE oauth_apps.first_authorized_at IS NULL`,
+  ).run(clientId, input.clientName, input.clientUri, JSON.stringify(input.redirectUris), iso(now));
+  return findAppByClientId(clientId)!;
+}
+
 /** Registrations nobody has approved yet -- the only ones an anonymous caller can pile up. */
 export function countPendingApps(): number {
   const row = db
@@ -130,7 +155,7 @@ export function createCode(
   input: { appId: number; userId: number; redirectUri: string; codeChallenge: string },
   now = Date.now(),
 ): string {
-  const code = generateSecret();
+  const code = oauthRoutingPrefix() + generateSecret();
   db.transaction(() => {
     db.prepare(
       `INSERT INTO oauth_codes (code_hash, app_id, user_id, redirect_uri, code_challenge, expires_at)
@@ -180,7 +205,7 @@ export function consumeCode(code: string, now = Date.now()): ConsumedCode | null
 
 /** Mint an access token, returning the RAW value. It never expires; revoking deletes it. */
 export function createToken(appId: number, userId: number, now = Date.now()): string {
-  const token = generateSecret();
+  const token = oauthRoutingPrefix() + generateSecret();
   db.prepare(
     'INSERT INTO oauth_tokens (token_hash, app_id, user_id, created_at) VALUES (?, ?, ?, ?)',
   ).run(hashSecret(token), appId, userId, iso(now));

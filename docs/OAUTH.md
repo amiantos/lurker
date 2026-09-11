@@ -1,9 +1,9 @@
 # OAuth for third-party clients
 
-A self-hosted Lurker is an OAuth 2 authorization server for third-party apps. It
-follows Mastodon's model: an app registers itself, the member signs in and
-approves it in the browser, and the app exchanges a one-time code for an access
-token. Hosted lurker.chat doesn't offer it.
+Lurker is an OAuth 2 authorization server for third-party apps, self-hosted and
+on lurker.chat (`https://app.lurker.chat`). It follows Mastodon's model: an app
+registers itself, the member signs in and approves it in the browser, and the app
+exchanges a one-time code for an access token. Everything below applies to both.
 
 ## The flow at a glance
 
@@ -200,6 +200,10 @@ Send it on every REST call and on the WebSocket upgrade, exactly like the sessio
 token in [Client Protocol](CLIENT_PROTOCOL.md) §3.1 and §4.1. A `401` means the
 token was revoked: discard it and authorize again.
 
+Treat codes and tokens as opaque strings. On lurker.chat they start with the name
+of the server holding the member's account and a `~`, so don't check them against
+the base64url alphabet.
+
 ## Revoke
 
 RFC 7009. Form-encoded or JSON, no auth.
@@ -311,8 +315,6 @@ curl -s "$SERVER/api/oauth/revoke" \
 
 ## For operators
 
-- OAuth is for self-hosted (standalone) Lurker only. Hosted lurker.chat doesn't
-  offer it.
 - **Set `PUBLIC_BASE_URL` behind a reverse proxy.** The discovery document's
   `issuer` and endpoint URLs come from it, and otherwise from the request's
   `Host` or `X-Forwarded-Host` header.

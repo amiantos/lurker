@@ -46,20 +46,19 @@ describe('buildApp route gating by edition', () => {
       expect(res.status).toBe(404);
     });
 
-    it('does not mount the MCP server at /mcp', async () => {
+    it('mounts the MCP server, for OAuth access tokens (requireApiAuth → 401)', async () => {
       const app = await buildFor('node');
       const res = await testRequest(app)
         .post('/mcp')
         .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(401);
     });
 
-    it('404s GET /mcp too (not swallowed by the SPA fallback)', async () => {
+    it('answers GET /mcp itself rather than handing back the SPA', async () => {
       const app = await buildFor('node');
-      // `mcp` is excluded from the SPA catch-all, so a disabled /mcp is
-      // consistently absent rather than served index.html.
       const res = await testRequest(app).get('/mcp');
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(401);
+      expect(res.text ?? '').not.toContain('id="app"');
     });
 
     it('mounts the orchestrator control surface /api/node', async () => {
@@ -155,12 +154,19 @@ describe('OAuth (#891) mounting', () => {
     expect(res.body.error).toBe('invalid_client_metadata');
   });
 
-  it('is not mounted in node edition, where sign-in happens in front of the cell', async () => {
+  it('is mounted in node edition, apart from registration and discovery', async () => {
     const app = await buildFor('node');
+    // The orchestrator in front of the cells keeps the registry and publishes discovery.
     expect((await testRequest(app).post('/api/oauth/register').send({})).status).toBe(404);
-    expect((await testRequest(app).get('/api/oauth/apps')).status).toBe(404);
     const discovery = await testRequest(app).get('/.well-known/oauth-authorization-server');
+    expect(discovery.status).toBe(404);
     expect(discovery.headers['content-type'] ?? '').not.toMatch(/json/);
+    // Everything else answers as it does self-hosted.
+    expect((await testRequest(app).get('/api/oauth/apps')).status).toBe(401);
+    expect((await testRequest(app).get('/api/oauth/authorize')).status).toBe(401);
+    const token = await testRequest(app).post('/api/oauth/token').type('form').send({});
+    expect(token.status).toBe(400);
+    expect(token.body.error).toBe('invalid_request');
   });
 
   it('serves the discovery document as JSON, ahead of the SPA fallback', async () => {
