@@ -98,9 +98,9 @@ address on the wire while everything on screen said otherwise.
 
 ::: tip Self-hosting without a proxy setting
 If you run Lurker behind the IRC engine, the engine is what dials — so it needs
-to be new enough to understand proxies (protocol minor 5). An older engine is
-refused rather than allowed to connect directly; update the engine image and
-restart it.
+to be from Lurker 2.3.0 or later to understand proxies. Settings → About shows
+which engine you have. An older engine is refused rather than allowed to connect
+directly; update the engine image and restart it.
 :::
 
 ## Joining channels
