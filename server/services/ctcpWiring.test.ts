@@ -893,12 +893,13 @@ describe('a /whois between requests is ordered by sequence, not by the clock', (
     conn.publish = publish;
 
     conn.raw('WHOIS bob');
-    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
+    conn.client.connection.addReadBuffer(':irc.example.test 401 nick bob :No such nick/channel');
 
     expect(ctcpLines().slice(before)).toHaveLength(0);
+    // Since #904 the raw handler's line is that report, and the only one.
     expect(publish).toHaveBeenCalledTimes(1);
     expect(publish).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'error', target: ':server:1' }),
+      expect.objectContaining({ type: 'motd', target: ':server:1' }),
     );
   });
 

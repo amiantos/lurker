@@ -1355,10 +1355,16 @@ describe('refused-message handler routing (#283)', () => {
     conn.publish = publish;
 
     conn.raw('WHOIS fartboy');
-    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'fartboy' });
+    // A wire line, not a hand-built 'irc error': the server buffer's report of
+    // an unclaimed 401 is the raw handler's line (#904).
+    conn.client.connection.addReadBuffer(
+      ':irc.example.test 401 nick fartboy :No such nick/channel',
+    );
 
     expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ target: 'fartboy' }));
-    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ target: ':server:1' }));
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'motd', target: ':server:1' }),
+    );
   });
 
   it("doesn't open a query from a /ctcp to a nick that isn't there", () => {
