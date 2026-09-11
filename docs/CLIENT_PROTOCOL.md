@@ -1231,6 +1231,11 @@ during the TLS handshake, so there is nothing to renegotiate on a live socket.
 `GET /api/network-presets` → `{presets, allowUserDefined}` for the add-network
 form.
 
+`GET /api/about` → `{engine}` for an About screen: `null` when this instance
+dials IRC itself, otherwise `{connected, version}` for the IRC engine holding its
+sockets. `version` is the Lurker release that last changed the engine, so it can
+trail the server's own; it is `null` until the engine has answered once.
+
 ### Settings & personalization
 
 | Endpoint                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
