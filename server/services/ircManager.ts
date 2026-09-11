@@ -543,6 +543,11 @@ class IrcManager extends EventEmitter {
       // Join Channel menu item, the invite toast and a bare /join all draw a
       // 475 on a parted +k channel (#873). ZNC does the same (CChan::JoinUser);
       // soju joins keyless. Nothing to stash, since the row already holds it.
+      //
+      // A key still stashed here belongs to an earlier keyed JOIN that got no
+      // echo, most likely refused. Drop it, or this JOIN's echo would store the
+      // refused key over the one that just worked.
+      conn.takeStashedJoinKey(name);
       // decryptSecret throws on a key stored under a rotated key-id, and this
       // is the unguarded ws path, so an unreadable key means a keyless JOIN.
       try {

@@ -581,6 +581,37 @@ describe('planChannelRejoins', () => {
     expect(join).toHaveBeenCalledWith('#vault', undefined);
   });
 
+  it('a keyless rejoin drops the key a refused JOIN left stashed', () => {
+    // A refused JOIN gets no echo, so its key stays stashed. The keyless rejoin
+    // after it sends the stored key and lands; its echo must not store the
+    // refused key over the one that worked.
+    const user = createUser('irc-join-stalestash');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    const join = vi.fn<(channel: string, key?: string) => void>();
+    conn.client.join = join;
+    conn.client.part = vi.fn<(channel: string, reason?: string) => void>();
+
+    ircManager.joinChannel(user.id, net.id, '#secret', 'hunter2');
+    conn.client.user.nick = 'a';
+    conn.client.emit('join', { channel: '#secret', nick: 'a' });
+    ircManager.partChannel(user.id, net.id, '#secret');
+    conn.client.emit('part', { channel: '#secret', nick: 'a' });
+
+    ircManager.joinChannel(user.id, net.id, '#secret', 'wrong'); // refused: no echo
+    ircManager.joinChannel(user.id, net.id, '#secret');
+    expect(join).toHaveBeenLastCalledWith('#secret', 'hunter2');
+    conn.client.emit('join', { channel: '#secret', nick: 'a' });
+
+    expect(buffers.getBuffer(user.id, net.id, '#secret')!.key).toBe('hunter2');
+  });
+
   it('joinChannel drops a non-string key from an untrusted payload without throwing', () => {
     const user = createUser('irc-join-badkey');
     const net = createNetwork(user.id, {
