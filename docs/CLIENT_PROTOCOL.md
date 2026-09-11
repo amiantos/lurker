@@ -713,7 +713,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `channel-topic`               | E   | RPL_TOPIC on join — set state, render nothing                                 |
 | `channel-modes`               | E   | full channel mode string                                                      |
 | `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                |
-| `channel-parted`              | E   | you left/were removed — mark parted, keep history                             |
+| `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history    |
 | `join-error`                  | E   | join failed — `text`, `reason`; do **not** create a buffer                    |
 | `names`                       | E   | `members[…]` — full nicklist replace                                          |
 | `member-update`               | E   | `member{…}` — single-nick patch (away/account/host changes)                   |
@@ -1034,7 +1034,12 @@ these signals:
 - **`buffer-reopened` needs no handler** — the message that caused the reopen
   arrives as a normal `irc` event and materializes the buffer via the DM rule.
 - **`channel-parted` → resolve, never materialize**: mark parted, clear members,
-  keep the buffer and history. If you have no such buffer, ignore it.
+  keep the buffer and history. If you have no such buffer, ignore it. It also
+  arrives for every joined channel when the connection to the IRC server drops;
+  each rejoin that lands sends its own `channel-joined`, and one the server
+  refuses leaves the buffer parted.
+- **`names` and `channel-topic` only ever name a channel you are in.** A `/names`
+  or `/topic` for any other comes back as `motd` text in the server buffer.
 - **`membersPending` (on a snapshot channel, or on a `names` event) → keep the
   members you already hold.** The server has not heard the channel's NAMES
   since it last connected or attached — after an engine re-attach that is every

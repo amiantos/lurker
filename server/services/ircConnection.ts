@@ -539,14 +539,20 @@ export class IrcConnection {
   onEvent: (event: EnrichedEvent) => void;
   client: IrcClient;
   state: string;
-  /** Mutate only through setChannel/deleteChannel — never `.set`/`.delete`
-   *  directly — so joinedFoldedCache can't drift from what's actually in
-   *  here. Reads (`.get`, `.values()`, `.has()`, iteration) are fine raw. */
+  /** Mutate only through setChannel/deleteChannel/forgetJoinedChannels —
+   *  never `.set`/`.delete`/`.clear` directly — so joinedFoldedCache can't
+   *  drift from what's actually in here. Reads (`.get`, `.values()`, `.has()`,
+   *  iteration) are fine raw.
+   *
+   *  The CURRENT socket's membership and nothing else (#908): only our own
+   *  JOIN echo (or the engine replay's synthesised one) adds an entry, a reply
+   *  that merely names a channel (NAMES, TOPIC) never does, and every entry
+   *  goes when the socket does. */
   channels: Map<string, ChannelState>;
   /** Lazily-built per-network-folded index over `channels` for
    *  isChannelJoined. null = rebuild on next probe. Nulled by setChannel/
-   *  deleteChannel on every mutation, and separately by a CASEMAPPING change
-   *  (the folds move even though membership doesn't). */
+   *  deleteChannel/forgetJoinedChannels on every mutation, and separately by a
+   *  CASEMAPPING change (the folds move even though membership doesn't). */
   joinedFoldedCache: Set<string> | null;
   // Join keys awaiting their echo, keyed by lowercased channel. Nothing is
   // persisted on a join REQUEST (the buffers row is echo-written), so the key
@@ -1209,7 +1215,14 @@ export class IrcConnection {
       // channel's requests. Before the denylist: 366 is exactly the kind of
       // line the server buffer never shows.
       this.noteRestoreReply(rawCommand, msg?.params?.[1]);
-      if (isServerBufferDeniedNumeric(rawCommand)) return;
+      // NAMES replies are denied because a joined channel's nicklist is where
+      // they show. One for a channel we are not in has no nicklist to land in
+      // (see 'userlist'), so it renders verbatim like any other numeric.
+      const namesChannel =
+        rawCommand === '353' ? msg?.params?.[2] : rawCommand === '366' ? msg?.params?.[1] : null;
+      const namesElsewhere =
+        typeof namesChannel === 'string' && !this.isChannelJoined(namesChannel);
+      if (isServerBufferDeniedNumeric(rawCommand) && !namesElsewhere) return;
       if (
         RESTORE_QUIET_NUMERICS.has(rawCommand) &&
         this.isRestoreQuiet(rawCommand, rawCommand === '221' ? '*' : msg?.params?.[1])
@@ -1514,6 +1527,9 @@ export class IrcConnection {
       }
       this.markAllPeersOffline();
       this.setState('disconnected');
+      // Safety net, like the sweep above: 'socket close' has almost always
+      // forgotten the channels already, and a second call is a no-op.
+      this.forgetJoinedChannels();
       // Decide, now that we know WHEN the socket died, whether a SASL rejection
       // (#617) or a ban-classified ERROR (#651) earlier in this connection is
       // what killed it.
@@ -1691,6 +1707,9 @@ export class IrcConnection {
         return;
       }
       this.setState('disconnected');
+      // The IRC socket itself is gone (the engine-link cases returned above),
+      // and the channels we were in went with it.
+      this.forgetJoinedChannels();
       // Our socket to this network just dropped — from our vantage point every
       // peer we track here is now unreachable, so mark them all offline. This is
       // the fix for the "stuck online" gap on networks without MONITOR: if a
@@ -2632,13 +2651,18 @@ export class IrcConnection {
     c.on('topic', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string;
       const eventTopic = event.topic as string | undefined;
-      const ch = this.upsertChannel(eventChannel);
+      // A topic for a channel we are not in answers a query (/topic #elsewhere,
+      // which the 'raw' handler already showed in the server buffer); it is not
+      // membership (#908). Fold-aware, so a reply spelled #a{b} lands on the
+      // #a[b] we joined.
+      const ch = this.channelState(eventChannel);
+      if (!ch) return;
       ch.topic = eventTopic ?? null;
       if (event.nick) {
         // Live TOPIC change — persist + render in the message list.
         this.publish({
           type: 'topic',
-          target: eventChannel,
+          target: ch.name,
           nick: event.nick as string,
           text: eventTopic,
           time: event.time,
@@ -2647,7 +2671,7 @@ export class IrcConnection {
         // RPL_TOPIC on join — sync the topic bar without printing a row, so
         // rejoining an already-open buffer doesn't repeat the same topic line
         // every time.
-        this.publishEphemeral({ type: 'channel-topic', target: eventChannel, topic: eventTopic });
+        this.publishEphemeral({ type: 'channel-topic', target: ch.name, topic: eventTopic });
       }
     });
 
@@ -2794,7 +2818,13 @@ export class IrcConnection {
       const tHandler = Date.now();
       const eventChannel = event.channel as string;
       const eventUsers = (event.users as Record<string, unknown>[]) || [];
-      const ch = this.upsertChannel(eventChannel);
+      // Only a channel we are in has a nicklist to replace. A NAMES reply for
+      // any other — a typed /names #elsewhere, a restore step answered after a
+      // KICK — used to create one, and the channel then read as joined with a
+      // nicklist that didn't have us in it (#908). The 'raw' handler shows such
+      // a reply in the server buffer instead.
+      const ch = this.channelState(eventChannel);
+      if (!ch) return;
       // Preserve known away flags AND user/host across re-issued NAMES
       // (e.g. on /NAMES or a fresh join). NAMES doesn't carry ident/host on
       // most ircds — the JOIN event and WHO reply do — so we hold onto
@@ -3990,6 +4020,23 @@ export class IrcConnection {
     return deleted;
   }
 
+  // The joined set belongs to one socket, so it dies with it (#908). Kept, a
+  // channel whose rejoin the server refused — a 477 before services identify
+  // us, a ban set while we were away — read as joined for the life of the
+  // process: the snapshot said joined, nothing arrived, and a 477 for it was
+  // taken for a speak rejection. Each one is announced parted so clients dim
+  // it; a rejoin that lands lights it again through its echo.
+  //
+  // autojoin is deliberately untouched: a dropped socket is not the user
+  // leaving, and that flag is what the reconnect's rejoin reads.
+  private forgetJoinedChannels(): void {
+    if (this.channels.size === 0) return;
+    const names = Array.from(this.channels.values(), (ch) => ch.name);
+    this.channels.clear();
+    this.joinedFoldedCache = null;
+    for (const name of names) this.publish({ type: 'channel-parted', target: name });
+  }
+
   upsertChannel(name: string): ChannelState {
     const key = name.toLowerCase();
     let ch = this.channels.get(key);
@@ -4387,6 +4434,10 @@ export class IrcConnection {
     switch (phase) {
       case 'dialing':
         this.resetRestoreState();
+        // A new socket. Anything we still think we are in belonged to one that
+        // died while our link to the engine was down, so 'socket close' never
+        // saw it go.
+        this.forgetJoinedChannels();
         this.announceConnecting();
         break;
       case 'attached': {

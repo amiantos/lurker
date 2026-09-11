@@ -163,10 +163,19 @@ describe('chghost fan-out (#591)', () => {
   });
 
   it('keeps the old half of the mask rather than publishing an empty one', () => {
-    const { conn, of, memberIn } = harness();
-    // A member whose ident we never learned (NAMES-derived, no JOIN observed),
-    // then a host-only CHGHOST. Neither side should end up with a bare '@host'.
-    conn.client.emit('userlist', { channel: '#one', users: [{ nick: 'bob', modes: [] }] });
+    const { conn, of, memberIn, join } = harness();
+    // A member whose ident we never learned (NAMES-derived, no JOIN of theirs
+    // observed), then a host-only CHGHOST. Neither side should end up with a
+    // bare '@host'. Our own JOIN comes first: a NAMES reply only fills a channel
+    // we are in (#908).
+    join('#one', 'alice');
+    conn.client.emit('userlist', {
+      channel: '#one',
+      users: [
+        { nick: 'alice', modes: [] },
+        { nick: 'bob', modes: [] },
+      ],
+    });
     conn.client.emit('user updated', {
       nick: 'bob',
       hostname: '',
