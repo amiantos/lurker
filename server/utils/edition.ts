@@ -49,6 +49,19 @@ export function isNodeMode(): boolean {
   return getEdition() === 'node';
 }
 
+/**
+ * What a cell puts in front of the OAuth codes and access tokens it mints (#891):
+ * its fleet name and a `~`. Neither carries a session the orchestrator could route
+ * by, so it reads the name instead. The secret after the last `~` is base64url,
+ * which never contains one. Empty in standalone edition, where there's nothing to
+ * route.
+ */
+export function oauthRoutingPrefix(): string {
+  if (!isNodeMode()) return '';
+  const name = (process.env.LURKER_NODE_NAME ?? '').trim();
+  return name ? `${name}~` : '';
+}
+
 // app_meta keys reserved for node identity. Populated by the orchestrator
 // handshake (A2) and the registration/heartbeat client (A4); never written in
 // standalone. Centralized here so the cell and its control surfaces agree on the

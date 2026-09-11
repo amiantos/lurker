@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import express, { Router } from 'express';
-import type { Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { requireAuth, requireCookieSession } from '../middleware/auth.js';
 import { RequestThrottle, limitRequests } from '../middleware/rateLimit.js';
 import { closeSocketsForOAuthTokens } from '../services/wsHub.js';
+import { isNodeMode } from '../utils/edition.js';
 import { publicBaseUrl } from '../utils/publicOrigin.js';
 import {
   MAX_PENDING_APPS,
@@ -43,7 +44,10 @@ import type { AuthorizeRequest } from '../services/oauth.js';
 // expire and there are no refresh tokens; revoking deletes the token and closes
 // every socket it opened.
 //
-// Standalone edition only (app.ts). Hosted sign-in happens in front of the cells.
+// A cell in node edition runs all of this except registration. One registration
+// is valid on every cell, so the orchestrator in front of them keeps the registry
+// (routes/node.ts), and every code and token a cell mints starts with its name so
+// the orchestrator can route it back (oauthRoutingPrefix in utils/edition.ts).
 
 export const oauthRouter = Router();
 
@@ -75,8 +79,19 @@ function param(body: unknown, key: string): string | undefined {
 
 // ---------- registration (RFC 7591) ----------
 
+// A node's orchestrator takes registrations for the whole fleet (see above), so a
+// cell refuses them before they count against anyone's limit.
+function registrationUnavailableInNodeMode(_req: Request, res: Response, next: NextFunction): void {
+  if (!isNodeMode()) {
+    next();
+    return;
+  }
+  res.status(404).json({ error: 'registration is managed by the control plane' });
+}
+
 oauthRouter.post(
   '/register',
+  registrationUnavailableInNodeMode,
   limitRequests(registrationThrottle),
   (req: Request, res: Response) => {
     noStore(res);

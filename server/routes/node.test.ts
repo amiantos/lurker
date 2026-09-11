@@ -369,3 +369,161 @@ describe('node control API — upload takedown', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('node control API — OAuth apps', () => {
+  const OOB = 'urn:ietf:wg:oauth:2.0:oob';
+  // The orchestrator mints client ids; any base64url string stands in for one here.
+  const clientId = (label: string) => `client_${label}_0123456789abcdef`;
+  const metadata = {
+    client_name: '  Fleet App  ',
+    client_uri: 'https://fleet.example',
+    redirect_uris: [OOB, OOB],
+  };
+
+  it('stores an app the self-hosted registration rules accept, as those rules read it', async () => {
+    const oauth = await import('../db/oauth.js');
+    const id = clientId('stored');
+    const res = await createAnonAgent(app)
+      .put(`/api/node/oauth/apps/${id}`)
+      .set('Authorization', AUTH)
+      .send(metadata);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      client_id: id,
+      client_name: 'Fleet App',
+      client_uri: 'https://fleet.example',
+      redirect_uris: [OOB],
+    });
+    expect(oauth.findAppByClientId(id)).toMatchObject({
+      clientName: 'Fleet App',
+      redirectUris: [OOB],
+      firstAuthorizedAt: null,
+    });
+  });
+
+  it('refuses what a self-hosted server would refuse, and stores nothing', async () => {
+    const oauth = await import('../db/oauth.js');
+    const id = clientId('refused');
+    const res = await createAnonAgent(app)
+      .put(`/api/node/oauth/apps/${id}`)
+      .set('Authorization', AUTH)
+      .send({ client_name: 'Phish', redirect_uris: ['javascript:alert(1)'] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_redirect_uri');
+    expect(oauth.findAppByClientId(id)).toBeNull();
+  });
+
+  it('refuses a client_id that is not base64url', async () => {
+    const res = await createAnonAgent(app)
+      .put('/api/node/oauth/apps/bad%20id')
+      .set('Authorization', AUTH)
+      .send(metadata);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid client_id');
+  });
+
+  it('keeps the row and metadata it has, and restarts a pending copy’s clock', async () => {
+    const oauth = await import('../db/oauth.js');
+    const id = clientId('pending');
+    const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
+    const stored = oauth.upsertAppFromFleet(
+      id,
+      { clientName: 'Original', clientUri: null, redirectUris: [OOB] },
+      twoHoursAgo,
+    );
+    const res = await createAnonAgent(app)
+      .put(`/api/node/oauth/apps/${id}`)
+      .set('Authorization', AUTH)
+      .send(metadata);
+    expect(res.status).toBe(200);
+    expect(res.body.client_name).toBe('Original');
+    expect(oauth.findAppByClientId(id)?.id).toBe(stored.id);
+    // Two hours old, the copy was due for the purge. Arriving again keeps it for
+    // the member now on the approval page.
+    oauth.purgeOAuth();
+    expect(oauth.findAppByClientId(id)).not.toBeNull();
+  });
+
+  it('leaves an approved app exactly as it is', async () => {
+    const oauth = await import('../db/oauth.js');
+    const id = clientId('approved');
+    const member = createUser('oauth-fleet-approver');
+    const longAgo = Date.now() - 2 * 60 * 60 * 1000;
+    const stored = oauth.upsertAppFromFleet(
+      id,
+      { clientName: 'Approved', clientUri: null, redirectUris: [OOB] },
+      longAgo,
+    );
+    oauth.createCode(
+      { appId: stored.id, userId: member.id, redirectUri: OOB, codeChallenge: 'c'.repeat(43) },
+      longAgo,
+    );
+    const before = oauth.findAppByClientId(id);
+    const res = await createAnonAgent(app)
+      .put(`/api/node/oauth/apps/${id}`)
+      .set('Authorization', AUTH)
+      .send(metadata);
+    expect(res.status).toBe(200);
+    expect(oauth.findAppByClientId(id)).toEqual(before);
+  });
+
+  it('requires the node secret', async () => {
+    const res = await createAnonAgent(app)
+      .put(`/api/node/oauth/apps/${clientId('noauth')}`)
+      .send(metadata);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('node control API — revoke a tenant’s OAuth apps', () => {
+  const OOB = 'urn:ietf:wg:oauth:2.0:oob';
+
+  it('deletes the tenant’s tokens and unexchanged codes, and nobody else’s', async () => {
+    const oauth = await import('../db/oauth.js');
+    const owner = createUser('oauth-revoke-owner');
+    const other = createUser('oauth-revoke-other');
+    const stored = oauth.upsertAppFromFleet('client_revoke_0123456789abcdef', {
+      clientName: 'Revoked',
+      clientUri: null,
+      redirectUris: [OOB],
+    });
+    const ownerToken = oauth.createToken(stored.id, owner.id);
+    const ownerCode = oauth.createCode({
+      appId: stored.id,
+      userId: owner.id,
+      redirectUri: OOB,
+      codeChallenge: 'c'.repeat(43),
+    });
+    const otherToken = oauth.createToken(stored.id, other.id);
+
+    const res = await createAnonAgent(app)
+      .post(`/api/node/users/${owner.id}/oauth/revoke`)
+      .set('Authorization', AUTH);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, revoked: 1 });
+    expect(oauth.findTokenByRaw(ownerToken)).toBeNull();
+    expect(oauth.consumeCode(ownerCode)).toBeNull();
+    expect(oauth.findTokenByRaw(otherToken)).not.toBeNull();
+  });
+
+  it('404s an unknown user', async () => {
+    const res = await createAnonAgent(app)
+      .post('/api/node/users/999999/oauth/revoke')
+      .set('Authorization', AUTH);
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses an admin (the operator)', async () => {
+    const admin = createUser('oauth-revoke-admin', { role: 'admin' });
+    const res = await createAnonAgent(app)
+      .post(`/api/node/users/${admin.id}/oauth/revoke`)
+      .set('Authorization', AUTH);
+    expect(res.status).toBe(409);
+  });
+
+  it('requires the node secret', async () => {
+    const owner = createUser('oauth-revoke-noauth');
+    const res = await createAnonAgent(app).post(`/api/node/users/${owner.id}/oauth/revoke`);
+    expect(res.status).toBe(401);
+  });
+});

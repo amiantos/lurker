@@ -17,6 +17,9 @@ import {
   setUserPaused,
 } from '../db/users.js';
 import { markUploadRemovedById } from '../db/uploadHistory.js';
+import { deleteOAuthForUser, upsertAppFromFleet } from '../db/oauth.js';
+import { validateRegistration } from '../services/oauth.js';
+import { closeSocketsForOAuthTokens } from '../services/wsHub.js';
 import ircManager from '../services/ircManager.js';
 import { sign as signCookie } from 'cookie-signature';
 import { createSession } from '../db/sessions.js';
@@ -226,6 +229,57 @@ router.post('/uploads/:id/takedown', (req: Request, res: Response) => {
     return;
   }
   res.json({ ok: true });
+});
+
+// OAuth (#891). One registration is valid on every cell, so the orchestrator keeps
+// the registry and a cell takes none itself (routes/oauth.ts). The orchestrator
+// checks each registration here, under the rules a self-hosted server applies,
+// before telling the client it registered, and hands a cell each app a member is
+// about to approve. Idempotent: an app a cell already holds keeps its metadata.
+const CLIENT_ID = /^[A-Za-z0-9_-]{1,256}$/;
+
+router.put('/oauth/apps/:clientId', (req: Request, res: Response) => {
+  const clientId = String(req.params.clientId);
+  if (!CLIENT_ID.test(clientId)) {
+    res.status(400).json({ error: 'invalid client_id' });
+    return;
+  }
+  const result = validateRegistration(req.body);
+  if (!result.ok) {
+    res.status(400).json({ error: result.error, error_description: result.description });
+    return;
+  }
+  const app = upsertAppFromFleet(clientId, result.metadata);
+  res.json({
+    client_id: app.clientId,
+    client_name: app.clientName,
+    ...(app.clientUri ? { client_uri: app.clientUri } : {}),
+    redirect_uris: app.redirectUris,
+  });
+});
+
+// Revoke every app a tenant approved: their tokens, any code not yet exchanged,
+// and the sockets those tokens opened. The orchestrator calls this when the
+// member resets their password, as account recovery does on a self-hosted server.
+// Idempotent; an unknown user is a 404 the orchestrator treats as done.
+router.post('/users/:id/oauth/revoke', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const target = findUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  if (target.role === 'admin') {
+    res.status(409).json({ error: 'refusing to revoke apps for an admin account' });
+    return;
+  }
+  const tokenIds = deleteOAuthForUser(id);
+  closeSocketsForOAuthTokens(id, tokenIds, 'app access revoked');
+  res.json({ ok: true, revoked: tokenIds.length });
 });
 
 export default router;
