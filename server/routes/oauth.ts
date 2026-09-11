@@ -18,6 +18,7 @@ import {
   deleteTokenForClient,
   findAppByClientId,
   listAuthorizedApps,
+  purgeOAuth,
 } from '../db/oauth.js';
 import type { OAuthApp } from '../db/oauth.js';
 import {
@@ -85,7 +86,10 @@ oauthRouter.post(
       return;
     }
     // The throttle bounds one address; this bounds the table, whatever the source.
-    // Approved apps don't count, and unapproved ones are purged after an hour.
+    // Approved apps don't count, and unapproved ones are purged after an hour. The
+    // hourly sweep can leave an expired registration in place for up to another
+    // hour, so a full table is swept before anyone is turned away.
+    if (countPendingApps() >= MAX_PENDING_APPS) purgeOAuth();
     if (countPendingApps() >= MAX_PENDING_APPS) {
       res.set('Retry-After', '3600');
       oauthError(

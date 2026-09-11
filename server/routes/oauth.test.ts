@@ -197,6 +197,30 @@ describe('POST /api/oauth/register', () => {
       db.prepare(`DELETE FROM oauth_apps WHERE client_id LIKE 'pending-filler-%'`).run();
     }
   });
+
+  it('sweeps registrations over an hour old before turning anyone away', async () => {
+    // The hourly sweep can leave an expired registration for up to another hour.
+    // A full table of them must not keep refusing new apps in the meantime.
+    const room = oauthDb.MAX_PENDING_APPS - oauthDb.countPendingApps();
+    const stale = new Date(Date.now() - oauthDb.PENDING_APP_TTL_MS - 60_000).toISOString();
+    db.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+       INSERT INTO oauth_apps (client_id, client_name, redirect_uris, created_at)
+       SELECT 'stale-filler-' || i, 'Filler', '[]', ? FROM n`,
+    ).run(room, stale);
+    try {
+      const res = await testRequest(app)
+        .post('/api/oauth/register')
+        .send({ client_name: 'After the hour', redirect_uris: [OOB] });
+      expect(res.status).toBe(201);
+      const left = db
+        .prepare(`SELECT COUNT(*) AS n FROM oauth_apps WHERE client_id LIKE 'stale-filler-%'`)
+        .get();
+      expect(left).toEqual({ n: 0 });
+    } finally {
+      db.prepare(`DELETE FROM oauth_apps WHERE client_id LIKE 'stale-filler-%'`).run();
+    }
+  });
 });
 
 describe('GET /api/oauth/authorize', () => {
@@ -515,6 +539,18 @@ describe('an OAuth access token', () => {
     const { token } = await tokenFor(user.id);
     expect((await asApp(token).post('/api/auth/logout')).status).toBe(200);
     expect((await asApp(token).get('/api/auth/me')).status).toBe(401);
+  });
+
+  it('stops working when it signs out alongside a session cookie', async () => {
+    // A client that keeps a cookie jar sends both. The cookie must not shadow the
+    // token: logout ends the session and revokes the token.
+    const user = createUser('oauth-token-logout-with-cookie');
+    const { token } = await tokenFor(user.id);
+    const browser = await createAuthedAgent(app, user.id);
+    const res = await browser.post('/api/auth/logout').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect((await asApp(token).get('/api/auth/me')).status).toBe(401);
+    expect((await browser.get('/api/auth/me')).status).toBe(401);
   });
 });
 

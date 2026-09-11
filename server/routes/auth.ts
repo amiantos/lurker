@@ -830,12 +830,13 @@ router.get('/auth-methods', (_req: Request, res: Response) => {
 router.post('/logout', (req: Request, res: Response) => {
   // Cookie for web, bearer for native — a native client has no cookie to clear,
   // so without the bearer branch its "log out" would leave a live session row
-  // behind and the token on the device would keep working.
+  // behind and the token on the device would keep working. A request carrying
+  // both signs out both: a bearer must not keep working because a cookie came
+  // along with it.
   const cookieToken = req.signedCookies?.[SESSION_COOKIE];
   const bearer = bearerToken(req.headers.authorization);
-  if (cookieToken) {
-    deleteSession(cookieToken);
-  } else if (bearer) {
+  if (cookieToken) deleteSession(cookieToken);
+  if (bearer) {
     deleteSession(bearer);
     // A third-party app signing out with its OAuth token (#891) revokes that
     // token and closes the sockets it opened, rather than answering ok while the
