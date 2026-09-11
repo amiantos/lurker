@@ -41,6 +41,7 @@ import {
   ensureOpen as ensureBufferOpen,
   seedAutojoinChannel,
   listForNetwork as listBufferRowsForNetwork,
+  close as closeBuffer,
 } from '../db/buffers.js';
 import { getPeerPresence, writePeerState } from '../db/peerPresence.js';
 import { setUserSetting, deleteUserSetting } from '../db/settings.js';
@@ -4325,6 +4326,101 @@ describe('join echo, forwarded joins (470), and un-partable channels (442)', () 
     });
 
     expect(getBuffer(conn.network.user_id, conn.network.id, '#apple')?.autojoin).toBe(false);
+  });
+});
+
+// Regression pin for a bug in the engine-restore "late PART" correction: it
+// used to delete the channel without nulling joinedFoldedCache, so a warm
+// cache kept answering "still joined". engineIntegration.test.ts covers this
+// branch too but via until(), which only proves eventual consistency — the
+// corrective PART's echo re-nulls the cache moments later through a
+// different, already-correct path, hiding the regression. These tests read
+// isChannelJoined() synchronously, same tick as the delete, before that echo
+// could arrive.
+describe('engine-restore late PART keeps isChannelJoined in sync (#stale-cache)', () => {
+  function makeConn(name: string): IrcConnection {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'nick',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    return new IrcConnection({ network, onEvent: () => {} });
+  }
+
+  it('reports not-joined immediately for an un-autojoined channel, even with a warm cache', () => {
+    const conn = makeConn('restore-late-part-autojoin');
+    conn.client.user.nick = 'me';
+    // Survived the engine's attach-time live-channel diff (still really
+    // joined on the ircd), but the row says we left it while disconnected.
+    conn.upsertChannel('#leaving');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#leaving', {
+      kind: 'channel',
+      autojoin: false,
+    });
+    conn.restoring = true;
+
+    // Warm the cache BEFORE the synthesised join, the way some other probe
+    // earlier in a real restore plausibly would — this is the state the
+    // stale-cache bug needed in order to bite.
+    expect(conn.isChannelJoined('#leaving')).toBe(true);
+
+    conn.client.emit('join', { channel: '#leaving', nick: 'me' });
+
+    // No await, no timer: this is the value in the exact tick the delete
+    // happens, before anything — including the raw PART this branch fires —
+    // gets a chance to correct it a different way.
+    expect(conn.channels.has('#leaving')).toBe(false);
+    expect(conn.isChannelJoined('#leaving')).toBe(false);
+  });
+
+  it('reports not-joined immediately for a closed-but-still-autojoined channel, even with a warm cache', () => {
+    const conn = makeConn('restore-late-part-closed');
+    conn.client.user.nick = 'me';
+    conn.upsertChannel('#leaving');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#leaving', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    closeBuffer(conn.network.user_id, conn.network.id, '#leaving');
+    conn.restoring = true;
+
+    expect(conn.isChannelJoined('#leaving')).toBe(true);
+
+    conn.client.emit('join', { channel: '#leaving', nick: 'me' });
+
+    expect(conn.channels.has('#leaving')).toBe(false);
+    expect(conn.isChannelJoined('#leaving')).toBe(false);
+  });
+
+  it('leaves an untouched channel joined and cached', () => {
+    const conn = makeConn('restore-late-part-sibling');
+    conn.client.user.nick = 'me';
+    conn.upsertChannel('#leaving');
+    conn.upsertChannel('#stay');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#leaving', {
+      kind: 'channel',
+      autojoin: false,
+    });
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#stay', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    conn.restoring = true;
+    expect(conn.isChannelJoined('#stay')).toBe(true);
+
+    conn.client.emit('join', { channel: '#leaving', nick: 'me' });
+
+    expect(conn.isChannelJoined('#stay')).toBe(true);
   });
 });
 

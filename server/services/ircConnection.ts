@@ -539,10 +539,14 @@ export class IrcConnection {
   onEvent: (event: EnrichedEvent) => void;
   client: IrcClient;
   state: string;
+  /** Mutate only through setChannel/deleteChannel — never `.set`/`.delete`
+   *  directly — so joinedFoldedCache can't drift from what's actually in
+   *  here. Reads (`.get`, `.values()`, `.has()`, iteration) are fine raw. */
   channels: Map<string, ChannelState>;
   /** Lazily-built per-network-folded index over `channels` for
-   *  isChannelJoined. null = rebuild on next probe. MUST be nulled by every
-   *  channels-map mutation and by a CASEMAPPING change (the folds move). */
+   *  isChannelJoined. null = rebuild on next probe. Nulled by setChannel/
+   *  deleteChannel on every mutation, and separately by a CASEMAPPING change
+   *  (the folds move even though membership doesn't). */
   joinedFoldedCache: Set<string> | null;
   // Join keys awaiting their echo, keyed by lowercased channel. Nothing is
   // persisted on a join REQUEST (the buffers row is echo-written), so the key
@@ -2280,7 +2284,7 @@ export class IrcConnection {
           row &&
           (!row.autojoin || isBufferClosed(this.network.user_id, this.network.id, eventChannel))
         ) {
-          this.channels.delete(eventChannel.toLowerCase());
+          this.deleteChannel(eventChannel.toLowerCase());
           try {
             c.raw('PART', eventChannel);
           } catch (_) {
@@ -2400,8 +2404,7 @@ export class IrcConnection {
       // branch now lowers autojoin, so a server that echoes our nick in the
       // PART prefix with different casing must not skip the correction.
       if (c.user.nick && eventNick.toLowerCase() === c.user.nick.toLowerCase()) {
-        this.channels.delete(eventChannel.toLowerCase());
-        this.joinedFoldedCache = null;
+        this.deleteChannel(eventChannel.toLowerCase());
         // The echo lowers autojoin, not just ircManager.partChannel. That path
         // is the app's own /part and buffer-close, so a PART Lurker did not
         // originate — a raw /quote PART, another client on the bouncer, a
@@ -2450,8 +2453,7 @@ export class IrcConnection {
       // Lowering autojoin also prevents the reconnect replay — rejoining a
       // channel that just kicked you reads as ban evasion to ops.
       if (eventKicked && c.user.nick && eventKicked.toLowerCase() === c.user.nick.toLowerCase()) {
-        this.channels.delete(eventChannel.toLowerCase());
-        this.joinedFoldedCache = null;
+        this.deleteChannel(eventChannel.toLowerCase());
         try {
           setBufferAutojoin(this.network.user_id, this.network.id, channel, false);
         } catch (_) {
@@ -3900,8 +3902,7 @@ export class IrcConnection {
   // nothing.
   private evictChannel(name: string, { forget = false }: { forget?: boolean } = {}): void {
     const canonical = canonicalChannelTarget(name, this.channels) ?? name;
-    this.channels.delete(name.toLowerCase());
-    this.joinedFoldedCache = null;
+    this.deleteChannel(name.toLowerCase());
     let favoritesChanged = false;
     try {
       if (forget && !hasMessageForTarget(this.network.id, canonical)) {
@@ -3976,13 +3977,25 @@ export class IrcConnection {
     return undefined;
   }
 
+  // setChannel and deleteChannel exist so that we don't forget to null
+  // joinedFoldedCache.
+  private setChannel(key: string, ch: ChannelState): void {
+    this.channels.set(key, ch);
+    this.joinedFoldedCache = null;
+  }
+
+  private deleteChannel(key: string): boolean {
+    const deleted = this.channels.delete(key);
+    if (deleted) this.joinedFoldedCache = null;
+    return deleted;
+  }
+
   upsertChannel(name: string): ChannelState {
     const key = name.toLowerCase();
     let ch = this.channels.get(key);
     if (!ch) {
       ch = { name, topic: null, members: new Map(), modes: new Set() };
-      this.channels.set(key, ch);
-      this.joinedFoldedCache = null;
+      this.setChannel(key, ch);
     }
     if (!ch.modes) ch.modes = new Set();
     return ch;
@@ -4388,8 +4401,7 @@ export class IrcConnection {
         const live = new Set((info.channels ?? []).map((c) => c.toLowerCase()));
         for (const [key, ch] of this.channels) {
           if (live.has(key)) continue;
-          this.channels.delete(key);
-          this.joinedFoldedCache = null;
+          this.deleteChannel(key);
           this.publish({ type: 'channel-parted', target: ch.name });
         }
         const away = info.detachedForMs
