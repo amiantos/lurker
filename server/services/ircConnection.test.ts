@@ -2194,6 +2194,7 @@ describe('disconnect-offline sweep + WHO re-light (no-MONITOR presence)', () => 
     conn.client.user.nick = 'me';
     conn.trackDmPeer('chanpal');
     // Peer shares a channel with us…
+    conn.client.emit('join', { channel: '#room', nick: 'me' });
     conn.client.emit('join', { channel: '#room', nick: 'chanpal', ident: 'u', hostname: 'h' });
     // …then our socket drops (peer quit unseen or not — doesn't matter):
     conn.markAllPeersOffline();
@@ -2211,6 +2212,7 @@ describe('disconnect-offline sweep + WHO re-light (no-MONITOR presence)', () => 
     conn.publish = vi.fn<typeof conn.publish>();
     conn.client.user.nick = 'me';
     conn.trackDmPeer('awaychan');
+    conn.client.emit('join', { channel: '#room', nick: 'me' });
     conn.client.emit('join', { channel: '#room', nick: 'awaychan' });
     conn.client.emit('wholist', { target: '#room', users: [{ nick: 'awaychan', away: true }] });
     expect(getPeerPresence(conn.network.id, 'awaychan')?.state).toBe('away');
