@@ -556,8 +556,9 @@ export class IrcConnection {
   joinedFoldedCache: Set<string> | null;
   // Join keys awaiting their echo, keyed by lowercased channel. Nothing is
   // persisted on a join REQUEST (the buffers row is echo-written), so the key
-  // rides here until the join lands; a forward (470) discards it. Lost on a
-  // process restart mid-join — the user just re-/joins with the key.
+  // rides here until the join lands; a forward (470) discards it, and so does
+  // the socket dying (forgetJoinedChannels). Lost on a process restart
+  // mid-join — the user just re-/joins with the key.
   private pendingJoinKeys = new Map<string, string>();
   userModes: Set<string>;
   awayState: AwayState;
@@ -2260,11 +2261,18 @@ export class IrcConnection {
     c.on('join', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
-      const ch = this.upsertChannel(eventChannel);
+      // Case-insensitive, like the part and kick handlers: a server that echoes
+      // our nick in a different case is still telling us about our own join.
+      const isSelf = !!c.user.nick && eventNick.toLowerCase() === c.user.nick.toLowerCase();
+      // Only our own JOIN makes a channel ours (#908). Someone else's updates a
+      // channel we are in and creates nothing for one we are not — a backlog
+      // line replayed for a channel we have since left, say. Fold-aware, like
+      // the NAMES and TOPIC handlers.
+      const ch = isSelf ? this.upsertChannel(eventChannel) : this.channelState(eventChannel);
       // extended-join: irc-framework parses the account param when the cap is
       // enabled, and omits the key when it isn't (#508).
       const joinAccount = normalizeAccount(event.account);
-      ch.members.set(eventNick.toLowerCase(), {
+      ch?.members.set(eventNick.toLowerCase(), {
         nick: eventNick,
         modes: [],
         away: false,
@@ -2283,7 +2291,7 @@ export class IrcConnection {
         // off every join row on networks without the cap.
         ...(joinAccount ? { account: joinAccount } : {}),
       });
-      if (eventNick !== c.user.nick) {
+      if (!isSelf) {
         // JOIN means they're online. If they were marked away and JOIN fires,
         // the away marker stays — markPeerEvent is idempotent against the
         // current state, and 'online' from JOIN doesn't fire if state is
@@ -2291,7 +2299,7 @@ export class IrcConnection {
         // The away-notify 'back' event is the authoritative back signal.
         this.markPeerEvent(eventNick, 'online');
       }
-      if (eventNick === c.user.nick && this.restoring) {
+      if (isSelf && this.restoring) {
         // A synthesised JOIN from the engine's replay. autojoin is lowered only
         // by a part, a kick or a close (db/buffers.ts) — so a channel the socket
         // is still in whose row says autojoin=0 means the user left it while
@@ -2314,7 +2322,7 @@ export class IrcConnection {
         this.publish({ type: 'channel-joined', target: eventChannel });
         return;
       }
-      if (eventNick === c.user.nick) {
+      if (isSelf) {
         // The ECHO is the only signal the join actually landed on the channel
         // we asked for, so this is where the buffers row is written: creation,
         // autojoin, and the key stashed at request time. A forwarded (470) or
@@ -4030,6 +4038,12 @@ export class IrcConnection {
   // autojoin is deliberately untouched: a dropped socket is not the user
   // leaving, and that flag is what the reconnect's rejoin reads.
   private forgetJoinedChannels(): void {
+    // A join key rides until its echo, and no echo comes for a JOIN sent on a
+    // dead socket. Left behind, it would be taken by the next echo for that
+    // name — a keyless /join on the new socket — and stored as the channel's
+    // key. Cleared even with no channels joined: the join that never landed is
+    // exactly the case with none.
+    this.pendingJoinKeys.clear();
     if (this.channels.size === 0) return;
     const names = Array.from(this.channels.values(), (ch) => ch.name);
     this.channels.clear();

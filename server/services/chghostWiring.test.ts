@@ -72,7 +72,12 @@ function harness() {
   const memberIn = (channel: string, nick: string) =>
     conn.channels.get(channel.toLowerCase())?.members.get(nick.toLowerCase());
   // Drive a real JOIN so member state is built the way production builds it.
-  const join = (channel: string, nick: string, extra: Ev = {}) =>
+  // Someone else's JOIN only reaches us for a channel we are in, so ours goes
+  // first (#908).
+  const join = (channel: string, nick: string, extra: Ev = {}) => {
+    if (nick !== 'alice' && !conn.isChannelJoined(channel)) {
+      conn.client.emit('join', { channel, nick: 'alice', ident: 'alice', hostname: 'self.host' });
+    }
     conn.client.emit('join', {
       channel,
       nick,
@@ -80,6 +85,7 @@ function harness() {
       hostname: 'old.host',
       ...extra,
     });
+  };
   return { conn, publish, of, memberIn, join };
 }
 
@@ -206,7 +212,10 @@ describe('extended-join / account-notify (#508)', () => {
   it('puts the account on the join event so the join line can show it', () => {
     const { of, join } = harness();
     join('#one', 'bob', { account: 'bobaccount' });
-    expect(of('join')[0]).toMatchObject({ nick: 'bob', account: 'bobaccount' });
+    expect(of('join').find((e) => e.nick === 'bob')).toMatchObject({
+      nick: 'bob',
+      account: 'bobaccount',
+    });
   });
 
   it('omits account from the join event when there is nothing to show', () => {

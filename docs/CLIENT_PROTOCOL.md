@@ -1036,7 +1036,7 @@ these signals:
 - **`channel-parted` → resolve, never materialize**: mark parted, clear members,
   keep the buffer and history. If you have no such buffer, ignore it. It also
   arrives for every joined channel when the connection to the IRC server drops;
-  each rejoin that lands sends its own `channel-joined`, and one the server
+  each rejoin that lands sends its own `channel-joined`, and one that the server
   refuses leaves the buffer parted.
 - **`names` and `channel-topic` only ever name a channel you are in.** A `/names`
   or `/topic` for any other comes back as `motd` text in the server buffer.

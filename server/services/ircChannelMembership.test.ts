@@ -18,7 +18,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { isAutojoin } from '../db/buffers.js';
+import { getBuffer, isAutojoin } from '../db/buffers.js';
 import { FakeIrcd, rawClient } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
 
@@ -150,6 +150,38 @@ describe('a dead socket takes its channels with it', () => {
       ircManager.disposeNetwork(userId, network.id);
     }
   }, 30000);
+
+  it('a join key whose echo never came does not outlive the socket', async () => {
+    const { conn, network } = connectDirect('memberkey');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      // The JOIN goes out, and the socket dies before any answer to it.
+      ircd.hold = (cmd, params) => cmd === 'JOIN' && params[0] === '#keyed';
+      conn.stashJoinKey('#keyed', 'stale-key');
+      conn.join('#keyed', 'stale-key');
+      await until(
+        () => (ircd.client('memberkey')?.sent ?? []).some((l) => l.startsWith('JOIN #keyed')),
+        5000,
+        'JOIN sent',
+      );
+      ircd.hold = null;
+      const registrations = ircd.registrations.length;
+      ircd.drop('memberkey', false);
+      await until(
+        () => ircd.registrations.length > registrations && conn.state === 'connected',
+        20000,
+        're-registered on a new socket',
+      );
+
+      // A keyless join on the new socket stores no key.
+      conn.join('#keyed');
+      await until(() => conn.isChannelJoined('#keyed'), 5000, 'joined #keyed');
+      expect(getBuffer(userId, network.id, '#keyed')?.key ?? null).toBeNull();
+    } finally {
+      ircd.hold = null;
+      conn.dispose();
+    }
+  }, 30000);
 });
 
 describe('a reply that names a channel is not membership', () => {
@@ -205,6 +237,28 @@ describe('a reply that names a channel is not membership', () => {
       ).toEqual([]);
     } finally {
       bystander.socket.destroy();
+      conn.dispose();
+    }
+  }, 30000);
+
+  it("someone else's JOIN never makes a channel ours; our own counts in any case", async () => {
+    const { conn, events } = connectDirect('memberfour');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      const mark = events.length;
+      ircd.sendRaw('memberfour', ':stranger!u@h JOIN #elsewhere');
+      // Our own JOIN, echoed with the nick in a different case. Sent second, so
+      // its channel-joined means the stranger's line was handled too.
+      ircd.sendRaw('memberfour', ':MemberFour!u@h JOIN #shouty');
+      await until(
+        () => events.slice(mark).some((e) => e.type === 'channel-joined' && e.target === '#shouty'),
+        5000,
+        'channel-joined for our own JOIN in a different case',
+      );
+      expect(conn.isChannelJoined('#shouty')).toBe(true);
+      expect(conn.isChannelJoined('#elsewhere')).toBe(false);
+      expect(conn.channelState('#elsewhere')).toBeUndefined();
+    } finally {
       conn.dispose();
     }
   }, 30000);

@@ -143,6 +143,10 @@ describe('rekey distribution ship (flushE2eRekeys)', () => {
     const notice = vi.fn<(target: string, text: string) => void>();
     conn.client.notice = notice;
     // A JOIN populates membership so the recipient handle resolves to a nick.
+    // Ours first: someone else's JOIN only reaches us for a channel we are in
+    // (#908).
+    conn.client.user.nick = 'alice';
+    conn.client.emit('join', { channel: '#x', nick: 'alice' });
     conn.client.emit('join', { channel: '#x', nick: 'carol', ident: 'c', hostname: 'c.host' });
     vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([
       { channel: '#x', targetHandle: 'c@c.host', body: 'RPEE2E REKEY v=1 c=#x' },
