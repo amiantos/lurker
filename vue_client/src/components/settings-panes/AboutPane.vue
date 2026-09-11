@@ -11,20 +11,14 @@
       server, and every device picks up where you left off.
     </p>
     <p class="muted small">version {{ appVersion }}</p>
+    <p v-if="engine" class="muted small engine-version">
+      {{ engine.connected ? `engine ${engine.version}` : 'engine not connected' }}
+    </p>
     <ul class="about-links">
       <li>
         <span class="about-label">source</span>
         <a href="https://github.com/amiantos/lurker" target="_blank" rel="noopener noreferrer"
           >github.com/amiantos/lurker</a
-        >
-      </li>
-      <li>
-        <span class="about-label">discuss</span>
-        <a
-          href="https://discuss.bradroot.me/tags/c/projects/13/lurker/39"
-          target="_blank"
-          rel="noopener noreferrer"
-          >discuss.bradroot.me</a
         >
       </li>
       <li>
@@ -42,8 +36,26 @@
 </template>
 
 <script setup lang="ts">
+import { ref, onMounted } from 'vue';
+import { api } from '../../api.js';
+
 // Build-time constant injected by vite.config.js (define).
 const appVersion = APP_VERSION;
+
+// The IRC engine holding this instance's sockets, if it runs one. Its version
+// is the release that last changed the engine, so it can trail appVersion.
+interface EngineInfo {
+  connected: boolean;
+  version: string | null;
+}
+const engine = ref<EngineInfo | null>(null);
+onMounted(async () => {
+  try {
+    engine.value = (await api<{ engine: EngineInfo | null }>('/api/about')).engine;
+  } catch {
+    /* no engine line; nothing else in the pane depends on it */
+  }
+});
 </script>
 
 <style src="./panes.css"></style>

@@ -113,6 +113,18 @@ jobs:
               changed=false
               echo "engine tag PINNED for ${GITHUB_REF_NAME} by ENGINE_TAG_PINNED_RELEASES"
             fi
+            # The engine names its own version, set by hand in
+            # server/engine/version.ts. A release that moves the tag has changed
+            # the engine, so it must have set that to this release too — or every
+            # engine it publishes names the one before, in Settings → About and
+            # in the app's log. Checked before anything is built or pushed.
+            if [ "$changed" = "true" ]; then
+              ENGINE_VERSION="$(sed -nE "s/^export const ENGINE_VERSION = '([^']+)';/\1/p" server/engine/version.ts)"
+              if [ "$ENGINE_VERSION" != "$version" ]; then
+                echo "the engine changed since ${prev:-<none>}, but server/engine/version.ts has ENGINE_VERSION = '${ENGINE_VERSION}' — set it to '${version}', or pin ${GITHUB_REF_NAME} in ENGINE_TAG_PINNED_RELEASES if the engine's behaviour did not change" >&2
+                exit 1
+              fi
+            fi
           elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.publish_engine }}" = "true" ]; then
             changed=true
             version="manual-$(git rev-parse --short HEAD)"

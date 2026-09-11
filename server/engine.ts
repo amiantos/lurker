@@ -14,6 +14,7 @@ import 'dotenv/config';
 import { loadEngineConfig } from './engine/config.js';
 import { EngineServer } from './engine/server.js';
 import { PROTOCOL_MAJOR, PROTOCOL_MINOR } from './engine/protocol.js';
+import { ENGINE_VERSION } from './engine/version.js';
 import { APP_VERSION } from './utils/userAgent.js';
 import {
   startIdentd,
@@ -54,7 +55,7 @@ const engine = new EngineServer({
   bufferBytes: config.bufferBytes,
   bufferTotalBytes: config.bufferTotalBytes,
   orphanMs: config.orphanMs,
-  version: APP_VERSION,
+  version: ENGINE_VERSION,
 });
 
 // Say which ident mode this process resolved, because the variables that
@@ -71,7 +72,7 @@ void (async () => {
   try {
     const { host, port } = await engine.listen(config.listenPort, config.listenHost);
     console.log(
-      `[engine] listening on ${host}:${port} — protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}, lurker ${APP_VERSION}; per-connection buffer ${config.bufferBytes} bytes, total ${config.bufferTotalBytes}`,
+      `[engine] listening on ${host}:${port} — engine ${ENGINE_VERSION}, protocol ${PROTOCOL_MAJOR}.${PROTOCOL_MINOR}, lurker ${APP_VERSION}; per-connection buffer ${config.bufferBytes} bytes, total ${config.bufferTotalBytes}`,
     );
   } catch (err) {
     console.error(

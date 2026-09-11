@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PROTOCOL_MAJOR } from './protocol.js';
+import { ENGINE_VERSION } from './version.js';
 
 const root = path.join(import.meta.dirname, '..', '..');
 
@@ -30,6 +31,22 @@ describe('engine topology artefacts', () => {
     expect(wf).not.toMatch(/^\s*MAJOR=\d+\s*$/m);
     // And it never trips on the version bump every release makes.
     expect(wf).not.toMatch(/git diff --quiet[^\n]*package\.json/);
+  });
+
+  // The engine's version is set by hand (server/engine/version.ts), and the
+  // release workflow refuses to move the engine tag unless it names that
+  // release. The workflow reads the constant with a sed, so this pins both ends:
+  // the pattern still matches the file, and the engine still reports the
+  // constant — not package.json's version, which a later checkout would carry.
+  it('the publish workflow checks ENGINE_VERSION, and the engine reports it', () => {
+    const wf = fs.readFileSync(path.join(root, '.github/workflows/docker-publish.yml'), 'utf8');
+    expect(wf).toContain(
+      `sed -nE "s/^export const ENGINE_VERSION = '([^']+)';/\\1/p" server/engine/version.ts`,
+    );
+    const src = fs.readFileSync(path.join(root, 'server/engine/version.ts'), 'utf8');
+    expect(/^export const ENGINE_VERSION = '([^']+)';$/m.exec(src)?.[1]).toBe(ENGINE_VERSION);
+    const entry = fs.readFileSync(path.join(root, 'server/engine.ts'), 'utf8');
+    expect(entry).toMatch(/^\s*version: ENGINE_VERSION,$/m);
   });
 
   // The engine binds loopback unless told otherwise (server/engine/config.ts),
