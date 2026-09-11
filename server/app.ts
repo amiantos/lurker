@@ -67,13 +67,19 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   res.status(500).json({ error: 'internal error' });
 };
 
+export interface BuildAppOptions {
+  /** The built web client to serve. Defaults to vue_client/dist. */
+  clientDist?: string;
+}
+
 /**
  * Build the fully-wired Express app. `sessionSecret` keys cookie-parser for the
  * signed `lurker_session` cookie (the same secret server.ts hands to the WS
  * hub). Route gating reads the cached edition, so set LURKER_EDITION before the
- * first getEdition() call.
+ * first getEdition() call. Tests pass `clientDist` to serve a stand-in client,
+ * because CI runs the suite without building vue_client.
  */
-export function buildApp(sessionSecret: string): Express {
+export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): Express {
   const app = express();
 
   // CORS_ORIGIN is a comma-separated allowlist, normalized to URL origins (see
@@ -180,7 +186,7 @@ export function buildApp(sessionSecret: string): Express {
   // this server doesn't publish (an MCP client asking for OAuth protected-resource
   // metadata before falling back to the authorization-server document, #891)
   // needs a 404 it can act on, not the SPA's HTML with a 200.
-  const clientDist = path.join(import.meta.dirname, '../vue_client/dist');
+  const clientDist = options.clientDist ?? path.join(import.meta.dirname, '../vue_client/dist');
   app.use(express.static(clientDist));
   app.get(/^\/(?!api|ws|mcp|assets|[.]well-known).*/, (req, res, next) => {
     // The OAuth approval page (#891) must never render inside someone else's

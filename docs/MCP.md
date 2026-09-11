@@ -47,6 +47,8 @@ their own account.
   is read-write here and works everywhere a password sign-in does. Its redirect
   URI has to follow the rules in [OAuth for third-party clients](OAUTH.md).
 
+While an account is paused, either credential gets the read tools only.
+
 There is no way to drive the browser-style stateful protocol (presence, drafts,
 snapshot resume) from an MCP client — that surface is deliberately out of scope.
 

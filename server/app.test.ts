@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
-import { existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import type { Express } from 'express';
 import { setupTestDb, testRequest, TEST_SESSION_SECRET } from './test-utils/testApp.js';
@@ -14,7 +15,17 @@ import { setupTestDb, testRequest, TEST_SESSION_SECRET } from './test-utils/test
 // standalone) rather than just that a route happens to be missing.
 const ctx = setupTestDb('app-gating');
 
-afterAll(() => ctx.cleanup());
+// CI runs the suite without building vue_client (.github/workflows/test.yml), so
+// the app serves a one-file stand-in for dist/. The SPA fallback, and the headers
+// it sets on the OAuth approval page, are then checked on every run rather than
+// skipped wherever no build happens to exist.
+const clientDist = mkdtempSync(path.join(os.tmpdir(), 'lurker-client-dist-'));
+writeFileSync(path.join(clientDist, 'index.html'), '<!doctype html><div id="app"></div>\n');
+
+afterAll(() => {
+  ctx.cleanup();
+  rmSync(clientDist, { recursive: true, force: true });
+});
 afterEach(() => {
   delete process.env.LURKER_EDITION;
 });
@@ -23,7 +34,7 @@ async function buildFor(edition: 'standalone' | 'node'): Promise<Express> {
   vi.resetModules();
   process.env.LURKER_EDITION = edition;
   const { buildApp } = await import('./app.js');
-  return buildApp(TEST_SESSION_SECRET);
+  return buildApp(TEST_SESSION_SECRET, { clientDist });
 }
 
 describe('buildApp route gating by edition', () => {
@@ -75,16 +86,7 @@ describe('buildApp route gating by edition', () => {
       expect(res.text ?? '').not.toContain('id="app"');
     });
 
-    // Asserting the client route still works needs a built client, and CI runs
-    // the suite without one (.github/workflows/test.yml never builds vue_client).
-    // Skipping when dist/ is absent is honest; the alternative — accepting a 404
-    // as a pass so the test runs everywhere — passed even when the fallback was
-    // broken outright, which is worse than no test because it reads as coverage.
-    const hasBuiltClient = existsSync(
-      path.join(import.meta.dirname, '../vue_client/dist/index.html'),
-    );
-
-    it.skipIf(!hasBuiltClient)('still serves index.html for a real client route', async () => {
+    it('still serves index.html for a real client route', async () => {
       const app = await buildFor('standalone');
       const res = await testRequest(app).get('/settings');
       // Strict: /settings must reach the catch-all and get the SPA shell, not
@@ -94,37 +96,32 @@ describe('buildApp route gating by edition', () => {
       expect(res.text).toContain('id="app"');
     });
 
-    it.skipIf(!hasBuiltClient)(
-      '404s a /.well-known URL nothing serves, rather than handing back the SPA',
-      async () => {
-        // A client probing for a discovery document (an MCP client asking for OAuth
-        // protected-resource metadata, #891) needs a 404 it can act on; the SPA's
-        // HTML with a 200 reads as a broken document instead.
-        const app = await buildFor('standalone');
-        const res = await testRequest(app).get('/.well-known/oauth-protected-resource/mcp');
-        expect(res.status).toBe(404);
-        expect(res.text ?? '').not.toContain('id="app"');
-      },
-    );
+    it('404s a /.well-known URL nothing serves, rather than handing back the SPA', async () => {
+      // A client probing for a discovery document (an MCP client asking for OAuth
+      // protected-resource metadata, #891) needs a 404 it can act on; the SPA's
+      // HTML with a 200 reads as a broken document instead.
+      const app = await buildFor('standalone');
+      const res = await testRequest(app).get('/.well-known/oauth-protected-resource/mcp');
+      expect(res.status).toBe(404);
+      expect(res.text ?? '').not.toContain('id="app"');
+    });
 
-    it.skipIf(!hasBuiltClient)(
-      'serves the OAuth approval page with headers that forbid framing it (#891)',
-      async () => {
-        const app = await buildFor('standalone');
-        // Every spelling the client router renders the page for, not just the canonical one.
-        for (const spelling of ['/oauth/authorize', '/oauth/authorize/', '/OAuth/Authorize']) {
-          const res = await testRequest(app).get(`${spelling}?client_id=x`);
-          expect(res.status).toBe(200);
-          expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
-          expect(res.headers['x-frame-options']).toBe('DENY');
-          expect(res.headers['cache-control']).toBe('no-store');
-          expect(res.headers['referrer-policy']).toBe('no-referrer');
-        }
-        // …and only there: the rest of the app stays embeddable.
-        const settings = await testRequest(app).get('/settings');
-        expect(settings.headers['x-frame-options']).toBeUndefined();
-      },
-    );
+    it('serves the OAuth approval page with headers that forbid framing it (#891)', async () => {
+      const app = await buildFor('standalone');
+      // Every spelling the client router renders the page for, not just the canonical one.
+      for (const spelling of ['/oauth/authorize', '/oauth/authorize/', '/OAuth/Authorize']) {
+        const res = await testRequest(app).get(`${spelling}?client_id=x`);
+        expect(res.status).toBe(200);
+        expect(res.text).toContain('id="app"');
+        expect(res.headers['content-security-policy']).toBe("frame-ancestors 'none'");
+        expect(res.headers['x-frame-options']).toBe('DENY');
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(res.headers['referrer-policy']).toBe('no-referrer');
+      }
+      // …and only there: the rest of the app stays embeddable.
+      const settings = await testRequest(app).get('/settings');
+      expect(settings.headers['x-frame-options']).toBeUndefined();
+    });
   });
 
   describe('standalone edition', () => {

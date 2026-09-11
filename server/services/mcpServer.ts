@@ -49,12 +49,14 @@ router.post('/', (req: Request, res: Response) => {
   // requireApiAuth attaches one of two credentials. An API token carries its own
   // scope; an OAuth access token (#891) has the access of a password sign-in,
   // which on this surface is read-write.
-  const scope = req.apiToken?.scope ?? (req.oauthToken ? 'read-write' : null);
-  if (!scope) {
+  const granted = req.apiToken?.scope ?? (req.oauthToken ? 'read-write' : null);
+  if (!granted) {
     res.status(401).json({ error: 'unauthorized' });
     return;
   }
-  const apiToken = { scope };
+  // A paused account can read but not change anything, whatever it signed in
+  // with. REST enforces that in requireAuth, which /mcp doesn't go through.
+  const apiToken = { scope: req.user?.is_paused ? 'read' : granted };
   const body = req.body as Record<string, unknown>;
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     res.json(jsonRpcError(null, -32600, 'Invalid Request'));

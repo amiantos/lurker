@@ -185,8 +185,10 @@ JSON with the same parameters is also accepted.
 { "access_token": "…", "token_type": "Bearer", "created_at": 1757462400 }
 ```
 
-There is no `expires_in` and no `refresh_token`. A code that fails any check is
-spent and can't be retried; start a new authorization. See [Errors](#errors).
+There is no `expires_in` and no `refresh_token`. A code that fails a check is
+spent and can't be retried; start a new authorization. A request refused before
+the code is looked at (`invalid_request`, `unsupported_grant_type`,
+`invalid_client`) leaves it usable. See [Errors](#errors).
 
 ## Use the token
 

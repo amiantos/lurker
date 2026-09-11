@@ -35,7 +35,9 @@
       <template v-else-if="state === 'approve' && info">
         <p class="subtitle">Authorize this app?</p>
         <p class="app-name">{{ info.app.name }}</p>
-        <p v-if="info.app.website" class="hint">{{ info.app.website }}</p>
+        <!-- The app sets its website when it registers and nothing checks it, so
+             it's shown as the app's claim rather than as who made it. -->
+        <p v-if="info.app.website" class="hint">Says it's from {{ info.app.website }}</p>
         <p class="warning">It will have full access to your account.</p>
         <p class="hint">
           <template v-if="info.destination.kind === 'code'">
