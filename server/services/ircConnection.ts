@@ -3875,10 +3875,10 @@ export class IrcConnection {
       return;
     }
     const why = PERMANENT_JOIN_REJECTION_REASONS[tag] ?? 'the server refused the join';
-    // The retry has to name a key for +k: joinChannel coerces an absent key to
-    // undefined and passes that straight to client.join, so a bare `/join #x`
-    // does NOT resend the stored one. Telling a user to run the command that
-    // reproduces their failure is worse than saying nothing.
+    // The retry has to name a key for +k: a bare `/join #x` repeats the JOIN
+    // that just failed, with the same stored key or with none. Telling a user
+    // to run the command that reproduces their failure is worse than saying
+    // nothing.
     const retry = tag === 'bad_channel_key' ? `/join ${canonical} <key>` : `/join ${canonical}`;
     this.publish({
       type: 'notice',

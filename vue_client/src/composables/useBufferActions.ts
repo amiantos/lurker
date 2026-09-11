@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { ContextMenuItem } from './useContextMenu.js';
+import { useBuffersStore } from '../stores/buffers.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
@@ -32,6 +34,8 @@ export interface BufferActionsAPI {
 // same actions. Server buffers have their own dedicated affordances (edit
 // network, browse channels) and aren't handled here.
 export function useBufferActions(): BufferActionsAPI {
+  const buffers = useBuffersStore();
+  const networks = useNetworksStore();
   const pins = usePinsStore();
   const favorites = useFavoritesStore();
   const nickNotes = useNickNotesStore();
@@ -59,6 +63,21 @@ export function useBufferActions(): BufferActionsAPI {
     const favorited = favorites.isFavorite(networkId, buf.target);
     const favoriteSection = isChannel ? 'Favorites' : 'Friends';
     const items: ContextMenuItem[] = [];
+    // A parted channel (a /part, a kick, or a rejoin the server refused — #873)
+    // stays in the sidebar with its history, and getting back in is the usual
+    // reason to open its menu, so Join leads. Same gate as the network menu's
+    // Join Channel…: a JOIN needs a live connection.
+    if (isChannel && buffers.findByTarget(networkId, buf.target)?.joined === false) {
+      items.push(
+        {
+          label: 'Join Channel',
+          icon: 'fa-solid fa-right-to-bracket',
+          disabled: networks.states[networkId]?.state !== 'connected',
+          onClick: () => buffers.joinOrToast(networkId, buf.target),
+        },
+        { divider: true },
+      );
+    }
     // A favorited buffer can't be pinned (one placement per buffer:
     // favorite⇒unpin server-side), so the pin item on a favorited buffer is
     // noise — hidden. The favorite item on a PINNED buffer stays: it's the
