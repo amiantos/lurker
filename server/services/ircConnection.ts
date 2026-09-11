@@ -3189,6 +3189,15 @@ export class IrcConnection {
         });
         return;
       }
+      // A 401 nothing above claimed is already reported: the raw handler logged
+      // "<nick> No such nick/channel" in the server buffer. The generic line at
+      // the bottom would be a second copy, and as an 'error' row it counts
+      // toward the server buffer's unread badge — so a /whois for someone
+      // offline, whose miss the profile modal already shows, badged the server
+      // tab (#904). Same call as the command-result tags below. A 401 is only
+      // ever an answer to something we sent, never the killed/banned/dropped
+      // class that badge is for.
+      if (tag === 'no_such_nick') return;
       // Channel-join rejections (full / invite-only / banned / bad key / too
       // many channels) carry the target in event.channel. Route them to that
       // channel as an ephemeral toast so the failure surfaces where the user
