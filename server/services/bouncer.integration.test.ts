@@ -507,6 +507,22 @@ describe("relayed lines follow the client's caps", () => {
       '@account=bob :bob!b@h PRIVMSG #chan :everyone?',
     ]);
   });
+
+  it("keeps the network's time on unwrapped multiline lines for a server-time client", async () => {
+    const acct = harnessMod.seedAccount({ nick: 'timely' });
+    const c = await attach(acct, ['server-time']);
+    const TIME = '2026-09-12T08:00:00.000Z';
+    const got = await relay(acct, c, [
+      `@time=${TIME};msgid=ml2 :bob!b@h BATCH +ml2 draft/multiline #chan`,
+      '@batch=ml2 :bob!b@h PRIVMSG #chan :first',
+      '@batch=ml2 :bob!b@h PRIVMSG #chan :second',
+      ':irc.example.test BATCH -ml2',
+    ]);
+    expect(got).toEqual([
+      `@time=${TIME} :bob!b@h PRIVMSG #chan :first`,
+      `@time=${TIME} :bob!b@h PRIVMSG #chan :second`,
+    ]);
+  });
 });
 
 // soju's pass-through caps: offered while the bound network has them, so a

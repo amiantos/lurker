@@ -290,6 +290,81 @@ describe('ClientLineFilter', () => {
       ];
       expect(lines.flatMap((l) => filter.apply(l))).toEqual(['@msgid=m1 :n!u@h PRIVMSG #c :text']);
     });
+
+    // A network's reconnect replay can hold a multiline message inside its
+    // chathistory batch. Unwrapped, its lines still belong to that batch.
+    it('keeps an enclosing batch the client was sent on the unwrapped lines', () => {
+      const filter = filterFor(['message-tags', 'batch']);
+      const lines = [
+        ':irc.test BATCH +hist chathistory #c',
+        '@batch=hist;msgid=m1;time=T :n!u@h BATCH +ml draft/multiline #c',
+        '@batch=ml :n!u@h PRIVMSG #c :one',
+        '@batch=ml :n!u@h PRIVMSG #c :two',
+        '@batch=hist :irc.test BATCH -ml',
+        ':irc.test BATCH -hist',
+      ];
+      expect(lines.flatMap((l) => filter.apply(l))).toEqual([
+        ':irc.test BATCH +hist chathistory #c',
+        '@batch=hist;msgid=m1;time=T :n!u@h PRIVMSG #c :one',
+        '@batch=hist;time=T :n!u@h PRIVMSG #c :two',
+        ':irc.test BATCH -hist',
+      ]);
+    });
+
+    it("gives the lines their batch's time, not the time they were relayed", () => {
+      const filter = filterFor(['message-tags', 'batch', 'server-time']);
+      const relayedAt = new Date('2026-09-12T19:33:25.000Z');
+      const lines = [
+        '@msgid=m1;time=2026-01-01T00:00:00.000Z :n!u@h BATCH +b draft/multiline #c',
+        '@batch=b :n!u@h PRIVMSG #c :one',
+        '@batch=b :n!u@h PRIVMSG #c :two',
+        ':irc.test BATCH -b',
+      ];
+      expect(lines.flatMap((l) => filter.apply(l, relayedAt))).toEqual([
+        '@msgid=m1;time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :one',
+        '@time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :two',
+      ]);
+    });
+  });
+
+  // soju stamps what it relays, so a server-time client has a time on every
+  // message. apply() does it for a line given the time it was relayed.
+  describe('time on relayed lines', () => {
+    const relayedAt = new Date('2026-09-12T19:33:25.000Z');
+    const stamp = 'time=2026-09-12T19:33:25.000Z';
+
+    it('stamps a relayed line that has no time, for a server-time client', () => {
+      const filter = filterFor(['server-time', 'message-tags']);
+      expect(filter.apply(':n!u@h PRIVMSG #c :hi', relayedAt)).toEqual([
+        `@${stamp} :n!u@h PRIVMSG #c :hi`,
+      ]);
+      expect(filter.apply('@msgid=m :n!u@h PRIVMSG #c :hi', relayedAt)).toEqual([
+        `@${stamp};msgid=m :n!u@h PRIVMSG #c :hi`,
+      ]);
+    });
+
+    it('leaves timed lines, numerics, unrelayed lines and other clients alone', () => {
+      const filter = filterFor(['server-time']);
+      const timed = '@time=T :n!u@h PRIVMSG #c :hi';
+      expect(filter.apply(timed, relayedAt)).toEqual([timed]);
+      expect(filter.apply(':irc.test 372 me :- welcome', relayedAt)).toEqual([
+        ':irc.test 372 me :- welcome',
+      ]);
+      expect(filter.apply(':lurker.bouncer NOTICE me :hi')).toEqual([
+        ':lurker.bouncer NOTICE me :hi',
+      ]);
+      expect(filterFor([]).apply(':n!u@h PRIVMSG #c :hi', relayedAt)).toEqual([
+        ':n!u@h PRIVMSG #c :hi',
+      ]);
+    });
+
+    it('stamps the CHGHOST fallback too, when the change has no time', () => {
+      const filter = filterFor(['server-time'], { shared: [{ channel: '#ops', modes: [] }] });
+      expect(filter.apply(':alice!old@old.host CHGHOST new new.host', relayedAt)).toEqual([
+        `@${stamp} :alice!old@old.host QUIT :Changing hostname`,
+        `@${stamp} :alice!new@new.host JOIN #ops`,
+      ]);
+    });
   });
 
   describe('CHGHOST fallback', () => {

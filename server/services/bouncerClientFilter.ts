@@ -193,9 +193,10 @@ export class ClientLineFilter {
 
   /**
    * The lines to write for `line`: none, the line itself (rewritten if a rule
-   * applies), or the fallback lines that stand in for it.
+   * applies), or the fallback lines that stand in for it. `relayedAt` marks a
+   * line the network sent, and is the time it gets if it has none of its own.
    */
-  apply(line: string): string[] {
+  apply(line: string, relayedAt?: Date): string[] {
     const msg = parseLine(line);
     if (!msg) return [];
     const { caps } = this.view;
@@ -217,7 +218,10 @@ export class ClientLineFilter {
         this.batches.set(refParam.slice(1), {
           type,
           opened,
-          tags: msg.tags.filter((tag) => tagKey(tag) !== 'batch'),
+          // The line's tags as they stand: a batch tag is still here only if it
+          // names a batch this client was sent, so a multiline batch inside a
+          // chathistory replay carries that reference onto its unwrapped lines.
+          tags: [...msg.tags],
           first: true,
         });
         if (!opened) return [];
@@ -230,7 +234,7 @@ export class ClientLineFilter {
 
     const gate = CAP_GATED_COMMANDS[msg.command];
     if (gate && !caps.has(gate)) {
-      return msg.command === 'CHGHOST' ? this.chghostFallback(msg) : [];
+      return msg.command === 'CHGHOST' ? this.chghostFallback(msg, relayedAt) : [];
     }
 
     if (msg.command === 'INVITE' && !caps.has('invite-notify')) {
@@ -300,6 +304,20 @@ export class ClientLineFilter {
       dirty = true;
     }
 
+    // soju stamps what it relays (upstream.go) so a server-time client has a
+    // time on every message; numerics are left alone, as soju leaves them. This
+    // runs after the multiline fallback, so an unwrapped line takes its batch's
+    // time before it would take the time it was relayed.
+    if (
+      relayedAt &&
+      caps.has('server-time') &&
+      !/^[0-9]{3}$/.test(msg.command) &&
+      !msg.tags.some((tag) => tagKey(tag) === 'time')
+    ) {
+      msg.tags = [`time=${relayedAt.toISOString()}`, ...msg.tags];
+      dirty = true;
+    }
+
     if (!caps.has('message-tags')) {
       const kept = msg.tags.filter((tag) => {
         const cap = TAG_CAPS[tagKey(tag)];
@@ -335,7 +353,7 @@ export class ClientLineFilter {
   // chghost. A QUIT, then a JOIN in each shared channel and a MODE restoring the
   // prefix modes there. soju just drops the line, which leaves the client
   // holding a stale hostmask.
-  private chghostFallback(msg: ClientLine): string[] {
+  private chghostFallback(msg: ClientLine, relayedAt?: Date): string[] {
     const source = msg.source ?? '';
     const bang = source.indexOf('!');
     const nick = bang === -1 ? source : source.slice(0, bang);
@@ -366,6 +384,6 @@ export class ClientLineFilter {
         );
       }
     }
-    return lines.flatMap((l) => this.apply(l));
+    return lines.flatMap((l) => this.apply(l, relayedAt));
   }
 }

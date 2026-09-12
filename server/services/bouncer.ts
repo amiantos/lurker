@@ -76,7 +76,7 @@ import {
   keyMatchesCert,
 } from '../utils/bouncerCert.js';
 import { isChannelTarget } from '../../shared/channels.js';
-import { ClientLineFilter, parseLine, restrictTags } from './bouncerClientFilter.js';
+import { ClientLineFilter, restrictTags } from './bouncerClientFilter.js';
 
 const SERVER_NAME = 'lurker.bouncer';
 
@@ -424,23 +424,6 @@ export function filterRelayLine(line: string): string | null {
   return line;
 }
 
-/**
- * `line` with a `time` tag of `now` if it has none, the way soju stamps what it
- * relays (upstream.go), so a server-time client has a time on every message.
- * Numerics are left alone, as soju leaves them.
- */
-export function stampTime(line: string, now: Date = new Date()): string {
-  const msg = parseLine(line);
-  if (!msg || /^[0-9]{3}$/.test(msg.command)) return line;
-  if (msg.tags.some((tag) => tag === 'time' || tag.startsWith('time='))) return line;
-  const time = `time=${now.toISOString()}`;
-  if (!line.startsWith('@')) return `@${time} ${line}`;
-  // An empty tag block (`@ …`) is replaced rather than extended.
-  return msg.tags.length === 0
-    ? `@${time} ${line.slice(line.indexOf(' ') + 1)}`
-    : `@${time};${line.slice(1)}`;
-}
-
 // Default IRC prefix ladder, used when the network's ISUPPORT PREFIX isn't
 // available (attached while upstream is still registering).
 const DEFAULT_PREFIXES: Array<{ mode: string; symbol: string }> = [
@@ -723,7 +706,8 @@ class BouncerSession {
     return this.registered;
   }
 
-  private write(line: string): void {
+  // `relayedAt` marks a line the network sent (see ClientLineFilter.apply).
+  private write(line: string, relayedAt?: Date): void {
     if (this.closed) return;
     try {
       // No generated line legitimately contains CR/LF/NUL; scrub rather than
@@ -733,7 +717,8 @@ class BouncerSession {
       const scrubbed = line.replace(/[\r\n\u0000]/g, ' ');
       // The one exit point: whatever wrote the line, the client gets only what
       // its caps allow (#926).
-      for (const out of this.clientFilter.apply(scrubbed)) this.socket.write(out + '\r\n');
+      for (const out of this.clientFilter.apply(scrubbed, relayedAt))
+        this.socket.write(out + '\r\n');
     } catch {
       this.destroy();
     }
@@ -1316,7 +1301,7 @@ class BouncerSession {
       // the self-echo, so drop the reflected copy to avoid a duplicate line.
       if (this.isReflectedSelfLine(event.line)) return;
       const out = filterRelayLine(event.line);
-      if (out) this.write(this.caps.has('server-time') ? stampTime(out) : out);
+      if (out) this.write(out, new Date());
     };
     // irc-framework's Client is an eventemitter3, which has no listener-count
     // cap — several attached clients can listen on one upstream client freely.
