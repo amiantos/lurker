@@ -76,7 +76,7 @@ import {
   keyMatchesCert,
 } from '../utils/bouncerCert.js';
 import { isChannelTarget } from '../../shared/channels.js';
-import { ClientLineFilter, restrictTags } from './bouncerClientFilter.js';
+import { ClientLineFilter, parseLine, restrictTags } from './bouncerClientFilter.js';
 
 const SERVER_NAME = 'lurker.bouncer';
 
@@ -90,12 +90,12 @@ function timingEqualizerHash(): string {
   return timingDummyHash;
 }
 
-// Caps we can honestly offer an attaching client. server-time stamps playback
-// and relayed lines; message-tags passes upstream tags through verbatim;
-// echo-message opts the client into receiving its own sends back (otherwise we
-// suppress the echo, since the client already rendered the message locally);
-// znc.in/self-message is a marker cap — clients that know it render
-// `:you PRIVMSG peer` playback/sync lines as *your* outgoing DMs.
+// Caps we can honestly offer an attaching client, whatever network it binds.
+// server-time stamps playback and relayed lines; message-tags passes upstream
+// tags through verbatim; echo-message opts the client into receiving its own
+// sends back (otherwise we suppress the echo, since the client already rendered
+// the message locally); znc.in/self-message is a marker cap — clients that know
+// it render `:you PRIVMSG peer` playback/sync lines as *your* outgoing DMs.
 const SUPPORTED_CAPS = [
   'sasl',
   'server-time',
@@ -112,6 +112,28 @@ const SUPPORTED_CAPS = [
   'soju.im/bouncer-networks-notify',
   // draft/chathistory: on-demand scrollback fetch (CHATHISTORY BEFORE/AFTER/…).
   'draft/chathistory',
+  // cap-notify: CAP NEW/DEL as the bound network's caps come and go (see
+  // updateSupportedCaps). CAP LS 302 turns it on without a REQ.
+  'cap-notify',
+  // invite-notify: other people's INVITEs. A network that doesn't send them
+  // just means fewer, which the spec allows; soju offers it regardless too.
+  'invite-notify',
+];
+
+// Caps offered only while the bound network has them, because the lines they
+// promise come from the network (soju's passthroughDownstreamCaps). Without the
+// cap, the client filter keeps those lines away from the client.
+// userhost-in-names is ZNC's addition; soju doesn't offer it. Not offered yet:
+// extended-monitor (a client's MONITOR is relayed raw, into Lurker's own list)
+// and labeled-response (needs per-request reply routing, #493).
+const PASSTHROUGH_CAPS = [
+  'away-notify',
+  'account-notify',
+  'account-tag',
+  'chghost',
+  'extended-join',
+  'multi-prefix',
+  'userhost-in-names',
 ];
 
 const CAP_BOUNCER_NETWORKS = 'soju.im/bouncer-networks';
@@ -128,10 +150,10 @@ const MAX_CHATHISTORY = 1000;
 const SASL_MECHANISMS = ['PLAIN'];
 
 /** Build the CAP LS token list, attaching cap values when the client sent 302. */
-function capLsList(version: number): string {
-  return SUPPORTED_CAPS.map((c) =>
-    c === 'sasl' && version >= 302 ? `sasl=${SASL_MECHANISMS.join(',')}` : c,
-  ).join(' ');
+function capLsList(caps: Iterable<string>, version: number): string {
+  return [...caps]
+    .map((c) => (c === 'sasl' && version >= 302 ? `sasl=${SASL_MECHANISMS.join(',')}` : c))
+    .join(' ');
 }
 
 // Upstream wire commands never relayed to attached clients: connection
@@ -402,6 +424,23 @@ export function filterRelayLine(line: string): string | null {
   return line;
 }
 
+/**
+ * `line` with a `time` tag of `now` if it has none, the way soju stamps what it
+ * relays (upstream.go), so a server-time client has a time on every message.
+ * Numerics are left alone, as soju leaves them.
+ */
+export function stampTime(line: string, now: Date = new Date()): string {
+  const msg = parseLine(line);
+  if (!msg || /^[0-9]{3}$/.test(msg.command)) return line;
+  if (msg.tags.some((tag) => tag === 'time' || tag.startsWith('time='))) return line;
+  const time = `time=${now.toISOString()}`;
+  if (!line.startsWith('@')) return `@${time} ${line}`;
+  // An empty tag block (`@ …`) is replaced rather than extended.
+  return msg.tags.length === 0
+    ? `@${time} ${line.slice(line.indexOf(' ') + 1)}`
+    : `@${time};${line.slice(1)}`;
+}
+
 // Default IRC prefix ladder, used when the network's ISUPPORT PREFIX isn't
 // available (attached while upstream is still registering).
 const DEFAULT_PREFIXES: Array<{ mode: string; symbol: string }> = [
@@ -412,14 +451,19 @@ const DEFAULT_PREFIXES: Array<{ mode: string; symbol: string }> = [
   { mode: 'v', symbol: '+' },
 ];
 
-export function memberPrefixSymbol(
+/**
+ * Every prefix symbol a member's modes earn, highest rank first (`@+` for +ov).
+ * The client filter cuts it to the highest one for a client without
+ * multi-prefix.
+ */
+export function memberPrefixSymbols(
   memberModes: string[],
   prefixes: Array<{ mode: string; symbol: string }> = DEFAULT_PREFIXES,
 ): string {
-  for (const p of prefixes) {
-    if (memberModes.includes(p.mode)) return p.symbol;
-  }
-  return '';
+  return prefixes
+    .filter((p) => memberModes.includes(p.mode))
+    .map((p) => p.symbol)
+    .join('');
 }
 
 /** Chunk a NAMES membership list into 353 lines under the 512-byte wire cap. */
@@ -603,6 +647,11 @@ export function attachedSessionCount(userId?: number, networkId?: number): numbe
 
 class BouncerSession {
   readonly caps = new Set<string>();
+  // What the client may request right now: SUPPORTED_CAPS, plus whichever
+  // pass-through caps apply (see handleCap and updateSupportedCaps).
+  private readonly availableCaps = new Set<string>(SUPPORTED_CAPS);
+  // The highest CAP LS version the client sent; 301 until it sends 302.
+  private capVersion = 301;
   userId = 0;
   networkId = 0;
   lastActivityAt = Date.now();
@@ -647,6 +696,7 @@ class BouncerSession {
   // mismatch cases) can't suppress an identical message sent much later.
   private pendingEcho: Array<{ key: string; at: number }> = [];
   private onRawUpstream: ((event: { from_server: boolean; line: string }) => void) | null = null;
+  private onUpstreamCaps: (() => void) | null = null;
   private regTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(socket: net.Socket) {
@@ -815,7 +865,16 @@ class BouncerSession {
         // 302 = versioned LS (advertise cap values); a bare/absent token is 301.
         const version = Number(msg.params[1]);
         const capVersion = Number.isFinite(version) && version >= 302 ? 302 : 301;
-        this.write(`:${SERVER_NAME} CAP ${nick} LS :${capLsList(capVersion)}`);
+        this.capVersion = Math.max(this.capVersion, capVersion);
+        if (capVersion >= 302) {
+          // Before registration the network isn't known, so a 302 client is
+          // shown the pass-through caps too, and binding takes back the ones
+          // the network lacks with a CAP DEL (soju does the same). 302 also
+          // turns on cap-notify, which is what carries that DEL to the client.
+          if (!this.registered) for (const cap of PASSTHROUGH_CAPS) this.availableCaps.add(cap);
+          this.caps.add('cap-notify');
+        }
+        this.write(`:${SERVER_NAME} CAP ${nick} LS :${capLsList(this.availableCaps, capVersion)}`);
         break;
       }
       case 'LIST':
@@ -827,8 +886,10 @@ class BouncerSession {
           .split(' ')
           .map((c) => c.trim())
           .filter(Boolean);
-        const supported = requested.every((c) => SUPPORTED_CAPS.includes(c.replace(/^-/, '')));
-        if (!supported || requested.length === 0) {
+        const supported = requested.every((c) => this.availableCaps.has(c.replace(/^-/, '')));
+        // cap-notify can't be turned off once CAP LS 302 has turned it on.
+        const dropsCapNotify = this.capVersion >= 302 && requested.includes('-cap-notify');
+        if (!supported || dropsCapNotify || requested.length === 0) {
           this.write(`:${SERVER_NAME} CAP ${nick} NAK :${requested.join(' ')}`);
           break;
         }
@@ -846,6 +907,34 @@ class BouncerSession {
         this.write(`:${SERVER_NAME} 410 ${nick} ${sub || '*'} :Invalid CAP command`);
         break;
     }
+  }
+
+  // soju's updateSupportedCaps: the pass-through caps follow the bound network.
+  // Runs once registration settles on a network (or on none, for a control
+  // connection) and again whenever that network's caps may have changed. A cap
+  // the network lacks leaves both sets, or the client would wait for lines that
+  // never come. `nick` is the one the client knows itself by at that moment.
+  private updateSupportedCaps(nick: string): void {
+    const upstream = new Set<string>(
+      !this.isControl && this.conn?.state === 'connected'
+        ? (this.conn.client.network?.cap?.enabled ?? [])
+        : [],
+    );
+    const added: string[] = [];
+    const removed: string[] = [];
+    for (const cap of PASSTHROUGH_CAPS) {
+      if (upstream.has(cap) && !this.availableCaps.has(cap)) {
+        this.availableCaps.add(cap);
+        added.push(cap);
+      } else if (!upstream.has(cap) && this.availableCaps.has(cap)) {
+        this.availableCaps.delete(cap);
+        this.caps.delete(cap);
+        removed.push(cap);
+      }
+    }
+    if (!this.caps.has('cap-notify')) return;
+    if (added.length > 0) this.write(`:${SERVER_NAME} CAP ${nick} NEW :${added.join(' ')}`);
+    if (removed.length > 0) this.write(`:${SERVER_NAME} CAP ${nick} DEL :${removed.join(' ')}`);
   }
 
   // SASL PLAIN (IRCv3). Reuses the same credential backend as PASS — the only
@@ -1097,6 +1186,8 @@ class BouncerSession {
     this.registered = true;
     this.clearRegTimer();
     attachToRegistry(this);
+    // Before the burst, so everything in it already follows the settled caps.
+    this.updateSupportedCaps(this.clientNick || '*');
     this.sendAttachBurst();
     systemLog.log({
       userId: this.userId,
@@ -1121,6 +1212,7 @@ class BouncerSession {
     this.isControl = true;
     this.registered = true;
     this.clearRegTimer();
+    this.updateSupportedCaps(this.clientNick || '*');
     this.sendControlBurst(user, networks);
     // failRegistration used to console.warn the reason for the commonest
     // misconfiguration (bare username, several networks). It no longer fails,
@@ -1224,11 +1316,18 @@ class BouncerSession {
       // the self-echo, so drop the reflected copy to avoid a duplicate line.
       if (this.isReflectedSelfLine(event.line)) return;
       const out = filterRelayLine(event.line);
-      if (out) this.write(out);
+      if (out) this.write(this.caps.has('server-time') ? stampTime(out) : out);
     };
     // irc-framework's Client is an eventemitter3, which has no listener-count
     // cap — several attached clients can listen on one upstream client freely.
     conn.client.on('raw', this.onRawUpstream);
+    // The network's caps can change under a live connection: its own CAP
+    // NEW/DEL, or a REQ Lurker sends after registration (#888).
+    this.onUpstreamCaps = () => {
+      if (!this.closed) this.updateSupportedCaps(this.currentNick() || '*');
+    };
+    conn.client.on('cap ack', this.onUpstreamCaps);
+    conn.client.on('cap del', this.onUpstreamCaps);
   }
 
   // --- control (unbound) connection ------------------------------------------
@@ -1585,29 +1684,41 @@ class BouncerSession {
     return DEFAULT_PREFIXES;
   }
 
-  // The channels `nick` shares with us and its modes in each, for the client
-  // filter's CHGHOST fallback. Members are keyed by lowercased nick, the way
-  // IrcConnection stores them.
-  private sharedChannels(nick: string): Array<{ channel: string; modes: string[] }> {
+  // The channels `nick` shares with us, with its modes and account in each, for
+  // the client filter's CHGHOST fallback. Members are keyed by lowercased nick,
+  // the way IrcConnection stores them.
+  private sharedChannels(
+    nick: string,
+  ): Array<{ channel: string; modes: string[]; account?: string | null }> {
     const key = nick.toLowerCase();
-    const shared: Array<{ channel: string; modes: string[] }> = [];
+    const shared: Array<{ channel: string; modes: string[]; account?: string | null }> = [];
     for (const ch of this.conn?.channels.values() ?? []) {
       const member = ch.members.get(key);
-      if (member) shared.push({ channel: ch.name, modes: member.modes || [] });
+      if (member) {
+        shared.push({ channel: ch.name, modes: member.modes || [], account: member.account });
+      }
     }
     return shared;
   }
 
+  // Each channel's JOIN, topic and NAMES, built in their fullest form: an
+  // extended-join JOIN, every prefix, hostmasks where known. write() trims them
+  // to what the client negotiated, as it trims the network's own lines.
   private sendJoinBurst(): void {
     const conn = this.conn!;
     const nick = this.currentNick() || '*';
     const prefixes = this.isupportPrefixes();
+    const realname = conn.client.user?.gecos || this.network?.realname || nick;
     for (const ch of conn.channels.values()) {
-      this.write(`:${this.selfPrefix()} JOIN ${ch.name}`);
+      // Our own account as this channel knows it, from our extended JOIN or ACCOUNT.
+      const account = ch.members.get(nick.toLowerCase())?.account;
+      const accountParam = typeof account === 'string' ? account : '*';
+      this.write(`:${this.selfPrefix()} JOIN ${ch.name} ${accountParam} :${realname}`);
       if (ch.topic) this.write(`:${SERVER_NAME} 332 ${nick} ${ch.name} :${ch.topic}`);
-      const names = Array.from(ch.members.values()).map(
-        (m) => memberPrefixSymbol(m.modes || [], prefixes) + m.nick,
-      );
+      const names = Array.from(ch.members.values()).map((m) => {
+        const mask = m.user && m.host ? `!${m.user}@${m.host}` : '';
+        return memberPrefixSymbols(m.modes || [], prefixes) + m.nick + mask;
+      });
       for (const line of buildNamesLines(nick, ch.name, names)) this.write(line);
     }
   }
@@ -1959,6 +2070,8 @@ class BouncerSession {
     this.clientFilter.resetBatches();
     // liveConn() closes us if the connection object was swapped out.
     if (!this.liveConn() || this.closed) return;
+    // A connect brings the network's caps; a disconnect takes them away.
+    this.updateSupportedCaps(this.currentNick() || '*');
     if (state === 'connected') this.notice(`Upstream reconnected to '${this.network?.name}'.`);
     else if (state === 'reconnecting' || state === 'disconnected') {
       this.notice(`Upstream ${state} ('${this.network?.name}') — Lurker will keep retrying.`);
@@ -2006,11 +2119,16 @@ class BouncerSession {
     if (this.onRawUpstream && this.conn) {
       try {
         this.conn.client.off('raw', this.onRawUpstream);
+        if (this.onUpstreamCaps) {
+          this.conn.client.off('cap ack', this.onUpstreamCaps);
+          this.conn.client.off('cap del', this.onUpstreamCaps);
+        }
       } catch {
         /* ignore */
       }
     }
     this.onRawUpstream = null;
+    this.onUpstreamCaps = null;
     sessions.delete(this);
     if (this.registered && this.isControl) {
       systemLog.log({

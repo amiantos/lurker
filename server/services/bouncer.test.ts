@@ -14,7 +14,8 @@ let parseBouncerCredentials: typeof import('./bouncer.js').parseBouncerCredentia
 let unmarshalLogin: typeof import('./bouncer.js').unmarshalLogin;
 let rewriteNumericTarget: typeof import('./bouncer.js').rewriteNumericTarget;
 let filterRelayLine: typeof import('./bouncer.js').filterRelayLine;
-let memberPrefixSymbol: typeof import('./bouncer.js').memberPrefixSymbol;
+let memberPrefixSymbols: typeof import('./bouncer.js').memberPrefixSymbols;
+let stampTime: typeof import('./bouncer.js').stampTime;
 let buildNamesLines: typeof import('./bouncer.js').buildNamesLines;
 let withNetworkList: typeof import('./bouncer.js').withNetworkList;
 let isServicesNick: typeof import('./bouncer.js').isServicesNick;
@@ -34,7 +35,8 @@ beforeAll(async () => {
   unmarshalLogin = mod.unmarshalLogin;
   rewriteNumericTarget = mod.rewriteNumericTarget;
   filterRelayLine = mod.filterRelayLine;
-  memberPrefixSymbol = mod.memberPrefixSymbol;
+  memberPrefixSymbols = mod.memberPrefixSymbols;
+  stampTime = mod.stampTime;
   buildNamesLines = mod.buildNamesLines;
   withNetworkList = mod.withNetworkList;
   isServicesNick = mod.isServicesNick;
@@ -392,11 +394,11 @@ describe('bouncerNetworkState', () => {
   });
 });
 
-describe('memberPrefixSymbol', () => {
-  it('maps the highest-ranked mode to its symbol', () => {
-    expect(memberPrefixSymbol(['v', 'o'])).toBe('@');
-    expect(memberPrefixSymbol(['v'])).toBe('+');
-    expect(memberPrefixSymbol([])).toBe('');
+describe('memberPrefixSymbols', () => {
+  it('maps every mode to its symbol, highest rank first', () => {
+    expect(memberPrefixSymbols(['v', 'o'])).toBe('@+');
+    expect(memberPrefixSymbols(['v'])).toBe('+');
+    expect(memberPrefixSymbols([])).toBe('');
   });
 
   it('honors a network-supplied prefix table', () => {
@@ -404,8 +406,27 @@ describe('memberPrefixSymbol', () => {
       { mode: 'y', symbol: '!' },
       { mode: 'o', symbol: '@' },
     ];
-    expect(memberPrefixSymbol(['y'], prefixes)).toBe('!');
-    expect(memberPrefixSymbol(['q'], prefixes)).toBe('');
+    expect(memberPrefixSymbols(['o', 'y'], prefixes)).toBe('!@');
+    expect(memberPrefixSymbols(['q'], prefixes)).toBe('');
+  });
+});
+
+describe('stampTime', () => {
+  const now = new Date('2026-09-12T19:33:25.000Z');
+  const time = '@time=2026-09-12T19:33:25.000Z';
+
+  it('adds a time tag to a line that has none', () => {
+    expect(stampTime(':n!u@h PRIVMSG #c :hi', now)).toBe(`${time} :n!u@h PRIVMSG #c :hi`);
+    expect(stampTime('@msgid=m :n!u@h PRIVMSG #c :hi', now)).toBe(
+      `${time};msgid=m :n!u@h PRIVMSG #c :hi`,
+    );
+    expect(stampTime('@ :n!u@h PRIVMSG #c :hi', now)).toBe(`${time} :n!u@h PRIVMSG #c :hi`);
+  });
+
+  it('leaves a line that has a time, and numerics, alone', () => {
+    const timed = '@time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :hi';
+    expect(stampTime(timed, now)).toBe(timed);
+    expect(stampTime(':irc.test 372 me :- welcome', now)).toBe(':irc.test 372 me :- welcome');
   });
 });
 

@@ -317,6 +317,18 @@ describe('ClientLineFilter', () => {
       ]);
     });
 
+    it('sends the fallback JOIN in extended form to an extended-join client', () => {
+      const withAccounts = [
+        { channel: '#ops', modes: [], account: 'alice' },
+        { channel: '#lounge', modes: [], account: null },
+      ];
+      expect(filterFor(['extended-join'], { shared: withAccounts }).apply(change)).toEqual([
+        ':alice!old@old.host QUIT :Changing hostname',
+        ':alice!new@new.host JOIN #ops alice :',
+        ':alice!new@new.host JOIN #lounge * :',
+      ]);
+    });
+
     it('sends nothing for our own change, or for a nick we share no channel with', () => {
       expect(filterFor([], { nick: 'Alice', shared }).apply(change)).toEqual([]);
       expect(filterFor([], { shared: [] }).apply(change)).toEqual([]);

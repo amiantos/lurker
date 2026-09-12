@@ -135,8 +135,12 @@ export interface ClientView {
   nick(): string | null;
   // The network's ISUPPORT PREFIX, highest rank first.
   prefixes(): ReadonlyArray<{ mode: string; symbol: string }>;
-  // The channels `nick` shares with us, with its prefix modes in each.
-  sharedChannels(nick: string): Array<{ channel: string; modes: readonly string[] }>;
+  // The channels `nick` shares with us, with its prefix modes in each and the
+  // services account we know it by (a string; null when logged out; undefined
+  // when never learned).
+  sharedChannels(
+    nick: string,
+  ): Array<{ channel: string; modes: readonly string[]; account?: string | null }>;
 }
 
 const MULTILINE_BATCH = 'draft/multiline';
@@ -348,8 +352,12 @@ export class ClientLineFilter {
     const tagBlock = time.length > 0 ? `@${time.join(';')} ` : '';
     const lines = [`${tagBlock}:${source} QUIT :Changing hostname`];
     const prefixes = this.view.prefixes();
-    for (const { channel, modes } of shared) {
-      lines.push(`${tagBlock}:${nick}!${user}@${host} JOIN ${channel}`);
+    for (const { channel, modes, account } of shared) {
+      // Built in extended-join form, which apply() trims for a client without
+      // it. Members carry no realname, so that stays empty. (ZNC sends a plain
+      // JOIN here, with a TODO for extended-join.)
+      const accountParam = typeof account === 'string' ? account : '*';
+      lines.push(`${tagBlock}:${nick}!${user}@${host} JOIN ${channel} ${accountParam} :`);
       const restored = prefixes.filter((p) => modes.includes(p.mode)).map((p) => p.mode);
       if (restored.length > 0) {
         const nicks = restored.map(() => nick).join(' ');

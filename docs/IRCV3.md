@@ -154,16 +154,20 @@ to the same always-on connection your browser uses (see
 capabilities Lurker offers _downstream_ are a deliberately short, honest list —
 we advertise only what we actually implement.
 
-| You get                                                                                         | Powered by                                                    |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Log in with SASL instead of a server password                                                   | `sasl` (PLAIN)                                                |
-| Backlog replays at its original timestamps, not at attach time                                  | `server-time`                                                 |
-| Scrollback on demand — page back through Lurker's full stored history from your terminal client | `draft/chathistory`                                           |
-| Your own sent messages echoed back, if your client wants them                                   | `echo-message`                                                |
-| Your outgoing DMs attributed to you correctly in replay                                         | `znc.in/self-message`                                         |
-| Pick your network from a list instead of hardcoding `username/networkname`                      | `soju.im/bouncer-networks`, `soju.im/bouncer-networks-notify` |
-| Message metadata passed through from upstream                                                   | `message-tags`                                                |
-| Network list delivered as one grouped burst                                                     | `batch`                                                       |
+| You get                                                                                         | Powered by                                                          |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Log in with SASL instead of a server password                                                   | `sasl` (PLAIN)                                                      |
+| Backlog replays at its original timestamps, not at attach time                                  | `server-time`                                                       |
+| Scrollback on demand — page back through Lurker's full stored history from your terminal client | `draft/chathistory`                                                 |
+| Your own sent messages echoed back, if your client wants them                                   | `echo-message`                                                      |
+| Your outgoing DMs attributed to you correctly in replay                                         | `znc.in/self-message`                                               |
+| Pick your network from a list instead of hardcoding `username/networkname`                      | `soju.im/bouncer-networks`, `soju.im/bouncer-networks-notify`       |
+| Message metadata passed through from upstream                                                   | `message-tags`                                                      |
+| Network list delivered as one grouped burst                                                     | `batch`                                                             |
+| People's away, account and host changes, when your network sends them                           | `away-notify`, `account-notify`, `chghost`                          |
+| Accounts on JOINs, every prefix and full hostmasks in NAMES, when your network sends them       | `extended-join`, `account-tag`, `multi-prefix`, `userhost-in-names` |
+| Invites other people get to your channels                                                       | `invite-notify`                                                     |
+| Told when a capability comes or goes, such as while your network reconnects                     | `cap-notify`                                                        |
 
 Implementation notes worth knowing if you're writing against it:
 
@@ -173,11 +177,17 @@ Implementation notes worth knowing if you're writing against it:
   Message references are `timestamp` only, deliberately not `msgid`, because
   Lurker's stored history IDs and an upstream network's message IDs are different
   namespaces and mixing them would break paging across the boundary.
-  <br>`server/services/bouncer.ts:124`, `:493`
+  <br>`server/services/bouncer.ts:146`, `:537`
 - Tags that only a server may set — `time`, `account`, `msgid`, `label`, `batch` —
   are stripped from anything an attached client sends, so a downstream client can't
   forge them.
-  <br>`server/services/bouncer.ts:256`
+  <br>`server/services/bouncer.ts:278`
+- Caps whose lines come from the network (`away-notify`, `account-notify`,
+  `account-tag`, `chghost`, `extended-join`, `multi-prefix`, `userhost-in-names`) are
+  offered only while the network you bind has them, as soju does. `CAP LS 302` lists
+  them before you pick a network, then `CAP DEL` takes back any that network lacks, and
+  `CAP NEW` offers them again when it reconnects.
+  <br>`server/services/bouncer.ts:917`
 - What the network sends is trimmed to the caps your client negotiated, as soju and ZNC
   do: no `AWAY` without `away-notify`, a bare `JOIN` without `extended-join`, one prefix
   per nick in NAMES and WHO without `multi-prefix`, and so on. Without `chghost`, a host
@@ -196,7 +206,7 @@ attaching to Lurker.
 | Capability                              | Client | Bouncer |
 | --------------------------------------- | :----: | :-----: |
 | `cap-3.1`, `cap-3.2`                    |   ✅   |   ✅    |
-| `cap-notify`                            |   ✅   |    —    |
+| `cap-notify`                            |   ✅   |   ✅    |
 | `sasl-3.1`, `sasl-3.2` (PLAIN)          |   ✅   |   ✅    |
 | `server-time`                           |   ✅   |   ✅    |
 | `message-tags`                          |   ✅   |   ✅    |
@@ -206,13 +216,13 @@ attaching to Lurker.
 | `draft/multiline`                       |   ✅   |    —    |
 | `+typing`                               |   ✅   |    —    |
 | `draft/chathistory`                     |   —    |   ✅    |
-| `multi-prefix`                          |   ✅   |    —    |
-| `userhost-in-names`                     |   ✅   |    —    |
-| `away-notify`                           |   ✅   |    —    |
-| `extended-join`                         |   ✅   |    —    |
-| `account-notify`                        |   ✅   |    —    |
-| `chghost`                               |   ✅   |    —    |
-| `invite-notify`                         |   ✅   |    —    |
+| `multi-prefix`                          |   ✅   |   ✅    |
+| `userhost-in-names`                     |   ✅   |   ✅    |
+| `away-notify`                           |   ✅   |   ✅    |
+| `extended-join`                         |   ✅   |   ✅    |
+| `account-notify`                        |   ✅   |   ✅    |
+| `chghost`                               |   ✅   |   ✅    |
+| `invite-notify`                         |   ✅   |   ✅    |
 | `monitor`                               |   ✅   |    —    |
 | `extended-monitor`                      |   ✅   |    —    |
 | `whox`                                  |   ✅   |    —    |
