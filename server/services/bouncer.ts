@@ -32,8 +32,11 @@
 //
 // Design notes / v1 limitations, all deliberate:
 // - Upstream→client traffic is relayed as the RAW wire lines the network sent
-//   (minus registration/PING plumbing), so semantics stay exact. That means
-//   Lurker-level ignore rules and RPE2E decryption do NOT apply to live relay:
+//   (minus registration/PING plumbing), so semantics stay exact, then trimmed
+//   per client to the caps that client negotiated: the network speaks to Lurker
+//   with Lurker's caps, not the client's (see bouncerClientFilter.ts, which
+//   every line to a client passes through). Raw relay also means Lurker-level
+//   ignore rules and RPE2E decryption do NOT apply to live relay:
 //   an ignored sender is still visible in an attached client, and E2E channel
 //   traffic shows as ciphertext there (your own sends echo as plaintext).
 // - Numeric replies to one attached client's query (WHOIS, LIST, …) are
@@ -73,6 +76,7 @@ import {
   keyMatchesCert,
 } from '../utils/bouncerCert.js';
 import { isChannelTarget } from '../../shared/channels.js';
+import { ClientLineFilter, restrictTags } from './bouncerClientFilter.js';
 
 const SERVER_NAME = 'lurker.bouncer';
 
@@ -373,29 +377,12 @@ export function rewriteNumericTarget(line: string, nick: string): string {
   return `${m[1]}${nick}${m[2]}`;
 }
 
-// Trim a line's IRCv3 tag block to what the client negotiated: everything for
-// message-tags, just `time` for server-time, nothing otherwise. Returns null for
-// a tag block with no message after it.
-function trimTagsForClient(line: string, caps: ReadonlySet<string>): string | null {
-  if (!line.startsWith('@')) return line;
-  const sp = line.indexOf(' ');
-  if (sp === -1) return null;
-  if (caps.has('message-tags')) return line;
-  const tags = line.slice(1, sp);
-  const rest = line.slice(sp + 1);
-  if (caps.has('server-time')) {
-    const time = tags.split(';').find((t) => t === 'time' || t.startsWith('time='));
-    if (time) return `@${time} ${rest}`;
-  }
-  return rest;
-}
-
 /**
- * Filter one raw upstream line for an attached client: drop connection
- * plumbing, drop tag-only commands the client can't parse, and trim message
- * tags to what the client negotiated. Returns null to drop the line.
+ * Filter one raw upstream line before it is relayed: drop the connection
+ * plumbing Lurker handles itself. What each client may then receive is up to
+ * its ClientLineFilter. Returns null to drop the line.
  */
-export function filterRelayLine(line: string, caps: ReadonlySet<string>): string | null {
+export function filterRelayLine(line: string): string | null {
   // irc-framework's raw event line keeps its trailing CR — strip it so the
   // relayed copy doesn't carry a stray control char into our own CRLF framing.
   line = line.replace(/[\r\n]+$/, '');
@@ -412,8 +399,7 @@ export function filterRelayLine(line: string, caps: ReadonlySet<string>): string
   }
   const command = (afterPrefix.split(' ', 1)[0] || '').toUpperCase();
   if (RELAY_DROP.has(command)) return null;
-  if ((command === 'TAGMSG' || command === 'BATCH') && !caps.has('message-tags')) return null;
-  return trimTagsForClient(line, caps);
+  return line;
 }
 
 // Default IRC prefix ladder, used when the network's ISUPPORT PREFIX isn't
@@ -627,6 +613,8 @@ class BouncerSession {
   // Decode incrementally so a multi-byte UTF-8 character split across two TCP
   // segments isn't corrupted (chunk.toString() per packet would mangle it).
   private readonly decoder = new StringDecoder('utf8');
+  // Every line written to this client passes through it (see write()).
+  private readonly clientFilter: ClientLineFilter;
   private capNegotiating = false;
   // SASL PLAIN state: the requested mechanism (null until AUTHENTICATE <mech>),
   // an accumulator for base64 payloads that arrive in 400-byte chunks, and the
@@ -664,6 +652,13 @@ class BouncerSession {
   constructor(socket: net.Socket) {
     this.socket = socket;
     this.remoteIp = socket.remoteAddress || 'unknown';
+    this.clientFilter = new ClientLineFilter({
+      caps: this.caps,
+      serverName: SERVER_NAME,
+      nick: () => this.currentNick() || this.clientNick,
+      prefixes: () => this.isupportPrefixes(),
+      sharedChannels: (nick) => this.sharedChannels(nick),
+    });
     socket.setNoDelay(true);
     socket.on('data', (chunk) => this.onData(chunk));
     socket.on('error', () => this.destroy());
@@ -685,7 +680,10 @@ class BouncerSession {
       // let an embedded newline in interpolated text split into a second
       // injected command. Matching control chars is the point of the regex.
       // eslint-disable-next-line no-control-regex
-      this.socket.write(line.replace(/[\r\n\u0000]/g, ' ') + '\r\n');
+      const scrubbed = line.replace(/[\r\n\u0000]/g, ' ');
+      // The one exit point: whatever wrote the line, the client gets only what
+      // its caps allow (#926).
+      for (const out of this.clientFilter.apply(scrubbed)) this.socket.write(out + '\r\n');
     } catch {
       this.destroy();
     }
@@ -1175,10 +1173,10 @@ class BouncerSession {
     if (conn.state === 'connected' && conn.registrationLines.length > 0) {
       // Saved at registration with the upstream's tags, so any per-delivery tag
       // on them (msgid, batch) is stale by now. Like ZNC, the replay keeps at
-      // most `time`, and only for a server-time client (#892).
-      const burstCaps = new Set(this.caps.has('server-time') ? ['server-time'] : []);
+      // most `time`, and write() drops that too unless the client negotiated
+      // server-time (#892).
       for (const line of conn.registrationLines) {
-        const out = trimTagsForClient(line, burstCaps);
+        const out = restrictTags(line, (key) => key === 'time');
         if (out) this.write(rewriteNumericTarget(out, requested));
       }
     } else {
@@ -1225,7 +1223,7 @@ class BouncerSession {
       // reflect our OWN PRIVMSG/NOTICE back. dispatchIrcEvent already synthesizes
       // the self-echo, so drop the reflected copy to avoid a duplicate line.
       if (this.isReflectedSelfLine(event.line)) return;
-      const out = filterRelayLine(event.line, this.caps);
+      const out = filterRelayLine(event.line);
       if (out) this.write(out);
     };
     // irc-framework's Client is an eventemitter3, which has no listener-count
@@ -1587,6 +1585,19 @@ class BouncerSession {
     return DEFAULT_PREFIXES;
   }
 
+  // The channels `nick` shares with us and its modes in each, for the client
+  // filter's CHGHOST fallback. Members are keyed by lowercased nick, the way
+  // IrcConnection stores them.
+  private sharedChannels(nick: string): Array<{ channel: string; modes: string[] }> {
+    const key = nick.toLowerCase();
+    const shared: Array<{ channel: string; modes: string[] }> = [];
+    for (const ch of this.conn?.channels.values() ?? []) {
+      const member = ch.members.get(key);
+      if (member) shared.push({ channel: ch.name, modes: member.modes || [] });
+    }
+    return shared;
+  }
+
   private sendJoinBurst(): void {
     const conn = this.conn!;
     const nick = this.currentNick() || '*';
@@ -1944,6 +1955,8 @@ class BouncerSession {
 
   onUpstreamState(state: string): void {
     if (this.closed) return;
+    // Batches the old upstream connection left open will never close.
+    this.clientFilter.resetBatches();
     // liveConn() closes us if the connection object was swapped out.
     if (!this.liveConn() || this.closed) return;
     if (state === 'connected') this.notice(`Upstream reconnected to '${this.network?.name}'.`);

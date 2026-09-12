@@ -361,3 +361,135 @@ describe('live relay', () => {
     expect(acct.upstream.rawSent.some((l) => l.includes('AUTHENTICATE'))).toBe(false);
   });
 });
+
+// #926. The network talks to Lurker with the caps Lurker negotiated upstream,
+// and the relay used to pass what it sent straight on. A client now gets only
+// what it negotiated itself: soju's SendMessage and ZNC's PutClient rules.
+describe("relayed lines follow the client's caps", () => {
+  type Account = import('../test-utils/bouncerHarness.js').HarnessAccount;
+  type Client = import('../test-utils/bouncerHarness.js').BouncerClient;
+  let syncs = 0;
+
+  async function attach(acct: Account, caps: string[] = []): Promise<Client> {
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    if (caps.length > 0) c.send(`CAP REQ :${caps.join(' ')}`);
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    c.send('CAP END');
+    // The attach burst goes out in one piece at registration; a PONG comes back
+    // after all of it, so nothing from the burst lands in what relay() returns.
+    const token = `attached-${++syncs}`;
+    c.send(`PING ${token}`);
+    await c.waitFor((l) => l.includes('PONG') && l.endsWith(`:${token}`));
+    return c;
+  }
+
+  // Push `lines` from the network, then a sentinel. The client receives lines
+  // in the order they were relayed, so once the sentinel arrives, anything that
+  // didn't come before it was filtered out. Returns what arrived in between.
+  async function relay(acct: Account, c: Client, lines: string[]): Promise<string[]> {
+    const from = c.lines.length;
+    const sentinel = `sentinel-${++syncs}`;
+    for (const line of lines) acct.upstream.pushUpstream(line);
+    acct.upstream.pushUpstream(`:bot!b@h PRIVMSG #chan :${sentinel}`);
+    await c.waitFor((l) => l.endsWith(`:${sentinel}`));
+    return c.lines.slice(from).filter((l) => !l.endsWith(`:${sentinel}`));
+  }
+
+  it('sends no AWAY to a client that asked only for echo-message', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'slakker' });
+    const c = await attach(acct, ['echo-message']);
+    // The reporter's lines, plus one going away rather than coming back.
+    const got = await relay(acct, c, [
+      ':meidam!meidam@FXNet.qylxi4wx.cagf6i3v.yehsgrdh.fx AWAY',
+      ':Dark77!Dark77@outofspace.1337 AWAY',
+      ':okawari!okawari@FXNet.oiri6mtj.nqjxkq3z.m7abhdem.fx AWAY',
+      ':alice!a@h AWAY :lunch',
+    ]);
+    expect(got).toEqual([]);
+  });
+
+  it('trims extended-join, multi-prefix and userhost-in-names from relayed lines', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'trimmer' });
+    const c = await attach(acct);
+    const got = await relay(acct, c, [
+      ':alice!a@h JOIN #chan alice :Alice A',
+      ':irc.example.test 353 trimmer = #chan :@+alice!a@h bob!b@h',
+      ':irc.example.test 366 trimmer #chan :End of /NAMES list.',
+      ':irc.example.test 352 trimmer #chan a h irc.example.test alice H@+ :0 Alice A',
+    ]);
+    expect(got).toEqual([
+      ':alice!a@h JOIN #chan',
+      ':irc.example.test 353 trimmer = #chan :@alice bob',
+      ':irc.example.test 366 trimmer #chan :End of /NAMES list.',
+      ':irc.example.test 352 trimmer #chan a h irc.example.test alice H@ :0 Alice A',
+    ]);
+  });
+
+  it('drops ACCOUNT and invites for other people, but not an invite for us', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'invitee' });
+    const c = await attach(acct);
+    const got = await relay(acct, c, [
+      ':alice!a@h ACCOUNT alice',
+      ':op!o@h INVITE someone #chan',
+      ':op!o@h INVITE invitee #chan',
+    ]);
+    expect(got).toEqual([':op!o@h INVITE invitee #chan']);
+  });
+
+  it("sends another user's host change as the QUIT, JOIN and MODE a network would", async () => {
+    const acct = harnessMod.seedAccount({ nick: 'watcher' });
+    acct.upstream.addChannel('#ops', { members: ['watcher', '@alice'] });
+    acct.upstream.addChannel('#lounge', { members: ['watcher', 'alice'] });
+    const c = await attach(acct, ['server-time']);
+    const TIME = '2026-09-12T19:33:25.000Z';
+    const got = await relay(acct, c, [
+      `@time=${TIME};msgid=h1 :alice!old@old.host CHGHOST new new.host`,
+      // Our own change gets no fallback: the network reports it with a 396.
+      ':watcher!w@fake.host CHGHOST w cloak/watcher',
+    ]);
+    expect(got).toEqual([
+      `@time=${TIME} :alice!old@old.host QUIT :Changing hostname`,
+      `@time=${TIME} :alice!new@new.host JOIN #ops`,
+      `@time=${TIME} :lurker.bouncer MODE #ops +o alice`,
+      `@time=${TIME} :alice!new@new.host JOIN #lounge`,
+    ]);
+  });
+
+  it('opens a network batch only for a client that negotiated batch', async () => {
+    const netsplit = [
+      ':irc.example.test BATCH +ns netsplit a.example.test b.example.test',
+      '@batch=ns :carol!c@h QUIT :a.example.test b.example.test',
+      ':irc.example.test BATCH -ns',
+    ];
+    const tagsOnly = harnessMod.seedAccount({ nick: 'tagsonly' });
+    const c1 = await attach(tagsOnly, ['message-tags']);
+    expect(await relay(tagsOnly, c1, netsplit)).toEqual([
+      ':carol!c@h QUIT :a.example.test b.example.test',
+    ]);
+
+    const batched = harnessMod.seedAccount({ nick: 'batched' });
+    const c2 = await attach(batched, ['message-tags', 'batch']);
+    expect(await relay(batched, c2, netsplit)).toEqual(netsplit);
+  });
+
+  it('unwraps a multiline batch for a client, which never has draft/multiline', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'reader' });
+    const c = await attach(acct, ['message-tags', 'batch']);
+    const got = await relay(acct, c, [
+      '@msgid=ml1;account=bob :bob!b@h BATCH +ml draft/multiline #chan',
+      '@batch=ml :bob!b@h PRIVMSG #chan hello',
+      '@batch=ml :bob!b@h PRIVMSG #chan :',
+      '@batch=ml :bob!b@h PRIVMSG #chan :how is ',
+      '@batch=ml;draft/multiline-concat :bob!b@h PRIVMSG #chan :everyone?',
+      ':irc.example.test BATCH -ml',
+    ]);
+    expect(got).toEqual([
+      '@msgid=ml1;account=bob :bob!b@h PRIVMSG #chan hello',
+      '@account=bob :bob!b@h PRIVMSG #chan :how is ',
+      '@account=bob :bob!b@h PRIVMSG #chan :everyone?',
+    ]);
+  });
+});

@@ -165,7 +165,7 @@ we advertise only what we actually implement.
 | Message metadata passed through from upstream                                                   | `message-tags`                                                |
 | Network list delivered as one grouped burst                                                     | `batch`                                                       |
 
-Two implementation notes worth knowing if you're writing against it:
+Implementation notes worth knowing if you're writing against it:
 
 - Scrollback is capped at 1000 messages per request, advertised via the
   `CHATHISTORY` ISUPPORT token. Over-limit requests are **rejected, not silently
@@ -173,11 +173,17 @@ Two implementation notes worth knowing if you're writing against it:
   Message references are `timestamp` only, deliberately not `msgid`, because
   Lurker's stored history IDs and an upstream network's message IDs are different
   namespaces and mixing them would break paging across the boundary.
-  <br>`server/services/bouncer.ts:110`, `:457`
+  <br>`server/services/bouncer.ts:124`, `:493`
 - Tags that only a server may set — `time`, `account`, `msgid`, `label`, `batch` —
   are stripped from anything an attached client sends, so a downstream client can't
   forge them.
-  <br>`server/services/bouncer.ts:246`
+  <br>`server/services/bouncer.ts:256`
+- What the network sends is trimmed to the caps your client negotiated, as soju and ZNC
+  do: no `AWAY` without `away-notify`, a bare `JOIN` without `extended-join`, one prefix
+  per nick in NAMES and WHO without `multi-prefix`, and so on. Without `chghost`, a host
+  change arrives as the `QUIT`, `JOIN` and `MODE` a network sends in its place. Lurker
+  never offers `draft/multiline`, so multiline messages arrive as separate lines.
+  <br>`server/services/bouncerClientFilter.ts`
 
 ---
 
