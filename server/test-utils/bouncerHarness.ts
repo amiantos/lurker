@@ -34,9 +34,39 @@ import type { User } from '../db/users.js';
 export interface FakeChannel {
   name: string;
   topic: string | null;
-  members: Map<string, { nick: string; modes: string[] }>;
+  members: Map<string, FakeMember>;
   modes: Set<string>;
 }
+
+// The ChannelMember fields the bouncer reads. The optional ones are unknown
+// until a test sets them, as they often are on a real connection.
+export interface FakeMember {
+  nick: string;
+  modes: string[];
+  account?: string | null;
+  user?: string | null;
+  host?: string | null;
+}
+
+// What irc-framework and IrcConnection typically end up negotiating with an
+// IRCv3 network. The bouncer offers its pass-through caps only while the bound
+// network has them; replace `upstream.client.network.cap.enabled` in a test to
+// model a network without some.
+export const UPSTREAM_CAPS = [
+  'cap-notify',
+  'batch',
+  'multi-prefix',
+  'message-tags',
+  'away-notify',
+  'invite-notify',
+  'account-notify',
+  'account-tag',
+  'server-time',
+  'userhost-in-names',
+  'extended-join',
+  'chghost',
+  'echo-message',
+];
 
 // Minimal stand-in for IrcConnection covering exactly what bouncer.ts reads.
 export class FakeUpstream {
@@ -69,6 +99,7 @@ export class FakeUpstream {
           { mode: 'v', symbol: '+' },
         ],
       },
+      cap: { enabled: [...UPSTREAM_CAPS] },
     };
     this.client = client;
   }
@@ -87,7 +118,7 @@ export class FakeUpstream {
   }
 
   addChannel(name: string, opts: { topic?: string; members?: string[] } = {}): FakeChannel {
-    const members = new Map<string, { nick: string; modes: string[] }>();
+    const members = new Map<string, FakeMember>();
     for (const raw of opts.members ?? []) {
       const modes: string[] = [];
       let nick = raw;

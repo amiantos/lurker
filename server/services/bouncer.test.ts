@@ -14,7 +14,7 @@ let parseBouncerCredentials: typeof import('./bouncer.js').parseBouncerCredentia
 let unmarshalLogin: typeof import('./bouncer.js').unmarshalLogin;
 let rewriteNumericTarget: typeof import('./bouncer.js').rewriteNumericTarget;
 let filterRelayLine: typeof import('./bouncer.js').filterRelayLine;
-let memberPrefixSymbol: typeof import('./bouncer.js').memberPrefixSymbol;
+let memberPrefixSymbols: typeof import('./bouncer.js').memberPrefixSymbols;
 let buildNamesLines: typeof import('./bouncer.js').buildNamesLines;
 let withNetworkList: typeof import('./bouncer.js').withNetworkList;
 let isServicesNick: typeof import('./bouncer.js').isServicesNick;
@@ -34,7 +34,7 @@ beforeAll(async () => {
   unmarshalLogin = mod.unmarshalLogin;
   rewriteNumericTarget = mod.rewriteNumericTarget;
   filterRelayLine = mod.filterRelayLine;
-  memberPrefixSymbol = mod.memberPrefixSymbol;
+  memberPrefixSymbols = mod.memberPrefixSymbols;
   buildNamesLines = mod.buildNamesLines;
   withNetworkList = mod.withNetworkList;
   isServicesNick = mod.isServicesNick;
@@ -277,61 +277,37 @@ describe('rewriteNumericTarget', () => {
 });
 
 describe('filterRelayLine', () => {
-  const noCaps = new Set<string>();
-
   it('passes ordinary conversation through untouched', () => {
     const line = ':nick!u@h PRIVMSG #chan :hello';
-    expect(filterRelayLine(line, noCaps)).toBe(line);
+    expect(filterRelayLine(line)).toBe(line);
   });
 
   it('strips the trailing CR irc-framework leaves on raw lines', () => {
-    expect(filterRelayLine(':nick!u@h PRIVMSG #chan :hello\r', noCaps)).toBe(
+    expect(filterRelayLine(':nick!u@h PRIVMSG #chan :hello\r')).toBe(
       ':nick!u@h PRIVMSG #chan :hello',
     );
   });
 
   it('drops connection plumbing', () => {
-    expect(filterRelayLine('PING :irc.libera.chat', noCaps)).toBeNull();
-    expect(filterRelayLine(':irc.libera.chat PONG server :token', noCaps)).toBeNull();
-    expect(filterRelayLine(':irc.libera.chat CAP * LS :sasl', noCaps)).toBeNull();
-    expect(filterRelayLine('AUTHENTICATE +', noCaps)).toBeNull();
-    expect(filterRelayLine('ERROR :Closing Link', noCaps)).toBeNull();
-    expect(filterRelayLine(':server 001 me :Welcome', noCaps)).toBeNull();
-    expect(filterRelayLine(':server 005 me CHANTYPES=# :are supported', noCaps)).toBeNull();
-    expect(filterRelayLine(':server 903 me :SASL successful', noCaps)).toBeNull();
+    expect(filterRelayLine('PING :irc.libera.chat')).toBeNull();
+    expect(filterRelayLine(':irc.libera.chat PONG server :token')).toBeNull();
+    expect(filterRelayLine(':irc.libera.chat CAP * LS :sasl')).toBeNull();
+    expect(filterRelayLine('AUTHENTICATE +')).toBeNull();
+    expect(filterRelayLine('ERROR :Closing Link')).toBeNull();
+    expect(filterRelayLine(':server 001 me :Welcome')).toBeNull();
+    expect(filterRelayLine(':server 005 me CHANTYPES=# :are supported')).toBeNull();
+    expect(filterRelayLine(':server 903 me :SASL successful')).toBeNull();
   });
 
   it('relays MOTD and other numerics', () => {
     const line = ':server 372 me :- welcome to the network';
-    expect(filterRelayLine(line, noCaps)).toBe(line);
+    expect(filterRelayLine(line)).toBe(line);
   });
 
-  it('strips all tags for a capless client', () => {
-    expect(filterRelayLine('@time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :hi', noCaps)).toBe(
-      ':n!u@h PRIVMSG #c :hi',
-    );
-  });
-
-  it('keeps only the time tag for a server-time client', () => {
-    const caps = new Set(['server-time']);
-    expect(
-      filterRelayLine('@msgid=abc;time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :hi', caps),
-    ).toBe('@time=2026-01-01T00:00:00.000Z :n!u@h PRIVMSG #c :hi');
-  });
-
-  it('keeps every tag for a message-tags client', () => {
-    const caps = new Set(['message-tags']);
-    const line = '@msgid=abc;time=x :n!u@h PRIVMSG #c :hi';
-    expect(filterRelayLine(line, caps)).toBe(line);
-  });
-
-  it('drops TAGMSG and BATCH unless the client negotiated message-tags', () => {
-    expect(filterRelayLine('@+typing=active :n!u@h TAGMSG #c', noCaps)).toBeNull();
-    expect(filterRelayLine(':server BATCH +ref draft/multiline #c', noCaps)).toBeNull();
-    const caps = new Set(['message-tags']);
-    expect(filterRelayLine('@+typing=active :n!u@h TAGMSG #c', caps)).toBe(
-      '@+typing=active :n!u@h TAGMSG #c',
-    );
+  it("leaves tags and cap-gated commands to each client's filter", () => {
+    // What one client may receive is bouncerClientFilter.ts's call, per client.
+    const line = '@time=2026-01-01T00:00:00.000Z :n!u@h AWAY :gone';
+    expect(filterRelayLine(line)).toBe(line);
   });
 });
 
@@ -416,11 +392,11 @@ describe('bouncerNetworkState', () => {
   });
 });
 
-describe('memberPrefixSymbol', () => {
-  it('maps the highest-ranked mode to its symbol', () => {
-    expect(memberPrefixSymbol(['v', 'o'])).toBe('@');
-    expect(memberPrefixSymbol(['v'])).toBe('+');
-    expect(memberPrefixSymbol([])).toBe('');
+describe('memberPrefixSymbols', () => {
+  it('maps every mode to its symbol, highest rank first', () => {
+    expect(memberPrefixSymbols(['v', 'o'])).toBe('@+');
+    expect(memberPrefixSymbols(['v'])).toBe('+');
+    expect(memberPrefixSymbols([])).toBe('');
   });
 
   it('honors a network-supplied prefix table', () => {
@@ -428,8 +404,8 @@ describe('memberPrefixSymbol', () => {
       { mode: 'y', symbol: '!' },
       { mode: 'o', symbol: '@' },
     ];
-    expect(memberPrefixSymbol(['y'], prefixes)).toBe('!');
-    expect(memberPrefixSymbol(['q'], prefixes)).toBe('');
+    expect(memberPrefixSymbols(['o', 'y'], prefixes)).toBe('!@');
+    expect(memberPrefixSymbols(['q'], prefixes)).toBe('');
   });
 });
 

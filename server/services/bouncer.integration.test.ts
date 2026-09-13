@@ -361,3 +361,333 @@ describe('live relay', () => {
     expect(acct.upstream.rawSent.some((l) => l.includes('AUTHENTICATE'))).toBe(false);
   });
 });
+
+// Helpers for the cap tests below.
+type Account = import('../test-utils/bouncerHarness.js').HarnessAccount;
+type Client = import('../test-utils/bouncerHarness.js').BouncerClient;
+let syncs = 0;
+
+// Lines reach a client in the order they were written, so once the PONG to a
+// fresh PING arrives, everything written before it has arrived too.
+async function sync(c: Client): Promise<void> {
+  const token = `sync-${++syncs}`;
+  c.send(`PING ${token}`);
+  await c.waitFor((l) => l.includes('PONG') && l.endsWith(`:${token}`));
+}
+
+// Register with `ls` (CAP LS 302 by default) and `caps` requested, and return
+// once the attach burst is through, so it can't land in what relay() returns.
+async function attach(acct: Account, caps: string[] = [], ls = 'CAP LS 302'): Promise<Client> {
+  const c = await harness.connect();
+  c.send(ls);
+  if (caps.length > 0) c.send(`CAP REQ :${caps.join(' ')}`);
+  c.send(`PASS ${acct.user.username}:${acct.password}`);
+  c.send('NICK client');
+  c.send('USER client 0 * :client');
+  c.send('CAP END');
+  await sync(c);
+  return c;
+}
+
+// Push `lines` from the network, then a sentinel, and return what the client
+// got in between. Anything filtered out never arrives before the sentinel.
+async function relay(acct: Account, c: Client, lines: string[]): Promise<string[]> {
+  const from = c.lines.length;
+  const sentinel = `sentinel-${++syncs}`;
+  for (const line of lines) acct.upstream.pushUpstream(line);
+  acct.upstream.pushUpstream(`:bot!b@h PRIVMSG #chan :${sentinel}`);
+  await c.waitFor((l) => l.endsWith(`:${sentinel}`));
+  return c.lines.slice(from).filter((l) => !l.endsWith(`:${sentinel}`));
+}
+
+// The cap names in a CAP LS / LIST / NEW / DEL line, without values.
+function capsIn(line: string): string[] {
+  return line
+    .slice(line.lastIndexOf(':') + 1)
+    .split(' ')
+    .filter(Boolean)
+    .map((cap) => cap.split('=')[0]);
+}
+
+// #926. The network talks to Lurker with the caps Lurker negotiated upstream,
+// and the relay used to pass what it sent straight on. A client now gets only
+// what it negotiated itself: soju's SendMessage and ZNC's PutClient rules.
+describe("relayed lines follow the client's caps", () => {
+  it('sends no AWAY to a client that asked only for echo-message', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'slakker' });
+    const c = await attach(acct, ['echo-message']);
+    // The reporter's lines, plus one going away rather than coming back.
+    const got = await relay(acct, c, [
+      ':meidam!meidam@FXNet.qylxi4wx.cagf6i3v.yehsgrdh.fx AWAY',
+      ':Dark77!Dark77@outofspace.1337 AWAY',
+      ':okawari!okawari@FXNet.oiri6mtj.nqjxkq3z.m7abhdem.fx AWAY',
+      ':alice!a@h AWAY :lunch',
+    ]);
+    expect(got).toEqual([]);
+  });
+
+  it('trims extended-join, multi-prefix and userhost-in-names from relayed lines', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'trimmer' });
+    const c = await attach(acct);
+    const got = await relay(acct, c, [
+      ':alice!a@h JOIN #chan alice :Alice A',
+      ':irc.example.test 353 trimmer = #chan :@+alice!a@h bob!b@h',
+      ':irc.example.test 366 trimmer #chan :End of /NAMES list.',
+      ':irc.example.test 352 trimmer #chan a h irc.example.test alice H@+ :0 Alice A',
+    ]);
+    expect(got).toEqual([
+      ':alice!a@h JOIN #chan',
+      ':irc.example.test 353 trimmer = #chan :@alice bob',
+      ':irc.example.test 366 trimmer #chan :End of /NAMES list.',
+      ':irc.example.test 352 trimmer #chan a h irc.example.test alice H@ :0 Alice A',
+    ]);
+  });
+
+  it('drops ACCOUNT and invites for other people, but not an invite for us', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'invitee' });
+    const c = await attach(acct);
+    const got = await relay(acct, c, [
+      ':alice!a@h ACCOUNT alice',
+      ':op!o@h INVITE someone #chan',
+      ':op!o@h INVITE invitee #chan',
+    ]);
+    expect(got).toEqual([':op!o@h INVITE invitee #chan']);
+  });
+
+  it("sends another user's host change as the QUIT, JOIN and MODE a network would", async () => {
+    const acct = harnessMod.seedAccount({ nick: 'watcher' });
+    acct.upstream.addChannel('#ops', { members: ['watcher', '@alice'] });
+    acct.upstream.addChannel('#lounge', { members: ['watcher', 'alice'] });
+    const c = await attach(acct, ['server-time']);
+    const TIME = '2026-09-12T19:33:25.000Z';
+    const got = await relay(acct, c, [
+      `@time=${TIME};msgid=h1 :alice!old@old.host CHGHOST new new.host`,
+      // Our own change gets no fallback: the network reports it with a 396.
+      ':watcher!w@fake.host CHGHOST w cloak/watcher',
+    ]);
+    expect(got).toEqual([
+      `@time=${TIME} :alice!old@old.host QUIT :Changing hostname`,
+      `@time=${TIME} :alice!new@new.host JOIN #ops`,
+      `@time=${TIME} :lurker.bouncer MODE #ops +o alice`,
+      `@time=${TIME} :alice!new@new.host JOIN #lounge`,
+    ]);
+  });
+
+  it('opens a network batch only for a client that negotiated batch', async () => {
+    const netsplit = [
+      ':irc.example.test BATCH +ns netsplit a.example.test b.example.test',
+      '@batch=ns :carol!c@h QUIT :a.example.test b.example.test',
+      ':irc.example.test BATCH -ns',
+    ];
+    const tagsOnly = harnessMod.seedAccount({ nick: 'tagsonly' });
+    const c1 = await attach(tagsOnly, ['message-tags']);
+    expect(await relay(tagsOnly, c1, netsplit)).toEqual([
+      ':carol!c@h QUIT :a.example.test b.example.test',
+    ]);
+
+    const batched = harnessMod.seedAccount({ nick: 'batched' });
+    const c2 = await attach(batched, ['message-tags', 'batch']);
+    expect(await relay(batched, c2, netsplit)).toEqual(netsplit);
+  });
+
+  it('ends a batch for a client that gives up batch, even if it asks for it again', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'unbatcher' });
+    const c = await attach(acct, ['message-tags', 'batch']);
+    const start = ':irc.example.test BATCH +ns netsplit a.example.test b.example.test';
+    expect(await relay(acct, c, [start])).toEqual([start]);
+
+    c.send('CAP REQ :-batch');
+    await sync(c);
+    expect(
+      await relay(acct, c, ['@batch=ns :carol!c@h QUIT :a.example.test b.example.test']),
+    ).toEqual([':carol!c@h QUIT :a.example.test b.example.test']);
+
+    c.send('CAP REQ :batch');
+    await sync(c);
+    expect(
+      await relay(acct, c, [
+        '@batch=ns :dave!d@h QUIT :a.example.test b.example.test',
+        ':irc.example.test BATCH -ns',
+      ]),
+    ).toEqual([':dave!d@h QUIT :a.example.test b.example.test']);
+  });
+
+  it('unwraps a multiline batch for a client, which never has draft/multiline', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'reader' });
+    const c = await attach(acct, ['message-tags', 'batch']);
+    const got = await relay(acct, c, [
+      '@msgid=ml1;account=bob :bob!b@h BATCH +ml draft/multiline #chan',
+      '@batch=ml :bob!b@h PRIVMSG #chan hello',
+      '@batch=ml :bob!b@h PRIVMSG #chan :',
+      '@batch=ml :bob!b@h PRIVMSG #chan :how is ',
+      '@batch=ml;draft/multiline-concat :bob!b@h PRIVMSG #chan :everyone?',
+      ':irc.example.test BATCH -ml',
+    ]);
+    expect(got).toEqual([
+      '@msgid=ml1;account=bob :bob!b@h PRIVMSG #chan hello',
+      '@account=bob :bob!b@h PRIVMSG #chan :how is ',
+      '@account=bob :bob!b@h PRIVMSG #chan :everyone?',
+    ]);
+  });
+
+  it("keeps the network's time on unwrapped multiline lines for a server-time client", async () => {
+    const acct = harnessMod.seedAccount({ nick: 'timely' });
+    const c = await attach(acct, ['server-time']);
+    const TIME = '2026-09-12T08:00:00.000Z';
+    const got = await relay(acct, c, [
+      `@time=${TIME};msgid=ml2 :bob!b@h BATCH +ml2 draft/multiline #chan`,
+      '@batch=ml2 :bob!b@h PRIVMSG #chan :first',
+      '@batch=ml2 :bob!b@h PRIVMSG #chan :second',
+      ':irc.example.test BATCH -ml2',
+    ]);
+    expect(got).toEqual([
+      `@time=${TIME} :bob!b@h PRIVMSG #chan :first`,
+      `@time=${TIME} :bob!b@h PRIVMSG #chan :second`,
+    ]);
+  });
+});
+
+// soju's pass-through caps: offered while the bound network has them, so a
+// client that supports away-notify, extended-join and the rest gets those lines,
+// and a client on a network without them is told so with CAP DEL.
+describe('pass-through caps follow the bound network', () => {
+  const PASSTHROUGH = [
+    'away-notify',
+    'account-notify',
+    'account-tag',
+    'chghost',
+    'extended-join',
+    'multi-prefix',
+    'userhost-in-names',
+  ];
+
+  it('lists them for CAP LS 302 before registration, and not for a plain CAP LS', async () => {
+    const c302 = await harness.connect();
+    c302.send('CAP LS 302');
+    const offered = capsIn(await c302.waitFor((l) => l.includes(' LS ')));
+    for (const cap of [...PASSTHROUGH, 'cap-notify', 'invite-notify']) {
+      expect(offered).toContain(cap);
+    }
+    c302.close();
+
+    const c301 = await harness.connect();
+    c301.send('CAP LS');
+    const plain = capsIn(await c301.waitFor((l) => l.includes(' LS ')));
+    expect(plain).toContain('invite-notify');
+    expect(plain).not.toContain('away-notify');
+    c301.close();
+  });
+
+  it('delivers what a client asked for when the network has it', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'capable' });
+    const c = await attach(acct, ['away-notify', 'account-notify', 'extended-join']);
+    const lines = [
+      ':alice!a@h AWAY :lunch',
+      ':alice!a@h ACCOUNT alice',
+      ':alice!a@h JOIN #chan alice :Alice A',
+    ];
+    expect(await relay(acct, c, lines)).toEqual(lines);
+  });
+
+  it('takes back what the network lacks with CAP DEL, before the welcome', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'sparse' });
+    acct.upstream.client.network.cap.enabled = ['message-tags', 'server-time'];
+    const c = await attach(acct, ['away-notify', 'server-time']);
+    const del = c.lines.findIndex((l) => harnessMod.commandOf(l) === 'CAP' && l.includes(' DEL '));
+    const welcome = c.lines.findIndex((l) => harnessMod.commandOf(l) === '001');
+    expect(del).toBeGreaterThan(-1);
+    expect(del).toBeLessThan(welcome);
+    expect(capsIn(c.lines[del])).toEqual(PASSTHROUGH);
+
+    c.send('CAP LIST');
+    const list = capsIn(await c.waitFor((l) => l.includes(' LIST ')));
+    expect(list).toContain('server-time');
+    expect(list).not.toContain('away-notify');
+    expect(await relay(acct, c, [':alice!a@h AWAY :lunch'])).toEqual([]);
+  });
+
+  it('takes every one back from a control connection, which has no network', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'controller' });
+    harnessMod.seedNetwork(acct.user, { networkName: 'second' });
+    const c = await attach(acct, ['away-notify']);
+    const del = c.lines.find((l) => harnessMod.commandOf(l) === 'CAP' && l.includes(' DEL '));
+    expect(del && capsIn(del)).toEqual(PASSTHROUGH);
+  });
+
+  it('offers them with CAP NEW once a connecting network connects', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'latecomer' });
+    acct.upstream.state = 'connecting';
+    const c = await attach(acct, ['away-notify']);
+    expect(c.lines.some((l) => l.includes(' DEL ') && l.includes('away-notify'))).toBe(true);
+
+    acct.upstream.state = 'connected';
+    harnessMod.emitNetworkState(acct.user.id, acct.network.id, 'connected');
+    const added = await c.waitFor((l) => harnessMod.commandOf(l) === 'CAP' && l.includes(' NEW '));
+    expect(capsIn(added)).toEqual(PASSTHROUGH);
+    c.send('CAP REQ :away-notify');
+    // Not waitFor(ACK): the ACK from registration is already there to match.
+    await sync(c);
+    expect(c.lines.filter((l) => l.includes(' ACK ') && l.includes('away-notify'))).toHaveLength(2);
+    expect(await relay(acct, c, [':alice!a@h AWAY :lunch'])).toEqual([':alice!a@h AWAY :lunch']);
+  });
+
+  it('offers a cap the network grants after registration', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'grantee' });
+    acct.upstream.client.network.cap.enabled = ['server-time'];
+    const c = await attach(acct, ['server-time']);
+    acct.upstream.client.network.cap.enabled = ['server-time', 'away-notify'];
+    acct.upstream.client.emit('cap ack', { command: 'ACK', capabilities: { 'away-notify': '' } });
+    const added = await c.waitFor((l) => harnessMod.commandOf(l) === 'CAP' && l.includes(' NEW '));
+    expect(capsIn(added)).toEqual(['away-notify']);
+  });
+
+  it('lets a pre-302 client ask for them once it has registered', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'oldclient' });
+    const c = await attach(acct, [], 'CAP LS');
+    c.send('CAP LS');
+    const offered = capsIn(await c.waitFor((l) => l.includes(' LS ') && l.includes('away-notify')));
+    expect(offered).toContain('extended-join');
+    c.send('CAP REQ :away-notify');
+    await c.waitFor((l) => l.includes(' ACK ') && l.includes('away-notify'));
+  });
+
+  it('keeps cap-notify on once CAP LS 302 turned it on', async () => {
+    const c = await harness.connect();
+    c.send('CAP LS 302');
+    c.send('CAP REQ :-cap-notify');
+    expect(await c.waitFor((l) => l.includes(' NAK '))).toContain('-cap-notify');
+    c.close();
+  });
+
+  it('sends CHGHOST itself to a chghost client, with no fallback', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'hostwatch' });
+    acct.upstream.addChannel('#ops', { members: ['hostwatch', '@alice'] });
+    const c = await attach(acct, ['chghost']);
+    const change = ':alice!old@old.host CHGHOST new new.host';
+    expect(await relay(acct, c, [change])).toEqual([change]);
+  });
+
+  it('replays channels with an extended JOIN, every prefix and hostmasks, trimmed per client', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'replayer' });
+    const room = acct.upstream.addChannel('#room', { members: ['replayer', '@carol'] });
+    room.members.set('replayer', { nick: 'replayer', modes: [], account: 'replayacct' });
+    room.members.set('carol', { nick: 'carol', modes: ['o', 'v'], user: 'c', host: 'carol.host' });
+
+    const full = await attach(acct, ['extended-join', 'multi-prefix', 'userhost-in-names']);
+    expect(full.lines).toContain(':replayer!replayer@fake.host JOIN #room replayacct :replayer');
+    expect(full.lines).toContain(
+      ':lurker.bouncer 353 replayer = #room :replayer @+carol!c@carol.host',
+    );
+
+    const plain = await attach(acct);
+    expect(plain.lines).toContain(':replayer!replayer@fake.host JOIN #room');
+    expect(plain.lines).toContain(':lurker.bouncer 353 replayer = #room :replayer @carol');
+  });
+
+  it('stamps a time on relayed lines that arrive without one, for a server-time client', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'stamped' });
+    const c = await attach(acct, ['server-time']);
+    const [line] = await relay(acct, c, [':alice!a@h PRIVMSG #chan :no time on this']);
+    expect(line).toMatch(/^@time=[0-9-]+T[0-9:.]+Z :alice!a@h PRIVMSG #chan :no time on this$/);
+  });
+});
