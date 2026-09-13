@@ -490,6 +490,28 @@ describe("relayed lines follow the client's caps", () => {
     expect(await relay(batched, c2, netsplit)).toEqual(netsplit);
   });
 
+  it('ends a batch for a client that gives up batch, even if it asks for it again', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'unbatcher' });
+    const c = await attach(acct, ['message-tags', 'batch']);
+    const start = ':irc.example.test BATCH +ns netsplit a.example.test b.example.test';
+    expect(await relay(acct, c, [start])).toEqual([start]);
+
+    c.send('CAP REQ :-batch');
+    await sync(c);
+    expect(
+      await relay(acct, c, ['@batch=ns :carol!c@h QUIT :a.example.test b.example.test']),
+    ).toEqual([':carol!c@h QUIT :a.example.test b.example.test']);
+
+    c.send('CAP REQ :batch');
+    await sync(c);
+    expect(
+      await relay(acct, c, [
+        '@batch=ns :dave!d@h QUIT :a.example.test b.example.test',
+        ':irc.example.test BATCH -ns',
+      ]),
+    ).toEqual([':dave!d@h QUIT :a.example.test b.example.test']);
+  });
+
   it('unwraps a multiline batch for a client, which never has draft/multiline', async () => {
     const acct = harnessMod.seedAccount({ nick: 'reader' });
     const c = await attach(acct, ['message-tags', 'batch']);

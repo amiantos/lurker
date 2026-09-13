@@ -237,6 +237,51 @@ describe('ClientLineFilter', () => {
       expect(filter.apply(netsplit[2])).toEqual([]);
     });
 
+    // A client can give up batch part-way through one with CAP REQ :-batch.
+    function filterWithCaps(caps: Set<string>): ClientLineFilter {
+      return new ClientLineFilter({
+        caps,
+        serverName: 'lurker.bouncer',
+        nick: () => 'me',
+        prefixes: () => PREFIXES,
+        sharedChannels: () => [],
+      });
+    }
+
+    it('ends a batch for a client that gives up batch, even if it asks for it again', () => {
+      const caps = new Set(['message-tags', 'batch']);
+      const filter = filterWithCaps(caps);
+      expect(filter.apply(netsplit[0])).toEqual([netsplit[0]]);
+      caps.delete('batch');
+      filter.forgetSentBatches();
+      expect(filter.apply(netsplit[1])).toEqual([':carol!c@h QUIT :a.test b.test']);
+      caps.add('batch');
+      expect(filter.apply('@batch=ns :dave!d@h QUIT :a.test b.test')).toEqual([
+        ':dave!d@h QUIT :a.test b.test',
+      ]);
+      expect(filter.apply(netsplit[2])).toEqual([]);
+    });
+
+    it('keeps no batch tag once the batch cap is gone, even before being told', () => {
+      const caps = new Set(['message-tags', 'batch']);
+      const filter = filterWithCaps(caps);
+      filter.apply(netsplit[0]);
+      caps.delete('batch');
+      expect(filter.apply(netsplit[1])).toEqual([':carol!c@h QUIT :a.test b.test']);
+    });
+
+    it('drops the enclosing batch from unwrapped multiline lines once batch is given up', () => {
+      const caps = new Set(['message-tags', 'batch']);
+      const filter = filterWithCaps(caps);
+      filter.apply(':irc.test BATCH +hist chathistory #c');
+      filter.apply('@batch=hist;msgid=m1 :n!u@h BATCH +ml draft/multiline #c');
+      caps.delete('batch');
+      filter.forgetSentBatches();
+      expect(filter.apply('@batch=ml :n!u@h PRIVMSG #c :one')).toEqual([
+        '@msgid=m1 :n!u@h PRIVMSG #c :one',
+      ]);
+    });
+
     it('keeps a nested batch inside an open one', () => {
       const filter = filterFor(['message-tags', 'batch']);
       const lines = [

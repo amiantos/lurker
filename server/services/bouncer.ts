@@ -882,6 +882,9 @@ class BouncerSession {
           if (cap.startsWith('-')) this.caps.delete(cap.slice(1));
           else this.caps.add(cap);
         }
+        // A client that gives up batch is done with every batch it was sent,
+        // even if it asks for batch again before one ends.
+        if (requested.includes('-batch')) this.clientFilter.forgetSentBatches();
         this.write(`:${SERVER_NAME} CAP ${nick} ACK :${requested.join(' ')}`);
         break;
       }

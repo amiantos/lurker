@@ -154,20 +154,21 @@ to the same always-on connection your browser uses (see
 capabilities Lurker offers _downstream_ are a deliberately short, honest list —
 we advertise only what we actually implement.
 
-| You get                                                                                         | Powered by                                                          |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Log in with SASL instead of a server password                                                   | `sasl` (PLAIN)                                                      |
-| Backlog replays at its original timestamps, not at attach time                                  | `server-time`                                                       |
-| Scrollback on demand — page back through Lurker's full stored history from your terminal client | `draft/chathistory`                                                 |
-| Your own sent messages echoed back, if your client wants them                                   | `echo-message`                                                      |
-| Your outgoing DMs attributed to you correctly in replay                                         | `znc.in/self-message`                                               |
-| Pick your network from a list instead of hardcoding `username/networkname`                      | `soju.im/bouncer-networks`, `soju.im/bouncer-networks-notify`       |
-| Message metadata passed through from upstream                                                   | `message-tags`                                                      |
-| Network list delivered as one grouped burst                                                     | `batch`                                                             |
-| People's away, account and host changes, when your network sends them                           | `away-notify`, `account-notify`, `chghost`                          |
-| Accounts on JOINs, every prefix and full hostmasks in NAMES, when your network sends them       | `extended-join`, `account-tag`, `multi-prefix`, `userhost-in-names` |
-| Invites other people get to your channels                                                       | `invite-notify`                                                     |
-| Told when a capability comes or goes, such as while your network reconnects                     | `cap-notify`                                                        |
+| You get                                                                                         | Powered by                                                    |
+| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Log in with SASL instead of a server password                                                   | `sasl` (PLAIN)                                                |
+| Backlog replays at its original timestamps, not at attach time                                  | `server-time`                                                 |
+| Scrollback on demand — page back through Lurker's full stored history from your terminal client | `draft/chathistory`                                           |
+| Your own sent messages echoed back, if your client wants them                                   | `echo-message`                                                |
+| Your outgoing DMs attributed to you correctly in replay                                         | `znc.in/self-message`                                         |
+| Pick your network from a list instead of hardcoding `username/networkname`                      | `soju.im/bouncer-networks`, `soju.im/bouncer-networks-notify` |
+| Message metadata passed through from upstream                                                   | `message-tags`                                                |
+| Network list delivered as one grouped burst                                                     | `batch`                                                       |
+| People's away, account and host changes, when your network sends them                           | `away-notify`, `account-notify`, `chghost`                    |
+| Accounts on JOINs and on each message, when your network sends them                             | `extended-join`, `account-tag`                                |
+| Every prefix and full hostmasks in NAMES, when your network sends them                          | `multi-prefix`, `userhost-in-names`                           |
+| Invites other people get to your channels                                                       | `invite-notify`                                               |
+| Told when a capability comes or goes, such as while your network reconnects                     | `cap-notify`                                                  |
 
 Implementation notes worth knowing if you're writing against it:
 
@@ -177,7 +178,7 @@ Implementation notes worth knowing if you're writing against it:
   Message references are `timestamp` only, deliberately not `msgid`, because
   Lurker's stored history IDs and an upstream network's message IDs are different
   namespaces and mixing them would break paging across the boundary.
-  <br>`server/services/bouncer.ts:146`, `:537`
+  <br>`server/services/bouncer.ts:146`, `:520`
 - Tags that only a server may set — `time`, `account`, `msgid`, `label`, `batch` —
   are stripped from anything an attached client sends, so a downstream client can't
   forge them.
@@ -187,7 +188,7 @@ Implementation notes worth knowing if you're writing against it:
   offered only while the network you bind has them, as soju does. `CAP LS 302` lists
   them before you pick a network, then `CAP DEL` takes back any that network lacks, and
   `CAP NEW` offers them again when it reconnects.
-  <br>`server/services/bouncer.ts:917`
+  <br>`server/services/bouncer.ts:905`
 - What the network sends is trimmed to the caps your client negotiated, as soju and ZNC
   do: no `AWAY` without `away-notify`, a bare `JOIN` without `extended-join`, one prefix
   per nick in NAMES and WHO without `multi-prefix`, and so on. Without `chghost`, a host
@@ -234,10 +235,10 @@ attaching to Lurker.
 In the interest of not padding the list: these are requested and acknowledged, but
 nothing in Lurker reads them yet. We'd rather say so than count them.
 
-| Capability                                                               | Status                                                                                                                                    |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `account-tag`                                                            | Acknowledged, but nothing reads the per-message account tag. Account information comes from `extended-join` and `account-notify` instead. |
-| `draft/message-tags-0.2`, `znc.in/server-time-iso`, `znc.in/server-time` | Pre-standardisation aliases requested by irc-framework for older servers. Superseded by `message-tags` and `server-time`.                 |
+| Capability                                                               | Status                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account-tag`                                                            | Acknowledged, but nothing reads the per-message account tag. Account information comes from `extended-join` and `account-notify` instead. The bouncer does pass the tag on to attached clients that ask for it. |
+| `draft/message-tags-0.2`, `znc.in/server-time-iso`, `znc.in/server-time` | Pre-standardisation aliases requested by irc-framework for older servers. Superseded by `message-tags` and `server-time`.                                                                                       |
 
 ---
 

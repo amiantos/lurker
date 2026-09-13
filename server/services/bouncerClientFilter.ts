@@ -171,8 +171,8 @@ const TAG_CAPS: Record<string, string> = {
 
 interface OpenBatch {
   type: string;
-  // Whether this client was sent the `BATCH +` line. Lines inside keep their
-  // batch tag only then.
+  // Whether this client was sent the `BATCH +` line, and hasn't given up batch
+  // since. Lines inside keep their batch tag only then.
   opened: boolean;
   // The `BATCH +` line's own tags. The multiline fallback puts them on the lines
   // instead: all of them on the first, all but msgid after that.
@@ -206,7 +206,7 @@ export class ClientLineFilter {
     // That also covers a client that attached part-way through a batch.
     const ref = tagValue(msg.tags, 'batch');
     const batch = ref === undefined ? undefined : this.batches.get(ref);
-    if (ref !== undefined && !batch?.opened) {
+    if (ref !== undefined && !this.sent(ref)) {
       msg.tags = msg.tags.filter((tag) => tagKey(tag) !== 'batch');
       dirty = true;
     }
@@ -287,9 +287,13 @@ export class ClientLineFilter {
       (msg.command === 'PRIVMSG' || msg.command === 'NOTICE')
     ) {
       if ((msg.params[1] ?? '') === '') return [];
-      const carried = batch.first
-        ? batch.tags
-        : batch.tags.filter((tag) => tagKey(tag) !== 'msgid');
+      const carried = batch.tags.filter((tag) => {
+        const key = tagKey(tag);
+        if (key === 'msgid') return batch.first;
+        // An enclosing batch, only while it's still this client's.
+        if (key === 'batch') return this.sent(tag.slice(key.length + 1));
+        return true;
+      });
       batch.first = false;
       const present = new Set(msg.tags.map(tagKey));
       const added = carried.filter((tag) => !present.has(tagKey(tag)));
@@ -339,6 +343,20 @@ export class ClientLineFilter {
    */
   resetBatches(): void {
     this.batches.clear();
+  }
+
+  /**
+   * The client gave up `batch` (CAP REQ :-batch). Every batch it was sent is
+   * over for it: the rest of their lines lose the batch tag, their `BATCH -`
+   * never reaches it, and asking for batch again doesn't bring one back.
+   */
+  forgetSentBatches(): void {
+    for (const open of this.batches.values()) open.opened = false;
+  }
+
+  // Whether this client was sent batch `ref`'s start and still has the batch cap.
+  private sent(ref: string): boolean {
+    return this.view.caps.has('batch') && this.batches.get(ref)?.opened === true;
   }
 
   private prefixSymbols(): string {
