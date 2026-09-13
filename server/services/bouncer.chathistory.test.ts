@@ -100,6 +100,38 @@ describe('CHATHISTORY advertisement', () => {
   });
 });
 
+describe('attach playback', () => {
+  // A joined channel and a DM, both with history.
+  async function attachWithHistory(nick: string, caps: string): Promise<Client> {
+    const acct = harnessMod.seedAccount({ nick });
+    acct.upstream.addChannel('#room', { members: [nick, 'bob'] });
+    seedMessages(acct.network.id, '#room', 2);
+    seedMessages(acct.network.id, 'bob', 1);
+    const c = await harness.connect();
+    await attachBound(c, acct, caps);
+    // Playback goes out in the same pass as the 422, so the PONG comes after it.
+    c.send('PING sync');
+    await c.waitForCommand('PONG');
+    return c;
+  }
+
+  it('sends none to a client that negotiated draft/chathistory', async () => {
+    // soju skips it too (downstream.go:1841): the client fetches its own
+    // history, so a replay shows every line twice.
+    const c = await attachWithHistory('ap1', HISTORY_CAPS);
+    expect(c.lines.some((l) => l.includes('JOIN #room'))).toBe(true);
+    expect(c.lines.filter((l) => l.includes(' PRIVMSG '))).toEqual([]);
+    c.close();
+  });
+
+  it('still replays channels and DMs to a client without it', async () => {
+    const c = await attachWithHistory('ap2', 'sasl batch server-time message-tags');
+    expect(c.lines.some((l) => l.includes('PRIVMSG #room :msg2'))).toBe(true);
+    expect(c.lines.some((l) => l.includes('PRIVMSG ap2 :msg1'))).toBe(true);
+    c.close();
+  });
+});
+
 describe('CHATHISTORY LATEST', () => {
   it('returns the newest messages oldest-first, in a chathistory batch with msgid+time', async () => {
     const acct = harnessMod.seedAccount({ nick: 'ch2' });

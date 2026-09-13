@@ -531,7 +531,7 @@ Modern IRCv3 clients (Halloy, gamja, Goguma, …) get more than the server-passw
 
 - **SASL** — log in with the same credential via SASL PLAIN instead of a server password.
 - **Network discovery** (`soju.im/bouncer-networks`) — the client lists and binds your networks itself, so you don't hardcode `username/networkname`; connect as just `username` and pick from the list. This is what the idle connection above is for.
-- **On-demand scrollback** (`draft/chathistory`) — page back through history on demand instead of relying only on the fixed replay-on-attach.
+- **On-demand scrollback** (`draft/chathistory`) — the client fetches the history it wants itself, so Lurker skips the replay on attach.
 
 These are negotiated automatically; plain clients that don't support them keep working over the server-password path.
 
@@ -555,7 +555,7 @@ Plain-text IRC would send that credential across the wire in the clear, so **the
 
 Repeated failed logins from an address are throttled automatically.
 
-Playback replays the last 50 lines per joined channel (plus your 20 most recently active DMs) on attach; tune with `LURKER_BOUNCER_PLAYBACK` (0 disables, max 1000). Clients that negotiate IRCv3 `server-time` get real timestamps on replayed lines.
+Playback replays the last 50 lines per joined channel (plus your 20 most recently active DMs) on attach; tune with `LURKER_BOUNCER_PLAYBACK` (0 disables, max 1000). Clients that negotiate IRCv3 `server-time` get real timestamps on replayed lines. Clients that negotiate `draft/chathistory` get no playback, since they fetch their own.
 
 Known limitations (shared-connection bouncer semantics): replies to one attached client's WHOIS/LIST are visible to all attached clients on that network; Lurker-side ignore rules don't filter the live relay; and on end-to-end encrypted channels an attached client sees the wire ciphertext for incoming messages.
 
