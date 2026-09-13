@@ -179,6 +179,9 @@ Implementation notes worth knowing if you're writing against it:
   Lurker's stored history IDs and an upstream network's message IDs are different
   namespaces and mixing them would break paging across the boundary.
   <br>`server/services/bouncer.ts:146`, `:520`
+- A client that negotiates `draft/chathistory` gets no playback on attach, as with
+  soju. It fetches the history it wants itself, so it doesn't see the same lines twice.
+  <br>`server/services/bouncer.ts:1717`
 - Tags that only a server may set — `time`, `account`, `msgid`, `label`, `batch` —
   are stripped from anything an attached client sends, so a downstream client can't
   forge them.

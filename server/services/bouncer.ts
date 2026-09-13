@@ -1712,6 +1712,9 @@ class BouncerSession {
   }
 
   private sendPlayback(): void {
+    // A draft/chathistory client fetches its own history, so replaying it here
+    // shows every line twice. soju skips it the same way (downstream.go:1841).
+    if (this.caps.has(CAP_CHATHISTORY)) return;
     const limit = playbackLimit();
     if (limit <= 0) return;
     const conn = this.conn!;
