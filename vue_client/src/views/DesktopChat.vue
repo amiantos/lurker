@@ -314,7 +314,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
@@ -410,6 +410,9 @@ const networkEditor = reactive(useNetworkEditor());
 const navHistory = useNavHistoryStore();
 const showBookmarks = ref(false);
 const channelModal = useChannelModal();
+// Its open state is module-level: leaving the chat view (a logout, say) must
+// not leave it open for whoever's session mounts the view next.
+onBeforeUnmount(() => channelModal.close());
 const showUploads = ref(false);
 const showSwitcher = ref(false);
 const showKbdHelp = ref(false);

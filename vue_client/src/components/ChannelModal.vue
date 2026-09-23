@@ -58,16 +58,7 @@
             <p v-if="!canEditModes && !visibleRows.length" class="muted">No modes set.</p>
             <ul v-if="namedRows.length" class="modes">
               <li v-for="row in namedRows" :key="row.letter" class="mode-row">
-                <ChannelModeRow
-                  :row="row"
-                  :state="shown(row.letter)"
-                  :disabled="!canEditModes"
-                  :revealed="keyRevealed"
-                  :can-reveal="!!storedKey"
-                  @toggle="setOn(row.letter, $event)"
-                  @value="setValue(row.letter, $event)"
-                  @reveal="keyRevealed = !keyRevealed"
-                />
+                <ChannelModeRow v-bind="rowBinding(row)" />
               </li>
             </ul>
             <!-- Letters with no name we can vouch for, folded away so twenty of
@@ -80,16 +71,7 @@
               </summary>
               <ul v-if="otherParams.length" class="modes">
                 <li v-for="row in otherParams" :key="row.letter" class="mode-row">
-                  <ChannelModeRow
-                    :row="row"
-                    :state="shown(row.letter)"
-                    :disabled="!canEditModes"
-                    :revealed="keyRevealed"
-                    :can-reveal="!!storedKey"
-                    @toggle="setOn(row.letter, $event)"
-                    @value="setValue(row.letter, $event)"
-                    @reveal="keyRevealed = !keyRevealed"
-                  />
+                  <ChannelModeRow v-bind="rowBinding(row)" />
                 </li>
               </ul>
               <ul v-if="otherFlags.length" class="modes bare">
@@ -190,7 +172,7 @@ import LinkedText from './LinkedText.vue';
 import ChannelModeRow from './ChannelModeRow.vue';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
-import { onIrcEvent, socketSendWithAck } from '../composables/useSocket.js';
+import { onIrcEvent, onSocketOpen, socketSendWithAck } from '../composables/useSocket.js';
 import { blockImeEnter } from '../composables/useImeSafeInput.js';
 import { formatDate, formatDateTime } from '../utils/timestamp.js';
 import {
@@ -201,6 +183,7 @@ import {
   topicBytes,
   type DraftRow,
   type LiveModes,
+  type ModeRow,
 } from '../utils/channelModeForm.js';
 import { patchModeList, type ListEntry, type ModeRowLike } from '../utils/modeListPatch.js';
 import { DEFAULT_PREFIX, hasRankAtLeast } from '../../../shared/channelModes.js';
@@ -241,11 +224,17 @@ const selfModes = computed<string[]>(() => {
   return me?.modes ?? [];
 });
 const prefix = computed(() => spec.value?.prefix ?? DEFAULT_PREFIX);
-const canEditModes = computed(() => hasRankAtLeast(selfModes.value, prefix.value, 'o'));
+// Editing needs us in the channel: a parted one's modes are last-known, and a
+// TOPIC or MODE from outside it only draws a 442.
+const joined = computed(() => buffer.value?.joined !== false);
+const canEditModes = computed(
+  () => joined.value && hasRankAtLeast(selfModes.value, prefix.value, 'o'),
+);
 const canSetTopic = computed(
   () =>
-    !(buffer.value?.modes ?? '').includes('t') ||
-    hasRankAtLeast(selfModes.value, prefix.value, 'h'),
+    joined.value &&
+    (!(buffer.value?.modes ?? '').includes('t') ||
+      hasRankAtLeast(selfModes.value, prefix.value, 'h')),
 );
 
 // ─── Tabs ───────────────────────────────────────────────────────────────────
@@ -310,35 +299,46 @@ const otherSetLetters = computed(() =>
     .join(''),
 );
 // The channel's key, which the server never puts in channel state: the newest
-// `+k <key>` we've seen (a key changed while the modal is open included), else
-// the one we joined with from the network config. `*` is a mask, not a key, and
-// a `-k` ends the search: whatever key the channel has now came after it.
-const keyFromRows = computed<string | undefined>(() => {
-  const seen = [...(buffer.value?.messages ?? []), ...modeRowsSeen.value] as ModeRowLike[];
-  for (let i = seen.length - 1; i >= 0; i--) {
-    const changes = seen[i].modes ?? [];
+// ±k we've seen — a `+k <key>` names it, a `-k` means there's none (so a key the
+// config still remembers doesn't come back) — else the one we joined with from
+// the network config. `*` is a mask, not a key. Undefined: no ±k seen.
+function lastKeyChange(rows: readonly ModeRowLike[]): string | null | undefined {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const changes = rows[i].modes ?? [];
     for (let j = changes.length - 1; j >= 0; j--) {
       const change = changes[j];
-      if (change.mode === '-k') return undefined;
+      if (change.mode === '-k') return null;
       if (change.mode === '+k' && change.param && change.param !== '*') return change.param;
     }
   }
   return undefined;
-});
+}
+// History is read once, when the modal opens; after that only live rows can
+// change the key, so a busy channel doesn't rescan its whole scrollback per line.
+const keyFromHistory = lastKeyChange((buffer.value?.messages ?? []) as ModeRowLike[]);
 const configKey = computed(() => {
   const network = networks.networks.find((n) => n.id === props.networkId);
   const channels = (network?.channels ?? []) as { name: string; key?: string | null }[];
   return channels.find((c) => c.name.toLowerCase() === props.target.toLowerCase())?.key ?? null;
 });
-const storedKey = computed(() => keyFromRows.value ?? configKey.value);
+const storedKey = computed(() => {
+  const fromLive = lastKeyChange(modeRowsSeen.value);
+  if (fromLive !== undefined) return fromLive;
+  return keyFromHistory !== undefined ? keyFromHistory : configKey.value;
+});
 const keyRevealed = ref(false);
-const live = computed<LiveModes>(() => ({
-  modes: buffer.value?.modes ?? '',
-  params: {
-    ...buffer.value?.modeParams,
-    ...(storedKey.value ? { k: storedKey.value } : {}),
-  },
-}));
+const live = computed<LiveModes>(() => {
+  const modes = buffer.value?.modes ?? '';
+  return {
+    modes,
+    params: {
+      ...buffer.value?.modeParams,
+      // Only while the channel has a key: ticking +k back on must start empty,
+      // not quietly re-send an old one.
+      ...(storedKey.value && modes.includes('k') ? { k: storedKey.value } : {}),
+    },
+  };
+});
 // Only the rows the user touched; everything else reads live (channelModeForm.ts).
 const draft = reactive<Record<string, DraftRow>>({});
 function shown(letter: string): DraftRow {
@@ -351,9 +351,42 @@ function setValue(letter: string, value: string) {
   draft[letter] = { on: shown(letter).on, value };
 }
 
+// Props and handlers for a ChannelModeRow, the same wherever the row is drawn.
+function rowBinding(row: ModeRow) {
+  return {
+    row,
+    state: shown(row.letter),
+    disabled: !canEditModes.value,
+    revealed: keyRevealed.value,
+    canReveal: !!storedKey.value,
+    onToggle: (on: boolean) => setOn(row.letter, on),
+    onValue: (value: string) => setValue(row.letter, value),
+    onReveal: () => (keyRevealed.value = !keyRevealed.value),
+  };
+}
+
 const pending = computed(() =>
   spec.value ? modeChanges(spec.value, live.value, draft) : { changes: [] },
 );
+
+// An edit stays until the channel's live state matches it — the server's echo
+// dissolves it, a refusal (482 …) leaves it standing beside the error. Never
+// cleared on Save: the ACK only means the line went out.
+watch(
+  live,
+  (now) => {
+    for (const [letter, want] of Object.entries(draft)) {
+      const was = liveRow(now, letter);
+      if (want.on === was.on && (!want.on || want.value.trim() === was.value)) {
+        delete draft[letter];
+      }
+    }
+  },
+  { deep: true },
+);
+watch(topic, (now) => {
+  if (topicDraft.value !== null && topicToSend.value === now) topicDraft.value = null;
+});
 const dirty = computed(
   () => topicChanged.value || 'error' in pending.value || pending.value.changes.length > 0,
 );
@@ -384,33 +417,30 @@ async function save() {
     saveError.value = `The topic is over the network's ${topicLen.value}-byte limit.`;
     return;
   }
+  // Both decided now, before any await: the fields stay editable while an ACK
+  // is out, and what goes out is what the user saved.
+  const topicToSave = topicChanged.value ? topicToSend.value : null;
+  const changes = pending.value.changes;
   armServerErrors();
   saving.value = true;
   try {
-    if (topicChanged.value) {
+    if (topicToSave !== null) {
       // Through the set_topic verb, not a raw line: a raw TOPIC to a network
-      // that's down is dropped without a word, and the typed topic with it.
+      // that's down is dropped without a word.
       const result = await ack({
         type: 'set-topic',
         networkId: props.networkId,
         channel: props.target,
-        topic: topicToSend.value,
+        topic: topicToSave,
       });
       if (result) {
         saveError.value = result;
         return;
       }
-      topicDraft.value = null;
     }
-    const changes = pending.value.changes;
     if (changes.length) {
       const result = await sendChanges(changes);
-      if (result) {
-        saveError.value = result;
-        return;
-      }
-      // The server's MODE echo updates the live state the form reads.
-      for (const letter of Object.keys(draft)) delete draft[letter];
+      if (result) saveError.value = result;
     }
   } finally {
     saving.value = false;
@@ -494,6 +524,17 @@ async function loadList(letter: string) {
     lists[letter] = { ...state, status: 'error', error: listError(data ?? result) };
   }
 }
+
+// A reconnect's gap arrives as backlog, not as live rows, so a list fetched
+// before the drop can't be patched up to date: fetch the open one again, and
+// let the others reload when their tab next opens.
+const stopReopen = onSocketOpen(() => {
+  for (const letter of Object.keys(lists)) {
+    if (letter === activeTab.value) void loadList(letter);
+    else delete lists[letter];
+  }
+});
+onBeforeUnmount(stopReopen);
 
 watch(activeTab, (tab) => {
   listActionError.value = '';

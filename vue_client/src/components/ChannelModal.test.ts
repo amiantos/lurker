@@ -17,6 +17,10 @@ const ircListeners = new Set<(event: Record<string, unknown>) => void>();
 const emitIrc = (event: Record<string, unknown>) => {
   for (const listener of ircListeners) listener(event);
 };
+const openListeners = new Set<() => void>();
+const reopenSocket = () => {
+  for (const listener of openListeners) listener();
+};
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSendWithAck: vi.fn<
@@ -25,6 +29,10 @@ vi.mock('../composables/useSocket.js', () => ({
   onIrcEvent: (listener: (event: Record<string, unknown>) => void) => {
     ircListeners.add(listener);
     return () => ircListeners.delete(listener);
+  },
+  onSocketOpen: (listener: () => void) => {
+    openListeners.add(listener);
+    return () => openListeners.delete(listener);
   },
 }));
 
@@ -87,6 +95,7 @@ describe('ChannelModal', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     ircListeners.clear();
+    openListeners.clear();
     // Reset, not clear: a test's unconsumed mockImplementationOnce would
     // otherwise answer the next test's first call.
     vi.mocked(socketSendWithAck).mockReset();
@@ -287,6 +296,93 @@ describe('ChannelModal', () => {
     });
     await flushPromises();
     expect(w.find('.list-pane .error').text()).toBe("The channel's +b list is full.");
+  });
+
+  it("doesn't bring back a key a -k removed", async () => {
+    // The config still remembers hunter2; a -k since says there's no key.
+    const { buffers } = seed({ modes: 'ntk' });
+    const w = open();
+    emitIrc({
+      id: 110,
+      networkId: 1,
+      target: '#chan',
+      type: 'mode',
+      modes: [{ mode: '-k', param: 'hunter2', kind: 'chan' }],
+    });
+    buffers.setChannelModes(1, '#chan', 'nt', { modeParams: {}, createdAt: null });
+    await flushPromises();
+    await checkbox(w, 'k')!.setValue(true);
+    const key = w.find('input[aria-label="+k value"]');
+    expect((key.element as HTMLInputElement).value).toBe('');
+    expect(w.find('button[aria-label="Show key"]').exists()).toBe(false);
+  });
+
+  it('keeps an edit until the channel matches it, so a refusal leaves it standing', async () => {
+    const { buffers } = seed();
+    const w = open();
+    await checkbox(w, 'm')!.setValue(true);
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    // Sent, but no echo yet (or a 482): the edit is still there.
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
+    // The server's echo lands: nothing left to save.
+    buffers.setChannelModes(1, '#chan', 'ntlm', { modeParams: { l: '50' }, createdAt: null });
+    await flushPromises();
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+    // And it's gone, not lingering: when another op takes -m off later, the box
+    // follows, rather than an old edit claiming +m and a Save putting it back.
+    buffers.setChannelModes(1, '#chan', 'ntl', { modeParams: { l: '50' }, createdAt: null });
+    await flushPromises();
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(false);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('sends what was saved, and keeps an edit made while the topic ACK was out', async () => {
+    seed();
+    let finishTopic!: (v: { ok: boolean }) => void;
+    vi.mocked(socketSendWithAck).mockImplementationOnce(
+      () => new Promise((r) => (finishTopic = r)),
+    );
+    const w = open();
+    await w.find('textarea').setValue('new topic');
+    await w.find('form.modal-form').trigger('submit');
+    // The user keeps editing while the ACK is out.
+    await checkbox(w, 'm')!.setValue(true);
+    finishTopic({ ok: true });
+    await flushPromises();
+    // No set-channel-modes: +m wasn't part of that Save…
+    expect(vi.mocked(socketSendWithAck).mock.calls.map(([p]) => p.type)).toEqual(['set-topic']);
+    // …and it's still there to save next.
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('is read-only for a channel we have left', () => {
+    const { buffers } = seed();
+    buffers.setJoined(1, '#chan', false);
+    const w = open();
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(checkbox(w, 'n')!.attributes('disabled')).toBeDefined();
+  });
+
+  it('fetches the open list again after a reconnect', async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementation(() =>
+      Promise.resolve({ ok: true, data: { ok: true, entries: [] } }),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    reopenSocket();
+    await flushPromises();
+    const fetches = vi
+      .mocked(socketSendWithAck)
+      .mock.calls.filter(([p]) => p.type === 'get-mode-list');
+    expect(fetches).toHaveLength(2);
   });
 
   it("says why a list couldn't be read", async () => {

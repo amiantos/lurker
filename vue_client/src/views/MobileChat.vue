@@ -229,7 +229,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import type { BufferLike } from '../composables/useBufferActions.js';
@@ -363,6 +363,9 @@ const screen = computed(() =>
 );
 const showBookmarks = ref(false);
 const channelModal = useChannelModal();
+// Its open state is module-level: leaving the chat view (a logout, say) must
+// not leave it open for whoever's session mounts the view next.
+onBeforeUnmount(() => channelModal.close());
 const showUploads = ref(false);
 const pendingScrollId = ref<number | null>(null);
 const messageInputRef = ref<{ focus: () => void } | null>(null);
@@ -373,10 +376,11 @@ const bufferCogBtn = ref<HTMLElement | null>(null);
 const { showSearch, showHighlights, searchScope, highlightScope, openSearch, openHighlights } =
   useBufferSearchScope();
 
-// Mobile folds the remaining buffer/topic/server actions behind one kebab menu
-// to keep the header uncluttered (Members is an inline header button — see
-// template). The menu is assembled per buffer type: either the shared buffer-actions menu
-// (pin/notify/profile/note/close) for channels & DMs, or the server controls
+// Mobile folds the remaining buffer/server actions behind one kebab menu to
+// keep the header uncluttered (Members is an inline header button — see
+// template). The menu is assembled per buffer type: either the shared
+// buffer-actions menu (pin/notify/channel settings/profile/note/close) for
+// channels & DMs, or the server controls
 // (browse/connect/edit) for server buffers. Anchored under the kebab like the
 // desktop sidebar menu; ContextMenu clamps it to the viewport.
 function openBufferActions() {
@@ -404,9 +408,7 @@ function openBufferActions() {
       { label: 'Edit network', icon: 'fa-solid fa-gear', onClick: editActiveNetwork },
     );
   } else {
-    const bufItems = bufferActions.buildItems(activeBuf.value as BufferLike);
-    if (items.length && bufItems.length) items.push({ divider: true });
-    items.push(...bufItems);
+    items.push(...bufferActions.buildItems(activeBuf.value as BufferLike));
   }
   if (items.length === 0) return;
   const rect = el.getBoundingClientRect();

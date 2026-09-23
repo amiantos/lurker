@@ -330,6 +330,23 @@ export type BacklogMode = 'replace' | 'append' | 'shell';
 // fallback flips channels.joined=0 — a network-state mutation a read-only
 // account shouldn't make (no PART goes out, since paused accounts hold no
 // connection, but the persisted join intent would still change).
+// The channel modal's WS messages (#727): each one's verb and the input it
+// takes from the message. One table, so a message and its input can't drift.
+const CHANNEL_MODAL_VERBS: Record<
+  'get-mode-list' | 'set-channel-modes' | 'set-topic',
+  (msg: WsPayload) => [string, Record<string, unknown>]
+> = {
+  'get-mode-list': (m) => [
+    'get_mode_list',
+    { networkId: m.networkId, channel: m.channel, letter: m.letter },
+  ],
+  'set-channel-modes': (m) => [
+    'set_channel_modes',
+    { networkId: m.networkId, channel: m.channel, changes: m.changes },
+  ],
+  'set-topic': (m) => ['set_topic', { networkId: m.networkId, channel: m.channel, topic: m.topic }],
+};
+
 const PAUSED_BLOCKED_TYPES = new Set([
   'send',
   'action',
@@ -3573,18 +3590,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       case 'get-mode-list':
       case 'set-channel-modes':
       case 'set-topic': {
-        const verbName =
-          msg.type === 'get-mode-list'
-            ? 'get_mode_list'
-            : msg.type === 'set-topic'
-              ? 'set_topic'
-              : 'set_channel_modes';
-        const input =
-          msg.type === 'get-mode-list'
-            ? { networkId: msg.networkId, channel: msg.channel, letter: msg.letter }
-            : msg.type === 'set-topic'
-              ? { networkId: msg.networkId, channel: msg.channel, topic: msg.topic }
-              : { networkId: msg.networkId, channel: msg.channel, changes: msg.changes };
+        const [verbName, input] = CHANNEL_MODAL_VERBS[msg.type](msg);
         const clientId = msg.clientId;
         void (async () => {
           let result: { ok: boolean; error?: string };
