@@ -171,10 +171,10 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
-    <TopicModal
-      v-if="showTopic && activeKey"
-      :topic="topic"
-      :label="bufferLabel"
+    <ChannelModal
+      v-if="showTopic && active && isChannel"
+      :network-id="active.networkId"
+      :target="active.target"
       @close="showTopic = false"
     />
     <ChannelListModal
@@ -247,7 +247,7 @@ import StatusBar from '../components/StatusBar.vue';
 import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
-import TopicModal from '../components/TopicModal.vue';
+import ChannelModal from '../components/ChannelModal.vue';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
@@ -372,8 +372,8 @@ const { showSearch, showHighlights, searchScope, highlightScope, openSearch, ope
 
 // Mobile folds the remaining buffer/topic/server actions behind one kebab menu
 // to keep the header uncluttered (Members is an inline header button — see
-// template). The menu is assembled per buffer type: view-topic is a navigation
-// shortcut unique to this layout, then either the shared buffer-actions menu
+// template). The menu is assembled per buffer type: channel settings (the
+// desktop header's sliders button) for channels, then either the shared buffer-actions menu
 // (pin/notify/profile/note/close) for channels & DMs, or the server controls
 // (browse/connect/edit) for server buffers. Anchored under the kebab like the
 // desktop sidebar menu; ContextMenu clamps it to the viewport.
@@ -382,12 +382,11 @@ function openBufferActions() {
   const el = bufferCogBtn.value;
   if (!a || !el) return;
   const items: ContextMenuItem[] = [];
-  // Channels only: a DM's pseudo-topic (the peer's ident@host) is a header
-  // identity, not prose worth a modal.
-  if (isChannel.value && topic.value) {
+  // Channels only: the topic, modes and lists (#727). A DM has none of them.
+  if (isChannel.value) {
     items.push({
-      label: 'View topic',
-      icon: 'fa-solid fa-circle-info',
+      label: 'Channel settings',
+      icon: 'fa-solid fa-sliders',
       onClick: () => {
         showTopic.value = true;
       },

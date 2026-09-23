@@ -120,7 +120,7 @@
             v-if="isChannel"
             type="button"
             class="topic-text"
-            title="View full topic"
+            title="Channel settings"
             @click="showTopic = true"
           >
             <LinkedText :text="topic" />
@@ -134,6 +134,16 @@
                parity with the mobile topic bar. The server buffer has no
                per-buffer scope, so it's excluded. -->
           <template v-if="!isServerBuffer">
+            <button
+              v-if="isChannel"
+              type="button"
+              class="link"
+              title="Channel settings"
+              aria-label="Channel settings"
+              @click="showTopic = true"
+            >
+              <i class="fa-solid fa-sliders"></i>
+            </button>
             <button
               type="button"
               class="link"
@@ -244,10 +254,10 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
-    <TopicModal
-      v-if="showTopic && active"
-      :topic="topic"
-      :label="bufferLabel"
+    <ChannelModal
+      v-if="showTopic && active && isChannel"
+      :network-id="active.networkId"
+      :target="active.target"
       @close="showTopic = false"
     />
     <ChannelListModal
@@ -323,7 +333,7 @@ import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
 import LinkedText from '../components/LinkedText.vue';
-import TopicModal from '../components/TopicModal.vue';
+import ChannelModal from '../components/ChannelModal.vue';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
