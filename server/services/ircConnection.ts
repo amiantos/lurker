@@ -1433,11 +1433,6 @@ export class IrcConnection {
         msg?.params ?? [],
         msg?.prefix?.split('!')[0],
       );
-      // A list fetch of our own (fetchModeList) collects its lines here. Being
-      // its asker already keeps them out of the server buffer and off clients.
-      if (this.replyOwner instanceof ModeListCollector) {
-        this.replyOwner.take(rawCommand, msg?.params ?? []);
-      }
       // Who answers a CTCP request, before any bouncer client's relay passes it
       // on (see ctcpAnswerer).
       this.ctcpAnswerer = rawCommand === 'PRIVMSG' && msg ? this.ctcpAnswererForLine(msg) : null;
@@ -4829,6 +4824,11 @@ export class IrcConnection {
    * it.
    */
   fetchModeList(channel: string, letter: string): Promise<ModeListResult> {
+    // ⚠ Load-bearing, not tidiness: the router tracks `MODE <target> +b` only
+    // for a channel target. Anything else goes out untracked, nothing ever
+    // answers or aborts the collector, and the promise (and its map entry)
+    // would never settle.
+    if (!isChannelTarget(channel)) return Promise.resolve({ ok: false, error: 'not-a-channel' });
     if (!this.modeSpec().list.includes(letter)) {
       return Promise.resolve({ ok: false, error: 'not-a-list-mode' });
     }

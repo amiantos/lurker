@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { registerVerb } from '../verbRegistry.js';
+import { isChannelTarget } from '../../../shared/channels.js';
 import { writableConnection } from './liveConn.js';
 import { channelArg } from './args.js';
 
@@ -34,6 +35,8 @@ registerVerb({
     const networkId = Number(input.networkId);
     const channel = channelArg(input.channel);
     if ('error' in channel) return { ok: false, error: channel.error };
+    // A nick here would make it a user-mode MODE line (see fetchModeList too).
+    if (!isChannelTarget(channel.value)) return { ok: false, error: 'not-a-channel' };
     const letter = typeof input.letter === 'string' ? input.letter : '';
     if (!/^[A-Za-z]$/.test(letter)) return { ok: false, error: 'letter-must-be-one-mode-letter' };
     const conn = writableConnection(ctx.userId, networkId);

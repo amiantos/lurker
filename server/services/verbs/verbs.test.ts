@@ -948,6 +948,17 @@ describe('agent control verbs', () => {
       ).resolves.toEqual({ ok: false, error: 'refused', numeric: '482', text: 'not op' });
     });
 
+    it('refuses a target that is not a channel', async () => {
+      live();
+      await expect(
+        callVerb('get_mode_list', rwCtx(owner.id), {
+          networkId: net.id,
+          channel: 'foo',
+          letter: 'b',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'not-a-channel' });
+    });
+
     it('checks the letter and the connection before asking', async () => {
       live();
       await expect(
@@ -1034,6 +1045,44 @@ describe('agent control verbs', () => {
 
     it('refuses when the network is down', () => {
       expect(set([{ sign: '+', letter: 'm' }])).toEqual({ ok: false, error: 'not-connected' });
+    });
+
+    it('refuses a target that is not a channel, instead of sending a user-mode change', () => {
+      const conn = live();
+      expect(set([{ sign: '+', letter: 'i' }], 'owner')).toEqual({
+        ok: false,
+        error: 'not-a-channel',
+      });
+      expect(conn.sent).toEqual([]);
+    });
+
+    it('gives -k no param where the network says it takes none', () => {
+      // k in group C (param on set only): a filled-in key would be handed to +o.
+      const conn = live();
+      conn.modeSpec = () =>
+        parseModeSpec({ CHANMODES: ['b', '', 'kl', 'mnt'], PREFIX: [{ mode: 'o', symbol: '@' }] });
+      expect(
+        set([
+          { sign: '-', letter: 'k' },
+          { sign: '+', letter: 'o', param: 'bob' },
+        ]),
+      ).toEqual({ ok: true, lines: 1 });
+      expect(conn.sent).toEqual(['MODE #x -k+o bob']);
+    });
+
+    it("falls back to * when the stored key can't be decrypted", async () => {
+      const { ensureOpen } = await import('../../db/buffers.js');
+      const db = (await import('../../db/index.js')).default;
+      ensureOpen(owner.id, net.id, '#rotated', { kind: 'channel', autojoin: true });
+      // An envelope under a key-id nobody holds, as after a key rotation.
+      db.prepare(`UPDATE buffers SET key = ? WHERE network_id = ? AND target = ?`).run(
+        'lk1.deadbeef.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        net.id,
+        '#rotated',
+      );
+      const conn = live([{ name: '#rotated', topic: null, members: new Map() }]);
+      expect(set([{ sign: '-', letter: 'k' }], '#rotated')).toEqual({ ok: true, lines: 1 });
+      expect(conn.sent).toEqual(['MODE #rotated -k *']);
     });
   });
 

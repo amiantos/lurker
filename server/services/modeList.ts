@@ -19,6 +19,15 @@
 // A 367 can arrive with only the mask, or mask and setter (weechat tests all
 // three shapes). A non-op asking for +e or +I gets 482 instead of a list
 // (irssi servers-redirect.c), which ends the query like any other error.
+//
+// ⚠ Known limit, from how the router works: an error naming the channel goes
+// to the oldest query on the wire that could take it, and MODE *changes*,
+// KICK and TOPIC aren't tracked (a change that changes nothing gets no reply,
+// so there is nothing to end one on). So a 482 for an untracked command sent
+// just before this query — the modal's own `MODE #c +b mask` — is taken as
+// this list's refusal, and the user's error row for it is lost. The modal
+// therefore patches an open list from live MODE ±b rather than refetching
+// right after a change.
 
 import type { ReplyClient } from './replyRouter.js';
 import { unixSecondsToIso } from '../utils/unixTime.js';
@@ -38,7 +47,13 @@ export type ModeListResult =
       // 'refused': the server answered with an error numeric (482, 403, …).
       // 'no-reply': nothing came before the router's timeout, or the socket went.
       // The others are decided before anything is sent.
-      error: 'refused' | 'no-reply' | 'not-connected' | 'not-a-list-mode' | 'unsupported-list-mode';
+      error:
+        | 'refused'
+        | 'no-reply'
+        | 'not-connected'
+        | 'not-a-channel'
+        | 'not-a-list-mode'
+        | 'unsupported-list-mode';
       numeric?: string;
       text?: string;
     };
@@ -53,8 +68,8 @@ export class ModeListCollector implements ReplyClient {
     private readonly finish: (result: ModeListResult) => void,
   ) {}
 
-  /** Every line the router says is this query's, in order. */
-  take(command: string, params: readonly string[]): void {
+  /** Every line the router says is this query's, in order (ReplyClient.onReply). */
+  onReply(command: string, params: readonly string[]): void {
     if (this.done) return;
     if (command === this.numerics.item) {
       const at = command === '728' ? 3 : 2;

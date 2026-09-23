@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { registerVerb } from '../verbRegistry.js';
+import { isChannelTarget } from '../../../shared/channels.js';
 import { writableConnection } from './liveConn.js';
 import { channelArg } from './args.js';
 import { getBuffer } from '../../db/buffers.js';
@@ -43,6 +44,16 @@ function checkChange(
   return { sign, letter, param };
 }
 
+// The key a bare -k should name. A stored key under a rotated or unknown key-id
+// makes the decrypt throw (db/buffers.ts); `*` is still a usable -k.
+function storedKey(userId: number, networkId: number, channel: string): string | null {
+  try {
+    return getBuffer(userId, networkId, channel)?.key ?? null;
+  } catch (_) {
+    return null;
+  }
+}
+
 registerVerb({
   name: 'set_channel_modes',
   description:
@@ -80,6 +91,8 @@ registerVerb({
     const networkId = Number(input.networkId);
     const channel = channelArg(input.channel);
     if ('error' in channel) return { ok: false, error: channel.error };
+    // A nick here would make it a user-mode MODE line (see fetchModeList too).
+    if (!isChannelTarget(channel.value)) return { ok: false, error: 'not-a-channel' };
     if (!Array.isArray(input.changes)) return { ok: false, error: 'changes-must-be-an-array' };
     if (input.changes.length === 0) return { ok: false, error: 'no-changes' };
     const conn = writableConnection(ctx.userId, networkId);
@@ -95,9 +108,15 @@ registerVerb({
       if ('error' in change) return { ok: false, error: change.error };
       // `-k` with the key we joined with, as irssi's /mode does (modes.c): an
       // ircu-family server refuses `-k` without the right one. `*` is what
-      // everyone else accepts.
-      if (change.sign === '-' && change.letter === 'k' && !change.param) {
-        change.param = getBuffer(ctx.userId, networkId, name)?.key || '*';
+      // everyone else accepts. Only where the network says `-k` takes a param:
+      // one that doesn't would hand the key to the next param-taking change.
+      if (
+        change.sign === '-' &&
+        change.letter === 'k' &&
+        !change.param &&
+        modeTakesParam(spec, 'k', '-')
+      ) {
+        change.param = storedKey(ctx.userId, networkId, name) || '*';
       }
       changes.push(change);
     }

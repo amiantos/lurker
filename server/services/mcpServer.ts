@@ -128,8 +128,16 @@ router.post('/', (req: Request, res: Response) => {
             const e = err as Error & { code?: string };
             toolCallResult = toolResult({ error: e.code || 'error', message: e.message }, true);
           }
-          if (isNotification) res.status(204).end();
-          else res.json({ jsonrpc: '2.0', id, result: toolCallResult });
+          // Outside the switch's try by now, and a rejection from this IIFE
+          // would be unhandled — which processGuards treats as fatal.
+          try {
+            if (isNotification) res.status(204).end();
+            else res.json({ jsonrpc: '2.0', id, result: toolCallResult });
+          } catch (err) {
+            if (!res.headersSent) {
+              res.json(jsonRpcError(id, -32603, 'Internal error', (err as Error).message));
+            }
+          }
         })();
         return;
       }

@@ -4533,6 +4533,12 @@ describe('list-mode fetch (#727)', () => {
 
   it('refuses what it cannot ask for, without sending anything', async () => {
     const { conn, sent } = makeConn('ml-refuse');
+    // ⚠ Not tidiness: the router only tracks MODE <channel> +b, so a fetch for
+    // anything else would never be answered or aborted, and never settle.
+    await expect(conn.fetchModeList('foo', 'b')).resolves.toEqual({
+      ok: false,
+      error: 'not-a-channel',
+    });
     await expect(conn.fetchModeList('#chan', 'm')).resolves.toEqual({
       ok: false,
       error: 'not-a-list-mode',
