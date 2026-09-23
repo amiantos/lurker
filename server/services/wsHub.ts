@@ -346,6 +346,8 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'typing',
   'e2e',
   'ctcp',
+  'get-mode-list',
+  'set-channel-modes',
 ]);
 
 // Options bag for fanOut.
@@ -2849,12 +2851,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       const networkId = Number(msg.networkId);
       if (!Number.isInteger(networkId) || !ownsNetwork(userId, networkId)) {
         send(ws, { kind: 'error', text: 'unknown network' });
-        // Surface the failure on the originating send/action/notice so the
-        // client can stop pretending the message succeeded.
-        if (
-          msg.clientId &&
-          (msg.type === 'send' || msg.type === 'action' || msg.type === 'notice')
-        ) {
+        // Surface the failure on the originating message's ACK, so the client
+        // can stop pretending it succeeded (or waiting on it).
+        if (msg.clientId) {
           send(ws, {
             kind: 'send-result',
             clientId: msg.clientId,
@@ -2872,7 +2871,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // as pending instead of hanging forever.
     if (ws.accountPaused && PAUSED_BLOCKED_TYPES.has(msg.type as string)) {
       send(ws, { kind: 'error', text: 'account paused' });
-      if (msg.clientId && (msg.type === 'send' || msg.type === 'action' || msg.type === 'notice')) {
+      if (msg.clientId) {
         send(ws, {
           kind: 'send-result',
           clientId: msg.clientId,
@@ -3563,6 +3562,39 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           bufferId: buf.id,
           maxLines,
         });
+        break;
+      }
+      // The channel modal (#727). Each result rides the send-result ACK with the
+      // verb's whole answer as `data`: the list's entries, or how many MODE
+      // lines went out. get-mode-list waits for the server, so it answers late.
+      case 'get-mode-list':
+      case 'set-channel-modes': {
+        const verbName = msg.type === 'get-mode-list' ? 'get_mode_list' : 'set_channel_modes';
+        const input =
+          msg.type === 'get-mode-list'
+            ? { networkId: msg.networkId, channel: msg.channel, letter: msg.letter }
+            : { networkId: msg.networkId, channel: msg.channel, changes: msg.changes };
+        const clientId = msg.clientId;
+        void (async () => {
+          let result: { ok: boolean; error?: string };
+          try {
+            result = (await callVerb(
+              verbName,
+              { userId, scope: 'read-write', transport: 'ws' },
+              input,
+            )) as { ok: boolean; error?: string };
+          } catch (err) {
+            result = { ok: false, error: (err as NodeJS.ErrnoException).code || 'error' };
+          }
+          if (!clientId) return;
+          send(ws, {
+            kind: 'send-result',
+            clientId,
+            ok: !!result.ok,
+            error: result.ok ? undefined : result.error,
+            data: result,
+          });
+        })();
         break;
       }
       case 'set-nick-note': {

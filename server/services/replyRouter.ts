@@ -34,6 +34,12 @@ export interface ReplyClient {
   replyFromCache(lines: string[]): void;
   /** This client's query ended without its reply: its end numeric, before the text. */
   replyAborted(numeric: string, params: string[]): void;
+  /**
+   * Each server line that is this client's, as it arrives. For an in-process
+   * asker (modeList.ts), which has no socket to relay the line to. A bouncer
+   * client leaves it out and relays through its own raw listener instead.
+   */
+  onReply?(command: string, params: string[]): void;
 }
 
 /** Who asked: Lurker's own automation, the user, or an attached IRC client. */
@@ -120,6 +126,11 @@ const LIST_MODE_NUMERICS: Record<string, { item: string; end: string } | undefin
   I: { item: '346', end: '347' },
   q: { item: '728', end: '729' },
 };
+
+/** A list mode's entry and end numerics, or null for a list this router can't track. */
+export function listModeNumerics(letter: string): { item: string; end: string } | null {
+  return Object.hasOwn(LIST_MODE_NUMERICS, letter) ? (LIST_MODE_NUMERICS[letter] ?? null) : null;
+}
 // Errors that name the command they refuse, and errors that name its target.
 const COMMAND_ERRORS = new Set(['263', '400', '421', '461']);
 const TARGET_ERRORS = new Set(['401', '402', '403', '407', '442', '476', '479', '482']);
@@ -303,6 +314,7 @@ export class ReplyRouter {
       if (this.settles(settle, command, params)) owner = settle.query.asker ?? 'nobody';
     }
     owner ??= this.claim(command, params);
+    if (typeof owner === 'object') owner.onReply?.(command, params);
     // Only now, so a query sent here can't take the line it was sent after.
     if (settle) this.releaseWaiting();
     if (owner !== undefined) return owner;

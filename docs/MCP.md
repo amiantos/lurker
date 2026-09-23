@@ -57,7 +57,7 @@ snapshot resume) from an MCP client — that surface is deliberately out of scop
 
 ## Tools (MCP verbs)
 
-All twenty-one tools come back through `tools/list` with full JSON Schemas
+All twenty-three tools come back through `tools/list` with full JSON Schemas
 for their inputs. A read-only token only sees the seven read tools.
 
 ### `list_networks` _(read)_
@@ -194,6 +194,25 @@ Read or change a joined channel's topic. `set_topic` requires an explicit
 `topic`, and an empty string **clears** the topic — it always writes, so use
 `get_topic` to read. It needs the usual channel privileges (+o or a -t
 channel); the server may reject it.
+
+### `get_mode_list` _(read-write)_
+
+Fetch one of a channel's lists fresh from the server — bans (`b`), ban
+exceptions (`e`), invite exceptions (`I`), or quiets (`q`, on networks that have
+a quiet list) — and **wait for the answer**: `{ ok: true, channel, letter,
+entries: [{ mask, setBy, setAt }] }`. A server that refuses (often 482 for `e`
+and `I` when you aren't an operator) comes back as `{ ok: false, error:
+"refused", numeric, text }`. The reply goes only to the caller; nothing lands in
+the server buffer.
+
+### `set_channel_modes` _(read-write)_
+
+Change a channel's modes: `changes` is a list of `{ sign: "+" | "-", letter,
+param? }`. Each letter is checked against the modes the network advertises, and
+a `param` is required exactly when the mode takes one (a mask, a limit, a key).
+`-k` may leave it out: the stored key is used, or `*`. The changes go out as the
+fewest MODE lines the network's `MODES` allows. A refusal from the server (482,
+467, 478) lands in the channel as an error line.
 
 ## Wire format
 

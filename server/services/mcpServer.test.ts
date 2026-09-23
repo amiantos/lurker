@@ -114,6 +114,7 @@ describe('MCP server', () => {
     expect(names).toEqual([
       'connect_network',
       'disconnect_network',
+      'get_mode_list',
       'get_nick_note',
       'get_topic',
       'join_channel',
@@ -128,6 +129,7 @@ describe('MCP server', () => {
       'send_notice',
       'send_raw',
       'set_away',
+      'set_channel_modes',
       'set_nick',
       'set_nick_note',
       'set_relay_bot',

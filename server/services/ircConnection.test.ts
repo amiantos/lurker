@@ -29,13 +29,13 @@ import {
   sendRejectionText,
   outgoingAddr,
   resolveKeyModeChange,
-  unixSecondsToIso,
   monitorLimitFromIsupport,
 } from './ircConnection.js';
 import type { MonitorHolder } from './monitorList.js';
 import { createIdentdServer, unregisterIdent } from './identd.js';
 import connectScheduler from './connectScheduler.js';
 import { getRecent } from './systemLog.js';
+import { unixSecondsToIso } from '../utils/unixTime.js';
 import { createUser } from '../db/users.js';
 import { createNetwork, getNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
@@ -4400,6 +4400,191 @@ describe('channel control state (#727)', () => {
       conn.client.emit('motd', { motd: '' });
       expect(specs()).toHaveLength(2);
     });
+  });
+});
+
+// get_mode_list's fetch (#727): its own query through the reply router, with a
+// collector as the asker, so the list comes back to the caller and nowhere else.
+describe('list-mode fetch (#727)', () => {
+  type Frame = Record<string, unknown> & { type: string };
+
+  function makeConn(name: string) {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'me',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    const frames: Frame[] = [];
+    const conn = new IrcConnection({ network, onEvent: (e) => frames.push(e as Frame) });
+    conn.client.user.nick = 'me';
+    conn.currentNick = 'me';
+    conn.state = 'connected';
+    const sent: string[] = [];
+    conn.client.raw = ((line: string) => {
+      sent.push(line);
+    }) as typeof conn.client.raw;
+    // solanum: q is a quiet LIST.
+    Object.assign(conn.client.network.options as Record<string, unknown>, {
+      CHANMODES: ['eIbq', 'k', 'flj', 'CFLMPQRSTcgimnprstuz'],
+      PREFIX: [
+        { symbol: '@', mode: 'o' },
+        { symbol: '+', mode: 'v' },
+      ],
+    });
+    conn.upsertChannel('#chan');
+    const serverSays = (line: string) =>
+      conn.client.emit('raw', { from_server: true, line: `:irc.example.test ${line}` });
+    const serverBuffer = () =>
+      frames.filter((f) => f.type === 'motd' && f.target === conn.serverTarget());
+    return { conn, frames, sent, serverSays, serverBuffer };
+  }
+
+  it('collects the entries, in every shape a 367 comes in, and shows none of them', async () => {
+    const { conn, sent, serverSays, serverBuffer } = makeConn('ml-bans');
+    const fetched = conn.fetchModeList('#chan', 'b');
+    expect(sent).toEqual(['MODE #chan +b']);
+    serverSays('367 me #chan *!*@a.example op!o@host 1700000000');
+    serverSays('367 me #chan *!*@b.example op');
+    serverSays('367 me #chan *!*@c.example');
+    // A scrubbed duplicate, as some servers send a non-op.
+    serverSays('367 me #chan *!*@A.EXAMPLE op 1700000000');
+    serverSays('368 me #chan :End of Channel Ban List');
+    await expect(fetched).resolves.toEqual({
+      ok: true,
+      entries: [
+        { mask: '*!*@a.example', setBy: 'op!o@host', setAt: '2023-11-14T22:13:20.000Z' },
+        { mask: '*!*@b.example', setBy: 'op', setAt: null },
+        { mask: '*!*@c.example', setBy: null, setAt: null },
+      ],
+    });
+    expect(serverBuffer()).toEqual([]);
+  });
+
+  it("reads 728's extra letter param for solanum's quiets", async () => {
+    const { conn, sent, serverSays } = makeConn('ml-quiets');
+    const fetched = conn.fetchModeList('#chan', 'q');
+    expect(sent).toEqual(['MODE #chan +q']);
+    serverSays('728 me #chan q troll!*@* op 1700000000');
+    serverSays('729 me #chan q :End of Channel Quiet List');
+    await expect(fetched).resolves.toEqual({
+      ok: true,
+      entries: [{ mask: 'troll!*@*', setBy: 'op', setAt: '2023-11-14T22:13:20.000Z' }],
+    });
+  });
+
+  it("ends on a 482, and neither it nor the end after it reaches the user's view", async () => {
+    const { conn, frames, serverSays, serverBuffer } = makeConn('ml-482');
+    const fetched = conn.fetchModeList('#chan', 'e');
+    serverSays("482 me #chan :You're not a channel operator");
+    serverSays('349 me #chan :End of Channel Exception List');
+    await expect(fetched).resolves.toEqual({
+      ok: false,
+      error: 'refused',
+      numeric: '482',
+      text: "You're not a channel operator",
+    });
+    expect(serverBuffer()).toEqual([]);
+    // The channel's "not a channel operator" row is for the user's own commands.
+    expect(frames.filter((f) => f.type === 'error')).toEqual([]);
+  });
+
+  it('leaves a list the user asks for themselves to print as before', async () => {
+    const { conn, serverSays, serverBuffer } = makeConn('ml-user');
+    const fetched = conn.fetchModeList('#chan', 'b');
+    serverSays('368 me #chan :End of Channel Ban List');
+    await fetched;
+    conn.raw('MODE #chan +b');
+    serverSays('367 me #chan *!*@user.example op 1700000000');
+    serverSays('368 me #chan :End of Channel Ban List');
+    expect(serverBuffer().map((f) => f.text)).toEqual([
+      expect.stringContaining('*!*@user.example'),
+      expect.stringContaining('End of Channel Ban List'),
+    ]);
+  });
+
+  it('takes only its own answer when the user asks for the same list meanwhile', async () => {
+    // Each 367 names only the channel, so two ban queries on the wire can't be
+    // told apart by their lines — but a server answers them in order, and the
+    // router ends the older one at its 368. Neither waits for the other (the
+    // router's rule: a query nobody answers mustn't hold up the next).
+    const { conn, sent, serverSays, serverBuffer } = makeConn('ml-overlap');
+    const fetched = conn.fetchModeList('#chan', 'b');
+    conn.raw('MODE #chan +b'); // the user, typing while the modal fetches
+    expect(sent).toEqual(['MODE #chan +b', 'MODE #chan +b']);
+    serverSays('367 me #chan *!*@modal.example op 1700000000');
+    serverSays('368 me #chan :End of Channel Ban List');
+    serverSays('367 me #chan *!*@user.example op 1700000000');
+    serverSays('368 me #chan :End of Channel Ban List');
+    expect(await fetched).toEqual({
+      ok: true,
+      entries: [{ mask: '*!*@modal.example', setBy: 'op', setAt: '2023-11-14T22:13:20.000Z' }],
+    });
+    expect(serverBuffer().map((f) => f.text)).toEqual([
+      expect.stringContaining('*!*@user.example'),
+      expect.stringContaining('End of Channel Ban List'),
+    ]);
+  });
+
+  it('lets a different list on the same channel go out at once', () => {
+    const { conn, sent } = makeConn('ml-other-list');
+    void conn.fetchModeList('#chan', 'b');
+    conn.raw('MODE #chan +e');
+    expect(sent).toEqual(['MODE #chan +b', 'MODE #chan +e']);
+  });
+
+  it('shares one query between two asks for the same list', async () => {
+    const { conn, sent, serverSays } = makeConn('ml-share');
+    const first = conn.fetchModeList('#chan', 'b');
+    const second = conn.fetchModeList('#CHAN', 'b');
+    expect(sent).toEqual(['MODE #chan +b']);
+    serverSays('368 me #chan :End of Channel Ban List');
+    expect(await first).toEqual(await second);
+    // Done, so the next ask goes out again.
+    void conn.fetchModeList('#chan', 'b');
+    expect(sent).toEqual(['MODE #chan +b', 'MODE #chan +b']);
+  });
+
+  it('ends with no-reply when the socket goes mid-fetch', async () => {
+    const { conn } = makeConn('ml-close');
+    const fetched = conn.fetchModeList('#chan', 'b');
+    conn.client.emit('close', false);
+    await expect(fetched).resolves.toEqual({ ok: false, error: 'no-reply' });
+  });
+
+  it('refuses what it cannot ask for, without sending anything', async () => {
+    const { conn, sent } = makeConn('ml-refuse');
+    // ⚠ Not tidiness: the router only tracks MODE <channel> +b, so a fetch for
+    // anything else would never be answered or aborted, and never settle.
+    await expect(conn.fetchModeList('foo', 'b')).resolves.toEqual({
+      ok: false,
+      error: 'not-a-channel',
+    });
+    await expect(conn.fetchModeList('#chan', 'm')).resolves.toEqual({
+      ok: false,
+      error: 'not-a-list-mode',
+    });
+    // A list mode whose numerics nothing tracks (InspIRCd's +g filter list).
+    (conn.client.network.options as Record<string, unknown>).CHANMODES = ['beIg', 'k', 'l', 'mnt'];
+    await expect(conn.fetchModeList('#chan', 'g')).resolves.toEqual({
+      ok: false,
+      error: 'unsupported-list-mode',
+    });
+    conn.state = 'disconnected';
+    await expect(conn.fetchModeList('#chan', 'b')).resolves.toEqual({
+      ok: false,
+      error: 'not-connected',
+    });
+    expect(sent).toEqual([]);
   });
 });
 

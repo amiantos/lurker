@@ -25,3 +25,5 @@ import './connectNetwork.js';
 import './disconnectNetwork.js';
 import './getTopic.js';
 import './setTopic.js';
+import './getModeList.js';
+import './setChannelModes.js';

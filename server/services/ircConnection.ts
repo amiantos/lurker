@@ -59,10 +59,13 @@ import { mayUseProxy } from './networkPolicy.js';
 import { ProxyTransport } from './proxyTransport.js';
 import { MonitorList } from './monitorList.js';
 import type { MonitorHolder, MonitorSync } from './monitorList.js';
-import { ReplyRouter } from './replyRouter.js';
+import { ReplyRouter, listModeNumerics } from './replyRouter.js';
 import type { Asker, ReplyOwner } from './replyRouter.js';
+import { ModeListCollector } from './modeList.js';
+import type { ModeListResult } from './modeList.js';
 import { classifyModeChange, modeLetter } from '../../shared/modes.js';
 import { parseModeSpec, sortByRank } from '../../shared/channelModes.js';
+import { unixSecondsToIso } from '../utils/unixTime.js';
 import type { ModeSpec } from '../../shared/channelModes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
@@ -767,6 +770,8 @@ export class IrcConnection {
   monitorLimit: number;
   // The last modeSpec sent as a `mode-spec` frame, as JSON (#727).
   private publishedModeSpec: string | null = null;
+  // List fetches on the wire, by folded channel + letter (fetchModeList).
+  private readonly modeListFetches = new Map<string, Promise<ModeListResult>>();
   pendingMonitorSeed: boolean;
   // The network's MONITOR list: Lurker's nicks plus those of the IRC clients
   // attached through the bouncer (see monitorList.ts and syncMonitor).
@@ -4813,6 +4818,42 @@ export class IrcConnection {
     });
   }
 
+  /**
+   * A channel's ban, exception, invite-exception or quiet list, fresh from the
+   * server (see modeList.ts). Two asks for the same list while one is out share
+   * it.
+   */
+  fetchModeList(channel: string, letter: string): Promise<ModeListResult> {
+    // ⚠ Load-bearing, not tidiness: the router tracks `MODE <target> +b` only
+    // for a channel target. Anything else goes out untracked, nothing ever
+    // answers or aborts the collector, and the promise (and its map entry)
+    // would never settle.
+    if (!isChannelTarget(channel)) return Promise.resolve({ ok: false, error: 'not-a-channel' });
+    if (!this.modeSpec().list.includes(letter)) {
+      return Promise.resolve({ ok: false, error: 'not-a-list-mode' });
+    }
+    // Lists whose numerics the router doesn't know (InspIRCd's +g, +w, …) would
+    // go out untracked and their replies would print as unasked.
+    const numerics = listModeNumerics(letter);
+    if (!numerics) return Promise.resolve({ ok: false, error: 'unsupported-list-mode' });
+    if (this.state !== 'connected') return Promise.resolve({ ok: false, error: 'not-connected' });
+    const name = this.channelState(channel)?.name ?? channel;
+    const key = `${foldTargetFor(this.network.id, name)} ${letter}`;
+    const inFlight = this.modeListFetches.get(key);
+    if (inFlight) return inFlight;
+    let resolve!: (result: ModeListResult) => void;
+    const promise = new Promise<ModeListResult>((r) => (resolve = r));
+    // In the map BEFORE the send: a query that can't go out is aborted
+    // synchronously, and its settle must find (and remove) this entry.
+    this.modeListFetches.set(key, promise);
+    const collector = new ModeListCollector(numerics, (result) => {
+      if (this.modeListFetches.get(key) === promise) this.modeListFetches.delete(key);
+      resolve(result);
+    });
+    this.raw(`MODE ${name} +${letter}`, collector);
+    return promise;
+  }
+
   /** This network's channel-mode vocabulary, from its ISUPPORT (#727). */
   modeSpec(): ModeSpec {
     return parseModeSpec(this.client.network?.options);
@@ -8450,17 +8491,6 @@ export class IrcConnection {
       ),
     };
   }
-}
-
-// A server's unix-seconds timestamp (333, 329) as ISO, or null when it isn't
-// one. ⚠ The range check is load-bearing: `new Date(ms).toISOString()` THROWS
-// past ±8.64e15 ms, and an IRC handler that throws takes the process down, so
-// one bogus `333 me #c x 99999999999999` would end every user's session.
-export function unixSecondsToIso(value: unknown): string | null {
-  const secs = typeof value === 'string' ? Number(value) : value;
-  if (typeof secs !== 'number' || !Number.isFinite(secs) || secs <= 0) return null;
-  const date = new Date(secs * 1000);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function sameModeParams(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
