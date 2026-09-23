@@ -383,8 +383,11 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
 { networkId, state,                    // 'connecting'|'connected'|'reconnecting'|'disconnected'
   nick, userModes, lagMs,
   multilineLimits,
+  modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
+              maxModes, topicLen },
   away: { active, since, message, autoSet, backAt } | null,
-  channels: [ { name, topic, modes,
+  channels: [ { name, topic, topicSetBy, topicSetAt,
+                modes, modeParams: { "<letter>": "<value>" }, createdAt,
                 members: [ { nick, modes: [], away, user, host, account } ],
                 membersPending?: true } ],   // NAMES not heard yet — see §9.1
   peerPresence: { "<lowercased nick>": { nick, state, stateAt, awayMessage } },
@@ -397,10 +400,35 @@ Offline networks appear with `state:'disconnected'`, `channels:[]`,
 names/hosts — fetch `GET /api/networks` for the roster (the iOS app does this
 before opening the socket; it doubles as a token validity check).
 
-Member `modes` are **prefix-mode letters, highest first** (`q a o h v`), _not_
-sigils (`~ & @ % +`). Map to sigils yourself for display. That letter list is a
-display ordering, not a classification set — don't reuse it to decide what a
-mode letter _means_ on a given network (§7.4).
+Member `modes` are **prefix-mode letters, highest first in the network's own
+PREFIX order** (`modeSpec.prefix`), _not_ sigils (`~ & @ % +`). `modeSpec.prefix`
+pairs each letter with its sigil, so map through it for display rather than
+hardcoding `q a o h v` — a network can rank letters you've never seen.
+
+`modeSpec` is the network's channel-mode vocabulary, parsed from its ISUPPORT
+on the server so a client never has to read 005 (`shared/channelModes.ts`):
+
+- `list` / `always` / `onSet` / `flags` — the four CHANMODES groups: list modes
+  (a mask on `+` and `-`: bans, exceptions, quiets), modes that always take a
+  param (`k`), modes that take one only when set (`l`), and plain flags. A letter
+  that is also in `prefix` appears only there. Before 005 these are the RFC
+  defaults `beI`, `k`, `l`, `imnst`.
+- `maxModes` — how many **param-taking** changes one MODE line may carry; `null`
+  means no limit.
+- `topicLen` — the longest topic the server accepts, in bytes; `null` when not
+  advertised.
+
+⚠ `modeSpec` is **`null` until the network's registration burst has ended** —
+before then the server only has defaults, and a default is not the network
+saying so. Treat null as "unknown", not as the RFC defaults. It arrives as a
+`mode-spec` frame once the burst ends (usually just after the snapshot, since
+005 follows 001) and again whenever a later 005 changes it.
+
+Per channel, `modeParams` holds the values of the set param modes
+(`{ l: '50' }`). ⚠ Channel state **never carries the key** (`k`): it shows in
+`modes` as the letter only. The `mode` row that set it does carry the value,
+as it does for everyone in the channel. `topicSetBy` / `topicSetAt` (ISO) and `createdAt`
+(ISO, from 329) are `null` until the server has said.
 
 `nickNotes` rows are `{nick, note, updatedAt}` — the account's own free-form
 notes about people, per network (the same nick on two networks is two rows,
@@ -712,9 +740,10 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `own-nick`                    | E   | your nick changed — `nick` is the new one                                     |
 | `mode`                        | P   | `text`, `modes[]` — see §7.4 for the entry shape and `kind`                   |
 | `usermode`                    | E   | your user modes, whole string                                                 |
-| `topic`                       | P   | a topic _change_ (renders as a line)                                          |
-| `channel-topic`               | E   | RPL_TOPIC on join — set state, render nothing                                 |
-| `channel-modes`               | E   | full channel mode string                                                      |
+| `topic`                       | P   | a topic _change_ (renders as a line); `nick` + `time` are its setter and time |
+| `channel-topic`               | E   | `topic, setBy, setAt` — 332/331/333: set state, render nothing                |
+| `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key       |
+| `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)             |
 | `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                |
 | `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history    |
 | `join-error`                  | E   | join failed — `text`, `reason`; do **not** create a buffer                    |

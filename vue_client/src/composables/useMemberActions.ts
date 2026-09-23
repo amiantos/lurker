@@ -11,6 +11,8 @@ import { socketSend } from './useSocket.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { addressNick } from './useComposerOverlay.js';
 import { isChannelTarget } from '../../../shared/channels.js';
+import { DEFAULT_PREFIX, hasRankAtLeast } from '../../../shared/channelModes.js';
+import { useNetworksStore } from '../stores/networks.js';
 
 export interface MemberLike {
   nick: string;
@@ -57,17 +59,6 @@ function nickOf(m: MemberLike | string): string {
 
 function modesOf(m: MemberLike | string): string[] {
   return typeof m === 'string' || !Array.isArray(m.modes) ? [] : m.modes;
-}
-
-// Modes that grant moderation power (kick/ban/voice). Halfop (h) counts here.
-const MODERATE_MODES = ['q', 'a', 'o', 'h'];
-// Modes that grant op management (+o/-o). Plain halfops usually can't op, so
-// they're excluded — keeps the action off the menu rather than letting the
-// server bounce it.
-const OP_MODES = ['q', 'a', 'o'];
-
-function hasAny(modes: string[], wanted: string[]): boolean {
-  return wanted.some((m) => modes.includes(m));
 }
 
 // Host ban by default (*!*@host). Falls back to a nick mask only when the
@@ -201,7 +192,12 @@ export function useMemberActions(): MemberActionsAPI {
     const channel =
       typeof ctx.channel === 'string' && isChannelTarget(ctx.channel) ? ctx.channel : null;
     const selfModes = Array.isArray(ctx.selfModes) ? ctx.selfModes : [];
-    if (!isSelf && channel && hasAny(selfModes, MODERATE_MODES)) {
+    // Ranked by the network's own PREFIX, so an owner, an admin, or a rank
+    // with a letter we've never heard of all pass on standing, not spelling.
+    const prefix = useNetworksStore().states[ctx.networkId]?.modeSpec?.prefix ?? DEFAULT_PREFIX;
+    // Halfop and up moderate (kick/ban/voice); on a network without halfops
+    // that rounds up to op.
+    if (!isSelf && channel && hasRankAtLeast(selfModes, prefix, 'h')) {
       const networkId = ctx.networkId;
       const targetModes = modesOf(member);
       const send = (l: string) => socketSend({ type: 'raw', networkId, line: l });
@@ -209,7 +205,10 @@ export function useMemberActions(): MemberActionsAPI {
 
       items.push({ divider: true });
 
-      if (hasAny(selfModes, OP_MODES)) {
+      // Plain halfops usually can't op, so op management starts at op — keeps
+      // the action off the menu rather than letting the server bounce it.
+      const hasMode = (letter: string) => prefix.some((p) => p.mode === letter);
+      if (hasMode('o') && hasRankAtLeast(selfModes, prefix, 'o')) {
         const opped = targetModes.includes('o');
         items.push({
           label: opped ? 'Take Op' : 'Give Op',
@@ -219,11 +218,13 @@ export function useMemberActions(): MemberActionsAPI {
       }
 
       const voiced = targetModes.includes('v');
-      items.push({
-        label: voiced ? 'Remove Voice' : 'Give Voice',
-        icon: voiced ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone',
-        onClick: () => send(`MODE ${ch} ${voiced ? '-' : '+'}v ${nick}`),
-      });
+      if (hasMode('v')) {
+        items.push({
+          label: voiced ? 'Remove Voice' : 'Give Voice',
+          icon: voiced ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone',
+          onClick: () => send(`MODE ${ch} ${voiced ? '-' : '+'}v ${nick}`),
+        });
+      }
 
       items.push({
         label: 'Kick…',

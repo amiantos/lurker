@@ -29,6 +29,7 @@ import {
   sendRejectionText,
   outgoingAddr,
   resolveKeyModeChange,
+  unixSecondsToIso,
   monitorLimitFromIsupport,
 } from './ircConnection.js';
 import type { MonitorHolder } from './monitorList.js';
@@ -40,6 +41,7 @@ import { createNetwork, getNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import {
   getBuffer,
+  setChannelKey as setBufferChannelKey,
   ensureOpen as ensureBufferOpen,
   seedAutojoinChannel,
   listForNetwork as listBufferRowsForNetwork,
@@ -4100,6 +4102,304 @@ describe('resolveKeyModeChange', () => {
     // Some servers hide the key from non-ops by echoing it as `*`; persisting
     // that would replace the real key with an unusable one.
     expect(resolveKeyModeChange('+', '*')).toBeNull();
+  });
+});
+
+// The state the channel modal reads (#727): param values, creation time, the
+// topic's setter and time, rank-ordered member modes, and the network's
+// mode vocabulary. The key value is the one thing that must never ride along.
+describe('channel control state (#727)', () => {
+  type Frame = Record<string, unknown> & { type: string };
+
+  function makeConn(name: string): { conn: IrcConnection; frames: Frame[] } {
+    const network = createNetwork(1, {
+      name,
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'me',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 0,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+    })!;
+    const frames: Frame[] = [];
+    const conn = new IrcConnection({ network, onEvent: (e) => frames.push(e as Frame) });
+    conn.client.user.nick = 'me';
+    conn.currentNick = 'me';
+    return { conn, frames };
+  }
+
+  const last = (frames: Frame[], type: string) => frames.filter((f) => f.type === type).at(-1);
+  const snapChannel = (conn: IrcConnection, name: string) =>
+    conn.snapshot().channels.find((c) => c.name === name)!;
+
+  it('324 replaces the modes and their params, and never carries the key', () => {
+    const { conn, frames } = makeConn('cc-324');
+    conn.upsertChannel('#chan');
+    conn.client.emit('mode', {
+      target: '#chan',
+      modes: [{ mode: '+m', param: null }],
+      raw_modes: '+m',
+      raw_params: [],
+    });
+
+    conn.client.emit('channel info', {
+      channel: '#chan',
+      modes: [
+        { mode: '+n', param: null },
+        { mode: '+l', param: '50' },
+        { mode: '+k', param: 'hunter2' },
+      ],
+    });
+
+    const frame = last(frames, 'channel-modes')!;
+    expect(frame.modes).toBe('nlk');
+    expect(frame.modeParams).toEqual({ l: '50' });
+    expect(JSON.stringify(frame)).not.toContain('hunter2');
+    expect(snapChannel(conn, '#chan').modeParams).toEqual({ l: '50' });
+    expect(JSON.stringify(conn.snapshot())).not.toContain('hunter2');
+  });
+
+  it('tracks a live param change: set, change, clear', () => {
+    const { conn, frames } = makeConn('cc-live-l');
+    conn.upsertChannel('#chan');
+    const mode = (sign: string, param: string | null) =>
+      conn.client.emit('mode', {
+        target: '#chan',
+        modes: [{ mode: `${sign}l`, param }],
+        raw_modes: `${sign}l`,
+        raw_params: param ? [param] : [],
+      });
+
+    mode('+', '50');
+    expect(last(frames, 'channel-modes')!.modeParams).toEqual({ l: '50' });
+    // Already +l: only the value moved, which is still a change to publish.
+    mode('+', '60');
+    expect(last(frames, 'channel-modes')!.modeParams).toEqual({ l: '60' });
+    mode('-', null);
+    expect(last(frames, 'channel-modes')).toMatchObject({ modes: '', modeParams: {} });
+  });
+
+  it('329 records the creation time', () => {
+    const { conn, frames } = makeConn('cc-329');
+    conn.upsertChannel('#chan');
+    conn.client.emit('channel info', { channel: '#chan', created_at: 1_700_000_000 });
+
+    const iso = new Date(1_700_000_000_000).toISOString();
+    expect(last(frames, 'channel-modes')!.createdAt).toBe(iso);
+    expect(snapChannel(conn, '#chan').createdAt).toBe(iso);
+  });
+
+  it('a 324 never writes the stored key, whatever value it shows', () => {
+    // The value can be a mask — `*`, or InspIRCd's `<key>` to a non-member —
+    // and even a real one isn't worth a write per reply. Only a live MODE ±k
+    // moves buffers.key (resolveKeyModeChange).
+    const { conn } = makeConn('cc-324-key');
+    conn.upsertChannel('#secret');
+    ensureBufferOpen(conn.network.user_id, conn.network.id, '#secret', {
+      kind: 'channel',
+      autojoin: true,
+    });
+    setBufferChannelKey(conn.network.user_id, conn.network.id, '#secret', 'pw');
+    for (const param of ['*', '<key>', null, 'newpw']) {
+      conn.client.emit('channel info', {
+        channel: '#secret',
+        modes: [
+          { mode: '+n', param: null },
+          { mode: '+k', param },
+        ],
+      });
+      expect(getBuffer(conn.network.user_id, conn.network.id, '#secret')?.key).toBe('pw');
+    }
+    // A 324 without k leaves it too.
+    conn.client.emit('channel info', { channel: '#secret', modes: [{ mode: '+n', param: null }] });
+    expect(getBuffer(conn.network.user_id, conn.network.id, '#secret')?.key).toBe('pw');
+  });
+
+  it('a timestamp out of Date range reads as unknown instead of throwing', () => {
+    // `new Date(1e17).toISOString()` throws, and a throwing IRC handler ends the
+    // process — for every user on it.
+    const { conn, frames } = makeConn('cc-bad-ts');
+    conn.upsertChannel('#chan');
+    expect(() => {
+      conn.client.emit('topicsetby', { channel: '#chan', nick: 'x', when: '99999999999999' });
+      conn.client.emit('channel info', { channel: '#chan', created_at: 99_999_999_999_999 });
+    }).not.toThrow();
+    expect(last(frames, 'channel-topic')).toMatchObject({ setBy: 'x', setAt: null });
+    expect(snapChannel(conn, '#chan').createdAt).toBeNull();
+    expect(unixSecondsToIso('junk')).toBeNull();
+    expect(unixSecondsToIso(0)).toBeNull();
+  });
+
+  it('332 then 333 publishes the topic, then who set it and when', () => {
+    const { conn, frames } = makeConn('cc-333');
+    conn.upsertChannel('#chan');
+
+    conn.client.emit('topic', { channel: '#chan', topic: 'hello' });
+    expect(last(frames, 'channel-topic')).toMatchObject({
+      topic: 'hello',
+      setBy: null,
+      setAt: null,
+    });
+
+    conn.client.emit('topicsetby', {
+      channel: '#chan',
+      nick: 'alice',
+      ident: 'a',
+      hostname: 'host',
+      when: '1700000000',
+    });
+    const iso = new Date(1_700_000_000_000).toISOString();
+    expect(last(frames, 'channel-topic')).toMatchObject({
+      topic: 'hello',
+      setBy: 'alice',
+      setAt: iso,
+    });
+    expect(snapChannel(conn, '#chan')).toMatchObject({ topicSetBy: 'alice', topicSetAt: iso });
+  });
+
+  it('reads the ts-only 333 shape as a time with no setter', () => {
+    // `333 me #chan 1205428096` — irc-framework hands the lone ts over as the
+    // setter's nick (weechat irc-protocol.c:5275 handles both shapes).
+    const { conn, frames } = makeConn('cc-333-ts');
+    conn.upsertChannel('#chan');
+    conn.client.emit('topicsetby', { channel: '#chan', nick: '1205428096' });
+    expect(last(frames, 'channel-topic')).toMatchObject({
+      setBy: null,
+      setAt: new Date(1_205_428_096_000).toISOString(),
+    });
+  });
+
+  it('a live TOPIC names its own setter and time', () => {
+    const { conn } = makeConn('cc-live-topic');
+    conn.upsertChannel('#chan');
+    conn.client.emit('topic', {
+      channel: '#chan',
+      topic: 'new',
+      nick: 'bob',
+      time: Date.parse('2026-09-23T10:00:00Z'),
+    });
+    expect(snapChannel(conn, '#chan')).toMatchObject({
+      topic: 'new',
+      topicSetBy: 'bob',
+      topicSetAt: '2026-09-23T10:00:00.000Z',
+    });
+  });
+
+  it('finds the channel by the network casemapping, not ASCII', () => {
+    // rfc1459: {}|~ fold to []\^, so a reply spelled #a{b} is about #a[b].
+    const { conn } = makeConn('cc-rfc1459');
+    conn.client.emit('raw', {
+      from_server: true,
+      line: ':irc.example.test 005 me CASEMAPPING=rfc1459 :are supported by this server',
+    });
+    conn.upsertChannel('#a[b]');
+    conn.client.emit('channel info', {
+      channel: '#a{b}',
+      modes: [{ mode: '+l', param: '5' }],
+    });
+    conn.client.emit('mode', {
+      target: '#A{B}',
+      modes: [{ mode: '+m', param: null }],
+      raw_modes: '+m',
+      raw_params: [],
+    });
+    expect(snapChannel(conn, '#a[b]')).toMatchObject({ modes: 'lm', modeParams: { l: '5' } });
+  });
+
+  it('a live TOPIC with a server-time out of Date range does not throw', () => {
+    const { conn } = makeConn('cc-live-topic-bad-time');
+    conn.upsertChannel('#chan');
+    expect(() =>
+      conn.client.emit('topic', { channel: '#chan', topic: 'x', nick: 'bob', time: -1e20 }),
+    ).not.toThrow();
+    // Falls back to arrival time, the same as a missing tag.
+    expect(Date.parse(snapChannel(conn, '#chan').topicSetAt!)).toBeGreaterThan(Date.now() - 60_000);
+  });
+
+  it("keeps a member's modes in rank order, not grant order", () => {
+    const { conn } = makeConn('cc-rank');
+    conn.upsertChannel('#chan');
+    conn.client.emit('userlist', { channel: '#chan', users: [{ nick: 'alice', modes: [] }] });
+    for (const letter of ['v', 'o']) {
+      conn.client.emit('mode', {
+        target: '#chan',
+        modes: [{ mode: `+${letter}`, param: 'alice' }],
+        raw_modes: `+${letter}`,
+        raw_params: ['alice'],
+      });
+    }
+    const alice = snapChannel(conn, '#chan').members.find((m) => m.nick === 'alice')!;
+    expect(alice.modes).toEqual(['o', 'v']);
+  });
+
+  describe('the mode spec clients see', () => {
+    function libera(name: string) {
+      const made = makeConn(name);
+      const options = made.conn.client.network.options as Record<string, unknown>;
+      // CHANMODES on one 005 line and PREFIX on the next: between the two, the
+      // server's own spec still has the default PREFIX, which claims q.
+      const line1 = () => {
+        options.CHANMODES = ['eIbq', 'k', 'flj', 'CFLMPQRSTcgimnprstuz'];
+        options.MODES = '4';
+        made.conn.client.emit('server options', { options });
+      };
+      const line2 = () => {
+        options.PREFIX = [
+          { symbol: '@', mode: 'o' },
+          { symbol: '+', mode: 'v' },
+        ];
+        made.conn.client.emit('server options', { options });
+      };
+      const specs = () => made.frames.filter((f) => f.type === 'mode-spec');
+      return { ...made, line1, line2, specs };
+    }
+
+    it('is null, not the defaults, until the registration burst ends', () => {
+      const { conn, line1, line2, specs } = libera('cc-spec-burst');
+      expect(conn.snapshot().modeSpec).toBeNull();
+      line1();
+      expect(conn.snapshot().modeSpec).toBeNull();
+      line2();
+      expect(specs()).toHaveLength(0);
+
+      conn.client.emit('motd', { motd: '' });
+      expect(specs()).toHaveLength(1);
+      expect(specs()[0].modeSpec).toMatchObject({ list: 'eIbq', onSet: 'flj', maxModes: 4 });
+      expect(conn.snapshot().modeSpec).toEqual(specs()[0].modeSpec);
+    });
+
+    it('is sent again only when a later 005 changes it', () => {
+      const { conn, line1, line2, specs } = libera('cc-spec-later');
+      line1();
+      line2();
+      conn.client.emit('motd', { motd: '' });
+      line2();
+      expect(specs()).toHaveLength(1);
+
+      (conn.client.network.options as Record<string, unknown>).MODES = '6';
+      conn.client.emit('server options', {});
+      expect(specs()).toHaveLength(2);
+      expect(specs()[1].modeSpec).toMatchObject({ maxModes: 6 });
+    });
+
+    it('is sent again after a reconnect even when nothing changed', () => {
+      // The reconnect's snapshot carries null, so the new burst's end has to
+      // restate the spec or clients keep the null.
+      const { conn, line1, line2, specs } = libera('cc-spec-reconnect');
+      line1();
+      line2();
+      conn.client.emit('motd', { motd: '' });
+      conn.client.emit('close', false);
+      expect(conn.snapshot().modeSpec).toBeNull();
+      conn.client.emit('motd', { motd: '' });
+      expect(specs()).toHaveLength(2);
+    });
   });
 });
 
