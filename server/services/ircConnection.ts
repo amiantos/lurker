@@ -494,6 +494,9 @@ const MAX_FUTURE_TIME_SKEW_MS = 2 * 60_000;
 // is pathological — and the cap bounds a hostile/broken flood.
 const SENT_CIPHERTEXT_TTL_MS = 30_000;
 const SENT_CIPHERTEXT_MAX = 500;
+// The largest |ms| a Date can hold (ECMA-262 §21.4.1.1).
+const MAX_DATE_MS = 8.64e15;
+
 function normalizeEventTime(t: unknown): string {
   let ms: number | undefined;
   if (typeof t === 'number' && Number.isFinite(t)) ms = t;
@@ -501,7 +504,10 @@ function normalizeEventTime(t: unknown): string {
     const parsed = Date.parse(t);
     if (Number.isFinite(parsed)) ms = parsed;
   }
-  if (ms === undefined || ms - Date.now() > MAX_FUTURE_TIME_SKEW_MS) {
+  // Past ±8.64e15 ms toISOString() throws, and every event passes through here.
+  // irc-framework can't hand us one (its times come from Date.parse / new Date),
+  // but a throw in an IRC handler ends the process, so it isn't worth trusting.
+  if (ms === undefined || Math.abs(ms) > MAX_DATE_MS || ms - Date.now() > MAX_FUTURE_TIME_SKEW_MS) {
     return new Date().toISOString();
   }
   return new Date(ms).toISOString();
@@ -3121,7 +3127,7 @@ export class IrcConnection {
       } else {
         // RPL_TOPIC on join — sync the topic bar without printing a row, so
         // rejoining an already-open buffer doesn't repeat the same topic line
-        // every time. The setter and time are the 333 behind it's to say; until
+        // every time. The 333 behind it restates the setter and time; until
         // then the ones we hold may belong to an older topic.
         ch.topicSetBy = null;
         ch.topicSetAt = null;

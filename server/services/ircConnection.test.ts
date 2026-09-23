@@ -4291,6 +4291,16 @@ describe('channel control state (#727)', () => {
     });
   });
 
+  it('a live TOPIC with a server-time out of Date range does not throw', () => {
+    const { conn } = makeConn('cc-live-topic-bad-time');
+    conn.upsertChannel('#chan');
+    expect(() =>
+      conn.client.emit('topic', { channel: '#chan', topic: 'x', nick: 'bob', time: -1e20 }),
+    ).not.toThrow();
+    // Falls back to arrival time, the same as a missing tag.
+    expect(Date.parse(snapChannel(conn, '#chan').topicSetAt!)).toBeGreaterThan(Date.now() - 60_000);
+  });
+
   it("keeps a member's modes in rank order, not grant order", () => {
     const { conn } = makeConn('cc-rank');
     conn.upsertChannel('#chan');

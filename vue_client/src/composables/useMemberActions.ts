@@ -207,7 +207,8 @@ export function useMemberActions(): MemberActionsAPI {
 
       // Plain halfops usually can't op, so op management starts at op — keeps
       // the action off the menu rather than letting the server bounce it.
-      if (hasRankAtLeast(selfModes, prefix, 'o')) {
+      const hasMode = (letter: string) => prefix.some((p) => p.mode === letter);
+      if (hasMode('o') && hasRankAtLeast(selfModes, prefix, 'o')) {
         const opped = targetModes.includes('o');
         items.push({
           label: opped ? 'Take Op' : 'Give Op',
@@ -217,11 +218,13 @@ export function useMemberActions(): MemberActionsAPI {
       }
 
       const voiced = targetModes.includes('v');
-      items.push({
-        label: voiced ? 'Remove Voice' : 'Give Voice',
-        icon: voiced ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone',
-        onClick: () => send(`MODE ${ch} ${voiced ? '-' : '+'}v ${nick}`),
-      });
+      if (hasMode('v')) {
+        items.push({
+          label: voiced ? 'Remove Voice' : 'Give Voice',
+          icon: voiced ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone',
+          onClick: () => send(`MODE ${ch} ${voiced ? '-' : '+'}v ${nick}`),
+        });
+      }
 
       items.push({
         label: 'Kick…',

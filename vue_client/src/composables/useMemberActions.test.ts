@@ -52,6 +52,13 @@ describe('useMemberActions channel-operator gating', () => {
     expect(labelsFor(['Y'])).toContain('Give Op');
   });
 
+  it('offers only the modes the network has', () => {
+    // No voice on this network: nothing may send +v.
+    prefix('(Yoh)!@%');
+    expect(labelsFor(['Y'])).toContain('Give Op');
+    expect(labelsFor(['Y'])).not.toContain('Give Voice');
+  });
+
   it('falls back to the conventional ladder before the spec arrives', () => {
     expect(labelsFor(['q'])).toContain('Give Op');
     expect(labelsFor(['v'])).not.toContain('Kick…');
