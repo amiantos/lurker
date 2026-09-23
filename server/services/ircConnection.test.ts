@@ -4291,6 +4291,27 @@ describe('channel control state (#727)', () => {
     });
   });
 
+  it('finds the channel by the network casemapping, not ASCII', () => {
+    // rfc1459: {}|~ fold to []\^, so a reply spelled #a{b} is about #a[b].
+    const { conn } = makeConn('cc-rfc1459');
+    conn.client.emit('raw', {
+      from_server: true,
+      line: ':irc.example.test 005 me CASEMAPPING=rfc1459 :are supported by this server',
+    });
+    conn.upsertChannel('#a[b]');
+    conn.client.emit('channel info', {
+      channel: '#a{b}',
+      modes: [{ mode: '+l', param: '5' }],
+    });
+    conn.client.emit('mode', {
+      target: '#A{B}',
+      modes: [{ mode: '+m', param: null }],
+      raw_modes: '+m',
+      raw_params: [],
+    });
+    expect(snapChannel(conn, '#a[b]')).toMatchObject({ modes: 'lm', modeParams: { l: '5' } });
+  });
+
   it('a live TOPIC with a server-time out of Date range does not throw', () => {
     const { conn } = makeConn('cc-live-topic-bad-time');
     conn.upsertChannel('#chan');

@@ -3190,7 +3190,9 @@ export class IrcConnection {
       }
 
       if (!target || !isChannelTarget(target)) return;
-      const ch = this.channels.get(target.toLowerCase());
+      // Fold-aware, like the topic handler: on an rfc1459 network a MODE for
+      // #a{b} is about the #a[b] we joined.
+      const ch = this.channelState(target);
       // Apply per-user prefix modes (+o/-o, +v/-v, etc.) to the member map so
       // the snapshot keeps current modes after page reload.
       let memberModesChanged = false;
@@ -3293,7 +3295,7 @@ export class IrcConnection {
     on('channel info', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string | undefined;
       if (!eventChannel) return;
-      const ch = this.channels.get(eventChannel.toLowerCase());
+      const ch = this.channelState(eventChannel);
       if (!ch) return;
       // RPL_CREATIONTIME (329) arrives as its own 'channel info' carrying only
       // `created_at`, in unix seconds.
