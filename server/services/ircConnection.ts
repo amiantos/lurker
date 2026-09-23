@@ -409,7 +409,9 @@ interface ChannelState {
   members: Map<string, ChannelMember>;
   modes: Set<string>;
   // Values of the set param modes (`l` → '50'), keyed by letter. NEVER `k`:
-  // the key lives encrypted in buffers.key and reaches no client frame (#727).
+  // the key lives encrypted in buffers.key, so channel state (snapshot,
+  // channel-modes) never carries it (#727). The MODE row that set it does
+  // show it, as every IRC client does to everyone in the channel.
   modeParams: Map<string, string>;
   // Channel creation time (ISO), from 329.
   createdAt: string | null;
@@ -1877,6 +1879,9 @@ export class IrcConnection {
       this.pendingMonitorSeed = false;
       this.monitor.reset();
       this.isupportComplete = false;
+      // The next snapshot sends a null spec (clientModeSpec), so the burst's
+      // end must send a frame even if the network's spec hasn't changed.
+      this.publishedModeSpec = null;
       this.rawMonitored.clear();
       // Safety-net presence sweep. The primary one runs in 'socket close',
       // which fires on every disconnect (including auto-reconnect blips), so it
@@ -2319,6 +2324,7 @@ export class IrcConnection {
     on('motd', (event: Record<string, unknown>) => {
       // The MOTD, or its absence, ends the registration burst after every 005.
       this.isupportComplete = true;
+      this.publishModeSpecIfChanged();
       // irc-framework also fires 'motd' for ERR_NOMOTD (no MOTD configured)
       // with `error` instead of `motd`, and for servers with an empty MOTD
       // file `motd` is just ''. Skip the blank-line publish either way.
@@ -3135,10 +3141,8 @@ export class IrcConnection {
         when = setBy;
         setBy = null;
       }
-      const secs = Number(when);
       ch.topicSetBy = setBy;
-      ch.topicSetAt =
-        Number.isFinite(secs) && secs > 0 ? new Date(secs * 1000).toISOString() : null;
+      ch.topicSetAt = unixSecondsToIso(when);
       this.publishTopic(ch);
     });
 
@@ -3273,7 +3277,13 @@ export class IrcConnection {
     // RPL_CHANNELMODEIS (324) and friends. Sent on join by most servers and
     // on demand via `MODE #chan`. Captures the current flag set without
     // requiring us to have observed the +/− history. 324 is the whole state,
-    // so it replaces rather than merges (weechat, soju and ZNC all do).
+    // so the letters and param values replace rather than merge (weechat, soju
+    // and ZNC all do).
+    //
+    // ⚠ It never touches the STORED key, in either direction. The value a 324
+    // shows can be a mask — `*`, or InspIRCd's `<key>` to a non-member — and a
+    // 324 without `k` may be about a key we still need; only a live MODE ±k
+    // (resolveKeyModeChange) writes buffers.key.
     on('channel info', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string | undefined;
       if (!eventChannel) return;
@@ -3282,9 +3292,7 @@ export class IrcConnection {
       // RPL_CREATIONTIME (329) arrives as its own 'channel info' carrying only
       // `created_at`, in unix seconds.
       if (event.created_at !== undefined) {
-        const secs = event.created_at as number;
-        const createdAt =
-          Number.isFinite(secs) && secs > 0 ? new Date(secs * 1000).toISOString() : null;
+        const createdAt = unixSecondsToIso(event.created_at);
         if (createdAt !== ch.createdAt) {
           ch.createdAt = createdAt;
           this.publishChannelModes(ch);
@@ -3301,16 +3309,7 @@ export class IrcConnection {
         const letter = m.mode.replace(/^[+-]/, '');
         if (!letter || listModes.has(letter)) continue;
         next.add(letter);
-        if (letter === 'k') {
-          // An op's 324 shows the real key; take it through the same guard as a
-          // live +k, so a masked `*` or a value-less echo leaves ours alone.
-          const change = resolveKeyModeChange('+', m.param ?? undefined);
-          if (change) {
-            setBufferChannelKey(this.network.user_id, this.network.id, ch.name, change.key);
-          }
-        } else if (m.param) {
-          nextParams.set(letter, m.param);
-        }
+        if (letter !== 'k' && m.param) nextParams.set(letter, m.param);
       }
       const before = [...ch.modes].toSorted().join('');
       const after = [...next].toSorted().join('');
@@ -4811,10 +4810,20 @@ export class IrcConnection {
     return parseModeSpec(this.client.network?.options);
   }
 
-  // Tell clients when 005 changes the spec. irc-framework fires 'server
-  // options' once per 005 line, so most calls change nothing.
+  // The spec as clients see it: null until the registration burst has ended.
+  // Before then modeSpec() is the RFC defaults, or a half-read 005 (CHANMODES
+  // seen, PREFIX not yet), and a client can't tell either from a network that
+  // actually said so — /quiet would refuse on Libera for the first second.
+  clientModeSpec(): ModeSpec | null {
+    return this.isupportComplete ? this.modeSpec() : null;
+  }
+
+  // Tell clients when the spec changes: once when the registration burst ends,
+  // then on any later 005. irc-framework fires 'server options' once per 005
+  // line, so most calls change nothing.
   private publishModeSpecIfChanged(): void {
-    const spec = this.modeSpec();
+    const spec = this.clientModeSpec();
+    if (!spec) return;
     const json = JSON.stringify(spec);
     if (json === this.publishedModeSpec) return;
     this.publishedModeSpec = json;
@@ -8394,9 +8403,9 @@ export class IrcConnection {
       // pushed (setState('connected') fires after CAP). (#381)
       multilineLimits: this.multilineLimits(),
       // Channel-mode vocabulary for the channel modal and rank gating (#727).
-      // Also sent as a `mode-spec` frame whenever 005 changes it, since 005
-      // follows the 001 that pushes this snapshot.
-      modeSpec: this.modeSpec(),
+      // Null until the registration burst ends (see clientModeSpec); then also
+      // sent as a `mode-spec` frame, since 005 follows the 001 that pushes this.
+      modeSpec: this.clientModeSpec(),
       away: a.since
         ? {
             active: a.active,
@@ -8433,6 +8442,17 @@ export class IrcConnection {
       ),
     };
   }
+}
+
+// A server's unix-seconds timestamp (333, 329) as ISO, or null when it isn't
+// one. ⚠ The range check is load-bearing: `new Date(ms).toISOString()` THROWS
+// past ±8.64e15 ms, and an IRC handler that throws takes the process down, so
+// one bogus `333 me #c x 99999999999999` would end every user's session.
+export function unixSecondsToIso(value: unknown): string | null {
+  const secs = typeof value === 'string' ? Number(value) : value;
+  if (typeof secs !== 'number' || !Number.isFinite(secs) || secs <= 0) return null;
+  const date = new Date(secs * 1000);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function sameModeParams(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {

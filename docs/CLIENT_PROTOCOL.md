@@ -418,12 +418,16 @@ on the server so a client never has to read 005 (`shared/channelModes.ts`):
 - `topicLen` — the longest topic the server accepts, in bytes; `null` when not
   advertised.
 
-It arrives in the snapshot and again as a `mode-spec` frame whenever 005 changes
-it — which is usually just after the snapshot, since 005 follows 001.
+⚠ `modeSpec` is **`null` until the network's registration burst has ended** —
+before then the server only has defaults, and a default is not the network
+saying so. Treat null as "unknown", not as the RFC defaults. It arrives as a
+`mode-spec` frame once the burst ends (usually just after the snapshot, since
+005 follows 001) and again whenever a later 005 changes it.
 
 Per channel, `modeParams` holds the values of the set param modes
-(`{ l: '50' }`). ⚠ It **never carries the key** (`k`): a channel's key shows in
-`modes` as the letter only. `topicSetBy` / `topicSetAt` (ISO) and `createdAt`
+(`{ l: '50' }`). ⚠ Channel state **never carries the key** (`k`): it shows in
+`modes` as the letter only. The `mode` row that set it does carry the value,
+as it does for everyone in the channel. `topicSetBy` / `topicSetAt` (ISO) and `createdAt`
 (ISO, from 329) are `null` until the server has said.
 
 `nickNotes` rows are `{nick, note, updatedAt}` — the account's own free-form

@@ -180,8 +180,10 @@ export interface OutgoingModeChange {
 // prefix the server adds when it relays our line to the channel.
 const MODE_LINE_BUDGET = 400;
 
+const encoder = new TextEncoder();
+
 function byteLength(s: string): number {
-  return new TextEncoder().encode(s).length;
+  return encoder.encode(s).length;
 }
 
 /**
