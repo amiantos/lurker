@@ -73,6 +73,9 @@ import { isChannelTarget } from '../../../shared/channels.js';
 export interface AckResult {
   ok: boolean;
   error?: string;
+  // What a request-shaped message answers with (get-mode-list's entries,
+  // set-channel-modes' line count). Absent on a plain send's ACK.
+  data?: unknown;
 }
 
 export interface SocketAPI {
@@ -1056,7 +1059,7 @@ function handleMessage(raw: string): void {
   }
   if (payload.kind === 'send-result') {
     const resolver = pendingAcks.get(payload.clientId);
-    if (resolver) resolver({ ok: !!payload.ok, error: payload.error });
+    if (resolver) resolver({ ok: !!payload.ok, error: payload.error, data: payload.data });
     return;
   }
   if (payload.kind === 'export') {
@@ -1219,9 +1222,14 @@ function failAllPendingAcks(error: string): void {
 // null synchronously if the socket isn't open — so the caller can detect
 // "not even sent" before doing anything destructive (clearing the input,
 // recording history). On a successful queue, returns a Promise<{ok, error}>
-// that resolves when the server ACKs, the socket closes, or ACK_TIMEOUT_MS
-// elapses — whichever fires first.
-export function socketSendWithAck(payload: Record<string, unknown>): Promise<AckResult> | null {
+// that resolves when the server ACKs, the socket closes, or the timeout
+// elapses — whichever fires first. `timeoutMs` is for a message whose answer
+// waits on the IRC server: get-mode-list can sit up to the server's 30 s reply
+// timeout before it says no-reply, so the default 8 s would give up first.
+export function socketSendWithAck(
+  payload: Record<string, unknown>,
+  { timeoutMs = ACK_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<AckResult> | null {
   if (!socket || socket.readyState !== WebSocket.OPEN) return null;
   const clientId = makeClientId();
   const wire = { ...payload, clientId };
@@ -1240,7 +1248,7 @@ export function socketSendWithAck(payload: Record<string, unknown>): Promise<Ack
       // eslint-disable-next-line promise/no-multiple-resolved
       resolve(result);
     };
-    const timer = setTimeout(() => settle({ ok: false, error: 'timeout' }), ACK_TIMEOUT_MS);
+    const timer = setTimeout(() => settle({ ok: false, error: 'timeout' }), timeoutMs);
     pendingAcks.set(clientId, settle);
     try {
       socket!.send(JSON.stringify(wire));

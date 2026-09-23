@@ -13,14 +13,16 @@
 // true } for a channel the caller never named. Rejecting up front is what turns
 // that into an answerable error instead of a wrong success.
 
-/** One IRC parameter: non-empty after trimming, no interior whitespace. */
+/** One IRC parameter: non-empty after trimming, no interior whitespace or NUL. */
 export function singleToken(
   value: unknown,
   { empty, malformed }: { empty: string; malformed: string },
 ): { value: string } | { error: string } {
   const s = typeof value === 'string' ? value.trim() : '';
   if (!s) return { error: empty };
-  if (/\s/.test(s)) return { error: malformed };
+  // NUL isn't whitespace, but conn.raw() strips it like CR/LF, so `#a\0b`
+  // would silently become #ab — an operation on a channel nobody named.
+  if (/[\s\0]/.test(s)) return { error: malformed };
   return { value: s };
 }
 

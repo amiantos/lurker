@@ -623,7 +623,8 @@ and rename-proof.
 same frame with a `data` field carrying their result.
 This confirms acceptance only — the message itself comes back as a normal `irc`
 echo with `self:true` and its real id (§9.3). The web client times acks out
-after 8 s (client policy). On networks that ACK `echo-message` upstream, that
+after 8 s (client policy). A `get-mode-list` answer waits on the IRC server, whose
+reply timeout is 30 s, so give that ack longer. On networks that ACK `echo-message` upstream, that
 `self:true` frame arrives only after the IRC server reflects the send back (one
 upstream round trip, carrying the real `msgid` + server `time`); elsewhere it
 is emitted immediately from the server's optimistic local copy.

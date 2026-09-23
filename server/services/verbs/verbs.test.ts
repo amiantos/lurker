@@ -1047,6 +1047,15 @@ describe('agent control verbs', () => {
       expect(set([{ sign: '+', letter: 'm' }])).toEqual({ ok: false, error: 'not-connected' });
     });
 
+    it('refuses a channel carrying a NUL, which raw() would strip into another name', () => {
+      const conn = live();
+      expect(set([{ sign: '+', letter: 'm' }], '#chan\0other')).toEqual({
+        ok: false,
+        error: 'channel-must-be-single-token',
+      });
+      expect(conn.sent).toEqual([]);
+    });
+
     it('refuses a target that is not a channel, instead of sending a user-mode change', () => {
       const conn = live();
       expect(set([{ sign: '+', letter: 'i' }], 'owner')).toEqual({

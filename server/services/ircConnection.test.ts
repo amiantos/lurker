@@ -4512,6 +4512,36 @@ describe('list-mode fetch (#727)', () => {
     ]);
   });
 
+  it('takes only its own answer when the user asks for the same list meanwhile', async () => {
+    // Each 367 names only the channel, so two ban queries on the wire can't be
+    // told apart by their lines — but a server answers them in order, and the
+    // router ends the older one at its 368. Neither waits for the other (the
+    // router's rule: a query nobody answers mustn't hold up the next).
+    const { conn, sent, serverSays, serverBuffer } = makeConn('ml-overlap');
+    const fetched = conn.fetchModeList('#chan', 'b');
+    conn.raw('MODE #chan +b'); // the user, typing while the modal fetches
+    expect(sent).toEqual(['MODE #chan +b', 'MODE #chan +b']);
+    serverSays('367 me #chan *!*@modal.example op 1700000000');
+    serverSays('368 me #chan :End of Channel Ban List');
+    serverSays('367 me #chan *!*@user.example op 1700000000');
+    serverSays('368 me #chan :End of Channel Ban List');
+    expect(await fetched).toEqual({
+      ok: true,
+      entries: [{ mask: '*!*@modal.example', setBy: 'op', setAt: '2023-11-14T22:13:20.000Z' }],
+    });
+    expect(serverBuffer().map((f) => f.text)).toEqual([
+      expect.stringContaining('*!*@user.example'),
+      expect.stringContaining('End of Channel Ban List'),
+    ]);
+  });
+
+  it('lets a different list on the same channel go out at once', () => {
+    const { conn, sent } = makeConn('ml-other-list');
+    void conn.fetchModeList('#chan', 'b');
+    conn.raw('MODE #chan +e');
+    expect(sent).toEqual(['MODE #chan +b', 'MODE #chan +e']);
+  });
+
   it('shares one query between two asks for the same list', async () => {
     const { conn, sent, serverSays } = makeConn('ml-share');
     const first = conn.fetchModeList('#chan', 'b');
