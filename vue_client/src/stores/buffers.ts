@@ -284,14 +284,15 @@ function clearSpeakerTyping(buf: Buffer, nick: string | undefined): void {
 
 // Before a buffer detaches, remember how far its live tail reached, so a replay
 // of a row it already had isn't taken as news (pushLive). Its newest row with
-// an id — a local /commands line has none — or, when it holds none (a shell, a
-// buffer wiped on reconnect), the socket's resume cursor: every id up to it has
-// been delivered. The cursor assumes cross-buffer id order only at this one
-// instant; after it the check is this buffer's own.
+// an id — a local /commands line has none — is exact for this buffer. Only when
+// it holds none (a shell, a buffer wiped on reconnect) does the socket's resume
+// cursor stand in: every id up to it has been delivered, assuming cross-buffer
+// id order at this one instant. Flooring an exact tail with it would take a new
+// row that arrives after a higher id elsewhere for a replay.
 function noteLiveTail(buf: Buffer): void {
   let tail = 0;
   for (let i = buf.messages.length - 1; i >= 0 && !tail; i--) tail = buf.messages[i].id ?? 0;
-  buf.liveTailId = Math.max(buf.liveTailId ?? 0, tail, seenEventCursor());
+  buf.liveTailId = Math.max(buf.liveTailId ?? 0, tail || seenEventCursor());
 }
 
 function makeBuffer(networkId: number | string | null, target: string): Buffer {

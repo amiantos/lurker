@@ -153,8 +153,8 @@ const ACK_TIMEOUT_MS = 8000;
 
 // Live IRC events, for a view that has to see its channel's rows even when the
 // buffer's own list won't take them: a detached buffer drops live rows (the
-// channel modal, #727). Only fresh events — a replay of one this client already
-// had is not news. Returns the unsubscribe.
+// channel modal, #727). Only news — a replay of a row its buffer already had is
+// not (applyEvent). Returns the unsubscribe.
 const ircEventListeners = new Set<(event: any) => void>();
 export function onIrcEvent(listener: (event: any) => void): () => void {
   ircEventListeners.add(listener);
@@ -243,9 +243,18 @@ function takeLive(
   return { news: outcome === 'shown' || outcome === 'detached', shown: outcome === 'shown' };
 }
 
-function applyEvent(event: any): void {
+// Returns whether the event was news: the onIrcEvent listeners hear only that.
+// An event with a row is news unless its buffer already had it (takeLive); one
+// without a row (ephemeral state) always is.
+function applyEvent(event: any): boolean {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
+  let news = true;
+  const take = (e: any = event) => {
+    const outcome = takeLive(buffers, e);
+    news = outcome.news;
+    return outcome;
+  };
 
   switch (event.type) {
     case 'state':
@@ -257,7 +266,7 @@ function applyEvent(event: any): void {
       // stale times. Unread/highlight counts come from the server's read-state
       // broadcast (fired after every countable event), so we don't increment
       // them here.
-      const { news, shown } = takeLive(buffers, event);
+      const { news, shown } = take();
       if (!news) break;
       // A live message is the one case where growth is expected and harmless: it lands at the
       // bottom, where the list's existing stick-to-bottom logic follows it down. Only for a row
@@ -280,23 +289,23 @@ function applyEvent(event: any): void {
       break;
     }
     case 'notice':
-      if (!takeLive(buffers, event).news) break;
+      if (!take().news) break;
       notifyForEvent(event);
       break;
     // For events that carry an id AND mutate buffer state (member list,
     // topic): on a replay the mutation would re-apply stale state (e.g. revert
     // the topic) — skip it. A detached buffer still takes it (takeLive).
     case 'join':
-      if (!takeLive(buffers, event).news) break;
+      if (!take().news) break;
       buffers.addMember(event.networkId, event.target, event.nick);
       break;
     case 'part':
     case 'quit':
-      if (!takeLive(buffers, event).news) break;
+      if (!take().news) break;
       buffers.removeMember(event.networkId, event.target, event.nick);
       break;
     case 'kick':
-      if (!takeLive(buffers, event).news) break;
+      if (!take().news) break;
       buffers.removeMember(event.networkId, event.target, event.kicked);
       // Only a kick of US notifies, and the server already decided that — this
       // call is gated on `event.notify` like every other one, so a kick of
@@ -305,14 +314,14 @@ function applyEvent(event: any): void {
       notifyForEvent(event);
       break;
     case 'nick':
-      if (!takeLive(buffers, event).news) break;
+      if (!take().news) break;
       buffers.renameMember(event.networkId, event.target, event.nick, event.newNick);
       break;
     case 'own-nick':
       networks.applyOwnNick(event);
       break;
     case 'topic':
-      if (!takeLive(buffers, event).news) break;
+      if (!take().news) break;
       buffers.setTopic(event.networkId, event.target, event.text, {
         setBy: event.nick,
         setAt: event.time,
@@ -327,7 +336,7 @@ function applyEvent(event: any): void {
       );
       break;
     case 'mode':
-      buffers.pushMessage(event);
+      take();
       break;
     case 'channel-modes':
       buffers.setChannelModes(event.networkId, event.target, event.modes, {
@@ -554,7 +563,7 @@ function applyEvent(event: any): void {
     case 'motd':
     case 'error': {
       const decorated = { ...event, target: event.target || `:server:${event.networkId}` };
-      const { news } = takeLive(buffers, decorated);
+      const { news } = take(decorated);
       // An unrecognized slash command (forwarded as raw IRC) only fails once
       // the server 421s, and that lands in the server buffer — invisible if
       // you typed in a channel. Mirror it as a toast so the feedback shows up
@@ -597,6 +606,7 @@ function applyEvent(event: any): void {
       break;
     }
   }
+  return news;
 }
 
 // Kick off preview resolution for a batch of incoming events.
@@ -866,12 +876,10 @@ function handleMessage(raw: string): void {
     // System-buffer lines (networkId null) ride the same 'irc' frame now but
     // carry system-table ids — keep them out of the `messages`-space resume
     // cursor (#355).
-    // Judged before the cursor moves past it.
-    const fresh =
-      payload.networkId == null || typeof payload.id !== 'number' || payload.id > seenEventCursor();
     if (payload.networkId != null) trackSeenId(payload.id);
-    applyEvent(payload);
-    if (fresh) for (const listener of ircEventListeners) listener(payload);
+    // Judged per buffer (buffers.pushLive), not by the global cursor, so a new
+    // row isn't withheld from a listener for arriving after a higher id elsewhere.
+    if (applyEvent(payload)) for (const listener of ircEventListeners) listener(payload);
     return;
   }
   if (payload.kind === 'account-state') {

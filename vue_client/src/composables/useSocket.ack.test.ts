@@ -111,7 +111,7 @@ describe('socketSendWithAck', () => {
     expect(settled).toMatchObject({ ok: false, error: 'no-reply' });
   });
 
-  it('onIrcEvent hears fresh irc frames, not a replay of one already seen', async () => {
+  it('onIrcEvent hears news, not a replay of a row its buffer already had', async () => {
     const ws = await openSocket();
     const heard: unknown[] = [];
     const stop = onIrcEvent((e) => heard.push(e.id));
@@ -127,9 +127,11 @@ describe('socketSendWithAck', () => {
     ws.deliver(frame(500)); // the same row again, as a resume can send it
     ws.deliver(frame(499));
     ws.deliver(frame(501));
+    // A lower id in ANOTHER buffer is still new to that buffer: replay is per buffer.
+    ws.deliver({ ...frame(450), target: '#other' });
     stop();
     ws.deliver(frame(502));
-    expect(heard).toEqual([500, 501]);
+    expect(heard).toEqual([500, 501, 450]);
   });
 
   it('still gives a plain send 8 s', async () => {

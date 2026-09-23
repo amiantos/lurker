@@ -149,6 +149,18 @@ describe('live events on a detached buffer', () => {
     expect(nicks(buffers)).toContain('alice');
   });
 
+  it('trusts its own tail over the cursor, so a row after a higher id elsewhere is news', async () => {
+    const ws = await openSocket();
+    const buffers = channel(false);
+    buffers.pushMessage({ id: 50, networkId: 1, target: '#chan', type: 'message', nick: 'x' });
+    // Another channel has moved the cursor to 100 …
+    ws.deliver({ ...irc(100, { type: 'message', nick: 'z', text: 'hi' }), target: '#other' });
+    buffers.detachForJump(1, '#chan');
+    // … and #chan's own 60 arrives after it. Its tail is 50: news.
+    ws.deliver(irc(60, { type: 'join', nick: 'carol' }));
+    expect(nicks(buffers)).toContain('carol');
+  });
+
   it("takes the socket's cursor as the floor when the buffer holds no rows", async () => {
     // A shell (or a buffer wiped on reconnect) has no tail of its own; every id
     // up to the cursor has already been delivered.
