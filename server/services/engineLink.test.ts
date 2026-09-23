@@ -97,7 +97,9 @@ async function readyLink(fake: FakeEngine): Promise<EngineLink> {
 }
 
 // A frame the fake sends after another is answered only once the first was
-// read, so a pong to it bounds what the link has processed.
+// read, so a pong to it bounds what the link has processed. It bounds the other
+// direction too: the pong trails everything the link had already written on
+// the same stream, so once the fake has it, it has read those frames as well.
 async function roundTrip(fake: FakeEngine): Promise<void> {
   const before = fake.seen.filter((f) => f.op === 'pong').length;
   fake.say({ op: 'ping' });
