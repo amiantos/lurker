@@ -214,11 +214,28 @@ const spec = computed(() => networks.states[props.networkId]?.modeSpec ?? null);
 // them — to patch an open list and to show what a Save was refused with.
 const modeRowsSeen = ref<ModeRowLike[]>([]);
 const errorsSeen = ref<{ text: string; at: number }[]>([]);
+// The newest live TOPIC, for the same reason: buffer.topic isn't updated while
+// the buffer is detached (useSocket applies it only when pushMessage takes the row).
+const liveTopic = ref<{ text: string; setBy: string | null; setAt: string | null } | null>(null);
 const stopListening = onIrcEvent((event) => {
   if (event.networkId !== props.networkId) return;
   if (String(event.target ?? '').toLowerCase() !== props.target.toLowerCase()) return;
   if (event.type === 'mode') modeRowsSeen.value.push(event as ModeRowLike);
-  else if (event.type === 'error') {
+  else if (event.type === 'topic') {
+    // A live TOPIC row: its author and time are the setter's.
+    liveTopic.value = {
+      text: String(event.text ?? ''),
+      setBy: event.nick ?? null,
+      setAt: event.time ?? null,
+    };
+  } else if (event.type === 'channel-topic') {
+    // 332/331 and 333: the topic bar's state, setter as the server says.
+    liveTopic.value = {
+      text: String(event.topic ?? ''),
+      setBy: event.setBy ?? null,
+      setAt: event.setAt ?? null,
+    };
+  } else if (event.type === 'error') {
     errorsSeen.value.push({ text: String(event.text ?? ''), at: Date.now() });
   }
 });
@@ -259,7 +276,7 @@ const activeList = computed(() => tabs.value.find((t) => t.id === activeTab.valu
 
 // ─── Topic ──────────────────────────────────────────────────────────────────
 
-const topic = computed(() => buffer.value?.topic ?? '');
+const topic = computed(() => liveTopic.value?.text ?? buffer.value?.topic ?? '');
 // Null until the user types: the field shows the live topic until then.
 const topicDraft = ref<string | null>(null);
 const topicShown = computed(() => topicDraft.value ?? topic.value);
@@ -277,8 +294,8 @@ const topicCounter = computed(() =>
   canSetTopic.value && topicLen.value != null ? `${topicSize.value} / ${topicLen.value}` : '',
 );
 const topicMeta = computed(() => {
-  const by = buffer.value?.topicSetBy;
-  const at = buffer.value?.topicSetAt;
+  const by = liveTopic.value ? liveTopic.value.setBy : buffer.value?.topicSetBy;
+  const at = liveTopic.value ? liveTopic.value.setAt : buffer.value?.topicSetAt;
   if (!topic.value || (!by && !at)) return '';
   return [by ? `Set by ${by}` : 'Set', at ? formatDateTime(at) : ''].filter(Boolean).join(' · ');
 });
@@ -380,26 +397,30 @@ const pending = computed(() =>
 // for a row that was saved — when that row's live state moves at all, since a
 // server may echo a value normalized (`+l 050` comes back as 50). A refusal
 // (482 …) moves nothing, so the edit stands beside the error.
-const savedFrom = new Map<string, string>();
+//
+// A save remembers both the live state it saw and the edit it sent. Only that
+// edit is the echo's to clear: the fields stay live while the ACK is out, and a
+// newer edit — untick +m again before +m comes back — is the user's to keep.
+const savedFrom = new Map<string, { live: string; sent: string }>();
 const rowKey = (row: DraftRow) => `${row.on}:${row.value}`;
 watch(live, (now) => {
   for (const [letter, want] of Object.entries(draft)) {
     const was = liveRow(now, letter);
     const matches = want.on === was.on && (!want.on || want.value.trim() === was.value);
-    const moved = savedFrom.has(letter) && savedFrom.get(letter) !== rowKey(was);
-    if (matches || moved) {
-      delete draft[letter];
-      savedFrom.delete(letter);
-    }
+    const saved = savedFrom.get(letter);
+    const moved = !!saved && saved.live !== rowKey(was);
+    if (moved) savedFrom.delete(letter);
+    if (matches || (moved && saved.sent === rowKey(want))) delete draft[letter];
   }
 });
-let topicSavedFrom: string | null = null;
+let topicSaved: { live: string; sent: string } | null = null;
 watch(topic, (now) => {
   if (topicDraft.value === null) return;
-  if (topicToSend.value === now || (topicSavedFrom !== null && now !== topicSavedFrom)) {
+  const moved = topicSaved !== null && now !== topicSaved.live;
+  if (topicToSend.value === now || (moved && topicToSend.value === topicSaved!.sent)) {
     topicDraft.value = null;
-    topicSavedFrom = null;
   }
+  if (moved) topicSaved = null;
 });
 const dirty = computed(
   () => topicChanged.value || 'error' in pending.value || pending.value.changes.length > 0,
@@ -443,9 +464,13 @@ async function save() {
   // is out, and what goes out is what the user saved.
   const topicToSave = topicChanged.value ? topicToSend.value : null;
   const changes = pending.value.changes;
-  if (topicToSave !== null) topicSavedFrom = topic.value;
-  for (const change of changes)
-    savedFrom.set(change.letter, rowKey(liveRow(live.value, change.letter)));
+  if (topicToSave !== null) topicSaved = { live: topic.value, sent: topicToSave };
+  for (const change of changes) {
+    savedFrom.set(change.letter, {
+      live: rowKey(liveRow(live.value, change.letter)),
+      sent: rowKey(draft[change.letter] ?? liveRow(live.value, change.letter)),
+    });
+  }
   armServerErrors();
   saving.value = true;
   try {

@@ -361,6 +361,40 @@ describe('ChannelModal', () => {
     expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
   });
 
+  it("doesn't let an echo clear a newer edit made while the save was out", async () => {
+    // Save +m, then untick it again before the echo: the echo answers the +m,
+    // and the user's newer "off" is theirs to keep.
+    const { buffers } = seed();
+    const w = open();
+    await checkbox(w, 'm')!.setValue(true);
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    await checkbox(w, 'm')!.setValue(false);
+    buffers.setChannelModes(1, '#chan', 'ntlm', { modeParams: { l: '50' }, createdAt: null });
+    await flushPromises();
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(false);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('follows a topic change while the buffer is detached', async () => {
+    // A detached buffer's store copy doesn't take live rows; the modal's does.
+    const { buffers } = seed();
+    buffers.buffers['1::#chan'].detached = true;
+    const w = open();
+    emitIrc({
+      id: 130,
+      networkId: 1,
+      target: '#chan',
+      type: 'topic',
+      nick: 'bob',
+      text: 'fresh topic',
+      time: '2026-09-23T12:00:00.000Z',
+    });
+    await flushPromises();
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('fresh topic');
+    expect(w.text()).toContain('Set by bob');
+  });
+
   it('sends what was saved, and keeps an edit made while the topic ACK was out', async () => {
     seed();
     let finishTopic!: (v: { ok: boolean }) => void;
