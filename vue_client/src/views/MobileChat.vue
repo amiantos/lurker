@@ -171,11 +171,14 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
-    <TopicModal
-      v-if="showTopic && activeKey"
-      :topic="topic"
-      :label="bufferLabel"
-      @close="showTopic = false"
+    <!-- Opened from the shared buffer menu (Channel Settings…); keyed so
+         opening another channel starts fresh. -->
+    <ChannelModal
+      v-if="channelModal.current.value"
+      :key="`${channelModal.current.value.networkId}::${channelModal.current.value.target}`"
+      :network-id="channelModal.current.value.networkId"
+      :target="channelModal.current.value.target"
+      @close="channelModal.close()"
     />
     <ChannelListModal
       v-if="channelListModal.isOpen && channelListModal.networkId !== null"
@@ -226,7 +229,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import type { BufferLike } from '../composables/useBufferActions.js';
@@ -247,7 +250,8 @@ import StatusBar from '../components/StatusBar.vue';
 import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
-import TopicModal from '../components/TopicModal.vue';
+import ChannelModal from '../components/ChannelModal.vue';
+import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
@@ -299,7 +303,6 @@ const {
   isChannel,
   isServerBuffer,
   bufferLabel,
-  topic,
   isSystemBuffer,
   isVirtual,
   hasInput,
@@ -359,7 +362,10 @@ const screen = computed(() =>
   ),
 );
 const showBookmarks = ref(false);
-const showTopic = ref(false);
+const channelModal = useChannelModal();
+// Its open state is module-level: leaving the chat view (a logout, say) must
+// not leave it open for whoever's session mounts the view next.
+onBeforeUnmount(() => channelModal.close());
 const showUploads = ref(false);
 const pendingScrollId = ref<number | null>(null);
 const messageInputRef = ref<{ focus: () => void } | null>(null);
@@ -370,11 +376,11 @@ const bufferCogBtn = ref<HTMLElement | null>(null);
 const { showSearch, showHighlights, searchScope, highlightScope, openSearch, openHighlights } =
   useBufferSearchScope();
 
-// Mobile folds the remaining buffer/topic/server actions behind one kebab menu
-// to keep the header uncluttered (Members is an inline header button — see
-// template). The menu is assembled per buffer type: view-topic is a navigation
-// shortcut unique to this layout, then either the shared buffer-actions menu
-// (pin/notify/profile/note/close) for channels & DMs, or the server controls
+// Mobile folds the remaining buffer/server actions behind one kebab menu to
+// keep the header uncluttered (Members is an inline header button — see
+// template). The menu is assembled per buffer type: either the shared
+// buffer-actions menu (pin/notify/channel settings/profile/note/close) for
+// channels & DMs, or the server controls
 // (browse/connect/edit) for server buffers. Anchored under the kebab like the
 // desktop sidebar menu; ContextMenu clamps it to the viewport.
 function openBufferActions() {
@@ -382,17 +388,6 @@ function openBufferActions() {
   const el = bufferCogBtn.value;
   if (!a || !el) return;
   const items: ContextMenuItem[] = [];
-  // Channels only: a DM's pseudo-topic (the peer's ident@host) is a header
-  // identity, not prose worth a modal.
-  if (isChannel.value && topic.value) {
-    items.push({
-      label: 'View topic',
-      icon: 'fa-solid fa-circle-info',
-      onClick: () => {
-        showTopic.value = true;
-      },
-    });
-  }
   if (isServerBuffer.value) {
     // Join channel / Channel list now live as top-bar buttons for server buffers,
     // so the kebab keeps just the less-frequent connect/edit actions.
@@ -413,9 +408,7 @@ function openBufferActions() {
       { label: 'Edit network', icon: 'fa-solid fa-gear', onClick: editActiveNetwork },
     );
   } else {
-    const bufItems = bufferActions.buildItems(activeBuf.value as BufferLike);
-    if (items.length && bufItems.length) items.push({ divider: true });
-    items.push(...bufItems);
+    items.push(...bufferActions.buildItems(activeBuf.value as BufferLike));
   }
   if (items.length === 0) return;
   const rect = el.getBoundingClientRect();

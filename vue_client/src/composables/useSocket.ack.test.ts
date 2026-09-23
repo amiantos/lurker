@@ -43,6 +43,7 @@ class FakeWebSocket {
 }
 
 import {
+  onIrcEvent,
   useSocket,
   resetPreviewToggleWiring,
   resetSocket,
@@ -108,6 +109,27 @@ describe('socketSendWithAck', () => {
     ws.deliver({ kind: 'send-result', clientId, ok: false, error: 'no-reply', data: {} });
     await vi.advanceTimersByTimeAsync(0);
     expect(settled).toMatchObject({ ok: false, error: 'no-reply' });
+  });
+
+  it('onIrcEvent hears fresh irc frames, not a replay of one already seen', async () => {
+    const ws = await openSocket();
+    const heard: unknown[] = [];
+    const stop = onIrcEvent((e) => heard.push(e.id));
+    const frame = (id: number) => ({
+      kind: 'irc',
+      type: 'mode',
+      networkId: 1,
+      target: '#chan',
+      id,
+      modes: [],
+    });
+    ws.deliver(frame(500));
+    ws.deliver(frame(500)); // the same row again, as a resume can send it
+    ws.deliver(frame(499));
+    ws.deliver(frame(501));
+    stop();
+    ws.deliver(frame(502));
+    expect(heard).toEqual([500, 501]);
   });
 
   it('still gives a plain send 8 s', async () => {

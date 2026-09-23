@@ -145,6 +145,20 @@ describe('channel modal WS messages', () => {
     expect(sent).toEqual(['MODE #chan +ml 20']);
   });
 
+  it('set-topic sets the topic through the verb, and says when it went nowhere', async () => {
+    let sent: string[] = [];
+    const reply = await ack(
+      { type: 'set-topic', networkId, channel: '#chan', topic: 'hello there' },
+      () => (sent = liveNetwork({ ok: true, entries: [] })),
+    );
+    expect(reply).toMatchObject({ ok: true });
+    expect(sent).toEqual(['TOPIC #chan :hello there']);
+    // A raw TOPIC to a down network is dropped in silence; this isn't.
+    ircManager.connectionsForUser(userId).clear();
+    const offline = await ack({ type: 'set-topic', networkId, channel: '#chan', topic: 'x' });
+    expect(offline).toMatchObject({ ok: false, error: 'not-connected' });
+  });
+
   it('answers not-connected when the network is down', async () => {
     const reply = await ack({ type: 'get-mode-list', networkId, channel: '#chan', letter: 'b' });
     expect(reply).toMatchObject({ ok: false, error: 'not-connected' });

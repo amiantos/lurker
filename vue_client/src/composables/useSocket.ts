@@ -150,6 +150,16 @@ const ACK_TIMEOUT_MS = 8000;
 // buffers.pushMessage handles any residual overlap if the gap is empty.
 let lastSeenEventId = 0;
 
+// Live IRC events, for a view that has to see its channel's rows even when the
+// buffer's own list won't take them: a detached buffer drops live rows (the
+// channel modal, #727). Only fresh events — a replay of one this client already
+// had is not news. Returns the unsubscribe.
+const ircEventListeners = new Set<(event: any) => void>();
+export function onIrcEvent(listener: (event: any) => void): () => void {
+  ircEventListeners.add(listener);
+  return () => ircEventListeners.delete(listener);
+}
+
 export function onSocketOpen(handler: () => void): () => void {
   openHandlers.add(handler);
   return () => openHandlers.delete(handler);
@@ -841,8 +851,12 @@ function handleMessage(raw: string): void {
     // System-buffer lines (networkId null) ride the same 'irc' frame now but
     // carry system-table ids — keep them out of the `messages`-space resume
     // cursor (#355).
+    // Judged before the cursor moves past it.
+    const fresh =
+      payload.networkId == null || typeof payload.id !== 'number' || payload.id > lastSeenEventId;
     if (payload.networkId != null) trackSeenId(payload.id);
     applyEvent(payload);
+    if (fresh) for (const listener of ircEventListeners) listener(payload);
     return;
   }
   if (payload.kind === 'account-state') {

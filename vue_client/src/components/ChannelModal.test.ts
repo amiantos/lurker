@@ -1,0 +1,549 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+// @vitest-environment happy-dom
+
+// The channel modal (#727), mounted against real stores with the socket mocked:
+// what it draws from the network's modeSpec, who may edit, what Save sends,
+// and how a list tab loads and then keeps itself current.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { flushPromises, mount } from '@vue/test-utils';
+import { setActivePinia, createPinia } from 'pinia';
+
+// The modal's live-event listener (onIrcEvent), so a test can deliver a frame
+// the way the socket would.
+const ircListeners = new Set<(event: Record<string, unknown>) => void>();
+const emitIrc = (event: Record<string, unknown>) => {
+  for (const listener of ircListeners) listener(event);
+};
+const openListeners = new Set<() => void>();
+const reopenSocket = () => {
+  for (const listener of openListeners) listener();
+};
+
+vi.mock('../composables/useSocket.js', () => ({
+  socketSendWithAck: vi.fn<
+    (payload: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown> | null
+  >(() => Promise.resolve({ ok: true, data: { ok: true, lines: 1 } })),
+  onIrcEvent: (listener: (event: Record<string, unknown>) => void) => {
+    ircListeners.add(listener);
+    return () => ircListeners.delete(listener);
+  },
+  onSocketOpen: (listener: () => void) => {
+    openListeners.add(listener);
+    return () => openListeners.delete(listener);
+  },
+}));
+
+// GET /api/networks, which a keyed channel's modal refetches on open: the key
+// the server holds now, not the one the page loaded with.
+const apiKey = { value: 'hunter2' };
+vi.mock('../api.js', () => ({
+  api: vi.fn<(url: string) => Promise<unknown>>(() =>
+    Promise.resolve({
+      networks: [
+        {
+          id: 1,
+          name: 'n',
+          host: 'h',
+          port: 6697,
+          nick: 'me',
+          tls: true,
+          channels: [{ name: '#chan', key: apiKey.value }],
+        },
+      ],
+    }),
+  ),
+}));
+
+import { socketSendWithAck } from '../composables/useSocket.js';
+import { useBuffersStore } from '../stores/buffers.js';
+import { useNetworksStore } from '../stores/networks.js';
+import { parseModeSpec } from '../../../shared/channelModes.js';
+import ChannelModal from './ChannelModal.vue';
+
+function seed({ myModes = ['o'], modes = 'ntl' } = {}) {
+  const networks = useNetworksStore();
+  // The network config, as GET /api/networks left it: where the key we joined
+  // with comes from.
+  networks.networks = [
+    {
+      id: 1,
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      nick: 'me',
+      tls: true,
+      channels: [{ name: '#chan', key: 'hunter2' }],
+    },
+  ];
+  networks.states[1] = {
+    networkId: 1,
+    channels: [],
+    nick: 'me',
+    // solanum: q is a quiet list, MODES=4, TOPICLEN=390.
+    modeSpec: parseModeSpec({
+      CHANMODES: ['eIbq', 'k', 'flj', 'CFLMPQRSTcgimnprstuz'],
+      PREFIX: [
+        { mode: 'o', symbol: '@' },
+        { mode: 'v', symbol: '+' },
+      ],
+      MODES: '4',
+      TOPICLEN: '390',
+    }),
+  };
+  const buffers = useBuffersStore();
+  buffers.ensure(1, '#chan');
+  buffers.setMembers(1, '#chan', [
+    { nick: 'me', modes: myModes, away: false },
+    { nick: 'alice', modes: [], away: false },
+  ]);
+  buffers.setTopic(1, '#chan', 'hello', { setBy: 'alice', setAt: '2026-09-23T10:00:00.000Z' });
+  buffers.setChannelModes(1, '#chan', modes, { modeParams: { l: '50' }, createdAt: null });
+  return { buffers };
+}
+
+const open = () => mount(ChannelModal, { props: { networkId: 1, target: '#chan' } });
+const checkbox = (w: ReturnType<typeof open>, letter: string) =>
+  w
+    .findAll('.modes li')
+    // A named mode carries its letter as a `.tag`; an unnamed one as its label.
+    .find((r) => r.findAll('.tag, span').some((e) => e.text() === `+${letter}`))
+    ?.find('input[type="checkbox"]');
+
+describe('ChannelModal', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    ircListeners.clear();
+    openListeners.clear();
+    apiKey.value = 'hunter2';
+    // Reset, not clear: a test's unconsumed mockImplementationOnce would
+    // otherwise answer the next test's first call.
+    vi.mocked(socketSendWithAck).mockReset();
+    vi.mocked(socketSendWithAck).mockImplementation(() =>
+      Promise.resolve({ ok: true, data: { ok: true, lines: 1 } }),
+    );
+  });
+
+  it("draws every mode the network has, checked as the channel's are", () => {
+    seed();
+    const w = open();
+    expect((checkbox(w, 'n')!.element as HTMLInputElement).checked).toBe(true);
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(false);
+    // A letter with no well-known meaning still gets its row.
+    expect(checkbox(w, 'C')?.exists()).toBe(true);
+    expect(w.text()).toContain('Set by alice');
+    expect(w.findAll('[role="tab"]').map((t) => t.text())).toEqual([
+      'Settings',
+      'Bans',
+      'Exceptions',
+      'Invites',
+      'Quiets',
+    ]);
+  });
+
+  it('folds the unnamed modes away, naming the ones that are set', () => {
+    seed({ modes: 'ntlCg' });
+    const w = open();
+    const other = w.find('details.other');
+    expect(other.attributes('open')).toBeUndefined();
+    expect(other.find('summary').text()).toBe('Other modes +Cg');
+  });
+
+  it('lets a non-op read but not edit, showing only the modes that are set', () => {
+    seed({ myModes: [], modes: 'nt' });
+    const w = open();
+    expect(checkbox(w, 'n')!.attributes('disabled')).toBeDefined();
+    expect(checkbox(w, 'm')).toBeUndefined();
+    expect(checkbox(w, 'C')).toBeUndefined();
+    expect(w.text()).toContain('Only channel operators can change modes.');
+    // +t and no rank: the topic is read-only too, so there's nothing to save.
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(w.find('button[type="submit"]').exists()).toBe(false);
+  });
+
+  it('saves only what changed, as one set-channel-modes', async () => {
+    seed();
+    const w = open();
+    await checkbox(w, 'm')!.setValue(true);
+    await checkbox(w, 't')!.setValue(false);
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    expect(socketSendWithAck).toHaveBeenCalledWith({
+      type: 'set-channel-modes',
+      networkId: 1,
+      channel: '#chan',
+      changes: [
+        { sign: '+', letter: 'm' },
+        { sign: '-', letter: 't' },
+      ],
+    });
+  });
+
+  it('sends a changed topic as one line, through set-topic', async () => {
+    seed();
+    const w = open();
+    await w.find('textarea').setValue('new\ntopic');
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    expect(socketSendWithAck).toHaveBeenCalledWith({
+      type: 'set-topic',
+      networkId: 1,
+      channel: '#chan',
+      topic: 'new topic',
+    });
+  });
+
+  it('keeps the typed topic and says so when the network is down', async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
+      Promise.resolve({ ok: false, error: 'not-connected' }),
+    );
+    const w = open();
+    await w.find('textarea').setValue('keep me');
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    expect(w.find('.error').text()).toBe('Not connected.');
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('keep me');
+  });
+
+  it("shows the channel's error rows that arrive after a Save", async () => {
+    seed();
+    const w = open();
+    await checkbox(w, 'm')!.setValue(true);
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    emitIrc({
+      id: 99,
+      networkId: 1,
+      target: '#chan',
+      type: 'error',
+      text: "You're not a channel operator.",
+      time: new Date().toISOString(),
+    });
+    await flushPromises();
+    expect(w.find('.error').text()).toBe("You're not a channel operator.");
+  });
+
+  it('follows a key changed while the modal is open', async () => {
+    seed({ modes: 'ntk' });
+    const w = open();
+    emitIrc({
+      id: 101,
+      networkId: 1,
+      target: '#chan',
+      type: 'mode',
+      modes: [
+        { mode: '-k', param: 'hunter2', kind: 'chan' },
+        { mode: '+k', param: 'hunter3', kind: 'chan' },
+      ],
+    });
+    await flushPromises();
+    const key = w.find('input[aria-label="+k value"]');
+    expect((key.element as HTMLInputElement).value).toBe('hunter3');
+  });
+
+  it("fills the key from the network config, masked, and doesn't resend it untouched", async () => {
+    seed({ modes: 'ntk' });
+    const w = open();
+    await flushPromises();
+    const key = w.find('input[aria-label="+k value"]');
+    expect(key.attributes('type')).toBe('password');
+    expect((key.element as HTMLInputElement).value).toBe('hunter2');
+    await w.find('button[aria-label="Show key"]').trigger('click');
+    expect(key.attributes('type')).toBe('text');
+    // Nothing touched, nothing to save.
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('loads a list tab with a long ACK timeout, then patches it from live MODE rows', async () => {
+    // Detached: the buffer's own list drops live rows, and the tab must not care.
+    const { buffers } = seed();
+    buffers.buffers['1::#chan'].detached = true;
+    vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: true,
+        data: { ok: true, entries: [{ mask: '*!*@old', setBy: 'op', setAt: null }] },
+      }),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    expect(socketSendWithAck).toHaveBeenCalledWith(
+      { type: 'get-mode-list', networkId: 1, channel: '#chan', letter: 'b' },
+      { timeoutMs: 35_000 },
+    );
+    expect(w.findAll('.mask').map((m) => m.text())).toEqual(['*!*@old']);
+
+    emitIrc({
+      id: 100,
+      networkId: 1,
+      target: '#chan',
+      type: 'mode',
+      nick: 'op',
+      time: '2026-09-23T11:00:00.000Z',
+      modes: [
+        { mode: '+b', param: '*!*@new', kind: 'list' },
+        { mode: '-b', param: '*!*@old', kind: 'list' },
+      ],
+    });
+    await flushPromises();
+    expect(w.findAll('.mask').map((m) => m.text())).toEqual(['*!*@new']);
+  });
+
+  it("shows the server's refusal of a ban added from a list tab", async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
+      Promise.resolve({ ok: true, data: { ok: true, entries: [] } }),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    await w.find('form.add input').setValue('*!*@new');
+    await w.find('form.add').trigger('submit');
+    await flushPromises();
+    emitIrc({
+      id: 102,
+      networkId: 1,
+      target: '#chan',
+      type: 'error',
+      text: "The channel's +b list is full.",
+    });
+    await flushPromises();
+    expect(w.find('.list-pane .error').text()).toBe("The channel's +b list is full.");
+  });
+
+  it("doesn't bring back a key a -k removed", async () => {
+    // The config still remembers hunter2; a -k since says there's no key.
+    const { buffers } = seed({ modes: 'ntk' });
+    const w = open();
+    emitIrc({
+      id: 110,
+      networkId: 1,
+      target: '#chan',
+      type: 'mode',
+      modes: [{ mode: '-k', param: 'hunter2', kind: 'chan' }],
+    });
+    buffers.setChannelModes(1, '#chan', 'nt', { modeParams: {}, createdAt: null });
+    await flushPromises();
+    await checkbox(w, 'k')!.setValue(true);
+    const key = w.find('input[aria-label="+k value"]');
+    expect((key.element as HTMLInputElement).value).toBe('');
+    expect(w.find('button[aria-label="Show key"]').exists()).toBe(false);
+  });
+
+  it('keeps an edit until the channel matches it, so a refusal leaves it standing', async () => {
+    const { buffers } = seed();
+    const w = open();
+    await checkbox(w, 'm')!.setValue(true);
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    // Sent, but no echo yet (or a 482): the edit is still there.
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
+    // The server's echo lands: nothing left to save.
+    buffers.setChannelModes(1, '#chan', 'ntlm', { modeParams: { l: '50' }, createdAt: null });
+    await flushPromises();
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+    // And it's gone, not lingering: when another op takes -m off later, the box
+    // follows, rather than an old edit claiming +m and a Save putting it back.
+    buffers.setChannelModes(1, '#chan', 'ntl', { modeParams: { l: '50' }, createdAt: null });
+    await flushPromises();
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(false);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it("doesn't let an echo clear a newer edit made while the save was out", async () => {
+    // Save +m, then untick it again before the echo: the echo answers the +m,
+    // and the user's newer "off" is theirs to keep.
+    const { buffers } = seed();
+    const w = open();
+    await checkbox(w, 'm')!.setValue(true);
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    await checkbox(w, 'm')!.setValue(false);
+    buffers.setChannelModes(1, '#chan', 'ntlm', { modeParams: { l: '50' }, createdAt: null });
+    await flushPromises();
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(false);
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
+  });
+
+  it('follows a topic change while the buffer is detached', async () => {
+    // A detached buffer's store copy doesn't take live rows; the modal's does.
+    const { buffers } = seed();
+    buffers.buffers['1::#chan'].detached = true;
+    const w = open();
+    emitIrc({
+      id: 130,
+      networkId: 1,
+      target: '#chan',
+      type: 'topic',
+      nick: 'bob',
+      text: 'fresh topic',
+      time: '2026-09-23T12:00:00.000Z',
+    });
+    await flushPromises();
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('fresh topic');
+    expect(w.text()).toContain('Set by bob');
+  });
+
+  it('sends what was saved, and keeps an edit made while the topic ACK was out', async () => {
+    seed();
+    let finishTopic!: (v: { ok: boolean }) => void;
+    vi.mocked(socketSendWithAck).mockImplementationOnce(
+      () => new Promise((r) => (finishTopic = r)),
+    );
+    const w = open();
+    await w.find('textarea').setValue('new topic');
+    await w.find('form.modal-form').trigger('submit');
+    // The user keeps editing while the ACK is out.
+    await checkbox(w, 'm')!.setValue(true);
+    finishTopic({ ok: true });
+    await flushPromises();
+    // No set-channel-modes: +m wasn't part of that Save…
+    expect(vi.mocked(socketSendWithAck).mock.calls.map(([p]) => p.type)).toEqual(['set-topic']);
+    // …and it's still there to save next.
+    expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
+  });
+
+  it("says what it doesn't know for a channel we're not in", () => {
+    // Parted — or gone from the server entirely: all we have is what we last
+    // saw, so no mode rows and no claims about ops or "no modes set".
+    const { buffers } = seed();
+    buffers.setJoined(1, '#chan', false);
+    buffers.setTopic(1, '#chan', null);
+    const w = open();
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(w.findAll('.modes li')).toHaveLength(0);
+    expect(w.text()).toContain('Join the channel to see its topic.');
+    expect(w.text()).toContain('Join the channel to see its modes.');
+    expect(w.text()).not.toContain('Only channel operators');
+    expect(w.text()).not.toContain('No modes set');
+    expect(w.find('button[type="submit"]').exists()).toBe(false);
+  });
+
+  it("still shows the last topic it saw for a channel we've left, read-only", () => {
+    const { buffers } = seed();
+    buffers.setJoined(1, '#chan', false);
+    const w = open();
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(w.find('.topic-text').text()).toBe('hello');
+  });
+
+  it('fetches the open list again after a reconnect', async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementation(() =>
+      Promise.resolve({ ok: true, data: { ok: true, entries: [] } }),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    reopenSocket();
+    await flushPromises();
+    const fetches = vi
+      .mocked(socketSendWithAck)
+      .mock.calls.filter(([p]) => p.type === 'get-mode-list');
+    expect(fetches).toHaveLength(2);
+  });
+
+  it("fetches the key afresh on open, over the page's copy", async () => {
+    seed({ modes: 'ntk' }); // the store's copy says hunter2
+    apiKey.value = 'rotated';
+    const w = open();
+    await flushPromises();
+    const key = w.find('input[aria-label="+k value"]');
+    expect((key.element as HTMLInputElement).value).toBe('rotated');
+  });
+
+  it('lets go of a saved edit when the server echoes it normalized', async () => {
+    const { buffers } = seed();
+    const w = open();
+    // From 50 to 060…
+    await w.find('input[aria-label="+l value"]').setValue('060');
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    // …which the ircd echoes as +l 60.
+    buffers.setChannelModes(1, '#chan', 'ntl', { modeParams: { l: '60' }, createdAt: null });
+    await flushPromises();
+    const limit = w.find('input[aria-label="+l value"]');
+    expect((limit.element as HTMLInputElement).value).toBe('60');
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it("shows a list action's refusal on its own tab only", async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementation(() =>
+      Promise.resolve({ ok: true, data: { ok: true, entries: [] } }),
+    );
+    const w = open();
+    const tab = (name: string) => w.findAll('[role="tab"]').find((t) => t.text() === name)!;
+    await tab('Bans').trigger('click');
+    await flushPromises();
+    await w.find('form.add input').setValue('*!*@x');
+    await w.find('form.add').trigger('submit');
+    await flushPromises();
+    emitIrc({ id: 120, networkId: 1, target: '#chan', type: 'error', text: 'list full' });
+    await flushPromises();
+    expect(w.text()).toContain('list full');
+    await tab('Settings').trigger('click');
+    expect(w.text()).not.toContain('list full');
+  });
+
+  it('sends one ban for a double submit', async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementation((p) =>
+      p.type === 'get-mode-list'
+        ? Promise.resolve({ ok: true, data: { ok: true, entries: [] } })
+        : new Promise(() => {}),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    await w.find('form.add input').setValue('*!*@x');
+    await w.find('form.add').trigger('submit');
+    await w.find('form.add').trigger('submit');
+    const sets = vi
+      .mocked(socketSendWithAck)
+      .mock.calls.filter(([p]) => p.type === 'set-channel-modes');
+    expect(sets).toHaveLength(1);
+  });
+
+  it("treats a buffer that's gone (closed elsewhere) as out of the channel", () => {
+    seed();
+    const w = mount(ChannelModal, { props: { networkId: 1, target: '#gone' } });
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(w.text()).toContain('Join the channel to see its modes.');
+  });
+
+  it("says why a list couldn't be read", async () => {
+    seed({ myModes: [] });
+    vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
+      Promise.resolve({
+        ok: false,
+        error: 'refused',
+        data: { ok: false, error: 'refused', numeric: '482', text: 'nope' },
+      }),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Exceptions')!
+      .trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('Only channel operators can see this list.');
+  });
+});

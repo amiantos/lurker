@@ -322,6 +322,23 @@ type WsPayload = Record<string, unknown>;
 // ignore `reset` entirely.
 export type BacklogMode = 'replace' | 'append' | 'shell';
 
+// The channel modal's WS messages (#727): each one's verb and the input it
+// takes from the message. One table, so a message and its input can't drift.
+const CHANNEL_MODAL_VERBS: Record<
+  'get-mode-list' | 'set-channel-modes' | 'set-topic',
+  (msg: WsPayload) => [string, Record<string, unknown>]
+> = {
+  'get-mode-list': (m) => [
+    'get_mode_list',
+    { networkId: m.networkId, channel: m.channel, letter: m.letter },
+  ],
+  'set-channel-modes': (m) => [
+    'set_channel_modes',
+    { networkId: m.networkId, channel: m.channel, changes: m.changes },
+  ],
+  'set-topic': (m) => ['set_topic', { networkId: m.networkId, channel: m.channel, topic: m.topic }],
+};
+
 // Inbound message types that mutate IRC state or produce outbound IRC traffic.
 // A paused account is read-only, so these are rejected while reads (snapshot,
 // history, search, chanlist-search) and local view state (read markers, pins,
@@ -348,6 +365,7 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'ctcp',
   'get-mode-list',
   'set-channel-modes',
+  'set-topic',
 ]);
 
 // Options bag for fanOut.
@@ -3567,13 +3585,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // The channel modal (#727). Each result rides the send-result ACK with the
       // verb's whole answer as `data`: the list's entries, or how many MODE
       // lines went out. get-mode-list waits for the server, so it answers late.
+      // set-topic is the modal's topic Save: unlike a `raw` TOPIC it says when
+      // the network is down, rather than dropping the line.
       case 'get-mode-list':
-      case 'set-channel-modes': {
-        const verbName = msg.type === 'get-mode-list' ? 'get_mode_list' : 'set_channel_modes';
-        const input =
-          msg.type === 'get-mode-list'
-            ? { networkId: msg.networkId, channel: msg.channel, letter: msg.letter }
-            : { networkId: msg.networkId, channel: msg.channel, changes: msg.changes };
+      case 'set-channel-modes':
+      case 'set-topic': {
+        const [verbName, input] = CHANNEL_MODAL_VERBS[msg.type](msg);
         const clientId = msg.clientId;
         void (async () => {
           let result: { ok: boolean; error?: string };

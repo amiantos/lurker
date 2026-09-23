@@ -619,8 +619,9 @@ and rename-proof.
 
 **Ack contract:** include a client-generated `clientId` on `send`/`action`/
 `notice` and the server replies `{kind:'send-result', clientId, ok, error?}`.
-`get-mode-list` and `set-channel-modes` (§ Channels & buffers) answer on the
-same frame with a `data` field carrying their result.
+`get-mode-list`, `set-channel-modes` and `set-topic` (§ Channels & buffers)
+answer on the same frame with a `data` field carrying their result; for
+`set-topic`, `not-connected` means the TOPIC never went out.
 This confirms acceptance only — the message itself comes back as a normal `irc`
 echo with `self:true` and its real id (§9.3). The web client times acks out
 after 8 s (client policy). A `get-mode-list` answer waits on the IRC server, whose
@@ -638,6 +639,7 @@ is emitted immediately from the server's optimistic local copy.
 | `open-buffer`       | `networkId, target, countBy?`                                        | **Write.** Reopen/create: replies `backlog` + `buffer-opened`, announces a shell + `buffer-opened` to the user's other devices; JOINs if an unjoined channel; mints an empty DM row for a bare nick                                                                                               |
 | `close-buffer`      | `networkId, target, reason?`                                         | Closes (PARTs a joined channel, untracks a DM peer, ends a `=nick` DCC chat). `:server:` refuses                                                                                                                                                                                                  |
 | `get-mode-list`     | `networkId, channel, letter, clientId`                               | Fetches a list mode (`b`, `e`, `I`, or `q` where it's a list) from the server. The `send-result` comes once the list is in, with the MCP verb's result as `data`: `{ entries: [{ mask, setBy, setAt }] }`, or `error: 'refused'` plus `numeric`/`text`. The replies never reach the server buffer |
+| `set-topic`         | `networkId, channel, topic, clientId?`                               | The `set_topic` verb: `TOPIC #chan :topic` (an empty string clears). Unlike a `raw` TOPIC, the ACK says `not-connected` when the network is down                                                                                                                                                  |
 | `set-channel-modes` | `networkId, channel, changes: [{ sign, letter, param? }], clientId?` | Validated against `modeSpec` (§5.1) and sent as the fewest MODE lines `maxModes` allows; `data.lines` says how many. A bare `-k` takes the stored key. The server's refusal (482, 467, 478) arrives as the channel's `error` row, not on the ack                                                  |
 
 Every verb in this section is rejected while an account is paused — they are all

@@ -120,8 +120,8 @@
             v-if="isChannel"
             type="button"
             class="topic-text"
-            title="View full topic"
-            @click="showTopic = true"
+            title="Channel settings"
+            @click="active && channelModal.open(active.networkId, active.target)"
           >
             <LinkedText :text="topic" />
           </button>
@@ -134,6 +134,16 @@
                parity with the mobile topic bar. The server buffer has no
                per-buffer scope, so it's excluded. -->
           <template v-if="!isServerBuffer">
+            <button
+              v-if="isChannel"
+              type="button"
+              class="link"
+              title="Channel settings"
+              aria-label="Channel settings"
+              @click="active && channelModal.open(active.networkId, active.target)"
+            >
+              <i class="fa-solid fa-sliders"></i>
+            </button>
             <button
               type="button"
               class="link"
@@ -244,11 +254,14 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
-    <TopicModal
-      v-if="showTopic && active"
-      :topic="topic"
-      :label="bufferLabel"
-      @close="showTopic = false"
+    <!-- For the channel it was opened for, whatever the active buffer does
+         meanwhile; keyed so opening another channel starts fresh. -->
+    <ChannelModal
+      v-if="channelModal.current.value"
+      :key="`${channelModal.current.value.networkId}::${channelModal.current.value.target}`"
+      :network-id="channelModal.current.value.networkId"
+      :target="channelModal.current.value.target"
+      @close="channelModal.close()"
     />
     <ChannelListModal
       v-if="channelListModal.isOpen && channelListModal.networkId !== null"
@@ -301,7 +314,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
@@ -323,7 +336,8 @@ import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
 import LinkedText from '../components/LinkedText.vue';
-import TopicModal from '../components/TopicModal.vue';
+import ChannelModal from '../components/ChannelModal.vue';
+import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
@@ -395,7 +409,10 @@ const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
 const navHistory = useNavHistoryStore();
 const showBookmarks = ref(false);
-const showTopic = ref(false);
+const channelModal = useChannelModal();
+// Its open state is module-level: leaving the chat view (a logout, say) must
+// not leave it open for whoever's session mounts the view next.
+onBeforeUnmount(() => channelModal.close());
 const showUploads = ref(false);
 const showSwitcher = ref(false);
 const showKbdHelp = ref(false);
@@ -414,7 +431,7 @@ const anyModalOpen = computed(
     networkEditor.isOpen ||
     showHighlights.value ||
     showBookmarks.value ||
-    showTopic.value ||
+    !!channelModal.current.value ||
     channelListModal.isOpen ||
     joinChannelModal.isOpen ||
     viewer.isOpen ||
