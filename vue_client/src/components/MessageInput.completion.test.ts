@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { useNetworksStore } from '../stores/networks.js';
+import { parseModeSpec } from '../../../shared/channelModes.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useDraftStore } from '../stores/drafts.js';
@@ -1150,6 +1151,87 @@ describe('MessageInput command dispatch', () => {
       await enter(el);
 
       expect(rawLine('KICK')).toBe('KICK &local bob :rude');
+    });
+  });
+
+  // #727: the network's own MODES decides how many nicks share a line, and /quiet only speaks +q
+  // where the network lists q as a list mode.
+  describe('mode shortcuts (#727)', () => {
+    const rawLines = (verb: string): string[] =>
+      vi
+        .mocked(socketSend)
+        .mock.calls.map(([p]) => p as { type?: string; line?: string })
+        .filter((p) => p?.type === 'raw' && !!p.line?.startsWith(verb))
+        .map((p) => p.line!);
+
+    function withSpec(
+      networks: ReturnType<typeof useNetworksStore>,
+      options: Record<string, unknown>,
+    ) {
+      networks.states[1] = { ...networks.states[1], modeSpec: parseModeSpec(options) } as never;
+    }
+
+    beforeEach(() => {
+      vi.mocked(socketSend).mockReturnValue(true);
+    });
+
+    it('/op splits at the network MODES', async () => {
+      const { networks } = seedStores('#zebra');
+      withSpec(networks, { MODES: '2' });
+      const { el } = await mountComposer();
+
+      await type(el, '/op alice bob mallory');
+      await enter(el);
+
+      expect(rawLines('MODE')).toEqual(['MODE #zebra +oo alice bob', 'MODE #zebra +o mallory']);
+    });
+
+    it('/op keeps to the default 3 before the network has said', async () => {
+      seedStores('#zebra');
+      const { el } = await mountComposer();
+
+      await type(el, '/op a b c d');
+      await enter(el);
+
+      expect(rawLines('MODE')).toEqual(['MODE #zebra +ooo a b c', 'MODE #zebra +o d']);
+    });
+
+    it('/quiet sends +q where q is a quiet list', async () => {
+      const { networks } = seedStores('#zebra');
+      // solanum: q is a quiet LIST, and PREFIX has only ops and voices.
+      withSpec(networks, {
+        CHANMODES: ['eIbq', 'k', 'flj', 'imnst'],
+        PREFIX: [
+          { mode: 'o', symbol: '@' },
+          { mode: 'v', symbol: '+' },
+        ],
+      });
+      const { el } = await mountComposer();
+
+      await type(el, '/quiet troll');
+      await enter(el);
+
+      expect(rawLines('MODE')).toEqual(['MODE #zebra +q troll']);
+    });
+
+    it('/quiet refuses where +q is the owner rank', async () => {
+      // InspIRCd / Unreal shape: q is a PREFIX mode, not a list.
+      const { networks, buffers } = seedStores('#zebra');
+      withSpec(networks, {
+        CHANMODES: ['beI', 'k', 'l', 'imnst'],
+        PREFIX: [
+          { mode: 'q', symbol: '~' },
+          { mode: 'o', symbol: '@' },
+        ],
+      });
+      const { el } = await mountComposer();
+
+      await type(el, '/quiet bob');
+      await enter(el);
+
+      expect(rawLines('MODE')).toEqual([]);
+      const texts = buffers.buffers['1::#zebra'].messages.map((m) => m.text);
+      expect(texts).toContain('this network has no +q quiet list');
     });
   });
 

@@ -40,12 +40,7 @@ function makeConn(): IrcConnection {
 // Mark a channel as joined (this.channels is keyed lowercase; .name is the case
 // we joined with).
 function join(conn: IrcConnection, name: string): void {
-  conn.channels.set(name.toLowerCase(), {
-    name,
-    topic: null,
-    members: new Map(),
-    modes: new Set(),
-  });
+  conn.upsertChannel(name);
 }
 
 const TIME = Date.parse('2026-09-15T07:05:19.957Z');

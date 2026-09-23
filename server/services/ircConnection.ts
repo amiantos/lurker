@@ -62,6 +62,8 @@ import type { MonitorHolder, MonitorSync } from './monitorList.js';
 import { ReplyRouter } from './replyRouter.js';
 import type { Asker, ReplyOwner } from './replyRouter.js';
 import { classifyModeChange, modeLetter } from '../../shared/modes.js';
+import { parseModeSpec, sortByRank } from '../../shared/channelModes.js';
+import type { ModeSpec } from '../../shared/channelModes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
@@ -400,8 +402,17 @@ interface ChannelMember {
 interface ChannelState {
   name: string;
   topic: string | null;
+  // Who set the topic and when (ISO), from 333 or a live TOPIC. Null until the
+  // server says; 332 clears them because the 333 behind it restates both.
+  topicSetBy: string | null;
+  topicSetAt: string | null;
   members: Map<string, ChannelMember>;
   modes: Set<string>;
+  // Values of the set param modes (`l` → '50'), keyed by letter. NEVER `k`:
+  // the key lives encrypted in buffers.key and reaches no client frame (#727).
+  modeParams: Map<string, string>;
+  // Channel creation time (ISO), from 329.
+  createdAt: string | null;
 }
 
 // irc-framework hands us `{mode, param}`; we add `kind` before publishing (see
@@ -746,6 +757,8 @@ export class IrcConnection {
   >();
   useMonitor: boolean;
   monitorLimit: number;
+  // The last modeSpec sent as a `mode-spec` frame, as JSON (#727).
+  private publishedModeSpec: string | null = null;
   pendingMonitorSeed: boolean;
   // The network's MONITOR list: Lurker's nicks plus those of the IRC clients
   // attached through the bouncer (see monitorList.ts and syncMonitor).
@@ -1943,6 +1956,7 @@ export class IrcConnection {
     // this guard we'd send `MONITOR +` blind and trigger 421 on older
     // ircds, which our 'irc error' path surfaces to the user.
     on('server options', () => {
+      this.publishModeSpecIfChanged();
       // 005 lines arrive in multiple bursts; this handler fires once per
       // line as irc-framework accumulates options. The MONITOR token isn't
       // necessarily in the first line, so only act when we transition
@@ -3086,6 +3100,10 @@ export class IrcConnection {
       if (!ch) return;
       ch.topic = eventTopic ?? null;
       if (event.nick) {
+        // A live TOPIC names its own setter and time. The row below carries
+        // both to clients, so no channel-topic frame is needed.
+        ch.topicSetBy = event.nick as string;
+        ch.topicSetAt = normalizeEventTime(event.time ?? this.lineArrivedAt?.getTime());
         // Live TOPIC change — persist + render in the message list.
         this.publish({
           type: 'topic',
@@ -3097,9 +3115,31 @@ export class IrcConnection {
       } else {
         // RPL_TOPIC on join — sync the topic bar without printing a row, so
         // rejoining an already-open buffer doesn't repeat the same topic line
-        // every time.
-        this.publishEphemeral({ type: 'channel-topic', target: ch.name, topic: eventTopic });
+        // every time. The setter and time are the 333 behind it's to say; until
+        // then the ones we hold may belong to an older topic.
+        ch.topicSetBy = null;
+        ch.topicSetAt = null;
+        this.publishTopic(ch);
       }
+    });
+
+    // RPL_TOPICWHOTIME (333): who set the topic and when. Arrives as
+    // `<setter> <ts>`, or on some servers `<ts>` alone — irc-framework reads a
+    // lone ts as the setter's mask, so it lands in `nick` with `when` unset.
+    on('topicsetby', (event: Record<string, unknown>) => {
+      const ch = this.channelState(event.channel as string);
+      if (!ch) return;
+      let setBy = (event.nick as string | undefined) || null;
+      let when = event.when as string | undefined;
+      if (when == null && setBy && /^\d+$/.test(setBy)) {
+        when = setBy;
+        setBy = null;
+      }
+      const secs = Number(when);
+      ch.topicSetBy = setBy;
+      ch.topicSetAt =
+        Number.isFinite(secs) && secs > 0 ? new Date(secs * 1000).toISOString() : null;
+      this.publishTopic(ch);
     });
 
     on('mode', (event: Record<string, unknown>) => {
@@ -3145,8 +3185,9 @@ export class IrcConnection {
       // the snapshot keeps current modes after page reload.
       let memberModesChanged = false;
       let chanModesChanged = false;
-      const listModes = this.listModes();
-      const prefixModes = this.prefixModes();
+      const spec = this.modeSpec();
+      const listModes = new Set(spec.list);
+      const prefixModes = new Set(spec.prefix.map((p) => p.mode));
       // Classify each change once, up front, and carry the class onto the row we
       // publish. The clients never see ISUPPORT, so this stamp is the only way
       // they can tell op/voice churn from a ban — which is what the event
@@ -3173,7 +3214,9 @@ export class IrcConnection {
             const set = new Set(member.modes);
             if (sign === '+') set.add(letter);
             else set.delete(letter);
-            member.modes = [...set];
+            // Rank order, so the array reads highest-first the way a NAMES
+            // reply with multi-prefix does — never grant order.
+            member.modes = sortByRank([...set], spec.prefix);
             memberModesChanged = true;
             continue;
           }
@@ -3188,6 +3231,17 @@ export class IrcConnection {
               chanModesChanged = true;
             } else if (sign === '-' && ch.modes.delete(letter)) {
               chanModesChanged = true;
+            }
+            // Param values (`+l 50`) for the channel modal — all but the key.
+            if (letter !== 'k') {
+              if (sign === '+' && m.param) {
+                if (ch.modeParams.get(letter) !== m.param) {
+                  ch.modeParams.set(letter, m.param);
+                  chanModesChanged = true;
+                }
+              } else if (sign === '-' && ch.modeParams.delete(letter)) {
+                chanModesChanged = true;
+              }
             }
           }
           // Keep the persisted +k key current so a live key change survives a
@@ -3218,25 +3272,51 @@ export class IrcConnection {
 
     // RPL_CHANNELMODEIS (324) and friends. Sent on join by most servers and
     // on demand via `MODE #chan`. Captures the current flag set without
-    // requiring us to have observed the +/− history.
+    // requiring us to have observed the +/− history. 324 is the whole state,
+    // so it replaces rather than merges (weechat, soju and ZNC all do).
     on('channel info', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string | undefined;
-      const eventModes = event.modes as ModeEntry[] | undefined;
-      if (!eventChannel || !eventModes) return;
+      if (!eventChannel) return;
       const ch = this.channels.get(eventChannel.toLowerCase());
       if (!ch) return;
+      // RPL_CREATIONTIME (329) arrives as its own 'channel info' carrying only
+      // `created_at`, in unix seconds.
+      if (event.created_at !== undefined) {
+        const secs = event.created_at as number;
+        const createdAt =
+          Number.isFinite(secs) && secs > 0 ? new Date(secs * 1000).toISOString() : null;
+        if (createdAt !== ch.createdAt) {
+          ch.createdAt = createdAt;
+          this.publishChannelModes(ch);
+        }
+        return;
+      }
+      const eventModes = event.modes as ModeEntry[] | undefined;
+      if (!eventModes) return;
       const listModes = this.listModes();
       const next = new Set<string>();
+      const nextParams = new Map<string, string>();
       for (const m of eventModes) {
         if (!m || !m.mode) continue;
         const letter = m.mode.replace(/^[+-]/, '');
         if (!letter || listModes.has(letter)) continue;
         next.add(letter);
+        if (letter === 'k') {
+          // An op's 324 shows the real key; take it through the same guard as a
+          // live +k, so a masked `*` or a value-less echo leaves ours alone.
+          const change = resolveKeyModeChange('+', m.param ?? undefined);
+          if (change) {
+            setBufferChannelKey(this.network.user_id, this.network.id, ch.name, change.key);
+          }
+        } else if (m.param) {
+          nextParams.set(letter, m.param);
+        }
       }
       const before = [...ch.modes].toSorted().join('');
       const after = [...next].toSorted().join('');
-      if (before !== after) {
+      if (before !== after || !sameModeParams(ch.modeParams, nextParams)) {
         ch.modes = next;
+        ch.modeParams = nextParams;
         this.publishChannelModes(ch);
       }
     });
@@ -4604,7 +4684,16 @@ export class IrcConnection {
     const key = name.toLowerCase();
     let ch = this.channels.get(key);
     if (!ch) {
-      ch = { name, topic: null, members: new Map(), modes: new Set() };
+      ch = {
+        name,
+        topic: null,
+        topicSetBy: null,
+        topicSetAt: null,
+        members: new Map(),
+        modes: new Set(),
+        modeParams: new Map(),
+        createdAt: null,
+      };
       this.setChannel(key, ch);
     }
     if (!ch.modes) ch.modes = new Set();
@@ -4701,29 +4790,56 @@ export class IrcConnection {
       type: 'channel-modes',
       target: ch.name,
       modes: [...ch.modes].join(''),
+      modeParams: Object.fromEntries(ch.modeParams),
+      createdAt: ch.createdAt,
     });
+  }
+
+  // The topic bar's state, without a history row: 332/331 and 333.
+  private publishTopic(ch: ChannelState): void {
+    this.publishEphemeral({
+      type: 'channel-topic',
+      target: ch.name,
+      topic: ch.topic,
+      setBy: ch.topicSetBy,
+      setAt: ch.topicSetAt,
+    });
+  }
+
+  /** This network's channel-mode vocabulary, from its ISUPPORT (#727). */
+  modeSpec(): ModeSpec {
+    return parseModeSpec(this.client.network?.options);
+  }
+
+  // Tell clients when 005 changes the spec. irc-framework fires 'server
+  // options' once per 005 line, so most calls change nothing.
+  private publishModeSpecIfChanged(): void {
+    const spec = this.modeSpec();
+    const json = JSON.stringify(spec);
+    if (json === this.publishedModeSpec) return;
+    this.publishedModeSpec = json;
+    this.publishEphemeral({ type: 'mode-spec', target: this.serverTarget(), modeSpec: spec });
   }
 
   // List-type channel modes (CHANMODES group A) carry a mask param — bans,
   // ban/invite exceptions, and quiets on ircds that model them as a list — that
   // we don't surface in the status bar. We read the set from the server's
   // ISUPPORT CHANMODES so it's correct per-ircd, falling back to the RFC
-  // defaults before 005 has been parsed (`??`, so a server that legitimately
-  // declares an empty group A keeps its empty set rather than the default).
+  // defaults before 005 has been parsed (a server that legitimately declares
+  // an empty group A keeps its empty set rather than the default).
   // This is the same categorisation weechat/irssi/gamja use. Parameter modes
   // like +k/+l are NOT list modes, so they still land in the (+...) display.
   // Member-prefix modes (o/v/h, plus q/a where an ircd uses them as prefixes)
   // are filtered earlier by prefixModes(), so they never reach this set.
   private listModes(): Set<string> {
-    const chanmodes = this.client.network?.options?.CHANMODES as string[] | undefined;
-    return new Set((chanmodes?.[0] ?? 'beI').split(''));
+    return new Set(this.modeSpec().list);
   }
 
   // Member-prefix (membership) modes, from the server's ISUPPORT PREFIX token —
   // the same 005 origin listModes() reads CHANMODES from, so the two agree
   // per-ircd. irc-framework parses `PREFIX=(ov)@+` into {symbol, mode} pairs
   // (registration.js), and leaves the RAW STRING in place when the token is
-  // malformed — hence the Array.isArray check rather than a truthiness test.
+  // malformed — which parseModeSpec treats as absent (shared/channelModes.ts).
   //
   // This used to be a hardcoded q/a/o/h/v set, which disagreed with solanum:
   // there +q is a quiet LIST mode, not an owner prefix, so a live
@@ -4735,16 +4851,9 @@ export class IrcConnection {
   //
   // A server that declares an empty PREFIX genuinely has no membership modes,
   // so an empty array is honoured rather than falling back (same intent as
-  // listModes' `??`). The fallback covers pre-005 and malformed tokens only.
+  // listModes). The fallback covers pre-005 and malformed tokens only.
   private prefixModes(): Set<string> {
-    const prefix = this.client.network?.options?.PREFIX as
-      | { symbol: string; mode: string }[]
-      | undefined;
-    // A FRESH Set on the fallback path too, matching listModes(). Handing out the shared
-    // module-level constant would let one connection's accidental mutation reach every other
-    // connection that ever fell back.
-    if (!Array.isArray(prefix)) return new Set(DEFAULT_PREFIX_MODES);
-    return new Set(prefix.map((p) => p.mode).filter(Boolean));
+    return new Set(this.modeSpec().prefix.map((p) => p.mode));
   }
 
   publishLag(): void {
@@ -8284,6 +8393,10 @@ export class IrcConnection {
       // the wire. Computed post-registration, which is when this snapshot is
       // pushed (setState('connected') fires after CAP). (#381)
       multilineLimits: this.multilineLimits(),
+      // Channel-mode vocabulary for the channel modal and rank gating (#727).
+      // Also sent as a `mode-spec` frame whenever 005 changes it, since 005
+      // follows the 001 that pushes this snapshot.
+      modeSpec: this.modeSpec(),
       away: a.since
         ? {
             active: a.active,
@@ -8296,7 +8409,11 @@ export class IrcConnection {
       channels: Array.from(this.channels.values()).map((ch) => ({
         name: ch.name,
         topic: ch.topic,
+        topicSetBy: ch.topicSetBy ?? null,
+        topicSetAt: ch.topicSetAt ?? null,
         modes: [...(ch.modes || [])].join(''),
+        modeParams: Object.fromEntries(ch.modeParams ?? []),
+        createdAt: ch.createdAt ?? null,
         members: Array.from(ch.members.values()).map(memberSnapshot),
         // See membersPending (#863).
         ...(this.membersPending(ch.name) ? { membersPending: true } : {}),
@@ -8318,10 +8435,11 @@ export class IrcConnection {
   }
 }
 
-// Pre-005 / malformed-PREFIX fallback for prefixModes(). The widest common set,
-// so a member mode isn't misread as a channel flag before ISUPPORT lands; once
-// the server declares PREFIX, that wins.
-const DEFAULT_PREFIX_MODES = new Set(['q', 'a', 'o', 'h', 'v']);
+function sameModeParams(a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const [letter, value] of a) if (b.get(letter) !== value) return false;
+  return true;
+}
 
 // Decide how a channel +k / -k MODE change should update the persisted key.
 // Returns null for "leave the stored key alone" — the two cases that must NOT

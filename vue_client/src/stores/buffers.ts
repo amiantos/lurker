@@ -255,6 +255,13 @@ export interface Buffer {
   // hydrate (reattachToLive → applyLatestReplace) clears the flag.
   unseeded: boolean;
   modes?: string;
+  // Values of the set param modes (`l` → '50'); never the key (#727).
+  modeParams?: Record<string, string>;
+  // Channel creation time (ISO), from 329.
+  createdAt?: string | null;
+  // Who set the topic and when (ISO); null when the server hasn't said.
+  topicSetBy?: string | null;
+  topicSetAt?: string | null;
 }
 
 function makeBuffer(networkId: number | string | null, target: string): Buffer {
@@ -1103,13 +1110,32 @@ export const useBuffersStore = defineStore('buffers', {
       buf.members = members;
     },
 
-    setTopic(networkId: number | string, target: string, topic: string | null) {
+    // `meta` omitted leaves the held setter/time alone; passed, it replaces both.
+    setTopic(
+      networkId: number | string,
+      target: string,
+      topic: string | null,
+      meta?: { setBy?: string | null; setAt?: string | null },
+    ) {
       const buf = ensureBuffer(this, networkId, target);
       buf.topic = topic;
+      if (meta) {
+        buf.topicSetBy = meta.setBy ?? null;
+        buf.topicSetAt = meta.setAt ?? null;
+      }
     },
-    setChannelModes(networkId: number | string, target: string, modes: string) {
+    setChannelModes(
+      networkId: number | string,
+      target: string,
+      modes: string,
+      extra?: { modeParams?: Record<string, string> | null; createdAt?: string | null },
+    ) {
       const buf = ensureBuffer(this, networkId, target);
       buf.modes = modes || '';
+      if (extra) {
+        buf.modeParams = extra.modeParams ?? {};
+        buf.createdAt = extra.createdAt ?? null;
+      }
     },
     removeMember(networkId: number | string, target: string, nick: string) {
       const buf = ensureBuffer(this, networkId, target);

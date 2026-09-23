@@ -191,6 +191,7 @@ import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
 import { isChannelTarget } from '../../../shared/channels.js';
+import { batchModeLines, DEFAULT_MAX_MODES } from '../../../shared/channelModes.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
@@ -2542,8 +2543,9 @@ function isChannelArgAmbiguous(t: string | undefined, networkId: number | null):
 // Shared builder for the op/voice/ban-family MODE shortcuts (/op, /voice, /ban,
 // …). The channel defaults to the current buffer; an explicit #chan may lead
 // the args (so `/op #other alice` works from anywhere). Each nick/mask consumes
-// one mode letter, so `/op a b` → `MODE #c +oo a b`. Bare nicks passed to +b/+q
-// are left verbatim — ircds auto-complete them to `nick!*@*`.
+// one mode letter, so `/op a b` → `MODE #c +oo a b`, split into as many lines
+// as the network's MODES allows (3 before its 005 has arrived). Bare nicks
+// passed to +b/+q are left verbatim — ircds auto-complete them to `nick!*@*`.
 function modeShortcut(
   networkId: number,
   target: string,
@@ -2567,11 +2569,25 @@ function modeShortcut(
     localInfo(networkId, target, usage);
     return true;
   }
-  const flags = sign + letter.repeat(args.length);
-  return sendOrToast(
-    { type: 'raw', networkId, line: `MODE ${channel} ${flags} ${args.join(' ')}` },
-    line,
+  const spec = networks.states[networkId]?.modeSpec;
+  const lines = batchModeLines(
+    channel,
+    args.map((param) => ({ sign, letter, param })),
+    spec ? spec.maxModes : DEFAULT_MAX_MODES,
   );
+  // Stop at the first line the socket refuses; its toast covers the rest.
+  return lines.every((l) => sendOrToast({ type: 'raw', networkId, line: l }, line));
+}
+
+// /quiet and /unquiet speak solanum's +q quiet LIST. On InspIRCd and Unreal +q
+// is the owner rank, so `/quiet bob` would try to make bob an owner — refuse
+// unless the network lists q among its list modes. Before the network's 005
+// has arrived there's nothing to check against, so the command goes through.
+function quietUnavailable(networkId: number, target: string): boolean {
+  const spec = networks.states[networkId]?.modeSpec;
+  if (!spec || spec.list.includes('q')) return false;
+  localInfo(networkId, target, 'this network has no +q quiet list');
+  return true;
 }
 
 function randomRoomId(): string {
@@ -3819,6 +3835,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'unban':
       return modeShortcut(networkId, target, rest, '-', 'b', 'usage: /unban [#chan] <mask>', line);
     case 'quiet':
+      if (quietUnavailable(networkId, target)) return true;
       return modeShortcut(
         networkId,
         target,
@@ -3829,6 +3846,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         line,
       );
     case 'unquiet':
+      if (quietUnavailable(networkId, target)) return true;
       return modeShortcut(
         networkId,
         target,

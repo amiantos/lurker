@@ -7,6 +7,7 @@ import { useAuthStore } from './auth.js';
 import { isVirtualKey } from '../lib/virtualBuffers.js';
 import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
 import type { MultilineLimits } from '../utils/messageSplit.js';
+import type { ModeSpec } from '../../../shared/channelModes.js';
 
 export interface Network {
   id: number;
@@ -71,6 +72,9 @@ export interface NetworkState {
   // else null/absent. Drives the composer's multiline-aware SPLIT/FLOOD hint
   // and upload-as-.txt gate. Refreshed by the snapshot pushed on connect. (#381)
   multilineLimits?: MultilineLimits | null;
+  // The network's channel-mode vocabulary, parsed from its ISUPPORT on the
+  // server (#727). Seeded by the snapshot, replaced by `mode-spec` frames.
+  modeSpec?: ModeSpec | null;
 }
 
 export interface ActiveBuffer {
@@ -297,6 +301,10 @@ export const useNetworksStore = defineStore('networks', {
         ...existing,
         userModes: typeof event.modes === 'string' ? event.modes : '',
       };
+    },
+    applyModeSpec(event: any) {
+      const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
+      this.states[event.networkId] = { ...existing, modeSpec: event.modeSpec ?? null };
     },
     applyAwayState(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

@@ -285,16 +285,30 @@ function applyEvent(event: any): void {
       break;
     case 'topic':
       if (!buffers.pushMessage(event)) break;
-      buffers.setTopic(event.networkId, event.target, event.text);
+      buffers.setTopic(event.networkId, event.target, event.text, {
+        setBy: event.nick,
+        setAt: event.time,
+      });
       break;
     case 'channel-topic':
-      buffers.setTopic(event.networkId, event.target, event.topic);
+      buffers.setTopic(
+        event.networkId,
+        event.target,
+        event.topic,
+        'setBy' in event ? { setBy: event.setBy, setAt: event.setAt } : undefined,
+      );
       break;
     case 'mode':
       buffers.pushMessage(event);
       break;
     case 'channel-modes':
-      buffers.setChannelModes(event.networkId, event.target, event.modes);
+      buffers.setChannelModes(event.networkId, event.target, event.modes, {
+        modeParams: event.modeParams,
+        createdAt: event.createdAt,
+      });
+      break;
+    case 'mode-spec':
+      networks.applyModeSpec(event);
       break;
     case 'lag':
       networks.applyLag(event);
@@ -700,8 +714,14 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
       buffers.setMembers(net.networkId, ch.name, normalized, {
         provisional: !!ch.membersPending,
       });
-      buffers.setTopic(net.networkId, ch.name, ch.topic);
-      buffers.setChannelModes(net.networkId, ch.name, ch.modes || '');
+      buffers.setTopic(net.networkId, ch.name, ch.topic, {
+        setBy: ch.topicSetBy,
+        setAt: ch.topicSetAt,
+      });
+      buffers.setChannelModes(net.networkId, ch.name, ch.modes || '', {
+        modeParams: ch.modeParams,
+        createdAt: ch.createdAt,
+      });
     }
   }
 }

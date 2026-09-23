@@ -111,12 +111,7 @@ function seed(target: string, nick: string, text: string, type = 'message'): voi
 // Mark a channel as currently joined (this.channels is keyed lowercase; .name
 // holds the case we joined with).
 function join(conn: IrcConnection, name: string): void {
-  conn.channels.set(name.toLowerCase(), {
-    name,
-    topic: null,
-    members: new Map(),
-    modes: new Set(),
-  });
+  conn.upsertChannel(name);
 }
 
 function emitNotice(conn: IrcConnection, fields: Record<string, unknown>): void {
