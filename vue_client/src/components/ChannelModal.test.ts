@@ -358,12 +358,28 @@ describe('ChannelModal', () => {
     expect((checkbox(w, 'm')!.element as HTMLInputElement).checked).toBe(true);
   });
 
-  it('is read-only for a channel we have left', () => {
+  it("says what it doesn't know for a channel we're not in", () => {
+    // Parted — or gone from the server entirely: all we have is what we last
+    // saw, so no mode rows and no claims about ops or "no modes set".
+    const { buffers } = seed();
+    buffers.setJoined(1, '#chan', false);
+    buffers.setTopic(1, '#chan', null);
+    const w = open();
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(w.findAll('.modes li')).toHaveLength(0);
+    expect(w.text()).toContain('Join the channel to see its topic.');
+    expect(w.text()).toContain('Join the channel to see its modes.');
+    expect(w.text()).not.toContain('Only channel operators');
+    expect(w.text()).not.toContain('No modes set');
+    expect(w.find('button[type="submit"]').exists()).toBe(false);
+  });
+
+  it("still shows the last topic it saw for a channel we've left, read-only", () => {
     const { buffers } = seed();
     buffers.setJoined(1, '#chan', false);
     const w = open();
     expect(w.find('textarea').exists()).toBe(false);
-    expect(checkbox(w, 'n')!.attributes('disabled')).toBeDefined();
+    expect(w.find('.topic-text').text()).toBe('hello');
   });
 
   it('fetches the open list again after a reconnect', async () => {

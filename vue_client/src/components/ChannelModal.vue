@@ -42,6 +42,9 @@
             @input="onTopicInput"
           ></textarea>
           <p v-else-if="topic" class="topic-text"><LinkedText :text="topic" /></p>
+          <!-- Out of the channel we don't know it has no topic — or that it
+               exists at all; only what we last saw. -->
+          <p v-else-if="!joined" class="muted">Join the channel to see its topic.</p>
           <p v-else class="muted">No topic set.</p>
           <p v-if="topicMeta || topicCounter" class="meta">
             <span>{{ topicMeta }}</span>
@@ -53,6 +56,7 @@
         <section class="field">
           <span class="label-text">Modes</span>
           <p v-if="!spec" class="muted">Modes show once the network is connected.</p>
+          <p v-else-if="!joined" class="muted">Join the channel to see its modes.</p>
           <template v-else>
             <p v-if="!canEditModes" class="muted">Only channel operators can change modes.</p>
             <p v-if="!canEditModes && !visibleRows.length" class="muted">No modes set.</p>
