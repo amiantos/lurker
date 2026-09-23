@@ -171,14 +171,14 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
-    <!-- Keyed on the channel: switching buffers (Alt+Up/Down isn't gated on an
-         open modal) must not carry one channel's unsaved edits into another's. -->
+    <!-- Opened from the shared buffer menu (Channel Settings…); keyed so
+         opening another channel starts fresh. -->
     <ChannelModal
-      v-if="showTopic && active && isChannel"
-      :key="`${active.networkId}::${active.target}`"
-      :network-id="active.networkId"
-      :target="active.target"
-      @close="showTopic = false"
+      v-if="channelModal.isOpen.value && channelModal.target.value"
+      :key="`${channelModal.networkId.value}::${channelModal.target.value}`"
+      :network-id="channelModal.networkId.value!"
+      :target="channelModal.target.value"
+      @close="channelModal.close()"
     />
     <ChannelListModal
       v-if="channelListModal.isOpen && channelListModal.networkId !== null"
@@ -251,6 +251,7 @@ import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
 import ChannelModal from '../components/ChannelModal.vue';
+import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
@@ -361,7 +362,7 @@ const screen = computed(() =>
   ),
 );
 const showBookmarks = ref(false);
-const showTopic = ref(false);
+const channelModal = useChannelModal();
 const showUploads = ref(false);
 const pendingScrollId = ref<number | null>(null);
 const messageInputRef = ref<{ focus: () => void } | null>(null);
@@ -374,8 +375,7 @@ const { showSearch, showHighlights, searchScope, highlightScope, openSearch, ope
 
 // Mobile folds the remaining buffer/topic/server actions behind one kebab menu
 // to keep the header uncluttered (Members is an inline header button — see
-// template). The menu is assembled per buffer type: channel settings (the
-// desktop header's sliders button) for channels, then either the shared buffer-actions menu
+// template). The menu is assembled per buffer type: either the shared buffer-actions menu
 // (pin/notify/profile/note/close) for channels & DMs, or the server controls
 // (browse/connect/edit) for server buffers. Anchored under the kebab like the
 // desktop sidebar menu; ContextMenu clamps it to the viewport.
@@ -384,16 +384,6 @@ function openBufferActions() {
   const el = bufferCogBtn.value;
   if (!a || !el) return;
   const items: ContextMenuItem[] = [];
-  // Channels only: the topic, modes and lists (#727). A DM has none of them.
-  if (isChannel.value) {
-    items.push({
-      label: 'Channel settings',
-      icon: 'fa-solid fa-sliders',
-      onClick: () => {
-        showTopic.value = true;
-      },
-    });
-  }
   if (isServerBuffer.value) {
     // Join channel / Channel list now live as top-bar buttons for server buffers,
     // so the kebab keeps just the less-frequent connect/edit actions.

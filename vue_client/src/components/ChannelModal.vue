@@ -49,65 +49,63 @@
           </p>
         </section>
 
+        <hr class="divider" />
         <section class="field">
           <span class="label-text">Modes</span>
           <p v-if="!spec" class="muted">Modes show once the network is connected.</p>
           <template v-else>
             <p v-if="!canEditModes" class="muted">Only channel operators can change modes.</p>
-            <p v-if="!canEditModes && !listedRows.length" class="muted">No modes set.</p>
-            <ul class="modes">
-              <li v-for="row in listedRows" :key="row.letter" class="mode-row">
-                <label class="toggle">
-                  <input
-                    type="checkbox"
-                    :checked="shown(row.letter).on"
-                    :disabled="!canEditModes"
-                    @change="setOn(row.letter, ($event.target as HTMLInputElement).checked)"
-                  />
-                  <code>+{{ row.letter }}</code>
-                  <span v-if="row.name">{{ row.name }}</span>
-                </label>
-                <input
-                  v-if="row.kind !== 'flag'"
-                  class="param"
-                  :type="row.kind === 'key' && !keyRevealed ? 'password' : 'text'"
-                  :value="shown(row.letter).value"
-                  :placeholder="row.kind === 'key' && shown('k').on ? 'Key is set' : ''"
-                  :disabled="!canEditModes || !shown(row.letter).on"
-                  :aria-label="`+${row.letter} value`"
-                  autocomplete="off"
-                  autocapitalize="off"
-                  spellcheck="false"
-                  @input="setValue(row.letter, ($event.target as HTMLInputElement).value)"
-                  @keydown.enter="blockImeEnter"
+            <p v-if="!canEditModes && !visibleRows.length" class="muted">No modes set.</p>
+            <ul v-if="namedRows.length" class="modes">
+              <li v-for="row in namedRows" :key="row.letter" class="mode-row">
+                <ChannelModeRow
+                  :row="row"
+                  :state="shown(row.letter)"
+                  :disabled="!canEditModes"
+                  :revealed="keyRevealed"
+                  :can-reveal="!!storedKey"
+                  @toggle="setOn(row.letter, $event)"
+                  @value="setValue(row.letter, $event)"
+                  @reveal="keyRevealed = !keyRevealed"
                 />
-                <button
-                  v-if="row.kind === 'key' && storedKey"
-                  type="button"
-                  class="link reveal"
-                  :title="keyRevealed ? 'Hide key' : 'Show key'"
-                  :aria-label="keyRevealed ? 'Hide key' : 'Show key'"
-                  @click="keyRevealed = !keyRevealed"
-                >
-                  <i :class="keyRevealed ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i>
-                </button>
               </li>
             </ul>
-            <!-- Letters with no name we can vouch for: a grid of bare +X toggles,
-                 so twenty of them don't bury the ones that mean something. -->
-            <ul v-if="bareFlags.length" class="modes bare">
-              <li v-for="row in bareFlags" :key="row.letter">
-                <label class="toggle">
-                  <input
-                    type="checkbox"
-                    :checked="shown(row.letter).on"
+            <!-- Letters with no name we can vouch for, folded away so twenty of
+                 them don't bury the ones that mean something. The summary says
+                 which are set, so folding hides nothing. -->
+            <details v-if="otherRows.length" class="other" :open="!canEditModes">
+              <summary>
+                Other modes
+                <span v-if="otherSetLetters" class="tag">+{{ otherSetLetters }}</span>
+              </summary>
+              <ul v-if="otherParams.length" class="modes">
+                <li v-for="row in otherParams" :key="row.letter" class="mode-row">
+                  <ChannelModeRow
+                    :row="row"
+                    :state="shown(row.letter)"
                     :disabled="!canEditModes"
-                    @change="setOn(row.letter, ($event.target as HTMLInputElement).checked)"
+                    :revealed="keyRevealed"
+                    :can-reveal="!!storedKey"
+                    @toggle="setOn(row.letter, $event)"
+                    @value="setValue(row.letter, $event)"
+                    @reveal="keyRevealed = !keyRevealed"
                   />
-                  <code>+{{ row.letter }}</code>
-                </label>
-              </li>
-            </ul>
+                </li>
+              </ul>
+              <ul v-if="otherFlags.length" class="modes bare">
+                <li v-for="row in otherFlags" :key="row.letter">
+                  <label class="toggle">
+                    <input
+                      type="checkbox"
+                      :checked="shown(row.letter).on"
+                      :disabled="!canEditModes"
+                      @change="setOn(row.letter, ($event.target as HTMLInputElement).checked)"
+                    />
+                    <span>+{{ row.letter }}</span>
+                  </label>
+                </li>
+              </ul>
+            </details>
           </template>
         </section>
 
@@ -189,6 +187,7 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import LinkedText from './LinkedText.vue';
+import ChannelModeRow from './ChannelModeRow.vue';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { onIrcEvent, socketSendWithAck } from '../composables/useSocket.js';
@@ -299,8 +298,17 @@ const rows = computed(() => (spec.value ? modeRows(spec.value) : []));
 const visibleRows = computed(() =>
   canEditModes.value ? rows.value : rows.value.filter((r) => shown(r.letter).on),
 );
-const bareFlags = computed(() => visibleRows.value.filter((r) => r.kind === 'flag' && !r.name));
-const listedRows = computed(() => visibleRows.value.filter((r) => r.kind !== 'flag' || r.name));
+const namedRows = computed(() => visibleRows.value.filter((r) => r.name));
+const otherRows = computed(() => visibleRows.value.filter((r) => !r.name));
+const otherParams = computed(() => otherRows.value.filter((r) => r.kind !== 'flag'));
+const otherFlags = computed(() => otherRows.value.filter((r) => r.kind === 'flag'));
+// Shown on the folded summary, so a set mode is never out of sight.
+const otherSetLetters = computed(() =>
+  otherRows.value
+    .filter((r) => shown(r.letter).on)
+    .map((r) => r.letter)
+    .join(''),
+);
 // The channel's key, which the server never puts in channel state: the newest
 // `+k <key>` we've seen (a key changed while the modal is open included), else
 // the one we joined with from the network config. `*` is a mask, not a key, and
@@ -623,10 +631,27 @@ textarea {
   flex-wrap: wrap;
   gap: var(--space-3) var(--space-6);
 }
-.param {
-  width: 12em;
-  max-width: 45%;
-  background: var(--bg-soft);
+.divider {
+  height: 1px;
+  width: 100%;
+  border: 0;
+  margin: 0;
+  background: var(--border);
+}
+.other summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: var(--space-2) 0;
+}
+.other summary:hover {
+  color: var(--fg);
+}
+.other[open] summary {
+  margin-bottom: var(--space-3);
+}
+.tag {
+  color: var(--fg-muted);
+  margin-left: var(--space-3);
 }
 code {
   background: var(--bg-soft);

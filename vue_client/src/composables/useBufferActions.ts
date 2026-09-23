@@ -10,6 +10,7 @@ import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useNotifyLadder } from './useNotifyLadder.js';
+import { useChannelModal } from './useChannelModal.js';
 import { socketSend } from './useSocket.js';
 import { isChannelTarget, isDccChatTarget, dccChatPeer } from '../../../shared/channels.js';
 
@@ -42,6 +43,7 @@ export function useBufferActions(): BufferActionsAPI {
   const whois = useWhoisStore();
   const menu = useContextMenu();
   const notify = useNotifyLadder();
+  const channelModal = useChannelModal();
 
   function buildItems(buf: BufferLike | null | undefined): ContextMenuItem[] {
     // Capture networkId as a const after the null guard so the narrowing to
@@ -130,7 +132,18 @@ export function useBufferActions(): BufferActionsAPI {
         ? notify.channelItems(networkId, buf.target)
         : notify.dmItems(networkId, buf.target)),
     );
-    if (!isChannel) {
+    if (isChannel) {
+      // The channel's own topic, modes and lists (#727) — for this channel, not
+      // whichever one is on screen.
+      items.push(
+        { divider: true },
+        {
+          label: 'Channel Settings…',
+          icon: 'fa-solid fa-sliders',
+          onClick: () => channelModal.open(networkId, buf.target),
+        },
+      );
+    } else {
       // DM target is the peer's nick — open the profile/note actions directly.
       // Channels can't carry a per-nick action from this menu (which nick?),
       // so these are DM-only; in-channel equivalents flow through the member

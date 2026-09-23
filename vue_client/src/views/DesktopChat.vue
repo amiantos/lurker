@@ -121,7 +121,7 @@
             type="button"
             class="topic-text"
             title="Channel settings"
-            @click="showTopic = true"
+            @click="active && channelModal.open(active.networkId, active.target)"
           >
             <LinkedText :text="topic" />
           </button>
@@ -140,7 +140,7 @@
               class="link"
               title="Channel settings"
               aria-label="Channel settings"
-              @click="showTopic = true"
+              @click="active && channelModal.open(active.networkId, active.target)"
             >
               <i class="fa-solid fa-sliders"></i>
             </button>
@@ -254,14 +254,14 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
-    <!-- Keyed on the channel: switching buffers (Alt+Up/Down isn't gated on an
-         open modal) must not carry one channel's unsaved edits into another's. -->
+    <!-- For the channel it was opened for, whatever the active buffer does
+         meanwhile; keyed so opening another channel starts fresh. -->
     <ChannelModal
-      v-if="showTopic && active && isChannel"
-      :key="`${active.networkId}::${active.target}`"
-      :network-id="active.networkId"
-      :target="active.target"
-      @close="showTopic = false"
+      v-if="channelModal.isOpen.value && channelModal.target.value"
+      :key="`${channelModal.networkId.value}::${channelModal.target.value}`"
+      :network-id="channelModal.networkId.value!"
+      :target="channelModal.target.value"
+      @close="channelModal.close()"
     />
     <ChannelListModal
       v-if="channelListModal.isOpen && channelListModal.networkId !== null"
@@ -337,6 +337,7 @@ import HighlightsModal from '../components/HighlightsModal.vue';
 import BookmarksModal from '../components/BookmarksModal.vue';
 import LinkedText from '../components/LinkedText.vue';
 import ChannelModal from '../components/ChannelModal.vue';
+import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
@@ -408,7 +409,7 @@ const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
 const navHistory = useNavHistoryStore();
 const showBookmarks = ref(false);
-const showTopic = ref(false);
+const channelModal = useChannelModal();
 const showUploads = ref(false);
 const showSwitcher = ref(false);
 const showKbdHelp = ref(false);
@@ -427,7 +428,7 @@ const anyModalOpen = computed(
     networkEditor.isOpen ||
     showHighlights.value ||
     showBookmarks.value ||
-    showTopic.value ||
+    channelModal.isOpen.value ||
     channelListModal.isOpen ||
     joinChannelModal.isOpen ||
     viewer.isOpen ||

@@ -3,7 +3,7 @@
 
 // @vitest-environment happy-dom
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 
 vi.mock('./useSocket.js', () => ({
@@ -11,6 +11,7 @@ vi.mock('./useSocket.js', () => ({
 }));
 
 import { useBufferActions } from './useBufferActions.js';
+import { useChannelModal } from './useChannelModal.js';
 import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -74,6 +75,28 @@ describe('useBufferActions', () => {
       channel('#lurker', false);
       const items = useBufferActions().buildItems({ networkId: 1, target: '#lurker' });
       expect(items[0]).toMatchObject({ label: 'Join Channel', disabled: true });
+    });
+  });
+
+  describe('Channel Settings…', () => {
+    afterEach(() => useChannelModal().close());
+
+    it("opens the modal for the menu's channel, not whichever is on screen", () => {
+      networkState('connected');
+      channel('#elsewhere', true);
+      const item = useBufferActions()
+        .buildItems({ networkId: 1, target: '#elsewhere' })
+        .find((i) => i.label === 'Channel Settings…');
+      item!.onClick?.();
+      const modal = useChannelModal();
+      expect(modal.isOpen.value).toBe(true);
+      expect([modal.networkId.value, modal.target.value]).toEqual([1, '#elsewhere']);
+    });
+
+    it('is not offered for a DM', () => {
+      networkState('connected');
+      const items = useBufferActions().buildItems({ networkId: 1, target: 'alice' });
+      expect(items.map((i) => i.label)).not.toContain('Channel Settings…');
     });
   });
 });

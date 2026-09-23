@@ -79,7 +79,8 @@ const open = () => mount(ChannelModal, { props: { networkId: 1, target: '#chan' 
 const checkbox = (w: ReturnType<typeof open>, letter: string) =>
   w
     .findAll('.modes li')
-    .find((r) => r.find('code').text() === `+${letter}`)
+    // A named mode carries its letter as a `.tag`; an unnamed one as its label.
+    .find((r) => r.findAll('.tag, span').some((e) => e.text() === `+${letter}`))
     ?.find('input[type="checkbox"]');
 
 describe('ChannelModal', () => {
@@ -109,6 +110,14 @@ describe('ChannelModal', () => {
       'Invites',
       'Quiets',
     ]);
+  });
+
+  it('folds the unnamed modes away, naming the ones that are set', () => {
+    seed({ modes: 'ntlCg' });
+    const w = open();
+    const other = w.find('details.other');
+    expect(other.attributes('open')).toBeUndefined();
+    expect(other.find('summary').text()).toBe('Other modes +Cg');
   });
 
   it('lets a non-op read but not edit, showing only the modes that are set', () => {
