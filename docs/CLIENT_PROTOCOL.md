@@ -619,6 +619,8 @@ and rename-proof.
 
 **Ack contract:** include a client-generated `clientId` on `send`/`action`/
 `notice` and the server replies `{kind:'send-result', clientId, ok, error?}`.
+`get-mode-list` and `set-channel-modes` (§ Channels & buffers) answer on the
+same frame with a `data` field carrying their result.
 This confirms acceptance only — the message itself comes back as a normal `irc`
 echo with `self:true` and its real id (§9.3). The web client times acks out
 after 8 s (client policy). On networks that ACK `echo-message` upstream, that
@@ -628,12 +630,14 @@ is emitted immediately from the server's optimistic local copy.
 
 ### Channels & buffers ⏸
 
-| `type`         | Fields                        | Notes                                                                                                                                                                                               |
-| -------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `join`         | `networkId, channel, key?`    | Request only — the buffer appears on `channel-joined` (§9.1). Without `key`, the channel's stored key is sent if the server has one                                                                 |
-| `part`         | `networkId, channel, reason?` | Buffer survives, parted                                                                                                                                                                             |
-| `open-buffer`  | `networkId, target, countBy?` | **Write.** Reopen/create: replies `backlog` + `buffer-opened`, announces a shell + `buffer-opened` to the user's other devices; JOINs if an unjoined channel; mints an empty DM row for a bare nick |
-| `close-buffer` | `networkId, target, reason?`  | Closes (PARTs a joined channel, untracks a DM peer, ends a `=nick` DCC chat). `:server:` refuses                                                                                                    |
+| `type`              | Fields                                                               | Notes                                                                                                                                                                                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `join`              | `networkId, channel, key?`                                           | Request only — the buffer appears on `channel-joined` (§9.1). Without `key`, the channel's stored key is sent if the server has one                                                                                                                                                               |
+| `part`              | `networkId, channel, reason?`                                        | Buffer survives, parted                                                                                                                                                                                                                                                                           |
+| `open-buffer`       | `networkId, target, countBy?`                                        | **Write.** Reopen/create: replies `backlog` + `buffer-opened`, announces a shell + `buffer-opened` to the user's other devices; JOINs if an unjoined channel; mints an empty DM row for a bare nick                                                                                               |
+| `close-buffer`      | `networkId, target, reason?`                                         | Closes (PARTs a joined channel, untracks a DM peer, ends a `=nick` DCC chat). `:server:` refuses                                                                                                                                                                                                  |
+| `get-mode-list`     | `networkId, channel, letter, clientId`                               | Fetches a list mode (`b`, `e`, `I`, or `q` where it's a list) from the server. The `send-result` comes once the list is in, with the MCP verb's result as `data`: `{ entries: [{ mask, setBy, setAt }] }`, or `error: 'refused'` plus `numeric`/`text`. The replies never reach the server buffer |
+| `set-channel-modes` | `networkId, channel, changes: [{ sign, letter, param? }], clientId?` | Validated against `modeSpec` (§5.1) and sent as the fewest MODE lines `maxModes` allows; `data.lines` says how many. A bare `-k` takes the stored key. The server's refusal (482, 467, 478) arrives as the channel's `error` row, not on the ack                                                  |
 
 Every verb in this section is rejected while an account is paused — they are all
 writes. **Hydration is not in this section for that reason:** it's

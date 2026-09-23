@@ -45,6 +45,15 @@ function jsonRpcError(
   return { jsonrpc: '2.0', id, error };
 }
 
+interface ToolCallResult {
+  content: { type: 'text'; text: string }[];
+  isError: boolean;
+}
+
+function toolResult(payload: unknown, isError: boolean): ToolCallResult {
+  return { content: [{ type: 'text', text: JSON.stringify(payload) }], isError };
+}
+
 router.post('/', (req: Request, res: Response) => {
   // requireApiAuth attaches one of two credentials. An API token carries its own
   // scope; an OAuth access token (#891) has the access of a password sign-in,
@@ -103,24 +112,26 @@ router.post('/', (req: Request, res: Response) => {
           res.json(jsonRpcError(id, -32602, 'Missing tool name'));
           return;
         }
-        let toolPayload: unknown;
-        let isError = false;
-        try {
-          toolPayload = callVerb(
-            name,
-            { userId: req.user!.id, scope: apiToken.scope, transport: 'mcp' },
-            args,
-          );
-        } catch (err) {
-          isError = true;
-          const e = err as Error & { code?: string };
-          toolPayload = { error: e.code || 'error', message: e.message };
-        }
-        result = {
-          content: [{ type: 'text', text: JSON.stringify(toolPayload) }],
-          isError,
-        };
-        break;
+        // A verb may answer later (get_mode_list waits for the server), so the
+        // reply goes out when its result settles.
+        const userId = req.user!.id;
+        void (async () => {
+          let toolCallResult: ToolCallResult;
+          try {
+            const payload = await callVerb(
+              name,
+              { userId, scope: apiToken.scope, transport: 'mcp' },
+              args,
+            );
+            toolCallResult = toolResult(payload, false);
+          } catch (err) {
+            const e = err as Error & { code?: string };
+            toolCallResult = toolResult({ error: e.code || 'error', message: e.message }, true);
+          }
+          if (isNotification) res.status(204).end();
+          else res.json({ jsonrpc: '2.0', id, result: toolCallResult });
+        })();
+        return;
       }
       default: {
         if (isNotification) {

@@ -8,6 +8,8 @@ import path from 'path';
 import type { User } from '../../db/users.js';
 import type { Network } from '../../db/networks.js';
 import type { VerbContext } from '../verbRegistry.js';
+import { parseModeSpec } from '../../../shared/channelModes.js';
+import type { ModeListResult } from '../modeList.js';
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-test-verbs-'));
 process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
@@ -669,6 +671,18 @@ describe('agent control verbs', () => {
       join: (name: string, key?: string) => joins.push([name, key]),
       part: (name: string, reason?: string) => parts.push([name, reason]),
       stashJoinKey: () => {},
+      // solanum's shape: q is a quiet list, MODES=4.
+      modeSpec: () =>
+        parseModeSpec({
+          CHANMODES: ['eIbq', 'k', 'flj', 'CFLMPQRSTcgimnprstuz'],
+          PREFIX: [
+            { mode: 'o', symbol: '@' },
+            { mode: 'v', symbol: '+' },
+          ],
+          MODES: '4',
+        }),
+      fetchModeList: (_channel: string, _letter: string): Promise<ModeListResult> =>
+        Promise.resolve({ ok: true, entries: [] }),
     };
   }
 
@@ -892,6 +906,134 @@ describe('agent control verbs', () => {
       expect(
         callVerb('set_topic', rwCtx(owner.id), { networkId: net.id, channel: '#x', topic: 'hi' }),
       ).toEqual({ ok: false, error: 'not-connected' });
+    });
+  });
+
+  describe('get_mode_list', () => {
+    it("returns the list's entries under the channel's own spelling", async () => {
+      const conn = live([{ name: '#foo[bar]', topic: null, members: new Map() }]);
+      const asked: string[] = [];
+      conn.fetchModeList = (channel, letter) => {
+        asked.push(`${channel} ${letter}`);
+        return Promise.resolve({
+          ok: true,
+          entries: [{ mask: '*!*@bad', setBy: 'op', setAt: '2023-11-14T22:13:20.000Z' }],
+        });
+      };
+      await expect(
+        callVerb('get_mode_list', rwCtx(owner.id), {
+          networkId: net.id,
+          channel: '#foo{bar}',
+          letter: 'b',
+        }),
+      ).resolves.toEqual({
+        ok: true,
+        channel: '#foo[bar]',
+        letter: 'b',
+        entries: [{ mask: '*!*@bad', setBy: 'op', setAt: '2023-11-14T22:13:20.000Z' }],
+      });
+      expect(asked).toEqual(['#foo{bar} b']);
+    });
+
+    it("passes the server's refusal through", async () => {
+      const conn = live();
+      conn.fetchModeList = () =>
+        Promise.resolve({ ok: false, error: 'refused', numeric: '482', text: 'not op' });
+      await expect(
+        callVerb('get_mode_list', rwCtx(owner.id), {
+          networkId: net.id,
+          channel: '#x',
+          letter: 'e',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'refused', numeric: '482', text: 'not op' });
+    });
+
+    it('checks the letter and the connection before asking', async () => {
+      live();
+      await expect(
+        callVerb('get_mode_list', rwCtx(owner.id), {
+          networkId: net.id,
+          channel: '#x',
+          letter: 'bb',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'letter-must-be-one-mode-letter' });
+      ircManager.connectionsForUser(owner.id).clear();
+      await expect(
+        callVerb('get_mode_list', rwCtx(owner.id), {
+          networkId: net.id,
+          channel: '#x',
+          letter: 'b',
+        }),
+      ).resolves.toEqual({ ok: false, error: 'not-connected' });
+    });
+  });
+
+  describe('set_channel_modes', () => {
+    const set = (changes: unknown[], channel = '#x') =>
+      callVerb('set_channel_modes', rwCtx(owner.id), { networkId: net.id, channel, changes });
+
+    it('batches the changes into MODE lines at the network MODES', () => {
+      const conn = live();
+      expect(
+        set([
+          { sign: '+', letter: 'm' },
+          { sign: '+', letter: 'l', param: '50' },
+          { sign: '-', letter: 'l' },
+          { sign: '+', letter: 'b', param: 'a!*@*' },
+          { sign: '+', letter: 'b', param: 'b!*@*' },
+          { sign: '+', letter: 'b', param: 'c!*@*' },
+          { sign: '+', letter: 'b', param: 'd!*@*' },
+        ]),
+      ).toEqual({ ok: true, lines: 2 });
+      // MODES=4 counts only the changes that carry a param: +l and three bans.
+      expect(conn.sent).toEqual(['MODE #x +ml-l+bbb 50 a!*@* b!*@* c!*@*', 'MODE #x +b d!*@*']);
+    });
+
+    it('checks every change against the network before sending any', () => {
+      const conn = live();
+      expect(
+        set([
+          { sign: '+', letter: 'm' },
+          { sign: '+', letter: 'Y' },
+        ]),
+      ).toEqual({
+        ok: false,
+        error: 'unknown-mode:Y',
+      });
+      expect(set([{ sign: '+', letter: 'l' }])).toEqual({ ok: false, error: 'param-required:l' });
+      expect(set([{ sign: '-', letter: 'l', param: '5' }])).toEqual({
+        ok: false,
+        error: 'param-not-taken:-l',
+      });
+      expect(set([{ sign: '+', letter: 'k', param: 'two words' }])).toEqual({
+        ok: false,
+        error: 'param-malformed:k',
+      });
+      // A leading ':' would make it the trailing parameter.
+      expect(set([{ sign: '+', letter: 'b', param: ':x' }])).toEqual({
+        ok: false,
+        error: 'param-malformed:b',
+      });
+      expect(set([{ sign: '*', letter: 'm' }])).toEqual({
+        ok: false,
+        error: 'sign-must-be-plus-or-minus',
+      });
+      expect(set([])).toEqual({ ok: false, error: 'no-changes' });
+      expect(conn.sent).toEqual([]);
+    });
+
+    it('fills a bare -k with the stored key, or * without one', async () => {
+      const { ensureOpen, setChannelKey } = await import('../../db/buffers.js');
+      ensureOpen(owner.id, net.id, '#keyed', { kind: 'channel', autojoin: true });
+      setChannelKey(owner.id, net.id, '#keyed', 'hunter2');
+      const conn = live([{ name: '#keyed', topic: null, members: new Map() }]);
+      expect(set([{ sign: '-', letter: 'k' }], '#keyed')).toEqual({ ok: true, lines: 1 });
+      expect(set([{ sign: '-', letter: 'k' }], '#unkeyed')).toEqual({ ok: true, lines: 1 });
+      expect(conn.sent).toEqual(['MODE #keyed -k hunter2', 'MODE #unkeyed -k *']);
+    });
+
+    it('refuses when the network is down', () => {
+      expect(set([{ sign: '+', letter: 'm' }])).toEqual({ ok: false, error: 'not-connected' });
     });
   });
 

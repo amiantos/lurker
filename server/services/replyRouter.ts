@@ -120,6 +120,11 @@ const LIST_MODE_NUMERICS: Record<string, { item: string; end: string } | undefin
   I: { item: '346', end: '347' },
   q: { item: '728', end: '729' },
 };
+
+/** A list mode's entry and end numerics, or null for a list this router can't track. */
+export function listModeNumerics(letter: string): { item: string; end: string } | null {
+  return Object.hasOwn(LIST_MODE_NUMERICS, letter) ? (LIST_MODE_NUMERICS[letter] ?? null) : null;
+}
 // Errors that name the command they refuse, and errors that name its target.
 const COMMAND_ERRORS = new Set(['263', '400', '421', '461']);
 const TARGET_ERRORS = new Set(['401', '402', '403', '407', '442', '476', '479', '482']);
