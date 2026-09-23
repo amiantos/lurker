@@ -244,8 +244,9 @@ function takeLive(
 }
 
 // Returns whether the event was news: the onIrcEvent listeners hear only that.
-// An event with a row is news unless its buffer already had it (takeLive); one
-// without a row (ephemeral state) always is.
+// Every branch that puts a row in goes through take(), so a row its buffer
+// already had is never news (takeLive); an event without a row (ephemeral
+// state) always is.
 function applyEvent(event: any): boolean {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
@@ -361,7 +362,7 @@ function applyEvent(event: any): boolean {
     // the raw event carries '' for a half the server chose to keep unchanged,
     // would briefly write the wrong value before member-update corrected it.
     case 'chghost':
-      buffers.pushMessage(event);
+      take();
       break;
     case 'names':
       // Provisional while an engine re-attach has not heard the channel's
@@ -405,7 +406,7 @@ function applyEvent(event: any): boolean {
       // the system buffer (logged server-side), so the long TTL is just a
       // convenience window, not the only chance to act.
       if (isChannelTarget(event.target as string)) {
-        buffers.pushMessage(event);
+        take();
         break;
       }
       const channel = event.channel as string;
@@ -555,7 +556,7 @@ function applyEvent(event: any): boolean {
       // App-scoped system-buffer line. It now arrives as a normal buffer event
       // (the system buffer rides the unified backlog/irc/history path, #355), so
       // it just appends like any other — keyed to :system: by its null networkId.
-      buffers.pushMessage(event);
+      take();
       break;
     }
     case 'e2e': // RPE2E status line (#382) — same routing as a server notice.
