@@ -102,14 +102,18 @@ export function modeChanges(
       if (want.on !== was.on) changes.push({ sign: want.on ? '+' : '-', letter });
       continue;
     }
-    if (/\s/.test(value)) return { error: `+${letter} can't contain spaces` };
     if (!want.on) {
       if (!was.on) continue;
-      // A B-group mode names its value to unset it; the server fills in -k's.
+      // A B-group mode names its value to unset it (`*` when we never learned
+      // it); the server fills in -k's.
       const needsParam = spec.always.includes(letter) && kind !== 'key';
-      changes.push(needsParam ? { sign: '-', letter, param: was.value } : { sign: '-', letter });
+      changes.push(
+        needsParam ? { sign: '-', letter, param: was.value || '*' } : { sign: '-', letter },
+      );
       continue;
     }
+    // Only now: a value being turned off doesn't need to be a valid one.
+    if (/\s/.test(value)) return { error: `+${letter} can't contain spaces` };
     if (kind === 'key') {
       if (!value) {
         if (!was.on) return { error: 'Enter a key' };

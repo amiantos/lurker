@@ -171,8 +171,11 @@
       @jump="onJumpToMessage"
     />
     <BookmarksModal v-if="showBookmarks" @close="showBookmarks = false" @jump="onJumpToMessage" />
+    <!-- Keyed on the channel: switching buffers (Alt+Up/Down isn't gated on an
+         open modal) must not carry one channel's unsaved edits into another's. -->
     <ChannelModal
       v-if="showTopic && active && isChannel"
+      :key="`${active.networkId}::${active.target}`"
       :network-id="active.networkId"
       :target="active.target"
       @close="showTopic = false"
@@ -299,7 +302,6 @@ const {
   isChannel,
   isServerBuffer,
   bufferLabel,
-  topic,
   isSystemBuffer,
   isVirtual,
   hasInput,

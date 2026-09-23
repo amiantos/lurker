@@ -93,6 +93,19 @@ describe('modeChanges', () => {
     });
   });
 
+  it('turns a row off whatever its field still holds', () => {
+    expect(modeChanges(SPEC, LIVE, { l: { on: false, value: '5 0' } })).toEqual({
+      changes: [{ sign: '-', letter: 'l' }],
+    });
+  });
+
+  it('unsets an always-param mode with * when its value never reached us', () => {
+    const spec = parseModeSpec({ CHANMODES: ['b', 'kL', 'l', 'nt'], PREFIX: [] });
+    expect(modeChanges(spec, { modes: 'L', params: {} }, { L: off })).toEqual({
+      changes: [{ sign: '-', letter: 'L', param: '*' }],
+    });
+  });
+
   it('ignores a draft row for a letter the network lacks', () => {
     expect(modeChanges(SPEC, LIVE, { Z: on() })).toEqual({ changes: [] });
   });

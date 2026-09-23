@@ -11,21 +11,24 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 
+// The modal's live-event listener (onIrcEvent), so a test can deliver a frame
+// the way the socket would.
+const ircListeners = new Set<(event: Record<string, unknown>) => void>();
+const emitIrc = (event: Record<string, unknown>) => {
+  for (const listener of ircListeners) listener(event);
+};
+
 vi.mock('../composables/useSocket.js', () => ({
-  socketSend: vi.fn<(payload: Record<string, unknown>) => boolean>(() => true),
   socketSendWithAck: vi.fn<
     (payload: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown> | null
   >(() => Promise.resolve({ ok: true, data: { ok: true, lines: 1 } })),
-}));
-vi.mock('../api.js', () => ({
-  api: vi.fn<(url: string) => Promise<unknown>>(() =>
-    Promise.resolve({
-      networks: [{ id: 1, channels: [{ name: '#chan', key: 'hunter2' }] }],
-    }),
-  ),
+  onIrcEvent: (listener: (event: Record<string, unknown>) => void) => {
+    ircListeners.add(listener);
+    return () => ircListeners.delete(listener);
+  },
 }));
 
-import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
+import { socketSendWithAck } from '../composables/useSocket.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { parseModeSpec } from '../../../shared/channelModes.js';
@@ -33,6 +36,19 @@ import ChannelModal from './ChannelModal.vue';
 
 function seed({ myModes = ['o'], modes = 'ntl' } = {}) {
   const networks = useNetworksStore();
+  // The network config, as GET /api/networks left it: where the key we joined
+  // with comes from.
+  networks.networks = [
+    {
+      id: 1,
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      nick: 'me',
+      tls: true,
+      channels: [{ name: '#chan', key: 'hunter2' }],
+    },
+  ];
   networks.states[1] = {
     networkId: 1,
     channels: [],
@@ -69,7 +85,7 @@ const checkbox = (w: ReturnType<typeof open>, letter: string) =>
 describe('ChannelModal', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    vi.mocked(socketSend).mockClear();
+    ircListeners.clear();
     // Reset, not clear: a test's unconsumed mockImplementationOnce would
     // otherwise answer the next test's first call.
     vi.mocked(socketSendWithAck).mockReset();
@@ -125,26 +141,40 @@ describe('ChannelModal', () => {
     });
   });
 
-  it('sends a changed topic as one line', async () => {
+  it('sends a changed topic as one line, through set-topic', async () => {
     seed();
     const w = open();
     await w.find('textarea').setValue('new\ntopic');
     await w.find('form.modal-form').trigger('submit');
     await flushPromises();
-    expect(socketSend).toHaveBeenCalledWith({
-      type: 'raw',
+    expect(socketSendWithAck).toHaveBeenCalledWith({
+      type: 'set-topic',
       networkId: 1,
-      line: 'TOPIC #chan :new topic',
+      channel: '#chan',
+      topic: 'new topic',
     });
   });
 
+  it('keeps the typed topic and says so when the network is down', async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
+      Promise.resolve({ ok: false, error: 'not-connected' }),
+    );
+    const w = open();
+    await w.find('textarea').setValue('keep me');
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    expect(w.find('.error').text()).toBe('Not connected.');
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('keep me');
+  });
+
   it("shows the channel's error rows that arrive after a Save", async () => {
-    const { buffers } = seed();
+    seed();
     const w = open();
     await checkbox(w, 'm')!.setValue(true);
     await w.find('form.modal-form').trigger('submit');
     await flushPromises();
-    buffers.pushMessage({
+    emitIrc({
       id: 99,
       networkId: 1,
       target: '#chan',
@@ -154,6 +184,24 @@ describe('ChannelModal', () => {
     });
     await flushPromises();
     expect(w.find('.error').text()).toBe("You're not a channel operator.");
+  });
+
+  it('follows a key changed while the modal is open', async () => {
+    seed({ modes: 'ntk' });
+    const w = open();
+    emitIrc({
+      id: 101,
+      networkId: 1,
+      target: '#chan',
+      type: 'mode',
+      modes: [
+        { mode: '-k', param: 'hunter2', kind: 'chan' },
+        { mode: '+k', param: 'hunter3', kind: 'chan' },
+      ],
+    });
+    await flushPromises();
+    const key = w.find('input[aria-label="+k value"]');
+    expect((key.element as HTMLInputElement).value).toBe('hunter3');
   });
 
   it("fills the key from the network config, masked, and doesn't resend it untouched", async () => {
@@ -170,7 +218,9 @@ describe('ChannelModal', () => {
   });
 
   it('loads a list tab with a long ACK timeout, then patches it from live MODE rows', async () => {
+    // Detached: the buffer's own list drops live rows, and the tab must not care.
     const { buffers } = seed();
+    buffers.buffers['1::#chan'].detached = true;
     vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
       Promise.resolve({
         ok: true,
@@ -189,7 +239,7 @@ describe('ChannelModal', () => {
     );
     expect(w.findAll('.mask').map((m) => m.text())).toEqual(['*!*@old']);
 
-    buffers.pushMessage({
+    emitIrc({
       id: 100,
       networkId: 1,
       target: '#chan',
@@ -203,6 +253,31 @@ describe('ChannelModal', () => {
     });
     await flushPromises();
     expect(w.findAll('.mask').map((m) => m.text())).toEqual(['*!*@new']);
+  });
+
+  it("shows the server's refusal of a ban added from a list tab", async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementationOnce(() =>
+      Promise.resolve({ ok: true, data: { ok: true, entries: [] } }),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    await w.find('form.add input').setValue('*!*@new');
+    await w.find('form.add').trigger('submit');
+    await flushPromises();
+    emitIrc({
+      id: 102,
+      networkId: 1,
+      target: '#chan',
+      type: 'error',
+      text: "The channel's +b list is full.",
+    });
+    await flushPromises();
+    expect(w.find('.list-pane .error').text()).toBe("The channel's +b list is full.");
   });
 
   it("says why a list couldn't be read", async () => {

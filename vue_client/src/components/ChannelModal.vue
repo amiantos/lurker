@@ -144,6 +144,7 @@
           <button type="submit" class="btn-secondary" :disabled="!newMask.trim()">Add</button>
         </form>
         <p v-if="listActionError" class="error">{{ listActionError }}</p>
+        <p v-for="err in serverErrors" :key="err" class="error">{{ err }}</p>
         <p v-if="listState.status === 'loading'" class="muted">Loading…</p>
         <p v-else-if="listState.status === 'error'" class="error">{{ listState.error }}</p>
         <p v-else-if="listState.status === 'ready' && !entries.length" class="muted">
@@ -185,13 +186,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import LinkedText from './LinkedText.vue';
-import { api } from '../api.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
-import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
+import { onIrcEvent, socketSendWithAck } from '../composables/useSocket.js';
 import { blockImeEnter } from '../composables/useImeSafeInput.js';
 import { formatDate, formatDateTime } from '../utils/timestamp.js';
 import {
@@ -219,7 +219,20 @@ const LIST_ACK_TIMEOUT_MS = 35_000;
 
 const buffer = computed(() => buffers.findByTarget(props.networkId, props.target));
 const spec = computed(() => networks.states[props.networkId]?.modeSpec ?? null);
-const messages = computed(() => buffer.value?.messages ?? []);
+
+// This channel's live `mode` and `error` rows since the modal opened. Taken
+// straight off the socket rather than from buffer.messages: a detached buffer
+// (the user jumped back in history) drops live rows, and the modal still needs
+// them — to patch an open list and to show what a Save was refused with.
+const modeRowsSeen = ref<ModeRowLike[]>([]);
+const errorsSeen = ref<string[]>([]);
+const stopListening = onIrcEvent((event) => {
+  if (event.networkId !== props.networkId) return;
+  if (String(event.target ?? '').toLowerCase() !== props.target.toLowerCase()) return;
+  if (event.type === 'mode') modeRowsSeen.value.push(event as ModeRowLike);
+  else if (event.type === 'error') errorsSeen.value.push(String(event.text ?? ''));
+});
+onBeforeUnmount(stopListening);
 
 // ─── Who may do what ────────────────────────────────────────────────────────
 
@@ -256,16 +269,17 @@ const topicShown = computed(() => topicDraft.value ?? topic.value);
 function onTopicInput(event: Event) {
   topicDraft.value = (event.target as HTMLTextAreaElement).value;
 }
-// A topic is one line on the wire; a pasted newline becomes a space.
-const topicToSend = computed(() => (topicDraft.value ?? '').replace(/[\r\n]+/g, ' '));
+// A topic is one line on the wire; a pasted newline becomes a space. The byte
+// count is of what goes out.
+const topicToSend = computed(() => topicShown.value.replace(/[\r\n]+/g, ' '));
 const topicChanged = computed(() => topicDraft.value !== null && topicToSend.value !== topic.value);
 const topicLen = computed(() => spec.value?.topicLen ?? null);
 const topicOver = computed(
-  () => topicLen.value != null && topicBytes(topicShown.value) > topicLen.value,
+  () => topicLen.value != null && topicBytes(topicToSend.value) > topicLen.value,
 );
 const topicCounter = computed(() =>
   canSetTopic.value && topicLen.value != null
-    ? `${topicBytes(topicShown.value)} / ${topicLen.value}`
+    ? `${topicBytes(topicToSend.value)} / ${topicLen.value}`
     : '',
 );
 const topicMeta = computed(() => {
@@ -287,9 +301,28 @@ const visibleRows = computed(() =>
 );
 const bareFlags = computed(() => visibleRows.value.filter((r) => r.kind === 'flag' && !r.name));
 const listedRows = computed(() => visibleRows.value.filter((r) => r.kind !== 'flag' || r.name));
-// The key we joined with, from the network config (the server never sends it
-// in channel state). Fetched when the channel has +k.
-const storedKey = ref<string | null>(null);
+// The channel's key, which the server never puts in channel state: the newest
+// `+k <key>` we've seen (a key changed while the modal is open included), else
+// the one we joined with from the network config. `*` is a mask, not a key, and
+// a `-k` ends the search: whatever key the channel has now came after it.
+const keyFromRows = computed<string | undefined>(() => {
+  const seen = [...(buffer.value?.messages ?? []), ...modeRowsSeen.value] as ModeRowLike[];
+  for (let i = seen.length - 1; i >= 0; i--) {
+    const changes = seen[i].modes ?? [];
+    for (let j = changes.length - 1; j >= 0; j--) {
+      const change = changes[j];
+      if (change.mode === '-k') return undefined;
+      if (change.mode === '+k' && change.param && change.param !== '*') return change.param;
+    }
+  }
+  return undefined;
+});
+const configKey = computed(() => {
+  const network = networks.networks.find((n) => n.id === props.networkId);
+  const channels = (network?.channels ?? []) as { name: string; key?: string | null }[];
+  return channels.find((c) => c.name.toLowerCase() === props.target.toLowerCase())?.key ?? null;
+});
+const storedKey = computed(() => keyFromRows.value ?? configKey.value);
 const keyRevealed = ref(false);
 const live = computed<LiveModes>(() => ({
   modes: buffer.value?.modes ?? '',
@@ -317,41 +350,19 @@ const dirty = computed(
   () => topicChanged.value || 'error' in pending.value || pending.value.changes.length > 0,
 );
 
-watch(
-  () => (buffer.value?.modes ?? '').includes('k'),
-  async (hasKey) => {
-    if (!hasKey || storedKey.value) return;
-    try {
-      const { networks: list } = await api<{
-        networks: { id: number; channels?: { name: string; key: string | null }[] }[];
-      }>('/api/networks');
-      const channel = list
-        .find((n) => n.id === props.networkId)
-        ?.channels?.find((c) => c.name.toLowerCase() === props.target.toLowerCase());
-      storedKey.value = channel?.key || null;
-    } catch {
-      // No stored key to show: the field says "Key is set", and -k still works.
-    }
-  },
-  { immediate: true },
-);
-
 // ─── Save ───────────────────────────────────────────────────────────────────
 
 const saving = ref(false);
 const saveError = ref('');
-// The channel's error rows (#434: 482, 467, 478 …) that arrive after a Save are
-// its answer — MODE changes aren't correlated server-side (see modeList.ts).
-const errorsAfterId = ref<number | null>(null);
-const serverErrors = computed(() => {
-  const after = errorsAfterId.value;
-  if (after == null) return [];
-  return messages.value
-    .filter((m) => m.type === 'error' && (m.id ?? 0) > after)
-    .map((m) => String(m.text ?? m.body ?? ''));
-});
-function newestId(): number {
-  return messages.value.reduce((max, m) => Math.max(max, m.id ?? 0), 0);
+// The channel's error rows (#434: 482, 467, 478 …) that arrive after a change
+// goes out are its answer — MODE changes aren't correlated server-side (see
+// modeList.ts). Armed by a Save and by a list add/remove alike.
+const errorsFrom = ref<number | null>(null);
+const serverErrors = computed(() =>
+  errorsFrom.value == null ? [] : errorsSeen.value.slice(errorsFrom.value),
+);
+function armServerErrors() {
+  errorsFrom.value = errorsSeen.value.length;
 }
 
 async function save() {
@@ -365,13 +376,20 @@ async function save() {
     saveError.value = `The topic is over the network's ${topicLen.value}-byte limit.`;
     return;
   }
-  errorsAfterId.value = newestId();
+  armServerErrors();
   saving.value = true;
   try {
     if (topicChanged.value) {
-      const line = `TOPIC ${props.target} :${topicToSend.value}`;
-      if (!socketSend({ type: 'raw', networkId: props.networkId, line })) {
-        saveError.value = 'Not connected.';
+      // Through the set_topic verb, not a raw line: a raw TOPIC to a network
+      // that's down is dropped without a word, and the typed topic with it.
+      const result = await ack({
+        type: 'set-topic',
+        networkId: props.networkId,
+        channel: props.target,
+        topic: topicToSend.value,
+      });
+      if (result) {
+        saveError.value = result;
         return;
       }
       topicDraft.value = null;
@@ -391,18 +409,22 @@ async function save() {
   }
 }
 
-// Send changes; resolves to an error message, or '' when they went out.
-async function sendChanges(changes: OutgoingModeChange[]): Promise<string> {
-  const ack = socketSendWithAck({
+// Send one acked message; resolves to an error message, or '' when it went out.
+async function ack(payload: Record<string, unknown>): Promise<string> {
+  const pendingAck = socketSendWithAck(payload);
+  if (!pendingAck) return 'Not connected.';
+  const result = await pendingAck;
+  if (result.ok) return '';
+  return result.error === 'not-connected' ? 'Not connected.' : `Couldn't save (${result.error}).`;
+}
+
+function sendChanges(changes: OutgoingModeChange[]): Promise<string> {
+  return ack({
     type: 'set-channel-modes',
     networkId: props.networkId,
     channel: props.target,
     changes,
   });
-  if (!ack) return 'Not connected.';
-  const result = await ack;
-  if (result.ok) return '';
-  return result.error === 'not-connected' ? 'Not connected.' : `Couldn't save (${result.error}).`;
 }
 
 // ─── Lists ──────────────────────────────────────────────────────────────────
@@ -411,19 +433,16 @@ interface ListState {
   status: 'idle' | 'loading' | 'ready' | 'error';
   entries: ListEntry[];
   error: string;
-  // Mode rows newer than this patch the fetched list (modeListPatch.ts).
-  afterId: number;
+  // Mode rows seen from here on patch the fetched list (modeListPatch.ts).
+  fromRow: number;
 }
 const lists = reactive<Record<string, ListState>>({});
 const listState = computed<ListState>(
-  () => lists[activeTab.value] ?? { status: 'idle', entries: [], error: '', afterId: 0 },
+  () => lists[activeTab.value] ?? { status: 'idle', entries: [], error: '', fromRow: 0 },
 );
 const entries = computed(() => {
   const state = listState.value;
-  const rowsSince = messages.value.filter(
-    (m) => m.type === 'mode' && (m.id ?? 0) > state.afterId,
-  ) as ModeRowLike[];
-  return patchModeList(state.entries, rowsSince, activeTab.value);
+  return patchModeList(state.entries, modeRowsSeen.value.slice(state.fromRow), activeTab.value);
 });
 
 function listError(data: { error?: string; numeric?: string; text?: string } | undefined) {
@@ -444,13 +463,18 @@ async function loadList(letter: string) {
   if (!LIST_NAMES[letter]) return;
   const load = (listLoads[letter] ?? 0) + 1;
   listLoads[letter] = load;
-  const state: ListState = { status: 'loading', entries: [], error: '', afterId: newestId() };
+  const state: ListState = {
+    status: 'loading',
+    entries: [],
+    error: '',
+    fromRow: modeRowsSeen.value.length,
+  };
   lists[letter] = state;
-  const ack = socketSendWithAck(
+  const pendingAck = socketSendWithAck(
     { type: 'get-mode-list', networkId: props.networkId, channel: props.target, letter },
     { timeoutMs: LIST_ACK_TIMEOUT_MS },
   );
-  const result = ack ? await ack : { ok: false, error: 'not-connected' };
+  const result = pendingAck ? await pendingAck : { ok: false, error: 'not-connected' };
   // A Refresh while this was out started a newer load; that one owns the tab.
   if (listLoads[letter] !== load) return;
   const data = (
@@ -477,10 +501,12 @@ const listActionError = ref('');
 async function addEntry() {
   const mask = newMask.value.trim();
   if (!mask) return;
+  armServerErrors();
   listActionError.value = await sendChanges([{ sign: '+', letter: activeTab.value, param: mask }]);
   if (!listActionError.value) newMask.value = '';
 }
 async function removeEntry(mask: string) {
+  armServerErrors();
   listActionError.value = await sendChanges([{ sign: '-', letter: activeTab.value, param: mask }]);
 }
 

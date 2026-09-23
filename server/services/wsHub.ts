@@ -348,6 +348,7 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'ctcp',
   'get-mode-list',
   'set-channel-modes',
+  'set-topic',
 ]);
 
 // Options bag for fanOut.
@@ -3567,13 +3568,23 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // The channel modal (#727). Each result rides the send-result ACK with the
       // verb's whole answer as `data`: the list's entries, or how many MODE
       // lines went out. get-mode-list waits for the server, so it answers late.
+      // set-topic is the modal's topic Save: unlike a `raw` TOPIC it says when
+      // the network is down, rather than dropping the line.
       case 'get-mode-list':
-      case 'set-channel-modes': {
-        const verbName = msg.type === 'get-mode-list' ? 'get_mode_list' : 'set_channel_modes';
+      case 'set-channel-modes':
+      case 'set-topic': {
+        const verbName =
+          msg.type === 'get-mode-list'
+            ? 'get_mode_list'
+            : msg.type === 'set-topic'
+              ? 'set_topic'
+              : 'set_channel_modes';
         const input =
           msg.type === 'get-mode-list'
             ? { networkId: msg.networkId, channel: msg.channel, letter: msg.letter }
-            : { networkId: msg.networkId, channel: msg.channel, changes: msg.changes };
+            : msg.type === 'set-topic'
+              ? { networkId: msg.networkId, channel: msg.channel, topic: msg.topic }
+              : { networkId: msg.networkId, channel: msg.channel, changes: msg.changes };
         const clientId = msg.clientId;
         void (async () => {
           let result: { ok: boolean; error?: string };
