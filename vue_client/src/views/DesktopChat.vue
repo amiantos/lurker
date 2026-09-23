@@ -257,10 +257,10 @@
     <!-- For the channel it was opened for, whatever the active buffer does
          meanwhile; keyed so opening another channel starts fresh. -->
     <ChannelModal
-      v-if="channelModal.isOpen.value && channelModal.target.value"
-      :key="`${channelModal.networkId.value}::${channelModal.target.value}`"
-      :network-id="channelModal.networkId.value!"
-      :target="channelModal.target.value"
+      v-if="channelModal.current.value"
+      :key="`${channelModal.current.value.networkId}::${channelModal.current.value.target}`"
+      :network-id="channelModal.current.value.networkId"
+      :target="channelModal.current.value.target"
       @close="channelModal.close()"
     />
     <ChannelListModal
@@ -431,7 +431,7 @@ const anyModalOpen = computed(
     networkEditor.isOpen ||
     showHighlights.value ||
     showBookmarks.value ||
-    channelModal.isOpen.value ||
+    !!channelModal.current.value ||
     channelListModal.isOpen ||
     joinChannelModal.isOpen ||
     viewer.isOpen ||

@@ -322,14 +322,6 @@ type WsPayload = Record<string, unknown>;
 // ignore `reset` entirely.
 export type BacklogMode = 'replace' | 'append' | 'shell';
 
-// Inbound message types that mutate IRC state or produce outbound IRC traffic.
-// A paused account is read-only, so these are rejected while reads (snapshot,
-// history, search, chanlist-search) and local view state (read markers, pins,
-// drafts, bookmarks, nicklist collapse) still work. open-buffer can resolve to
-// a JOIN, so it's blocked; close-buffer is blocked because its disconnected
-// fallback flips channels.joined=0 — a network-state mutation a read-only
-// account shouldn't make (no PART goes out, since paused accounts hold no
-// connection, but the persisted join intent would still change).
 // The channel modal's WS messages (#727): each one's verb and the input it
 // takes from the message. One table, so a message and its input can't drift.
 const CHANNEL_MODAL_VERBS: Record<
@@ -347,6 +339,14 @@ const CHANNEL_MODAL_VERBS: Record<
   'set-topic': (m) => ['set_topic', { networkId: m.networkId, channel: m.channel, topic: m.topic }],
 };
 
+// Inbound message types that mutate IRC state or produce outbound IRC traffic.
+// A paused account is read-only, so these are rejected while reads (snapshot,
+// history, search, chanlist-search) and local view state (read markers, pins,
+// drafts, bookmarks, nicklist collapse) still work. open-buffer can resolve to
+// a JOIN, so it's blocked; close-buffer is blocked because its disconnected
+// fallback flips channels.joined=0 — a network-state mutation a read-only
+// account shouldn't make (no PART goes out, since paused accounts hold no
+// connection, but the persisted join intent would still change).
 const PAUSED_BLOCKED_TYPES = new Set([
   'send',
   'action',

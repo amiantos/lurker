@@ -36,6 +36,27 @@ vi.mock('../composables/useSocket.js', () => ({
   },
 }));
 
+// GET /api/networks, which a keyed channel's modal refetches on open: the key
+// the server holds now, not the one the page loaded with.
+const apiKey = { value: 'hunter2' };
+vi.mock('../api.js', () => ({
+  api: vi.fn<(url: string) => Promise<unknown>>(() =>
+    Promise.resolve({
+      networks: [
+        {
+          id: 1,
+          name: 'n',
+          host: 'h',
+          port: 6697,
+          nick: 'me',
+          tls: true,
+          channels: [{ name: '#chan', key: apiKey.value }],
+        },
+      ],
+    }),
+  ),
+}));
+
 import { socketSendWithAck } from '../composables/useSocket.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
@@ -96,6 +117,7 @@ describe('ChannelModal', () => {
     setActivePinia(createPinia());
     ircListeners.clear();
     openListeners.clear();
+    apiKey.value = 'hunter2';
     // Reset, not clear: a test's unconsumed mockImplementationOnce would
     // otherwise answer the next test's first call.
     vi.mocked(socketSendWithAck).mockReset();
@@ -399,6 +421,78 @@ describe('ChannelModal', () => {
       .mocked(socketSendWithAck)
       .mock.calls.filter(([p]) => p.type === 'get-mode-list');
     expect(fetches).toHaveLength(2);
+  });
+
+  it("fetches the key afresh on open, over the page's copy", async () => {
+    seed({ modes: 'ntk' }); // the store's copy says hunter2
+    apiKey.value = 'rotated';
+    const w = open();
+    await flushPromises();
+    const key = w.find('input[aria-label="+k value"]');
+    expect((key.element as HTMLInputElement).value).toBe('rotated');
+  });
+
+  it('lets go of a saved edit when the server echoes it normalized', async () => {
+    const { buffers } = seed();
+    const w = open();
+    // From 50 to 060…
+    await w.find('input[aria-label="+l value"]').setValue('060');
+    await w.find('form.modal-form').trigger('submit');
+    await flushPromises();
+    // …which the ircd echoes as +l 60.
+    buffers.setChannelModes(1, '#chan', 'ntl', { modeParams: { l: '60' }, createdAt: null });
+    await flushPromises();
+    const limit = w.find('input[aria-label="+l value"]');
+    expect((limit.element as HTMLInputElement).value).toBe('60');
+    expect(w.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it("shows a list action's refusal on its own tab only", async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementation(() =>
+      Promise.resolve({ ok: true, data: { ok: true, entries: [] } }),
+    );
+    const w = open();
+    const tab = (name: string) => w.findAll('[role="tab"]').find((t) => t.text() === name)!;
+    await tab('Bans').trigger('click');
+    await flushPromises();
+    await w.find('form.add input').setValue('*!*@x');
+    await w.find('form.add').trigger('submit');
+    await flushPromises();
+    emitIrc({ id: 120, networkId: 1, target: '#chan', type: 'error', text: 'list full' });
+    await flushPromises();
+    expect(w.text()).toContain('list full');
+    await tab('Settings').trigger('click');
+    expect(w.text()).not.toContain('list full');
+  });
+
+  it('sends one ban for a double submit', async () => {
+    seed();
+    vi.mocked(socketSendWithAck).mockImplementation((p) =>
+      p.type === 'get-mode-list'
+        ? Promise.resolve({ ok: true, data: { ok: true, entries: [] } })
+        : new Promise(() => {}),
+    );
+    const w = open();
+    await w
+      .findAll('[role="tab"]')
+      .find((t) => t.text() === 'Bans')!
+      .trigger('click');
+    await flushPromises();
+    await w.find('form.add input').setValue('*!*@x');
+    await w.find('form.add').trigger('submit');
+    await w.find('form.add').trigger('submit');
+    const sets = vi
+      .mocked(socketSendWithAck)
+      .mock.calls.filter(([p]) => p.type === 'set-channel-modes');
+    expect(sets).toHaveLength(1);
+  });
+
+  it("treats a buffer that's gone (closed elsewhere) as out of the channel", () => {
+    seed();
+    const w = mount(ChannelModal, { props: { networkId: 1, target: '#gone' } });
+    expect(w.find('textarea').exists()).toBe(false);
+    expect(w.text()).toContain('Join the channel to see its modes.');
   });
 
   it("says why a list couldn't be read", async () => {

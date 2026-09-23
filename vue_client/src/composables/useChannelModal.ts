@@ -9,20 +9,19 @@
 
 import { ref } from 'vue';
 
-const isOpen = ref(false);
-const networkId = ref<number | null>(null);
-const target = ref<string | null>(null);
+export interface OpenChannel {
+  networkId: number;
+  target: string;
+}
+
+const current = ref<OpenChannel | null>(null);
 
 export function useChannelModal() {
-  function open(id: number, channel: string): void {
-    networkId.value = id;
-    target.value = channel;
-    isOpen.value = true;
+  function open(networkId: number, target: string): void {
+    current.value = { networkId, target };
   }
   function close(): void {
-    isOpen.value = false;
-    networkId.value = null;
-    target.value = null;
+    current.value = null;
   }
-  return { isOpen, networkId, target, open, close };
+  return { current, open, close };
 }

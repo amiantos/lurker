@@ -88,9 +88,7 @@ describe('useBufferActions', () => {
         .buildItems({ networkId: 1, target: '#elsewhere' })
         .find((i) => i.label === 'Channel Settings…');
       item!.onClick?.();
-      const modal = useChannelModal();
-      expect(modal.isOpen.value).toBe(true);
-      expect([modal.networkId.value, modal.target.value]).toEqual([1, '#elsewhere']);
+      expect(useChannelModal().current.value).toEqual({ networkId: 1, target: '#elsewhere' });
     });
 
     it('is not offered for a DM', () => {

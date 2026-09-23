@@ -619,8 +619,9 @@ and rename-proof.
 
 **Ack contract:** include a client-generated `clientId` on `send`/`action`/
 `notice` and the server replies `{kind:'send-result', clientId, ok, error?}`.
-`get-mode-list` and `set-channel-modes` (§ Channels & buffers) answer on the
-same frame with a `data` field carrying their result.
+`get-mode-list`, `set-channel-modes` and `set-topic` (§ Channels & buffers)
+answer on the same frame with a `data` field carrying their result; for
+`set-topic`, `not-connected` means the TOPIC never went out.
 This confirms acceptance only — the message itself comes back as a normal `irc`
 echo with `self:true` and its real id (§9.3). The web client times acks out
 after 8 s (client policy). A `get-mode-list` answer waits on the IRC server, whose

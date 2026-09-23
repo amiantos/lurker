@@ -125,7 +125,9 @@
             @input="onMaskInput"
             @keydown.enter="blockImeEnter"
           />
-          <button type="submit" class="btn-secondary" :disabled="!newMask.trim()">Add</button>
+          <button type="submit" class="btn-secondary" :disabled="!newMask.trim() || listBusy">
+            Add
+          </button>
         </form>
         <p v-if="listActionError" class="error">{{ listActionError }}</p>
         <p v-for="err in serverErrors" :key="err" class="error">{{ err }}</p>
@@ -211,12 +213,14 @@ const spec = computed(() => networks.states[props.networkId]?.modeSpec ?? null);
 // (the user jumped back in history) drops live rows, and the modal still needs
 // them — to patch an open list and to show what a Save was refused with.
 const modeRowsSeen = ref<ModeRowLike[]>([]);
-const errorsSeen = ref<string[]>([]);
+const errorsSeen = ref<{ text: string; at: number }[]>([]);
 const stopListening = onIrcEvent((event) => {
   if (event.networkId !== props.networkId) return;
   if (String(event.target ?? '').toLowerCase() !== props.target.toLowerCase()) return;
   if (event.type === 'mode') modeRowsSeen.value.push(event as ModeRowLike);
-  else if (event.type === 'error') errorsSeen.value.push(String(event.text ?? ''));
+  else if (event.type === 'error') {
+    errorsSeen.value.push({ text: String(event.text ?? ''), at: Date.now() });
+  }
 });
 onBeforeUnmount(stopListening);
 
@@ -230,7 +234,8 @@ const selfModes = computed<string[]>(() => {
 const prefix = computed(() => spec.value?.prefix ?? DEFAULT_PREFIX);
 // Editing needs us in the channel: a parted one's modes are last-known, and a
 // TOPIC or MODE from outside it only draws a 442.
-const joined = computed(() => buffer.value?.joined !== false);
+// No buffer at all (closed from another device) is out of the channel too.
+const joined = computed(() => !!buffer.value && buffer.value.joined !== false);
 const canEditModes = computed(
   () => joined.value && hasRankAtLeast(selfModes.value, prefix.value, 'o'),
 );
@@ -266,13 +271,10 @@ function onTopicInput(event: Event) {
 const topicToSend = computed(() => topicShown.value.replace(/[\r\n]+/g, ' '));
 const topicChanged = computed(() => topicDraft.value !== null && topicToSend.value !== topic.value);
 const topicLen = computed(() => spec.value?.topicLen ?? null);
-const topicOver = computed(
-  () => topicLen.value != null && topicBytes(topicToSend.value) > topicLen.value,
-);
+const topicSize = computed(() => topicBytes(topicToSend.value));
+const topicOver = computed(() => topicLen.value != null && topicSize.value > topicLen.value);
 const topicCounter = computed(() =>
-  canSetTopic.value && topicLen.value != null
-    ? `${topicBytes(topicToSend.value)} / ${topicLen.value}`
-    : '',
+  canSetTopic.value && topicLen.value != null ? `${topicSize.value} / ${topicLen.value}` : '',
 );
 const topicMeta = computed(() => {
   const by = buffer.value?.topicSetBy;
@@ -306,9 +308,9 @@ const otherSetLetters = computed(() =>
 // ±k we've seen — a `+k <key>` names it, a `-k` means there's none (so a key the
 // config still remembers doesn't come back) — else the one we joined with from
 // the network config. `*` is a mask, not a key. Undefined: no ±k seen.
-function lastKeyChange(rows: readonly ModeRowLike[]): string | null | undefined {
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const changes = rows[i].modes ?? [];
+function lastKeyChange(seenRows: readonly ModeRowLike[]): string | null | undefined {
+  for (let i = seenRows.length - 1; i >= 0; i--) {
+    const changes = seenRows[i].modes ?? [];
     for (let j = changes.length - 1; j >= 0; j--) {
       const change = changes[j];
       if (change.mode === '-k') return null;
@@ -317,9 +319,9 @@ function lastKeyChange(rows: readonly ModeRowLike[]): string | null | undefined 
   }
   return undefined;
 }
-// History is read once, when the modal opens; after that only live rows can
-// change the key, so a busy channel doesn't rescan its whole scrollback per line.
-const keyFromHistory = lastKeyChange((buffer.value?.messages ?? []) as ModeRowLike[]);
+// The config copy is the key the server holds (buffers.key, kept current by
+// every live ±k) — as of when it was fetched. Fetched afresh on open for a keyed
+// channel, since the page's copy dates from load; live rows cover the rest.
 const configKey = computed(() => {
   const network = networks.networks.find((n) => n.id === props.networkId);
   const channels = (network?.channels ?? []) as { name: string; key?: string | null }[];
@@ -327,9 +329,9 @@ const configKey = computed(() => {
 });
 const storedKey = computed(() => {
   const fromLive = lastKeyChange(modeRowsSeen.value);
-  if (fromLive !== undefined) return fromLive;
-  return keyFromHistory !== undefined ? keyFromHistory : configKey.value;
+  return fromLive !== undefined ? fromLive : configKey.value;
 });
+if ((buffer.value?.modes ?? '').includes('k')) void networks.fetchAll().catch(() => {});
 const keyRevealed = ref(false);
 const live = computed<LiveModes>(() => {
   const modes = buffer.value?.modes ?? '';
@@ -362,7 +364,7 @@ function rowBinding(row: ModeRow) {
     state: shown(row.letter),
     disabled: !canEditModes.value,
     revealed: keyRevealed.value,
-    canReveal: !!storedKey.value,
+    canReveal: !!storedKey.value && live.value.modes.includes('k'),
     onToggle: (on: boolean) => setOn(row.letter, on),
     onValue: (value: string) => setValue(row.letter, value),
     onReveal: () => (keyRevealed.value = !keyRevealed.value),
@@ -373,23 +375,31 @@ const pending = computed(() =>
   spec.value ? modeChanges(spec.value, live.value, draft) : { changes: [] },
 );
 
-// An edit stays until the channel's live state matches it — the server's echo
-// dissolves it, a refusal (482 …) leaves it standing beside the error. Never
-// cleared on Save: the ACK only means the line went out.
-watch(
-  live,
-  (now) => {
-    for (const [letter, want] of Object.entries(draft)) {
-      const was = liveRow(now, letter);
-      if (want.on === was.on && (!want.on || want.value.trim() === was.value)) {
-        delete draft[letter];
-      }
+// An edit stays until the channel answers it. Never cleared on Save: the ACK
+// only means the line went out. It goes when the live state matches it, or —
+// for a row that was saved — when that row's live state moves at all, since a
+// server may echo a value normalized (`+l 050` comes back as 50). A refusal
+// (482 …) moves nothing, so the edit stands beside the error.
+const savedFrom = new Map<string, string>();
+const rowKey = (row: DraftRow) => `${row.on}:${row.value}`;
+watch(live, (now) => {
+  for (const [letter, want] of Object.entries(draft)) {
+    const was = liveRow(now, letter);
+    const matches = want.on === was.on && (!want.on || want.value.trim() === was.value);
+    const moved = savedFrom.has(letter) && savedFrom.get(letter) !== rowKey(was);
+    if (matches || moved) {
+      delete draft[letter];
+      savedFrom.delete(letter);
     }
-  },
-  { deep: true },
-);
+  }
+});
+let topicSavedFrom: string | null = null;
 watch(topic, (now) => {
-  if (topicDraft.value !== null && topicToSend.value === now) topicDraft.value = null;
+  if (topicDraft.value === null) return;
+  if (topicToSend.value === now || (topicSavedFrom !== null && now !== topicSavedFrom)) {
+    topicDraft.value = null;
+    topicSavedFrom = null;
+  }
 });
 const dirty = computed(
   () => topicChanged.value || 'error' in pending.value || pending.value.changes.length > 0,
@@ -402,12 +412,20 @@ const saveError = ref('');
 // The channel's error rows (#434: 482, 467, 478 …) that arrive after a change
 // goes out are its answer — MODE changes aren't correlated server-side (see
 // modeList.ts). Armed by a Save and by a list add/remove alike.
-const errorsFrom = ref<number | null>(null);
-const serverErrors = computed(() =>
-  errorsFrom.value == null ? [] : errorsSeen.value.slice(errorsFrom.value),
-);
+// Only the rows that come soon after, on the tab that acted: a server answers a
+// MODE in moments, and a 404 or a /kick's 441 minutes later is not this Save's.
+const ERROR_WINDOW_MS = 10_000;
+const armed = ref<{ from: number; at: number; tab: string } | null>(null);
+const serverErrors = computed(() => {
+  const a = armed.value;
+  if (!a || a.tab !== activeTab.value) return [];
+  return errorsSeen.value
+    .slice(a.from)
+    .filter((e) => e.at - a.at < ERROR_WINDOW_MS)
+    .map((e) => e.text);
+});
 function armServerErrors() {
-  errorsFrom.value = errorsSeen.value.length;
+  armed.value = { from: errorsSeen.value.length, at: Date.now(), tab: activeTab.value };
 }
 
 async function save() {
@@ -425,6 +443,9 @@ async function save() {
   // is out, and what goes out is what the user saved.
   const topicToSave = topicChanged.value ? topicToSend.value : null;
   const changes = pending.value.changes;
+  if (topicToSave !== null) topicSavedFrom = topic.value;
+  for (const change of changes)
+    savedFrom.set(change.letter, rowKey(liveRow(live.value, change.letter)));
   armServerErrors();
   saving.value = true;
   try {
@@ -541,7 +562,6 @@ const stopReopen = onSocketOpen(() => {
 onBeforeUnmount(stopReopen);
 
 watch(activeTab, (tab) => {
-  listActionError.value = '';
   if (tab !== 'settings' && !lists[tab]) void loadList(tab);
 });
 
@@ -549,18 +569,30 @@ const newMask = ref('');
 function onMaskInput(event: Event) {
   newMask.value = (event.target as HTMLInputElement).value;
 }
-const listActionError = ref('');
+// Per list, so an error lands on the tab whose action it answers.
+const listActionErrors = reactive<Record<string, string>>({});
+const listActionError = computed(() => listActionErrors[activeTab.value] ?? '');
+// One change at a time: a double click must not send the ban twice.
+const listBusy = ref(false);
 // No refetch after a change: the MODE echo patches the list (modeListPatch.ts).
+async function listChange(sign: '+' | '-', mask: string): Promise<boolean> {
+  if (listBusy.value) return false;
+  const letter = activeTab.value;
+  listBusy.value = true;
+  armServerErrors();
+  try {
+    listActionErrors[letter] = await sendChanges([{ sign, letter, param: mask }]);
+    return !listActionErrors[letter];
+  } finally {
+    listBusy.value = false;
+  }
+}
 async function addEntry() {
   const mask = newMask.value.trim();
-  if (!mask) return;
-  armServerErrors();
-  listActionError.value = await sendChanges([{ sign: '+', letter: activeTab.value, param: mask }]);
-  if (!listActionError.value) newMask.value = '';
+  if (mask && (await listChange('+', mask))) newMask.value = '';
 }
-async function removeEntry(mask: string) {
-  armServerErrors();
-  listActionError.value = await sendChanges([{ sign: '-', letter: activeTab.value, param: mask }]);
+function removeEntry(mask: string) {
+  void listChange('-', mask);
 }
 
 function entryMeta(entry: ListEntry): string {

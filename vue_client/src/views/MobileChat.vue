@@ -174,10 +174,10 @@
     <!-- Opened from the shared buffer menu (Channel Settings…); keyed so
          opening another channel starts fresh. -->
     <ChannelModal
-      v-if="channelModal.isOpen.value && channelModal.target.value"
-      :key="`${channelModal.networkId.value}::${channelModal.target.value}`"
-      :network-id="channelModal.networkId.value!"
-      :target="channelModal.target.value"
+      v-if="channelModal.current.value"
+      :key="`${channelModal.current.value.networkId}::${channelModal.current.value.target}`"
+      :network-id="channelModal.current.value.networkId"
+      :target="channelModal.current.value.target"
       @close="channelModal.close()"
     />
     <ChannelListModal
