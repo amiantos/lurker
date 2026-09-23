@@ -69,6 +69,7 @@ function dismissDccOfferToast(key: string): void {
 import { downloadTextFile } from '../utils/download.js';
 import { notifyForEvent, playSound } from './useHighlightNotifier.js';
 import { isChannelTarget } from '../../../shared/channels.js';
+import { seenEventCursor, setSeenEventCursor } from '../lib/seenEventCursor.js';
 
 export interface AckResult {
   ok: boolean;
@@ -144,11 +145,11 @@ const openHandlers = new Set<() => void>();
 // timeout — whichever fires first.
 const pendingAcks = new Map<string, AckResolver>();
 const ACK_TIMEOUT_MS = 8000;
-// Highest event id this client has ever received in any buffer. Sent on
-// reconnect as `?since=N` so the server can ship just the gap instead of
-// re-issuing the whole last-50-per-buffer backlog. Per-buffer dedupe in
-// buffers.pushMessage handles any residual overlap if the gap is empty.
-let lastSeenEventId = 0;
+// Highest event id this client has ever received in any buffer
+// (lib/seenEventCursor.ts). Sent on reconnect as `?since=N` so the server can
+// ship just the gap instead of re-issuing the whole last-50-per-buffer backlog.
+// Per-buffer dedupe in buffers.pushLive handles any residual overlap if the gap
+// is empty.
 
 // Live IRC events, for a view that has to see its channel's rows even when the
 // buffer's own list won't take them: a detached buffer drops live rows (the
@@ -219,13 +220,27 @@ function armLivenessProbe(): void {
 function wsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const base = `${proto}://${window.location.host}/ws`;
-  return lastSeenEventId > 0 ? `${base}?since=${lastSeenEventId}` : base;
+  const since = seenEventCursor();
+  return since > 0 ? `${base}?since=${since}` : base;
 }
 
 function trackSeenId(eventId: unknown): void {
-  if (typeof eventId === 'number' && eventId > lastSeenEventId) {
-    lastSeenEventId = eventId;
+  if (typeof eventId === 'number' && eventId > seenEventCursor()) {
+    setSeenEventCursor(eventId);
   }
+}
+
+// Whether a live event is news, so its side effects (a member list or topic
+// change, a speaker) apply — and whether its row went in. A detached buffer
+// (the user is reading a history slice) keeps its rows out but is still told
+// the news; only a replay is not (buffers.pushLive). Gating on pushMessage's
+// boolean conflated the two and froze a detached channel's nicklist and topic.
+function takeLive(
+  buffers: ReturnType<typeof useBuffersStore>,
+  event: any,
+): { news: boolean; shown: boolean } {
+  const outcome = buffers.pushLive(event);
+  return { news: outcome === 'shown' || outcome === 'detached', shown: outcome === 'shown' };
 }
 
 function applyEvent(event: any): void {
@@ -238,16 +253,16 @@ function applyEvent(event: any): void {
       break;
     case 'message':
     case 'action': {
-      // pushMessage returns false on dedupe (a replayed event we already had).
-      // Skip the speaker side effect in that case — replaying would re-seed
-      // speakers with stale times. Unread/highlight counts come from the
-      // server's read-state broadcast (fired after every countable event),
-      // so we don't increment them here.
-      if (!buffers.pushMessage(event)) break;
+      // Not news on a replay (takeLive): replaying would re-seed speakers with
+      // stale times. Unread/highlight counts come from the server's read-state
+      // broadcast (fired after every countable event), so we don't increment
+      // them here.
+      const { news, shown } = takeLive(buffers, event);
+      if (!news) break;
       // A live message is the one case where growth is expected and harmless: it lands at the
-      // bottom, where the list's existing stick-to-bottom logic follows it down. Primed after
-      // the dedupe check so a replayed event doesn't re-queue.
-      primeEventPreviews([event]);
+      // bottom, where the list's existing stick-to-bottom logic follows it down. Only for a row
+      // that went in — a detached buffer draws it when it reattaches, and primes it then.
+      if (shown) primeEventPreviews([event]);
       // Speakers feeds tab-complete and the nick-picker. Our own messages
       // would just clutter our own suggestions, so they don't count as
       // "people who recently spoke here."
@@ -265,23 +280,23 @@ function applyEvent(event: any): void {
       break;
     }
     case 'notice':
-      if (!buffers.pushMessage(event)) break;
+      if (!takeLive(buffers, event).news) break;
       notifyForEvent(event);
       break;
     // For events that carry an id AND mutate buffer state (member list,
-    // topic), run the dedupe in pushMessage first. On a replay the mutation
-    // would re-apply stale state (e.g. revert the topic) — skip both.
+    // topic): on a replay the mutation would re-apply stale state (e.g. revert
+    // the topic) — skip it. A detached buffer still takes it (takeLive).
     case 'join':
-      if (!buffers.pushMessage(event)) break;
+      if (!takeLive(buffers, event).news) break;
       buffers.addMember(event.networkId, event.target, event.nick);
       break;
     case 'part':
     case 'quit':
-      if (!buffers.pushMessage(event)) break;
+      if (!takeLive(buffers, event).news) break;
       buffers.removeMember(event.networkId, event.target, event.nick);
       break;
     case 'kick':
-      if (!buffers.pushMessage(event)) break;
+      if (!takeLive(buffers, event).news) break;
       buffers.removeMember(event.networkId, event.target, event.kicked);
       // Only a kick of US notifies, and the server already decided that — this
       // call is gated on `event.notify` like every other one, so a kick of
@@ -290,14 +305,14 @@ function applyEvent(event: any): void {
       notifyForEvent(event);
       break;
     case 'nick':
-      if (!buffers.pushMessage(event)) break;
+      if (!takeLive(buffers, event).news) break;
       buffers.renameMember(event.networkId, event.target, event.nick, event.newNick);
       break;
     case 'own-nick':
       networks.applyOwnNick(event);
       break;
     case 'topic':
-      if (!buffers.pushMessage(event)) break;
+      if (!takeLive(buffers, event).news) break;
       buffers.setTopic(event.networkId, event.target, event.text, {
         setBy: event.nick,
         setAt: event.time,
@@ -539,13 +554,13 @@ function applyEvent(event: any): void {
     case 'motd':
     case 'error': {
       const decorated = { ...event, target: event.target || `:server:${event.networkId}` };
-      const fresh = buffers.pushMessage(decorated);
+      const { news } = takeLive(buffers, decorated);
       // An unrecognized slash command (forwarded as raw IRC) only fails once
       // the server 421s, and that lands in the server buffer — invisible if
       // you typed in a channel. Mirror it as a toast so the feedback shows up
-      // where you're looking. Gated on `fresh` so a resume-gap replay of the
+      // where you're looking. Gated on `news` so a resume-gap replay of the
       // same error can't re-fire it (same guard the message path uses).
-      if (fresh && event.unknownCommand) {
+      if (news && event.unknownCommand) {
         useToastsStore().push({
           kind: 'warn',
           title: 'Unknown command',
@@ -853,7 +868,7 @@ function handleMessage(raw: string): void {
     // cursor (#355).
     // Judged before the cursor moves past it.
     const fresh =
-      payload.networkId == null || typeof payload.id !== 'number' || payload.id > lastSeenEventId;
+      payload.networkId == null || typeof payload.id !== 'number' || payload.id > seenEventCursor();
     if (payload.networkId != null) trackSeenId(payload.id);
     applyEvent(payload);
     if (fresh) for (const listener of ircEventListeners) listener(payload);
@@ -1307,7 +1322,7 @@ export function resetSocket(): void {
   reconnectAttempts = 0;
   socketOpenedAt = null;
   hiddenSince = null;
-  lastSeenEventId = 0;
+  setSeenEventCursor(0);
   failAllPendingAcks('disconnected');
 }
 

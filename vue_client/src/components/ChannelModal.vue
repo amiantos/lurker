@@ -214,28 +214,11 @@ const spec = computed(() => networks.states[props.networkId]?.modeSpec ?? null);
 // them — to patch an open list and to show what a Save was refused with.
 const modeRowsSeen = ref<ModeRowLike[]>([]);
 const errorsSeen = ref<{ text: string; at: number }[]>([]);
-// The newest live TOPIC, for the same reason: buffer.topic isn't updated while
-// the buffer is detached (useSocket applies it only when pushMessage takes the row).
-const liveTopic = ref<{ text: string; setBy: string | null; setAt: string | null } | null>(null);
 const stopListening = onIrcEvent((event) => {
   if (event.networkId !== props.networkId) return;
   if (String(event.target ?? '').toLowerCase() !== props.target.toLowerCase()) return;
   if (event.type === 'mode') modeRowsSeen.value.push(event as ModeRowLike);
-  else if (event.type === 'topic') {
-    // A live TOPIC row: its author and time are the setter's.
-    liveTopic.value = {
-      text: String(event.text ?? ''),
-      setBy: event.nick ?? null,
-      setAt: event.time ?? null,
-    };
-  } else if (event.type === 'channel-topic') {
-    // 332/331 and 333: the topic bar's state, setter as the server says.
-    liveTopic.value = {
-      text: String(event.topic ?? ''),
-      setBy: event.setBy ?? null,
-      setAt: event.setAt ?? null,
-    };
-  } else if (event.type === 'error') {
+  else if (event.type === 'error') {
     errorsSeen.value.push({ text: String(event.text ?? ''), at: Date.now() });
   }
 });
@@ -276,7 +259,7 @@ const activeList = computed(() => tabs.value.find((t) => t.id === activeTab.valu
 
 // ─── Topic ──────────────────────────────────────────────────────────────────
 
-const topic = computed(() => liveTopic.value?.text ?? buffer.value?.topic ?? '');
+const topic = computed(() => buffer.value?.topic ?? '');
 // Null until the user types: the field shows the live topic until then.
 const topicDraft = ref<string | null>(null);
 const topicShown = computed(() => topicDraft.value ?? topic.value);
@@ -294,8 +277,8 @@ const topicCounter = computed(() =>
   canSetTopic.value && topicLen.value != null ? `${topicSize.value} / ${topicLen.value}` : '',
 );
 const topicMeta = computed(() => {
-  const by = liveTopic.value ? liveTopic.value.setBy : buffer.value?.topicSetBy;
-  const at = liveTopic.value ? liveTopic.value.setAt : buffer.value?.topicSetAt;
+  const by = buffer.value?.topicSetBy;
+  const at = buffer.value?.topicSetAt;
   if (!topic.value || (!by && !at)) return '';
   return [by ? `Set by ${by}` : 'Set', at ? formatDateTime(at) : ''].filter(Boolean).join(' · ');
 });

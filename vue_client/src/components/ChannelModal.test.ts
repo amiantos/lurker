@@ -376,19 +376,15 @@ describe('ChannelModal', () => {
     expect(w.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
   });
 
-  it('follows a topic change while the buffer is detached', async () => {
-    // A detached buffer's store copy doesn't take live rows; the modal's does.
+  it('shows the topic the store holds while the buffer is detached', async () => {
+    // useSocket keeps a detached buffer's topic current (takeLive); the modal
+    // must read it rather than anything that stops at the slice.
     const { buffers } = seed();
     buffers.buffers['1::#chan'].detached = true;
     const w = open();
-    emitIrc({
-      id: 130,
-      networkId: 1,
-      target: '#chan',
-      type: 'topic',
-      nick: 'bob',
-      text: 'fresh topic',
-      time: '2026-09-23T12:00:00.000Z',
+    buffers.setTopic(1, '#chan', 'fresh topic', {
+      setBy: 'bob',
+      setAt: '2026-09-23T12:00:00.000Z',
     });
     await flushPromises();
     expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('fresh topic');
