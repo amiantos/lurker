@@ -66,7 +66,7 @@ describe('engine-closure against this repo', () => {
     );
     expect(lines.filter((l) => /\.(test|spec)\.ts$/.test(l))).toEqual([]);
     for (const file of lines.filter((l) => !l.includes('*'))) {
-      expect(fs.existsSync(path.join(repo, file)), file).toBe(true);
+      expect(fs.existsSync(path.join(repo, file)), `${file} exists`).toBe(true);
     }
   });
 
@@ -147,8 +147,8 @@ describe('engine-closure import scan', () => {
     for (const call of ["await import('./engine/late.js');", 'await import(name);']) {
       const root = fixture({ 'server/engine.ts': call, 'server/engine/late.ts': '' });
       const r = run(['files', '--root', root]);
-      expect(r.status, call).toBe(1);
-      expect(r.stderr, call).toContain('LAZY_IMPORTS');
+      expect(r.status, `status for ${call}`).toBe(1);
+      expect(r.stderr, `stderr for ${call}`).toContain('LAZY_IMPORTS');
     }
   });
 });
