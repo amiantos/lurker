@@ -5,6 +5,7 @@ import { defineStore } from 'pinia';
 import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
+import { seenEventCursor } from '../lib/seenEventCursor.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
@@ -254,6 +255,12 @@ export interface Buffer {
   // real backlog (and must NOT mark-read to that stray line) until a proper
   // hydrate (reattachToLive → applyLatestReplace) clears the flag.
   unseeded: boolean;
+  // The newest id of the live tail as this buffer last knew it: recorded when
+  // it detaches (its slice is about to be replaced) and advanced by every live
+  // event it takes while detached. It is the detached buffer's replay test —
+  // per buffer, like the live tail's own last-row check, so it assumes nothing
+  // about the order of other buffers' events.
+  liveTailId?: number | null;
   modes?: string;
   // Values of the set param modes (`l` → '50'); never the key (#727).
   modeParams?: Record<string, string>;
@@ -262,6 +269,35 @@ export interface Buffer {
   // Who set the topic and when (ISO); null when the server hasn't said.
   topicSetBy?: string | null;
   topicSetAt?: string | null;
+}
+
+// A message from `nick` ends their typing indicator — whether or not its row
+// is drawn. Keys off the resolved buffer's target, not the event's: setTyping
+// armed the expiry timer under buf.target, so a divergently-cased event would
+// otherwise miss it and strand the timer (#327).
+function clearSpeakerTyping(buf: Buffer, nick: string | undefined): void {
+  const speakerKey = nick?.toLowerCase();
+  if (!speakerKey || !buf.typing[speakerKey]) return;
+  clearTypingTimer(buf.networkId, buf.target, nick!);
+  delete buf.typing[speakerKey];
+}
+
+// Before a buffer detaches, remember how far its live tail reached, so a replay
+// of a row it already had isn't taken as news (pushLive). Its newest row with
+// an id — a local /commands line has none — is exact for this buffer. Only when
+// it holds none (a shell, a buffer wiped on reconnect) does the socket's resume
+// cursor stand in: every id up to it has been delivered, assuming cross-buffer
+// id order at this one instant. Flooring an exact tail with it would take a new
+// row that arrives after a higher id elsewhere for a replay.
+//
+// ⚠ Never for the system buffer (networkId null): its rows are numbered by
+// their own sequence (system_messages), which the cursor doesn't track, so the
+// two can't be compared.
+function noteLiveTail(buf: Buffer): void {
+  let tail = 0;
+  for (let i = buf.messages.length - 1; i >= 0 && !tail; i--) tail = buf.messages[i].id ?? 0;
+  const floor = buf.networkId == null ? 0 : seenEventCursor();
+  buf.liveTailId = Math.max(buf.liveTailId ?? 0, tail || floor);
 }
 
 function makeBuffer(networkId: number | string | null, target: string): Buffer {
@@ -559,30 +595,45 @@ export const useBuffersStore = defineStore('buffers', {
     ensure(networkId: number | string, target: string, bufferId?: number | null) {
       return ensureBuffer(this, networkId, target, bufferId);
     },
-    pushMessage(event: BufferMessage) {
-      if (!event.target) return false;
+    // Whether the row went in. See pushLive for why it didn't.
+    pushMessage(event: BufferMessage): boolean {
+      return this.pushLive(event) === 'shown';
+    },
+    // Put a live event in its buffer, and say what became of it:
+    //   'shown'    — the row went in.
+    //   'replay'   — we already had it (a WS resume overlapping what we saw live).
+    //                It changes nothing.
+    //   'detached' — the buffer is showing a history slice, so the row stays out
+    //                of it until the user returns to the present. It is still
+    //                news: the state it carries (members, topic) must apply.
+    // useSocket's side effects hang on this distinction; a bare false used to
+    // mean both of the last two, and a detached channel's nicklist froze.
+    pushLive(event: BufferMessage): 'shown' | 'replay' | 'detached' | 'none' {
+      if (!event.target) return 'none';
       const buf = ensureBuffer(
         this,
         event.networkId,
         event.target,
         typeof event.bufferId === 'number' ? event.bufferId : undefined,
       );
-      // Detached: the user is reading a historical slice that doesn't include
-      // the live tail. Drop the event so nothing materializes inside the
-      // slice, and bump the badge so the StatusBar "Return to present" button
-      // can surface a hint that fresh activity has happened. The caller's
-      // unread/highlight side effects still fire — those are buffer-state
-      // counts, independent of whether we render the row right now.
       if (buf.detached) {
+        if (event.id != null) {
+          if (event.id <= (buf.liveTailId ?? 0)) return 'replay';
+          buf.liveTailId = event.id;
+        }
+        // Drop the row so nothing materializes inside the slice, and bump the
+        // badge so the StatusBar "Return to present" button can hint that
+        // fresh activity has happened.
         buf.liveDuringDetach += 1;
-        return false;
+        clearSpeakerTyping(buf, event.nick);
+        return 'detached';
       }
       const prevMaxId = buf.messages[buf.messages.length - 1]?.id ?? 0;
       // Server inserts persisted events in id order per buffer, so any event
       // with id <= prevMaxId is a replay (e.g. a WS resume that overlapped
       // with an event we already saw live). Drop it — and signal the caller
       // so it can skip unread/highlight side effects too.
-      if (event.id != null && event.id <= prevMaxId) return false;
+      if (event.id != null && event.id <= prevMaxId) return 'replay';
       buf.messages.push(event);
       if (buf.messages.length > MAX_PER_BUFFER) {
         buf.messages.splice(0, buf.messages.length - MAX_PER_BUFFER);
@@ -638,15 +689,8 @@ export const useBuffersStore = defineStore('buffers', {
           }
         }
       }
-      const speakerKey = event.nick?.toLowerCase();
-      if (speakerKey && buf.typing[speakerKey]) {
-        // Key off the resolved buffer's target, not event.target — setTyping
-        // armed the expiry timer under buf.target, so a divergently-cased event
-        // would otherwise miss it and strand the timer (#327).
-        clearTypingTimer(buf.networkId, buf.target, event.nick!);
-        delete buf.typing[speakerKey];
-      }
-      return true;
+      clearSpeakerTyping(buf, event.nick);
+      return 'shown';
     },
     replaceBacklog(
       networkId: number | string,
@@ -666,6 +710,11 @@ export const useBuffersStore = defineStore('buffers', {
       // Speakers / readState / joined still apply (they're slice-independent
       // buffer-level state).
       if (buf.detached) {
+        // Its rows were delivered all the same: a live frame resending one is a
+        // replay, not news (pushLive).
+        for (const e of events) {
+          if (e.id != null && e.id > (buf.liveTailId ?? 0)) buf.liveTailId = e.id;
+        }
         if (speakers !== undefined) this.seedSpeakers(networkId, target, speakers);
         if (readState) this.applyReadState(networkId, target, readState);
         if (typeof joined === 'boolean') buf.joined = joined;
@@ -812,6 +861,7 @@ export const useBuffersStore = defineStore('buffers', {
     detachForJump(networkId: number | string, target: string) {
       const buf = ensureBuffer(this, networkId, target);
       if (buf.detached) return;
+      noteLiveTail(buf);
       buf.detached = true;
       buf.liveDuringDetach = 0;
     },
@@ -834,6 +884,7 @@ export const useBuffersStore = defineStore('buffers', {
       const buf = ensureBuffer(this, networkId, target);
       const token = nextHistoryToken();
       const wasDetached = buf.detached;
+      if (!wasDetached) noteLiveTail(buf);
       buf.detached = true;
       buf.pendingHistoryToken = token;
       buf.loadingHistory = true;

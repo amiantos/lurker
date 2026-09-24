@@ -111,7 +111,7 @@ describe('socketSendWithAck', () => {
     expect(settled).toMatchObject({ ok: false, error: 'no-reply' });
   });
 
-  it('onIrcEvent hears fresh irc frames, not a replay of one already seen', async () => {
+  it('onIrcEvent hears news, not a replay of a row its buffer already had', async () => {
     const ws = await openSocket();
     const heard: unknown[] = [];
     const stop = onIrcEvent((e) => heard.push(e.id));
@@ -127,9 +127,36 @@ describe('socketSendWithAck', () => {
     ws.deliver(frame(500)); // the same row again, as a resume can send it
     ws.deliver(frame(499));
     ws.deliver(frame(501));
+    // A lower id in ANOTHER buffer is still new to that buffer: replay is per buffer.
+    ws.deliver({ ...frame(450), target: '#other' });
     stop();
     ws.deliver(frame(502));
-    expect(heard).toEqual([500, 501]);
+    expect(heard).toEqual([500, 501, 450]);
+  });
+
+  it('onIrcEvent hears a resent chghost or channel invite only once', async () => {
+    // Every row-bearing branch goes through the same replay test.
+    const ws = await openSocket();
+    const heard: unknown[] = [];
+    const stop = onIrcEvent((e) => heard.push(`${e.type}:${e.id}`));
+    const row = (type: string, id: number) => ({
+      kind: 'irc',
+      type,
+      networkId: 1,
+      target: '#chan',
+      id,
+      nick: 'bob',
+    });
+    for (const frame of [
+      row('chghost', 600),
+      row('chghost', 600),
+      row('invite', 601),
+      row('invite', 601),
+    ]) {
+      ws.deliver(frame);
+    }
+    stop();
+    expect(heard).toEqual(['chghost:600', 'invite:601']);
   });
 
   it('still gives a plain send 8 s', async () => {
