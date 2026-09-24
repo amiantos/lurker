@@ -58,7 +58,8 @@ jobs:
 
       # The engine step runs tools/engine-closure.mjs, which asks esbuild (a
       # dependency, through tsx) for the engine's module graph — so a release
-      # needs Node and the installed dependencies. --ignore-scripts: nothing
+      # needs Node and the production dependencies (tsx, and so esbuild, is
+      # one — the same tree the image installs). --ignore-scripts: nothing
       # here runs the app, so the native modules' install scripts can be
       # skipped, and esbuild finds its binary without its own.
       - name: Set up Node
@@ -70,7 +71,7 @@ jobs:
 
       - name: Install dependencies
         if: github.event_name == 'release'
-        run: npm ci --ignore-scripts
+        run: npm ci --omit=dev --ignore-scripts
 
       # The IRC engine (server/engine.ts) ships in this same image under its
       # own tag lineage, `engine-<protocol major>`, that moves ONLY when a
@@ -114,8 +115,15 @@ jobs:
               # stops the step (set -e) instead of reading as "no difference".
               engine_files="$(node tools/engine-closure.mjs files)"
               mapfile -t engine_paths <<<"$engine_files"
-              if ! git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "${engine_paths[@]}"; then
+              # 1 is "differs"; anything else is git failing, which must not
+              # read as an engine change.
+              diff_rc=0
+              git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "${engine_paths[@]}" || diff_rc=$?
+              if [ "$diff_rc" -eq 1 ]; then
                 changed=true
+              elif [ "$diff_rc" -ne 0 ]; then
+                echo "git diff of the engine's files failed (exit $diff_rc)" >&2
+                exit 1
               else
                 prev_deps="$(git show "$prev:package-lock.json" | node tools/engine-closure.mjs deps)"
                 this_deps="$(git show "$GITHUB_REF_NAME:package-lock.json" | node tools/engine-closure.mjs deps)"

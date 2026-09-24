@@ -41,14 +41,24 @@
 // same. Integrity is compared as well as version: a git or fork dependency
 // can change without its version string changing.
 //
-// Anything it can't account for stops the release: an import that doesn't
-// resolve, or a dynamic import or require of a computed specifier in the
-// engine's own files.
+// An import that doesn't resolve, or a dynamic import or require of a
+// computed specifier in the engine's own files, stops the release. Code the
+// engine loads without an import esbuild can see (createRequire, a Worker, a
+// child process) is not caught; the diff of the whole server/engine directory
+// is the backstop there. A package that declares `"sideEffects": false` is
+// taken at its word.
 
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+
+const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// tsx's own copy of esbuild, not whichever one npm hoisted: esbuild isn't a
+// dependency of ours in its own right, and a second copy could come in under
+// some other package.
+const { build } = createRequire(path.join(repo, 'node_modules/tsx/package.json'))('esbuild');
 
 const ENTRY = 'server/engine.ts';
 
@@ -89,6 +99,11 @@ export async function scanEngine(root) {
       bundle: true,
       platform: 'node',
       format: 'esm',
+      // Resolve as Node does, not as a bundler would: tsx loads the engine
+      // with Node's resolver and uses esbuild only to transpile. No `module`
+      // condition, no `module` main field.
+      conditions: [],
+      mainFields: ['main'],
       write: false,
       outfile: 'engine.js',
       metafile: true,
@@ -182,10 +197,7 @@ export function lockClosure(lock, edges, used) {
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const rootFlag = rest.indexOf('--root');
-  const root =
-    rootFlag >= 0
-      ? rest[rootFlag + 1]
-      : path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const root = rootFlag >= 0 ? rest[rootFlag + 1] : repo;
   if (cmd === 'files') {
     const { files } = await scanEngine(root);
     process.stdout.write([...files, ...STATIC_INPUTS].join('\n') + '\n');

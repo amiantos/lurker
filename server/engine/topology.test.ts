@@ -41,7 +41,9 @@ describe('engine topology artefacts', () => {
   it('the publish workflow takes the engine closure from tools/engine-closure.mjs', () => {
     const wf = fs.readFileSync(path.join(root, '.github/workflows/docker-publish.yml'), 'utf8');
     expect(wf).toContain('engine_files="$(node tools/engine-closure.mjs files)"');
-    expect(wf).toContain('git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "${engine_paths[@]}"');
+    expect(wf).toContain(
+      'git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "${engine_paths[@]}" || diff_rc=$?',
+    );
     expect(wf).toMatch(
       /\$\(git show "\$prev:package-lock\.json" \| node tools\/engine-closure\.mjs deps\)/,
     );
@@ -49,7 +51,7 @@ describe('engine topology artefacts', () => {
       /\$\(git show "\$GITHUB_REF_NAME:package-lock\.json" \| node tools\/engine-closure\.mjs deps\)/,
     );
     // The script asks esbuild, so a release installs the dependencies first.
-    expect(wf).toContain('run: npm ci --ignore-scripts');
+    expect(wf).toContain('run: npm ci --omit=dev --ignore-scripts');
     // No hand-kept list or single-package check left beside it.
     expect(wf).not.toContain('server/services/identd.ts');
     expect(wf).not.toContain('node_modules/irc-framework');
