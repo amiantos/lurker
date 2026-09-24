@@ -9,42 +9,52 @@
 //
 // It used to be a list written into the workflow, and it fell behind: the
 // CertFP and proxy work gave the engine four more files and the `socks`
-// package, and the list never heard about them. So the list is now derived by
-// following the engine's imports from server/engine.ts, and checked against
-// the lockfile for the packages those imports reach.
+// package, and the list never heard about them. So the list is now the
+// engine's module graph, as esbuild resolves it from server/engine.ts. esbuild
+// is what tsx transpiles and resolves the engine with at runtime, so its
+// answer is the engine's: type-only imports dropped under this repo's
+// tsconfig, Node's builtins left out, and a package's browser-only files never
+// reached.
 //
-// Deliberately NOT included: tsx, the loader the engine runs under
-// (docker-compose.engine.yml). It is a dev-tool dependency that Dependabot
-// bumps routinely, a bump rarely changes what the engine does, and every move
-// of the engine tag drops self-hosters' IRC connections. Node itself IS
-// covered, through the Dockerfile's pinned base image.
+// A package counts only if some of its code survives esbuild's tree shaking,
+// i.e. the engine can actually run it. clientCert.ts imports selfsigned inside
+// generateClientCert, which only the app calls, so selfsigned and its
+// dependencies don't count — and if the engine ever calls it, they will,
+// without anyone having to remember to say so.
 //
-// Usage (from the repo root, plain Node — the release job has no npm install):
+// Deliberately NOT included: tsx and esbuild themselves, the loader the engine
+// runs under (docker-compose.engine.yml). Dependabot bumps them routinely, a
+// bump rarely changes what the engine does, and every move of the engine tag
+// drops self-hosters' IRC connections. Node itself IS covered, through the
+// Dockerfile's pinned base image.
+//
+// Usage (from the repo root, after `npm ci`):
 //   node tools/engine-closure.mjs files
 //       the pathspecs to `git diff` between two releases, one per line
 //   git show v2.3.1:package-lock.json | node tools/engine-closure.mjs deps
-//       every package the engine loads, transitively, as key@version lines
+//       every package the engine loads, as `name@version integrity` lines
 //
-// `deps` takes its package list from THIS checkout's imports and reads
-// versions from whichever lockfile it's fed, so the two sides of a release
-// compare the same packages.
+// `deps` takes the packages, and which package loads which, from THIS
+// checkout's node_modules, then looks each one up in whichever lockfile it's
+// fed — so the two sides of a release compare the same packages, and a
+// package that moved in node_modules (a dedupe) without changing reads the
+// same. Integrity is compared as well as version: a git or fork dependency
+// can change without its version string changing.
 //
-// The import scan is a regex over comment-stripped source, not a parser. Where
-// it can't be sure, it errs toward "part of the engine" (a false positive
-// moves the tag once) or stops the release (an import it can't resolve, a
-// computed dynamic import, a package the lockfile doesn't have) — never toward
-// quietly leaving something out.
+// Anything it can't account for stops the release: an import that doesn't
+// resolve, or a dynamic import or require of a computed specifier in the
+// engine's own files.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { isBuiltin } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const ENTRY = 'server/engine.ts';
 
 // Inputs the engine depends on that no import names: the whole engine
 // directory (anything it reads at runtime rather than imports), the image it
-// runs in, and the tsconfig tsx transpiles it with.
+// runs in, and the tsconfig it's transpiled with.
 const STATIC_INPUTS = [
   'server/engine',
   ':(exclude)server/engine/*.test.ts',
@@ -53,125 +63,83 @@ const STATIC_INPUTS = [
   'tsconfig*.json',
 ];
 
-// A dynamic import is loaded when its code runs, not when the engine starts,
-// so it is only part of the engine if the engine calls it. The scan follows
-// every one like a static import, except those listed here with the reason
-// the engine never runs them.
-const LAZY_IMPORTS = {
-  // generateClientCert mints certs for the app's CertFP form. The engine
-  // imports clientCert.ts only for isDialableCertPair.
-  'server/utils/clientCert.ts': ['selfsigned'],
-};
-
-// `import … from '…'`, `export … from '…'` and a bare `import '…'`. The span
-// before `from` may cross lines (a long import list) but not a semicolon, a
-// quote, or the start of another import/export statement. Group 2 marks a
-// type-only statement: `type` followed by anything but `,` or `from` (which
-// make it a default import that happens to be named `type`).
-const STATIC_RE =
-  /^[ \t]*(import|export)(\s+type\b(?!\s*,)(?!\s+from\b))?(?:(?!^[ \t]*(?:import|export)\b)[^;'"])*?\bfrom\s*['"]([^'"]+)['"]|^[ \t]*import\s*['"]([^'"]+)['"]/gm;
-const DYNAMIC_RE = /\bimport\s*\(\s*(?:(['"])([^'"]+)\1)?/g;
-
 class ClosureError extends Error {}
 
-/** `src` with its comments blanked out, so a quote, a semicolon or the word
- *  `import(` in a comment can't confuse the scan. String contents are kept:
- *  they hold the specifiers. Newlines survive, so `^` still anchors lines. */
-function stripComments(src) {
-  let out = '';
-  let quote = null;
-  for (let i = 0; i < src.length; i++) {
-    const c = src[i];
-    if (quote) {
-      out += c;
-      if (c === '\\') out += src[++i] ?? '';
-      else if (c === quote) quote = null;
-    } else if (c === "'" || c === '"' || c === '`') {
-      quote = c;
-      out += c;
-    } else if (c === '/' && src[i + 1] === '/') {
-      while (i < src.length && src[i] !== '\n') i++;
-      out += '\n';
-    } else if (c === '/' && src[i + 1] === '*') {
-      const end = src.indexOf('*/', i + 2);
-      const body = src.slice(i, end < 0 ? src.length : end + 2);
-      out += body.replace(/[^\n]/g, ' ');
-      i += body.length - 1;
-    } else {
-      out += c;
-    }
-  }
-  return out;
+/** `node_modules/a/node_modules/@s/b/lib/x.js` → `node_modules/a/node_modules/@s/b`,
+ *  the package's lockfile key; null for a file of our own. */
+function packageKey(file) {
+  const m = /^(.*node_modules\/(?:@[^/]+\/)?[^/]+)\//.exec(file);
+  return m ? m[1] : null;
 }
 
-function resolveLocal(root, fromFile, spec) {
-  const base = path.posix.join(path.posix.dirname(fromFile), spec);
-  const candidates = base.endsWith('.js')
-    ? [base.slice(0, -3) + '.ts', base]
-    : [base, base + '.ts', base + '/index.ts'];
-  const hit = candidates.find((c) =>
-    fs.statSync(path.join(root, c), { throwIfNoEntry: false })?.isFile(),
-  );
-  if (!hit) throw new ClosureError(`${fromFile}: cannot resolve import '${spec}'`);
-  return hit;
+function packageName(key) {
+  return key.slice(key.lastIndexOf('node_modules/') + 'node_modules/'.length);
 }
 
-function packageName(spec) {
-  const parts = spec.split('/');
-  return spec.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
-}
-
-/** The repo-relative files the engine loads, and the packages they import. */
-export function scanEngine(root) {
-  const files = new Set();
-  const packages = new Set();
-  const follow = (file, spec) => {
-    if (spec.startsWith('.')) visit(resolveLocal(root, file, spec));
-    else if (!isBuiltin(spec)) packages.add(packageName(spec));
-  };
-  const visit = (file) => {
-    if (files.has(file)) return;
-    files.add(file);
-    const src = stripComments(fs.readFileSync(path.join(root, file), 'utf8'));
-    for (const m of src.matchAll(STATIC_RE)) {
-      if (m[2]) continue; // `import type` / `export type`: erased, loads nothing
-      follow(file, m[3] ?? m[4]);
-    }
-    // A literal one is followed, whether it runs or sits in a type position
-    // (`typeof import('x')`, which loads nothing) — the scan can't tell those
-    // apart, and counting too much only moves the tag.
-    for (const m of src.matchAll(DYNAMIC_RE)) {
-      const spec = m[2];
-      if (!spec) throw new ClosureError(`${file}: a dynamic import of a computed specifier`);
-      if (!(LAZY_IMPORTS[file] ?? []).includes(spec)) follow(file, spec);
-    }
-  };
-  visit(ENTRY);
-  // Checked against this checkout's own lockfile: a specifier that isn't an
-  // installed package (a tsconfig `paths` alias, a `#` subpath import, a typo)
-  // would otherwise read "(absent)" on both sides of a release and compare
-  // equal forever.
-  const lock = readLock(root);
-  for (const name of packages) {
-    if (!lock.packages?.[`node_modules/${name}`]) {
-      throw new ClosureError(`the engine imports '${name}', which package-lock.json doesn't have`);
-    }
-  }
-  return { files: [...files].sort(), packages: [...packages].sort() };
-}
-
-function readLock(root) {
+/** The engine's own files; which package each file or package loads
+ *  (`edges.get(from)` maps the package names `from` imports to where they sit
+ *  in this checkout, where `from` is a lockfile key, or '' for the engine's
+ *  own files); and which packages have code in the engine (`used`). */
+export async function scanEngine(root) {
+  let result;
   try {
-    return JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+    result = await build({
+      entryPoints: [ENTRY],
+      absWorkingDir: path.resolve(root),
+      bundle: true,
+      platform: 'node',
+      format: 'esm',
+      write: false,
+      outfile: 'engine.js',
+      metafile: true,
+      logLevel: 'silent',
+      logOverride: {
+        'unsupported-dynamic-import': 'warning',
+        'unsupported-require-call': 'warning',
+      },
+    });
   } catch (err) {
-    throw new ClosureError(`cannot read ${root}/package-lock.json: ${err.message}`);
+    const first = err.errors?.[0];
+    if (!first) throw err;
+    const where = first.location ? `${first.location.file}:${first.location.line}: ` : '';
+    throw new ClosureError(`${where}${first.text}`, { cause: err });
   }
+  // A package's own computed require is the package's business: its contents
+  // are covered by its version and integrity. One in the engine's files could
+  // load anything.
+  for (const w of result.warnings) {
+    const file = w.location?.file ?? '';
+    if (w.id.startsWith('unsupported-') && !packageKey(file)) {
+      throw new ClosureError(`${file}:${w.location?.line}: ${w.text}`);
+    }
+  }
+  const files = [];
+  const edges = new Map();
+  for (const [file, input] of Object.entries(result.metafile.inputs)) {
+    const from = packageKey(file) ?? '';
+    if (!from) files.push(file);
+    for (const imp of input.imports) {
+      const to = imp.external ? null : packageKey(imp.path);
+      if (!to || to === from) continue;
+      if (!edges.has(from)) edges.set(from, new Map());
+      edges.get(from).set(packageName(to), to);
+    }
+  }
+  const used = new Set();
+  for (const output of Object.values(result.metafile.outputs)) {
+    for (const [file, { bytesInOutput }] of Object.entries(output.inputs)) {
+      const key = packageKey(file);
+      if (key && bytesInOutput > 0) used.add(key);
+    }
+  }
+  return { files: files.sort(), edges, used };
 }
 
-/** Every lockfile entry `roots` load, following npm's nested resolution, with
- *  its version and integrity: a git or fork dependency can change its
- *  contents without changing its version string. */
-export function lockClosure(lock, roots) {
+/** Each package with code in the engine, looked up in `lock` by npm's
+ *  resolution from whatever loads it there, as `name@version integrity`. The
+ *  walk still passes through a package with none (a re-export shim) to reach
+ *  the ones it loads. */
+export function lockClosure(lock, edges, used) {
   const entries = lock.packages ?? {};
   const find = (from, name) => {
     let dir = from;
@@ -183,33 +151,35 @@ export function lockClosure(lock, roots) {
       dir = i < 0 ? '' : dir.slice(0, i);
     }
   };
-  const seen = new Map();
-  const walk = (key) => {
-    if (seen.has(key)) return;
-    const entry = entries[key];
-    seen.set(key, `${entry.version ?? ''} ${entry.integrity ?? entry.resolved ?? ''}`.trim());
-    const deps = {
-      ...entry.dependencies,
-      ...entry.optionalDependencies,
-      ...entry.peerDependencies,
-    };
-    for (const name of Object.keys(deps)) {
-      const dep = find(key, name);
-      if (dep) walk(dep);
+  const lines = new Set();
+  const seen = new Set();
+  // `here` walks this checkout's graph; `there` is the same package's key in
+  // `lock`, which may sit at a different depth.
+  const walk = (here, there) => {
+    for (const [name, child] of edges.get(here) ?? []) {
+      const found = there === null ? null : find(there, name);
+      const visit = `${child}\0${found}`;
+      if (seen.has(visit)) continue;
+      seen.add(visit);
+      if (used.has(child)) {
+        // A package this checkout's engine loads can be missing from an OLDER
+        // lockfile (the release that added it). That's a difference, not an
+        // error.
+        const e = found === null ? null : entries[found];
+        lines.add(
+          e
+            ? `${name}@${e.version ?? ''} ${e.integrity ?? e.resolved ?? ''}`.trim()
+            : `${name}@(absent)`,
+        );
+      }
+      walk(child, found);
     }
   };
-  for (const name of roots) {
-    // A package this checkout's engine imports can be missing from an OLDER
-    // lockfile (the release that added it). That's a difference, not an error;
-    // scanEngine has already refused one missing from this checkout's.
-    const key = find('', name);
-    if (key) walk(key);
-    else seen.set(`node_modules/${name}`, '(absent)');
-  }
-  return [...seen].map(([key, version]) => `${key}@${version}`).sort();
+  walk('', '');
+  return [...lines].sort();
 }
 
-function main() {
+async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
   const rootFlag = rest.indexOf('--root');
   const root =
@@ -217,12 +187,12 @@ function main() {
       ? rest[rootFlag + 1]
       : path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
   if (cmd === 'files') {
-    const { files } = scanEngine(root);
+    const { files } = await scanEngine(root);
     process.stdout.write([...files, ...STATIC_INPUTS].join('\n') + '\n');
   } else if (cmd === 'deps') {
-    const { packages } = scanEngine(root);
+    const { edges, used } = await scanEngine(root);
     const lock = JSON.parse(fs.readFileSync(0, 'utf8'));
-    process.stdout.write(lockClosure(lock, packages).join('\n') + '\n');
+    process.stdout.write(lockClosure(lock, edges, used).join('\n') + '\n');
   } else {
     process.stderr.write('usage: node tools/engine-closure.mjs files|deps [--root DIR]\n');
     process.exit(2);
@@ -233,11 +203,9 @@ function main() {
 // checkout the two would differ, main() would never run, and the step would
 // read empty output as an answer.
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try {
-    main();
-  } catch (err) {
+  main().catch((err) => {
     if (!(err instanceof ClosureError)) throw err;
     process.stderr.write(`engine-closure: ${err.message}\n`);
     process.exit(1);
-  }
+  });
 }

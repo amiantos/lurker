@@ -3,7 +3,7 @@
 
 // tools/engine-closure.mjs decides, for the release workflow, whether the
 // engine changed. Run through its real CLI, the way docker-publish.yml calls
-// it: against this repo, and against small fixture repos for the scan's edges.
+// it: against this repo, and against small fixture repos for the edges.
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -28,23 +28,33 @@ afterEach(() => {
   for (const dir of fixtures.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** A throwaway repo root holding `files`, for `--root`. Its package-lock.json
- *  (which the scan checks the engine's packages against) defaults to empty. */
+/** A throwaway repo root holding `files`, for `--root`. */
 function fixture(files: Record<string, string>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-closure-'));
   fixtures.push(dir);
-  for (const [name, src] of Object.entries({ 'package-lock.json': lock({}), ...files })) {
+  for (const [name, src] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), src);
   }
   return dir;
 }
 
-type LockEntry = { version: string; integrity?: string; dependencies?: Record<string, string> };
+/** An installed CommonJS package at `dir` (e.g. `node_modules/a`). */
+function pkg(dir: string, src: string): Record<string, string> {
+  const name = dir.slice(dir.lastIndexOf('node_modules/') + 'node_modules/'.length);
+  return {
+    [`${dir}/package.json`]: JSON.stringify({ name, version: '1.0.0', main: 'index.js' }),
+    [`${dir}/index.js`]: src,
+  };
+}
+
+type LockEntry = { version: string; integrity?: string };
 
 function lock(packages: Record<string, LockEntry>) {
   return JSON.stringify({ lockfileVersion: 3, packages: { '': {}, ...packages } });
 }
+
+const ownFiles = (lines: string[]) => lines.filter((l) => l.endsWith('.ts') && !l.startsWith(':('));
 
 describe('engine-closure against this repo', () => {
   it('lists the files the engine imports, including the ones the old hand list missed', () => {
@@ -67,123 +77,170 @@ describe('engine-closure against this repo', () => {
         'tsconfig*.json',
       ]),
     );
-    const included = lines.filter((l) => !l.startsWith(':('));
-    expect(included.filter((l) => /\.(test|spec)\.ts$/.test(l))).toEqual([]);
-    for (const file of lines.filter((l) => !l.includes('*'))) {
+    expect(ownFiles(lines).filter((l) => /\.(test|spec)\.ts$/.test(l))).toEqual([]);
+    for (const file of lines.filter((l) => !l.includes('*') && !l.startsWith(':('))) {
       expect(fs.existsSync(path.join(repo, file)), `${file} exists`).toBe(true);
     }
   });
 
-  it("lists the engine's packages and what they pull in, but not a lazy import it never runs", () => {
+  it('lists the packages whose code runs in the engine, and only those', () => {
     const { status, lines } = run(
       ['deps'],
       fs.readFileSync(path.join(repo, 'package-lock.json'), 'utf8'),
     );
     expect(status).toBe(0);
-    const names = lines.map((l) => l.split(' ')[0].replace(/@[^@]*$/, ''));
+    const names = lines.map((l) => l.slice(0, l.indexOf('@', 1)));
     expect(names).toEqual(
       expect.arrayContaining([
-        'node_modules/irc-framework',
-        'node_modules/socks',
+        'irc-framework',
+        'iconv-lite',
+        'socks',
         // socks' own dependency: a lockfile-only bump of it changes the engine.
-        'node_modules/smart-buffer',
-        'node_modules/dotenv',
+        'smart-buffer',
+        'dotenv',
       ]),
     );
-    // clientCert.ts imports it inside generateClientCert, which only the app calls.
-    expect(names).not.toContain('node_modules/selfsigned');
+    // clientCert.ts imports selfsigned inside generateClientCert, which only
+    // the app calls; and irc-framework's browser polyfills never load in Node.
+    for (const never of ['selfsigned', 'core-js', 'util', 'buffer', 'stream-browserify']) {
+      expect(names, `${never} is not the engine's`).not.toContain(never);
+    }
   });
 });
 
-describe('engine-closure import scan', () => {
-  it('follows every import form, and skips type-only imports and builtins', () => {
+describe('engine-closure module graph', () => {
+  it("follows the engine's imports the way tsx loads them", () => {
     const root = fixture({
       'server/engine.ts': [
-        "import 'dotenv/config';",
-        "import net from 'node:net';",
-        "import os from 'os';",
-        'import {',
-        '  a,',
-        '  b,',
-        "} from './engine/multi.js';",
+        "import { a } from './engine/a.js';",
         "import type { T } from './engine/typesOnly.js';",
-        "export { c } from './engine/reexport.js';",
-        "export * from './engine/star.js';",
-        "import './engine/sideEffect.js';",
-        "import { type U, d } from './engine/mixed.js';",
         "// a comment with a quote in it: don't; and import('./engine/gone.js')",
-        'import {',
-        "  e, // the app's copy; not ours",
-        "} from './engine/commented.js';",
-        "import type from './engine/namedType.js';",
-        "type C = typeof import('./engine/typePosition.js');",
-        '/* import x from "./engine/inBlockComment.js"; */',
+        "const quote = /'/g; const glob = 'image/*';",
+        "const words = 'failed to import (proxy)';",
+        "const later = `${quote ? `a` : 'b'}`;",
+        "await import('./engine/late.js');",
+        '/** doc */',
+        'console.log(a, quote, glob, words, later);',
       ].join('\n'),
-      'server/engine/multi.ts': "import { x } from '@scope/pkg/sub';\nexport const a = 1, b = 2;\n",
-      'server/engine/typesOnly.ts': "import 'never-loaded';\n",
-      'server/engine/reexport.ts': 'export const c = 1;\n',
-      'server/engine/star.ts': 'export const s = 1;\n',
-      'server/engine/sideEffect.ts': '',
-      'server/engine/mixed.ts': 'export const d = 1;\n',
-      'server/engine/commented.ts': 'export const e = 1;\n',
-      'server/engine/namedType.ts': 'export default 1;\n',
-      'server/engine/typePosition.ts': 'export const t = 1;\n',
-      'package-lock.json': lock({
-        'node_modules/dotenv': { version: '1.0.0' },
-        'node_modules/@scope/pkg': { version: '2.0.0' },
-      }),
+      'server/engine/a.ts': 'export const a = 1;\n',
+      'server/engine/typesOnly.ts': "import 'never-installed';\nexport type T = 1;\n",
+      'server/engine/late.ts': 'export const l = 1;\n',
     });
-    const files = run(['files', '--root', root]);
-    expect(files.stderr).toBe('');
-    expect(files.lines.filter((l) => l.endsWith('.ts') && !l.startsWith(':('))).toEqual([
+    const r = run(['files', '--root', root]);
+    expect(r.stderr).toBe('');
+    expect(ownFiles(r.lines)).toEqual([
       'server/engine.ts',
-      'server/engine/commented.ts',
-      'server/engine/mixed.ts',
-      'server/engine/multi.ts',
-      'server/engine/namedType.ts',
-      'server/engine/reexport.ts',
-      'server/engine/sideEffect.ts',
-      'server/engine/star.ts',
-      // A type position loads nothing, but the scan can't tell; counting it
-      // only moves the tag.
-      'server/engine/typePosition.ts',
+      'server/engine/a.ts',
+      'server/engine/late.ts',
     ]);
-    const deps = run(
-      ['deps', '--root', root],
-      fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'),
-    );
-    expect(deps.lines).toEqual(['node_modules/@scope/pkg@2.0.0', 'node_modules/dotenv@1.0.0']);
   });
 
   it('refuses an import it cannot resolve', () => {
-    const root = fixture({ 'server/engine.ts': "import { x } from './engine/gone.js';\n" });
+    const root = fixture({ 'server/engine.ts': "import { x } from './engine/gone.js';\nx();\n" });
     const r = run(['files', '--root', root]);
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("cannot resolve import './engine/gone.js'");
+    expect(r.stderr).toContain('./engine/gone.js');
     expect(r.lines).toEqual([]);
   });
 
-  it('follows a literal dynamic import, and refuses a computed one', () => {
-    const literal = fixture({
-      'server/engine.ts': "await import('./engine/late.js');\n",
-      'server/engine/late.ts': '',
-    });
-    expect(run(['files', '--root', literal]).lines).toContain('server/engine/late.ts');
-    const computed = fixture({ 'server/engine.ts': 'await import(name);\n' });
-    const r = run(['files', '--root', computed]);
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain('computed specifier');
-  });
-
-  it('refuses a package the lockfile does not have, so an alias cannot compare equal forever', () => {
-    for (const spec of ['@shared/proxy', '#shared/proxy']) {
-      const root = fixture({ 'server/engine.ts': `import { p } from '${spec}';\n` });
+  it('refuses a computed import or require in the engine, which could load anything', () => {
+    for (const call of ['await import(process.env.X);', 'require(process.env.X);']) {
+      const root = fixture({ 'server/engine.ts': `${call}\nexport {};\n` });
       const r = run(['files', '--root', root]);
-      expect(r.status, `status for ${spec}`).toBe(1);
-      expect(r.lines, `output for ${spec}`).toEqual([]);
+      expect(r.status, `status for ${call}`).toBe(1);
+      expect(r.stderr, `stderr for ${call}`).toContain('server/engine.ts');
     }
   });
 
+  it('counts a package only once the engine can run its code', () => {
+    const files = (callsIt: boolean) => ({
+      'server/engine.ts': [
+        "import { used, mint } from './engine/cert.js';",
+        `console.log(used${callsIt ? ', await mint()' : ''});`,
+      ].join('\n'),
+      'server/engine/cert.ts': [
+        'export const used = 1;',
+        "export async function mint() { return (await import('lazy')).default; }",
+      ].join('\n'),
+      ...pkg('node_modules/lazy', 'module.exports = 42;\n'),
+    });
+    const theLock = lock({ 'node_modules/lazy': { version: '1.0.0', integrity: 'sha512-l' } });
+    expect(run(['deps', '--root', fixture(files(false))], theLock).lines).toEqual([]);
+    expect(run(['deps', '--root', fixture(files(true))], theLock).lines).toEqual([
+      'lazy@1.0.0 sha512-l',
+    ]);
+  });
+});
+
+describe('engine-closure lockfile comparison', () => {
+  // The engine loads a, which loads b; this checkout has b nested under a.
+  const root = () =>
+    fixture({
+      'server/engine.ts': "import a from 'a';\nconsole.log(a);\n",
+      ...pkg('node_modules/a', "module.exports = require('b');\n"),
+      ...pkg('node_modules/a/node_modules/b', 'module.exports = 1;\n'),
+    });
+  const deps = (packages: Record<string, LockEntry>) =>
+    run(['deps', '--root', root()], lock(packages));
+
+  it('passes through a package with no code of its own to the ones it re-exports', () => {
+    const esm = (name: string, src: string) => ({
+      [`node_modules/${name}/package.json`]: JSON.stringify({
+        name,
+        version: '1.0.0',
+        type: 'module',
+        main: 'index.js',
+        sideEffects: false,
+      }),
+      [`node_modules/${name}/index.js`]: src,
+    });
+    const root = fixture({
+      'server/engine.ts': "import { v } from 'shim';\nconsole.log(v);\n",
+      // Nothing of shim's survives the bundle; real's code does.
+      ...esm('shim', "export * from 'real';\n"),
+      ...esm('real', 'export const v = 1;\n'),
+    });
+    const r = run(
+      ['deps', '--root', root],
+      lock({
+        'node_modules/shim': { version: '1.0.0' },
+        'node_modules/real': { version: '3.0.0' },
+      }),
+    );
+    expect(r.lines).toEqual(['real@3.0.0']);
+  });
+
+  it('reads a package the same wherever npm put it', () => {
+    const nested = deps({
+      'node_modules/a': { version: '1.0.0', integrity: 'sha512-a' },
+      'node_modules/a/node_modules/b': { version: '2.0.0', integrity: 'sha512-b' },
+      'node_modules/b': { version: '9.0.0', integrity: 'sha512-other' },
+    });
+    const hoisted = deps({
+      'node_modules/a': { version: '1.0.0', integrity: 'sha512-a' },
+      'node_modules/b': { version: '2.0.0', integrity: 'sha512-b' },
+    });
+    expect(nested.lines).toEqual(['a@1.0.0 sha512-a', 'b@2.0.0 sha512-b']);
+    expect(hoisted.lines).toEqual(nested.lines);
+  });
+
+  it('tells two builds of one version apart by integrity (a git or fork dependency)', () => {
+    const withB = (integrity: string) =>
+      deps({
+        'node_modules/a': { version: '1.0.0' },
+        'node_modules/b': { version: '2.0.0', integrity },
+      }).lines;
+    expect(withB('sha512-old')).not.toEqual(withB('sha512-new'));
+  });
+
+  it('reports a package an older lockfile lacks instead of failing', () => {
+    const r = deps({ 'node_modules/a': { version: '1.0.0' } });
+    expect(r.status).toBe(0);
+    expect(r.lines).toEqual(['a@1.0.0', 'b@(absent)']);
+  });
+});
+
+describe('engine-closure invocation', () => {
   it('runs when invoked through a symlinked path', () => {
     const dir = fixture({});
     const link = path.join(dir, 'linked-tools');
@@ -191,45 +248,5 @@ describe('engine-closure import scan', () => {
     const r = run(['files'], undefined, path.join(link, 'engine-closure.mjs'));
     expect(r.status).toBe(0);
     expect(r.lines).toContain('server/engine.ts');
-  });
-});
-
-describe('engine-closure lockfile walk', () => {
-  const root = () =>
-    fixture({
-      'server/engine.ts': "import 'a';\n",
-      'package-lock.json': lock({ 'node_modules/a': { version: '1.0.0' } }),
-    });
-
-  it('follows nested resolution, so the copy a package actually loads is the one compared', () => {
-    const r = run(
-      ['deps', '--root', root()],
-      lock({
-        'node_modules/a': { version: '1.0.0', dependencies: { b: '^2' } },
-        'node_modules/a/node_modules/b': { version: '2.1.0', dependencies: { c: '*' } },
-        'node_modules/b': { version: '1.0.0' },
-        'node_modules/c': { version: '3.0.0' },
-        'node_modules/unrelated': { version: '9.9.9' },
-      }),
-    );
-    expect(r.lines).toEqual([
-      'node_modules/a/node_modules/b@2.1.0',
-      'node_modules/a@1.0.0',
-      'node_modules/c@3.0.0',
-    ]);
-  });
-
-  it('tells two builds of one version apart by integrity (a git or fork dependency)', () => {
-    const deps = (integrity: string) =>
-      run(['deps', '--root', root()], lock({ 'node_modules/a': { version: '1.0.0', integrity } }))
-        .lines;
-    expect(deps('sha512-old')).toEqual(['node_modules/a@1.0.0 sha512-old']);
-    expect(deps('sha512-old')).not.toEqual(deps('sha512-new'));
-  });
-
-  it('reports a package an older lockfile lacks instead of failing', () => {
-    const r = run(['deps', '--root', root()], lock({}));
-    expect(r.status).toBe(0);
-    expect(r.lines).toEqual(['node_modules/a@(absent)']);
   });
 });

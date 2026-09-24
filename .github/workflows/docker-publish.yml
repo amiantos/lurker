@@ -56,12 +56,21 @@ jobs:
           # shallow checkout, and every release move the engine tag.
           fetch-depth: ${{ github.event_name == 'release' && '0' || '1' }}
 
-      # The engine step runs tools/engine-closure.mjs. It needs plain Node and
-      # no npm install; pinned rather than left to whatever the runner image has.
+      # The engine step runs tools/engine-closure.mjs, which asks esbuild (a
+      # dependency, through tsx) for the engine's module graph — so a release
+      # needs Node and the installed dependencies. --ignore-scripts: nothing
+      # here runs the app, so the native modules' install scripts can be
+      # skipped, and esbuild finds its binary without its own.
       - name: Set up Node
+        if: github.event_name == 'release'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        if: github.event_name == 'release'
+        run: npm ci --ignore-scripts
 
       # The IRC engine (server/engine.ts) ships in this same image under its
       # own tag lineage, `engine-<protocol major>`, that moves ONLY when a
@@ -74,11 +83,11 @@ jobs:
       # The major is read from the source of truth, server/engine/protocol.ts,
       # so a PROTOCOL_MAJOR bump cannot publish a v2 engine under `engine-1`.
       # What counts as "the engine" comes from tools/engine-closure.mjs, which
-      # follows the engine's imports from server/engine.ts: the files to diff,
-      # and the packages (with everything they pull in) whose resolved versions
-      # to compare. package.json / package-lock.json are deliberately NOT in
-      # the path list: every release bumps the version field, which would move
-      # the tag on every release.
+      # takes the engine's module graph from esbuild: the files to diff, and
+      # the packages with code in the engine, whose resolved versions and
+      # integrity to compare. package.json / package-lock.json are deliberately
+      # NOT in the path list: every release bumps the version field, which
+      # would move the tag on every release.
       - name: Decide whether the engine tag moves
         id: engine
         shell: bash

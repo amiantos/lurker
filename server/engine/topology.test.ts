@@ -33,7 +33,7 @@ describe('engine topology artefacts', () => {
     expect(wf).not.toMatch(/git diff --quiet[^\n]*package\.json/);
   });
 
-  // What "the engine" is comes from following its imports
+  // What "the engine" is comes from its module graph
   // (tools/engine-closure.mjs, tested in tools/engineClosure.test.ts). A path
   // list written into the workflow is what fell behind before — CertFP and
   // proxies gave the engine four files and a package it never named — so the
@@ -48,6 +48,8 @@ describe('engine topology artefacts', () => {
     expect(wf).toMatch(
       /\$\(git show "\$GITHUB_REF_NAME:package-lock\.json" \| node tools\/engine-closure\.mjs deps\)/,
     );
+    // The script asks esbuild, so a release installs the dependencies first.
+    expect(wf).toContain('run: npm ci --ignore-scripts');
     // No hand-kept list or single-package check left beside it.
     expect(wf).not.toContain('server/services/identd.ts');
     expect(wf).not.toContain('node_modules/irc-framework');
