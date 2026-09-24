@@ -33,6 +33,36 @@ describe('engine topology artefacts', () => {
     expect(wf).not.toMatch(/git diff --quiet[^\n]*package\.json/);
   });
 
+  // What "the engine" is comes from its module graph
+  // (tools/engine-closure.mjs, tested in tools/engineClosure.test.ts). A path
+  // list written into the workflow is what fell behind before — CertFP and
+  // proxies gave the engine four files and a package it never named — so the
+  // workflow must ask the script, for both the files and the packages.
+  it('the publish workflow takes the engine closure from tools/engine-closure.mjs', () => {
+    const wf = fs.readFileSync(path.join(root, '.github/workflows/docker-publish.yml'), 'utf8');
+    expect(wf).toContain('engine_files="$(node tools/engine-closure.mjs files)"');
+    expect(wf).toContain(
+      'git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "${engine_paths[@]}" || diff_rc=$?',
+    );
+    expect(wf).toMatch(
+      /\$\(git show "\$prev:package-lock\.json" \| node tools\/engine-closure\.mjs deps\)/,
+    );
+    expect(wf).toMatch(
+      /\$\(git show "\$GITHUB_REF_NAME:package-lock\.json" \| node tools\/engine-closure\.mjs deps\)/,
+    );
+    expect(wf).toMatch(
+      /\$\(git show "\$prev:package\.json" \| node tools\/engine-closure\.mjs manifest\)/,
+    );
+    expect(wf).toMatch(
+      /\$\(git show "\$GITHUB_REF_NAME:package\.json" \| node tools\/engine-closure\.mjs manifest\)/,
+    );
+    // The script asks esbuild, so a release installs the dependencies first.
+    expect(wf).toContain('run: npm ci --omit=dev --ignore-scripts');
+    // No hand-kept list or single-package check left beside it.
+    expect(wf).not.toContain('server/services/identd.ts');
+    expect(wf).not.toContain('node_modules/irc-framework');
+  });
+
   // The engine's version is set by hand (server/engine/version.ts), and the
   // release workflow refuses to move the engine tag unless it names that
   // release. The workflow reads the constant with a sed, so this pins both ends:
