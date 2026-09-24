@@ -14,8 +14,8 @@ import path from 'node:path';
 const repo = path.join(import.meta.dirname, '..');
 const script = path.join(repo, 'tools', 'engine-closure.mjs');
 
-function run(args: string[], stdin?: string) {
-  const r = spawnSync(process.execPath, [script, ...args], {
+function run(args: string[], stdin?: string, scriptPath = script) {
+  const r = spawnSync(process.execPath, [scriptPath, ...args], {
     cwd: repo,
     input: stdin,
     encoding: 'utf8',
@@ -28,20 +28,21 @@ afterEach(() => {
   for (const dir of fixtures.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-/** A throwaway repo root holding `files`, for `--root`. */
+/** A throwaway repo root holding `files`, for `--root`. Its package-lock.json
+ *  (which the scan checks the engine's packages against) defaults to empty. */
 function fixture(files: Record<string, string>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'engine-closure-'));
   fixtures.push(dir);
-  for (const [name, src] of Object.entries(files)) {
+  for (const [name, src] of Object.entries({ 'package-lock.json': lock({}), ...files })) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), src);
   }
   return dir;
 }
 
-function lock(
-  packages: Record<string, { version: string; dependencies?: Record<string, string> }>,
-) {
+type LockEntry = { version: string; integrity?: string; dependencies?: Record<string, string> };
+
+function lock(packages: Record<string, LockEntry>) {
   return JSON.stringify({ lockfileVersion: 3, packages: { '': {}, ...packages } });
 }
 
@@ -60,11 +61,14 @@ describe('engine-closure against this repo', () => {
         'shared/proxy.ts',
         'server/utils/clientCert.ts',
         'shared/clientCertPem.ts',
+        // Whatever the engine reads at runtime rather than imports.
+        'server/engine',
         'Dockerfile',
         'tsconfig*.json',
       ]),
     );
-    expect(lines.filter((l) => /\.(test|spec)\.ts$/.test(l))).toEqual([]);
+    const included = lines.filter((l) => !l.startsWith(':('));
+    expect(included.filter((l) => /\.(test|spec)\.ts$/.test(l))).toEqual([]);
     for (const file of lines.filter((l) => !l.includes('*'))) {
       expect(fs.existsSync(path.join(repo, file)), `${file} exists`).toBe(true);
     }
@@ -76,7 +80,7 @@ describe('engine-closure against this repo', () => {
       fs.readFileSync(path.join(repo, 'package-lock.json'), 'utf8'),
     );
     expect(status).toBe(0);
-    const names = lines.map((l) => l.slice(0, l.lastIndexOf('@')));
+    const names = lines.map((l) => l.split(' ')[0].replace(/@[^@]*$/, ''));
     expect(names).toEqual(
       expect.arrayContaining([
         'node_modules/irc-framework',
@@ -107,6 +111,13 @@ describe('engine-closure import scan', () => {
         "export * from './engine/star.js';",
         "import './engine/sideEffect.js';",
         "import { type U, d } from './engine/mixed.js';",
+        "// a comment with a quote in it: don't; and import('./engine/gone.js')",
+        'import {',
+        "  e, // the app's copy; not ours",
+        "} from './engine/commented.js';",
+        "import type from './engine/namedType.js';",
+        "type C = typeof import('./engine/typePosition.js');",
+        '/* import x from "./engine/inBlockComment.js"; */',
       ].join('\n'),
       'server/engine/multi.ts': "import { x } from '@scope/pkg/sub';\nexport const a = 1, b = 2;\n",
       'server/engine/typesOnly.ts': "import 'never-loaded';\n",
@@ -114,23 +125,32 @@ describe('engine-closure import scan', () => {
       'server/engine/star.ts': 'export const s = 1;\n',
       'server/engine/sideEffect.ts': '',
       'server/engine/mixed.ts': 'export const d = 1;\n',
-    });
-    expect(run(['files', '--root', root]).lines).toEqual([
-      'server/engine.ts',
-      'server/engine/mixed.ts',
-      'server/engine/multi.ts',
-      'server/engine/reexport.ts',
-      'server/engine/sideEffect.ts',
-      'server/engine/star.ts',
-      'Dockerfile',
-      'tsconfig*.json',
-    ]);
-    const deps = run(
-      ['deps', '--root', root],
-      lock({
+      'server/engine/commented.ts': 'export const e = 1;\n',
+      'server/engine/namedType.ts': 'export default 1;\n',
+      'server/engine/typePosition.ts': 'export const t = 1;\n',
+      'package-lock.json': lock({
         'node_modules/dotenv': { version: '1.0.0' },
         'node_modules/@scope/pkg': { version: '2.0.0' },
       }),
+    });
+    const files = run(['files', '--root', root]);
+    expect(files.stderr).toBe('');
+    expect(files.lines.filter((l) => l.endsWith('.ts') && !l.startsWith(':('))).toEqual([
+      'server/engine.ts',
+      'server/engine/commented.ts',
+      'server/engine/mixed.ts',
+      'server/engine/multi.ts',
+      'server/engine/namedType.ts',
+      'server/engine/reexport.ts',
+      'server/engine/sideEffect.ts',
+      'server/engine/star.ts',
+      // A type position loads nothing, but the scan can't tell; counting it
+      // only moves the tag.
+      'server/engine/typePosition.ts',
+    ]);
+    const deps = run(
+      ['deps', '--root', root],
+      fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'),
     );
     expect(deps.lines).toEqual(['node_modules/@scope/pkg@2.0.0', 'node_modules/dotenv@1.0.0']);
   });
@@ -143,18 +163,43 @@ describe('engine-closure import scan', () => {
     expect(r.lines).toEqual([]);
   });
 
-  it('refuses a dynamic import nobody said the engine never runs', () => {
-    for (const call of ["await import('./engine/late.js');", 'await import(name);']) {
-      const root = fixture({ 'server/engine.ts': call, 'server/engine/late.ts': '' });
+  it('follows a literal dynamic import, and refuses a computed one', () => {
+    const literal = fixture({
+      'server/engine.ts': "await import('./engine/late.js');\n",
+      'server/engine/late.ts': '',
+    });
+    expect(run(['files', '--root', literal]).lines).toContain('server/engine/late.ts');
+    const computed = fixture({ 'server/engine.ts': 'await import(name);\n' });
+    const r = run(['files', '--root', computed]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('computed specifier');
+  });
+
+  it('refuses a package the lockfile does not have, so an alias cannot compare equal forever', () => {
+    for (const spec of ['@shared/proxy', '#shared/proxy']) {
+      const root = fixture({ 'server/engine.ts': `import { p } from '${spec}';\n` });
       const r = run(['files', '--root', root]);
-      expect(r.status, `status for ${call}`).toBe(1);
-      expect(r.stderr, `stderr for ${call}`).toContain('LAZY_IMPORTS');
+      expect(r.status, `status for ${spec}`).toBe(1);
+      expect(r.lines, `output for ${spec}`).toEqual([]);
     }
+  });
+
+  it('runs when invoked through a symlinked path', () => {
+    const dir = fixture({});
+    const link = path.join(dir, 'linked-tools');
+    fs.symlinkSync(path.dirname(script), link);
+    const r = run(['files'], undefined, path.join(link, 'engine-closure.mjs'));
+    expect(r.status).toBe(0);
+    expect(r.lines).toContain('server/engine.ts');
   });
 });
 
 describe('engine-closure lockfile walk', () => {
-  const root = () => fixture({ 'server/engine.ts': "import 'a';\n" });
+  const root = () =>
+    fixture({
+      'server/engine.ts': "import 'a';\n",
+      'package-lock.json': lock({ 'node_modules/a': { version: '1.0.0' } }),
+    });
 
   it('follows nested resolution, so the copy a package actually loads is the one compared', () => {
     const r = run(
@@ -172,6 +217,14 @@ describe('engine-closure lockfile walk', () => {
       'node_modules/a@1.0.0',
       'node_modules/c@3.0.0',
     ]);
+  });
+
+  it('tells two builds of one version apart by integrity (a git or fork dependency)', () => {
+    const deps = (integrity: string) =>
+      run(['deps', '--root', root()], lock({ 'node_modules/a': { version: '1.0.0', integrity } }))
+        .lines;
+    expect(deps('sha512-old')).toEqual(['node_modules/a@1.0.0 sha512-old']);
+    expect(deps('sha512-old')).not.toEqual(deps('sha512-new'));
   });
 
   it('reports a package an older lockfile lacks instead of failing', () => {
