@@ -80,6 +80,45 @@ describe('local driver', () => {
     await expect(local.delete('deadbeef0000.png', {})).resolves.toBeUndefined();
   });
 
+  it('links to public_base_url when one is set, keeping any path on it', async () => {
+    const meta = { filename: 'note.txt', mime: 'text/plain' };
+    const res = await local.upload(bufferSource(Buffer.from('a')), meta, {
+      public_base_url: ' https://files.example.com/ ',
+    });
+    expect(res.url).toBe(`https://files.example.com/uploads/${res.ref}`);
+    const nested = await local.upload(bufferSource(Buffer.from('b')), meta, {
+      public_base_url: 'https://example.com/irc',
+    });
+    expect(nested.url).toBe(`https://example.com/irc/uploads/${nested.ref}`);
+  });
+
+  it('refuses a public_base_url that would mangle the link, before writing', async () => {
+    const before = fs.readdirSync(dir, { recursive: true }).length;
+    const bad = [
+      'files.example.com',
+      'ftp://files.example.com',
+      'javascript:alert(1)',
+      'https://files.example.com?x=1',
+      'https://files.example.com#top',
+      'https://user:pw@files.example.com',
+    ];
+    const codes: Record<string, unknown> = {};
+    for (const value of bad) {
+      codes[value] = await local
+        .upload(
+          bufferSource(Buffer.from('x')),
+          { filename: 'x.txt', mime: 'text/plain' },
+          { public_base_url: value },
+        )
+        .then(
+          () => 'accepted',
+          (err: { code?: string }) => err.code,
+        );
+    }
+    expect(codes).toEqual(Object.fromEntries(bad.map((v) => [v, 'PROVIDER_CONFIG'])));
+    expect(fs.readdirSync(dir, { recursive: true }).length).toBe(before);
+  });
+
   it('resolveDiskPath refuses traversal outside the storage root', () => {
     expect(() => local.resolveDiskPath('../escape.png')).toThrow(/unsafe/);
     expect(() => local.resolveDiskPath('../../etc/passwd')).toThrow(/unsafe/);

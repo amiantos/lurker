@@ -370,6 +370,28 @@ describe('POST', () => {
     }
   });
 
+  // #983: the files on their own host, while the endpoint (and the credentials a
+  // client sends it) stays on PUBLIC_BASE_URL.
+  it('answers with the local uploader’s public_base_url when it has one', async () => {
+    const user = await seedUser();
+    const { updateUploaderConfig } = await import('../db/uploaderConfig.js');
+    updateUploaderConfig(localRowId, {
+      values: { public_base_url: 'https://files.example.test/' },
+    });
+    try {
+      const res = await upload(basic(user.username, PASSWORD));
+      expect(res.status).toBe(201);
+      const location = res.headers['location'];
+      expect(location).toMatch(/^https:\/\/files\.example\.test\/uploads\/[0-9a-f]{12}\.webp$/);
+      // The files host's reverse proxy hands /uploads/ to this same instance.
+      const served = await testRequest(app).get(new URL(location).pathname);
+      expect(served.status).toBe(200);
+      expect(served.headers['content-type']).toBe('image/webp');
+    } finally {
+      updateUploaderConfig(localRowId, { values: { public_base_url: '' } });
+    }
+  });
+
   it('keeps control characters out of the stored name', async () => {
     const user = await seedUser();
     const res = await upload(basic(user.username, PASSWORD), png, {

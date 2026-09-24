@@ -12,11 +12,16 @@
 // clickable from IRC. The real security boundary is SERVE-time, not here — see
 // routes/localUploads.ts for the sniff / disposition / header recipe.
 //
+// `public_base_url` puts the links on another origin (#983): a files host the
+// operator's reverse proxy points at this instance's /uploads/. The link is then
+// absolute already and nothing else moves: PUBLIC_BASE_URL still names the app,
+// the OAuth issuer and the soju.im/FILEHOST endpoint, the last of which a client
+// only sends its bouncer credentials to on the bouncer's own host.
+//
 // Storage location is instance-wide (LOCAL_UPLOADS_DIR env, else <data-dir>/
 // uploads), resolved identically by this driver and the serving route so the key
-// alone locates the file — no per-config lookup on the hot serve path. Per-
-// uploader storage dirs can come later (P3 admin UI) via a configSchema field;
-// keeping the P1 schema empty means the seeded row works zero-config.
+// alone locates the file — no per-config lookup on the hot serve path. Every
+// configSchema field is optional, so the seeded row still works zero-config.
 
 import fs from 'fs';
 import path from 'path';
@@ -37,9 +42,44 @@ export const capabilities: DriverCapabilities = {
   selfHostOnly: true,
 };
 
-// Empty in P1 (zero-config, like x0). Storage dir + public base URL come from env
-// / request derivation; per-uploader fields arrive with the P3 admin UI.
-export const configSchema: ConfigField[] = [];
+export const configSchema: ConfigField[] = [
+  {
+    key: 'public_base_url',
+    label: 'Public base URL',
+    type: 'string',
+    required: false,
+    default: '',
+    description:
+      'Serve upload links from another host, e.g. https://files.example.com. Your reverse proxy must pass /uploads/ on that host to Lurker. Blank = this server’s own address.',
+  },
+];
+
+/** The configured public base, without a trailing slash, or '' when unset. Only
+ *  an http(s) origin, maybe with a path: the key is appended to it and the result
+ *  is pasted into IRC, so a query, fragment or userinfo would mangle every link. */
+function publicBase(config: Record<string, string>): string {
+  const raw = (config.public_base_url || '').trim().replace(/\/+$/, '');
+  if (!raw) return '';
+  let url: URL | null = null;
+  try {
+    url = new URL(raw);
+  } catch {
+    // unparseable; refused below
+  }
+  if (
+    !url ||
+    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw Object.assign(new Error('local uploader public base URL must be an http(s) URL'), {
+      code: 'PROVIDER_CONFIG',
+    });
+  }
+  return raw;
+}
 
 /** The single instance-wide storage root. Both the driver and the serving route
  *  call this, so the stored key is all that's needed to locate a file. Defaults
@@ -68,8 +108,10 @@ export function resolveDiskPath(key: string, storageDir = resolveStorageDir()): 
 export async function upload(
   source: UploadSource,
   { filename }: UploadMeta,
-  _config: Record<string, string>,
+  config: Record<string, string>,
 ): Promise<UploadResult> {
+  // Before the write, so a bad value fails the upload instead of orphaning bytes.
+  const base = publicBase(config);
   const storageDir = resolveStorageDir();
   // Extension from the (pipeline-produced) filename; buildObjectKey re-sanitizes
   // it, so a hostile value can't escape the key.
@@ -93,7 +135,7 @@ export async function upload(
       code: 'PROVIDER_ERROR',
     });
   }
-  return { url: `/uploads/${key}`, ref: key, bytes };
+  return { url: `${base}/uploads/${key}`, ref: key, bytes };
 }
 
 /** Orphan reap: unlink the on-disk file when its history row is deleted. Missing

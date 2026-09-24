@@ -238,6 +238,17 @@ environment:
   - PUBLIC_BASE_URL=https://lurker.example.com
 ```
 
+To serve the files from a different host, such as `files.example.com`, open **Admin → Uploaders**, choose **edit** on **Local disk**, and set **Public base URL** to `https://files.example.com`. Links then point there, while Lurker itself and the bouncer's upload endpoint stay on `PUBLIC_BASE_URL`. Point that host at Lurker in your reverse proxy, and pass through only `/uploads/`. Otherwise the whole app is reachable on your files host too. With Caddy:
+
+```
+files.example.com {
+	handle /uploads/* {
+		reverse_proxy localhost:8015
+	}
+	respond 404
+}
+```
+
 ::: warning Cloudflare users: turn off Hotlink Protection
 If you expose Lurker through Cloudflare (including a [Cloudflare Tunnel](#exposing-lurker-to-the-internet-recommended-cloudflare-tunnel)), **Hotlink Protection will break local uploads.** It's a Cloudflare feature that blocks image files whenever they're loaded from a page on another domain — which is exactly what an uploaded image _is_ once you share the link on IRC. Cloudflare returns a `403` at the edge and the request never reaches Lurker, so the image loads for you but is broken for everyone else.
 

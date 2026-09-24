@@ -159,7 +159,7 @@ const addableDrivers = computed(() => store.uploaderDrivers.filter((d) => d.crea
 const addingDriver = computed(() => (adding.value ? driverFor(adding.value) : undefined));
 const editingDriver = computed(() => (editing.value ? driverFor(editing.value.driver) : undefined));
 
-/** Zero-config drivers (x0, local disk) have nothing to edit. */
+/** A zero-config driver (x0) has nothing to edit. */
 function hasFields(u: AdminUploader): boolean {
   return (driverFor(u.driver)?.configSchema.length ?? 0) > 0;
 }
