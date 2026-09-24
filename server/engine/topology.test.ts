@@ -50,6 +50,12 @@ describe('engine topology artefacts', () => {
     expect(wf).toMatch(
       /\$\(git show "\$GITHUB_REF_NAME:package-lock\.json" \| node tools\/engine-closure\.mjs deps\)/,
     );
+    expect(wf).toMatch(
+      /\$\(git show "\$prev:package\.json" \| node tools\/engine-closure\.mjs manifest\)/,
+    );
+    expect(wf).toMatch(
+      /\$\(git show "\$GITHUB_REF_NAME:package\.json" \| node tools\/engine-closure\.mjs manifest\)/,
+    );
     // The script asks esbuild, so a release installs the dependencies first.
     expect(wf).toContain('run: npm ci --omit=dev --ignore-scripts');
     // No hand-kept list or single-package check left beside it.

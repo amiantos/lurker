@@ -172,6 +172,43 @@ describe('engine-closure module graph', () => {
   });
 });
 
+describe('engine-closure resolution', () => {
+  it("picks a package's `node` export, as Node does, not a bundler's `module` one", () => {
+    const root = fixture({
+      'server/engine.ts': "import v from 'p';\nconsole.log(v);\n",
+      'node_modules/p/package.json': JSON.stringify({
+        name: 'p',
+        version: '1.0.0',
+        exports: { module: './m.js', node: './n.js', default: './d.js' },
+      }),
+      'node_modules/p/m.js': "module.exports = require('bundler-only');\n",
+      'node_modules/p/n.js': "module.exports = require('node-only');\n",
+      'node_modules/p/d.js': 'module.exports = 0;\n',
+      ...pkg('node_modules/bundler-only', 'module.exports = 1;\n'),
+      ...pkg('node_modules/node-only', 'module.exports = 2;\n'),
+    });
+    const r = run(
+      ['deps', '--root', root],
+      lock({
+        'node_modules/p': { version: '1.0.0' },
+        'node_modules/bundler-only': { version: '1.0.0' },
+        'node_modules/node-only': { version: '1.0.0' },
+      }),
+    );
+    expect(r.lines).toEqual(['node-only@1.0.0', 'p@1.0.0']);
+  });
+
+  it("compares package.json's module-resolution fields, not its version", () => {
+    const manifest = (fields: Record<string, unknown>) =>
+      run(['manifest'], JSON.stringify({ name: 'lurker', version: '2.3.2', ...fields })).lines;
+    const base = manifest({ type: 'module' });
+    expect(base).toEqual(['{"type":"module","imports":null,"exports":null}']);
+    expect(manifest({ type: 'module', version: '9.9.9', scripts: { x: 'y' } })).toEqual(base);
+    expect(manifest({ type: 'commonjs' })).not.toEqual(base);
+    expect(manifest({ type: 'module', imports: { '#p': './shared/proxy.ts' } })).not.toEqual(base);
+  });
+});
+
 describe('engine-closure lockfile comparison', () => {
   // The engine loads a, which loads b; this checkout has b nested under a.
   const root = () =>

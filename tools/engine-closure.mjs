@@ -33,6 +33,12 @@
 //       the pathspecs to `git diff` between two releases, one per line
 //   git show v2.3.1:package-lock.json | node tools/engine-closure.mjs deps
 //       every package the engine loads, as `name@version integrity` lines
+//   git show v2.3.1:package.json | node tools/engine-closure.mjs manifest
+//       the package.json fields that change how Node resolves the engine
+//
+// package.json itself isn't in `files`: every release bumps its version,
+// which would move the tag every time. `manifest` compares only the fields
+// that decide how the engine's modules load.
 //
 // `deps` takes the packages, and which package loads which, from THIS
 // checkout's node_modules, then looks each one up in whichever lockfile it's
@@ -72,6 +78,11 @@ const STATIC_INPUTS = [
   'Dockerfile',
   'tsconfig*.json',
 ];
+
+// Root package.json fields Node reads to load the engine: `type` decides
+// whether a .js file is ESM, and `imports`/`exports` map `#x` and self-
+// referencing specifiers.
+const MANIFEST_FIELDS = ['type', 'imports', 'exports'];
 
 class ClosureError extends Error {}
 
@@ -205,8 +216,12 @@ async function main() {
     const { edges, used } = await scanEngine(root);
     const lock = JSON.parse(fs.readFileSync(0, 'utf8'));
     process.stdout.write(lockClosure(lock, edges, used).join('\n') + '\n');
+  } else if (cmd === 'manifest') {
+    const manifest = JSON.parse(fs.readFileSync(0, 'utf8'));
+    const picked = Object.fromEntries(MANIFEST_FIELDS.map((f) => [f, manifest[f] ?? null]));
+    process.stdout.write(JSON.stringify(picked) + '\n');
   } else {
-    process.stderr.write('usage: node tools/engine-closure.mjs files|deps [--root DIR]\n');
+    process.stderr.write('usage: node tools/engine-closure.mjs files|deps|manifest [--root DIR]\n');
     process.exit(2);
   }
 }
