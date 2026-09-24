@@ -56,6 +56,13 @@ jobs:
           # shallow checkout, and every release move the engine tag.
           fetch-depth: ${{ github.event_name == 'release' && '0' || '1' }}
 
+      # The engine step runs tools/engine-closure.mjs. It needs plain Node and
+      # no npm install; pinned rather than left to whatever the runner image has.
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
       # The IRC engine (server/engine.ts) ships in this same image under its
       # own tag lineage, `engine-<protocol major>`, that moves ONLY when a
       # release changes the engine. Self-hosters run the engine from that tag so
@@ -66,10 +73,12 @@ jobs:
       #
       # The major is read from the source of truth, server/engine/protocol.ts,
       # so a PROTOCOL_MAJOR bump cannot publish a v2 engine under `engine-1`.
-      # package.json / package-lock.json are deliberately NOT in the path list:
-      # every release bumps the version field, which would move the tag on
-      # every release. The one dependency the engine runs on (irc-framework's
-      # line parser) is compared by its resolved version instead.
+      # What counts as "the engine" comes from tools/engine-closure.mjs, which
+      # follows the engine's imports from server/engine.ts: the files to diff,
+      # and the packages (with everything they pull in) whose resolved versions
+      # to compare. package.json / package-lock.json are deliberately NOT in
+      # the path list: every release bumps the version field, which would move
+      # the tag on every release.
       - name: Decide whether the engine tag moves
         id: engine
         shell: bash
@@ -91,16 +100,18 @@ jobs:
             prev="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
             if [ -z "$prev" ]; then
               changed=true
-            elif ! git diff --quiet "$prev" "$GITHUB_REF_NAME" -- \
-                server/engine ':(exclude)server/engine/*.test.ts' \
-                ':(exclude)server/engine/*.spec.ts' \
-                server/engine.ts server/services/identd.ts \
-                server/utils/processGuards.ts server/utils/userAgent.ts \
-                Dockerfile 'tsconfig*.json'; then
-              changed=true
             else
-              dep() { git show "$1:package-lock.json" | jq -r '.packages["node_modules/irc-framework"].version // empty'; }
-              [ "$(dep "$prev")" = "$(dep "$GITHUB_REF_NAME")" ] || changed=true
+              # Each output is captured on its own line so a failing script
+              # stops the step (set -e) instead of reading as "no difference".
+              engine_files="$(node tools/engine-closure.mjs files)"
+              mapfile -t engine_paths <<<"$engine_files"
+              if ! git diff --quiet "$prev" "$GITHUB_REF_NAME" -- "${engine_paths[@]}"; then
+                changed=true
+              else
+                prev_deps="$(git show "$prev:package-lock.json" | node tools/engine-closure.mjs deps)"
+                this_deps="$(git show "$GITHUB_REF_NAME:package-lock.json" | node tools/engine-closure.mjs deps)"
+                [ "$prev_deps" = "$this_deps" ] || changed=true
+              fi
             fi
             echo "engine files changed since ${prev:-<none>}: $changed"
             # Match whole ENTRIES, not substrings or words: `grep -w` treats `-`
