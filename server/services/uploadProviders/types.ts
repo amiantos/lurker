@@ -115,4 +115,8 @@ export interface UploadDriver {
   // Deletability of a row = supportsDelete ∧ canDeleteWith(config) ∧ ref
   // present — see deletableWith() in resolve.ts, the one shared predicate.
   canDeleteWith?(config: Record<string, string>): boolean;
+  // Optional check of values the schema can't express, run by both save routes:
+  // an error message, or null when they're fine. A PATCH passes only the fields
+  // it changes, so a driver checks the ones present.
+  validateConfig?(values: Record<string, string>): string | null;
 }

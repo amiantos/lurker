@@ -54,31 +54,30 @@ export const configSchema: ConfigField[] = [
   },
 ];
 
-/** The configured public base, without a trailing slash, or '' when unset. Only
- *  an http(s) origin, maybe with a path: the key is appended to it and the result
- *  is pasted into IRC, so a query, fragment or userinfo would mangle every link. */
-function publicBase(config: Record<string, string>): string {
-  const raw = (config.public_base_url || '').trim().replace(/\/+$/, '');
+const BAD_PUBLIC_BASE =
+  'Public base URL must be an https address with nothing after the host, e.g. https://files.example.com';
+
+/** The public_base_url origin, '' when unset, or null when it can't be used. An
+ *  https origin and nothing more: links go out as <origin>/uploads/<key>, the
+ *  path the files host's proxy passes to us, and an http link would be mixed
+ *  content in the web client. The link is built from the parsed origin, never the
+ *  typed text, and href is compared because it keeps what the parsed fields drop
+ *  (a bare `?` or `#`). */
+function publicBase(value: string | undefined): string | null {
+  const raw = (value || '').trim();
   if (!raw) return '';
-  let url: URL | null = null;
+  let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    // unparseable; refused below
+    return null;
   }
-  if (
-    !url ||
-    (url.protocol !== 'https:' && url.protocol !== 'http:') ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash
-  ) {
-    throw Object.assign(new Error('local uploader public base URL must be an http(s) URL'), {
-      code: 'PROVIDER_CONFIG',
-    });
-  }
-  return raw;
+  return url.protocol === 'https:' && url.href === `${url.origin}/` ? url.origin : null;
+}
+
+/** Refuse an unusable public_base_url when it's saved, not on the next upload. */
+export function validateConfig(values: Record<string, string>): string | null {
+  return publicBase(values.public_base_url) === null ? BAD_PUBLIC_BASE : null;
 }
 
 /** The single instance-wide storage root. Both the driver and the serving route
@@ -110,8 +109,12 @@ export async function upload(
   { filename }: UploadMeta,
   config: Record<string, string>,
 ): Promise<UploadResult> {
-  // Before the write, so a bad value fails the upload instead of orphaning bytes.
-  const base = publicBase(config);
+  // validateConfig refuses a bad value on save, so this is only a row written some
+  // other way. It's the server's config, not the uploader's, hence PROVIDER_ERROR.
+  const base = publicBase(config.public_base_url);
+  if (base === null) {
+    throw Object.assign(new Error(BAD_PUBLIC_BASE), { code: 'PROVIDER_ERROR' });
+  }
   const storageDir = resolveStorageDir();
   // Extension from the (pipeline-produced) filename; buildObjectKey re-sanitizes
   // it, so a hostile value can't escape the key.

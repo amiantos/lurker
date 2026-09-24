@@ -238,7 +238,7 @@ environment:
   - PUBLIC_BASE_URL=https://lurker.example.com
 ```
 
-To serve the files from a different host, such as `files.example.com`, open **Admin → Uploaders**, choose **edit** on **Local disk**, and set **Public base URL** to `https://files.example.com`. Links then point there, while Lurker itself and the bouncer's upload endpoint stay on `PUBLIC_BASE_URL`. Point that host at Lurker in your reverse proxy, and pass through only `/uploads/`. Otherwise the whole app is reachable on your files host too. With Caddy:
+To serve the files from a different host, such as `files.example.com`, open **Admin → Uploaders**, choose **edit** on **Local disk**, and set **Public base URL** to `https://files.example.com`: an https address with nothing after the host. Links then point there, while Lurker itself and the bouncer's upload endpoint stay on `PUBLIC_BASE_URL`, so set that too. Point that host at Lurker in your reverse proxy, and pass through only `/uploads/`. Otherwise the whole app is reachable on your files host too. With Caddy:
 
 ```
 files.example.com {
