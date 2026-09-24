@@ -174,6 +174,25 @@ describe('live events on a detached buffer', () => {
     expect(nicks(buffers)).not.toContain('alice');
   });
 
+  it("doesn't judge the system buffer by the network cursor", async () => {
+    // System lines are numbered by their own sequence; a network cursor at 100
+    // says nothing about system line 5.
+    const ws = await openSocket();
+    const buffers = useBuffersStore();
+    ws.deliver({ ...irc(100, { type: 'message', nick: 'z', text: 'hi' }), target: '#other' });
+    buffers.ensure(null as unknown as number, ':system:');
+    buffers.detachForJump(null as unknown as number, ':system:');
+    ws.deliver({
+      kind: 'irc',
+      type: 'system',
+      networkId: null,
+      target: ':system:',
+      id: 5,
+      text: 'x',
+    });
+    expect(buffers.buffers[':system:'].liveDuringDetach).toBe(1);
+  });
+
   it('counts a backlog it dropped while detached as seen', async () => {
     const ws = await openSocket();
     const buffers = channel(true);

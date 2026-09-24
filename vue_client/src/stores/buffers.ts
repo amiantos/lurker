@@ -289,10 +289,15 @@ function clearSpeakerTyping(buf: Buffer, nick: string | undefined): void {
 // cursor stand in: every id up to it has been delivered, assuming cross-buffer
 // id order at this one instant. Flooring an exact tail with it would take a new
 // row that arrives after a higher id elsewhere for a replay.
+//
+// ⚠ Never for the system buffer (networkId null): its rows are numbered by
+// their own sequence (system_messages), which the cursor doesn't track, so the
+// two can't be compared.
 function noteLiveTail(buf: Buffer): void {
   let tail = 0;
   for (let i = buf.messages.length - 1; i >= 0 && !tail; i--) tail = buf.messages[i].id ?? 0;
-  buf.liveTailId = Math.max(buf.liveTailId ?? 0, tail || seenEventCursor());
+  const floor = buf.networkId == null ? 0 : seenEventCursor();
+  buf.liveTailId = Math.max(buf.liveTailId ?? 0, tail || floor);
 }
 
 function makeBuffer(networkId: number | string | null, target: string): Buffer {
