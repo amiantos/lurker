@@ -209,6 +209,32 @@ describe('the instance default (#299)', () => {
   });
 });
 
+describe('PATCH the local uploader’s public base URL (#983)', () => {
+  it('refuses an unusable one when it’s saved, and keeps a good one', async () => {
+    const local = instanceRow('local');
+    const bad = await adminAgent
+      .patch(`/api/admin/uploaders/${local.id}`)
+      .send({ values: { public_base_url: 'files.example.com' } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error).toMatch(/^Public base URL must be/);
+    expect(JSON.parse(getUploaderConfig(local.id)!.config_json).public_base_url).toBeUndefined();
+
+    const good = await adminAgent
+      .patch(`/api/admin/uploaders/${local.id}`)
+      .send({ values: { public_base_url: 'https://files.example.com' } });
+    expect(good.status).toBe(200);
+    expect(JSON.parse(getUploaderConfig(local.id)!.config_json).public_base_url).toBe(
+      'https://files.example.com',
+    );
+
+    // Blank goes back to this server's own address.
+    const cleared = await adminAgent
+      .patch(`/api/admin/uploaders/${local.id}`)
+      .send({ values: { public_base_url: '' } });
+    expect(cleared.status).toBe(200);
+  });
+});
+
 describe('DELETE /api/admin/uploaders/:id', () => {
   it('refuses to delete a built-in (it would just come back on the next boot)', async () => {
     for (const driver of ['x0', 'catbox', 'local']) {

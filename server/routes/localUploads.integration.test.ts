@@ -95,4 +95,25 @@ describe('local uploader — full round trip', () => {
     expect(del.status).toBe(200);
     expect(fs.existsSync(local.resolveDiskPath(key))).toBe(false);
   });
+
+  it('links to the uploader’s public_base_url instead of the request origin', async () => {
+    const { listInstanceUploaders, updateUploaderConfig } = await import('../db/uploaderConfig.js');
+    const localRow = listInstanceUploaders().find((r) => r.driver === 'local')!;
+    updateUploaderConfig(localRow.id, { values: { public_base_url: 'https://files.example.com' } });
+    try {
+      const up = await agent
+        .post('/api/uploads')
+        .set('X-Forwarded-Proto', 'https')
+        .set('X-Forwarded-Host', 'irc.example.com')
+        .attach('image', smallPng, { filename: 'photo.png', contentType: 'image/png' });
+      expect(up.status).toBe(200);
+      expect(up.body.url).toMatch(
+        /^https:\/\/files\.example\.com\/uploads\/[0-9a-f]{12}\.(png|jpe?g|webp)$/,
+      );
+      const served = await agent.get(new URL(up.body.url).pathname);
+      expect(served.status).toBe(200);
+    } finally {
+      updateUploaderConfig(localRow.id, { values: { public_base_url: '' } });
+    }
+  });
 });

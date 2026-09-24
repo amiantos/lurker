@@ -120,13 +120,14 @@ function placeholderFor(field: UploaderConfigField): string {
 }
 
 function onSubmit() {
-  // Blank fields are dropped rather than sent as '': for a secret that's what
-  // means "keep the stored one", and for an optional string it's the difference
-  // between "unset" and "explicitly empty".
+  // A blank secret is dropped: it means "keep the stored one", since the stored
+  // value is never shown to be edited. A blank string is sent as '', which is how
+  // an edit clears an optional field; left out, the server would keep the old
+  // value (updateUploaderConfig merges).
   const payload: Record<string, string> = {};
   for (const field of props.driver.configSchema) {
     const v = String(values.value[field.key] ?? '').trim();
-    if (v) payload[field.key] = v;
+    if (v || field.type !== 'secret') payload[field.key] = v;
   }
   emit('save', { label: label.value.trim() || props.driver.label, values: payload });
 }

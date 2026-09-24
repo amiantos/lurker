@@ -99,7 +99,7 @@ export function providerErrorStatus(e: { code?: string }): number {
 
 /** Absolutize a driver result URL. Drivers that store remotely already return an
  *  absolute URL; the local driver returns a root-relative path we prefix with the
- *  instance's public base. */
+ *  instance's public base, unless its own public_base_url made it absolute. */
 function absolutizeUrl(url: string, storesRemotely: boolean, baseUrl: () => string): string {
   if (storesRemotely || !url.startsWith('/')) return url;
   const base = baseUrl();

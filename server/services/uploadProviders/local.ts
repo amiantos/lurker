@@ -12,11 +12,16 @@
 // clickable from IRC. The real security boundary is SERVE-time, not here — see
 // routes/localUploads.ts for the sniff / disposition / header recipe.
 //
+// `public_base_url` puts the links on another origin (#983): a files host the
+// operator's reverse proxy points at this instance's /uploads/. The link is then
+// absolute already and nothing else moves: PUBLIC_BASE_URL still names the app,
+// the OAuth issuer and the soju.im/FILEHOST endpoint, the last of which a client
+// only sends its bouncer credentials to on the bouncer's own host.
+//
 // Storage location is instance-wide (LOCAL_UPLOADS_DIR env, else <data-dir>/
 // uploads), resolved identically by this driver and the serving route so the key
-// alone locates the file — no per-config lookup on the hot serve path. Per-
-// uploader storage dirs can come later (P3 admin UI) via a configSchema field;
-// keeping the P1 schema empty means the seeded row works zero-config.
+// alone locates the file — no per-config lookup on the hot serve path. Every
+// configSchema field is optional, so the seeded row still works zero-config.
 
 import fs from 'fs';
 import path from 'path';
@@ -37,9 +42,43 @@ export const capabilities: DriverCapabilities = {
   selfHostOnly: true,
 };
 
-// Empty in P1 (zero-config, like x0). Storage dir + public base URL come from env
-// / request derivation; per-uploader fields arrive with the P3 admin UI.
-export const configSchema: ConfigField[] = [];
+export const configSchema: ConfigField[] = [
+  {
+    key: 'public_base_url',
+    label: 'Public base URL',
+    type: 'string',
+    required: false,
+    default: '',
+    description:
+      'Serve upload links from another host, e.g. https://files.example.com. Your reverse proxy must pass /uploads/ on that host to Lurker. Blank = this server’s own address.',
+  },
+];
+
+const BAD_PUBLIC_BASE =
+  'Public base URL must be an https address with nothing after the host, e.g. https://files.example.com';
+
+/** The public_base_url origin, '' when unset, or null when it can't be used. An
+ *  https origin and nothing more: links go out as <origin>/uploads/<key>, the
+ *  path the files host's proxy passes to us, and an http link would be mixed
+ *  content in the web client. The link is built from the parsed origin, never the
+ *  typed text, and href is compared because it keeps what the parsed fields drop
+ *  (a bare `?` or `#`). */
+function publicBase(value: string | undefined): string | null {
+  const raw = (value || '').trim();
+  if (!raw) return '';
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  return url.protocol === 'https:' && url.href === `${url.origin}/` ? url.origin : null;
+}
+
+/** Refuse an unusable public_base_url when it's saved, not on the next upload. */
+export function validateConfig(values: Record<string, string>): string | null {
+  return publicBase(values.public_base_url) === null ? BAD_PUBLIC_BASE : null;
+}
 
 /** The single instance-wide storage root. Both the driver and the serving route
  *  call this, so the stored key is all that's needed to locate a file. Defaults
@@ -68,8 +107,14 @@ export function resolveDiskPath(key: string, storageDir = resolveStorageDir()): 
 export async function upload(
   source: UploadSource,
   { filename }: UploadMeta,
-  _config: Record<string, string>,
+  config: Record<string, string>,
 ): Promise<UploadResult> {
+  // validateConfig refuses a bad value on save, so this is only a row written some
+  // other way. It's the server's config, not the uploader's, hence PROVIDER_ERROR.
+  const base = publicBase(config.public_base_url);
+  if (base === null) {
+    throw Object.assign(new Error(BAD_PUBLIC_BASE), { code: 'PROVIDER_ERROR' });
+  }
   const storageDir = resolveStorageDir();
   // Extension from the (pipeline-produced) filename; buildObjectKey re-sanitizes
   // it, so a hostile value can't escape the key.
@@ -93,7 +138,7 @@ export async function upload(
       code: 'PROVIDER_ERROR',
     });
   }
-  return { url: `/uploads/${key}`, ref: key, bytes };
+  return { url: `${base}/uploads/${key}`, ref: key, bytes };
 }
 
 /** Orphan reap: unlink the on-disk file when its history row is deleted. Missing

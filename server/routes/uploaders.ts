@@ -117,6 +117,8 @@ function validateValues(
     if (typeof v !== 'string') return `config field must be a string: ${k}`;
     if (v.length > MAX_VALUE_LEN) return `config field is too long: ${k}`;
   }
+  const refused = driver.validateConfig?.(values as Record<string, string>);
+  if (refused) return refused;
   if (partial) return null;
   for (const f of driver.configSchema) {
     if (f.required && !String(values[f.key] ?? '').trim()) return `${f.label} is required`;

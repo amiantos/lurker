@@ -50,12 +50,13 @@ export interface DriverCapabilities {
   // local, s3 — never offered on the hosted fleet.
   selfHostOnly?: boolean;
   // May a human stand up a new instance of this driver in the management UI
-  // (#514)? Not derivable, so it's declared: `x0` and `local` are zero-config
-  // singletons whose seeded instance row IS the driver (a second row would be
-  // byte-identical), and `hoarder` is the operator/seed-managed hosted dropper
-  // that decision 12 retired from the self-host menu. Existing rows of a
-  // non-creatable driver keep working — this gates the "add an uploader" list
-  // only. Defaults to false so a new driver has to opt in deliberately.
+  // (#514)? Not derivable, so it's declared: `x0` and `local` are singletons
+  // whose seeded instance row IS the driver (x0 has nothing to configure, and
+  // local's disk is instance-wide), and `hoarder` is the operator/seed-managed
+  // hosted dropper that decision 12 retired from the self-host menu. Existing
+  // rows of a non-creatable driver keep working — this gates the "add an
+  // uploader" list only. Defaults to false so a new driver has to opt in
+  // deliberately.
   creatable?: boolean;
 }
 
@@ -114,4 +115,8 @@ export interface UploadDriver {
   // Deletability of a row = supportsDelete ∧ canDeleteWith(config) ∧ ref
   // present — see deletableWith() in resolve.ts, the one shared predicate.
   canDeleteWith?(config: Record<string, string>): boolean;
+  // Optional check of values the schema can't express, run by both save routes:
+  // an error message, or null when they're fine. A PATCH passes only the fields
+  // it changes, so a driver checks the ones present.
+  validateConfig?(values: Record<string, string>): string | null;
 }

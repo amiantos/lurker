@@ -80,6 +80,70 @@ describe('local driver', () => {
     await expect(local.delete('deadbeef0000.png', {})).resolves.toBeUndefined();
   });
 
+  it('links to public_base_url when one is set, built from the parsed origin', async () => {
+    const meta = { filename: 'note.txt', mime: 'text/plain' };
+    const links: string[] = [];
+    for (const value of [
+      ' https://files.example.com/ ',
+      'HTTPS://Files.Example.com',
+      'https:\\\\files.example.com',
+    ]) {
+      const res = await local.upload(bufferSource(Buffer.from('a')), meta, {
+        public_base_url: value,
+      });
+      links.push(res.url.replace(res.ref!, '<key>'));
+    }
+    expect(links).toEqual(Array(3).fill('https://files.example.com/uploads/<key>'));
+    const port = await local.upload(bufferSource(Buffer.from('b')), meta, {
+      public_base_url: 'https://files.example.com:8443',
+    });
+    expect(port.url).toBe(`https://files.example.com:8443/uploads/${port.ref}`);
+  });
+
+  // Each of these would put something other than /uploads/<key> after the host,
+  // or an http link in an https page.
+  const BAD_BASES = [
+    'files.example.com',
+    'http://files.example.com',
+    'ftp://files.example.com',
+    'javascript:alert(1)',
+    'https://files.example.com/irc',
+    'https://files.example.com?x=1',
+    'https://files.example.com?',
+    'https://files.example.com#top',
+    'https://files.example.com#',
+    'https://user:pw@files.example.com',
+  ];
+
+  it('validateConfig refuses a public_base_url that would mangle the link', () => {
+    const verdicts = Object.fromEntries(
+      BAD_BASES.map((v) => [v, local.validateConfig({ public_base_url: v })]),
+    );
+    for (const v of BAD_BASES) expect(verdicts[v]).toMatch(/^Public base URL must be/);
+    expect(local.validateConfig({ public_base_url: '' })).toBeNull();
+    expect(local.validateConfig({ public_base_url: 'https://files.example.com' })).toBeNull();
+    expect(local.validateConfig({})).toBeNull();
+  });
+
+  it('refuses an unusable stored public_base_url before writing', async () => {
+    const before = fs.readdirSync(dir, { recursive: true }).length;
+    const codes: Record<string, unknown> = {};
+    for (const value of BAD_BASES) {
+      codes[value] = await local
+        .upload(
+          bufferSource(Buffer.from('x')),
+          { filename: 'x.txt', mime: 'text/plain' },
+          { public_base_url: value },
+        )
+        .then(
+          () => 'accepted',
+          (err: { code?: string }) => err.code,
+        );
+    }
+    expect(codes).toEqual(Object.fromEntries(BAD_BASES.map((v) => [v, 'PROVIDER_ERROR'])));
+    expect(fs.readdirSync(dir, { recursive: true }).length).toBe(before);
+  });
+
   it('resolveDiskPath refuses traversal outside the storage root', () => {
     expect(() => local.resolveDiskPath('../escape.png')).toThrow(/unsafe/);
     expect(() => local.resolveDiskPath('../../etc/passwd')).toThrow(/unsafe/);
