@@ -206,9 +206,13 @@ onMounted(() => {
 .quick {
   display: flex;
   /* One line, always: a narrow phone clips the last pick rather than wrapping
-     and resizing the modal under the user's thumb. */
+     and resizing the modal under the user's thumb. Clipped sideways ONLY —
+     `overflow: hidden` clips every edge, and with emoji making the buttons a
+     fractional height it shaved off their bottom border. `clip` on one axis,
+     unlike `hidden`, leaves the other visible. */
   flex-wrap: nowrap;
-  overflow: hidden;
+  overflow-x: clip;
+  overflow-y: visible;
   gap: var(--space-2);
 }
 .quick-btn {
