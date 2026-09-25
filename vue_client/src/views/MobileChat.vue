@@ -16,7 +16,7 @@
         <button class="icon" title="Search messages" @click="openSearch(false)">
           <i class="fa-solid fa-magnifying-glass"></i>
         </button>
-        <button class="icon" title="Highlights" @click="openHighlights(false)">
+        <button class="icon" title="Activity" @click="openHighlights(false)">
           <i class="fa-regular fa-bell"></i>
         </button>
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
@@ -93,7 +93,7 @@
         <button
           v-if="!isVirtual && !isServerBuffer"
           class="icon"
-          title="Highlights in this buffer"
+          title="Activity in this buffer"
           @click="openHighlights(true)"
         >
           <i class="fa-regular fa-bell"></i>
@@ -225,6 +225,7 @@
       :nick="nickNotes.editor.nick"
       :network-id="nickNotes.editor.networkId"
     />
+    <ReactModal v-if="reactions.picker.open" />
   </div>
 </template>
 
@@ -258,12 +259,14 @@ import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 import TransfersModal from '../components/TransfersModal.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
+import ReactModal from '../components/ReactModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
 import MediaViewerModal from '../components/MediaViewerModal.vue';
 import { screenForRoute } from '../utils/mobileScreen.js';
 import { backOrPush } from '../utils/routerBack.js';
 import { shouldLeaveMembers } from '../utils/bufferNav.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useReactionsStore } from '../stores/reactions.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
@@ -310,6 +313,7 @@ const {
 const bufferActions = useBufferActions();
 const menu = useContextMenu();
 const nickNotes = useNickNotesStore();
+const reactions = useReactionsStore();
 const dcc = useDccStore();
 const dccTitle = computed(() =>
   dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',

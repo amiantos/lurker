@@ -75,6 +75,10 @@ export interface NetworkState {
   // The network's channel-mode vocabulary, parsed from its ISUPPORT on the
   // server (#727). Seeded by the snapshot, replaced by `mode-spec` frames.
   modeSpec?: ModeSpec | null;
+  // Whether this network can carry an IRCv3 reaction we send (message-tags,
+  // echo-message, not denied by CLIENTTAGDENY). False until the registration
+  // burst ends; seeded by the snapshot, replaced by `react-support` frames.
+  canReact?: boolean;
 }
 
 export interface ActiveBuffer {
@@ -305,6 +309,10 @@ export const useNetworksStore = defineStore('networks', {
     applyModeSpec(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
       this.states[event.networkId] = { ...existing, modeSpec: event.modeSpec ?? null };
+    },
+    applyReactSupport(event: any) {
+      const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
+      this.states[event.networkId] = { ...existing, canReact: !!event.canReact };
     },
     applyAwayState(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

@@ -524,6 +524,15 @@ export const EXPORT_TABLES = Object.freeze({
 
   // ---- skipped ----
 
+  message_reactions: {
+    mode: 'skip',
+    reason:
+      'not carried across yet: a reaction rekeys through the messages id map, which only ' +
+      'exists on a with-history import, and the generic data.json path would fail the ' +
+      'NOT NULL message_id on a history-less one. Reactions are lightweight annotations; ' +
+      'an archive without them still restores every line they were on',
+  },
+
   instance_settings: {
     mode: 'skip',
     reason: 'instance-level operational settings (e.g. uploads.allow_user_defined), not user data',

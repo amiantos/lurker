@@ -15,6 +15,7 @@ import { EARLY_PRUNE_TYPES } from '../../shared/eventFilter.js';
 import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
+import type { MessageReaction } from '../../shared/reactions.js';
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
 // filters on `buffer_id`, and `target` is written at insert as an observation
@@ -46,6 +47,9 @@ interface MessageRow {
   // 0/1 from the computed `bookmarked` column — see BOOKMARKED_COL. Optional
   // because it exists only on the SELECTs that ask for it.
   bookmarked?: number;
+  // JSON array from the computed `reactions` column, NULL when there are none —
+  // see REACTIONS_COL. Optional for the same reason as `bookmarked`.
+  reactions?: string | null;
 }
 
 /** A raw message row joined with network_name. */
@@ -83,6 +87,9 @@ export interface MessageEvent {
   // haven't, on the same reasoning as `msgid`: almost no row is bookmarked, and
   // a false on every row is pure wire weight. See BOOKMARKED_COL.
   bookmarked?: true;
+  // IRCv3 reactions standing on this line, oldest first. Absent when there are
+  // none, like `bookmarked`. See REACTIONS_COL.
+  reactions?: MessageReaction[];
   [key: string]: unknown;
 }
 
@@ -224,6 +231,34 @@ const BOOKMARKED_COL = (alias: string) => `EXISTS (
       AND ub.user_id = (SELECT n_own.user_id FROM networks n_own WHERE n_own.id = ${alias}.network_id)
   ) AS bookmarked`;
 
+// The reactions standing on a row, as a JSON array built in SQL — the same
+// ride-along as BOOKMARKED_COL, so every query that yields rows for a client
+// yields their reactions without a second round-trip or any per-caller
+// plumbing. Only on the timeline reads (pages, around, resume) — left off the
+// bouncer's CHATHISTORY/playback reads (loadHistoryWindow, listRecentMessages)
+// and the search/highlights/activity feeds (searchMessages), whose rows never
+// render chips: there the column would be pure cost. The correlated subquery is a seek on idx_message_reactions_key
+// (message_id leads it); a line nobody reacted to costs one empty probe. NULL,
+// not '[]', when there are none, so rowToEvent can leave the field absent.
+const REACTIONS_COL = (alias: string) => `(
+    SELECT json_group_array(
+      json_object('nick', r.nick, 'value', r.value, 'self', r.self) ORDER BY r.id
+    )
+    FROM message_reactions r
+    WHERE r.message_id = ${alias}.id
+    HAVING count(*) > 0
+  ) AS reactions`;
+
+function parseReactionsCol(raw: string | null | undefined): MessageReaction[] | null {
+  if (!raw) return null;
+  try {
+    const list = JSON.parse(raw) as { nick: string; value: string; self: number }[];
+    return list.map((r) => ({ nick: r.nick, value: r.value, self: r.self === 1 }));
+  } catch (_) {
+    return null;
+  }
+}
+
 function rowToEvent(row: MessageRow): MessageEvent {
   const event: MessageEvent = {
     id: row.id,
@@ -261,6 +296,10 @@ function rowToEvent(row: MessageRow): MessageEvent {
   // that makes the column authoritative.
   delete event.bookmarked;
   if (row.bookmarked) event.bookmarked = true;
+  // Same rule for reactions: only the column may set them.
+  delete event.reactions;
+  const reactions = parseReactionsCol(row.reactions);
+  if (reactions) event.reactions = reactions;
   return event;
 }
 
@@ -285,15 +324,15 @@ function listMessagesById(
   if (afterId) {
     const rows = db
       .prepare(
-        `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE buffer_id = ? AND id > ?
+        `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE buffer_id = ? AND id > ?
        ORDER BY id ASC LIMIT ?`,
       )
       .all(bufferId, afterId, limit) as MessageRow[];
     return rows.map(rowToEvent);
   }
   const sql = before
-    ? `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
-    : `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ?`;
+    ? `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
+    : `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ?`;
   const params = before ? [bufferId, before, limit] : [bufferId, limit];
   const rows = db.prepare(sql).all(...params) as MessageRow[];
   return rows.map(rowToEvent).toReversed();
@@ -453,7 +492,7 @@ function listMessagesCountedById(
   }
   const rows = db
     .prepare(
-      `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ASC`,
+      `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ASC`,
     )
     .all(...params) as MessageRow[];
   return rows.map(rowToEvent);
@@ -484,7 +523,7 @@ export function listMessagesAround(
       ? undefined
       : (db
           .prepare(
-            `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE id = ? AND buffer_id = ?`,
+            `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE id = ? AND buffer_id = ?`,
           )
           .get(anchorId, bufferId) as MessageRow | undefined);
   if (bufferId === undefined || !anchorRow) {

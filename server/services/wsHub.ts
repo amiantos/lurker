@@ -97,6 +97,7 @@ import {
 } from '../db/favoriteBuffers.js';
 import { setNicklistCollapsed } from '../db/nicklistCollapsed.js';
 import { addBookmark, removeBookmark } from '../db/bookmarks.js';
+import { MAX_REACTION_SYNC_IDS, reactionsForMessages } from '../db/reactions.js';
 import {
   getChannelNotifyAlways,
   setChannelNotifyAlways,
@@ -361,6 +362,7 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'away',
   'back',
   'typing',
+  'react',
   'e2e',
   'ctcp',
   'get-mode-list',
@@ -2203,6 +2205,38 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       });
       return;
     }
+    // A reaction was added or removed (handleReaction). It patches a line the
+    // client may or may not have loaded, so it's its own frame rather than an
+    // `irc` row: no decoration, no push, no unread bump, and — unlike a message —
+    // never a reason to reopen a closed buffer.
+    if ((event as { type?: string }).type === 'reaction') {
+      const ev = event as unknown as {
+        networkId: number;
+        bufferId: number;
+        target: string;
+        messageId: number;
+        nick: string;
+        value: string;
+        self: boolean;
+        remove: boolean;
+        toSelf: boolean;
+        time: string;
+      };
+      fanOut(eventUserId, {
+        kind: 'reaction',
+        networkId: ev.networkId,
+        bufferId: ev.bufferId,
+        target: ev.target,
+        messageId: ev.messageId,
+        nick: ev.nick,
+        value: ev.value,
+        self: ev.self,
+        remove: ev.remove,
+        toSelf: ev.toSelf,
+        time: ev.time,
+      });
+      return;
+    }
     // A buffer changed names (a DM peer's NICK; later, channel RENAME). This
     // is a lifecycle frame, not a message — intercept before decoration so it
     // can't leak to clients as a kind:'irc' row. Fanned to EVERY socket
@@ -3651,6 +3685,32 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         } catch (_) {
           /* boundary already filtered bad networkId; ignore */
         }
+        break;
+      }
+      case 'react': {
+        // React to (or, with `remove`, unreact from) one stored line. Nothing is
+        // written or echoed here: the network's echo comes back as a `reaction`
+        // frame, and a refusal (no msgid, network can't carry it, value out of
+        // bounds) is silence — the client never renders a reaction optimistically.
+        const messageId = Number(msg.messageId);
+        if (!Number.isFinite(messageId) || messageId <= 0) break;
+        if (typeof msg.value !== 'string') break;
+        ircManager.react(userId, messageId, msg.value, msg.remove === true);
+        break;
+      }
+      case 'sync-reactions': {
+        // A resumed client re-reading the reactions on lines it already holds
+        // (reactions.ts reactionsForMessages says why). Answered to this socket
+        // only, with every id asked about — an id with none standing is how a
+        // removal made while it was away reaches it.
+        if (!Array.isArray(msg.messageIds)) break;
+        const ids = (msg.messageIds as unknown[])
+          .map(Number)
+          .filter((n) => Number.isInteger(n) && n > 0)
+          .slice(0, MAX_REACTION_SYNC_IDS);
+        if (ids.length === 0) break;
+        const found = reactionsForMessages(userId, ids);
+        send(ws, { kind: 'reactions-sync', messageIds: ids, reactions: Object.fromEntries(found) });
         break;
       }
       case 'set-bookmark': {

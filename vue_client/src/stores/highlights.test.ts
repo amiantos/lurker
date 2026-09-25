@@ -19,7 +19,7 @@ const { useHighlightsStore } = await import('./highlights.js');
 beforeEach(() => {
   setActivePinia(createPinia());
   api.mockReset();
-  api.mockResolvedValue({ items: [{ id: 1 }], nextBefore: null });
+  api.mockResolvedValue({ items: [{ id: 1 }], next: null });
 });
 
 describe('loadInitial skipIfSameFilter', () => {
@@ -64,5 +64,28 @@ describe('loadInitial skipIfSameFilter', () => {
     expect(api).toHaveBeenCalledTimes(2);
     expect(store.error).toBe('');
     expect(store.items).toEqual([{ id: 1 }]);
+  });
+});
+
+describe('paging the activity feed', () => {
+  // The server pages two sources at once and hands back a cursor for each; the
+  // store sends both back untouched, and stops when the server says null.
+  it('sends back the cursor pair, and stops at null', async () => {
+    const store = useHighlightsStore();
+    api.mockResolvedValueOnce({
+      items: [{ id: 1 }],
+      next: { beforeMessage: 40, beforeReaction: 7 },
+    });
+    await store.loadInitial();
+    expect(api.mock.calls[0][0]).toMatch(/^\/api\/activity\?/);
+    expect(store.hasMore).toBe(true);
+
+    api.mockResolvedValueOnce({ items: [{ id: 2 }], next: null });
+    await store.loadMore();
+    const url = new URL(api.mock.calls[1][0], 'http://x');
+    expect(url.searchParams.get('beforeMessage')).toBe('40');
+    expect(url.searchParams.get('beforeReaction')).toBe('7');
+    expect(store.items).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(store.hasMore).toBe(false);
   });
 });

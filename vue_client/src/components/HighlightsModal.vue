@@ -3,8 +3,16 @@
   SPDX-License-Identifier: MPL-2.0
 -->
 
+<!--
+  The activity feed: everything that happened to you, newest first —
+  highlights, and other people's reactions to your lines (replies will join
+  them). One list, merged by the server (services/activityFeed.ts). Still
+  HighlightsModal / the highlights store in code; it was the highlights modal
+  before reactions joined it.
+-->
+
 <template>
-  <AppModal word="highlights" title="highlights" size="lg" fill-height @close="$emit('close')">
+  <AppModal word="activity" title="activity" size="lg" fill-height @close="$emit('close')">
     <template #actions>
       <button
         class="link sound-toggle"
@@ -21,7 +29,7 @@
         @input="onQueryInput"
         class="filter"
         type="text"
-        placeholder="filter highlights — from:nick in:#channel on:network"
+        placeholder="filter activity — from:nick in:#channel on:network"
         autocomplete="off"
         spellcheck="false"
       />
@@ -30,16 +38,17 @@
     <ul v-if="visibleItems.length" ref="listEl" class="match-list" @scroll="onScroll">
       <HistoryMessageRow
         v-for="m in visibleItems"
-        :key="`${m.networkId}::${m.target}::${m.id}`"
+        :key="m.kind === 'reaction' ? `r::${m.reactionId}` : `h::${m.id}`"
         :message="m"
+        :reaction="m.kind === 'reaction' ? (m.value ?? null) : null"
         @jump="onJump"
       />
       <li v-if="store.loading" class="more">Loading…</li>
     </ul>
     <p v-else-if="store.loading" class="empty">Loading…</p>
-    <p v-else-if="store.items.length" class="empty">All highlights are from ignored users.</p>
-    <p v-else-if="hasFilter" class="empty">No highlights match your filter.</p>
-    <p v-else class="empty">No highlights yet.</p>
+    <p v-else-if="store.items.length" class="empty">All activity is from ignored users.</p>
+    <p v-else-if="hasFilter" class="empty">No activity matches your filter.</p>
+    <p v-else class="empty">No activity yet.</p>
   </AppModal>
 </template>
 
@@ -49,6 +58,7 @@ import AppModal from './AppModal.vue';
 import HistoryMessageRow, { type HistoryMessage } from './HistoryMessageRow.vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useHighlightsStore } from '../stores/highlights.js';
+import type { ActivityItem } from '../stores/highlights.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 
@@ -57,11 +67,11 @@ const emit = defineEmits<{
   jump: [payload: { networkId: number; target: string; messageId: number }];
 }>();
 
-// `scope` (set when opened from a buffer's topic bar) runs the highlights feed
-// filtered to this buffer. Unlike search this loads immediately — highlights is
-// a filtered feed, not a type-to-search box, so the channel's highlights should
+// `scope` (set when opened from a buffer's topic bar) runs the activity feed
+// filtered to this buffer. Unlike search this loads immediately — activity is
+// a filtered feed, not a type-to-search box, so the channel's activity should
 // be visible at a glance. The global session is snapshotted and restored on
-// close so the list-bar highlights modal is unaffected.
+// close so the list-bar activity modal is unaffected.
 const props = defineProps<{ scope?: string | null }>();
 const scoped = !!props.scope;
 
@@ -72,8 +82,16 @@ let scopedSnapshot: typeof store.$state | null = null;
 
 const listEl = ref<HTMLUListElement | null>(null);
 
-const visibleItems = computed(() =>
-  store.items.filter((m) => !ignores.isMessageHidden(m.networkId, m)),
+// A reaction is judged as what it is — the reactor sending `value` — not as
+// the user's own line it sits on, so a pattern ignore reads the reaction and a
+// host-mask ignore reads the reactor's host (stored with the reaction, so a
+// rule added after it arrived still applies).
+const visibleItems = computed<ActivityItem[]>(() =>
+  store.items.filter((m) =>
+    m.kind === 'reaction'
+      ? !ignores.isMessageHidden(m.networkId, { ...m, type: 'message', text: m.value ?? '' })
+      : !ignores.isMessageHidden(m.networkId, m),
+  ),
 );
 
 const hasFilter = computed(() => store.query.trim().length > 0);
@@ -139,7 +157,7 @@ async function toggleSound(): Promise<void> {
 onMounted(() => {
   if (scoped) {
     // Snapshot the global session, then seed the scoped filter before the
-    // initial load so the feed opens showing this buffer's highlights.
+    // initial load so the feed opens showing this buffer's activity.
     scopedSnapshot = { ...store.$state };
     store.setQuery(queryInput.value);
   }

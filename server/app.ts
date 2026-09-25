@@ -20,6 +20,7 @@ import settingsRouter from './routes/settings.js';
 import retentionRouter from './routes/retention.js';
 import highlightRulesRouter from './routes/highlightRules.js';
 import highlightsRouter from './routes/highlights.js';
+import activityRouter from './routes/activity.js';
 import bookmarksRouter from './routes/bookmarks.js';
 import searchRouter from './routes/search.js';
 import themesRouter from './routes/themes.js';
@@ -117,6 +118,7 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
   app.use('/api/retention', retentionRouter);
   app.use('/api/highlight-rules', highlightRulesRouter);
   app.use('/api/highlights', highlightsRouter);
+  app.use('/api/activity', activityRouter);
   app.use('/api/bookmarks', bookmarksRouter);
   app.use('/api/search', searchRouter);
   app.use('/api/themes', themesRouter);

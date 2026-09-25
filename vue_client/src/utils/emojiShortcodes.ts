@@ -153,6 +153,16 @@ export function emojiGlyph(name: string): string | null {
   return loadedTable?.[name.toLowerCase()] ?? null;
 }
 
+// A reaction typed as text (the picker's field, /react's argument): a whole
+// `:shortcode:` — closing colon optional, nothing follows it to be ambiguous
+// with — becomes its glyph; anything else, an unknown shortcode included, is
+// sent as typed.
+export function reactionFromInput(raw: string): string {
+  const text = raw.trim();
+  const m = text.match(/^:([\w+-]+):?$/);
+  return (m && emojiGlyph(m[1])) || text;
+}
+
 // Synchronous ranked search for the desktop emoji picker — mirrors emojiData's
 // `searchEmoji` but reads the cached table so it can run inside a Vue computed
 // (no await). Returns [] until the chunk has loaded; the picker gates on

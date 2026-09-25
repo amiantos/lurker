@@ -57,7 +57,7 @@
         <button class="link" @click="openSearch(false)" title="Search messages">
           <i class="fa-solid fa-magnifying-glass"></i>
         </button>
-        <button class="link" @click="openHighlights(false)" title="Highlights">
+        <button class="link" @click="openHighlights(false)" title="Activity">
           <i class="fa-regular fa-bell"></i>
         </button>
         <button class="link" @click="showBookmarks = true" title="Saved messages">
@@ -156,8 +156,8 @@
             <button
               type="button"
               class="link"
-              title="Highlights in this buffer"
-              aria-label="Highlights in this buffer"
+              title="Activity in this buffer"
+              aria-label="Activity in this buffer"
               @click="openHighlights(true)"
             >
               <i class="fa-regular fa-bell"></i>
@@ -310,6 +310,7 @@
       :nick="nickNotes.editor.nick"
       :network-id="nickNotes.editor.networkId"
     />
+    <ReactModal v-if="reactions.picker.open" />
   </div>
 </template>
 
@@ -346,12 +347,14 @@ import QuickSwitcher from '../components/QuickSwitcher.vue';
 import SearchModal from '../components/SearchModal.vue';
 import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
+import ReactModal from '../components/ReactModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
 import MediaViewerModal from '../components/MediaViewerModal.vue';
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts.js';
 import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { shouldOpenSystemBufferOnLoad } from '../utils/defaultBuffer.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useReactionsStore } from '../stores/reactions.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
@@ -386,6 +389,7 @@ const settings = useSettingsStore();
 const auth = useAuthStore();
 const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
+const reactions = useReactionsStore();
 const dcc = useDccStore();
 const dccTitle = computed(() =>
   dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',

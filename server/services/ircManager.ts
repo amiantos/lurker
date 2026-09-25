@@ -52,6 +52,7 @@ import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { e2eDbg } from './e2e/debug.js';
 import db from '../db/index.js';
+import { reactionSendTarget } from '../db/reactions.js';
 import { isDccChatTarget, dccChatPeer } from '../../shared/channels.js';
 import {
   dccChatHostFor,
@@ -927,15 +928,16 @@ class IrcManager extends EventEmitter {
     userId: number,
     networkId: number,
     target: string,
-    kind: 'action' | 'notice',
+    kind: 'action' | 'notice' | 'reaction',
   ): boolean {
     if (!isChannelContext(target)) return false;
     if (!e2eManager.isChannelEnabled(userId, networkId, contextKey(target, ''))) return false;
+    const what = { action: '/me actions', notice: 'notices', reaction: 'reactions' }[kind];
     conn.publishEphemeral({
       type: 'e2e',
       level: 'warn',
       target,
-      text: `${kind === 'action' ? '/me actions' : 'notices'} aren't encrypted yet — not sent on this E2E channel`,
+      text: `${what} aren't encrypted yet — not sent on this E2E channel`,
     });
     return true;
   }
@@ -1033,6 +1035,24 @@ class IrcManager extends EventEmitter {
     if (!['active', 'paused', 'done'].includes(state)) return false;
     conn.sendTyping(target, state);
     return true;
+  }
+
+  // React to (or unreact from) one of the user's stored lines. The connection
+  // gates on what the network supports and sends; the echo records it. False
+  // when there's nothing to send to — a disconnected network, a line with no
+  // msgid, a network that can't carry reactions.
+  react(userId: number, messageId: number, value: string, remove: boolean): boolean {
+    const dest = reactionSendTarget(userId, messageId);
+    if (!dest) return false;
+    const conn = this.getConnection(userId, dest.networkId);
+    if (!conn) return false;
+    // A reaction is a cleartext tag. On an E2E channel even one on a plaintext
+    // line (sent before /e2e on, or by a peer without it) would put "lol" on
+    // the wire in the clear — refused like /me and notices are.
+    if (this.refuseCleartextOnE2eChannel(conn, userId, dest.networkId, dest.target, 'reaction')) {
+      return false;
+    }
+    return conn.sendReaction(dest.target, dest.msgid, value, remove);
   }
 
   // RPE2E command surface (#382). Dispatches a `/e2e …` subcommand on a live

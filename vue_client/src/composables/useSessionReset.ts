@@ -5,6 +5,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useHighlightsStore } from '../stores/highlights.js';
+import { useReactionsStore } from '../stores/reactions.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
@@ -34,6 +35,8 @@ export function resetSession(): void {
   useNetworksStore().$reset();
   useSettingsStore().$reset();
   useHighlightsStore().$reset();
+  // The reactions seen on the last account's lines, and its picker if open.
+  useReactionsStore().$reset();
   // Saved messages are per-account and this store holds fetched ROWS, not just ids —
   // leaving them would show the next user the previous one's saved conversations. It was
   // never in this list; the `bookmark-ids-snapshot` frame used to overwrite the id set on

@@ -27,6 +27,7 @@ import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
+import { useReactionsStore } from '../stores/reactions.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useUploadsStore } from '../stores/uploads.js';
@@ -347,6 +348,9 @@ function applyEvent(event: any): boolean {
       break;
     case 'mode-spec':
       networks.applyModeSpec(event);
+      break;
+    case 'react-support':
+      networks.applyReactSupport(event);
       break;
     case 'lag':
       networks.applyLag(event);
@@ -815,6 +819,10 @@ function handleMessage(raw: string): void {
     // modal open refetches. This is what the departed `bookmark-ids-snapshot`
     // used to do as a side effect of overwriting the store.
     useBookmarksStore().markListStale();
+    // No cursor = a resume: our loaded lines stayed, but reaction changes to
+    // them while we were away weren't sent to us. Ask. (A fresh connect holds
+    // no lines yet, and each backlog that follows carries its own reactions.)
+    if (typeof payload.cursor !== 'number') useReactionsStore().resync();
     return;
   }
   if (payload.kind === 'backlog') {
@@ -825,6 +833,7 @@ function handleMessage(raw: string): void {
       for (const e of payload.events) trackSeenId(e?.id);
     }
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
+    useReactionsStore().noteFromEvents(payload.events, payload.networkId);
     primeEventPreviews(payload.events, payload.networkId, payload.target);
     applyBacklog(payload);
     return;
@@ -839,6 +848,7 @@ function handleMessage(raw: string): void {
     // Every mode carries `events`; reconcile before the mode-specific dispatch so
     // one call covers around/latest/after/before alike.
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
+    useReactionsStore().noteFromEvents(payload.events, payload.networkId);
     primeEventPreviews(payload.events, payload.networkId, payload.target);
     if (mode === 'around') {
       buffers.applyAroundSlice(payload.networkId, payload.target, payload);
@@ -1063,6 +1073,14 @@ function handleMessage(raw: string): void {
     // message. Upsert the row into the Transfers store; this also self-reveals
     // the Transfers affordance the first time an offer lands.
     useDccStore().applyTransfer(payload.transfer);
+    return;
+  }
+  if (payload.kind === 'reaction') {
+    useReactionsStore().applyFrame(payload);
+    return;
+  }
+  if (payload.kind === 'reactions-sync') {
+    useReactionsStore().applySync(payload);
     return;
   }
   if (payload.kind === 'bookmark-updated') {
