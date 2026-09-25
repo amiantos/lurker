@@ -8,8 +8,8 @@
   count. Square and borderless on the soft background; ours tinted in the
   accent. Clicking or tapping a chip adds our reaction or takes it back;
   hovering names who reacted. The trailing
-  add chip (a smiley with a plus, always shown while there are reactions, as
-  Slack does) opens the picker, which is also where a touch screen sees who gave what.
+  add chip (always shown while there are reactions, as Slack does) opens the
+  picker, which is also where a touch screen sees who gave what.
   Renders nothing when no reactions stand on the line, so an ordinary line
   keeps its height.
 -->
@@ -39,8 +39,7 @@
       aria-label="React / see who reacted"
       @click.stop="reactions.openPicker(message)"
     >
-      <i class="fa-regular fa-face-smile" aria-hidden="true"></i
-      ><span class="plus" aria-hidden="true">+</span>
+      <i class="fa-solid fa-heart-circle-plus" aria-hidden="true"></i>
     </button>
   </div>
 </template>
@@ -130,10 +129,5 @@ function onChipClick(value: string) {
 }
 .chip.mine:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 25%, transparent);
-}
-/* The add chip: always there while the line has reactions (Slack's add-
-   reaction button), a smiley with a plus tucked in beside it. */
-.chip.add .plus {
-  margin-left: -0.15em;
 }
 </style>
