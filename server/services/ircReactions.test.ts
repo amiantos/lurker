@@ -286,6 +286,8 @@ describe('reactions to our own lines', () => {
         networkId: rig.network.id,
         target: '#m1',
         nick: 'bob',
+        // Kept so a host-mask ignore added later still applies in the feed.
+        userhost: 'bob!~bob@peer.fake',
         value: '❤️',
         text: 'my line',
       });
@@ -380,6 +382,23 @@ describe('sending reactions', () => {
       expect(rig.conn.sendReaction('#s2', msgid, '', false)).toBe(false);
       expect(rig.conn.sendReaction('#s2', msgid, 'x'.repeat(65), false)).toBe(false);
       expect(rig.conn.sendReaction('#s2', msgid, 'two\nlines', false)).toBe(false);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('follows cap-notify: off when echo-message is withdrawn, back on when it returns', async () => {
+    const rig = await connect('capdel', '#cd');
+    try {
+      const support = () => rig.events.filter((e) => e.type === 'react-support');
+      expect(support().at(-1)).toMatchObject({ canReact: true });
+      ircd.sendRaw('capdel', ':irc.fake CAP capdel DEL :echo-message');
+      await until(() => support().length === 2, 5000, 'react-support after DEL');
+      expect(support().at(-1)).toMatchObject({ canReact: false });
+      expect(rig.conn.canSendReactions()).toBe(false);
+      ircd.sendRaw('capdel', ':irc.fake CAP capdel ACK :echo-message');
+      await until(() => support().length === 3, 5000, 'react-support after ACK');
+      expect(support().at(-1)).toMatchObject({ canReact: true });
     } finally {
       rig.conn.dispose();
     }

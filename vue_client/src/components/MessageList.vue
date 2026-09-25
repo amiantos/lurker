@@ -145,6 +145,7 @@
             /><ReactionRow
               v-if="row.m && reactable(row.m)"
               :message="row.m"
+              :interactive="!row.m.e2e"
               @measured="repinAfterPreviewGrowth(true)"
             />
           </span>
@@ -313,6 +314,7 @@
                  re-parents nothing (see the note above). --><ReactionRow
               v-if="row.m && reactable(row.m)"
               :message="row.m"
+              :interactive="row.m.type !== 'notice' && !row.m.e2e"
               @measured="repinAfterPreviewGrowth(true)"
             />
           </span>

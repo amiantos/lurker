@@ -3,6 +3,7 @@
 
 import db from './index.js';
 import { resolveBuffer } from './bufferResolve.js';
+import type { MessageReaction } from '../../shared/reactions.js';
 
 // IRCv3 reactions — see the message_reactions table in db/index.ts for the
 // model. Rows hold standing state: react inserts, unreact deletes. How they
@@ -42,8 +43,8 @@ export function findReactionParent(
 
 const insertStmt = db.prepare(`
   INSERT INTO message_reactions
-    (message_id, network_id, nick, nick_folded, value, self, to_self, time)
-  VALUES (@messageId, @networkId, @nick, @nickFolded, @value, @self, @toSelf, @time)
+    (message_id, network_id, nick, nick_folded, userhost, value, self, to_self, time)
+  VALUES (@messageId, @networkId, @nick, @nickFolded, @userhost, @value, @self, @toSelf, @time)
   ON CONFLICT(message_id, nick_folded, value) DO NOTHING
 `);
 
@@ -56,6 +57,7 @@ export interface ReactionWrite {
   messageId: number;
   networkId: number;
   nick: string;
+  userhost?: string | null;
   value: string;
   self: boolean;
   toSelf: boolean;
@@ -70,6 +72,7 @@ export function addReaction(r: ReactionWrite): boolean {
     networkId: r.networkId,
     nick: r.nick,
     nickFolded: r.nick.toLowerCase(),
+    userhost: r.userhost ?? null,
     value: r.value,
     self: r.self ? 1 : 0,
     toSelf: r.toSelf ? 1 : 0,
@@ -153,8 +156,9 @@ export interface ReactionFeedItem {
   networkName: string;
   // The buffer's current name (a renamed DM has moved), for the jump.
   target: string;
-  // Who reacted, and with what.
+  // Who reacted (and from where, for ignore matching), and with what.
   nick: string;
+  userhost: string | null;
   value: string;
   time: string;
   // The reacted-to line's own text and time.
@@ -216,7 +220,7 @@ export function listReactionsToUser(
   params.push(opts.limit ?? 50);
   const rows = db
     .prepare(
-      `SELECT r.id AS reaction_id, r.nick, r.value, r.time,
+      `SELECT r.id AS reaction_id, r.nick, r.userhost, r.value, r.time,
               m.id, m.network_id, m.text, m.time AS message_time,
               b.target, n.name AS network_name
        FROM message_reactions r
@@ -230,6 +234,7 @@ export function listReactionsToUser(
     .all(...params) as {
     reaction_id: number;
     nick: string;
+    userhost: string | null;
     value: string;
     time: string;
     id: number;
@@ -246,9 +251,45 @@ export function listReactionsToUser(
     networkName: row.network_name,
     target: row.target,
     nick: row.nick,
+    userhost: row.userhost,
     value: row.value,
     time: row.time,
     text: row.text,
     messageTime: row.message_time,
   }));
+}
+
+// The reactions standing on a set of the user's lines, for a client re-syncing
+// after a resume: a `reaction` frame only reaches sockets that were connected,
+// and a resume ships only NEW rows, so a change to a line the client already
+// holds is otherwise lost until a reload. Ownership is in the join — ids from
+// someone else's networks simply come back with nothing.
+export const MAX_REACTION_SYNC_IDS = 5000;
+const SYNC_CHUNK = 500;
+
+export function reactionsForMessages(
+  userId: number,
+  messageIds: number[],
+): Map<number, MessageReaction[]> {
+  const out = new Map<number, MessageReaction[]>();
+  const ids = messageIds.slice(0, MAX_REACTION_SYNC_IDS);
+  for (let i = 0; i < ids.length; i += SYNC_CHUNK) {
+    const chunk = ids.slice(i, i + SYNC_CHUNK);
+    const rows = db
+      .prepare(
+        `SELECT r.message_id, r.nick, r.value, r.self
+         FROM message_reactions r
+         JOIN messages m ON m.id = r.message_id
+         JOIN networks n ON n.id = m.network_id
+         WHERE n.user_id = ? AND r.message_id IN (${chunk.map(() => '?').join(', ')})
+         ORDER BY r.id`,
+      )
+      .all(userId, ...chunk) as { message_id: number; nick: string; value: string; self: number }[];
+    for (const row of rows) {
+      let list = out.get(row.message_id);
+      if (!list) out.set(row.message_id, (list = []));
+      list.push({ nick: row.nick, value: row.value, self: row.self === 1 });
+    }
+  }
+  return out;
 }

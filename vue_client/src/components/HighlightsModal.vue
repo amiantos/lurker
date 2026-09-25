@@ -82,9 +82,16 @@ let scopedSnapshot: typeof store.$state | null = null;
 
 const listEl = ref<HTMLUListElement | null>(null);
 
-// For a reaction, `nick` is whoever reacted — so ignoring them hides it too.
+// A reaction is judged as what it is — the reactor sending `value` — not as
+// the user's own line it sits on, so a pattern ignore reads the reaction and a
+// host-mask ignore reads the reactor's host (stored with the reaction, so a
+// rule added after it arrived still applies).
 const visibleItems = computed<ActivityItem[]>(() =>
-  store.items.filter((m) => !ignores.isMessageHidden(m.networkId, m)),
+  store.items.filter((m) =>
+    m.kind === 'reaction'
+      ? !ignores.isMessageHidden(m.networkId, { ...m, type: 'message', text: m.value ?? '' })
+      : !ignores.isMessageHidden(m.networkId, m),
+  ),
 );
 
 const hasFilter = computed(() => store.query.trim().length > 0);

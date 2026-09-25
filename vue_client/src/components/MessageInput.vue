@@ -2620,18 +2620,32 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
     localInfo(networkId, target, "this network can't carry reactions right now");
     return true;
   }
+  // The last line someone else said — and if THAT one can't take a reaction,
+  // say why rather than quietly reaching back to an older line the user never
+  // meant (an e2e run, a trailing notice, a line with no msgid).
   const messages = buffers.findByTarget(networkId, target)?.messages ?? [];
   let parent: (typeof messages)[number] | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.id == null || m.self || m.e2e || !m.msgid) continue;
-    // Same rule as the React action: a PRIVMSG or /me, never a notice.
-    if (m.type !== 'message' && m.type !== 'action') continue;
+    if (m.id == null || m.self) continue;
+    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
     parent = m;
     break;
   }
   if (!parent) {
     localInfo(networkId, target, 'nothing here to react to');
+    return true;
+  }
+  const refusal =
+    parent.type === 'notice'
+      ? "can't react to a notice"
+      : parent.e2e
+        ? "can't react to an encrypted line"
+        : !parent.msgid
+          ? "can't react to that line (no message id)"
+          : null;
+  if (refusal) {
+    localInfo(networkId, target, refusal);
     return true;
   }
   const mine = reactions.groupsFor(parent.id).some((g) => g.mine && g.value === value);

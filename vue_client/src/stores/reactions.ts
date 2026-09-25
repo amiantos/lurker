@@ -4,6 +4,7 @@
 import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
 import { useHighlightsStore } from './highlights.js';
+import { useBuffersStore } from './buffers.js';
 import type { MessageReaction } from '../../../shared/reactions.js';
 
 // IRCv3 reactions, two tracks — the same split as bookmarks:
@@ -41,6 +42,11 @@ export interface ReactionFrame {
 }
 
 const sameNick = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
+// resync(): how far back per buffer, and in all — the latter is the server's
+// MAX_REACTION_SYNC_IDS, past which it ignores the rest.
+const SYNC_PER_BUFFER = 200;
+const SYNC_MAX_IDS = 5000;
 
 export const useReactionsStore = defineStore('reactions', {
   state: () => ({
@@ -130,6 +136,38 @@ export const useReactionsStore = defineStore('reactions', {
             sameNick(it.nick, frame.nick),
         );
         if (idx >= 0) feed.items.splice(idx, 1);
+      }
+    },
+
+    // After a resume: ask what stands now on the lines we already hold. A
+    // `reaction` frame only reaches a connected socket, and the resume ships
+    // only NEW rows, so a react/unreact on a loaded line while we were away
+    // would otherwise never land. The newest SYNC_PER_BUFFER lines of each
+    // loaded buffer — where reactions land — within the server's cap.
+    resync() {
+      const buffers = useBuffersStore();
+      const ids: number[] = [];
+      for (const buf of Object.values(buffers.buffers)) {
+        if (buf.networkId == null) continue; // system lines: their own id space
+        const msgs = buf.messages;
+        for (let i = msgs.length - 1, n = 0; i >= 0 && n < SYNC_PER_BUFFER; i--) {
+          const id = Number(msgs[i]?.id);
+          if (!Number.isFinite(id)) continue;
+          ids.push(id);
+          n += 1;
+        }
+        if (ids.length >= SYNC_MAX_IDS) break;
+      }
+      if (ids.length)
+        socketSend({ type: 'sync-reactions', messageIds: ids.slice(0, SYNC_MAX_IDS) });
+    },
+
+    // The answer: every id asked about is authoritative, present or not.
+    applySync(frame: { messageIds: number[]; reactions: Record<string, MessageReaction[]> }) {
+      for (const id of frame.messageIds ?? []) {
+        const list = frame.reactions?.[String(id)];
+        if (Array.isArray(list) && list.length) this.byMessage.set(id, list);
+        else this.byMessage.delete(id);
       }
     },
 

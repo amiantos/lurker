@@ -819,6 +819,10 @@ function handleMessage(raw: string): void {
     // modal open refetches. This is what the departed `bookmark-ids-snapshot`
     // used to do as a side effect of overwriting the store.
     useBookmarksStore().markListStale();
+    // No cursor = a resume: our loaded lines stayed, but reaction changes to
+    // them while we were away weren't sent to us. Ask. (A fresh connect holds
+    // no lines yet, and each backlog that follows carries its own reactions.)
+    if (typeof payload.cursor !== 'number') useReactionsStore().resync();
     return;
   }
   if (payload.kind === 'backlog') {
@@ -1073,6 +1077,10 @@ function handleMessage(raw: string): void {
   }
   if (payload.kind === 'reaction') {
     useReactionsStore().applyFrame(payload);
+    return;
+  }
+  if (payload.kind === 'reactions-sync') {
+    useReactionsStore().applySync(payload);
     return;
   }
   if (payload.kind === 'bookmark-updated') {

@@ -234,9 +234,10 @@ const BOOKMARKED_COL = (alias: string) => `EXISTS (
 // The reactions standing on a row, as a JSON array built in SQL — the same
 // ride-along as BOOKMARKED_COL, so every query that yields rows for a client
 // yields their reactions without a second round-trip or any per-caller
-// plumbing. Left off the bouncer's CHATHISTORY/playback reads
-// (loadHistoryWindow, listRecentMessages): nothing there turns reactions into
-// IRC lines, so on that hot path the column would be pure cost. The correlated subquery is a seek on idx_message_reactions_key
+// plumbing. Only on the timeline reads (pages, around, resume) — left off the
+// bouncer's CHATHISTORY/playback reads (loadHistoryWindow, listRecentMessages)
+// and the search/highlights/activity feeds (searchMessages), whose rows never
+// render chips: there the column would be pure cost. The correlated subquery is a seek on idx_message_reactions_key
 // (message_id leads it); a line nobody reacted to costs one empty probe. NULL,
 // not '[]', when there are none, so rowToEvent can leave the field absent.
 const REACTIONS_COL = (alias: string) => `(
@@ -1200,7 +1201,7 @@ export function listUserHighlights(
   { before, limit = 50 }: { before?: number; limit?: number } = {},
 ): MessageEventWithNetwork[] {
   const sql = before
-    ? `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}, ${REACTIONS_COL('m')}
+    ? `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
        FROM messages m
        JOIN networks n ON n.id = m.network_id
        WHERE n.user_id = ?
@@ -1209,7 +1210,7 @@ export function listUserHighlights(
          AND m.id < ?
        ORDER BY m.id DESC
        LIMIT ?`
-    : `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}, ${REACTIONS_COL('m')}
+    : `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
        FROM messages m
        JOIN networks n ON n.id = m.network_id
        WHERE n.user_id = ?
@@ -1407,7 +1408,7 @@ export function searchMessages(
   // order natively, so the query stops at the LIMIT instead of materializing
   // and sorting every message that ever contained the term (measured 2126ms →
   // 1.6ms for a common word on a 2M-row database).
-  const sql = `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}, ${REACTIONS_COL('m')}
+  const sql = `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
                FROM ${from}
                WHERE ${where.join(' AND ')}
                ORDER BY ${hasText ? 'messages_fts.rowid' : 'm.id'} DESC

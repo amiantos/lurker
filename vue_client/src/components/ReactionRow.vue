@@ -33,6 +33,7 @@
       ><span class="count">{{ g.nicks.length }}</span>
     </button>
     <button
+      v-if="interactive"
       type="button"
       class="chip add"
       title="React / see who reacted"
@@ -49,14 +50,21 @@ import { computed, nextTick, watch } from 'vue';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useNetworksStore } from '../stores/networks.js';
 
-const props = defineProps<{
-  message: {
-    id?: number | null;
-    networkId: number;
-    nick?: string;
-    text?: string;
-  };
-}>();
+const props = withDefaults(
+  defineProps<{
+    message: {
+      id?: number | null;
+      networkId: number;
+      nick?: string;
+      text?: string;
+    };
+    // False on lines we can show reactions on but not send to — a notice
+    // someone else's client reacted to, an encrypted line. The server refuses
+    // both (reactionSendTarget), so the chips must not pretend otherwise.
+    interactive?: boolean;
+  }>(),
+  { interactive: true },
+);
 
 const emit = defineEmits<{ measured: [] }>();
 
@@ -77,6 +85,7 @@ watch(
   },
 );
 const canReact = computed(() => {
+  if (!props.interactive) return false;
   const state = networks.states[props.message.networkId];
   return state?.state === 'connected' && !!state.canReact;
 });

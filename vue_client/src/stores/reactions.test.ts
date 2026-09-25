@@ -11,6 +11,7 @@ vi.mock('../composables/useSocket.js', () => ({
 import { socketSend } from '../composables/useSocket.js';
 import { useReactionsStore } from './reactions.js';
 import { useHighlightsStore } from './highlights.js';
+import { useBuffersStore } from './buffers.js';
 import type { ReactionFrame } from './reactions.js';
 
 const NET = 1;
@@ -133,5 +134,49 @@ describe('reactions store', () => {
       value: '👍',
       remove: true,
     });
+  });
+});
+
+describe('resync after a resume', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(socketSend).mockClear();
+  });
+
+  // Reaction changes made while the socket was down reach no one, and a resume
+  // ships only new rows — so the client asks about the lines it already holds.
+  it('asks about the newest loaded lines on networks, and trusts every id answered', () => {
+    const buffers = useBuffersStore();
+    buffers.buffers['1::#c'] = {
+      ...buffers.buffers[Object.keys(buffers.buffers)[0]],
+      networkId: 1,
+      target: '#c',
+      messages: Array.from({ length: 250 }, (_, i) => ({
+        id: i + 1,
+        networkId: 1,
+        target: '#c',
+        type: 'message',
+      })),
+    } as never;
+    const store = useReactionsStore();
+    store.resync();
+    const sent = vi.mocked(socketSend).mock.calls.at(-1)![0] as { messageIds: number[] };
+    expect(sent).toMatchObject({ type: 'sync-reactions' });
+    // The newest 200 of that buffer; the system buffer's lines are never sent.
+    expect(sent.messageIds).toHaveLength(200);
+    expect(sent.messageIds[0]).toBe(250);
+    expect(sent.messageIds.at(-1)).toBe(51);
+
+    store.applyFrame(frame({ messageId: 240, nick: 'stale' }));
+    store.applyFrame(frame({ messageId: 60, nick: 'keeps' }));
+    store.applySync({
+      messageIds: [240, 250],
+      reactions: { 250: [{ nick: 'new', value: '🎉', self: false }] },
+    });
+    // Asked about and answered with nothing: removed while we were away.
+    expect(store.groupsFor(240)).toEqual([]);
+    expect(store.groupsFor(250).map((g) => g.value)).toEqual(['🎉']);
+    // Not asked about: untouched.
+    expect(store.groupsFor(60)).toHaveLength(1);
   });
 });

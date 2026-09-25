@@ -1293,6 +1293,10 @@ ensureColumn('messages', 'alt', 'INTEGER NOT NULL DEFAULT 0');
 // legitimately produce duplicates, and a constraint failure inside publish()
 // would drop the message. Partial index — untagged rows stay out of it.
 ensureColumn('messages', 'msgid', 'TEXT');
+
+// The reactor's hostmask, as the reaction arrived — so the activity feed can
+// apply a host-mask ignore added after the fact, as message rows do.
+ensureColumn('message_reactions', 'userhost', 'TEXT');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_msgid
          ON messages(network_id, msgid)
          WHERE msgid IS NOT NULL`);

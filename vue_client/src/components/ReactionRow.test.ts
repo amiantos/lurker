@@ -85,6 +85,22 @@ describe('ReactionRow', () => {
     expect(socketSend).not.toHaveBeenCalled();
   });
 
+  // A notice or an encrypted line can show reactions others sent, but the
+  // server won't let us send one there — so no dead buttons.
+  it('is read-only on a line we can’t react to', async () => {
+    useReactionsStore().noteFromEvents([{ id: 10, reactions: [r('alice', '👍')] }], NET);
+    useNetworksStore().states[NET] = {
+      networkId: NET,
+      channels: [],
+      state: 'connected',
+      canReact: true,
+    };
+    const wrapper = mount(ReactionRow, { props: { message, interactive: false } });
+    expect(wrapper.find('.chip.add').exists()).toBe(false);
+    await wrapper.find('.chip').trigger('click');
+    expect(socketSend).not.toHaveBeenCalled();
+  });
+
   it('opens the picker from the + chip', async () => {
     const wrapper = withReactions([r('alice', '👍')]);
     await wrapper.find('.chip.add').trigger('click');

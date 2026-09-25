@@ -33,6 +33,7 @@ import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
 import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
+import { evaluateIgnores } from '../../shared/ignoreMatch.js';
 import * as chanlistDb from '../db/chanlist.js';
 import type { PeerPresence, PeerState } from '../db/peerPresence.js';
 import {
@@ -296,9 +297,6 @@ const NON_PERSISTED_TYPES = new Set([
   // Incremental nicklist patch (host/account). Like 'names' it describes
   // current membership state, not history — a replayed one would be wrong.
   'member-update',
-  // A reaction changed. Its state lives in message_reactions (written by
-  // handleReaction), not as a history row of its own.
-  'reaction',
 ]);
 
 // Diagnostic: a single synchronous IRC-event handler (NAMES/WHO member-list
@@ -1695,6 +1693,12 @@ export class IrcConnection {
       const caps = (event?.capabilities as Record<string, unknown> | undefined) || {};
       for (const name of Object.keys(caps)) this.capsRefused.add(name);
     });
+
+    // Reacting needs message-tags and echo-message, and cap-notify can grant or
+    // withdraw either mid-session (irc-framework has already updated its
+    // enabled set when these fire). A no-op until the burst has ended.
+    on('cap ack', () => this.publishReactSupportIfChanged());
+    on('cap del', () => this.publishReactSupportIfChanged());
 
     on('sasl failed', (event: Record<string, unknown>) => {
       const reason = (event?.reason as string | undefined) || undefined;
@@ -3910,13 +3914,11 @@ export class IrcConnection {
     // Judged as the message it would have been, so the ignore's levels apply.
     if (!isSelf) {
       try {
-        const { fromIgnored } = decideStamp(
-          { type: 'message', nick, userhost, target, text: value, self: false },
-          highlightRulesService.getCompiled(this.network.user_id, this.network.id),
+        const verdict = evaluateIgnores(
           ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
-          isDmTargetName(target),
+          { nick, userhost, target, text: value, type: 'message', isDm: isDmTargetName(target) },
         );
-        if (fromIgnored) return;
+        if (verdict.hide) return;
       } catch (e) {
         console.warn('[reactions] ignore check failed:', (e as Error)?.message || e);
       }
@@ -3931,6 +3933,7 @@ export class IrcConnection {
           messageId: parent.id,
           networkId: this.network.id,
           nick,
+          userhost,
           value,
           self: isSelf,
           toSelf: parent.self,

@@ -17,6 +17,7 @@ import {
   addReaction,
   listReactionsToUser,
   reactionSendTarget,
+  reactionsForMessages,
   removeReaction,
 } from './reactions.js';
 import { refoldNetworkBuffers } from './refoldBuffers.js';
@@ -170,5 +171,55 @@ describe('listReactionsToUser', () => {
     });
     expect(listReactionsToUser(userId, { target: '#chat{dev}' }).map((r) => r.id)).toEqual([mine]);
     expect(listReactionsToUser(userId, { target: '#elsewhere' })).toEqual([]);
+  });
+});
+
+describe('reactionsForMessages', () => {
+  // A resumed client re-reads the reactions on lines it holds: every id it has
+  // gets its current list, and nothing from anyone else's account comes back.
+  it('returns what stands on the user’s lines, and nothing on another user’s', () => {
+    const a = line();
+    const b = line();
+    const bare = line();
+    react(a, 'bob', '👍');
+    react(a, 'carol', 'lol');
+    react(b, 'dave', '🎉');
+
+    const other = createNetwork(otherId, {
+      name: 'o',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'o',
+    })!;
+    const theirs = Number(
+      insertMessage({
+        networkId: other.id,
+        target: '#o',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'x',
+        text: 'theirs',
+        msgid: 'o1',
+      }).id,
+    );
+    addReaction({
+      messageId: theirs,
+      networkId: other.id,
+      nick: 'x',
+      value: '🙈',
+      self: false,
+      toSelf: false,
+      time: new Date().toISOString(),
+    });
+
+    const found = reactionsForMessages(userId, [a, b, bare, theirs]);
+    expect(found.get(a)).toEqual([
+      { nick: 'bob', value: '👍', self: false },
+      { nick: 'carol', value: 'lol', self: false },
+    ]);
+    expect(found.get(b)).toEqual([{ nick: 'dave', value: '🎉', self: false }]);
+    expect(found.has(bare)).toBe(false);
+    expect(found.has(theirs)).toBe(false);
   });
 });

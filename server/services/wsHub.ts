@@ -97,6 +97,7 @@ import {
 } from '../db/favoriteBuffers.js';
 import { setNicklistCollapsed } from '../db/nicklistCollapsed.js';
 import { addBookmark, removeBookmark } from '../db/bookmarks.js';
+import { MAX_REACTION_SYNC_IDS, reactionsForMessages } from '../db/reactions.js';
 import {
   getChannelNotifyAlways,
   setChannelNotifyAlways,
@@ -3695,6 +3696,21 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         if (!Number.isFinite(messageId) || messageId <= 0) break;
         if (typeof msg.value !== 'string') break;
         ircManager.react(userId, messageId, msg.value, msg.remove === true);
+        break;
+      }
+      case 'sync-reactions': {
+        // A resumed client re-reading the reactions on lines it already holds
+        // (reactions.ts reactionsForMessages says why). Answered to this socket
+        // only, with every id asked about — an id with none standing is how a
+        // removal made while it was away reaches it.
+        if (!Array.isArray(msg.messageIds)) break;
+        const ids = (msg.messageIds as unknown[])
+          .map(Number)
+          .filter((n) => Number.isInteger(n) && n > 0)
+          .slice(0, MAX_REACTION_SYNC_IDS);
+        if (ids.length === 0) break;
+        const found = reactionsForMessages(userId, ids);
+        send(ws, { kind: 'reactions-sync', messageIds: ids, reactions: Object.fromEntries(found) });
         break;
       }
       case 'set-bookmark': {
