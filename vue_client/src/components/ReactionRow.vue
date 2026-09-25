@@ -103,8 +103,11 @@ function onChipClick(value: string) {
   border-radius: 0;
   color: var(--fg-muted);
   font: inherit;
-  line-height: 1.4;
-  padding: 0 var(--space-3);
+  /* Real vertical padding rather than a tall line box: an emoji's glyph sits
+     low in the line, so with none its bottom met the chip's edge while its
+     top floated. */
+  line-height: 1.2;
+  padding: var(--space-2) var(--space-4);
   cursor: pointer;
 }
 .chip:hover:not(:disabled) {
