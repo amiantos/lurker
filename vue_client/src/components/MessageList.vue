@@ -2429,10 +2429,6 @@ watch(
   align-items: baseline;
   position: relative;
 }
-/* ReactionRow's add chip shows while its line is hovered. */
-.line:hover :deep(.chip.add) {
-  opacity: 1;
-}
 /* Alt-row striping is a standard-mode helper for telling adjacent same-type
    rows apart in a dense column. In compact mode, message groups already
    visually separate via the head/gap rhythm, so striping individual lines

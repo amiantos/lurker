@@ -74,7 +74,7 @@ export const useReactionsStore = defineStore('reactions', {
     token: 0,
     lastUrl: null as string | null,
     // The react picker (ReactModal), opened from a line's React action or the
-    // + chip on its reaction row.
+    // add chip on its reaction row.
     picker: {
       open: false,
       messageId: null as number | null,
