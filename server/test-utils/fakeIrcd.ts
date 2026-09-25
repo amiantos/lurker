@@ -70,6 +70,8 @@ export interface FakeIrcdOptions {
   whox?: boolean;
   // Follow a channel's 324 with its 329 (RPL_CREATIONTIME), as most ircds do.
   creationTime?: boolean;
+  // Extra ISUPPORT tokens for the 005 (e.g. `CLIENTTAGDENY=*`).
+  isupport?: string[];
 }
 
 export interface FakeClient {
@@ -248,6 +250,20 @@ export class FakeIrcd extends EventEmitter {
     if (c) this.raw(c, `PING :${token}`);
   }
 
+  // A TAGMSG from a synthetic peer, carrying `clientTags` as written (already
+  // escaped, `+`-prefixed), to every message-tags client on the target.
+  tagmsg(from: string, target: string, clientTags: string[]): string {
+    const msgid = `m${++this.msgidCounter}`;
+    const line = `:${from}!~${from}@peer.fake TAGMSG ${target}`;
+    const recipients = isChannelTarget(target)
+      ? this.members(target)
+      : [this.client(target)].filter((c): c is FakeClient => !!c);
+    for (const c of recipients) {
+      if (c.caps.has('message-tags')) this.tagged(c, line, msgid, clientTags);
+    }
+    return msgid;
+  }
+
   // Deliver a line from a synthetic peer to a nick or a channel.
   say(from: string, target: string, text: string): string {
     const msgid = `m${++this.msgidCounter}`;
@@ -363,12 +379,25 @@ export class FakeIrcd extends EventEmitter {
     );
   }
 
-  // Prefix a relayed line with tags the client negotiated.
-  private tagged(c: FakeClient, line: string, msgid?: string): void {
+  // Prefix a relayed line with tags the client negotiated. `clientTags` are the
+  // sender's `+`-prefixed tags, exactly as it wrote them (escaping included),
+  // relayed only to a client that negotiated message-tags — as a real server does.
+  private tagged(c: FakeClient, line: string, msgid?: string, clientTags: string[] = []): void {
     const tags: string[] = [];
     if (c.caps.has('server-time')) tags.push(`time=${new Date().toISOString()}`);
     if (c.caps.has('message-tags') && msgid) tags.push(`msgid=${msgid}`);
+    if (c.caps.has('message-tags')) tags.push(...clientTags);
     this.raw(c, tags.length ? `@${tags.join(';')} ${line}` : line);
+  }
+
+  // The client-only (`+`) tags on a line as sent, still escaped.
+  private static clientTagsOf(line: string): string[] {
+    if (!line.startsWith('@')) return [];
+    const end = line.indexOf(' ');
+    return line
+      .slice(1, end < 0 ? undefined : end)
+      .split(';')
+      .filter((t) => t.startsWith('+'));
   }
 
   private onLine(c: FakeClient, line: string): void {
@@ -456,6 +485,29 @@ export class FakeIrcd extends EventEmitter {
           if (!m) return this.num(c, '401', target, 'No such nick/channel');
           this.tagged(m, out, msgid);
           if (c.caps.has('echo-message')) this.tagged(c, out, msgid);
+        }
+        return;
+      }
+      // Client-tag-only messages (+typing, +draft/react, …). Only a client that
+      // negotiated message-tags may send one, and only such clients receive it.
+      case 'TAGMSG': {
+        if (!c.caps.has('message-tags')) return this.num(c, '421', 'TAGMSG', 'Unknown command');
+        const target = p[0] ?? '';
+        const msgid = `m${++this.msgidCounter}`;
+        const clientTags = FakeIrcd.clientTagsOf(line);
+        const out = `:${this.hostmask(c)} TAGMSG ${target}`;
+        const deliver = (m: FakeClient) => {
+          if (m.caps.has('message-tags')) this.tagged(m, out, msgid, clientTags);
+        };
+        if (isChannelTarget(target)) {
+          for (const m of this.members(target)) {
+            if (m !== c || c.caps.has('echo-message')) deliver(m);
+          }
+        } else {
+          const m = this.client(target);
+          if (!m) return this.num(c, '401', target, 'No such nick/channel');
+          deliver(m);
+          if (c.caps.has('echo-message')) deliver(c);
         }
         return;
       }
@@ -634,6 +686,7 @@ export class FakeIrcd extends EventEmitter {
       'PREFIX=(ov)@+',
       'MONITOR=100',
       ...(this.opts.whox ? ['WHOX'] : []),
+      ...(this.opts.isupport ?? []),
       'are supported by this server',
     );
     if (this.opts.burstNickTo) {

@@ -128,12 +128,19 @@ export const useReactionsStore = defineStore('reactions', {
     applyFrame(frame: ReactionFrame) {
       const id = Number(frame.messageId);
       if (!Number.isFinite(id)) return;
-      const list = (this.byMessage.get(id) ?? []).filter(
-        (r) => !(r.value === frame.value && sameNick(r.nick, frame.nick)),
-      );
-      if (!frame.remove) list.push({ nick: frame.nick, value: frame.value, self: frame.self });
-      if (list.length) this.byMessage.set(id, list);
-      else this.byMessage.delete(id);
+      const current = this.byMessage.get(id) ?? [];
+      const same = (r: MessageReaction) => r.value === frame.value && sameNick(r.nick, frame.nick);
+      if (frame.remove) {
+        const list = current.filter((r) => !same(r));
+        if (list.length) this.byMessage.set(id, list);
+        else this.byMessage.delete(id);
+      } else if (!current.some(same)) {
+        // Appended, so a group keeps its place and a new one goes last.
+        this.byMessage.set(id, [
+          ...current,
+          { nick: frame.nick, value: frame.value, self: frame.self },
+        ]);
+      }
 
       // The tab lists other people's reactions to our lines. A new one can't be
       // spliced in — the frame doesn't carry the line's text — so it waits for
