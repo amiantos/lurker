@@ -426,6 +426,21 @@ describe('sending reactions', () => {
     }
   });
 
+  // No message-tags, no TAGMSG — supportsTag() answers false for every tag.
+  it('is off when message-tags is withdrawn, even with echo-message still on', async () => {
+    const rig = await connect('capdel2', '#cd2');
+    try {
+      const support = () => rig.events.filter((e) => e.type === 'react-support');
+      expect(support().at(-1)).toMatchObject({ canReact: true });
+      ircd.sendRaw('capdel2', ':irc.fake CAP capdel2 DEL :message-tags');
+      await until(() => support().length === 2, 5000, 'react-support after DEL');
+      expect(support().at(-1)).toMatchObject({ canReact: false });
+      expect(rig.conn.echoActive()).toBe(true);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
   it('is off on a network whose CLIENTTAGDENY forbids the tags', async () => {
     const rig = await connect('deny1', '#d1', denyIrcd.port);
     try {

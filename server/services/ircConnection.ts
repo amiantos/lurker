@@ -8230,6 +8230,8 @@ export class IrcConnection {
     if (!this.echoActive()) return false;
     const net = this.client.network as unknown as { supportsTag?: (tag: string) => boolean };
     if (typeof net?.supportsTag !== 'function') return false;
+    // supportsTag() is false for every tag unless message-tags is negotiated,
+    // so this is also the message-tags gate (pinned by the cap-notify test).
     return (
       net.supportsTag('draft/react') &&
       net.supportsTag('draft/unreact') &&
