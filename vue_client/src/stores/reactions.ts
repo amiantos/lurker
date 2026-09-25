@@ -22,7 +22,7 @@ import type { MessageReaction } from '../../../shared/reactions.js';
 // feed's from:/in:/on: filter.
 const PAGE_SIZE = 50;
 
-// One group on a line's tail: a value, how many reacted with it, who, and
+// One chip on a line's reaction row: a value, how many reacted with it, who, and
 // whether we're among them.
 export interface ReactionGroup {
   value: string;
@@ -74,7 +74,7 @@ export const useReactionsStore = defineStore('reactions', {
     token: 0,
     lastUrl: null as string | null,
     // The react picker (ReactModal), opened from a line's React action or by
-    // tapping its tail on a touch screen.
+    // the + chip on its reaction row.
     picker: {
       open: false,
       messageId: null as number | null,
@@ -85,7 +85,7 @@ export const useReactionsStore = defineStore('reactions', {
   }),
   getters: {
     hasMore: (state) => state.nextBefore != null,
-    // The tail for one line: reactions grouped by value, first-reacted first.
+    // The chips for one line: reactions grouped by value, first-reacted first.
     groupsFor:
       (state) =>
       (messageId: number | string | null | undefined): ReactionGroup[] => {
@@ -158,7 +158,7 @@ export const useReactionsStore = defineStore('reactions', {
     },
 
     // React with `value` on a line, or take ours back if it's already there.
-    // Never optimistic: the server's echo is what lights the tail up.
+    // Never optimistic: the server's echo is what lights the chip up.
     toggle(messageId: number | string, value: string) {
       const id = Number(messageId);
       if (!Number.isFinite(id)) return false;
