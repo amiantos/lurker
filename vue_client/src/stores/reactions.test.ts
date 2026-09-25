@@ -54,8 +54,21 @@ describe('reactions store', () => {
       NET,
     );
     expect(store.groupsFor(10)).toEqual([
-      { value: '👍', nicks: ['bob', 'me'], mine: true },
-      { value: 'lol', nicks: ['carol'], mine: false },
+      {
+        value: '👍',
+        nicks: ['bob', 'me'],
+        reactors: [
+          { nick: 'bob', value: '👍', self: false },
+          { nick: 'me', value: '👍', self: true },
+        ],
+        mine: true,
+      },
+      {
+        value: 'lol',
+        nicks: ['carol'],
+        reactors: [{ nick: 'carol', value: 'lol', self: false }],
+        mine: false,
+      },
     ]);
     expect(store.groupsFor(11)).toEqual([]);
   });
@@ -91,7 +104,9 @@ describe('reactions store', () => {
     store.applyFrame(frame({ nick: 'carol' }));
     // A repeat doesn't double up.
     store.applyFrame(frame({ nick: 'bob' }));
-    expect(store.groupsFor(10)).toEqual([{ value: '👍', nicks: ['bob', 'carol'], mine: false }]);
+    expect(store.groupsFor(10).map((g) => [g.value, g.nicks, g.mine])).toEqual([
+      ['👍', ['bob', 'carol'], false],
+    ]);
     store.applyFrame(frame({ nick: 'BOB', remove: true }));
     store.applyFrame(frame({ nick: 'carol', remove: true }));
     expect(store.groupsFor(10)).toEqual([]);

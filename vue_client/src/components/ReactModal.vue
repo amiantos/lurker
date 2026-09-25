@@ -4,8 +4,8 @@
 -->
 
 <!--
-  The react picker. Shows what's already on the line and who put it there (the
-  only place a touch screen can see that), a row of quick reactions, and a
+  The react picker. Shows what's already on the line and everyone who put it
+  there (the line itself names three per reaction), a row of quick reactions, and a
   field for anything else: an emoji, a :shortcode:, or plain text like "lol",
   which the spec allows and IRC people actually use. Every choice toggles —
   picking a reaction you already gave takes it back.

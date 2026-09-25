@@ -4,48 +4,63 @@
 -->
 
 <!--
-  A line's reactions as a row of chips under its text, Slack-style: one chip
-  per value with its count, ours lit in the accent. Clicking or tapping a chip
-  adds our reaction or takes it back; hovering names who reacted. The trailing
-  `+` opens the picker, which is also where a touch screen sees who gave what.
-  Renders nothing when no reactions stand on the line, so an ordinary line
-  keeps its height.
--->
+  A line's reactions as one muted line of text under it, in the same register
+  as the -->/<-- event lines: ↳ 👍 alice, carol · 🎉 dave · 👀 5 Names, nick-coloured (ours in the
+self colour), because on IRC who reacted is the point; past NAME_LIMIT a group collapses to its
+count and the names move to the tooltip (and to the picker, via the line's React action). Clicking a
+reaction adds ours or takes it back. Renders nothing when no reactions stand on the line, so an
+ordinary line keeps its height. -->
 
 <template>
-  <div v-if="groups.length" class="reaction-row">
-    <button
+  <div v-if="groups.length" class="reaction-line">
+    <span class="lead" aria-hidden="true">↳</span>
+    <span
       v-for="g in groups"
       :key="g.value"
-      type="button"
-      class="chip"
-      :class="{ mine: g.mine }"
-      :disabled="!canReact"
+      class="group"
       :title="`${g.nicks.join(', ')} reacted ${g.value}`"
-      :aria-label="`${g.value}, ${g.nicks.length} (${g.nicks.join(', ')})`"
-      :aria-pressed="g.mine"
-      @click.stop="onChipClick(g.value)"
-      @contextmenu.stop
     >
-      <span class="value">{{ g.value }}</span
-      ><span class="count">{{ g.nicks.length }}</span>
-    </button>
-    <button
-      type="button"
-      class="chip add"
-      title="React / see who reacted"
-      aria-label="React / see who reacted"
-      @click.stop="reactions.openPicker(message)"
-    >
-      <i class="fa-regular fa-face-smile"></i>
-    </button>
+      <button
+        type="button"
+        class="value"
+        :class="{ mine: g.mine }"
+        :disabled="!canReact"
+        :aria-pressed="g.mine"
+        :aria-label="`${g.value} — ${g.nicks.join(', ')}`"
+        @click.stop="onValueClick(g.value)"
+        @contextmenu.stop
+        v-text="g.value"
+      ></button>
+      <span
+        v-if="g.reactors.length > NAME_LIMIT"
+        class="count"
+        :style="g.mine ? selfStyle : null"
+        v-text="g.reactors.length"
+      ></span>
+      <span v-else class="names">
+        <span
+          v-for="r in g.reactors"
+          :key="r.nick"
+          class="nick"
+          :style="nickStyle(r)"
+          v-text="r.nick"
+        ></span>
+      </span>
+    </span>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, watch } from 'vue';
+import type { CSSProperties } from 'vue';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useSettingsStore } from '../stores/settings.js';
+import { useNickColors } from '../composables/useNickColors.js';
+import type { MessageReaction } from '../../../shared/reactions.js';
+
+// Past this many people a group shows its count instead of their names.
+const NAME_LIMIT = 3;
 
 const props = defineProps<{
   message: {
@@ -60,80 +75,86 @@ const emit = defineEmits<{ measured: [] }>();
 
 const reactions = useReactionsStore();
 const networks = useNetworksStore();
+const settings = useSettingsStore();
+const nicks = useNickColors();
 
 const groups = computed(() => reactions.groupsFor(props.message.id));
-
-// A reaction landing live can add the row, or wrap it onto another line — the
-// line grows under a reader following the live tail. Same contract as
-// MessageBody's `measured`: say so once the DOM has it, and the list re-pins.
-// Only on change; a line that arrives with its reactions is measured with them.
-watch(
-  () => groups.value.map((g) => `${g.value}:${g.nicks.length}`).join('|'),
-  async () => {
-    await nextTick();
-    emit('measured');
-  },
-);
 const canReact = computed(() => {
   const state = networks.states[props.message.networkId];
   return state?.state === 'connected' && !!state.canReact;
 });
 
-function onChipClick(value: string) {
+const selfStyle = computed((): CSSProperties | null => {
+  const c = settings.effective('look.nick.self_color') as string | undefined;
+  return c ? { color: c } : null;
+});
+
+function nickStyle(r: MessageReaction): CSSProperties | null {
+  if (r.self) return selfStyle.value;
+  const c = nicks.color(r.nick);
+  return c ? { color: c } : null;
+}
+
+// A reaction landing live can add the line, or wrap it onto another — the row
+// grows under a reader following the live tail. Same contract as MessageBody's
+// `measured`: say so once the DOM has it, and the list re-pins. Only on change;
+// a row that arrives with its reactions is measured with them.
+watch(
+  () => groups.value.map((g) => `${g.value}:${g.nicks.join(',')}`).join('|'),
+  async () => {
+    await nextTick();
+    emit('measured');
+  },
+);
+
+function onValueClick(value: string) {
   if (!canReact.value || props.message.id == null) return;
   reactions.toggle(props.message.id, value);
 }
 </script>
 
 <style scoped>
-.reaction-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+/* Separators are CSS, not text nodes, so no formatter reflow can add or drop
+   a space between the pieces. */
+.reaction-line {
+  color: var(--fg-muted);
   white-space: normal;
 }
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  background: var(--bg-soft);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  color: var(--fg-muted);
+.lead {
+  margin-right: 0.5ch;
+}
+.group {
+  white-space: nowrap;
+}
+.group + .group::before {
+  content: '·';
+  margin: 0 1ch;
+}
+.value {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-right: 0.5ch;
   font: inherit;
-  line-height: 1.4;
-  padding: 0 var(--space-4);
+  color: inherit;
   cursor: pointer;
 }
-.chip:hover:not(:disabled) {
-  border-color: var(--fg-muted);
-  color: var(--fg);
-}
-.chip:disabled {
+.value:disabled {
   cursor: default;
 }
-.chip.mine {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, var(--bg-soft));
+.value:hover:not(:disabled) {
+  text-decoration: underline;
+}
+/* Ours: a text reaction ("lol") reads in the accent; an emoji is its own
+   colour, so the underline is what marks it. */
+.value.mine {
   color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 0.2em;
 }
-/* The add chip only shows on hover (or always, on touch), so a settled row
-   reads as the reactions alone. The line-hover reveal lives in MessageList,
-   which owns `.line` — ⚠ NOT here as `:global(.line:hover) .chip.add`. A
-   `:hover` nested inside a pseudo-function sends postcss-hover-media-feature
-   (postcss.config.js) into an endless loop: `vite` and `vite build` sit at
-   100% CPU with no error. */
-.chip.add {
-  opacity: 0;
-  transition: opacity 0.1s;
-}
-.chip.add:focus-visible {
-  opacity: 1;
-}
-@media (hover: none) {
-  .chip.add {
-    opacity: 1;
-  }
+.nick + .nick::before {
+  content: ', ';
+  color: var(--fg-muted);
 }
 </style>

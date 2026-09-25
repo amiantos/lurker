@@ -22,11 +22,14 @@ import type { MessageReaction } from '../../../shared/reactions.js';
 // feed's from:/in:/on: filter.
 const PAGE_SIZE = 50;
 
-// One chip on a line's reaction row: a value, how many reacted with it, who, and
+// One group on a line's reaction line: a value, how many reacted with it, who, and
 // whether we're among them.
 export interface ReactionGroup {
   value: string;
   nicks: string[];
+  // The same people as `nicks`, with which of them is us — the reaction line
+  // colours our own name with the self colour.
+  reactors: MessageReaction[];
   mine: boolean;
 }
 
@@ -73,8 +76,7 @@ export const useReactionsStore = defineStore('reactions', {
     error: '',
     token: 0,
     lastUrl: null as string | null,
-    // The react picker (ReactModal), opened from a line's React action or by
-    // the + chip on its reaction row.
+    // The react picker (ReactModal), opened from a line's React action.
     picker: {
       open: false,
       messageId: null as number | null,
@@ -85,7 +87,7 @@ export const useReactionsStore = defineStore('reactions', {
   }),
   getters: {
     hasMore: (state) => state.nextBefore != null,
-    // The chips for one line: reactions grouped by value, first-reacted first.
+    // The groups for one line: reactions grouped by value, first-reacted first.
     groupsFor:
       (state) =>
       (messageId: number | string | null | undefined): ReactionGroup[] => {
@@ -96,10 +98,11 @@ export const useReactionsStore = defineStore('reactions', {
         for (const r of list) {
           let g = groups.find((x) => x.value === r.value);
           if (!g) {
-            g = { value: r.value, nicks: [], mine: false };
+            g = { value: r.value, nicks: [], reactors: [], mine: false };
             groups.push(g);
           }
           g.nicks.push(r.nick);
+          g.reactors.push(r);
           if (r.self) g.mine = true;
         }
         return groups;
@@ -158,7 +161,7 @@ export const useReactionsStore = defineStore('reactions', {
     },
 
     // React with `value` on a line, or take ours back if it's already there.
-    // Never optimistic: the server's echo is what lights the chip up.
+    // Never optimistic: the server's echo is what lights the reaction up.
     toggle(messageId: number | string, value: string) {
       const id = Number(messageId);
       if (!Number.isFinite(id)) return false;
