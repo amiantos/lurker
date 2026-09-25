@@ -119,12 +119,15 @@ function onChipClick(value: string) {
   color: var(--accent);
 }
 /* The add chip only shows on hover (or always, on touch), so a settled row
-   reads as the reactions alone. */
+   reads as the reactions alone. The line-hover reveal lives in MessageList,
+   which owns `.line` — ⚠ NOT here as `:global(.line:hover) .chip.add`. A
+   `:hover` nested inside a pseudo-function sends postcss-hover-media-feature
+   (postcss.config.js) into an endless loop: `vite` and `vite build` sit at
+   100% CPU with no error. */
 .chip.add {
   opacity: 0;
   transition: opacity 0.1s;
 }
-:global(.line:hover) .chip.add,
 .chip.add:focus-visible {
   opacity: 1;
 }
