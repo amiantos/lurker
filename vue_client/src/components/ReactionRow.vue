@@ -92,7 +92,9 @@ function onChipClick(value: string) {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  margin-top: var(--space-2);
+  /* Room below as well as above: a highlighted line's background ends at the
+     line's edge, and chips flush against it looked cut off. */
+  margin: var(--space-2) 0;
   white-space: normal;
 }
 .chip {
