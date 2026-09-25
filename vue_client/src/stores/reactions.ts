@@ -22,14 +22,11 @@ import type { MessageReaction } from '../../../shared/reactions.js';
 // feed's from:/in:/on: filter.
 const PAGE_SIZE = 50;
 
-// One group on a line's reaction line: a value, how many reacted with it, who, and
+// One chip on a line's reaction row: a value, how many reacted with it, who, and
 // whether we're among them.
 export interface ReactionGroup {
   value: string;
   nicks: string[];
-  // The same people as `nicks`, with which of them is us — the reaction line
-  // colours our own name with the self colour.
-  reactors: MessageReaction[];
   mine: boolean;
 }
 
@@ -76,7 +73,8 @@ export const useReactionsStore = defineStore('reactions', {
     error: '',
     token: 0,
     lastUrl: null as string | null,
-    // The react picker (ReactModal), opened from a line's React action.
+    // The react picker (ReactModal), opened from a line's React action or the
+    // + chip on its reaction row.
     picker: {
       open: false,
       messageId: null as number | null,
@@ -98,11 +96,10 @@ export const useReactionsStore = defineStore('reactions', {
         for (const r of list) {
           let g = groups.find((x) => x.value === r.value);
           if (!g) {
-            g = { value: r.value, nicks: [], reactors: [], mine: false };
+            g = { value: r.value, nicks: [], mine: false };
             groups.push(g);
           }
           g.nicks.push(r.nick);
-          g.reactors.push(r);
           if (r.self) g.mine = true;
         }
         return groups;

@@ -3,8 +3,9 @@
 
 // @vitest-environment happy-dom
 
-// The reaction line under a message: names while they fit, a count past three,
-// ours marked, and a click that toggles only when the network can carry it.
+// The chip row under a message: a chip per value with its count, ours marked,
+// a click that toggles only when the network can carry it, and a + chip that
+// opens the picker.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
@@ -44,30 +45,22 @@ describe('ReactionRow', () => {
 
   it('renders nothing on a line nobody reacted to', () => {
     const wrapper = withReactions([]);
-    expect(wrapper.find('.reaction-line').exists()).toBe(false);
+    expect(wrapper.find('.reaction-row').exists()).toBe(false);
   });
 
-  it('names up to three people per reaction, then shows a count', () => {
-    const wrapper = withReactions([
-      r('alice', '👍'),
-      r('carol', '👍'),
-      r('d1', '👀'),
-      r('d2', '👀'),
-      r('d3', '👀'),
-      r('d4', '👀'),
+  it('shows a chip per value with its count, first-reacted first, names in the tooltip', () => {
+    const wrapper = withReactions([r('alice', '👍'), r('carol', '👍'), r('dave', '🎉')]);
+    const chips = wrapper.findAll('.chip:not(.add)');
+    expect(chips.map((c) => [c.find('.value').text(), c.find('.count').text()])).toEqual([
+      ['👍', '2'],
+      ['🎉', '1'],
     ]);
-    const groups = wrapper.findAll('.group');
-    expect(groups.map((g) => g.find('.value').text())).toEqual(['👍', '👀']);
-    expect(groups[0].findAll('.nick').map((n) => n.text())).toEqual(['alice', 'carol']);
-    expect(groups[1].find('.nick').exists()).toBe(false);
-    expect(groups[1].find('.count').text()).toBe('4');
-    // Everyone is still in the tooltip.
-    expect(groups[1].attributes('title')).toBe('d1, d2, d3, d4 reacted 👀');
+    expect(chips[0].attributes('title')).toBe('alice, carol reacted 👍');
   });
 
   it('marks a reaction that is ours, and toggles it on click', async () => {
     const wrapper = withReactions([r('alice', 'lol'), r('me', 'lol', true), r('bob', '🎉')]);
-    const [lol, party] = wrapper.findAll('.value');
+    const [lol, party] = wrapper.findAll('.chip:not(.add)');
     expect(lol.classes()).toContain('mine');
     expect(party.classes()).not.toContain('mine');
     await lol.trigger('click');
@@ -88,7 +81,13 @@ describe('ReactionRow', () => {
 
   it('sends nothing while the network is down', async () => {
     const wrapper = withReactions([r('alice', '👍')], false);
-    await wrapper.find('.value').trigger('click');
+    await wrapper.find('.chip:not(.add)').trigger('click');
     expect(socketSend).not.toHaveBeenCalled();
+  });
+
+  it('opens the picker from the + chip', async () => {
+    const wrapper = withReactions([r('alice', '👍')]);
+    await wrapper.find('.chip.add').trigger('click');
+    expect(useReactionsStore().picker).toMatchObject({ open: true, messageId: 10, networkId: NET });
   });
 });

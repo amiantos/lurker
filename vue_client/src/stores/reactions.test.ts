@@ -54,21 +54,8 @@ describe('reactions store', () => {
       NET,
     );
     expect(store.groupsFor(10)).toEqual([
-      {
-        value: '👍',
-        nicks: ['bob', 'me'],
-        reactors: [
-          { nick: 'bob', value: '👍', self: false },
-          { nick: 'me', value: '👍', self: true },
-        ],
-        mine: true,
-      },
-      {
-        value: 'lol',
-        nicks: ['carol'],
-        reactors: [{ nick: 'carol', value: 'lol', self: false }],
-        mine: false,
-      },
+      { value: '👍', nicks: ['bob', 'me'], mine: true },
+      { value: 'lol', nicks: ['carol'], mine: false },
     ]);
     expect(store.groupsFor(11)).toEqual([]);
   });

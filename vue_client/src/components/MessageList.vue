@@ -745,7 +745,7 @@ const actionContext: MessageContext = {
 
 // Lines that can carry reactions: the chat lines a reaction can reply to, on a
 // network (the system buffer's ids are their own sequence — see
-// reactions.noteFromEvents). Cheap enough to run per rendered row; the reaction line
+// reactions.noteFromEvents). Cheap enough to run per rendered row; the chip row
 // itself renders nothing when no reactions stand on the line.
 function reactable(m: ChatMessage): boolean {
   return (
@@ -2428,6 +2428,10 @@ watch(
   grid-template-columns: subgrid;
   align-items: baseline;
   position: relative;
+}
+/* ReactionRow's add chip shows while its line is hovered. */
+.line:hover :deep(.chip.add) {
+  opacity: 1;
 }
 /* Alt-row striping is a standard-mode helper for telling adjacent same-type
    rows apart in a dense column. In compact mode, message groups already
