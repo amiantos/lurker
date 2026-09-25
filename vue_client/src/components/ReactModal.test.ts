@@ -4,7 +4,8 @@
 // @vitest-environment happy-dom
 
 // The react picker's free field: emoji suggestions for any word typed, colons
-// optional, while Enter still sends the text as typed.
+// optional, shown in the quick row's place (one row, never more than the quick
+// picks), while Enter still sends the text as typed.
 
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
@@ -41,8 +42,9 @@ async function type(wrapper: ReturnType<typeof open>, text: string) {
   await nextTick();
 }
 
-const suggested = (wrapper: ReturnType<typeof open>) =>
-  wrapper.findAll('.suggestions .quick-btn').map((b) => b.text());
+const row = (wrapper: ReturnType<typeof open>) =>
+  wrapper.findAll('.quick .quick-btn').map((b) => b.text());
+const QUICK = ['👍', '❤️', '😂', '🎉', '😮', '😢', '👀', '🙏'];
 
 describe('ReactModal', () => {
   beforeAll(async () => {
@@ -53,15 +55,31 @@ describe('ReactModal', () => {
     vi.mocked(socketSend).mockClear();
   });
 
-  it('suggests emoji for a bare word, and for a :shortcode alike', async () => {
+  it('swaps the quick row for matches — a bare word or a :shortcode alike', async () => {
     const wrapper = open();
+    expect(row(wrapper)).toEqual(QUICK);
     await type(wrapper, 'skul');
-    expect(suggested(wrapper)).toContain('💀');
+    expect(row(wrapper)).toContain('💀');
+    expect(row(wrapper)).not.toContain('👍');
     await type(wrapper, ':skul');
-    expect(suggested(wrapper)).toContain('💀');
-    // One character is too little to search on.
+    expect(row(wrapper)).toContain('💀');
+    // One character is too little to search on: the quick picks come back.
     await type(wrapper, 's');
-    expect(suggested(wrapper)).toEqual([]);
+    expect(row(wrapper)).toEqual(QUICK);
+    // Nothing below the field, ever.
+    expect(wrapper.find('.suggestions').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('never shows more matches than the quick row holds', async () => {
+    const wrapper = open();
+    // `face` matches dozens.
+    await type(wrapper, 'face');
+    expect(row(wrapper).length).toBe(QUICK.length);
+    // One button per glyph, even where aliases share one (`bee` / `honeybee`).
+    await type(wrapper, 'bee');
+    expect(row(wrapper).filter((e) => e === '🐝')).toHaveLength(1);
+    expect(new Set(row(wrapper)).size).toBe(row(wrapper).length);
     wrapper.unmount();
   });
 
@@ -81,7 +99,7 @@ describe('ReactModal', () => {
   it('sends a picked suggestion', async () => {
     const wrapper = open();
     await type(wrapper, 'skul');
-    const skull = wrapper.findAll('.suggestions .quick-btn').find((b) => b.text() === '💀')!;
+    const skull = wrapper.findAll('.quick .quick-btn').find((b) => b.text() === '💀')!;
     await skull.trigger('click');
     expect(socketSend).toHaveBeenLastCalledWith({
       type: 'react',

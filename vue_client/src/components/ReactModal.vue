@@ -33,17 +33,19 @@
         </ul>
 
         <template v-if="canReact">
+          <!-- The quick picks, or — once the field has a search — its matches in
+               their place: one row either way, so the modal never resizes. -->
           <div class="quick">
             <button
-              v-for="q in QUICK"
-              :key="q"
+              v-for="item in rowItems"
+              :key="item.value"
               type="button"
               class="quick-btn"
-              :class="{ mine: mineValues.has(q) }"
-              :title="mineValues.has(q) ? `Take back ${q}` : `React ${q}`"
-              @click="choose(q)"
+              :class="{ mine: mineValues.has(item.value) }"
+              :title="mineValues.has(item.value) ? `Take back ${item.value}` : item.title"
+              @click="choose(item.value)"
             >
-              {{ q }}
+              {{ item.value }}
             </button>
           </div>
 
@@ -58,18 +60,6 @@
             autocomplete="off"
             spellcheck="false"
           />
-          <div v-if="suggestions.length" class="suggestions">
-            <button
-              v-for="s in suggestions"
-              :key="s.name"
-              type="button"
-              class="quick-btn"
-              :title="`:${s.name}:`"
-              @click="choose(s.emoji)"
-            >
-              {{ s.emoji }}
-            </button>
-          </div>
           <p v-if="tooLong" class="error inline">That's longer than a reaction can be.</p>
         </template>
         <p v-else class="meta">This network can't carry reactions right now.</p>
@@ -128,8 +118,23 @@ const tooLong = computed(() => !!typedValue.value && !isValidReactionValue(typed
 const suggestions = computed(() => {
   if (!emojiFn()) return [];
   const m = typed.value.trim().match(/^:?([\w+-]{2,}):?$/);
-  return m ? searchEmojiSync(m[1], 16) : [];
+  if (!m) return [];
+  // Aliases share a glyph (`:+1:` / `:thumbsup:`): one button per emoji, and
+  // search a little past the cap so dropping them doesn't leave the row short.
+  const seen = new Set<string>();
+  return searchEmojiSync(m[1], QUICK.length * 3)
+    .filter((s) => !seen.has(s.emoji) && !!seen.add(s.emoji))
+    .slice(0, QUICK.length);
 });
+
+// What the one row shows: matches while there are any, the quick picks
+// otherwise. Capped at QUICK's length so a search never outgrows the row the
+// quick picks already fit on.
+const rowItems = computed(() =>
+  suggestions.value.length
+    ? suggestions.value.map((s) => ({ value: s.emoji, title: `:${s.name}:` }))
+    : QUICK.map((q) => ({ value: q, title: `React ${q}` })),
+);
 
 function choose(value: string) {
   if (picker.value.messageId == null || !isValidReactionValue(value)) return;
@@ -198,10 +203,12 @@ onMounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.quick,
-.suggestions {
+.quick {
   display: flex;
-  flex-wrap: wrap;
+  /* One line, always: a narrow phone clips the last pick rather than wrapping
+     and resizing the modal under the user's thumb. */
+  flex-wrap: nowrap;
+  overflow: hidden;
   gap: var(--space-2);
 }
 .quick-btn {
