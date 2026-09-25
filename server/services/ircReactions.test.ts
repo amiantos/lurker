@@ -246,6 +246,28 @@ describe('receiving reactions', () => {
     }
   });
 
+  // An ignore added AFTER someone reacted blocks their new reactions, never
+  // their unreact — or the old one could never come off.
+  it('still takes an unreact from someone ignored after they reacted', async () => {
+    const rig = await connect('recv7', '#r7');
+    try {
+      const msgid = await peerSays(rig, 'bob', '#r7', 'hello');
+      ircd.tagmsg('trent', '#r7', [`+draft/reply=${msgid}`, '+draft/react=👍']);
+      await until(() => reactionFrames(rig).length === 1, 5000, 'trent reacted');
+      const added = ignoreRulesService.add(userId, rig.network.id, maskToRuleInput('trent!*@*')!);
+      expect(added.ok).toBe(true);
+      ircd.tagmsg('trent', '#r7', [`+draft/reply=${msgid}`, '+draft/unreact=👍']);
+      await until(() => reactionFrames(rig).length === 2, 5000, 'trent unreacted');
+      expect(rowByMsgid(rig, '#r7', msgid).reactions).toBeUndefined();
+      // …while a NEW reaction from them is still refused.
+      ircd.tagmsg('trent', '#r7', [`+draft/reply=${msgid}`, '+draft/react=🎉']);
+      await barrier(rig, 'erin', '#r7', msgid);
+      expect(rowByMsgid(rig, '#r7', msgid).reactions?.map((r) => r.nick)).toEqual(['erin']);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
   it('routes a DM reaction to the sender’s buffer', async () => {
     const rig = await connect('recv5');
     try {

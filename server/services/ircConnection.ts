@@ -3910,9 +3910,12 @@ export class IrcConnection {
     const parent = findReactionParent(this.network.id, bufferId, parentMsgid);
     if (!parent) return;
     const userhost = buildUserhost(event);
+    const remove = unreact !== undefined;
     // Someone the user has ignored doesn't get to annotate their lines either.
     // Judged as the message it would have been, so the ignore's levels apply.
-    if (!isSelf) {
+    // New reactions only: an unreact always goes through, or a reaction given
+    // before the ignore was added could never be taken off again.
+    if (!isSelf && !remove) {
       try {
         const verdict = evaluateIgnores(
           ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
@@ -3926,7 +3929,6 @@ export class IrcConnection {
     const time = normalizeEventTime(
       (event.time as number | undefined) ?? this.lineArrivedAt?.getTime(),
     );
-    const remove = unreact !== undefined;
     const changed = remove
       ? removeReaction(parent.id, nick, value, isSelf)
       : addReaction({
