@@ -159,7 +159,7 @@ export function useMessageActions(): MessageActionsAPI {
     ) {
       const state = networks.states[reactNetworkId];
       if (state?.state === 'connected' && state.canReact) {
-        actions.push({ key: 'react', label: 'React', icon: 'fa-regular fa-face-smile' });
+        actions.push({ key: 'react', label: 'React', icon: 'fa-solid fa-heart-circle-plus' });
       }
     }
 
