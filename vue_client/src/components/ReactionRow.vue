@@ -4,10 +4,10 @@
 -->
 
 <!--
-  A line's reactions as a row of chips under its text: one chip per value with
-  its count, drawn like Lurker's own buttons (square, outlined, no fill), ours
-  with the accent border. Clicking or tapping a chip
-  adds our reaction or takes it back; hovering names who reacted. The trailing
+  A line's reactions as a row of chips under its text, one per value with its
+  count. Square and borderless on the soft background; ours tinted in the
+  accent. Clicking or tapping a chip adds our reaction or takes it back;
+  hovering names who reacted. The trailing
   `+` opens the picker, which is also where a touch screen sees who gave what.
   Renders nothing when no reactions stand on the line, so an ordinary line
   keeps its height.
@@ -98,8 +98,8 @@ function onChipClick(value: string) {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  background: none;
-  border: 1px solid var(--border);
+  background: var(--bg-soft);
+  border: none;
   border-radius: 0;
   color: var(--fg-muted);
   font: inherit;
@@ -108,7 +108,7 @@ function onChipClick(value: string) {
   cursor: pointer;
 }
 .chip:hover:not(:disabled) {
-  border-color: var(--accent);
+  background: color-mix(in srgb, var(--fg) 8%, var(--bg-soft));
   color: var(--fg);
 }
 /* Offline, the reactions still read normally — just not clickable. (The
@@ -118,14 +118,13 @@ function onChipClick(value: string) {
   color: var(--fg-muted);
   cursor: default;
 }
-/* Ours: the always-on accent border, as .btn-primary marks the emphasized
-   action — accent for emphasis, never a fill. */
+/* Ours: an accent tint and accent text. */
 .chip.mine {
-  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
 }
 .chip.mine:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 /* The add chip only shows on hover (or always, on touch), so a settled row
    reads as the reactions alone. The line-hover reveal lives in MessageList,
