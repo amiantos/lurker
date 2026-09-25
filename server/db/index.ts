@@ -621,6 +621,34 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_bookmarks_user_msg
       ON user_bookmarks(user_id, message_id DESC);
 
+    -- IRCv3 reactions (+draft/react / +draft/unreact, keyed to their parent by
+    -- +reply). One row per (message, reactor, value) currently standing: a
+    -- react inserts, an unreact deletes, so the table holds state, not a log.
+    -- The message_id FK cascades, so retention and buffer/network deletes take a
+    -- line's reactions with it. A reaction whose parent we never stored is
+    -- dropped at receive time rather than parked — there's nothing to hang it on.
+    -- nick is as sent; nick_folded (ASCII lowercase) is the identity an unreact
+    -- matches on. self = we sent it (learned from the echo, never on send);
+    -- to_self = the parent is one of our own lines, which is what the reactions
+    -- feed lists — denormalised so that feed is an index range, not a join scan.
+    CREATE TABLE IF NOT EXISTS message_reactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      nick TEXT NOT NULL,
+      nick_folded TEXT NOT NULL,
+      value TEXT NOT NULL,
+      self INTEGER NOT NULL DEFAULT 0,
+      to_self INTEGER NOT NULL DEFAULT 0,
+      time TEXT NOT NULL,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reactions_key
+      ON message_reactions(message_id, nick_folded, value);
+    CREATE INDEX IF NOT EXISTS idx_message_reactions_to_self
+      ON message_reactions(network_id, id) WHERE to_self = 1 AND self = 0;
+
     -- Saved theme presets: per-user snapshots of the \`themed\` settings-registry
     -- keys (shared/settingsRegistry.ts), stored as one JSON object per theme.
     -- The built-in Dark/Light themes are code (shared/themePresets.ts), never

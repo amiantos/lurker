@@ -179,6 +179,8 @@ import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/setting
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
 import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore } from '../stores/buffers.js';
+import { useReactionsStore } from '../stores/reactions.js';
+import { MAX_REACTION_GRAPHEMES, isValidReactionValue } from '../../../shared/reactions.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
@@ -217,6 +219,7 @@ import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import { ensureChannelPrefix } from '../utils/channelTarget.js';
 import {
+  emojiGlyph,
   findActiveShortcode,
   findCompletedShortcode,
   loadEmoji,
@@ -250,6 +253,7 @@ import { isImeKey } from '../composables/useImeSafeInput.js';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const reactions = useReactionsStore();
 const recentBuffers = useRecentBuffersStore();
 const auth = useAuthStore();
 const inputHistory = useInputHistoryStore();
@@ -2436,6 +2440,7 @@ function formatHighlightEntry(entry: HighlightRule, idx: number, global = false)
 const COMMANDS_LINES = [
   'commands:',
   '  /me <text>             — emote in the current buffer',
+  '  /react <emoji|text>    — react to the last line someone else said here',
   '  /slap <nick>           — slap someone around a bit with a large trout',
   '  /shrug [text]          — say your text followed by ¯\\_(ツ)_/¯',
   '  /msg <nick> <text>     — open a DM and send (alias: /query)',
@@ -2599,6 +2604,47 @@ function randomRoomId(): string {
 // Best-effort send for control commands (/join, /raw, /away, ...). Returns
 // false if the socket isn't open — so the caller can keep the typed text in
 // the input rather than silently swallowing it.
+// /react <emoji|:shortcode:|text> — react to the most recent line someone else
+// said in this buffer (the picker on a line's React action reaches any other).
+// Only lines the server gave a msgid can be reacted to; an encrypted one can't.
+function runReact(argLine: string, networkId: number, target: string, line: string): boolean {
+  const raw = argLine.trim();
+  if (!raw) {
+    localInfo(networkId, target, 'usage: /react <emoji|text> — e.g. /react 👍 or /react :tada:');
+    return true;
+  }
+  const shortcode = raw.match(/^:([\w+-]+):?$/);
+  const value = (shortcode && emojiGlyph(shortcode[1])) || raw;
+  if (!isValidReactionValue(value)) {
+    localInfo(networkId, target, `a reaction can be at most ${MAX_REACTION_GRAPHEMES} characters`);
+    return true;
+  }
+  const state = networks.states[networkId];
+  if (state?.state !== 'connected' || !state.canReact) {
+    localInfo(networkId, target, "this network can't carry reactions right now");
+    return true;
+  }
+  const messages = buffers.findByTarget(networkId, target)?.messages ?? [];
+  let parent: (typeof messages)[number] | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.id == null || m.self || m.e2e || !m.msgid) continue;
+    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
+    parent = m;
+    break;
+  }
+  if (!parent) {
+    localInfo(networkId, target, 'nothing here to react to');
+    return true;
+  }
+  const mine = reactions.groupsFor(parent.id).some((g) => g.mine && g.value === value);
+  if (mine) {
+    localInfo(networkId, target, `you already reacted ${value} to ${parent.nick ?? 'that'}`);
+    return true;
+  }
+  return sendOrToast({ type: 'react', messageId: Number(parent.id), value, remove: false }, line);
+}
+
 function sendOrToast(payload: Record<string, unknown>, body: string): boolean {
   const ok = socketSend(payload);
   if (!ok) toastSendFailure('disconnected', body);
@@ -3402,6 +3448,8 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // Mark/unmark/list relay bots on this network (#277). Network-scoped: a
       // relay mark is per-(network, nick), so it needs an active network.
       return runRelay(argLine, networkId, target);
+    case 'react':
+      return runReact(argLine, networkId, target, line);
     case 'me':
       return ackedSend({ type: 'action', networkId, target, text: chatBody(argLine) }, argLine, {
         networkId,

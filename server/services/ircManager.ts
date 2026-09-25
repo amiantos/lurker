@@ -52,6 +52,7 @@ import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { e2eDbg } from './e2e/debug.js';
 import db from '../db/index.js';
+import { reactionSendTarget } from '../db/reactions.js';
 import { isDccChatTarget, dccChatPeer } from '../../shared/channels.js';
 import {
   dccChatHostFor,
@@ -1033,6 +1034,18 @@ class IrcManager extends EventEmitter {
     if (!['active', 'paused', 'done'].includes(state)) return false;
     conn.sendTyping(target, state);
     return true;
+  }
+
+  // React to (or unreact from) one of the user's stored lines. The connection
+  // gates on what the network supports and sends; the echo records it. False
+  // when there's nothing to send to — a disconnected network, a line with no
+  // msgid, a network that can't carry reactions.
+  react(userId: number, messageId: number, value: string, remove: boolean): boolean {
+    const dest = reactionSendTarget(userId, messageId);
+    if (!dest) return false;
+    const conn = this.getConnection(userId, dest.networkId);
+    if (!conn) return false;
+    return conn.sendReaction(dest.target, dest.msgid, value, remove);
   }
 
   // RPE2E command surface (#382). Dispatches a `/e2e …` subcommand on a live

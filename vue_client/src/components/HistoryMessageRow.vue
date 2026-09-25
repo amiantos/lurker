@@ -35,7 +35,13 @@
         </button>
       </div>
     </div>
-    <div class="body">
+    <div v-if="reaction != null" class="body">
+      <span class="nick" :style="nickStyle">{{ message.nick }}</span>
+      <span class="sep">|</span>
+      <span class="reaction">{{ reaction }}</span>
+      <span class="text"> on “{{ message.text ?? '' }}”</span>
+    </div>
+    <div v-else class="body">
       <span class="nick" :style="nickStyle">{{ message.nick }}</span>
       <span class="sep">|</span>
       <span class="text"><LinkedText :text="message.text ?? ''" /></span>
@@ -71,8 +77,11 @@ const props = withDefaults(
   defineProps<{
     message: HistoryMessage;
     removable?: boolean;
+    // A reactions-tab row: `message.nick` reacted with this on `message.text`
+    // (one of the user's own lines), and `message.time` is when.
+    reaction?: string | null;
   }>(),
-  { removable: false },
+  { removable: false, reaction: null },
 );
 
 defineEmits<{

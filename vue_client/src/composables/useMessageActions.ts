@@ -3,6 +3,8 @@
 
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
+import { useReactionsStore } from '../stores/reactions.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
 
@@ -22,6 +24,11 @@ export interface MessageLike {
   // buffers(id), as it rides on the server's message events — the direct
   // answer, when the row came from the server rather than being minted here.
   bufferId?: number;
+  // The server's IRCv3 msgid — what a reaction replies to. Absent on networks
+  // without message-tags and on lines sent before echo-message stamped them.
+  msgid?: string;
+  // An end-to-end encrypted line; reactions are cleartext tags, so none here.
+  e2e?: boolean;
 }
 
 export interface MessageContext {
@@ -30,7 +37,7 @@ export interface MessageContext {
   onIgnore(message: MessageLike): void;
 }
 
-export type MessageActionKey = 'reply' | 'copy' | 'link' | 'save' | 'ignore';
+export type MessageActionKey = 'reply' | 'react' | 'copy' | 'link' | 'save' | 'ignore';
 
 export interface MessageAction {
   key: MessageActionKey;
@@ -72,6 +79,8 @@ export interface MessageActionsAPI {
 // `context` shape: { networkId, onReply(message), onIgnore(message) }
 export function useMessageActions(): MessageActionsAPI {
   const bookmarks = useBookmarksStore();
+  const reactions = useReactionsStore();
+  const networks = useNetworksStore();
   const buffers = useBuffersStore();
   const menu = useContextMenu();
 
@@ -128,6 +137,18 @@ export function useMessageActions(): MessageActionsAPI {
       actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: 'fa-solid fa-reply' });
     }
 
+    // A reaction replies to the line's msgid, so the line needs one, and the
+    // network has to be up and able to carry it (canReact — see the server's
+    // canSendReactions). The server re-checks all of it; this just keeps a
+    // button off lines where it could only do nothing.
+    const reactNetworkId = message.networkId ?? message.network_id;
+    if (message.id != null && reactNetworkId != null && message.msgid && !message.e2e) {
+      const state = networks.states[reactNetworkId];
+      if (state?.state === 'connected' && state.canReact) {
+        actions.push({ key: 'react', label: 'React', icon: 'fa-regular fa-face-smile' });
+      }
+    }
+
     if (message.text) {
       actions.push({ key: 'copy', label: 'Copy text', icon: 'fa-regular fa-copy' });
     }
@@ -172,6 +193,14 @@ export function useMessageActions(): MessageActionsAPI {
     switch (key) {
       case 'reply':
         ctx.onReply(message);
+        break;
+      case 'react':
+        reactions.openPicker({
+          id: message.id,
+          networkId: message.networkId ?? message.network_id ?? null,
+          nick: message.nick,
+          text: message.text,
+        });
         break;
       case 'copy':
         if (navigator.clipboard) {

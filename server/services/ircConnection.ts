@@ -30,6 +30,9 @@ import {
   kindForTarget,
 } from '../db/buffers.js';
 import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
+import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
+import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
+import { isValidReactionValue } from '../../shared/reactions.js';
 import * as chanlistDb from '../db/chanlist.js';
 import type { PeerPresence, PeerState } from '../db/peerPresence.js';
 import {
@@ -293,6 +296,9 @@ const NON_PERSISTED_TYPES = new Set([
   // Incremental nicklist patch (host/account). Like 'names' it describes
   // current membership state, not history — a replayed one would be wrong.
   'member-update',
+  // A reaction changed. Its state lives in message_reactions (written by
+  // handleReaction), not as a history row of its own.
+  'reaction',
 ]);
 
 // Diagnostic: a single synchronous IRC-event handler (NAMES/WHO member-list
@@ -770,6 +776,9 @@ export class IrcConnection {
   monitorLimit: number;
   // The last modeSpec sent as a `mode-spec` frame, as JSON (#727).
   private publishedModeSpec: string | null = null;
+  // The last canReact sent as a `react-support` frame; null = none sent on
+  // this connection yet.
+  private publishedCanReact: boolean | null = null;
   // List fetches on the wire, by folded channel + letter (fetchModeList).
   private readonly modeListFetches = new Map<string, Promise<ModeListResult>>();
   pendingMonitorSeed: boolean;
@@ -1893,6 +1902,7 @@ export class IrcConnection {
       // The next snapshot sends a null spec (clientModeSpec), so the burst's
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
+      this.publishedCanReact = null;
       this.rawMonitored.clear();
       // Safety-net presence sweep. The primary one runs in 'socket close',
       // which fires on every disconnect (including auto-reconnect blips), so it
@@ -1973,6 +1983,7 @@ export class IrcConnection {
     // ircds, which our 'irc error' path surfaces to the user.
     on('server options', () => {
       this.publishModeSpecIfChanged();
+      this.publishReactSupportIfChanged();
       // 005 lines arrive in multiple bursts; this handler fires once per
       // line as irc-framework accumulates options. The MONITOR token isn't
       // necessarily in the first line, so only act when we transition
@@ -2336,6 +2347,7 @@ export class IrcConnection {
       // The MOTD, or its absence, ends the registration burst after every 005.
       this.isupportComplete = true;
       this.publishModeSpecIfChanged();
+      this.publishReactSupportIfChanged();
       // irc-framework also fires 'motd' for ERR_NOMOTD (no MOTD configured)
       // with `error` instead of `motd`, and for servers with an empty MOTD
       // file `motd` is just ''. Skip the blank-line publish either way.
@@ -3835,8 +3847,15 @@ export class IrcConnection {
       // echo-message our own TAGMSGs reflect back, and a server relaying a
       // case-variant nick must not show us our own typing indicator.
       const isSelf = !!eventNick && !!me && eventNick.toLowerCase() === me.toLowerCase();
-      if (isSelf) return;
       const tags = event.tags as Record<string, string> | undefined;
+      // Reactions are the one TAGMSG we take from ourselves: our own react
+      // comes back as the echo, and that echo is how it's recorded (the send
+      // path writes nothing — see sendReaction).
+      if (tags && ('+draft/react' in tags || '+draft/unreact' in tags)) {
+        this.handleReaction(event, tags, isSelf);
+        return;
+      }
+      if (isSelf) return;
       const typing = tags && tags['+typing'];
       if (!typing) return;
       const eventTarget = event.target as string | undefined;
@@ -3849,6 +3868,86 @@ export class IrcConnection {
         state: typing,
         userhost: buildUserhost(event),
       });
+    });
+  }
+
+  // An IRCv3 reaction (client-tags/react) arriving on a TAGMSG: a react or an
+  // unreact of `value`, by the sender, on the line whose msgid `+reply` names.
+  // Stored as standing state and fanned out as a `reaction` frame; anything
+  // that doesn't resolve to a line we hold is dropped. Reactions sent on a
+  // PRIVMSG (the spec's text-fallback form) are left to render as the ordinary
+  // message they also are.
+  private handleReaction(
+    event: Record<string, unknown>,
+    tags: Record<string, string>,
+    isSelf: boolean,
+  ): void {
+    // A replayed session is not new history — same rule as publish().
+    if (this.restoring) return;
+    const react = tags['+draft/react'];
+    const unreact = tags['+draft/unreact'];
+    // "MUST NOT both be attached to a single message" — no way to tell which
+    // one was meant.
+    if (react !== undefined && unreact !== undefined) return;
+    const value = react ?? unreact;
+    if (!isValidReactionValue(value)) return;
+    const parentMsgid = tags['+reply'] || tags['+draft/reply'];
+    if (!parentMsgid) return;
+    const nick = event.nick as string | undefined;
+    const eventTarget = event.target as string | undefined;
+    if (!nick || !eventTarget) return;
+    // Same routing as a PRIVMSG: a channel by name; a DM by the other party,
+    // which for our own echo is the recipient and otherwise the sender.
+    const target = isChannelTarget(eventTarget)
+      ? eventTarget
+      : this.canonicalDmTarget(isSelf ? eventTarget : nick);
+    const bufferId = resolveBufferIdByNetwork(this.network.id, target);
+    if (bufferId === undefined) return;
+    const parent = findReactionParent(this.network.id, bufferId, parentMsgid);
+    if (!parent) return;
+    const userhost = buildUserhost(event);
+    // Someone the user has ignored doesn't get to annotate their lines either.
+    // Judged as the message it would have been, so the ignore's levels apply.
+    if (!isSelf) {
+      try {
+        const { fromIgnored } = decideStamp(
+          { type: 'message', nick, userhost, target, text: value, self: false },
+          highlightRulesService.getCompiled(this.network.user_id, this.network.id),
+          ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
+          isDmTargetName(target),
+        );
+        if (fromIgnored) return;
+      } catch (e) {
+        console.warn('[reactions] ignore check failed:', (e as Error)?.message || e);
+      }
+    }
+    const time = normalizeEventTime(
+      (event.time as number | undefined) ?? this.lineArrivedAt?.getTime(),
+    );
+    const remove = unreact !== undefined;
+    const changed = remove
+      ? removeReaction(parent.id, nick, value)
+      : addReaction({
+          messageId: parent.id,
+          networkId: this.network.id,
+          nick,
+          value,
+          self: isSelf,
+          toSelf: parent.self,
+          time,
+        });
+    if (!changed) return;
+    this.publishEphemeral({
+      type: 'reaction',
+      target,
+      bufferId: parent.bufferId,
+      messageId: parent.id,
+      nick,
+      value,
+      self: isSelf,
+      remove,
+      toSelf: parent.self,
+      time,
     });
   }
 
@@ -4877,6 +4976,22 @@ export class IrcConnection {
     if (json === this.publishedModeSpec) return;
     this.publishedModeSpec = json;
     this.publishEphemeral({ type: 'mode-spec', target: this.serverTarget(), modeSpec: spec });
+  }
+
+  // Whether clients may offer reactions here, as they see it: false until the
+  // registration burst has ended, for the same reason as clientModeSpec — the
+  // CLIENTTAGDENY that could forbid them rides a 005 that follows the 001 which
+  // pushes the connect snapshot.
+  clientCanReact(): boolean {
+    return this.isupportComplete && this.canSendReactions();
+  }
+
+  private publishReactSupportIfChanged(): void {
+    if (!this.isupportComplete) return;
+    const canReact = this.clientCanReact();
+    if (canReact === this.publishedCanReact) return;
+    this.publishedCanReact = canReact;
+    this.publishEphemeral({ type: 'react-support', target: this.serverTarget(), canReact });
   }
 
   // List-type channel modes (CHANMODES group A) carry a mask param — bans,
@@ -8101,6 +8216,38 @@ export class IrcConnection {
   supportsMessageTags(): boolean {
     return (this.client.network?.cap?.enabled || []).includes('message-tags');
   }
+  // Whether this network can carry a reaction we send, and show us the result.
+  // message-tags for the client-only tags; echo-message because the echo is
+  // the only thing that records our own reaction (and a reaction we can't see
+  // land is one we'd have to guess about); and the network must not deny the
+  // tags via CLIENTTAGDENY. Either reply tag will do — we send both.
+  canSendReactions(): boolean {
+    if (!this.echoActive()) return false;
+    const net = this.client.network as unknown as { supportsTag?: (tag: string) => boolean };
+    if (typeof net?.supportsTag !== 'function') return false;
+    return (
+      net.supportsTag('draft/react') &&
+      net.supportsTag('draft/unreact') &&
+      (net.supportsTag('reply') || net.supportsTag('draft/reply'))
+    );
+  }
+
+  // React (or unreact) `value` on the line with `msgid` in `target`. Writes
+  // nothing locally: the server's echo comes back through handleReaction like
+  // anyone else's, so what we show is what the network accepted. Both reply
+  // tags go out — `+reply` is the ratified name and `+draft/reply` is what
+  // older clients still read; halloy and goguma send the pair the same way.
+  sendReaction(target: string, msgid: string, value: string, remove: boolean): boolean {
+    if (!this.canSendReactions()) return false;
+    if (!isValidReactionValue(value)) return false;
+    this.client.tagmsg(target, {
+      '+reply': msgid,
+      '+draft/reply': msgid,
+      [remove ? '+draft/unreact' : '+draft/react']: value,
+    });
+    return true;
+  }
+
   sendTyping(target: string, state: string): void {
     // +typing is a client-only tag carried over TAGMSG, which only exists when
     // the server negotiated the message-tags capability. Networks that don't
@@ -8455,6 +8602,8 @@ export class IrcConnection {
       // Null until the registration burst ends (see clientModeSpec); then also
       // sent as a `mode-spec` frame, since 005 follows the 001 that pushes this.
       modeSpec: this.clientModeSpec(),
+      // Whether reactions can be sent here; kept current by `react-support`.
+      canReact: this.clientCanReact(),
       away: a.since
         ? {
             active: a.active,

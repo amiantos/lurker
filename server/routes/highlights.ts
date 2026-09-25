@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { searchMessages } from '../db/messages.js';
+import { listReactionsToUser } from '../db/reactions.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -48,6 +49,29 @@ router.get('/', (req: Request, res: Response) => {
   // Cursor for the next page is the id of the oldest row in this page; null
   // when the page didn't fill the limit (there's nothing older).
   const nextBefore = items.length === limit ? items[items.length - 1].id : null;
+  res.json({ items, nextBefore });
+});
+
+// The reactions tab: other people's reactions to the user's own lines, with the
+// same filter params as the highlights feed. Paged by reaction id, since the
+// feed is ordered by when the reaction landed, not when the line was said.
+router.get('/reactions', (req: Request, res: Response) => {
+  const rawLimit = Number(req.query.limit);
+  const limit =
+    Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, MAX_LIMIT) : DEFAULT_LIMIT;
+  const rawBefore = Number(req.query.before);
+  const before = Number.isFinite(rawBefore) && rawBefore > 0 ? rawBefore : undefined;
+  const rawNetworkId = Number(req.query.networkId);
+  const networkId = Number.isFinite(rawNetworkId) && rawNetworkId > 0 ? rawNetworkId : undefined;
+  const items = listReactionsToUser(req.user!.id, {
+    query: str(req.query.q),
+    nicks: strArray(req.query.nick),
+    target: str(req.query.target),
+    networkId,
+    before,
+    limit,
+  });
+  const nextBefore = items.length === limit ? items[items.length - 1].reactionId : null;
   res.json({ items, nextBefore });
 });
 

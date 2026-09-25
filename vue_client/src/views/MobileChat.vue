@@ -225,6 +225,7 @@
       :nick="nickNotes.editor.nick"
       :network-id="nickNotes.editor.networkId"
     />
+    <ReactModal v-if="reactions.picker.open" />
   </div>
 </template>
 
@@ -258,12 +259,14 @@ import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 import TransfersModal from '../components/TransfersModal.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
+import ReactModal from '../components/ReactModal.vue';
 import UserProfileModal from '../components/UserProfileModal.vue';
 import MediaViewerModal from '../components/MediaViewerModal.vue';
 import { screenForRoute } from '../utils/mobileScreen.js';
 import { backOrPush } from '../utils/routerBack.js';
 import { shouldLeaveMembers } from '../utils/bufferNav.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useReactionsStore } from '../stores/reactions.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
@@ -310,6 +313,7 @@ const {
 const bufferActions = useBufferActions();
 const menu = useContextMenu();
 const nickNotes = useNickNotesStore();
+const reactions = useReactionsStore();
 const dcc = useDccStore();
 const dccTitle = computed(() =>
   dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',

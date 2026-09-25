@@ -142,7 +142,7 @@
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
               @nick-click="onMentionMenu"
-            />
+            /><ReactionTail v-if="row.m && reactable(row.m)" :message="row.m" :limit="2" />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
         </template>
@@ -305,6 +305,12 @@
                  every event row from an edit site giving no hint the two were connected.
                  They now render inside MessageBody, which IS the chain's first branch, so the
                  hazard is gone rather than avoided. -->
+            <!-- After the chain's LAST branch, so it starts a chain of its own and
+                 re-parents nothing (see the note above). --><ReactionTail
+              v-if="row.m && reactable(row.m)"
+              :message="row.m"
+              :limit="isMobile ? 2 : null"
+            />
           </span>
         </template>
         <div
@@ -396,6 +402,7 @@ import { useWhoisStore } from '../stores/whois.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
+import ReactionTail from './ReactionTail.vue';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -731,6 +738,18 @@ const actionContext: MessageContext = {
     };
   },
 };
+
+// Lines that can carry reactions: the chat lines a reaction can reply to, on a
+// network (the system buffer's ids are their own sequence — see
+// reactions.noteFromEvents). Cheap enough to run per rendered row; the tail
+// itself renders nothing when no reactions stand on the line.
+function reactable(m: ChatMessage): boolean {
+  return (
+    m.id != null &&
+    m.networkId != null &&
+    (m.type === 'message' || m.type === 'action' || m.type === 'notice')
+  );
+}
 
 function actionsFor(m: ChatMessage | undefined | null): MessageAction[] {
   if (!m) return [];
