@@ -54,7 +54,7 @@
             @keydown.enter="blockImeEnter"
             class="typed"
             type="text"
-            placeholder="emoji, :shortcode, or text"
+            placeholder="search emoji, or react with any text"
             autocomplete="off"
             spellcheck="false"
           />
@@ -119,11 +119,15 @@ const inputEl = ref<HTMLInputElement | null>(null);
 const typedValue = computed(() => reactionFromInput(typed.value));
 const tooLong = computed(() => !!typedValue.value && !isValidReactionValue(typedValue.value));
 
-// Shortcode suggestions while the field reads like one. emojiFn() makes this
-// recompute once the lazily-loaded table lands.
+// Emoji suggestions for whatever's typed — `skul` finds 💀 as `:skul` does; the
+// colons are optional here, since the field is only ever a reaction. A
+// suggestion is one tap away while Enter still sends the text as typed, so a
+// text reaction like `lol` loses nothing. Two characters before searching, as
+// the composer's picker waits (#402). emojiFn() makes this recompute once the
+// lazily-loaded table lands.
 const suggestions = computed(() => {
   if (!emojiFn()) return [];
-  const m = typed.value.trim().match(/^:([\w+-]{2,})$/);
+  const m = typed.value.trim().match(/^:?([\w+-]{2,}):?$/);
   return m ? searchEmojiSync(m[1], 16) : [];
 });
 
