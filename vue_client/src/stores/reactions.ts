@@ -131,7 +131,11 @@ export const useReactionsStore = defineStore('reactions', {
       const current = this.byMessage.get(id) ?? [];
       const same = (r: MessageReaction) => r.value === frame.value && sameNick(r.nick, frame.nick);
       if (frame.remove) {
-        const list = current.filter((r) => !same(r));
+        // Ours goes by `self`, not nick — we may have reacted under an older
+        // nick (see the server's removeReaction).
+        const list = current.filter((r) =>
+          frame.self ? !(r.self && r.value === frame.value) : !same(r),
+        );
         if (list.length) this.byMessage.set(id, list);
         else this.byMessage.delete(id);
       } else if (!current.some(same)) {

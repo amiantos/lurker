@@ -234,7 +234,9 @@ const BOOKMARKED_COL = (alias: string) => `EXISTS (
 // The reactions standing on a row, as a JSON array built in SQL — the same
 // ride-along as BOOKMARKED_COL, so every query that yields rows for a client
 // yields their reactions without a second round-trip or any per-caller
-// plumbing. The correlated subquery is a seek on idx_message_reactions_key
+// plumbing. Left off the bouncer's CHATHISTORY/playback reads
+// (loadHistoryWindow, listRecentMessages): nothing there turns reactions into
+// IRC lines, so on that hot path the column would be pure cost. The correlated subquery is a seek on idx_message_reactions_key
 // (message_id leads it); a line nobody reacted to costs one empty probe. NULL,
 // not '[]', when there are none, so rowToEvent can leave the field absent.
 const REACTIONS_COL = (alias: string) => `(
@@ -713,7 +715,7 @@ export function loadHistoryWindow(
   const dir = newestFirst ? 'DESC' : 'ASC';
   const rows = db
     .prepare(
-      `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE ${conds.join(' AND ')}
+      `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE ${conds.join(' AND ')}
        ORDER BY time ${dir}, id ${dir} LIMIT ?`,
     )
     .all(...params) as MessageRow[];
@@ -736,7 +738,7 @@ export function listRecentMessages(
   if (bufferId === undefined) return [];
   const rows = db
     .prepare(
-      `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages
+      `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages
         WHERE buffer_id = ? AND ${chathistoryMsgFilter()}
         ORDER BY id DESC LIMIT ?`,
     )

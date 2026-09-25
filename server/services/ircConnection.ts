@@ -3926,7 +3926,7 @@ export class IrcConnection {
     );
     const remove = unreact !== undefined;
     const changed = remove
-      ? removeReaction(parent.id, nick, value)
+      ? removeReaction(parent.id, nick, value, isSelf)
       : addReaction({
           messageId: parent.id,
           networkId: this.network.id,

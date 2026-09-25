@@ -51,6 +51,7 @@
             ref="inputEl"
             :value="typed"
             @input="onTypedInput"
+            @keydown.enter="blockImeEnter"
             class="typed"
             type="text"
             placeholder="emoji, :shortcode, or text"
@@ -88,8 +89,8 @@ import { computed, onMounted, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useNetworksStore } from '../stores/networks.js';
-import { useImeSafeInput } from '../composables/useImeSafeInput.js';
-import { emojiGlyph, searchEmojiSync } from '../utils/emojiShortcodes.js';
+import { blockImeEnter, useImeSafeInput } from '../composables/useImeSafeInput.js';
+import { reactionFromInput, searchEmojiSync } from '../utils/emojiShortcodes.js';
 import { emojiFn, preloadEmoji } from '../composables/useEmoji.js';
 import { isValidReactionValue } from '../../../shared/reactions.js';
 
@@ -115,15 +116,7 @@ const typed = ref('');
 const onTypedInput = useImeSafeInput(typed);
 const inputEl = ref<HTMLInputElement | null>(null);
 
-// A whole-field `:shortcode:` (or `:shortcode` — the closing colon is optional
-// here, there's nothing after it to be ambiguous with) sends its glyph.
-const typedValue = computed(() => {
-  const raw = typed.value.trim();
-  if (!raw) return '';
-  const m = raw.match(/^:([\w+-]+):?$/);
-  if (m) return emojiGlyph(m[1]) ?? raw;
-  return raw;
-});
+const typedValue = computed(() => reactionFromInput(typed.value));
 const tooLong = computed(() => !!typedValue.value && !isValidReactionValue(typedValue.value));
 
 // Shortcode suggestions while the field reads like one. emojiFn() makes this

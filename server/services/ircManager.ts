@@ -928,15 +928,16 @@ class IrcManager extends EventEmitter {
     userId: number,
     networkId: number,
     target: string,
-    kind: 'action' | 'notice',
+    kind: 'action' | 'notice' | 'reaction',
   ): boolean {
     if (!isChannelContext(target)) return false;
     if (!e2eManager.isChannelEnabled(userId, networkId, contextKey(target, ''))) return false;
+    const what = { action: '/me actions', notice: 'notices', reaction: 'reactions' }[kind];
     conn.publishEphemeral({
       type: 'e2e',
       level: 'warn',
       target,
-      text: `${kind === 'action' ? '/me actions' : 'notices'} aren't encrypted yet — not sent on this E2E channel`,
+      text: `${what} aren't encrypted yet — not sent on this E2E channel`,
     });
     return true;
   }
@@ -1045,6 +1046,12 @@ class IrcManager extends EventEmitter {
     if (!dest) return false;
     const conn = this.getConnection(userId, dest.networkId);
     if (!conn) return false;
+    // A reaction is a cleartext tag. On an E2E channel even one on a plaintext
+    // line (sent before /e2e on, or by a peer without it) would put "lol" on
+    // the wire in the clear — refused like /me and notices are.
+    if (this.refuseCleartextOnE2eChannel(conn, userId, dest.networkId, dest.target, 'reaction')) {
+      return false;
+    }
     return conn.sendReaction(dest.target, dest.msgid, value, remove);
   }
 

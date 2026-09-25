@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
+import { resolveBuffer } from './bufferResolve.js';
 
 // IRCv3 reactions — see the message_reactions table in db/index.ts for the
 // model. Rows hold standing state: react inserts, unreact deletes. How they
@@ -77,23 +78,43 @@ export function addReaction(r: ReactionWrite): boolean {
   return info.changes > 0;
 }
 
-export function removeReaction(messageId: number, nick: string, value: string): boolean {
+const deleteSelfStmt = db.prepare(`
+  DELETE FROM message_reactions WHERE message_id = ? AND self = 1 AND value = ?
+`);
+
+// A peer's unreact matches their nick. Ours matches `self`, not the nick: we may
+// have reacted as alice and be alice_ now, and the unreact echo comes from
+// alice_ — keyed on the nick it would find nothing, and the reaction would stay
+// ours on screen for good, every click sending another unreact that can't land.
+export function removeReaction(
+  messageId: number,
+  nick: string,
+  value: string,
+  self = false,
+): boolean {
+  if (self) return deleteSelfStmt.run(messageId, value).changes > 0;
   return deleteStmt.run(messageId, nick.toLowerCase(), value).changes > 0;
 }
 
 // Where to send a reaction to one of the user's lines: the network, the line's
 // msgid, and the buffer's CURRENT name (a DM whose peer renamed has moved;
 // messages.target still holds the name the line arrived under). Null when the
-// line isn't the user's, isn't a chat line, has no msgid to reply to, or was
-// end-to-end encrypted — a reaction is a cleartext tag, and "lol" on an
-// encrypted line says what the line was about to anyone watching the wire.
+// line isn't the user's, has no msgid to reply to, or was end-to-end encrypted
+// — a reaction is a cleartext tag, and "lol" on an encrypted line says what the
+// line was about to anyone watching the wire.
+//
+// Only a PRIVMSG or /me in a channel or DM buffer. Not a notice: server notices
+// live in the `:server:N` pseudo-buffer, which is no IRC target, and a notice
+// routed into a channel by +draft/channel-context was sent to us alone — a
+// reaction to it would go to the whole channel, replying to a msgid only we
+// ever saw. Not a `=nick` DCC chat either: it isn't IRC at all.
 const sendTargetStmt = db.prepare(`
-  SELECT m.network_id, m.msgid, m.extra, b.target
+  SELECT m.network_id, m.msgid, m.extra, b.target, b.kind
   FROM messages m
   JOIN networks n ON n.id = m.network_id
   JOIN buffers b ON b.id = m.buffer_id
   WHERE m.id = ? AND n.user_id = ?
-    AND m.type IN ('message', 'action', 'notice')
+    AND m.type IN ('message', 'action')
     AND m.msgid IS NOT NULL AND m.msgid != ''
 `);
 
@@ -105,9 +126,11 @@ export interface ReactionSendTarget {
 
 export function reactionSendTarget(userId: number, messageId: number): ReactionSendTarget | null {
   const row = sendTargetStmt.get(messageId, userId) as
-    | { network_id: number; msgid: string; extra: string | null; target: string }
+    | { network_id: number; msgid: string; extra: string | null; target: string; kind: string }
     | undefined;
   if (!row) return null;
+  // `server` (the :server:N console) and `dcc` (=nick) are not IRC targets.
+  if (row.kind !== 'channel' && row.kind !== 'dm') return null;
   if (row.extra) {
     try {
       if ((JSON.parse(row.extra) as { e2e?: unknown }).e2e) return null;
@@ -148,6 +171,8 @@ export interface ReactionFeedOpts {
   query?: string;
 }
 
+const userNetworkIdsStmt = db.prepare('SELECT id FROM networks WHERE user_id = ?');
+
 export function listReactionsToUser(
   userId: number,
   opts: ReactionFeedOpts = {},
@@ -166,13 +191,27 @@ export function listReactionsToUser(
     conds.push(`r.nick_folded IN (${opts.nicks.map(() => '?').join(', ')})`);
     params.push(...opts.nicks.map((n) => n.toLowerCase()));
   }
+  // `in:` resolves through the buffer registry per network, exactly as
+  // searchMessages does for the highlights tab — folds are per-network (#707),
+  // so one lowercased string can't stand in for an rfc1459 '#chat{dev}'.
   if (opts.target) {
-    conds.push('lower(b.target) = ?');
-    params.push(opts.target.toLowerCase());
+    const nets = opts.networkId
+      ? [{ id: opts.networkId }]
+      : (userNetworkIdsStmt.all(userId) as { id: number }[]);
+    const bufferIds: number[] = [];
+    for (const net of nets) {
+      const found = resolveBuffer(userId, net.id, opts.target);
+      if (found) bufferIds.push(found.id);
+    }
+    if (bufferIds.length === 0) return [];
+    conds.push(`m.buffer_id IN (${bufferIds.map(() => '?').join(', ')})`);
+    params.push(...bufferIds);
   }
+  // Both sides folded by SQLite's lower(), so they agree even where it and
+  // JS's toLowerCase would not (SQLite folds ASCII only).
   if (opts.query) {
-    conds.push('(instr(lower(m.text), ?) > 0 OR instr(lower(r.value), ?) > 0)');
-    params.push(opts.query.toLowerCase(), opts.query.toLowerCase());
+    conds.push('(instr(lower(m.text), lower(?)) > 0 OR instr(lower(r.value), lower(?)) > 0)');
+    params.push(opts.query, opts.query);
   }
   params.push(opts.limit ?? 50);
   const rows = db

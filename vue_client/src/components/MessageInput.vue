@@ -219,10 +219,10 @@ import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import { ensureChannelPrefix } from '../utils/channelTarget.js';
 import {
-  emojiGlyph,
   findActiveShortcode,
   findCompletedShortcode,
   loadEmoji,
+  reactionFromInput,
 } from '../utils/emojiShortcodes.js';
 import type { EmojiMatch } from '../utils/emojiData.js';
 import NickPicker from './NickPicker.vue';
@@ -2601,9 +2601,6 @@ function randomRoomId(): string {
   return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Best-effort send for control commands (/join, /raw, /away, ...). Returns
-// false if the socket isn't open — so the caller can keep the typed text in
-// the input rather than silently swallowing it.
 // /react <emoji|:shortcode:|text> — react to the most recent line someone else
 // said in this buffer (the picker on a line's React action reaches any other).
 // Only lines the server gave a msgid can be reacted to; an encrypted one can't.
@@ -2613,8 +2610,7 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
     localInfo(networkId, target, 'usage: /react <emoji|text> — e.g. /react 👍 or /react :tada:');
     return true;
   }
-  const shortcode = raw.match(/^:([\w+-]+):?$/);
-  const value = (shortcode && emojiGlyph(shortcode[1])) || raw;
+  const value = reactionFromInput(raw);
   if (!isValidReactionValue(value)) {
     localInfo(networkId, target, `a reaction can be at most ${MAX_REACTION_GRAPHEMES} characters`);
     return true;
@@ -2629,7 +2625,8 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.id == null || m.self || m.e2e || !m.msgid) continue;
-    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
+    // Same rule as the React action: a PRIVMSG or /me, never a notice.
+    if (m.type !== 'message' && m.type !== 'action') continue;
     parent = m;
     break;
   }
@@ -2645,6 +2642,9 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
   return sendOrToast({ type: 'react', messageId: Number(parent.id), value, remove: false }, line);
 }
 
+// Best-effort send for control commands (/join, /raw, /away, ...). Returns
+// false if the socket isn't open — so the caller can keep the typed text in
+// the input rather than silently swallowing it.
 function sendOrToast(payload: Record<string, unknown>, body: string): boolean {
   const ok = socketSend(payload);
   if (!ok) toastSendFailure('disconnected', body);

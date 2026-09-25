@@ -13,7 +13,13 @@ import { createUser } from './users.js';
 import { createNetwork } from './networks.js';
 import type { Network } from './networks.js';
 import { insertMessage, listMessages } from './messages.js';
-import { addReaction, reactionSendTarget, removeReaction } from './reactions.js';
+import {
+  addReaction,
+  listReactionsToUser,
+  reactionSendTarget,
+  removeReaction,
+} from './reactions.js';
+import { refoldNetworkBuffers } from './refoldBuffers.js';
 
 let userId: number;
 let otherId: number;
@@ -113,10 +119,56 @@ describe('reactionSendTarget', () => {
     expect(reactionSendTarget(otherId, line())).toBeNull();
   });
 
+  // Not IRC targets, or not ours to answer in public — see reactionSendTarget.
+  it('refuses a notice, a server-console line, and a DCC chat line', () => {
+    expect(reactionSendTarget(userId, line({ type: 'notice' }))).toBeNull();
+    expect(reactionSendTarget(userId, line({ target: `:server:${net.id}` }))).toBeNull();
+    expect(reactionSendTarget(userId, line({ target: '=bob' }))).toBeNull();
+    // …while a /me in a DM is fine.
+    expect(reactionSendTarget(userId, line({ type: 'action', target: 'bob' }))).not.toBeNull();
+  });
+
   it('refuses a line with no msgid, a non-chat line, and an encrypted one', () => {
     expect(reactionSendTarget(userId, line({ msgid: undefined }))).toBeNull();
     expect(reactionSendTarget(userId, line({ type: 'join', text: null }))).toBeNull();
     // A cleartext reaction on an E2E line would say what the line was about.
     expect(reactionSendTarget(userId, line({ extra: { e2e: true } }))).toBeNull();
+  });
+});
+
+describe('listReactionsToUser', () => {
+  // `in:` folds per network, like the highlights tab: on rfc1459, `{` is `[`.
+  it('matches in: through the network’s casemapping', () => {
+    const rfc = createNetwork(userId, {
+      name: 'rfc',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    refoldNetworkBuffers(userId, rfc.id, 'rfc1459');
+    const mine = Number(
+      insertMessage({
+        networkId: rfc.id,
+        target: '#Chat[Dev]',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'me',
+        text: 'mine',
+        self: true,
+        msgid: 'rfc1',
+      }).id,
+    );
+    addReaction({
+      messageId: mine,
+      networkId: rfc.id,
+      nick: 'bob',
+      value: '👍',
+      self: false,
+      toSelf: true,
+      time: new Date().toISOString(),
+    });
+    expect(listReactionsToUser(userId, { target: '#chat{dev}' }).map((r) => r.id)).toEqual([mine]);
+    expect(listReactionsToUser(userId, { target: '#elsewhere' })).toEqual([]);
   });
 });

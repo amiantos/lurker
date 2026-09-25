@@ -9,15 +9,17 @@
 
 // MUST be first: redirects DATABASE_PATH before anything opens the db.
 import '../test-utils/isolateDb.js';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { listMessages } from '../db/messages.js';
+import { insertMessage, listMessages } from '../db/messages.js';
 import type { MessageEvent } from '../db/messages.js';
 import { listReactionsToUser, reactionSendTarget } from '../db/reactions.js';
 import { IrcConnection } from './ircConnection.js';
 import ignoreRulesService from './ignoreRulesService.js';
+import ircManager from './ircManager.js';
+import { e2eManager } from './e2e/manager.js';
 import { maskToRuleInput } from './ignoreRuleInput.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
@@ -348,6 +350,29 @@ describe('sending reactions', () => {
     }
   });
 
+  it('takes back a reaction given under an older nick', async () => {
+    const rig = await connect('nickA', '#s3');
+    try {
+      const msgid = await peerSays(rig, 'bob', '#s3', 'react then rename');
+      rig.conn.sendReaction('#s3', msgid, '👍', false);
+      await until(() => reactionFrames(rig).length === 1, 5000, 'reacted as nickA');
+
+      rig.conn.client.changeNick('nickB');
+      await until(
+        () => rig.events.some((e) => e.type === 'own-nick' && e.nick === 'nickB'),
+        5000,
+        'renamed',
+      );
+      // The unreact echo comes from nickB; the stored reaction is nickA's.
+      rig.conn.sendReaction('#s3', msgid, '👍', true);
+      await until(() => reactionFrames(rig).length === 2, 5000, 'unreact as nickB');
+      expect(reactionFrames(rig)[1]).toMatchObject({ nick: 'nickB', self: true, remove: true });
+      expect(rowByMsgid(rig, '#s3', msgid).reactions).toBeUndefined();
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
   it('refuses a value it would drop if it came in', async () => {
     const rig = await connect('send2', '#s2');
     try {
@@ -370,5 +395,54 @@ describe('sending reactions', () => {
     } finally {
       rig.conn.dispose();
     }
+  });
+});
+
+describe('ircManager.react', () => {
+  function stubConn() {
+    const sendReaction = vi.fn<IrcConnection['sendReaction']>(() => true);
+    const publishEphemeral = vi.fn<IrcConnection['publishEphemeral']>();
+    const conn = { sendReaction, publishEphemeral } as unknown as IrcConnection;
+    return { conn, sendReaction, publishEphemeral };
+  }
+
+  function storedLine(network: Network, target: string): number {
+    return Number(
+      insertMessage({
+        networkId: network.id,
+        target,
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text: 'a plaintext line',
+        msgid: `mgr${++seq}`,
+      }).id,
+    );
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('sends to the line’s buffer with its msgid', () => {
+    const network = makeNetwork('mgr1');
+    const id = storedLine(network, '#plain');
+    const { conn, sendReaction } = stubConn();
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    expect(ircManager.react(userId, id, '👍', false)).toBe(true);
+    expect(sendReaction).toHaveBeenCalledWith('#plain', `mgr${seq}`, '👍', false);
+  });
+
+  // A reaction is a cleartext tag, so even a plaintext line on an E2E channel
+  // can't take one — it would put the reaction on the wire in the clear.
+  it('refuses on an E2E channel, and says so', () => {
+    const network = makeNetwork('mgr2');
+    const id = storedLine(network, '#secret');
+    const { conn, sendReaction, publishEphemeral } = stubConn();
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    vi.spyOn(e2eManager, 'isChannelEnabled').mockReturnValue(true);
+    expect(ircManager.react(userId, id, '👍', false)).toBe(false);
+    expect(sendReaction).not.toHaveBeenCalled();
+    expect(publishEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'e2e', level: 'warn', target: '#secret' }),
+    );
   });
 });

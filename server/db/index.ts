@@ -631,6 +631,9 @@ function migrate() {
     -- matches on. self = we sent it (learned from the echo, never on send);
     -- to_self = the parent is one of our own lines, which is what the reactions
     -- feed lists — denormalised so that feed is an index range, not a join scan.
+    -- network_id carries no FK of its own: the message_id cascade already
+    -- covers a network delete, and an FK here would want a full index on
+    -- network_id (the feed's is partial, which SQLite can't use to enforce one).
     CREATE TABLE IF NOT EXISTS message_reactions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       message_id INTEGER NOT NULL,
@@ -641,8 +644,7 @@ function migrate() {
       self INTEGER NOT NULL DEFAULT 0,
       to_self INTEGER NOT NULL DEFAULT 0,
       time TEXT NOT NULL,
-      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE,
-      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reactions_key
       ON message_reactions(message_id, nick_folded, value);

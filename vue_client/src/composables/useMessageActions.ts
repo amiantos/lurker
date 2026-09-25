@@ -5,6 +5,7 @@ import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
 
@@ -29,6 +30,8 @@ export interface MessageLike {
   msgid?: string;
   // An end-to-end encrypted line; reactions are cleartext tags, so none here.
   e2e?: boolean;
+  // message / action / notice / … — only the first two can be reacted to.
+  type?: string;
 }
 
 export interface MessageContext {
@@ -139,10 +142,21 @@ export function useMessageActions(): MessageActionsAPI {
 
     // A reaction replies to the line's msgid, so the line needs one, and the
     // network has to be up and able to carry it (canReact — see the server's
-    // canSendReactions). The server re-checks all of it; this just keeps a
-    // button off lines where it could only do nothing.
+    // canSendReactions). Only a PRIVMSG or /me in a channel or DM: not a notice,
+    // not the :server: console, not a =nick DCC chat — the server's
+    // reactionSendTarget says why. It re-checks all of this; the gate just
+    // keeps a button off lines where it could only do nothing.
     const reactNetworkId = message.networkId ?? message.network_id;
-    if (message.id != null && reactNetworkId != null && message.msgid && !message.e2e) {
+    if (
+      message.id != null &&
+      reactNetworkId != null &&
+      message.msgid &&
+      !message.e2e &&
+      (message.type === 'message' || message.type === 'action') &&
+      !!message.target &&
+      !message.target.startsWith(':') &&
+      !isDccChatTarget(message.target)
+    ) {
       const state = networks.states[reactNetworkId];
       if (state?.state === 'connected' && state.canReact) {
         actions.push({ key: 'react', label: 'React', icon: 'fa-regular fa-face-smile' });
