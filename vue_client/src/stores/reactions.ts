@@ -2,10 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { defineStore } from 'pinia';
-import { api } from '../api.js';
 import { socketSend } from '../composables/useSocket.js';
-import { useNetworksStore } from './networks.js';
-import { parseSearchQuery } from '../utils/searchQuery.js';
+import { useHighlightsStore } from './highlights.js';
 import type { MessageReaction } from '../../../shared/reactions.js';
 
 // IRCv3 reactions, two tracks — the same split as bookmarks:
@@ -17,10 +15,8 @@ import type { MessageReaction } from '../../../shared/reactions.js';
 // what's on it (`reactions`, absent when none), and a `reaction` frame adds or
 // removes one live. Like the bookmark Set it's a cache of what we've SEEN.
 //
-// `items` is the reactions tab of the highlights modal: other people's
-// reactions to the user's own lines, REST-loaded and paged, with the highlights
-// feed's from:/in:/on: filter.
-const PAGE_SIZE = 50;
+// Other people's reactions to the user's own lines also show in the activity
+// feed (the highlights store), which the server merges — see applyFrame.
 
 // One chip on a line's reaction row: a value, how many reacted with it, who, and
 // whether we're among them.
@@ -28,23 +24,6 @@ export interface ReactionGroup {
   value: string;
   nicks: string[];
   mine: boolean;
-}
-
-// A row of the reactions tab (`GET /api/highlights/reactions`). `id` is the
-// line reacted to, so the shared jump handler lands on it; `nick`/`value`/`time`
-// are the reaction's.
-export interface ReactionFeedItem {
-  id: number;
-  reactionId: number;
-  networkId: number;
-  networkName: string;
-  target: string;
-  nick: string;
-  value: string;
-  time: string;
-  text: string | null;
-  messageTime: string;
-  [key: string]: unknown;
 }
 
 // The live frame (wsHub fans it out for every change handleReaction records).
@@ -66,13 +45,6 @@ const sameNick = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 export const useReactionsStore = defineStore('reactions', {
   state: () => ({
     byMessage: new Map<number, MessageReaction[]>(),
-    query: '',
-    items: [] as ReactionFeedItem[],
-    nextBefore: null as number | null,
-    loading: false,
-    error: '',
-    token: 0,
-    lastUrl: null as string | null,
     // The react picker (ReactModal), opened from a line's React action or the
     // add chip on its reaction row.
     picker: {
@@ -84,7 +56,6 @@ export const useReactionsStore = defineStore('reactions', {
     },
   }),
   getters: {
-    hasMore: (state) => state.nextBefore != null,
     // The groups for one line: reactions grouped by value, first-reacted first.
     groupsFor:
       (state) =>
@@ -146,14 +117,19 @@ export const useReactionsStore = defineStore('reactions', {
         ]);
       }
 
-      // The tab lists other people's reactions to our lines. A new one can't be
-      // spliced in — the frame doesn't carry the line's text — so it waits for
-      // the next load (every modal open is one). A removal can be.
+      // The activity feed lists other people's reactions to our lines. A new
+      // one can't be spliced in — the frame doesn't carry the line's text — so
+      // it waits for the next load (every modal open is one). A removal can be.
       if (frame.toSelf && !frame.self && frame.remove) {
-        const idx = this.items.findIndex(
-          (it) => it.id === id && it.value === frame.value && sameNick(it.nick, frame.nick),
+        const feed = useHighlightsStore();
+        const idx = feed.items.findIndex(
+          (it) =>
+            it.kind === 'reaction' &&
+            it.id === id &&
+            it.value === frame.value &&
+            sameNick(it.nick, frame.nick),
         );
-        if (idx >= 0) this.items.splice(idx, 1);
+        if (idx >= 0) feed.items.splice(idx, 1);
       }
     },
 
@@ -183,67 +159,6 @@ export const useReactionsStore = defineStore('reactions', {
     },
     closePicker() {
       this.picker = { open: false, messageId: null, networkId: null, nick: '', text: '' };
-    },
-
-    // ---- the reactions tab ----
-    setQuery(raw: string) {
-      this.query = raw;
-    },
-    buildUrl(before: number | null): string {
-      const params = new URLSearchParams();
-      params.set('limit', String(PAGE_SIZE));
-      const parsed = parseSearchQuery(this.query);
-      if (parsed.query) params.set('q', parsed.query);
-      for (const nick of parsed.from) params.append('nick', nick);
-      if (parsed.in) params.set('target', parsed.in);
-      if (parsed.on) {
-        const networks = useNetworksStore();
-        const match = networks.networks.find(
-          (n) => n.name.toLowerCase() === parsed.on.toLowerCase(),
-        );
-        if (match) params.set('networkId', String(match.id));
-      }
-      if (before) params.set('before', String(before));
-      return `/api/highlights/reactions?${params.toString()}`;
-    },
-    // Same contract as the highlights store's loadInitial — see there.
-    async loadInitial(skipIfSameFilter = false) {
-      const url = this.buildUrl(null);
-      if (skipIfSameFilter && !this.error && url === this.lastUrl) return;
-      this.lastUrl = url;
-      const token = (this.token += 1);
-      this.items = [];
-      this.nextBefore = null;
-      this.error = '';
-      this.loading = true;
-      try {
-        const { items, nextBefore } = await api(url);
-        if (token !== this.token) return;
-        this.items = items || [];
-        this.nextBefore = nextBefore ?? null;
-      } catch (e: any) {
-        if (token !== this.token) return;
-        this.error = e.message || 'failed to load reactions';
-      } finally {
-        if (token === this.token) this.loading = false;
-      }
-    },
-    async loadMore() {
-      if (this.loading || this.nextBefore == null) return;
-      const token = this.token;
-      this.loading = true;
-      this.error = '';
-      try {
-        const { items, nextBefore } = await api(this.buildUrl(this.nextBefore));
-        if (token !== this.token) return;
-        this.items = this.items.concat(items || []);
-        this.nextBefore = nextBefore ?? null;
-      } catch (e: any) {
-        if (token !== this.token) return;
-        this.error = e.message || 'failed to load more reactions';
-      } finally {
-        if (token === this.token) this.loading = false;
-      }
     },
   },
 });

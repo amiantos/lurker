@@ -3,8 +3,16 @@
   SPDX-License-Identifier: MPL-2.0
 -->
 
+<!--
+  The activity feed: everything that happened to you, newest first —
+  highlights, and other people's reactions to your lines (replies will join
+  them). One list, merged by the server (services/activityFeed.ts). Still
+  HighlightsModal / the highlights store in code; it was the highlights modal
+  before reactions joined it.
+-->
+
 <template>
-  <AppModal word="highlights" title="highlights" size="lg" fill-height @close="$emit('close')">
+  <AppModal word="activity" title="activity" size="lg" fill-height @close="$emit('close')">
     <template #actions>
       <button
         class="link sound-toggle"
@@ -15,59 +23,32 @@
       </button>
     </template>
 
-    <!-- The reactions tab lists other people's reactions to your own lines. Not
-         offered on a buffer-scoped open, which is about that buffer's highlights. -->
-    <div v-if="!scoped" class="tabs" role="tablist">
-      <button
-        v-for="t in TABS"
-        :key="t"
-        type="button"
-        role="tab"
-        class="tab"
-        :class="{ active: tab === t }"
-        :aria-selected="tab === t"
-        @click="setTab(t)"
-      >
-        {{ t }}
-      </button>
-    </div>
     <div class="search-row">
       <input
         :value="queryInput"
         @input="onQueryInput"
         class="filter"
         type="text"
-        :placeholder="`filter ${tab} — from:nick in:#channel on:network`"
+        placeholder="filter activity — from:nick in:#channel on:network"
         autocomplete="off"
         spellcheck="false"
       />
     </div>
-    <p v-if="feed.error" class="error inline">{{ feed.error }}</p>
+    <p v-if="store.error" class="error inline">{{ store.error }}</p>
     <ul v-if="visibleItems.length" ref="listEl" class="match-list" @scroll="onScroll">
-      <template v-if="tab === 'reactions'">
-        <HistoryMessageRow
-          v-for="m in visibleItems"
-          :key="`r::${m.reactionId}`"
-          :message="m"
-          :reaction="m.value as string"
-          @jump="onJump"
-        />
-      </template>
-      <template v-else>
-        <HistoryMessageRow
-          v-for="m in visibleItems"
-          :key="`${m.networkId}::${m.target}::${m.id}`"
-          :message="m"
-          @jump="onJump"
-        />
-      </template>
-      <li v-if="feed.loading" class="more">Loading…</li>
+      <HistoryMessageRow
+        v-for="m in visibleItems"
+        :key="m.kind === 'reaction' ? `r::${m.reactionId}` : `h::${m.id}`"
+        :message="m"
+        :reaction="m.kind === 'reaction' ? (m.value ?? null) : null"
+        @jump="onJump"
+      />
+      <li v-if="store.loading" class="more">Loading…</li>
     </ul>
-    <p v-else-if="feed.loading" class="empty">Loading…</p>
-    <p v-else-if="feed.items.length" class="empty">All {{ tab }} are from ignored users.</p>
-    <p v-else-if="hasFilter" class="empty">No {{ tab }} match your filter.</p>
-    <p v-else-if="tab === 'reactions'" class="empty">No reactions to your messages yet.</p>
-    <p v-else class="empty">No highlights yet.</p>
+    <p v-else-if="store.loading" class="empty">Loading…</p>
+    <p v-else-if="store.items.length" class="empty">All activity is from ignored users.</p>
+    <p v-else-if="hasFilter" class="empty">No activity matches your filter.</p>
+    <p v-else class="empty">No activity yet.</p>
   </AppModal>
 </template>
 
@@ -77,7 +58,7 @@ import AppModal from './AppModal.vue';
 import HistoryMessageRow, { type HistoryMessage } from './HistoryMessageRow.vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useHighlightsStore } from '../stores/highlights.js';
-import { useReactionsStore } from '../stores/reactions.js';
+import type { ActivityItem } from '../stores/highlights.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 
@@ -86,43 +67,27 @@ const emit = defineEmits<{
   jump: [payload: { networkId: number; target: string; messageId: number }];
 }>();
 
-// `scope` (set when opened from a buffer's topic bar) runs the highlights feed
-// filtered to this buffer. Unlike search this loads immediately — highlights is
-// a filtered feed, not a type-to-search box, so the channel's highlights should
+// `scope` (set when opened from a buffer's topic bar) runs the activity feed
+// filtered to this buffer. Unlike search this loads immediately — activity is
+// a filtered feed, not a type-to-search box, so the channel's activity should
 // be visible at a glance. The global session is snapshotted and restored on
-// close so the list-bar highlights modal is unaffected.
+// close so the list-bar activity modal is unaffected.
 const props = defineProps<{ scope?: string | null }>();
 const scoped = !!props.scope;
 
 const settings = useSettingsStore();
 const store = useHighlightsStore();
-const reactionsFeed = useReactionsStore();
 const ignores = useIgnoresStore();
-
-const TABS = ['highlights', 'reactions'] as const;
-type Tab = (typeof TABS)[number];
-const tab = ref<Tab>('highlights');
-// The feed the list, filter and pager are driving. Both stores share the
-// from:/in:/on: filter contract, so one input serves either.
-const feed = computed(() => (tab.value === 'reactions' ? reactionsFeed : store));
 let scopedSnapshot: typeof store.$state | null = null;
 
 const listEl = ref<HTMLUListElement | null>(null);
 
-const visibleItems = computed(() =>
-  (feed.value.items as HistoryMessage[]).filter((m) => !ignores.isMessageHidden(m.networkId, m)),
+// For a reaction, `nick` is whoever reacted — so ignoring them hides it too.
+const visibleItems = computed<ActivityItem[]>(() =>
+  store.items.filter((m) => !ignores.isMessageHidden(m.networkId, m)),
 );
 
-const hasFilter = computed(() => feed.value.query.trim().length > 0);
-
-function setTab(next: Tab): void {
-  if (tab.value === next) return;
-  tab.value = next;
-  autoFillFetched = 0;
-  // Carry the filter across, and load fresh — each tab is a live feed.
-  feed.value.setQuery(queryInput.value);
-  feed.value.loadInitial();
-}
+const hasFilter = computed(() => store.query.trim().length > 0);
 
 // If the entire loaded page is from ignored users the scroll container is not
 // rendered, so the user can't trigger pagination themselves — quietly fetch
@@ -139,13 +104,13 @@ const queryInput = ref(scoped ? `${props.scope} ` : store.query);
 const onQueryInput = useImeSafeInput(queryInput);
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 watch(queryInput, (val) => {
-  feed.value.setQuery(val);
+  store.setQuery(val);
   autoFillFetched = 0; // New filter — let auto-fill work again.
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     // skipIfSameFilter: this watcher fires on no-op input changes too (a
     // trailing space, a half-typed filter token) — don't blank + refetch.
-    feed.value.loadInitial(true);
+    store.loadInitial(true);
   }, 200);
 });
 onBeforeUnmount(() => {
@@ -158,16 +123,16 @@ function onScroll(): void {
   const el = listEl.value;
   if (!el) return;
   if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
-    feed.value.loadMore();
+    store.loadMore();
   }
 }
 
 watch(
-  () => [visibleItems.value.length, feed.value.loading, feed.value.hasMore] as const,
+  () => [visibleItems.value.length, store.loading, store.hasMore] as const,
   ([visible, loading, hasMore]) => {
     if (visible === 0 && hasMore && !loading && autoFillFetched < AUTO_FILL_MAX_PAGES) {
       autoFillFetched += 1;
-      feed.value.loadMore();
+      store.loadMore();
     }
   },
 );
@@ -185,7 +150,7 @@ async function toggleSound(): Promise<void> {
 onMounted(() => {
   if (scoped) {
     // Snapshot the global session, then seed the scoped filter before the
-    // initial load so the feed opens showing this buffer's highlights.
+    // initial load so the feed opens showing this buffer's activity.
     scopedSnapshot = { ...store.$state };
     store.setQuery(queryInput.value);
   }
@@ -218,28 +183,6 @@ function onJump(m: HistoryMessage): void {
   /* Icon-only button — size the glyph (fa-solid is already weight 900, so
      font-weight here would be a no-op). */
   font-size: var(--icon-md);
-}
-
-.tabs {
-  display: flex;
-  gap: var(--space-6);
-  margin-bottom: var(--space-5);
-}
-.tab {
-  background: none;
-  border: none;
-  border-bottom: 1px solid transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-  padding: 0 0 var(--space-2);
-}
-.tab:hover {
-  color: var(--fg);
-}
-.tab.active {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
 }
 
 .search-row {

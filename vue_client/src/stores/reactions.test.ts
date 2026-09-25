@@ -10,6 +10,7 @@ vi.mock('../composables/useSocket.js', () => ({
 
 import { socketSend } from '../composables/useSocket.js';
 import { useReactionsStore } from './reactions.js';
+import { useHighlightsStore } from './highlights.js';
 import type { ReactionFrame } from './reactions.js';
 
 const NET = 1;
@@ -99,24 +100,17 @@ describe('reactions store', () => {
     expect(store.groupsFor(10)).toEqual([]);
   });
 
-  it('takes a reaction back from the feed when it’s removed', () => {
+  it('takes a reaction back from the activity feed when it’s removed', () => {
     const store = useReactionsStore();
-    store.items = [
-      {
-        id: 10,
-        reactionId: 1,
-        networkId: NET,
-        networkName: 'n',
-        target: '#c',
-        nick: 'bob',
-        value: '👍',
-        time: '',
-        text: 'mine',
-        messageTime: '',
-      },
+    const feed = useHighlightsStore();
+    const base = { id: 10, networkId: NET, target: '#c', nick: 'bob' };
+    feed.items = [
+      // A highlight on the same line from the same nick must stay.
+      { ...base, kind: 'highlight', text: 'bob: mine' },
+      { ...base, kind: 'reaction', reactionId: 1, value: '👍', text: 'mine' },
     ];
     store.applyFrame(frame({ toSelf: true, remove: true, nick: 'Bob' }));
-    expect(store.items).toEqual([]);
+    expect(feed.items.map((i) => i.kind)).toEqual(['highlight']);
   });
 
   // Toggle: react when it isn't ours yet, take it back when it is. Nothing is

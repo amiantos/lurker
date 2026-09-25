@@ -16,7 +16,7 @@
         <button class="icon" title="Search messages" @click="openSearch(false)">
           <i class="fa-solid fa-magnifying-glass"></i>
         </button>
-        <button class="icon" title="Highlights" @click="openHighlights(false)">
+        <button class="icon" title="Activity" @click="openHighlights(false)">
           <i class="fa-regular fa-bell"></i>
         </button>
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
@@ -93,7 +93,7 @@
         <button
           v-if="!isVirtual && !isServerBuffer"
           class="icon"
-          title="Highlights in this buffer"
+          title="Activity in this buffer"
           @click="openHighlights(true)"
         >
           <i class="fa-regular fa-bell"></i>

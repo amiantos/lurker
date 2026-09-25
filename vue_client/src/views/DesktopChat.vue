@@ -57,7 +57,7 @@
         <button class="link" @click="openSearch(false)" title="Search messages">
           <i class="fa-solid fa-magnifying-glass"></i>
         </button>
-        <button class="link" @click="openHighlights(false)" title="Highlights">
+        <button class="link" @click="openHighlights(false)" title="Activity">
           <i class="fa-regular fa-bell"></i>
         </button>
         <button class="link" @click="showBookmarks = true" title="Saved messages">
@@ -156,8 +156,8 @@
             <button
               type="button"
               class="link"
-              title="Highlights in this buffer"
-              aria-label="Highlights in this buffer"
+              title="Activity in this buffer"
+              aria-label="Activity in this buffer"
               @click="openHighlights(true)"
             >
               <i class="fa-regular fa-bell"></i>
