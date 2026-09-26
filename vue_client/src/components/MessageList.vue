@@ -117,24 +117,21 @@
           @click.stop="onReplyContextClick(row.replyParent)"
           @keydown.enter.space.prevent.stop="onReplyContextClick(row.replyParent)"
         >
-          <!-- The arm opens the quote, in the body column: a box-drawing arm, not an
-               icon — the list's other markers are plain text (the join and part
-               arrows, the action star), and the square corner matches the buffer
-               list's lines. It rises from the reply's text below and turns into the
-               quote, which it indents. The nick column stays who/what for each line.
-               The quote is written the way IRC writes the line — `<alice> text`,
-               `* bob waves`, `-ChanServ- text` — so it reads as what was said, not as
-               a sentence starting with a name. -->
+          <!-- A box-drawing arm, not an icon: the list's other markers are plain text
+               (the join and part arrows, the action star), and the square corner
+               matches the buffer list's lines. It rises from the reply's nick below
+               and turns into the quote. -->
+          <span class="reply-mark" role="img" aria-label="In reply to">┌─</span>
+          <!-- Quoted the way IRC writes the line — `<alice> text`, `* bob waves`,
+               `-ChanServ- text` — so it reads as what was said, not as a sentence
+               starting with a name. -->
           <span class="reply-excerpt"
-            ><span class="reply-mark" role="img" aria-label="In reply to">┌─</span
-            ><span class="reply-quote"
-              ><template v-if="row.replyParent"
-                >{{ quoteMarks(row.replyParent.type)[0] }}<NickRef :nick="row.replyParent.nick" />{{
-                  quoteMarks(row.replyParent.type)[1]
-                }}
-                {{ replyExcerpt(row.replyParent.text) }}</template
-              ><template v-else>original message unavailable</template></span
-            ></span
+            ><template v-if="row.replyParent"
+              >{{ quoteMarks(row.replyParent.type)[0] }}<NickRef :nick="row.replyParent.nick" />{{
+                quoteMarks(row.replyParent.type)[1]
+              }}
+              {{ replyExcerpt(row.replyParent.text) }}</template
+            ><template v-else>original message unavailable</template></span
           >
         </div>
         <template v-if="compactMode && row.m?.type === 'message'">
@@ -2754,16 +2751,15 @@ watch(
   padding-left: 1ch;
 }
 /* IRCv3 reply (#993): the answered line, one faded italic row above the reply. It
-   spans the last two columns as a subgrid of its own, so the quote (arm first) starts
-   in the body column, the arm's corner over the reply's first character — and
-   counting from the END keeps that true on phone widths, where the time column is
-   gone. The nick-column cell is left empty. The reply's own cells drop to row 2
-   (scoped to the standard layout; compact places them by area).
+   spans the last two columns as a subgrid of its own, so the mark lines up under the
+   nick column's right edge and the excerpt with the body text — and counting from the
+   END keeps that true on phone widths, where the time column is gone. The reply's own
+   cells drop to row 2 (scoped to the standard layout; compact places them by area).
 
    Faded with opacity rather than a muted colour, so the quoted nick keeps its own
-   colour and fades with the rest — the arm, the brackets and the text all sit at one
-   level. On the excerpt (the arm is inside it), not the row: the row also carries the
-   column rule (::before), which must stay at full strength to read as unbroken. */
+   colour and fades with the rest — the mark, the brackets and the text all sit at one
+   level. On the mark and the excerpt, not the row: the row also carries the column
+   rule (::before), which must stay at full strength to read as unbroken. */
 .reply-ctx {
   grid-column: -3 / -1;
   grid-row: 1;
@@ -2778,9 +2774,11 @@ watch(
 .reply-ctx.missing {
   cursor: default;
 }
+.reply-ctx > .reply-mark,
 .reply-ctx > .reply-excerpt {
   opacity: 0.45;
 }
+.reply-ctx:not(.missing):hover > .reply-mark,
 .reply-ctx:not(.missing):hover > .reply-excerpt {
   opacity: 0.8;
 }
@@ -2790,8 +2788,11 @@ watch(
   grid-row: 2;
 }
 .reply-mark {
-  margin-right: 1ch;
-  /* Upright in the italic row: a slanted corner stops lining up with the text. */
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  padding-right: 1ch;
+  /* Upright in the italic row: a slanted corner stops lining up with the nick. */
   font-style: normal;
 }
 .reply-excerpt {
@@ -2900,6 +2901,9 @@ watch(
   .message-list:not(.compact) .reply-excerpt {
     padding-left: 0.5ch;
   }
+  .message-list:not(.compact) .reply-mark {
+    padding-right: 0.5ch;
+  }
 }
 
 /* Compact layout (look.message.layout = compact, or = auto on mobile):
@@ -2945,6 +2949,10 @@ watch(
 .message-list.compact .reply-ctx {
   grid-area: reply;
   display: flex;
+  gap: 0.75ch;
+}
+.message-list.compact .reply-mark {
+  padding-right: 0;
 }
 .message-list.compact .reply-excerpt {
   padding-left: 0;

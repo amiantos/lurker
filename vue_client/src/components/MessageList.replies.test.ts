@@ -89,10 +89,8 @@ describe('MessageList — replies', () => {
     });
     const w = mountWith([p, r]);
     const row = rowOf(w, r.id);
-    // Quoted as IRC writes it, formatting dropped, opened by the arm in the body
-    // column (inside the excerpt), not the nick column.
-    expect(row.find('.reply-quote').text()).toBe('<alice> what time is it?');
-    expect(row.find('.reply-excerpt .reply-mark').text()).toBe('┌─');
+    // Quoted as IRC writes it, formatting dropped.
+    expect(row.find('.reply-excerpt').text()).toBe('<alice> what time is it?');
     expect(row.find('.body').text()).toBe('noon');
     // A plain line has no reply line.
     expect(rowOf(w, p.id).find('.reply-ctx').exists()).toBe(false);
@@ -102,7 +100,7 @@ describe('MessageList — replies', () => {
     const r = line('bob', 'lol same', { replyTo: { msgid: 'gone', parent: null } });
     const w = mountWith([r]);
     expect(rowOf(w, r.id).find('.reply-ctx').classes()).toContain('missing');
-    expect(rowOf(w, r.id).find('.reply-quote').text()).toBe('original message unavailable');
+    expect(rowOf(w, r.id).find('.reply-excerpt').text()).toBe('original message unavailable');
   });
 
   it('won’t quote someone ignored since, even though the server sent the line', () => {
@@ -121,7 +119,7 @@ describe('MessageList — replies', () => {
     ];
     const r = line('bob', 'alice: noon', { replyTo: { msgid: 'm1', parent: parent() } });
     const w = mountWith([r]);
-    expect(rowOf(w, r.id).find('.reply-quote').text()).toBe('original message unavailable');
+    expect(rowOf(w, r.id).find('.reply-excerpt').text()).toBe('original message unavailable');
     expect(rowOf(w, r.id).text()).not.toContain('what time');
     // With no quote naming her, the address is the only sign of who it's to.
     expect(rowOf(w, r.id).find('.body').text()).toBe('alice: noon');
@@ -156,8 +154,8 @@ describe('MessageList — replies', () => {
       replyTo: { msgid: 'm2', parent: parent({ nick: 'ChanServ', type: 'notice', text: 'hi' }) },
     });
     const w = mountWith([a, n]);
-    expect(rowOf(w, a.id).find('.reply-quote').text()).toBe('* carol waves');
-    expect(rowOf(w, n.id).find('.reply-quote').text()).toBe('-ChanServ- hi');
+    expect(rowOf(w, a.id).find('.reply-excerpt').text()).toBe('* carol waves');
+    expect(rowOf(w, n.id).find('.reply-excerpt').text()).toBe('-ChanServ- hi');
   });
 
   // The tint follows the server's stamp, which is what the badge and the feed
