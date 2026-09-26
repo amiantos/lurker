@@ -188,7 +188,7 @@ describe('MessageList — replies', () => {
       .find((b) => b.attributes('title')?.startsWith('Reply'));
     expect(reply).toBeTruthy();
     await reply!.trigger('click');
-    expect(useRepliesStore().forKey(KEY)).toEqual({
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({
       messageId: p.id,
       nick: 'alice',
       type: 'message',

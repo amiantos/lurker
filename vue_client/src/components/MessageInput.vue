@@ -896,12 +896,14 @@ function giveBackReply(taken: TakenReply | null): void {
 }
 
 // The status bar's × and Escape: drop the pending reply, and take back the
-// `nick: ` its Reply put in the draft (halloy does the same).
+// `nick: ` its Reply put in the draft (halloy does the same) — only if the Reply
+// put it there; one the user typed stays.
 function cancelReply(): void {
   const key = networks.activeKey;
   const reply = replies.forKey(key);
   if (!reply) return;
   replies.cancel(key);
+  if (!reply.addressed) return;
   const cur = text.value;
   const stripped = stripAddress(cur, reply.nick);
   if (stripped !== cur) setInputAndCaretEnd(stripped);
@@ -1804,7 +1806,13 @@ function addressInComposer(nick: string): void {
   resetCompletion();
   resetHistoryNav();
   const cur = text.value;
-  setInputAndCaretEnd(isAddressedTo(cur, nick) ? cur : nick + addressSuffix() + cur);
+  if (!isAddressedTo(cur, nick)) {
+    setInputAndCaretEnd(nick + addressSuffix() + cur);
+    // Cancelling the pending reply (#993) takes back only what this inserted.
+    if (networks.activeKey) replies.markAddressed(networks.activeKey, nick);
+  } else {
+    setInputAndCaretEnd(cur);
+  }
   queueMicrotask(() => inputEl.value?.focus());
 }
 

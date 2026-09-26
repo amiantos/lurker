@@ -6,7 +6,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { useRepliesStore } from './replies.js';
 import { bufferClosed, bufferRenamed } from '../lib/bufferLifecycle.js';
 
-const REPLY = { messageId: 42, nick: 'alice', type: 'message', text: 'hi' };
+const REPLY = Object.freeze({ messageId: 42, nick: 'alice', type: 'message', text: 'hi' });
 
 describe('pending replies across a buffer’s lifecycle', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -18,7 +18,7 @@ describe('pending replies across a buffer’s lifecycle', () => {
     replies.start('1::#bar', REPLY);
     bufferClosed(1, '#foo');
     expect(replies.forKey('1::#foo')).toBeNull();
-    expect(replies.forKey('1::#bar')).toEqual(REPLY);
+    expect(replies.forKey('1::#bar')).toMatchObject(REPLY);
   });
 
   it('follow a renamed buffer', () => {
@@ -26,6 +26,6 @@ describe('pending replies across a buffer’s lifecycle', () => {
     replies.start('1::alice', REPLY);
     bufferRenamed(1, 'alice', 'alice_');
     expect(replies.forKey('1::alice')).toBeNull();
-    expect(replies.forKey('1::alice_')).toEqual(REPLY);
+    expect(replies.forKey('1::alice_')).toMatchObject(REPLY);
   });
 });

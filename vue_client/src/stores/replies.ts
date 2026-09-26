@@ -19,6 +19,10 @@ export interface PendingReply {
   nick: string;
   type: string;
   text: string;
+  // The Reply put `nick: ` into the draft (it doesn't when the draft already
+  // opens with it). Only then does cancelling take it back out — an address the
+  // user typed is theirs.
+  addressed?: boolean;
 }
 
 export const useRepliesStore = defineStore('replies', {
@@ -34,7 +38,17 @@ export const useRepliesStore = defineStore('replies', {
   },
   actions: {
     start(key: string, reply: PendingReply) {
-      this.pending[key] = reply;
+      // Reply again on a line by the same author: the address in the draft is
+      // still the one the first Reply put there. Stored as our own copy — the
+      // caller's object is theirs, and markAddressed must not reach into it.
+      const prev = this.pending[key];
+      const addressed = !!reply.addressed || (!!prev?.addressed && prev.nick === reply.nick);
+      this.pending[key] = { ...reply, addressed };
+    },
+    // The composer put `nick: ` in the draft for this buffer's pending reply.
+    markAddressed(key: string, nick: string) {
+      const reply = this.pending[key];
+      if (reply && reply.nick === nick) this.pending[key] = { ...reply, addressed: true };
     },
     cancel(key: string | null | undefined) {
       if (key) delete this.pending[key];

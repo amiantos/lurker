@@ -15,7 +15,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useRepliesStore } from '../stores/replies.js';
-import { cancelComposerReply } from '../composables/useComposerOverlay.js';
+import { addressNick, cancelComposerReply } from '../composables/useComposerOverlay.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
 
@@ -28,7 +28,12 @@ vi.mock('../composables/useSocket.js', () => ({
 }));
 
 const KEY = '1::#chan';
-const REPLY = { messageId: 42, nick: 'alice', type: 'message', text: 'what time is it?' };
+const REPLY = Object.freeze({
+  messageId: 42,
+  nick: 'alice',
+  type: 'message',
+  text: 'what time is it?',
+});
 
 let mounted: VueWrapper[] = [];
 
@@ -66,6 +71,15 @@ async function press(el: HTMLTextAreaElement, key: string) {
 
 const sent = () =>
   vi.mocked(socketSendWithAck).mock.calls.map((c) => c[0] as Record<string, unknown>);
+
+// What a line's Reply action does (MessageList's onReply): start the pending
+// reply, then have the composer address them.
+async function reply(el: HTMLTextAreaElement) {
+  useRepliesStore().start(KEY, REPLY);
+  addressNick(REPLY.nick);
+  await flush();
+  return el;
+}
 
 describe('composing a reply', () => {
   beforeEach(() => {
@@ -112,7 +126,7 @@ describe('composing a reply', () => {
     const el = await composer();
     await type(el, '/me');
     await press(el, 'Enter');
-    expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject(REPLY);
   });
 
   it('gives the reply back when the send never left', async () => {
@@ -122,7 +136,7 @@ describe('composing a reply', () => {
     const el = await composer();
     await type(el, 'alice: noon');
     await press(el, 'Enter');
-    expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject(REPLY);
   });
 
   it('gives it back when the server refuses the send', async () => {
@@ -134,7 +148,7 @@ describe('composing a reply', () => {
     const el = await composer();
     await type(el, 'alice: noon');
     await press(el, 'Enter');
-    expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject(REPLY);
   });
 
   it('gives a /me reply back when the server refuses it', async () => {
@@ -146,13 +160,13 @@ describe('composing a reply', () => {
     const el = await composer();
     await type(el, '/me checks the clock');
     await press(el, 'Enter');
-    expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject(REPLY);
   });
 
   it('drops the reply on Escape, and the address its Reply put in', async () => {
     seed();
-    useRepliesStore().start(KEY, REPLY);
-    const el = await composer();
+    const el = await reply(await composer());
+    expect(el.value).toBe('alice: ');
     await type(el, 'alice: it is noon');
     await press(el, 'Escape');
     expect(useRepliesStore().forKey(KEY)).toBeNull();
@@ -161,8 +175,7 @@ describe('composing a reply', () => {
 
   it('drops it from the status bar’s × the same way', async () => {
     seed();
-    useRepliesStore().start(KEY, REPLY);
-    const el = await composer();
+    const el = await reply(await composer());
     await type(el, 'alice: it is noon');
     cancelComposerReply();
     await flush();
@@ -170,10 +183,32 @@ describe('composing a reply', () => {
     expect(el.value).toBe('it is noon');
   });
 
+  // An address the user typed is theirs: the Reply found it there and added
+  // nothing, so cancelling has nothing to take back.
+  it('leaves an address the user typed themselves', async () => {
+    seed();
+    const el = await composer();
+    await type(el, 'alice: about earlier');
+    await reply(el);
+    expect(el.value).toBe('alice: about earlier');
+    expect(useRepliesStore().forKey(KEY)?.addressed).toBeFalsy();
+    await press(el, 'Escape');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(el.value).toBe('alice: about earlier');
+  });
+
+  it('still takes back its own address after a second Reply to the same author', async () => {
+    seed();
+    const el = await reply(await composer());
+    await reply(el);
+    await type(el, 'alice: noon');
+    await press(el, 'Escape');
+    expect(el.value).toBe('noon');
+  });
+
   it('leaves a draft that no longer addresses them alone', async () => {
     seed();
-    useRepliesStore().start(KEY, REPLY);
-    const el = await composer();
+    const el = await reply(await composer());
     await type(el, 'alicia should know');
     await press(el, 'Escape');
     expect(useRepliesStore().forKey(KEY)).toBeNull();
@@ -187,6 +222,6 @@ describe('composing a reply', () => {
     await type(el, 'unrelated');
     await press(el, 'Enter');
     expect(sent()[0]).not.toHaveProperty('replyTo');
-    expect(useRepliesStore().forKey('1::#other')).toEqual(REPLY);
+    expect(useRepliesStore().forKey('1::#other')).toMatchObject(REPLY);
   });
 });
