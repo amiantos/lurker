@@ -88,8 +88,8 @@ describe('MessageList — replies', () => {
     });
     const w = mountWith([p, r]);
     const row = rowOf(w, r.id);
-    expect(row.find('.reply-ctx').text()).toContain('alice');
-    expect(row.find('.reply-excerpt').text()).toContain('what time is it?');
+    // Quoted as IRC writes it, formatting dropped.
+    expect(row.find('.reply-excerpt').text()).toBe('<alice> what time is it?');
     expect(row.find('.body').text()).toBe('noon');
     // A plain line has no reply line.
     expect(rowOf(w, p.id).find('.reply-ctx').exists()).toBe(false);
@@ -122,16 +122,37 @@ describe('MessageList — replies', () => {
     expect(rowOf(w, r.id).text()).not.toContain('what time');
   });
 
+  it('quotes a /me and a notice the way IRC writes them', () => {
+    const a = line('bob', 'rip', {
+      replyTo: { msgid: 'm1', parent: parent({ nick: 'carol', type: 'action', text: 'waves' }) },
+    });
+    const n = line('bob', 'thanks', {
+      replyTo: { msgid: 'm2', parent: parent({ nick: 'ChanServ', type: 'notice', text: 'hi' }) },
+    });
+    const w = mountWith([a, n]);
+    expect(rowOf(w, a.id).find('.reply-excerpt').text()).toBe('* carol waves');
+    expect(rowOf(w, n.id).find('.reply-excerpt').text()).toBe('-ChanServ- hi');
+  });
+
+  // The tint follows the server's stamp, which is what the badge and the feed
+  // count — not the parent, which can be gone by now.
   it('keeps a reply to you highlighted once the rules are evaluated live', () => {
     const rules = useHighlightRulesStore();
     rules.loaded = true;
     const toMe = line('bob', 'good question', {
       matched: true,
+      replyToSelf: true,
       replyTo: { msgid: 'm1', parent: parent({ nick: 'me', self: true }) },
     });
+    const parentGone = line('bob', 'still to you', {
+      matched: true,
+      replyToSelf: true,
+      replyTo: { msgid: 'm3', parent: null },
+    });
     const toAlice = line('bob', 'not you', { replyTo: { msgid: 'm2', parent: parent() } });
-    const w = mountWith([toMe, toAlice]);
+    const w = mountWith([toMe, parentGone, toAlice]);
     expect(rowOf(w, toMe.id).classes()).toContain('highlight');
+    expect(rowOf(w, parentGone.id).classes()).toContain('highlight');
     expect(rowOf(w, toAlice.id).classes()).not.toContain('highlight');
   });
 

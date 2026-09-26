@@ -1313,6 +1313,7 @@ export class IrcConnection {
       // The wire carries the resolved context, never the bare tag value.
       delete enriched.replyMsgid;
       if (replyTo) enriched.replyTo = replyTo;
+      if (replyToSelf) enriched.replyToSelf = true;
       enriched.fromIgnored = fromIgnored;
     }
 

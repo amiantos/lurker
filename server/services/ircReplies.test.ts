@@ -218,10 +218,15 @@ describe('a reply to the user', () => {
       await peerSays(rig, 'bob', '#h1', 'good question', [`+draft/reply=${mine.msgid}`]);
       await peerSays(rig, 'bob', '#h1', 'not to you', [`+draft/reply=${theirs}`]);
 
-      expect(liveByText(rig, 'good question').matched).toBe(true);
-      expect(rowByText(rig, '#h1', 'good question').matched).toBe(true);
+      expect(liveByText(rig, 'good question')).toMatchObject({ matched: true, replyToSelf: true });
+      expect(rowByText(rig, '#h1', 'good question')).toMatchObject({
+        matched: true,
+        replyToSelf: true,
+      });
       expect(liveByText(rig, 'not to you').matched).toBe(false);
+      expect(liveByText(rig, 'not to you')).not.toHaveProperty('replyToSelf');
       expect(rowByText(rig, '#h1', 'not to you').matched).toBe(false);
+      expect(rowByText(rig, '#h1', 'not to you')).not.toHaveProperty('replyToSelf');
       expect(countHighlightsNewer(rig.network.id, '#h1', before)).toBe(1);
       const feed = searchMessages(userId, { matched: true, networkId: rig.network.id });
       expect(feed.map((m) => m.text)).toEqual(['good question']);
@@ -267,6 +272,7 @@ describe('a reply to the user', () => {
       const mine = await weSay(rig, '#h4', 'hello all');
       await peerSays(rig, 'pest', '#h4', 'hi hi hi', [`+draft/reply=${mine.msgid}`]);
       expect(rowByText(rig, '#h4', 'hi hi hi').matched).toBe(false);
+      expect(rowByText(rig, '#h4', 'hi hi hi')).not.toHaveProperty('replyToSelf');
       expect(countHighlightsNewer(rig.network.id, '#h4', mine.id)).toBe(0);
     } finally {
       rig.conn.dispose();

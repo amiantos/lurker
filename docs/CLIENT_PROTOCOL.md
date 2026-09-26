@@ -554,9 +554,11 @@ carries that msgid — retention took it, it predates your history, it was a
 reaction, or its author was ignored when it arrived — so show the reply without
 its context. Absent on a line that isn't a reply, and on rows from search, the
 activity feed and bookmarks, which don't resolve it. `id` is the jump target. A
-reply to one of your own lines, from someone else, is a highlight: `matched:true`
-with `matchedRuleId: null` (no rule matched it). Send one with `replyTo` on
-`send`/`action` (§6).
+reply to one of your own lines, from someone else, is a highlight and carries
+`replyToSelf: true` (absent otherwise) with `matched: true`. Tint and count it
+from that stamp rather than from `parent.self`: the parent can be gone, or stored
+after the reply, while the stamp is what the server's counts and feeds read. Send
+one with `replyTo` on `send`/`action` (§6).
 
 **`notify` is the server's delivery decision — the one flag to gate a live
 alert (toast, sound, native buzz) on.** It is the union of the content signals

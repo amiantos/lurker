@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { parseIrcFormatting } from './nickColor.js';
+import { escapeRegex } from '../../../shared/textMatch.js';
 
 // Text helpers for IRCv3 replies (#993), shared by the reply line above a
 // message (MessageList) and the pending-reply segment (StatusBar).
@@ -16,13 +17,14 @@ export function replyExcerpt(text: string): string {
     .trim();
 }
 
-// A character that can't continue a nick — MessageInput's NOT_NICK_CHAR, so
-// `bob_: hi` is not addressing bob, and `bobł: hi` is not either.
-const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+// A character that cannot continue a nick, which is what "punctuation after
+// the nick" has to mean when telling `nick: hi` from a line that just opens
+// with a word: not a letter or digit (Unicode — `\w` is ASCII-only, so `bobł`
+// would read as bob + a mark), not whitespace, and not one of the RFC 2812 nick
+// specials `[]\`_^{|}-` — or `bob_: hi` would count as addressing bob, and bob_
+// is every ghost's nick. The one definition: the composer's address matching
+// (MessageInput) and the reply display's (stripReplyAddress) must agree on it.
+export const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
 
 // A reply's text without the `nick: ` it opens with when it names the author it
 // answers — how halloy and goguma send one, and how our composer does, so a

@@ -103,6 +103,11 @@ export interface MessageEvent {
   // a reply, and on reads that don't resolve it (search, the bouncer) — see
   // REPLY_COL.
   replyTo?: ReplyContext;
+  // The reply_to_self stamp: this line answers one of the owner's own, and so
+  // is a highlight with no rule behind it. Absent when false, like `bookmarked`.
+  // The stamp, not replyTo.parent — the parent can be gone or late, the stamp
+  // is what every count and feed read.
+  replyToSelf?: true;
   [key: string]: unknown;
 }
 
@@ -418,6 +423,8 @@ function rowToEvent(row: MessageRow): MessageEvent {
   // And for the reply context. Only on reads that resolved it (REPLY_COL): a
   // reply read without it would otherwise claim its parent was unavailable.
   delete event.replyTo;
+  delete event.replyToSelf;
+  if (row.reply_to_self === 1) event.replyToSelf = true;
   if (row.reply_msgid && row.reply_parent !== undefined) {
     event.replyTo = { msgid: row.reply_msgid, parent: parseReplyParent(row.reply_parent) };
   }
@@ -1303,24 +1310,24 @@ export function countServerBufferUnread(
 // OR, so each half walks its own partial index — idx_messages_matched_buf and
 // idx_messages_reply_self_buf — instead of every unread row; the second skips
 // rule-matched rows so a line that is both isn't counted twice.
+const countHighlightsNewerStmt = db.prepare(`
+  SELECT
+    (SELECT COUNT(*) FROM messages
+      WHERE buffer_id = @bufferId AND id > @afterId
+        AND matched_rule_id IS NOT NULL
+        AND from_ignored = 0
+        AND notable = 1)
+  + (SELECT COUNT(*) FROM messages
+      WHERE buffer_id = @bufferId AND id > @afterId
+        AND reply_to_self = 1 AND matched_rule_id IS NULL
+        AND from_ignored = 0
+        AND notable = 1) AS n
+`);
+
 export function countHighlightsNewer(networkId: number, target: string, afterId: number): number {
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return 0;
-  const row = db
-    .prepare(
-      `SELECT
-         (SELECT COUNT(*) FROM messages
-           WHERE buffer_id = @bufferId AND id > @afterId
-             AND matched_rule_id IS NOT NULL
-             AND from_ignored = 0
-             AND notable = 1)
-       + (SELECT COUNT(*) FROM messages
-           WHERE buffer_id = @bufferId AND id > @afterId
-             AND reply_to_self = 1 AND matched_rule_id IS NULL
-             AND from_ignored = 0
-             AND notable = 1) AS n`,
-    )
-    .get({ bufferId, afterId: afterId || 0 }) as { n: number };
+  const row = countHighlightsNewerStmt.get({ bufferId, afterId: afterId || 0 }) as { n: number };
   return row.n;
 }
 

@@ -182,6 +182,7 @@ import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { PendingReply } from '../stores/replies.js';
+import { NOT_NICK_CHAR } from '../utils/replyText.js';
 import { MAX_REACTION_GRAPHEMES, isValidReactionValue } from '../../../shared/reactions.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useAuthStore } from '../stores/auth.js';
@@ -849,13 +850,6 @@ function addressSuffix(): string {
   return `${addressPunct()} `;
 }
 
-// A character that cannot continue a nick, which is what "punctuation after
-// the nick" has to mean for isAddressedTo(): not a letter or digit (Unicode —
-// `\w` is ASCII-only, so `bobł` would read as bob + a mark), not whitespace,
-// and not one of the RFC 2812 nick specials `[]\`_^{|}-` — or `bob_: hi`
-// would count as addressing bob, and bob_ is every ghost's nick.
-const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
-
 // Whether `draft` already opens by addressing `nick`, so Reply is idempotent.
 // Not just the configured form: a draft can carry an older setting's form, or
 // one another client wrote (iOS still says `nick: `, and drafts sync), so any
@@ -866,22 +860,29 @@ const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
 // setting that draft is indistinguishable from an addressed one, which is the
 // ambiguity of the convention itself, not something to second-guess.
 function isAddressedTo(draft: string, nick: string): boolean {
-  const punct = addressPunct();
-  const marks = punct ? `(?:${escapeRegex(punct)}|${NOT_NICK_CHAR}+)` : `${NOT_NICK_CHAR}*`;
-  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu').test(draft);
+  return addressRegex(nick).test(draft);
 }
 
 // `draft` with the address isAddressedTo() recognizes taken off the front —
-// what cancelling a reply undoes. Anything else in the draft stays.
+// what cancelling a reply (#993) undoes. Anything else in the draft stays.
 function stripAddress(draft: string, nick: string): string {
+  return draft.replace(addressRegex(nick), '');
+}
+
+// The one pattern both of the above use, so what counts as an address and what
+// cancelling takes back can't drift apart. NOT_NICK_CHAR is shared with the
+// reply display's stripReplyAddress (utils/replyText.ts).
+function addressRegex(nick: string): RegExp {
   const punct = addressPunct();
   const marks = punct ? `(?:${escapeRegex(punct)}|${NOT_NICK_CHAR}+)` : `${NOT_NICK_CHAR}*`;
-  return draft.replace(new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu'), '');
+  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu');
 }
 
 // Hand the active buffer's pending reply to a send, clearing it. The caller
 // puts it back (giveBackReply) when the send never left.
-function takeReply(): { key: string; reply: PendingReply } | null {
+type TakenReply = { key: string; reply: PendingReply };
+
+function takeReply(): TakenReply | null {
   const key = networks.activeKey;
   const reply = replies.forKey(key);
   if (!key || !reply) return null;
@@ -889,7 +890,7 @@ function takeReply(): { key: string; reply: PendingReply } | null {
   return { key, reply };
 }
 
-function giveBackReply(taken: { key: string; reply: PendingReply } | null): void {
+function giveBackReply(taken: TakenReply | null): void {
   // Unless another Reply has been started there since.
   if (taken && !replies.forKey(taken.key)) replies.start(taken.key, taken.reply);
 }
@@ -2384,7 +2385,10 @@ async function submit() {
     const ack = takeCommandAck();
     if (ack) {
       const result = await ack.promise;
-      if (!result.ok) restoreFailedSend(ack.origin.networkId, ack.origin.target, ack.origin.line);
+      if (!result.ok) {
+        restoreFailedSend(ack.origin.networkId, ack.origin.target, ack.origin.line);
+        giveBackReply(ack.origin.reply ?? null);
+      }
     }
     return;
   }
@@ -2760,7 +2764,15 @@ let chatMessagesSent = 0;
 // invariant worth shipping.
 interface CommandAck {
   promise: Promise<AckResult>;
-  origin: { networkId: number; target: string; line: string };
+  origin: CommandOrigin;
+}
+// `reply`: the pending reply (#993) the command's line was sent as — a /me —
+// given back with the text if the send fails.
+interface CommandOrigin {
+  networkId: number;
+  target: string;
+  line: string;
+  reply?: TakenReply | null;
 }
 let pendingCommandAck: CommandAck | null = null;
 
@@ -2780,7 +2792,7 @@ function takeCommandAck(): CommandAck | null {
 function ackedSend(
   payload: Record<string, unknown>,
   body: string,
-  origin?: { networkId: number; target: string; line: string },
+  origin?: CommandOrigin,
 ): boolean {
   const pending = socketSendWithAck(payload);
   if (!pending) {
@@ -3542,7 +3554,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
           ...(taken ? { replyTo: taken.reply.messageId } : {}),
         },
         argLine,
-        { networkId, target, line },
+        { networkId, target, line, reply: taken },
       );
       if (!sent) giveBackReply(taken);
       return sent;

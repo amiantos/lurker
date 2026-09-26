@@ -128,6 +128,18 @@ describe('composing a reply', () => {
     expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
   });
 
+  it('gives a /me reply back when the server refuses it', async () => {
+    seed();
+    useRepliesStore().start(KEY, REPLY);
+    vi.mocked(socketSendWithAck).mockReturnValueOnce(
+      Promise.resolve({ ok: false, error: 'not-connected' }),
+    );
+    const el = await composer();
+    await type(el, '/me checks the clock');
+    await press(el, 'Enter');
+    expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
+  });
+
   it('drops the reply on Escape, and the address its Reply put in', async () => {
     seed();
     useRepliesStore().start(KEY, REPLY);

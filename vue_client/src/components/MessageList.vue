@@ -110,17 +110,22 @@
         <div
           v-if="row.m?.replyTo"
           class="reply-ctx"
-          :class="{ missing: !shownParent(row.m) }"
-          :title="shownParent(row.m) ? 'Jump to this message' : undefined"
-          @click.stop="onReplyContextClick(row.m)"
+          :class="{ missing: !row.replyParent }"
+          :title="row.replyParent ? 'Jump to this message' : undefined"
+          @click.stop="onReplyContextClick(row.replyParent)"
         >
           <span class="reply-mark"
             ><i class="fa-solid fa-reply" role="img" aria-label="In reply to"></i
           ></span>
+          <!-- Quoted the way IRC writes the line — `<alice> text`, `* bob waves`,
+               `-ChanServ- text` — so it reads as what was said, not as a sentence
+               starting with a name. -->
           <span class="reply-excerpt"
-            ><template v-if="shownParent(row.m)"
-              ><NickRef :nick="shownParent(row.m)!.nick" />
-              {{ replyExcerpt(shownParent(row.m)!.text) }}</template
+            ><template v-if="row.replyParent"
+              >{{ quoteMarks(row.replyParent.type)[0] }}<NickRef :nick="row.replyParent.nick" />{{
+                quoteMarks(row.replyParent.type)[1]
+              }}
+              {{ replyExcerpt(row.replyParent.text) }}</template
             ><template v-else>original message unavailable</template></span
           >
         </div>
@@ -489,6 +494,10 @@ interface ChatMessage {
 interface RenderRow {
   // Message row
   m?: ChatMessage;
+  // A reply's answered line as its reply line shows it (#993): null for
+  // "unavailable". Decided once per row in renderRows — it runs the ignore
+  // matcher — rather than per template binding. Absent on a non-reply.
+  replyParent?: ReplyParent | null;
   alt?: boolean;
   key: string | number;
   // Divider row
@@ -1228,7 +1237,9 @@ const renderRows = computed((): RenderRow[] => {
     let rowHighlight = !!m.matched;
     // A reply to one of our lines is a highlight with no rule behind it (#993):
     // the live rule evaluation below can't see it, so it has to survive that.
-    const replyToSelf = !m.self && !!m.replyTo?.parent?.self;
+    // The server's stamp, not replyTo.parent — the parent can be gone (retention)
+    // or stored after the reply, and the stamp is what the badge and feed count.
+    const replyToSelf = !m.self && !!m.replyToSelf;
     if (highlights.loaded && !m.self && networkId) {
       rowHighlight =
         highlights.evaluate(networkId, {
@@ -1372,6 +1383,7 @@ const renderRows = computed((): RenderRow[] => {
       key,
       nohilight: rowNohilight,
       highlight: rowHighlight,
+      ...(m.replyTo ? { replyParent: shownParent(m.replyTo.parent, networkId, bufTarget) } : {}),
     });
   }
 
@@ -1607,15 +1619,17 @@ function replyable(m: ChatMessage): boolean {
 // The answered line as the reply line shows it — or null for "unavailable",
 // which also covers a line from someone ignored since it arrived (the server
 // only screens out who was ignored at the time). Judged as the line it was.
-function shownParent(m: ChatMessage | undefined): ReplyParent | null {
-  const parent = m?.replyTo?.parent;
+function shownParent(
+  parent: ReplyParent | null,
+  networkId: number | null | undefined,
+  target: string,
+): ReplyParent | null {
   if (!parent) return null;
-  const networkId = buffer.value?.networkId;
   if (!parent.self && parent.nick && networkId != null) {
     const verdict = ignores.evaluate(networkId, {
       nick: parent.nick,
       userhost: parent.userhost,
-      target: buffer.value?.target ?? '',
+      target,
       text: parent.text,
       type: parent.type,
       isDm: buffer.value?.kind === 'dm',
@@ -1625,8 +1639,14 @@ function shownParent(m: ChatMessage | undefined): ReplyParent | null {
   return parent;
 }
 
-function onReplyContextClick(m: ChatMessage | undefined): void {
-  const parent = shownParent(m);
+// What goes either side of the nick in a quoted line, by its type.
+function quoteMarks(type: string): [string, string] {
+  if (type === 'action') return ['* ', ''];
+  if (type === 'notice') return ['-', '-'];
+  return ['<', '>'];
+}
+
+function onReplyContextClick(parent: ReplyParent | null | undefined): void {
   const buf = buffer.value;
   if (!parent || !buf || buf.networkId == null) return;
   // The shared jump pipeline: scrolls to the line if it's loaded, else loads a
