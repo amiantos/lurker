@@ -194,4 +194,39 @@ describe('bookmarked flag on message rows', () => {
     });
     expect(listMessages(net!.id, '#meta')[0]).not.toHaveProperty('bookmarked');
   });
+
+  // A saved reply to you is still one — the same stamp every other read carries
+  // (#993), and only the column may set it.
+  it('carries the reply-to-you stamp, and only from the column', () => {
+    const u = createUser('bm-replies');
+    const net = mkNetwork(u.id, 'libera');
+    const toMe = Number(
+      insertMessage({
+        networkId: net!.id,
+        target: '#meta',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text: 'good question',
+        replyMsgid: 'm1',
+        replyToSelf: true,
+      }).id,
+    );
+    const forged = Number(
+      insertMessage({
+        networkId: net!.id,
+        target: '#meta',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text: 'not to you',
+        extra: { replyToSelf: true },
+      }).id,
+    );
+    addBookmark(u.id, toMe);
+    addBookmark(u.id, forged);
+    const rows = listBookmarksForUser(u.id, { limit: 10 });
+    expect(rows.find((r) => r.id === toMe)).toMatchObject({ matched: true, replyToSelf: true });
+    expect(rows.find((r) => r.id === forged)).not.toHaveProperty('replyToSelf');
+  });
 });

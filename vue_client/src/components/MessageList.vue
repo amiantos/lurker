@@ -112,7 +112,10 @@
           class="reply-ctx"
           :class="{ missing: !row.replyParent }"
           :title="row.replyParent ? 'Jump to this message' : undefined"
+          :role="row.replyParent ? 'button' : undefined"
+          :tabindex="row.replyParent ? 0 : undefined"
           @click.stop="onReplyContextClick(row.replyParent)"
+          @keydown.enter.space.prevent.stop="onReplyContextClick(row.replyParent)"
         >
           <span class="reply-mark"
             ><i class="fa-solid fa-reply" role="img" aria-label="In reply to"></i
@@ -1369,12 +1372,16 @@ const renderRows = computed((): RenderRow[] => {
         };
       }
     }
+    // A reply's answered line as its reply line will show it — null when it
+    // can't (see shownParent).
+    const replyParent = m.replyTo ? shownParent(m.replyTo.parent, networkId, bufTarget) : null;
     // A reply that opens by addressing the author it answers (`alice: sure`) —
     // how halloy and goguma send one, so clients without replies still see who it
-    // is for. The reply line above already names her, so drop the prefix here.
-    const parentNick = mDisplay.replyTo?.parent?.nick;
-    if (parentNick && mDisplay.type === 'message') {
-      const text = stripReplyAddress(mDisplay.text ?? '', parentNick);
+    // is for. The reply line above already names her, so drop the prefix here —
+    // but only when it does: with the quote unavailable (gone, or someone
+    // ignored), the address is the only sign of who the reply is to.
+    if (replyParent && mDisplay.type === 'message') {
+      const text = stripReplyAddress(mDisplay.text ?? '', replyParent.nick);
       if (text !== mDisplay.text) mDisplay = { ...mDisplay, text };
     }
     out.push({
@@ -1383,7 +1390,7 @@ const renderRows = computed((): RenderRow[] => {
       key,
       nohilight: rowNohilight,
       highlight: rowHighlight,
-      ...(m.replyTo ? { replyParent: shownParent(m.replyTo.parent, networkId, bufTarget) } : {}),
+      ...(m.replyTo ? { replyParent } : {}),
     });
   }
 

@@ -106,6 +106,15 @@ describe('composing a reply', () => {
     expect(useRepliesStore().forKey(KEY)).toBeNull();
   });
 
+  it('leaves the reply pending on an empty /me, which sends nothing', async () => {
+    seed();
+    useRepliesStore().start(KEY, REPLY);
+    const el = await composer();
+    await type(el, '/me');
+    await press(el, 'Enter');
+    expect(useRepliesStore().forKey(KEY)).toEqual(REPLY);
+  });
+
   it('gives the reply back when the send never left', async () => {
     seed();
     useRepliesStore().start(KEY, REPLY);

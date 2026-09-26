@@ -16,6 +16,7 @@ import { useIgnoresStore } from '../stores/ignores.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { ReplyParent } from '../../../shared/replies.js';
+import * as jumpIntent from '../composables/useJumpIntent.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -120,6 +121,29 @@ describe('MessageList — replies', () => {
     const w = mountWith([r]);
     expect(rowOf(w, r.id).find('.reply-excerpt').text()).toBe('original message unavailable');
     expect(rowOf(w, r.id).text()).not.toContain('what time');
+    // With no quote naming her, the address is the only sign of who it's to.
+    expect(rowOf(w, r.id).find('.body').text()).toBe('alice: noon');
+  });
+
+  it('jumps to the answered line from the keyboard, and offers nothing when it’s gone', async () => {
+    const jump = vi.spyOn(jumpIntent, 'emitJumpIntent');
+    const p = line('alice', 'what time is it?', { msgid: 'm1' });
+    const r = line('bob', 'noon', { replyTo: { msgid: 'm1', parent: parent({ id: p.id }) } });
+    const gone = line('bob', 'lol', { replyTo: { msgid: 'x', parent: null } });
+    const w = mountWith([p, r, gone]);
+    const ctx = rowOf(w, r.id).find('.reply-ctx');
+    expect(ctx.attributes('role')).toBe('button');
+    expect(ctx.attributes('tabindex')).toBe('0');
+    await ctx.trigger('keydown', { key: 'Enter' });
+    await ctx.trigger('keydown', { key: ' ' });
+    expect(jump).toHaveBeenCalledTimes(2);
+    expect(jump).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'jump', networkId: 1, target: '#chan', messageId: p.id }),
+    );
+    const missing = rowOf(w, gone.id).find('.reply-ctx');
+    expect(missing.attributes('role')).toBeUndefined();
+    expect(missing.attributes('tabindex')).toBeUndefined();
+    jump.mockRestore();
   });
 
   it('quotes a /me and a notice the way IRC writes them', () => {

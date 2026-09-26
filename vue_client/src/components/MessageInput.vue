@@ -3543,8 +3543,9 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'react':
       return runReact(argLine, networkId, target, line);
     case 'me': {
-      // A /me can be the reply (#993) — any other command leaves it pending.
-      const taken = takeReply();
+      // A /me can be the reply (#993) — any other command leaves it pending, and
+      // so does an empty /me, which the server refuses without sending anything.
+      const taken = argLine.trim() ? takeReply() : null;
       const sent = ackedSend(
         {
           type: 'action',

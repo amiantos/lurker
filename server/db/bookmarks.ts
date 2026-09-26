@@ -132,6 +132,9 @@ export function listBookmarksForUser(
         /* ignore */
       }
     }
+    // After the extra spread, as rowToEvent does: only the column may set it.
+    delete event.replyToSelf;
+    if (row.reply_to_self === 1) event.replyToSelf = true;
     return event;
   });
 }
