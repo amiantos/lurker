@@ -206,6 +206,76 @@ describe('receiving replies', () => {
   });
 });
 
+// The stored thread root (#993, for a threaded view): read straight off the row,
+// since nothing puts it on the wire yet.
+function rootOf(rig: Rig, target: string, text: string): string | null {
+  const id = rowByText(rig, target, text).id;
+  return (
+    db.prepare('SELECT reply_root_msgid AS root FROM messages WHERE id = ?').get(id) as {
+      root: string | null;
+    }
+  ).root;
+}
+
+describe('thread roots', () => {
+  it('points every reply down a chain at the line that started it', async () => {
+    const rig = await connect('root1', ['#t1']);
+    try {
+      const top = await peerSays(rig, 'alice', '#t1', 'top of thread');
+      const r1 = await peerSays(rig, 'bob', '#t1', 'first reply', [`+draft/reply=${top}`]);
+      await peerSays(rig, 'carol', '#t1', 'reply to the reply', [`+draft/reply=${r1}`]);
+      expect(rootOf(rig, '#t1', 'top of thread')).toBeNull();
+      expect(rootOf(rig, '#t1', 'first reply')).toBe(top);
+      expect(rootOf(rig, '#t1', 'reply to the reply')).toBe(top);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('roots at the parent it can’t find, and keeps that root down the chain', async () => {
+    const rig = await connect('root2', ['#t2']);
+    try {
+      const r1 = await peerSays(rig, 'bob', '#t2', 'to an unknown line', ['+draft/reply=lost1']);
+      await peerSays(rig, 'carol', '#t2', 'and onward', [`+draft/reply=${r1}`]);
+      expect(rootOf(rig, '#t2', 'to an unknown line')).toBe('lost1');
+      expect(rootOf(rig, '#t2', 'and onward')).toBe('lost1');
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  // The quote skips someone ignored; the thread must not come apart over them.
+  it('threads through a line from someone ignored', async () => {
+    const rig = await connect('root3', ['#t3']);
+    try {
+      const added = ignoreRulesService.add(userId, rig.network.id, maskToRuleInput('troll!*@*')!);
+      expect(added.ok).toBe(true);
+      const top = await peerSays(rig, 'alice', '#t3', 'start');
+      const mid = await peerSays(rig, 'troll', '#t3', 'bait', [`+draft/reply=${top}`]);
+      await peerSays(rig, 'bob', '#t3', 'answering the troll', [`+draft/reply=${mid}`]);
+      expect(rootOf(rig, '#t3', 'answering the troll')).toBe(top);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('roots our own reply the same way', async () => {
+    const rig = await connect('root4', ['#t4']);
+    try {
+      vi.spyOn(ircManager, 'getConnection').mockReturnValue(rig.conn);
+      const top = await peerSays(rig, 'alice', '#t4', 'question');
+      const r1 = await peerSays(rig, 'bob', '#t4', 'partial answer', [`+draft/reply=${top}`]);
+      const parent = rowByText(rig, '#t4', 'partial answer');
+      expect(parent.msgid).toBe(r1);
+      ircManager.send(userId, rig.network.id, '#t4', 'bob: more to it', { replyTo: parent.id });
+      await until(() => rows(rig, '#t4').some((m) => m.text === 'bob: more to it'), 5000, 'echo');
+      expect(rootOf(rig, '#t4', 'bob: more to it')).toBe(top);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+});
+
 describe('a reply to the user', () => {
   it('is a highlight — live, on the row, in the count and the feed', async () => {
     const rig = await connect('mine1', ['#h1']);

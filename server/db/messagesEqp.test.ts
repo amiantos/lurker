@@ -119,6 +119,27 @@ describe('highlight-count path', () => {
   });
 });
 
+describe('thread path', () => {
+  // A thread for the forum view (#993): every reply naming the root, as one
+  // range on the partial root index.
+  it('reads a thread’s replies as one range on the root index', () => {
+    const detail = plan(
+      `SELECT id FROM messages WHERE buffer_id = 1 AND reply_root_msgid = 'x' ORDER BY id`,
+    );
+    expect(detail).toMatch(/USING (COVERING )?INDEX idx_messages_reply_root/);
+  });
+
+  it('finds a reply’s root by a seek on the msgid index (replyRootFor shape)', () => {
+    const detail = plan(
+      `SELECT reply_root_msgid FROM messages
+       WHERE network_id = 1 AND msgid = 'x' AND +buffer_id = 1
+         AND type IN ('message', 'action', 'notice')
+       ORDER BY id DESC LIMIT 1`,
+    );
+    expect(detail).toMatch(/USING INDEX idx_messages_msgid/);
+  });
+});
+
 describe('reply parent path', () => {
   // REPLY_COL / findReplyParent: one seek on the msgid index per reply row. The
   // `+` on buffer_id keeps the planner off the per-buffer index, which would

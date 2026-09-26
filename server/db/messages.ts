@@ -50,6 +50,9 @@ interface MessageRow {
   // one of the owner's own (from someone else) — see the columns in db/index.ts.
   reply_msgid: string | null;
   reply_to_self: number;
+  // The msgid at the top of this reply's thread (see db/index.ts). Not on the
+  // wire yet — nothing displays threads.
+  reply_root_msgid: string | null;
   // JSON object from the computed `reply_parent` column (REPLY_COL), NULL when
   // the msgid names no line we hold. Absent — not null — on reads without it.
   reply_parent?: string | null;
@@ -137,6 +140,7 @@ export interface MessageInput {
   // the owner's lines (the highlight stamp — see HIGHLIGHTED_SQL).
   replyMsgid?: string | null;
   replyToSelf?: boolean;
+  replyRootMsgid?: string | null;
   // Server-buffer notability (#470). Defaults to notable (true); pass false for
   // Lurker's own connection-status notices so they render in the server buffer
   // but don't mark it unread. Read by countServerBufferUnread (the :server: unread
@@ -162,9 +166,9 @@ export interface MaxIdByBufferRow {
 // Non-striped types pass through with alt=0; the value is meaningless for them
 // and the client never reads it.
 const insertStmt = db.prepare(`
-  INSERT INTO messages (network_id, buffer_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, notable, msgid, reply_msgid, reply_to_self, alt)
+  INSERT INTO messages (network_id, buffer_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, notable, msgid, reply_msgid, reply_to_self, reply_root_msgid, alt)
   VALUES (
-    @networkId, @bufferId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored, @notable, @msgid, @replyMsgid, @replyToSelf,
+    @networkId, @bufferId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored, @notable, @msgid, @replyMsgid, @replyToSelf, @replyRootMsgid,
     CASE WHEN @type IN ('message', 'action', 'notice')
          THEN 1 - COALESCE(
            (SELECT alt FROM messages
@@ -214,6 +218,7 @@ export function insertMessage(row: MessageInput): {
     msgid: row.msgid || null,
     replyMsgid: row.replyMsgid || null,
     replyToSelf: row.replyToSelf ? 1 : 0,
+    replyRootMsgid: row.replyRootMsgid || null,
   });
   const id = result.lastInsertRowid;
   // Retention prunes lazily: the sweep only ever looks at buffers that grew.
@@ -351,6 +356,33 @@ export function findReplyParent(
 ): ReplyParent | null {
   const row = replyParentStmt.get(networkId, msgid, bufferId) as { parent: string } | undefined;
   return row ? parseReplyParent(row.parent) : null;
+}
+
+// The parent's own root, for a reply being inserted. Unlike the quote lookup
+// this takes a line from someone ignored: it's structure, not display, and
+// skipping it would split their thread in two. Same buffer scope and seek.
+const replyRootStmt = db.prepare(`
+  SELECT reply_root_msgid AS root FROM messages
+  WHERE network_id = ? AND msgid = ? AND +buffer_id = ?
+    AND type IN ('message', 'action', 'notice')
+  ORDER BY id DESC LIMIT 1
+`);
+
+// The thread root for a reply to `parentMsgid` in `bufferId`: the parent's root
+// when it is itself a reply, else the parent — including a parent we don't
+// hold (gone to retention, older than our history, a reaction): as far as we
+// can tell, that's where the thread starts. `bufferId` undefined = no buffer
+// yet, so no parent either.
+export function replyRootFor(
+  networkId: number,
+  bufferId: number | undefined,
+  parentMsgid: string,
+): string {
+  if (bufferId === undefined) return parentMsgid;
+  const row = replyRootStmt.get(networkId, parentMsgid, bufferId) as
+    | { root: string | null }
+    | undefined;
+  return row?.root || parentMsgid;
 }
 
 const replySendStmt = db.prepare(`

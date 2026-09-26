@@ -1318,6 +1318,17 @@ ensureColumn('messages', 'reply_to_self', 'INTEGER NOT NULL DEFAULT 0');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
          ON messages(buffer_id, id DESC)
          WHERE reply_to_self = 1`);
+// The top of a reply's thread: the root's msgid, set on every reply at insert
+// (its parent's root, or — when the parent has none, or isn't one we hold —
+// the parent's msgid). The line that started the thread stores nothing; it's
+// found by its own msgid. So a whole thread is its root row (idx_messages_msgid)
+// plus every row naming it here, and reply_msgid on each links the tree. Kept
+// for a threaded "forum" view of a channel; nothing reads it for display yet.
+ensureColumn('messages', 'reply_root_msgid', 'TEXT');
+// A thread's replies in one range: (buffer, root). Partial — replies only.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root
+         ON messages(buffer_id, reply_root_msgid)
+         WHERE reply_root_msgid IS NOT NULL`);
 
 // Sender matched the network owner's ignore list at insert time. Stamped on
 // the row so countNewer/countHighlightsNewer can exclude ignored senders

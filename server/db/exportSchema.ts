@@ -223,6 +223,7 @@ export const EXPORT_TABLES = Object.freeze({
       'msgid',
       'reply_msgid',
       'reply_to_self',
+      'reply_root_msgid',
     ],
   },
 

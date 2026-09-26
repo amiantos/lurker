@@ -11,6 +11,7 @@ import {
   hasSameMessageWithMsgid,
   hasRecentMessageLike,
   findReplyParent,
+  replyRootFor,
 } from '../db/messages.js';
 import { renameBuffer as renameDmBuffer } from '../db/renameBuffer.js';
 import { refoldNetworkBuffers } from '../db/refoldBuffers.js';
@@ -1254,12 +1255,15 @@ export class IrcConnection {
           : undefined;
       let replyTo: ReplyContext | undefined;
       let replyToSelf = false;
+      let replyRootMsgid: string | undefined;
       if (replyMsgid) {
         const bufferId = resolveBufferIdByNetwork(this.network.id, event.target as string);
         const parent =
           bufferId === undefined ? null : findReplyParent(this.network.id, bufferId, replyMsgid);
         replyTo = { msgid: replyMsgid, parent };
         replyToSelf = !!parent?.self && !event.self;
+        // The top of its thread, for a threaded view (see db/index.ts).
+        replyRootMsgid = replyRootFor(this.network.id, bufferId, replyMsgid);
       }
       let matchedRuleId: number | null = null;
       let fromIgnored = false;
@@ -1302,6 +1306,7 @@ export class IrcConnection {
         msgid: event.msgid as string | undefined,
         replyMsgid,
         replyToSelf,
+        replyRootMsgid,
       });
       enriched.id = id;
       enriched.alt = alt;
