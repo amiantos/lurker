@@ -2748,11 +2748,16 @@ watch(
   word-break: break-word;
   padding-left: 1ch;
 }
-/* IRCv3 reply (#993): the answered line, one muted row above the reply. It spans the
-   last two columns as a subgrid of its own, so the mark lines up under the nick column's
-   right edge and the excerpt with the body text — and counting from the END keeps that
-   true on phone widths, where the time column is gone. The reply's own cells drop to
-   row 2 (scoped to the standard layout; compact places them by area). */
+/* IRCv3 reply (#993): the answered line, one faded italic row above the reply. It
+   spans the last two columns as a subgrid of its own, so the mark lines up under the
+   nick column's right edge and the excerpt with the body text — and counting from the
+   END keeps that true on phone widths, where the time column is gone. The reply's own
+   cells drop to row 2 (scoped to the standard layout; compact places them by area).
+
+   Faded with opacity rather than a muted colour, so the quoted nick keeps its own
+   colour and fades with the rest — the mark, the brackets and the text all sit at one
+   level. On the mark and the excerpt, not the row: the row also carries the column
+   rule (::before), which must stay at full strength to read as unbroken. */
 .reply-ctx {
   grid-column: -3 / -1;
   grid-row: 1;
@@ -2760,12 +2765,20 @@ watch(
   grid-template-columns: subgrid;
   align-items: baseline;
   min-width: 0;
-  color: var(--fg-muted);
+  color: var(--fg);
+  font-style: italic;
   cursor: pointer;
 }
 .reply-ctx.missing {
   cursor: default;
-  font-style: italic;
+}
+.reply-ctx > .reply-mark,
+.reply-ctx > .reply-excerpt {
+  opacity: 0.45;
+}
+.reply-ctx:not(.missing):hover > .reply-mark,
+.reply-ctx:not(.missing):hover > .reply-excerpt {
+  opacity: 0.8;
 }
 .message-list:not(.compact) .line.has-reply > .time,
 .message-list:not(.compact) .line.has-reply > .prefix,
@@ -2773,11 +2786,14 @@ watch(
   grid-row: 2;
 }
 .reply-mark {
+  grid-column: 1;
+  grid-row: 1;
   justify-self: end;
   padding-right: 1ch;
 }
 .reply-excerpt {
-  position: relative;
+  grid-column: 2;
+  grid-row: 1;
   min-width: 0;
   padding-left: 1ch;
   white-space: nowrap;
@@ -2785,18 +2801,16 @@ watch(
   text-overflow: ellipsis;
 }
 /* Carry the nick/body separator through the reply row, so the column rule stays
-   unbroken down the list. */
-.reply-excerpt::before {
+   unbroken down the list. A grid item of the row, in the excerpt's cell at its left
+   edge (the column boundary), so the excerpt's fade doesn't reach it. */
+.reply-ctx::before {
   content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  align-self: stretch;
   width: 1px;
   background: var(--border);
-}
-.reply-ctx:not(.missing):hover .reply-excerpt {
-  color: var(--fg);
 }
 
 /* Relay-bot origin tag (#277): the bracketed [source] before the re-attributed
@@ -2939,7 +2953,7 @@ watch(
 .message-list.compact .reply-excerpt {
   padding-left: 0;
 }
-.message-list.compact .reply-excerpt::before {
+.message-list.compact .reply-ctx::before {
   display: none;
 }
 /* Continuation message rows render only body + time — no head, no cluster
