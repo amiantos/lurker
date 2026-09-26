@@ -513,7 +513,8 @@ Common fields on every **persisted** event (`db/messages.ts` `rowToEvent` +
   fromIgnored, notifyAlways, notify,
   msgid?,                             // IRCv3 server message id, when supplied
   bookmarked?,                        // true when you've saved this line
-  reactions? }                        // IRCv3 reactions standing on this line
+  reactions?,                         // IRCv3 reactions standing on this line
+  replyTo? }                          // IRCv3 reply: the line this one answers
 ```
 
 plus type-specific extras (`newNick`, `kicked`, `modes`, `members`, …).
@@ -544,6 +545,18 @@ when there are none. Like `bookmarked`, keep a map of what you've seen: a row
 that arrives is authoritative for itself (no `reactions` means none stand now),
 and a `reaction` frame (§7.1) adds or removes one live. A `value` is an emoji or
 short text (at most 64 grapheme clusters); group by `value` to render.
+
+**`replyTo`** marks an IRCv3 reply (`+reply` / `+draft/reply`) as
+`{ msgid, parent }`, where `parent` is the line it answers, found by `msgid` in
+the same buffer: `{ id, nick, type, text, userhost, self }`, `text` clipped to
+300 characters with formatting codes intact, `self` true when it's your line. `parent` is `null` when no line we hold
+carries that msgid — retention took it, it predates your history, it was a
+reaction, or its author was ignored when it arrived — so show the reply without
+its context. Absent on a line that isn't a reply, and on rows from search, the
+activity feed and bookmarks, which don't resolve it. `id` is the jump target. A
+reply to one of your own lines, from someone else, is a highlight: `matched:true`
+with `matchedRuleId: null` (no rule matched it). Send one with `replyTo` on
+`send`/`action` (§6).
 
 **`notify` is the server's delivery decision — the one flag to gate a live
 alert (toast, sound, native buzz) on.** It is the union of the content signals
@@ -627,8 +640,8 @@ and rename-proof.
 
 | `type`   | Fields                                             | Notes                                                                                                                                                                                                                                                                                                                                                                              |
 | -------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`   | `networkId, target, text, clientId?`               | PRIVMSG. Ack via `send-result` iff `clientId` present                                                                                                                                                                                                                                                                                                                              |
-| `action` | `networkId, target, text, clientId?`               | CTCP ACTION (`/me`)                                                                                                                                                                                                                                                                                                                                                                |
+| `send`   | `networkId, target, text, clientId?, replyTo?`     | PRIVMSG. Ack via `send-result` iff `clientId` present. `replyTo` is the `id` of a stored line in the same buffer this answers: the first line out carries `+reply`/`+draft/reply` with its msgid. Ignored — the text still goes, as a plain line — when that line has no msgid, is in another buffer, the network can't carry the tags, or the channel is E2E                      |
+| `action` | `networkId, target, text, clientId?, replyTo?`     | CTCP ACTION (`/me`). `replyTo` as for `send`                                                                                                                                                                                                                                                                                                                                       |
 | `notice` | `networkId, target, text, clientId?`               | NOTICE                                                                                                                                                                                                                                                                                                                                                                             |
 | `raw`    | `networkId, line`                                  | Raw IRC line — the escape hatch for `/mode`, `/kick`, `/whois`, unknown commands                                                                                                                                                                                                                                                                                                   |
 | `ctcp`   | `networkId, target, ctcpType, args, issuingTarget` | CTCP request (`/ping`, `/version` at a user)                                                                                                                                                                                                                                                                                                                                       |

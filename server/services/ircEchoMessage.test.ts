@@ -455,8 +455,9 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.send(userId, networkId, '#gate', 'hi');
     ircManager.action(userId, networkId, '#gate', 'waves');
     ircManager.notice(userId, networkId, '#gate', 'psst');
-    expect(say).toHaveBeenCalledWith('#gate', 'hi');
-    expect(action).toHaveBeenCalledWith('#gate', 'waves');
+    // The third argument is a reply's tags — none here.
+    expect(say).toHaveBeenCalledWith('#gate', 'hi', null);
+    expect(action).toHaveBeenCalledWith('#gate', 'waves', null);
     expect(notice).toHaveBeenCalledWith('#gate', 'psst');
     expect(publish).not.toHaveBeenCalled();
   });
@@ -474,7 +475,7 @@ describe('ircManager optimistic-publish gating', () => {
     const withEcho = fakeConn({ supportsMultiline: () => true, sendMultiline });
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(withEcho.conn);
     ircManager.send(userId, networkId, '#gate', 'a\nb');
-    expect(sendMultiline).toHaveBeenCalledWith('#gate', 'a\nb');
+    expect(sendMultiline).toHaveBeenCalledWith('#gate', 'a\nb', undefined);
     expect(withEcho.publish).not.toHaveBeenCalled();
     vi.restoreAllMocks();
 

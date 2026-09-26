@@ -56,6 +56,30 @@
             ><span :style="seg.color ? { color: seg.color } : null">{{ seg.text }}</span></template
           ></span
         >
+        <!-- The reply being composed here (#993): the next line sent answers this
+             one. × (or Escape in the composer) drops it. @mousedown.prevent keeps
+             the composer focused, as the tool buttons do. Last, because it takes
+             whatever width the bar has left. -->
+        <span
+          v-if="pendingReply"
+          class="seg reply"
+          :title="`Replying to ${pendingReply.nick} — Escape to cancel`"
+          ><span class="reply-body"
+            ><i class="fa-solid fa-reply" role="img" aria-label="Replying to"></i
+            ><span class="reply-label">{{ compact ? '' : 'replying to' }}</span
+            ><NickRef :nick="pendingReply.nick" /><span class="reply-excerpt">{{
+              pendingReplyExcerpt ? `: ${pendingReplyExcerpt}` : ''
+            }}</span
+            ><button
+              type="button"
+              class="reply-cancel"
+              aria-label="Cancel reply"
+              title="Cancel reply"
+              @mousedown.prevent
+              @click="cancelComposerReply"
+            >
+              <i class="fa-solid fa-xmark"></i></button></span
+        ></span>
       </div>
       <div class="bar-tools">
         <!-- One control for every way a file gets into a message. It used to open
@@ -180,8 +204,12 @@ import {
   closeColorPicker,
   setColorPickerOpen,
   setUploadMenuOpen,
+  cancelComposerReply,
   type NickStripItem,
 } from '../composables/useComposerOverlay.js';
+import { useRepliesStore } from '../stores/replies.js';
+import { replyExcerpt } from '../utils/replyText.js';
+import NickRef from './NickRef.vue';
 import type { EmojiMatch } from '../utils/emojiData.js';
 import { dccChatPeer, isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 
@@ -260,6 +288,11 @@ const uploadLabel = computed(() => {
 const { newBelow, stuckToBottom, unreadAnchor } = useScrollState();
 
 const active = computed(() => networks.activeBuffer);
+const replies = useRepliesStore();
+const pendingReply = computed(() => replies.forKey(networks.activeKey));
+const pendingReplyExcerpt = computed(() =>
+  pendingReply.value ? replyExcerpt(pendingReply.value.text) : '',
+);
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const isServerBuffer = computed(() => !!active.value?.target?.startsWith(':server:'));
 const sendable = computed(() => !!active.value && !isServerBuffer.value && !auth.isPaused);
@@ -566,6 +599,51 @@ function onToggleUploadMenu() {
 }
 .seg.buffer .modes {
   color: var(--fg-muted);
+}
+/* Takes the width the other segments leave (a zero basis, growing), so it never
+   makes them shrink — and its floor is icon + label + nick + ×, so only the
+   excerpt ever gives way. The body is a grid for that floor: the excerpt's
+   `minmax(0, max-content)` track counts as 0 toward its min-content, where in
+   flex a nowrap excerpt's min-content is its whole text. The body is a child
+   rather than the segment itself so the `|` separator (the segment's ::before)
+   stays out of the grid's columns. */
+.seg.reply {
+  flex: 1 1 0;
+  display: flex;
+  align-items: baseline;
+  color: var(--fg-muted);
+}
+.seg.reply .reply-body {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, max-content) auto;
+  align-items: baseline;
+}
+/* Gaps as margins, not spaces: a space at the edge of a grid item is dropped.
+   The one after the icon lives on the label, not the <i> — `ch` on the icon
+   font is ~0.5em (see .seg.typing). The compact bar drops the words and keeps
+   the gap. */
+.seg.reply .reply-label {
+  margin-left: 1ch;
+}
+.seg.reply .reply-label:not(:empty) {
+  margin-right: 1ch;
+}
+.seg.reply .reply-excerpt {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.seg.reply .reply-cancel {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 0 0 1ch;
+}
+.seg.reply .reply-cancel:hover {
+  color: var(--fg);
 }
 .seg.lag {
   color: var(--fg-muted);

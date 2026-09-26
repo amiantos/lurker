@@ -22,7 +22,7 @@ import {
   deleteBuffer,
   listAutojoinChannels,
 } from '../db/buffers.js';
-import { hasMessageForTarget } from '../db/messages.js';
+import { hasMessageForTarget, replySendMsgid } from '../db/messages.js';
 import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
 import { findUserById } from '../db/users.js';
 import { isNetworkHostAllowed } from './networkPolicy.js';
@@ -790,7 +790,19 @@ class IrcManager extends EventEmitter {
   // text as a single self-message event — so the sender saw one bubble while
   // peers saw N. Splitting on our side and publishing per chunk keeps the
   // local view symmetric with what was actually transmitted.
-  send(userId: number, networkId: number, target: string, text: string): boolean {
+  //
+  // `opts.replyTo`: the id of the user's stored line this answers (IRCv3 reply,
+  // #993). The first line out carries the reply tags; a paste that splits is
+  // several messages and only the first is the reply. Dropped silently where it
+  // can't apply — a line from another buffer, one with no msgid, a network that
+  // can't carry the tags, an E2E channel — and the text goes out as written.
+  send(
+    userId: number,
+    networkId: number,
+    target: string,
+    text: string,
+    opts: { replyTo?: number } = {},
+  ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
     // that: the composer (wsHub `send`), the MCP `send_message` verb — which
@@ -853,6 +865,8 @@ class IrcManager extends EventEmitter {
         // a failed send as plaintext.
         return false;
       }
+      // No reply tags here: a tag is cleartext, and which line a message on an
+      // encrypted channel answers is itself something the wire shouldn't show.
       if (outcome.kind === 'encrypted') {
         for (const line of outcome.lines) {
           conn.say(target, line);
@@ -892,20 +906,32 @@ class IrcManager extends EventEmitter {
     // E2E branch above is exempt: its echo is ciphertext, so the plaintext self
     // row can only come from here.
     const adoptEcho = conn.echoActive();
+    // Our own copy is a reply only when the tags actually went out; with
+    // echo-message the echo says so itself.
+    const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
     if (hasInteriorNewline(text) && conn.supportsMultiline()) {
       const nick = conn.currentNick;
-      const echoes = conn.sendMultiline(target, text);
+      const echoes = conn.sendMultiline(target, text, reply?.tags);
       if (!adoptEcho) {
-        for (const echo of echoes) {
-          conn.publish({ type: 'message', target, nick, text: echo, kind: 'privmsg', self: true });
-        }
+        echoes.forEach((echo, i) => {
+          conn.publish({
+            type: 'message',
+            target,
+            nick,
+            text: echo,
+            kind: 'privmsg',
+            self: true,
+            ...(i === 0 && reply ? { replyMsgid: reply.msgid } : {}),
+          });
+        });
       }
       return true;
     }
     const chunks = splitSay(text);
-    for (const chunk of chunks) {
-      conn.say(target, chunk);
-      if (adoptEcho) continue;
+    chunks.forEach((chunk, i) => {
+      const first = i === 0 && reply;
+      conn.say(target, chunk, first ? reply.tags : null);
+      if (adoptEcho) return;
       conn.publish({
         type: 'message',
         target,
@@ -913,9 +939,26 @@ class IrcManager extends EventEmitter {
         text: chunk,
         kind: 'privmsg',
         self: true,
+        ...(first ? { replyMsgid: reply.msgid } : {}),
       });
-    }
+    });
     return true;
+  }
+
+  // The msgid and tags for a reply to the user's line `messageId` in `target`,
+  // or null when it can't be one (see send()).
+  private replyFor(
+    conn: IrcConnection,
+    userId: number,
+    networkId: number,
+    target: string,
+    messageId: number | undefined,
+  ): { msgid: string; tags: Record<string, string> } | null {
+    if (!messageId) return null;
+    const msgid = replySendMsgid(userId, networkId, target, messageId);
+    if (!msgid) return null;
+    const tags = conn.replyTags(msgid);
+    return tags ? { msgid, tags } : null;
   }
 
   // On an E2E-enabled channel, /me actions and notices have no interoperable
@@ -942,7 +985,14 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
-  action(userId: number, networkId: number, target: string, text: string): boolean {
+  // `opts.replyTo` as for send(): a /me can answer a line too.
+  action(
+    userId: number,
+    networkId: number,
+    target: string,
+    text: string,
+    opts: { replyTo?: number } = {},
+  ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
     // that: the composer (wsHub `send`), the MCP `send_message` verb — which
@@ -965,10 +1015,12 @@ class IrcManager extends EventEmitter {
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'action')) return true;
     // Same echo-adoption gating as send() — see the comment there.
     const adoptEcho = conn.echoActive();
+    const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
     const chunks = splitAction(text);
-    for (const chunk of chunks) {
-      conn.action(target, chunk);
-      if (adoptEcho) continue;
+    chunks.forEach((chunk, i) => {
+      const first = i === 0 && reply;
+      conn.action(target, chunk, first ? reply.tags : null);
+      if (adoptEcho) return;
       conn.publish({
         type: 'action',
         target,
@@ -977,8 +1029,9 @@ class IrcManager extends EventEmitter {
         // Shape parity with the adopted echo, which stamps kind:'action'.
         kind: 'action',
         self: true,
+        ...(first ? { replyMsgid: reply.msgid } : {}),
       });
-    }
+    });
     return true;
   }
 

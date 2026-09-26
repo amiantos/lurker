@@ -10,6 +10,7 @@ import {
   hasMessageWithMsgid,
   hasSameMessageWithMsgid,
   hasRecentMessageLike,
+  findReplyParent,
 } from '../db/messages.js';
 import { renameBuffer as renameDmBuffer } from '../db/renameBuffer.js';
 import { refoldNetworkBuffers } from '../db/refoldBuffers.js';
@@ -33,6 +34,8 @@ import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
 import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
+import { replyMsgidFromTags } from '../../shared/replies.js';
+import type { ReplyContext } from '../../shared/replies.js';
 import { evaluateIgnores } from '../../shared/ignoreMatch.js';
 import * as chanlistDb from '../db/chanlist.js';
 import type { PeerPresence, PeerState } from '../db/peerPresence.js';
@@ -885,7 +888,7 @@ export class IrcConnection {
   // line's tags — so the raw handler stashes them here and accumulateMultiline
   // grafts them onto the first fragment. Consumed on first fragment; cleared on
   // socket close with multilineBatches so an unopened batch can't leak.
-  multilineBatchTags: Map<string, { time?: string; msgid?: string }>;
+  multilineBatchTags: Map<string, { time?: string; msgid?: string; reply?: string }>;
   // When the server line being handled arrived. An event without server-time
   // takes it as its time, and so does the bouncer's copy of the line, so the
   // stored row and the relayed line agree: a MARKREAD from an attached client
@@ -1239,6 +1242,25 @@ export class IrcConnection {
       // unread/highlight/search counts skip it. decideStamp gates on self/nick
       // and runs the level test first, so high-churn JOIN/PART/QUIT with no
       // matching-level rule stay cheap. See insertDecisions.ts.
+      // IRCv3 reply (#993): find the line it answers now, for two things the
+      // stored row can't say later — the live frame's context (what a read
+      // resolves through REPLY_COL) and whether that line is ours, which makes
+      // this one a highlight. No buffer yet means a first line: nothing to answer.
+      const replyMsgid =
+        typeof event.replyMsgid === 'string' &&
+        event.replyMsgid &&
+        (event.type === 'message' || event.type === 'action' || event.type === 'notice')
+          ? event.replyMsgid
+          : undefined;
+      let replyTo: ReplyContext | undefined;
+      let replyToSelf = false;
+      if (replyMsgid) {
+        const bufferId = resolveBufferIdByNetwork(this.network.id, event.target as string);
+        const parent =
+          bufferId === undefined ? null : findReplyParent(this.network.id, bufferId, replyMsgid);
+        replyTo = { msgid: replyMsgid, parent };
+        replyToSelf = !!parent?.self && !event.self;
+      }
       let matchedRuleId: number | null = null;
       let fromIgnored = false;
       try {
@@ -1250,12 +1272,14 @@ export class IrcConnection {
             target: event.target as string,
             text: event.text as string | null | undefined,
             self: event.self as boolean | undefined,
+            replyToSelf,
           },
           highlightRulesService.getCompiled(this.network.user_id, this.network.id),
           ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
           isDmTargetName(event.target as string),
         );
         matchedRuleId = decided.matchedRuleId;
+        replyToSelf = decided.replyToSelf;
         fromIgnored = decided.fromIgnored;
       } catch (e) {
         console.warn('[ignore/highlight] match-on-insert failed:', (e as Error)?.message || e);
@@ -1276,14 +1300,19 @@ export class IrcConnection {
         mirrored: event.mirrored as boolean | undefined,
         notable: event.notable as boolean | undefined,
         msgid: event.msgid as string | undefined,
+        replyMsgid,
+        replyToSelf,
       });
       enriched.id = id;
       enriched.alt = alt;
       // The buffer the row landed in — the wire's stable identity for the
       // buffer (schema 17); rides every persisted `irc` frame.
       enriched.bufferId = bufferId;
-      enriched.matched = matchedRuleId != null;
+      enriched.matched = matchedRuleId != null || replyToSelf;
       enriched.matchedRuleId = matchedRuleId;
+      // The wire carries the resolved context, never the bare tag value.
+      delete enriched.replyMsgid;
+      if (replyTo) enriched.replyTo = replyTo;
       enriched.fromIgnored = fromIgnored;
     }
 
@@ -1495,9 +1524,12 @@ export class IrcConnection {
           const tags = (msg.tags ?? {}) as Record<string, string>;
           const time = tags.time || undefined;
           const msgid = tags.msgid || tags['draft/msgid'] || undefined;
-          if (time || msgid) {
+          // A multiline reply's +reply rides the BATCH line too (client-only
+          // tags go on the batch, like the msgid).
+          const reply = replyMsgidFromTags(tags);
+          if (time || msgid || reply) {
             if (this.multilineBatchTags.size >= 100) this.multilineBatchTags.clear();
-            this.multilineBatchTags.set(msg.params[0].slice(1), { time, msgid });
+            this.multilineBatchTags.set(msg.params[0].slice(1), { time, msgid, reply });
           }
         }
       }
@@ -2394,6 +2426,8 @@ export class IrcConnection {
       // IRCv3 server message id (#450) — the future react/reply anchor. Tag
       // keys arrive lowercased; draft/msgid covers pre-ratification servers.
       const msgid = tags?.msgid || tags?.['draft/msgid'] || undefined;
+      // IRCv3 reply (#993): the msgid this line answers, if it's a reply.
+      const replyMsgid = replyMsgidFromTags(tags);
       const targetIsChannel = isChannelTarget(eventTarget);
       const type =
         eventType === 'action' ? 'action' : eventType === 'notice' ? 'notice' : 'message';
@@ -2438,6 +2472,7 @@ export class IrcConnection {
           userhost: buildUserhost(event),
           time: event.time,
           msgid,
+          replyMsgid,
         });
         // Parity with the optimistic path it replaces: no closed-buffer notice
         // mirror, no trackDmPeer/markPeerEvent for ourselves.
@@ -2560,6 +2595,7 @@ export class IrcConnection {
         userhost: buildUserhost(event),
         time: event.time,
         msgid,
+        replyMsgid,
         ...(e2eFlag ? { e2e: true } : {}),
       }) as EnrichedEvent | undefined;
       // If a notice's home buffer is one the user has closed, the wsHub fan-out
@@ -5799,10 +5835,11 @@ export class IrcConnection {
     this.notePartSent(channel);
     this.client.part(channel, reason);
   }
-  say(target: string, text: string): void {
+  // `tags`: client-only tags for this line — a reply's (replyTags).
+  say(target: string, text: string, tags?: Record<string, string> | null): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    this.client.say(target, text);
+    this.client.say(target, text, tags ?? undefined);
     // Arm AFTER the send, and never let a DB hiccup in arming break delivery of
     // the user's actual message.
     try {
@@ -5811,10 +5848,17 @@ export class IrcConnection {
       /* arming is best-effort */
     }
   }
-  action(target: string, text: string): void {
+  action(target: string, text: string, tags?: Record<string, string> | null): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    this.client.action(target, text);
+    if (!tags) {
+      this.client.action(target, text);
+      return;
+    }
+    // irc-framework's action() takes no tags, so write the CTCP ACTION line
+    // ourselves, the way sendMultiline writes its tagged lines. `text` is one
+    // splitAction chunk, already within the budget action() would split to.
+    this.raw(`@${IRC.MessageTags.encode(tags)} PRIVMSG ${target} :\x01ACTION ${text}\x01`);
   }
   notice(target: string, text: string): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
@@ -7996,15 +8040,20 @@ export class IrcConnection {
   // no spurious newline. Returns the per-batch display text so the caller can
   // echo one self bubble per batch, matching what the channel sees. All lines
   // go through raw() so embedded CR/LF/NUL is stripped. (#381)
-  sendMultiline(target: string, text: string): string[] {
+  // `tags` (a reply's) go on the first batch's BATCH line, where the spec puts
+  // a multiline message's client-only tags; a paste that needs several batches
+  // is several messages, and only the first is the reply.
+  sendMultiline(target: string, text: string, tags?: Record<string, string> | null): string[] {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
     const limits = this.multilineLimits();
     if (!limits) return [];
     const echoes: string[] = [];
+    let batchTags = tags ? IRC.MessageTags.encode(tags) : '';
     for (const batch of partitionMultiline(text, limits)) {
       const ref = randomBytes(8).toString('hex');
-      this.raw(`BATCH +${ref} draft/multiline ${target}`);
+      this.raw(`${batchTags ? `@${batchTags} ` : ''}BATCH +${ref} draft/multiline ${target}`);
+      batchTags = '';
       for (const line of batch) {
         const tag = line.concat ? `batch=${ref};draft/multiline-concat` : `batch=${ref}`;
         this.raw(`@${tag} PRIVMSG ${target} :${line.content}`);
@@ -8027,22 +8076,25 @@ export class IrcConnection {
     const line = (event.message as string | undefined) ?? '';
     const existing = this.multilineBatches.get(id);
     if (!existing) {
-      // Graft the BATCH start line's msgid/@time (stashed by the raw handler)
-      // onto the retained first fragment: inner fragments carry only the batch
-      // ref, so without this every multiline row loses its msgid and falls
-      // back to receive time. Fragment-level tags win if a server sets both.
+      // Graft the BATCH start line's msgid/@time/+reply (stashed by the raw
+      // handler) onto the retained first fragment: inner fragments carry only
+      // the batch ref, so without this every multiline row loses its msgid and
+      // falls back to receive time. Fragment-level tags win if a server sets both.
       const batchTags = this.multilineBatchTags.get(id);
       if (batchTags) {
         this.multilineBatchTags.delete(id);
-        const tags = event.tags as Record<string, string> | undefined;
+        let tags = event.tags as Record<string, string> | undefined;
+        if (batchTags.msgid && !tags?.msgid && !tags?.['draft/msgid']) {
+          tags = { ...tags, msgid: batchTags.msgid };
+        }
+        if (batchTags.reply && !replyMsgidFromTags(tags)) {
+          tags = { ...tags, '+reply': batchTags.reply };
+        }
         event = {
           ...event,
           // normalizeEventTime accepts the raw ISO tag string.
           time: event.time ?? batchTags.time,
-          tags:
-            batchTags.msgid && !tags?.msgid && !tags?.['draft/msgid']
-              ? { ...tags, msgid: batchTags.msgid }
-              : tags,
+          tags,
         };
       }
       // Without server-time the message would be stored when the batch ends,
@@ -8237,6 +8289,20 @@ export class IrcConnection {
       net.supportsTag('draft/unreact') &&
       (net.supportsTag('reply') || net.supportsTag('draft/reply'))
     );
+  }
+
+  // The tags that make an outgoing line a reply to `msgid`, or null when the
+  // network can't carry them (no message-tags, or CLIENTTAGDENY forbids both
+  // names) — the line then goes out as a plain line, its `nick: ` prefix still
+  // saying who it answers. Each name the network allows goes out: `+reply` is
+  // the ratified one, `+draft/reply` what older clients still read.
+  replyTags(msgid: string): Record<string, string> | null {
+    const net = this.client.network as unknown as { supportsTag?: (tag: string) => boolean };
+    if (typeof net?.supportsTag !== 'function') return null;
+    const tags: Record<string, string> = {};
+    if (net.supportsTag('reply')) tags['+reply'] = msgid;
+    if (net.supportsTag('draft/reply')) tags['+draft/reply'] = msgid;
+    return Object.keys(tags).length ? tags : null;
   }
 
   // React (or unreact) `value` on the line with `msgid` in `target`. Writes

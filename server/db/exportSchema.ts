@@ -221,6 +221,8 @@ export const EXPORT_TABLES = Object.freeze({
       'mirrored',
       'notable',
       'msgid',
+      'reply_msgid',
+      'reply_to_self',
     ],
   },
 

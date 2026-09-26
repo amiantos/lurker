@@ -16,6 +16,8 @@ import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
+import { REPLY_EXCERPT_MAX } from '../../shared/replies.js';
+import type { ReplyContext, ReplyParent } from '../../shared/replies.js';
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
 // filters on `buffer_id`, and `target` is written at insert as an observation
@@ -44,6 +46,13 @@ interface MessageRow {
   from_ignored: number;
   mirrored: number;
   msgid: string | null;
+  // IRCv3 replies (#993): the msgid this line answers, and whether that line is
+  // one of the owner's own (from someone else) — see the columns in db/index.ts.
+  reply_msgid: string | null;
+  reply_to_self: number;
+  // JSON object from the computed `reply_parent` column (REPLY_COL), NULL when
+  // the msgid names no line we hold. Absent — not null — on reads without it.
+  reply_parent?: string | null;
   // 0/1 from the computed `bookmarked` column — see BOOKMARKED_COL. Optional
   // because it exists only on the SELECTs that ask for it.
   bookmarked?: number;
@@ -90,6 +99,10 @@ export interface MessageEvent {
   // IRCv3 reactions standing on this line, oldest first. Absent when there are
   // none, like `bookmarked`. See REACTIONS_COL.
   reactions?: MessageReaction[];
+  // IRCv3 reply (#993): the line this one answers. Absent on a line that isn't
+  // a reply, and on reads that don't resolve it (search, the bouncer) — see
+  // REPLY_COL.
+  replyTo?: ReplyContext;
   [key: string]: unknown;
 }
 
@@ -115,6 +128,10 @@ export interface MessageInput {
   fromIgnored?: boolean;
   mirrored?: boolean;
   msgid?: string | null;
+  // IRCv3 reply (#993): the msgid this line answers, and whether that's one of
+  // the owner's lines (the highlight stamp — see HIGHLIGHTED_SQL).
+  replyMsgid?: string | null;
+  replyToSelf?: boolean;
   // Server-buffer notability (#470). Defaults to notable (true); pass false for
   // Lurker's own connection-status notices so they render in the server buffer
   // but don't mark it unread. Read by countServerBufferUnread (the :server: unread
@@ -140,9 +157,9 @@ export interface MaxIdByBufferRow {
 // Non-striped types pass through with alt=0; the value is meaningless for them
 // and the client never reads it.
 const insertStmt = db.prepare(`
-  INSERT INTO messages (network_id, buffer_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, notable, msgid, alt)
+  INSERT INTO messages (network_id, buffer_id, target, time, type, nick, text, kind, self, extra, matched_rule_id, userhost, from_ignored, mirrored, notable, msgid, reply_msgid, reply_to_self, alt)
   VALUES (
-    @networkId, @bufferId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored, @notable, @msgid,
+    @networkId, @bufferId, @target, @time, @type, @nick, @text, @kind, @self, @extra, @matchedRuleId, @userhost, @fromIgnored, @mirrored, @notable, @msgid, @replyMsgid, @replyToSelf,
     CASE WHEN @type IN ('message', 'action', 'notice')
          THEN 1 - COALESCE(
            (SELECT alt FROM messages
@@ -190,6 +207,8 @@ export function insertMessage(row: MessageInput): {
     // `||` not `??`: an empty-string msgid would be stored and indexed
     // (msgid IS NOT NULL) yet never surfaced — rowToEvent reads truthily.
     msgid: row.msgid || null,
+    replyMsgid: row.replyMsgid || null,
+    replyToSelf: row.replyToSelf ? 1 : 0,
   });
   const id = result.lastInsertRowid;
   // Retention prunes lazily: the sweep only ever looks at buffers that grew.
@@ -259,6 +278,102 @@ function parseReactionsCol(raw: string | null | undefined): MessageReaction[] | 
   }
 }
 
+// A row is a highlight when a rule matched it or it answers one of the owner's
+// own lines. Every highlight read uses this, so the two can never disagree about
+// what counts. (countHighlightsNewer probes the halves separately — see there.)
+export const HIGHLIGHTED_SQL = (alias: string) =>
+  `(${alias}.matched_rule_id IS NOT NULL OR ${alias}.reply_to_self = 1)`;
+
+// The line a reply answers, as JSON, found by msgid in the reply's own buffer.
+// Scoped to the buffer for the reason findReactionParent is: nothing stops a
+// reply naming a msgid seen elsewhere, and #a's reply must not quote #b. The
+// newest copy of a repeated msgid wins, as there. `+p.buffer_id` keeps the
+// planner on idx_messages_msgid (network_id, msgid), which pins it to a row or
+// two; the buffer check then filters those. Chat lines only (a reaction's
+// TAGMSG was never stored as one), and not a line from someone ignored when it
+// arrived — quoting them would put their words back on screen.
+const REPLY_PARENT_JSON = `json_object(
+      'id', p.id, 'nick', p.nick, 'type', p.type,
+      'text', substr(p.text, 1, ${REPLY_EXCERPT_MAX}), 'userhost', p.userhost,
+      'self', p.self
+    )`;
+const REPLY_PARENT_WHERE = `p.type IN ('message', 'action', 'notice')
+      AND p.from_ignored = 0`;
+
+// Resolved at read time rather than stored, so retention taking the parent
+// needs nothing kept in step: the reply just reads as unavailable. Same
+// ride-along as REACTIONS_COL and on the same reads (the timeline ones); a
+// line that isn't a reply costs the CASE and nothing else.
+const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS NULL THEN NULL ELSE (
+    SELECT ${REPLY_PARENT_JSON}
+    FROM messages p
+    WHERE p.network_id = ${alias}.network_id AND p.msgid = ${alias}.reply_msgid
+      AND +p.buffer_id = ${alias}.buffer_id AND ${REPLY_PARENT_WHERE}
+    ORDER BY p.id DESC LIMIT 1
+  ) END AS reply_parent`;
+
+function parseReplyParent(raw: string | null | undefined): ReplyParent | null {
+  if (!raw) return null;
+  try {
+    const p = JSON.parse(raw) as Omit<ReplyParent, 'self'> & { self: number };
+    return {
+      id: p.id,
+      nick: p.nick ?? '',
+      type: p.type,
+      text: p.text ?? '',
+      userhost: p.userhost ?? null,
+      self: p.self === 1,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+const replyParentStmt = db.prepare(`
+  SELECT ${REPLY_PARENT_JSON} AS parent
+  FROM messages p
+  WHERE p.network_id = ? AND p.msgid = ? AND +p.buffer_id = ? AND ${REPLY_PARENT_WHERE}
+  ORDER BY p.id DESC LIMIT 1
+`);
+
+// The same lookup REPLY_COL makes, for a line being inserted now: its live
+// frame needs the context the stored row will read back with, and the insert
+// needs to know whether the parent is ours (reply_to_self).
+export function findReplyParent(
+  networkId: number,
+  bufferId: number,
+  msgid: string,
+): ReplyParent | null {
+  const row = replyParentStmt.get(networkId, msgid, bufferId) as { parent: string } | undefined;
+  return row ? parseReplyParent(row.parent) : null;
+}
+
+const replySendStmt = db.prepare(`
+  SELECT m.msgid FROM messages m
+  JOIN networks n ON n.id = m.network_id
+  WHERE m.id = ? AND n.user_id = ? AND m.network_id = ? AND m.buffer_id = ?
+    AND m.type IN ('message', 'action', 'notice')
+    AND m.msgid IS NOT NULL AND m.msgid != ''
+`);
+
+// The msgid to put on a reply the user is sending to `target`, naming their
+// stored line `messageId`. Null unless that line is theirs to see, carries a
+// msgid, and sits in the very buffer the reply goes to — a reply in #b naming a
+// line from #a would quote, to #b's clients, something only #a saw.
+export function replySendMsgid(
+  userId: number,
+  networkId: number,
+  target: string,
+  messageId: number,
+): string | null {
+  const bufferId = resolveBufferIdByNetwork(networkId, target);
+  if (bufferId === undefined) return null;
+  const row = replySendStmt.get(messageId, userId, networkId, bufferId) as
+    | { msgid: string }
+    | undefined;
+  return row?.msgid ?? null;
+}
+
 function rowToEvent(row: MessageRow): MessageEvent {
   const event: MessageEvent = {
     id: row.id,
@@ -273,7 +388,7 @@ function rowToEvent(row: MessageRow): MessageEvent {
     self: !!row.self,
     userhost: row.userhost ?? null,
     alt: row.alt === 1,
-    matched: row.matched_rule_id != null,
+    matched: row.matched_rule_id != null || row.reply_to_self === 1,
     matchedRuleId: row.matched_rule_id,
     fromIgnored: row.from_ignored === 1,
     mirrored: row.mirrored === 1,
@@ -300,6 +415,12 @@ function rowToEvent(row: MessageRow): MessageEvent {
   delete event.reactions;
   const reactions = parseReactionsCol(row.reactions);
   if (reactions) event.reactions = reactions;
+  // And for the reply context. Only on reads that resolved it (REPLY_COL): a
+  // reply read without it would otherwise claim its parent was unavailable.
+  delete event.replyTo;
+  if (row.reply_msgid && row.reply_parent !== undefined) {
+    event.replyTo = { msgid: row.reply_msgid, parent: parseReplyParent(row.reply_parent) };
+  }
   return event;
 }
 
@@ -324,15 +445,15 @@ function listMessagesById(
   if (afterId) {
     const rows = db
       .prepare(
-        `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE buffer_id = ? AND id > ?
+        `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE buffer_id = ? AND id > ?
        ORDER BY id ASC LIMIT ?`,
       )
       .all(bufferId, afterId, limit) as MessageRow[];
     return rows.map(rowToEvent);
   }
   const sql = before
-    ? `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
-    : `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ?`;
+    ? `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
+    : `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ?`;
   const params = before ? [bufferId, before, limit] : [bufferId, limit];
   const rows = db.prepare(sql).all(...params) as MessageRow[];
   return rows.map(rowToEvent).toReversed();
@@ -492,7 +613,7 @@ function listMessagesCountedById(
   }
   const rows = db
     .prepare(
-      `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ASC`,
+      `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ASC`,
     )
     .all(...params) as MessageRow[];
   return rows.map(rowToEvent);
@@ -523,7 +644,7 @@ export function listMessagesAround(
       ? undefined
       : (db
           .prepare(
-            `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')} FROM messages WHERE id = ? AND buffer_id = ?`,
+            `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE id = ? AND buffer_id = ?`,
           )
           .get(anchorId, bufferId) as MessageRow | undefined);
   if (bufferId === undefined || !anchorRow) {
@@ -1177,20 +1298,30 @@ export function countServerBufferUnread(
 // are excluded too (#470): a Lurker status notice that happens to match a self-
 // nick rule ("Reclaimed nick <you>.") must not highlight the server buffer when
 // it's deliberately not even counted as unread.
+//
+// A reply to the user counts too (HIGHLIGHTED_SQL). Two probes rather than one
+// OR, so each half walks its own partial index — idx_messages_matched_buf and
+// idx_messages_reply_self_buf — instead of every unread row; the second skips
+// rule-matched rows so a line that is both isn't counted twice.
 export function countHighlightsNewer(networkId: number, target: string, afterId: number): number {
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return 0;
-  return (
-    db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM messages
-     WHERE buffer_id = ? AND id > ?
-       AND matched_rule_id IS NOT NULL
-       AND from_ignored = 0
-       AND notable = 1`,
-      )
-      .get(bufferId, afterId || 0) as { n: number }
-  ).n;
+  const row = db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM messages
+           WHERE buffer_id = @bufferId AND id > @afterId
+             AND matched_rule_id IS NOT NULL
+             AND from_ignored = 0
+             AND notable = 1)
+       + (SELECT COUNT(*) FROM messages
+           WHERE buffer_id = @bufferId AND id > @afterId
+             AND reply_to_self = 1 AND matched_rule_id IS NULL
+             AND from_ignored = 0
+             AND notable = 1) AS n`,
+    )
+    .get({ bufferId, afterId: afterId || 0 }) as { n: number };
+  return row.n;
 }
 
 // Highlight history feed for the /api/highlights endpoint. Scoped to a single
@@ -1205,7 +1336,7 @@ export function listUserHighlights(
        FROM messages m
        JOIN networks n ON n.id = m.network_id
        WHERE n.user_id = ?
-         AND m.matched_rule_id IS NOT NULL
+         AND ${HIGHLIGHTED_SQL('m')}
          AND m.from_ignored = 0
          AND m.id < ?
        ORDER BY m.id DESC
@@ -1214,7 +1345,7 @@ export function listUserHighlights(
        FROM messages m
        JOIN networks n ON n.id = m.network_id
        WHERE n.user_id = ?
-         AND m.matched_rule_id IS NOT NULL
+         AND ${HIGHLIGHTED_SQL('m')}
          AND m.from_ignored = 0
        ORDER BY m.id DESC
        LIMIT ?`;
@@ -1253,7 +1384,8 @@ function toFtsMatch(text: string): string {
 // networks"); prepared once like every other statement in this module.
 const userNetworkIdsStmt = db.prepare(`SELECT id FROM networks WHERE user_id = ?`);
 
-// `matched: true` restricts to highlight rows (matched_rule_id IS NOT NULL) —
+// `matched: true` restricts to highlight rows (HIGHLIGHTED_SQL: a rule matched,
+// or the line replies to one of the user's own) —
 // this is what powers filterable highlights, which reuse the same from:/in:/on:
 // + free-text machinery as search. Unlike plain search, an all-empty filter set
 // is valid when `matched` is set: it means "all my highlights".
@@ -1299,10 +1431,8 @@ export function searchMessages(
   ];
   const params: (string | number)[] = [userId];
 
-  // Placed before the FTS join so the partial idx_messages_matched index
-  // (WHERE matched_rule_id IS NOT NULL) is available to the planner.
   if (matched) {
-    where.push('m.matched_rule_id IS NOT NULL');
+    where.push(HIGHLIGHTED_SQL('m'));
   }
 
   const hasText = !!text;

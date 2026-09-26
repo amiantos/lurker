@@ -104,6 +104,34 @@ describe('highlight-count path', () => {
     );
     expect(detail).toMatch(/USING INDEX idx_messages_matched_buf/);
   });
+
+  // The reply half (#993): a probe of its own, so it walks its own partial
+  // index rather than every unread row an OR with the rule half would cost.
+  it('the reply half uses the partial reply index (countHighlightsNewer shape)', () => {
+    const detail = plan(
+      `SELECT COUNT(*) FROM messages
+       WHERE buffer_id = 1 AND id > 0
+         AND reply_to_self = 1 AND matched_rule_id IS NULL
+         AND from_ignored = 0
+         AND notable = 1`,
+    );
+    expect(detail).toMatch(/USING INDEX idx_messages_reply_self_buf/);
+  });
+});
+
+describe('reply parent path', () => {
+  // REPLY_COL / findReplyParent: one seek on the msgid index per reply row. The
+  // `+` on buffer_id keeps the planner off the per-buffer index, which would
+  // walk the whole buffer looking for one msgid.
+  it('finds the parent by a seek on the msgid index', () => {
+    const detail = plan(
+      `SELECT p.id FROM messages p
+       WHERE p.network_id = 1 AND p.msgid = 'x' AND +p.buffer_id = 1
+         AND p.type IN ('message', 'action', 'notice') AND p.from_ignored = 0
+       ORDER BY p.id DESC LIMIT 1`,
+    );
+    expect(detail).toMatch(/USING INDEX idx_messages_msgid/);
+  });
 });
 
 // The searchMessages driving-filter shapes (SEARCH_FILTER_INDEX_PLAN in
