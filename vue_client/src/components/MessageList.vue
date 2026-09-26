@@ -2939,10 +2939,12 @@ watch(
   margin-top: var(--space-5);
 }
 /* Compact: the reply line gets its own track above the head. A row with no reply
-   leaves the track empty, and an empty auto track is zero tall. */
+   leaves the track empty, and an empty auto track is zero tall. It starts in the
+   body's column, not at the edge, so it takes the same small indent the body and
+   its reactions do (the column gap after the empty prefix track). */
 .message-list.compact .line {
   grid-template-areas:
-    'reply  reply reply'
+    '.      reply reply'
     'head   head  head'
     'prefix body  time';
 }
