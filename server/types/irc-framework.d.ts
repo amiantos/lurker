@@ -219,6 +219,9 @@ declare module 'irc-framework' {
     on(event: 'raw', listener: (event: { from_server: boolean; line: string }) => void): this;
   }
 
+  /** IRCv3 tag encoding (values escaped per the spec). */
+  export const MessageTags: { encode(tags: Record<string, string>): string };
+
   /** Parse a raw IRC line into a message object. */
   export function ircLineParser(line: string): {
     command: string;
@@ -233,7 +236,11 @@ declare module 'irc-framework' {
 
   // Default export in the package is an object with a `Client` property.
   // ircConnection.ts imports it as: import IRC from 'irc-framework'
-  const defaultExport: { Client: typeof Client; ircLineParser: typeof ircLineParser };
+  const defaultExport: {
+    Client: typeof Client;
+    ircLineParser: typeof ircLineParser;
+    MessageTags: typeof MessageTags;
+  };
   export default defaultExport;
 }
 

@@ -263,3 +263,36 @@ describe('collapseDisplay — bypass', () => {
     expect(rows.every((r) => !r.continuationAuthor && !r.continuationTime)).toBe(true);
   });
 });
+
+// IRCv3 replies (#993): the reply line sits between a reply and the row above,
+// so a reply always shows its author — and still opens a run of its own.
+describe('collapseDisplay — replies', () => {
+  const opts = { collapseAuthors: true, authorWindowMs: 5 * 60_000 };
+  const reply = (id: number, nick: string, time: string): DisplayRow => {
+    const row = msg({ id, nick, time });
+    row.m!.replyTo = { msgid: 'x', parent: null };
+    return row;
+  };
+
+  it('never continues a run, even the same author a moment later', () => {
+    const rows = collapseDisplay(
+      [
+        msg({ id: 1, nick: 'bob', time: '2026-09-25T12:00:00Z' }),
+        reply(2, 'bob', '2026-09-25T12:00:10Z'),
+      ],
+      opts,
+    );
+    expect(rows[1].continuationAuthor).toBeFalsy();
+  });
+
+  it('opens a run: the author’s next plain line collapses under it', () => {
+    const rows = collapseDisplay(
+      [
+        reply(1, 'bob', '2026-09-25T12:00:00Z'),
+        msg({ id: 2, nick: 'bob', time: '2026-09-25T12:00:10Z' }),
+      ],
+      opts,
+    );
+    expect(rows[1].continuationAuthor).toBe(true);
+  });
+});

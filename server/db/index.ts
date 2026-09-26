@@ -1301,6 +1301,35 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_msgid
          ON messages(network_id, msgid)
          WHERE msgid IS NOT NULL`);
 
+// IRCv3 replies (#993): the msgid a line answers, from its +reply (or
+// +draft/reply) tag. Only the msgid is stored; the line it names is looked up
+// when rows are read (REPLY_COL in db/messages.ts), so a parent that retention
+// has since taken simply reads as unavailable, with nothing to keep in step.
+ensureColumn('messages', 'reply_msgid', 'TEXT');
+// Stamped at insert: the line answers one of the user's own lines, from
+// someone else. A reply to you is a highlight without your nick in it, so
+// every highlight read ORs this in beside matched_rule_id (HIGHLIGHTED_SQL).
+// Kept out of matched_rule_id because no rule matched — that column names one.
+ensureColumn('messages', 'reply_to_self', 'INTEGER NOT NULL DEFAULT 0');
+// countHighlightsNewer's second probe, the reply half of what
+// idx_messages_matched_buf is for the rule half. Partial, so it holds only the
+// few rows that are replies to the user; building it is one pass over the table
+// on the boot that adds it.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
+         ON messages(buffer_id, id DESC)
+         WHERE reply_to_self = 1`);
+// The top of a reply's thread: the root's msgid, set on every reply at insert
+// (its parent's root, or — when the parent has none, or isn't one we hold —
+// the parent's msgid). The line that started the thread stores nothing; it's
+// found by its own msgid. So a whole thread is its root row (idx_messages_msgid)
+// plus every row naming it here, and reply_msgid on each links the tree. Kept
+// for a threaded "forum" view of a channel; nothing reads it for display yet.
+ensureColumn('messages', 'reply_root_msgid', 'TEXT');
+// A thread's replies in one range: (buffer, root). Partial — replies only.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root
+         ON messages(buffer_id, reply_root_msgid)
+         WHERE reply_root_msgid IS NOT NULL`);
+
 // Sender matched the network owner's ignore list at insert time. Stamped on
 // the row so countNewer/countHighlightsNewer can exclude ignored senders
 // without doing a JS-side mask scan over every unread row — the client's

@@ -2956,6 +2956,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               networkId: msg.networkId,
               target: msg.target,
               text: msg.text,
+              // IRCv3 reply (#993): the id of the line this answers.
+              ...(Number.isInteger(msg.replyTo) ? { replyTo: msg.replyTo } : {}),
             },
           ) as { ok: boolean; error?: string };
         } catch (err) {

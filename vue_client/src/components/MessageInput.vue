@@ -180,6 +180,9 @@ import type { SettingOption } from '../../../shared/settingsRegistry.js';
 import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useRepliesStore } from '../stores/replies.js';
+import type { PendingReply } from '../stores/replies.js';
+import { NOT_NICK_CHAR } from '../utils/replyText.js';
 import { MAX_REACTION_GRAPHEMES, isValidReactionValue } from '../../../shared/reactions.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useAuthStore } from '../stores/auth.js';
@@ -258,6 +261,9 @@ const recentBuffers = useRecentBuffersStore();
 const auth = useAuthStore();
 const inputHistory = useInputHistoryStore();
 const drafts = useDraftStore();
+// The IRCv3 reply being composed in each buffer (#993), set by a line's Reply
+// action and shown in the status bar. The next chat line sent consumes it.
+const replies = useRepliesStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const uploads = useUploadsStore();
@@ -844,13 +850,6 @@ function addressSuffix(): string {
   return `${addressPunct()} `;
 }
 
-// A character that cannot continue a nick, which is what "punctuation after
-// the nick" has to mean for isAddressedTo(): not a letter or digit (Unicode —
-// `\w` is ASCII-only, so `bobł` would read as bob + a mark), not whitespace,
-// and not one of the RFC 2812 nick specials `[]\`_^{|}-` — or `bob_: hi`
-// would count as addressing bob, and bob_ is every ghost's nick.
-const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
-
 // Whether `draft` already opens by addressing `nick`, so Reply is idempotent.
 // Not just the configured form: a draft can carry an older setting's form, or
 // one another client wrote (iOS still says `nick: `, and drafts sync), so any
@@ -861,9 +860,53 @@ const NOT_NICK_CHAR = '[^\\p{L}\\p{N}\\s_\\[\\]\\\\`^{|}-]';
 // setting that draft is indistinguishable from an addressed one, which is the
 // ambiguity of the convention itself, not something to second-guess.
 function isAddressedTo(draft: string, nick: string): boolean {
+  return addressRegex(nick).test(draft);
+}
+
+// `draft` with the address isAddressedTo() recognizes taken off the front —
+// what cancelling a reply (#993) undoes. Anything else in the draft stays.
+function stripAddress(draft: string, nick: string): string {
+  return draft.replace(addressRegex(nick), '');
+}
+
+// The one pattern both of the above use, so what counts as an address and what
+// cancelling takes back can't drift apart. NOT_NICK_CHAR is shared with the
+// reply display's stripReplyAddress (utils/replyText.ts).
+function addressRegex(nick: string): RegExp {
   const punct = addressPunct();
   const marks = punct ? `(?:${escapeRegex(punct)}|${NOT_NICK_CHAR}+)` : `${NOT_NICK_CHAR}*`;
-  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu').test(draft);
+  return new RegExp(`^${escapeRegex(nick)}${marks}\\s`, 'iu');
+}
+
+// Hand the active buffer's pending reply to a send, clearing it. The caller
+// puts it back (giveBackReply) when the send never left.
+type TakenReply = { key: string; reply: PendingReply };
+
+function takeReply(): TakenReply | null {
+  const key = networks.activeKey;
+  const reply = replies.forKey(key);
+  if (!key || !reply) return null;
+  replies.cancel(key);
+  return { key, reply };
+}
+
+function giveBackReply(taken: TakenReply | null): void {
+  // Unless another Reply has been started there since.
+  if (taken && !replies.forKey(taken.key)) replies.start(taken.key, taken.reply);
+}
+
+// The status bar's × and Escape: drop the pending reply, and take back the
+// `nick: ` its Reply put in the draft (halloy does the same) — only if the Reply
+// put it there; one the user typed stays.
+function cancelReply(): void {
+  const key = networks.activeKey;
+  const reply = replies.forKey(key);
+  if (!reply) return;
+  replies.cancel(key);
+  if (!reply.addressed) return;
+  const cur = text.value;
+  const stripped = stripAddress(cur, reply.nick);
+  if (stripped !== cur) setInputAndCaretEnd(stripped);
 }
 
 function buildNickMatches(buf: Buffer, networkId: number, prefix: string): string[] {
@@ -1269,6 +1312,22 @@ function onKeydown(e: KeyboardEvent): void {
       historyPickerEl.value.confirmActive();
       return;
     }
+  }
+  // Escape drops a pending reply (#993), once nothing above has claimed it.
+  // The pickers close themselves from their own document listeners, which run
+  // after this one — so while one is open, the Escape is theirs.
+  if (
+    e.key === 'Escape' &&
+    !e.shiftKey &&
+    replies.forKey(networks.activeKey) &&
+    !pickerOpen.value &&
+    !channelPickerOpen.value &&
+    !emojiPickerOpen.value &&
+    !historyPickerOpen.value
+  ) {
+    e.preventDefault();
+    cancelReply();
+    return;
   }
   if (e.key === 'Enter') {
     // Textareas don't submit forms on Enter, so we trigger submission here.
@@ -1747,7 +1806,13 @@ function addressInComposer(nick: string): void {
   resetCompletion();
   resetHistoryNav();
   const cur = text.value;
-  setInputAndCaretEnd(isAddressedTo(cur, nick) ? cur : nick + addressSuffix() + cur);
+  if (!isAddressedTo(cur, nick)) {
+    setInputAndCaretEnd(nick + addressSuffix() + cur);
+    // Cancelling the pending reply (#993) takes back only what this inserted.
+    if (networks.activeKey) replies.markAddressed(networks.activeKey, nick);
+  } else {
+    setInputAndCaretEnd(cur);
+  }
   queueMicrotask(() => inputEl.value?.focus());
 }
 
@@ -1986,6 +2051,7 @@ onMounted(() => {
     onPickFile,
     onPickCamera,
     onAddress: addressInComposer,
+    onCancelReply: cancelReply,
   });
 });
 
@@ -2327,7 +2393,10 @@ async function submit() {
     const ack = takeCommandAck();
     if (ack) {
       const result = await ack.promise;
-      if (!result.ok) restoreFailedSend(ack.origin.networkId, ack.origin.target, ack.origin.line);
+      if (!result.ok) {
+        restoreFailedSend(ack.origin.networkId, ack.origin.target, ack.origin.line);
+        giveBackReply(ack.origin.reply ?? null);
+      }
     }
     return;
   }
@@ -2338,10 +2407,18 @@ async function submit() {
   // the typed `||…||` form (commitInput is given `raw`), so up-arrow
   // round-trips the editable text rather than raw control codes.
   const wireText = applySpoilerMarkup(escapedSlash ? raw.slice(1) : raw);
-  const pending = socketSendWithAck({ type: 'send', networkId, target, text: wireText });
+  const taken = takeReply();
+  const pending = socketSendWithAck({
+    type: 'send',
+    networkId,
+    target,
+    text: wireText,
+    ...(taken ? { replyTo: taken.reply.messageId } : {}),
+  });
   if (!pending) {
     // Socket isn't open — don't clear the input, don't pollute history. The
     // user can edit and retry, or wait for the auto-reconnect.
+    giveBackReply(taken);
     toastSendFailure('disconnected', raw);
     return;
   }
@@ -2353,6 +2430,7 @@ async function submit() {
   if (!result.ok) {
     toastSendFailure(result.error ?? 'unknown', raw);
     restoreFailedSend(networkId, target, raw);
+    giveBackReply(taken);
   }
 }
 
@@ -2694,7 +2772,15 @@ let chatMessagesSent = 0;
 // invariant worth shipping.
 interface CommandAck {
   promise: Promise<AckResult>;
-  origin: { networkId: number; target: string; line: string };
+  origin: CommandOrigin;
+}
+// `reply`: the pending reply (#993) the command's line was sent as — a /me —
+// given back with the text if the send fails.
+interface CommandOrigin {
+  networkId: number;
+  target: string;
+  line: string;
+  reply?: TakenReply | null;
 }
 let pendingCommandAck: CommandAck | null = null;
 
@@ -2714,7 +2800,7 @@ function takeCommandAck(): CommandAck | null {
 function ackedSend(
   payload: Record<string, unknown>,
   body: string,
-  origin?: { networkId: number; target: string; line: string },
+  origin?: CommandOrigin,
 ): boolean {
   const pending = socketSendWithAck(payload);
   if (!pending) {
@@ -3464,12 +3550,24 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return runRelay(argLine, networkId, target);
     case 'react':
       return runReact(argLine, networkId, target, line);
-    case 'me':
-      return ackedSend({ type: 'action', networkId, target, text: chatBody(argLine) }, argLine, {
-        networkId,
-        target,
-        line,
-      });
+    case 'me': {
+      // A /me can be the reply (#993) — any other command leaves it pending, and
+      // so does an empty /me, which the server refuses without sending anything.
+      const taken = argLine.trim() ? takeReply() : null;
+      const sent = ackedSend(
+        {
+          type: 'action',
+          networkId,
+          target,
+          text: chatBody(argLine),
+          ...(taken ? { replyTo: taken.reply.messageId } : {}),
+        },
+        argLine,
+        { networkId, target, line, reply: taken },
+      );
+      if (!sent) giveBackReply(taken);
+      return sent;
+    }
     case 'ctcp': {
       // /ctcp <nick> <type> [args] — send a CTCP query (#263). The cell frames
       // and sends it, echoes locally, and routes the reply back to this buffer.

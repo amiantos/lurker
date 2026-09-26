@@ -91,6 +91,23 @@ other people's chatter. Incoming multi-line messages are reassembled the same wa
 - **`batch`**, **`draft/multiline`**, **`message-tags`**
   <br>`server/services/ircConnection.ts:518`
 
+### Replies show what they answer
+
+A reply shows a short line above it quoting the message it answers — who said it and
+how it started — and clicking that line jumps to the original. A reply to one of your
+own messages counts as a highlight, even when it doesn't mention your nick. Web client
+only for now.
+
+- **`+reply`** (and the older **`+draft/reply`**, read and sent alongside it), which
+  requires **`message-tags`**. Lurker finds the original by its `msgid` in the same
+  channel or conversation. If the original is gone (taken by retention, older than your
+  history, or from someone you ignore), the reply still shows, just without the quote.
+  Replies you send start with `nick: ` too, so people on clients without reply support
+  still see who you're answering. On a network whose `CLIENTTAGDENY` refuses the tag,
+  or on an E2E channel, the reply goes out as a plain message.
+  <br>`server/services/ircConnection.ts:2430` (receive), `:8299` (send),
+  `server/db/messages.ts:307` (the quote)
+
 ### You can see when someone is typing
 
 Typing indicators in channels and DMs, both directions — Lurker sends yours and
@@ -351,7 +368,6 @@ you, not by spec number.
 | Capability                      | What it would give you                                                                                                                                                                                                               |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `+draft/react`                  | Emoji reactions on messages. Lurker already stores the `msgid` that reactions anchor to, so the hard part is done.                                                                                                                   |
-| `+reply`                        | Threaded replies, anchored on the same stored `msgid`.                                                                                                                                                                               |
 | `draft/chathistory` (as client) | Backfill missed history from an upstream bouncer or a network that stores it. Note the asymmetry: Lurker _serves_ chathistory downstream but doesn't consume it upstream, so gaps from a Lurker outage can't currently be filled in. |
 | `standard-replies`              | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics.                                                                                                               |
 | `draft/message-redaction`       | When someone deletes a message, it disappears from your view too, rather than persisting forever in Lurker's history.                                                                                                                |

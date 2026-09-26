@@ -127,7 +127,8 @@ describe('outbound encrypt (ircManager.send)', () => {
 
     ircManager.send(1, 1, '#plain', 'hello world');
 
-    expect(say).toHaveBeenCalledWith('#plain', 'hello world');
+    // The third argument is a reply's tags — none here.
+    expect(say).toHaveBeenCalledWith('#plain', 'hello world', null);
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'message', target: '#plain', text: 'hello world' }),
     );
@@ -367,7 +368,7 @@ describe('egress refuses cleartext actions/notices on an E2E channel (#2)', () =
 
     ircManager.action(1, 1, '#plainchan', 'waves');
 
-    expect(action).toHaveBeenCalledWith('#plainchan', 'waves');
+    expect(action).toHaveBeenCalledWith('#plainchan', 'waves', null);
     vi.restoreAllMocks();
   });
 });

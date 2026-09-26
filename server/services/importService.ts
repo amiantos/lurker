@@ -538,6 +538,8 @@ async function streamMessagesInBatches(
       // is NOT NULL. Default to 1 (notable), matching the column default: old
       // history predates the server-buffer notability model, so it all counts.
       if (row.notable === undefined) row.notable = 1;
+      // reply_to_self (#993) is NOT NULL too; a pre-reply archive has no replies.
+      if (row.reply_to_self === undefined) row.reply_to_self = 0;
       row.buffer_id = resolveOrMintForInsert(row.network_id as number, String(row.target ?? ''));
       const result = insertOne(stmt, cols, row);
       messagesMap.set(original.id, result.lastInsertRowid);

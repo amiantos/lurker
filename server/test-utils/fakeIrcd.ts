@@ -264,16 +264,17 @@ export class FakeIrcd extends EventEmitter {
     return msgid;
   }
 
-  // Deliver a line from a synthetic peer to a nick or a channel.
-  say(from: string, target: string, text: string): string {
+  // Deliver a line from a synthetic peer to a nick or a channel. `clientTags`
+  // (escaped, `+`-prefixed) ride along to message-tags clients, as on TAGMSG.
+  say(from: string, target: string, text: string, clientTags: string[] = []): string {
     const msgid = `m${++this.msgidCounter}`;
     const body = this.opts.stripFormatting ? stripFormatting(text) : text;
     const line = `:${from}!~${from}@peer.fake PRIVMSG ${target} :${body}`;
     if (isChannelTarget(target)) {
-      for (const c of this.members(target)) this.tagged(c, line, msgid);
+      for (const c of this.members(target)) this.tagged(c, line, msgid, clientTags);
     } else {
       const c = this.client(target);
-      if (c) this.tagged(c, line, msgid);
+      if (c) this.tagged(c, line, msgid, clientTags);
     }
     return msgid;
   }
@@ -476,15 +477,19 @@ export class FakeIrcd extends EventEmitter {
         const text = this.opts.stripFormatting ? stripFormatting(raw) : raw;
         const msgid = `m${++this.msgidCounter}`;
         const out = `:${this.hostmask(c)} ${cmd} ${target} :${text}`;
+        // Client-only tags (a reply's +reply) are relayed as a real ircd does:
+        // only a message-tags sender's, and tagged() only hands them on to
+        // message-tags recipients.
+        const clientTags = c.caps.has('message-tags') ? FakeIrcd.clientTagsOf(line) : [];
         if (isChannelTarget(target)) {
           for (const m of this.members(target)) {
-            if (m !== c || c.caps.has('echo-message')) this.tagged(m, out, msgid);
+            if (m !== c || c.caps.has('echo-message')) this.tagged(m, out, msgid, clientTags);
           }
         } else {
           const m = this.client(target);
           if (!m) return this.num(c, '401', target, 'No such nick/channel');
-          this.tagged(m, out, msgid);
-          if (c.caps.has('echo-message')) this.tagged(c, out, msgid);
+          this.tagged(m, out, msgid, clientTags);
+          if (c.caps.has('echo-message')) this.tagged(c, out, msgid, clientTags);
         }
         return;
       }

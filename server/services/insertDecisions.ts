@@ -19,10 +19,14 @@ export interface StampEvent {
   target: string;
   text?: string | null;
   self?: boolean;
+  // IRCv3 reply (#993): the line answers one of the owner's own — a highlight
+  // with no rule behind it.
+  replyToSelf?: boolean;
 }
 
 // Returns the matched_rule_id (null when no highlight, or when a NOHIGHLIGHT rule
-// suppresses it) and from_ignored (true when a hide rule matches). A NOHIGHLIGHT
+// suppresses it), reply_to_self (the event's own flag, under the same NOHIGHLIGHT
+// suppression) and from_ignored (true when a hide rule matches). A NOHIGHLIGHT
 // rule deliberately leaves from_ignored false — the message stays visible and
 // counted, it just never highlights.
 export function decideStamp(
@@ -31,8 +35,9 @@ export function decideStamp(
   ignoreCompiled: CompiledIgnore,
   isDm: boolean,
   now?: number,
-): { matchedRuleId: number | null; fromIgnored: boolean } {
+): { matchedRuleId: number | null; replyToSelf: boolean; fromIgnored: boolean } {
   let matchedRuleId: number | null = null;
+  let replyToSelf = !!event.replyToSelf && !event.self;
   const { matched, ruleId } = matchEvent(event, highlightCompiled);
   if (matched) matchedRuleId = ruleId;
 
@@ -55,9 +60,12 @@ export function decideStamp(
       },
       now,
     );
-    if (verdict.nohilight) matchedRuleId = null;
+    if (verdict.nohilight) {
+      matchedRuleId = null;
+      replyToSelf = false;
+    }
     fromIgnored = verdict.hide;
   }
 
-  return { matchedRuleId, fromIgnored };
+  return { matchedRuleId, replyToSelf, fromIgnored };
 }

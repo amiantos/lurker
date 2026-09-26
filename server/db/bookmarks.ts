@@ -36,6 +36,7 @@ interface BookmarkRow {
   userhost: string | null;
   alt: number;
   matched_rule_id: number | null;
+  reply_to_self: number;
   network_name: string;
   extra: string | null;
 }
@@ -119,7 +120,8 @@ export function listBookmarksForUser(
       self: !!row.self,
       userhost: row.userhost ?? null,
       alt: row.alt === 1,
-      matched: row.matched_rule_id != null,
+      // A reply to the user is a highlight too — see HIGHLIGHTED_SQL.
+      matched: row.matched_rule_id != null || row.reply_to_self === 1,
       matchedRuleId: row.matched_rule_id,
       networkName: row.network_name,
     };
@@ -130,6 +132,9 @@ export function listBookmarksForUser(
         /* ignore */
       }
     }
+    // After the extra spread, as rowToEvent does: only the column may set it.
+    delete event.replyToSelf;
+    if (row.reply_to_self === 1) event.replyToSelf = true;
     return event;
   });
 }

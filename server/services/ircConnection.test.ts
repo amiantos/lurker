@@ -3151,6 +3151,24 @@ describe('IRCv3 draft/multiline (#381)', () => {
       });
     });
 
+    // IRCv3 reply (#993): a multiline reply's +reply rides the BATCH line, like
+    // its msgid — the fragments carry only the batch ref.
+    it('carries a +reply from the BATCH line onto the reassembled message', () => {
+      const { conn, publish } = makeReceiver();
+      conn.client.emit('raw', {
+        from_server: true,
+        line: '@msgid=whole;+draft/reply=parent1 :alice!a@h BATCH +br draft/multiline #chan',
+      });
+      conn.client.emit('message', fragment('br', 'line one'));
+      conn.client.emit('message', fragment('br', 'line two'));
+      conn.client.emit('batch end draft/multiline', { id: 'br' });
+      expect(publish.mock.calls[0][0]).toMatchObject({
+        text: 'line one\nline two',
+        msgid: 'whole',
+        replyMsgid: 'parent1',
+      });
+    });
+
     it('without server-time, takes the time the first fragment arrived', () => {
       // The bouncer relays each fragment with the time it arrived, so a MARKREAD
       // can name any of them. The stored message has to be no later than the first.
@@ -3223,6 +3241,21 @@ describe('IRCv3 draft/multiline (#381)', () => {
       expect(lines).toHaveLength(4);
       // One batch → one self-echo carrying the reassembled text.
       expect(echoes).toEqual(['line one\nline two']);
+    });
+
+    // A reply's tags go on the first batch's BATCH line (#993), escaped.
+    it('puts a reply’s tags on the BATCH line', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      conn.sendMultiline('#chan', 'line one\nline two', { '+reply': 'a;b', '+draft/reply': 'a;b' });
+      const lines = raw.mock.calls.map((c) => c[0]);
+      expect(lines[0]).toMatch(
+        /^@\+reply=a\\:b;\+draft\/reply=a\\:b BATCH \+[0-9a-f]{16} draft\/multiline #chan$/,
+      );
+      const ref = lines[0].match(/BATCH \+(\S+)/)![1];
+      expect(lines[1]).toBe(`@batch=${ref} PRIVMSG #chan :line one`);
     });
 
     it('preserves a blank line as an empty PRIVMSG with a trailing colon', () => {

@@ -104,6 +104,36 @@
         :data-msg-id="row.m?.id ?? null"
         @click="onMessageRowClick($event, row.m)"
       >
+        <!-- IRCv3 reply (#993): the line this one answers, on its own grid row above it.
+             In the standard layout the mark sits in the nick column and the excerpt in the
+             body column; compact stacks it above the head. -->
+        <div
+          v-if="row.m?.replyTo"
+          class="reply-ctx"
+          :class="{ missing: !row.replyParent }"
+          :title="row.replyParent ? 'Jump to this message' : undefined"
+          :role="row.replyParent ? 'button' : undefined"
+          :tabindex="row.replyParent ? 0 : undefined"
+          @click.stop="onReplyContextClick(row.replyParent)"
+          @keydown.enter.space.prevent.stop="onReplyContextClick(row.replyParent)"
+        >
+          <!-- A box-drawing arm, not an icon: the list's other markers are plain text
+               (the join and part arrows, the action star), and the square corner
+               matches the buffer list's lines. It rises from the reply's nick below
+               and turns into the quote. -->
+          <span class="reply-mark" role="img" aria-label="In reply to">┌─</span>
+          <!-- Quoted the way IRC writes the line — `<alice> text`, `* bob waves`,
+               `-ChanServ- text` — so it reads as what was said, not as a sentence
+               starting with a name. -->
+          <span class="reply-excerpt"
+            ><template v-if="row.replyParent"
+              >{{ quoteMarks(row.replyParent.type)[0] }}<NickRef :nick="row.replyParent.nick" />{{
+                quoteMarks(row.replyParent.type)[1]
+              }}
+              {{ replyExcerpt(row.replyParent.text) }}</template
+            ><template v-else>original message unavailable</template></span
+          >
+        </div>
         <template v-if="compactMode && row.m?.type === 'message'">
           <!-- Compact-mode message rows (IRCCloud-style): nick on its own
              head line above the body; body row carries the body and a
@@ -372,6 +402,7 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
+import { replyExcerpt, stripReplyAddress } from '../utils/replyText.js';
 import {
   formatTimestamp,
   formatDuration,
@@ -407,8 +438,11 @@ import { useContextMenu, type ContextMenuItem } from '../composables/useContextM
 import { useWhoisStore } from '../stores/whois.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
-import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
+import { isChannelTarget, dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
 import ReactionRow from './ReactionRow.vue';
+import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
+import { useRepliesStore } from '../stores/replies.js';
+import { emitJumpIntent } from '../composables/useJumpIntent.js';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -454,6 +488,9 @@ interface ChatMessage {
   // ISUPPORT, so `kind` is the only way to tell op churn from a ban — see
   // shared/modes.ts and docs/CLIENT_PROTOCOL.md §7.4.
   modes?: ModeChange[];
+  // IRCv3 reply (#993): the line this one answers, as the server resolved it by
+  // msgid within the buffer — see shared/replies.ts.
+  replyTo?: ReplyContext;
   [key: string]: unknown;
 }
 
@@ -462,6 +499,10 @@ interface ChatMessage {
 interface RenderRow {
   // Message row
   m?: ChatMessage;
+  // A reply's answered line as its reply line shows it (#993): null for
+  // "unavailable". Decided once per row in renderRows — it runs the ignore
+  // matcher — rather than per template binding. Absent on a non-reply.
+  replyParent?: ReplyParent | null;
   alt?: boolean;
   key: string | number;
   // Divider row
@@ -507,6 +548,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const ignores = useIgnoresStore();
+const replies = useRepliesStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
 const nicks = useNickColors();
@@ -693,6 +735,7 @@ function rowClass(row: RenderRow) {
     alt: row.alt,
     highlight: !!row.highlight && !row.nohilight,
     'cont-author': !!row.continuationAuthor,
+    'has-reply': !!m?.replyTo,
     'cont-time': !!row.continuationTime,
     selected: m?.id != null && m.id === selectedMessageId.value,
   };
@@ -732,7 +775,20 @@ const actionContext: MessageContext = {
     return buffer.value?.networkId ?? 0;
   },
   onReply: (msg) => {
-    if (msg.nick) addressNick(msg.nick);
+    if (!msg.nick) return;
+    // A line with a msgid gets a real reply (#993): pending in the status bar,
+    // sent with the next line. Either way the composer addresses them — that's
+    // what a client without replies sees, and the reply line hides it for us.
+    const key = networks.activeKey;
+    if (key && replyable(msg as ChatMessage)) {
+      replies.start(key, {
+        messageId: msg.id as number,
+        nick: msg.nick,
+        type: msg.type ?? 'message',
+        text: (msg.text as string | undefined) ?? '',
+      });
+    }
+    addressNick(msg.nick);
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);
@@ -1184,15 +1240,21 @@ const renderRows = computed((): RenderRow[] => {
     // -mask scope. Client evaluation is authoritative once the rule store has
     // loaded; until then we fall back to the server stamp.
     let rowHighlight = !!m.matched;
+    // A reply to one of our lines is a highlight with no rule behind it (#993):
+    // the live rule evaluation below can't see it, so it has to survive that.
+    // The server's stamp, not replyTo.parent — the parent can be gone (retention)
+    // or stored after the reply, and the stamp is what the badge and feed count.
+    const replyToSelf = !m.self && !!m.replyToSelf;
     if (highlights.loaded && !m.self && networkId) {
-      rowHighlight = highlights.evaluate(networkId, {
-        nick: m.nick,
-        userhost: m.userhost ?? null,
-        target: bufTarget,
-        text: m.text ?? '',
-        type: m.type,
-        self: m.self,
-      });
+      rowHighlight =
+        highlights.evaluate(networkId, {
+          nick: m.nick,
+          userhost: m.userhost ?? null,
+          target: bufTarget,
+          text: m.text ?? '',
+          type: m.type,
+          self: m.self,
+        }) || replyToSelf;
     }
 
     // Parsed once and reused by the smart filter and the presence dividers
@@ -1312,12 +1374,25 @@ const renderRows = computed((): RenderRow[] => {
         };
       }
     }
+    // A reply's answered line as its reply line will show it — null when it
+    // can't (see shownParent).
+    const replyParent = m.replyTo ? shownParent(m.replyTo.parent, networkId, bufTarget) : null;
+    // A reply that opens by addressing the author it answers (`alice: sure`) —
+    // how halloy and goguma send one, so clients without replies still see who it
+    // is for. The reply line above already names her, so drop the prefix here —
+    // but only when it does: with the quote unavailable (gone, or someone
+    // ignored), the address is the only sign of who the reply is to.
+    if (replyParent && mDisplay.type === 'message') {
+      const text = stripReplyAddress(mDisplay.text ?? '', replyParent.nick);
+      if (text !== mDisplay.text) mDisplay = { ...mDisplay, text };
+    }
     out.push({
       m: mDisplay,
       alt: STRIPED_TYPES.has(m.type) && !!m.alt,
       key,
       nohilight: rowNohilight,
       highlight: rowHighlight,
+      ...(m.replyTo ? { replyParent } : {}),
     });
   }
 
@@ -1531,6 +1606,66 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     ) as RenderSegment[];
   }
   return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
+}
+
+// Whether the Reply action can make a real reply of this line: it needs the
+// msgid the reply names, and a channel or DM to send it in. Not an E2E line —
+// the server sends no reply tags on an encrypted channel — and not the
+// :server: console or a =nick DCC chat, which aren't IRC targets. The server
+// re-checks all of it (replySendMsgid); this only decides what the action does.
+function replyable(m: ChatMessage): boolean {
+  return (
+    m.id != null &&
+    !!m.msgid &&
+    !m.e2e &&
+    (m.type === 'message' || m.type === 'action' || m.type === 'notice') &&
+    !!m.target &&
+    !m.target.startsWith(':') &&
+    !isDccChatTarget(m.target)
+  );
+}
+
+// The answered line as the reply line shows it — or null for "unavailable",
+// which also covers a line from someone ignored since it arrived (the server
+// only screens out who was ignored at the time). Judged as the line it was.
+function shownParent(
+  parent: ReplyParent | null,
+  networkId: number | null | undefined,
+  target: string,
+): ReplyParent | null {
+  if (!parent) return null;
+  if (!parent.self && parent.nick && networkId != null) {
+    const verdict = ignores.evaluate(networkId, {
+      nick: parent.nick,
+      userhost: parent.userhost,
+      target,
+      text: parent.text,
+      type: parent.type,
+      isDm: buffer.value?.kind === 'dm',
+    });
+    if (verdict.hide) return null;
+  }
+  return parent;
+}
+
+// What goes either side of the nick in a quoted line, by its type.
+function quoteMarks(type: string): [string, string] {
+  if (type === 'action') return ['* ', ''];
+  if (type === 'notice') return ['-', '-'];
+  return ['<', '>'];
+}
+
+function onReplyContextClick(parent: ReplyParent | null | undefined): void {
+  const buf = buffer.value;
+  if (!parent || !buf || buf.networkId == null) return;
+  // The shared jump pipeline: scrolls to the line if it's loaded, else loads a
+  // slice around it (detaching the buffer), as a search hit does.
+  emitJumpIntent({
+    kind: 'jump',
+    networkId: buf.networkId,
+    target: buf.target,
+    messageId: parent.id,
+  });
 }
 
 // Template helpers for consolidation row items — vue-tsc can't narrow
@@ -2615,6 +2750,73 @@ watch(
   word-break: break-word;
   padding-left: 1ch;
 }
+/* IRCv3 reply (#993): the answered line, one faded italic row above the reply. It
+   spans the last two columns as a subgrid of its own, so the mark lines up under the
+   nick column's right edge and the excerpt with the body text — and counting from the
+   END keeps that true on phone widths, where the time column is gone. The reply's own
+   cells drop to row 2 (scoped to the standard layout; compact places them by area).
+
+   Faded with opacity rather than a muted colour, so the quoted nick keeps its own
+   colour and fades with the rest — the mark, the brackets and the text all sit at one
+   level. On the mark and the excerpt, not the row: the row also carries the column
+   rule (::before), which must stay at full strength to read as unbroken. */
+.reply-ctx {
+  grid-column: -3 / -1;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+  min-width: 0;
+  color: var(--fg);
+  font-style: italic;
+  cursor: pointer;
+}
+.reply-ctx.missing {
+  cursor: default;
+}
+.reply-ctx > .reply-mark,
+.reply-ctx > .reply-excerpt {
+  opacity: 0.45;
+}
+.reply-ctx:not(.missing):hover > .reply-mark,
+.reply-ctx:not(.missing):hover > .reply-excerpt {
+  opacity: 0.8;
+}
+.message-list:not(.compact) .line.has-reply > .time,
+.message-list:not(.compact) .line.has-reply > .prefix,
+.message-list:not(.compact) .line.has-reply > .body {
+  grid-row: 2;
+}
+.reply-mark {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: end;
+  padding-right: 1ch;
+  /* Upright in the italic row: a slanted corner stops lining up with the nick. */
+  font-style: normal;
+}
+.reply-excerpt {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  padding-left: 1ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Carry the nick/body separator through the reply row, so the column rule stays
+   unbroken down the list. A grid item of the row, in the excerpt's cell at its left
+   edge (the column boundary), so the excerpt's fade doesn't reach it. */
+.reply-ctx::before {
+  content: '';
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: start;
+  align-self: stretch;
+  width: 1px;
+  background: var(--border);
+}
+
 /* Relay-bot origin tag (#277): the bracketed [source] before the re-attributed
    text — mirrors how the bot framed the line, so it reads as provenance rather
    than part of the message. Muted, no glyph; font size stays uniform per house
@@ -2695,8 +2897,12 @@ watch(
   .message-list:not(.compact) .prefix {
     padding-right: 0.5ch;
   }
-  .message-list:not(.compact) .body {
+  .message-list:not(.compact) .body,
+  .message-list:not(.compact) .reply-excerpt {
     padding-left: 0.5ch;
+  }
+  .message-list:not(.compact) .reply-mark {
+    padding-right: 0.5ch;
   }
 }
 
@@ -2731,6 +2937,30 @@ watch(
      backgrounds don't touch across the gap. Adjacent siblings collapse
      vertical margins, so back-to-back clusters get one 10px gap, not 20px. */
   margin-top: var(--space-5);
+}
+/* Compact: the reply line gets its own track above the head. A row with no reply
+   leaves the track empty, and an empty auto track is zero tall. It starts in the
+   body's column, not at the edge, so it takes the same small indent the body and
+   its reactions do (the column gap after the empty prefix track). */
+.message-list.compact .line {
+  grid-template-areas:
+    '.      reply reply'
+    'head   head  head'
+    'prefix body  time';
+}
+.message-list.compact .reply-ctx {
+  grid-area: reply;
+  display: flex;
+  gap: 0.75ch;
+}
+.message-list.compact .reply-mark {
+  padding-right: 0;
+}
+.message-list.compact .reply-excerpt {
+  padding-left: 0;
+}
+.message-list.compact .reply-ctx::before {
+  display: none;
 }
 /* Continuation message rows render only body + time — no head, no cluster
    start — and should sit tight under the previous line. */

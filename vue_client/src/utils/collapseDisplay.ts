@@ -14,7 +14,8 @@
 //                               the previous visible row displayed the same
 //                               formatted time string.
 //
-// Only `type === 'message'` participates in author collapsing. Actions and
+// Only `type === 'message'` participates in author collapsing, and a reply
+// never continues a run (it can still start one). Actions and
 // notices have a distinct prefix shape (`*` / `-nick-`) and embed the nick
 // into the body text, so collapsing them would either break visual identity
 // or require body-string surgery; keep them as anchors. System events
@@ -30,6 +31,8 @@ export interface MessageRowInner {
   nick?: string;
   time?: string;
   self?: boolean;
+  // Set on an IRCv3 reply (#993) — any value means "this row answers another".
+  replyTo?: unknown;
 }
 
 export interface DisplayRow {
@@ -87,7 +90,10 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
       // delta would trivially pass the window check and collapse a replayed
       // old line under a fresh message it doesn't belong to.
       const deltaMs = prevAuthorTimeMs != null ? timeMs - prevAuthorTimeMs : -1;
-      if (prevAuthorKey === key && deltaMs >= 0 && deltaMs <= authorWindowMs) {
+      // A reply always shows its author: its reply line sits between it and the
+      // line above, and without a nick it reads as belonging to that line. It
+      // still opens a run, so the author's next plain line collapses under it.
+      if (!row.m.replyTo && prevAuthorKey === key && deltaMs >= 0 && deltaMs <= authorWindowMs) {
         row.continuationAuthor = true;
       }
       prevAuthorKey = key;

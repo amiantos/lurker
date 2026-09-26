@@ -687,7 +687,7 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(msg).toBeDefined();
   });
 
-  it('imports an older archive whose messages omit late-added NOT NULL columns (mirrored #439, notable #470)', async () => {
+  it('imports an older archive whose messages omit late-added NOT NULL columns (mirrored #439, notable #470, reply_to_self #993)', async () => {
     // A backup taken before messages.mirrored / messages.notable existed has no
     // such key in messages.ndjson. Both are NOT NULL DEFAULT-ed, but a column
     // default does NOT apply when the importer binds an explicit NULL for a
@@ -736,6 +736,8 @@ describe('importFromZipBuffer — roundtrip', () => {
         const row = JSON.parse(l);
         delete row.mirrored;
         delete row.notable;
+        delete row.reply_msgid;
+        delete row.reply_to_self;
         return JSON.stringify(row);
       })
       .join('\n');
@@ -757,12 +759,13 @@ describe('importFromZipBuffer — roundtrip', () => {
     // notable defaulted to 1 (old history predates the notability model → counts).
     const rows = db
       .prepare(
-        'SELECT m.mirrored, m.notable FROM messages m JOIN networks n ON n.id = m.network_id WHERE n.user_id = ?',
+        'SELECT m.mirrored, m.notable, m.reply_to_self FROM messages m JOIN networks n ON n.id = m.network_id WHERE n.user_id = ?',
       )
-      .all(olive.id) as Array<{ mirrored: number; notable: number }>;
+      .all(olive.id) as Array<{ mirrored: number; notable: number; reply_to_self: number }>;
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => r.mirrored === 0)).toBe(true);
     expect(rows.every((r) => r.notable === 1)).toBe(true);
+    expect(rows.every((r) => r.reply_to_self === 0)).toBe(true);
   });
 
   it('converts a legacy archive (channels + closed_buffers, no buffers table) into registry rows', async () => {

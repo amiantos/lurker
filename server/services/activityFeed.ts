@@ -8,8 +8,9 @@ import type { ReactionFeedItem } from '../db/reactions.js';
 
 // The activity feed: everything that happened TO the user, newest first —
 // highlights (lines a highlight rule matched) and other people's reactions to
-// the user's own lines. Replies to the user will join the highlights side: a
-// reply is a message row, stamped at insert the way a highlight is.
+// the user's own lines. Replies to the user are on the highlights side: a reply
+// is a message row, stamped at insert (reply_to_self) the way a highlight is,
+// and searchMessages' `matched` reads both stamps (HIGHLIGHTED_SQL).
 //
 // Merged at read time from the two places that already own the state, rather
 // than kept in an activity table of its own. A table would be a second copy
