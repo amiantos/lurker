@@ -117,9 +117,11 @@
           @click.stop="onReplyContextClick(row.replyParent)"
           @keydown.enter.space.prevent.stop="onReplyContextClick(row.replyParent)"
         >
-          <span class="reply-mark"
-            ><i class="fa-solid fa-reply" role="img" aria-label="In reply to"></i
-          ></span>
+          <!-- A box-drawing arm, not an icon: the list's other markers are plain text
+               (the join and part arrows, the action star), and the square corner
+               matches the buffer list's lines. It rises from the reply's nick below
+               and turns into the quote. -->
+          <span class="reply-mark" role="img" aria-label="In reply to">┌─</span>
           <!-- Quoted the way IRC writes the line — `<alice> text`, `* bob waves`,
                `-ChanServ- text` — so it reads as what was said, not as a sentence
                starting with a name. -->
@@ -2790,6 +2792,8 @@ watch(
   grid-row: 1;
   justify-self: end;
   padding-right: 1ch;
+  /* Upright in the italic row: a slanted corner stops lining up with the nick. */
+  font-style: normal;
 }
 .reply-excerpt {
   grid-column: 2;
