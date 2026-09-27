@@ -556,6 +556,15 @@ function viewInChannel(m: ThreadMessage): void {
   pointer-events: none;
   z-index: var(--z-base);
 }
+/* The first line always sits at the very top of the scroller, where a bar
+   floated above it would be clipped under the topic bar: hang it below
+   instead, overlapping the next line's top the way the others overlap the
+   line above. */
+.t-line.root .row-actions {
+  top: auto;
+  bottom: var(--space-2);
+  transform: translateY(100%);
+}
 .row-actions:focus-within,
 .t-line:hover .row-actions {
   opacity: 1;
