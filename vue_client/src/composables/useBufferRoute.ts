@@ -51,7 +51,7 @@ function currentRouteBufferId(router: Router): number | null {
 }
 
 /** Navigate to a buffer, unless we're already there or already on the way. */
-export function pushBuffer(router: Router, id: number): void {
+export function pushBuffer(router: Router, id: number): Promise<void> {
   // The SAME predicate the watcher uses, deliberately. This function used to
   // re-check the route unconditionally, which quietly overrode it: with a push
   // to another buffer in flight, shouldPushBuffer correctly says "navigate" and
@@ -61,11 +61,14 @@ export function pushBuffer(router: Router, id: number): void {
   // shared. The route READER is not: this one name-gates to 'buffer' (a
   // deliberate push from the member list must leave it), where the watcher's
   // routeId() counts the members route as "already there" — see its comment.
-  if (!shouldPushBuffer(id, currentRouteBufferId(router), inFlightId)) return;
+  if (!shouldPushBuffer(id, currentRouteBufferId(router), inFlightId)) return Promise.resolve();
   inFlightId = id;
-  void router.push(`/buffer/${id}`).finally(() => {
-    if (inFlightId === id) inFlightId = null;
-  });
+  return router
+    .push(`/buffer/${id}`)
+    .then(() => undefined)
+    .finally(() => {
+      if (inFlightId === id) inFlightId = null;
+    });
 }
 
 export function useBufferRoute(): void {
@@ -176,7 +179,12 @@ export function useBufferRoute(): void {
     const buf = buffers.byId(id);
     if (!buf) return false;
     const key = bufferKey(buf.networkId, buf.target);
-    if (key !== networks.activeKey) buffers.activate(buf.networkId, buf.target);
+    if (key !== networks.activeKey) {
+      // A thread's URL shows the thread, not the buffer's lines: don't read them.
+      if (route.name === 'buffer-thread')
+        buffers.activate(buf.networkId, buf.target, { thread: true });
+      else buffers.activate(buf.networkId, buf.target);
+    }
     return true;
   }
 

@@ -117,6 +117,12 @@ export const BUFFER_SCOPED_TABLES: readonly BufferScopedTable[] = [
     note: 'half-typed composer input; buffer_id-keyed since v18',
   },
   {
+    table: 'thread_follows',
+    status: 'buffer_id',
+    scope: ['user_id'],
+    note: 'followed reply threads (buffer, root msgid); born buffer_id-keyed',
+  },
+  {
     table: 'buffer_retention',
     status: 'buffer_id',
     scope: ['user_id'],

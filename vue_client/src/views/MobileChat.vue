@@ -65,7 +65,12 @@
              only thing standing in for them (#636). Inline rather than a corner
              badge: .icon is already a flex row and the bar has the width, so
              "← 3" stays legible where an overlay on a 36px target would not. -->
-        <button class="icon back" :title="backTitle" :aria-label="backTitle" @click="goList">
+        <button
+          class="icon back"
+          :title="backTitle"
+          :aria-label="backTitle"
+          @click="threadRoute ? goBufferFromMembers() : goList()"
+        >
           <i class="fa-solid fa-arrow-left"></i>
           <span v-if="hlChip.show.value" class="hl-chip" aria-hidden="true">{{
             hlChip.label.value
@@ -80,7 +85,8 @@
              pre-filtered to this buffer (in:<target> on:<network>), members
              toggles the roster, the rest folds into the kebab. The *global*
              search / highlights / saved / uploads live on the list top bar. -->
-        <span v-if="isServerBuffer || isVirtual" class="title">{{ bufferLabel }}</span>
+        <span v-if="threadRoute" class="title">{{ bufferLabel }} ╰─ {{ threadTitle }}</span>
+        <span v-else-if="isServerBuffer || isVirtual" class="title">{{ bufferLabel }}</span>
         <span class="spacer"></span>
         <button
           v-if="!isVirtual && !isServerBuffer"
@@ -137,7 +143,8 @@
           <i class="fa-solid fa-ellipsis-vertical"></i>
         </button>
       </header>
-      <MessageList :pending-scroll-id="pendingScrollId" />
+      <ThreadView v-if="threadRoute" />
+      <MessageList v-else :pending-scroll-id="pendingScrollId" />
       <StatusBar compact />
       <div
         v-if="hasInput"
@@ -245,6 +252,9 @@ import { useContextMenu } from '../composables/useContextMenu.js';
 import type { ContextMenuItem } from '../composables/useContextMenu.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
+import ThreadView from '../components/ThreadView.vue';
+import { useThreadRoute } from '../composables/useThreadRoute.js';
+import { useThreadsStore } from '../stores/threads.js';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import StatusBar from '../components/StatusBar.vue';
@@ -531,6 +541,15 @@ function goBufferFromMembers() {
   backOrPush(router, route.params.id ? `/buffer/${route.params.id}` : '/');
 }
 
+// A thread's back is its channel, the way the members screen's is.
+const threadRoute = useThreadRoute();
+const threadsStore = useThreadsStore();
+const threadTitle = computed(() =>
+  threadRoute.value
+    ? threadsStore.title(threadRoute.value.bufferId, threadRoute.value.rootMsgid)
+    : '',
+);
+
 function goMembers() {
   // The ACTIVE buffer's id, not route.params.id: the button belongs to the
   // buffer on screen, and the two can disagree — a channel shown via
@@ -669,7 +688,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
    the desktop rows but in a vertical flex. min-height: 0 on the screen +
    flex: 1 on MessageList is what lets it scroll without pushing the input
    off the visible viewport. */
-.buffer :deep(.message-list) {
+.buffer :deep(.message-list),
+.buffer :deep(.thread-view) {
   flex: 1;
   min-height: 0;
 }

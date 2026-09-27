@@ -13,15 +13,15 @@
   plain text, and the square corner matches the buffer list's lines), so it
   reads as what was said, not as a sentence starting with a name. One clipped
   line, italic, faded with opacity so the quoted nick keeps its own colour.
-  Clicking (or Enter/Space) jumps to the line; with no parent to show it says
-  so and does nothing.
+  Clicking (or Enter/Space) opens the reply's thread (MessageList decides);
+  with no parent to show it says so and does nothing.
 -->
 
 <template>
   <span
     class="reply-quote"
     :class="{ missing: !parent }"
-    :title="parent ? 'Jump to this message' : undefined"
+    :title="parent ? 'Open thread' : undefined"
     :role="parent ? 'button' : undefined"
     :tabindex="parent ? 0 : undefined"
     @click.stop="jump"

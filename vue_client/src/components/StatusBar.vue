@@ -80,6 +80,17 @@
             >
               <i class="fa-solid fa-xmark"></i></button></span
         ></span>
+        <!-- In a reply thread with no Reply picked, a line answers its first line
+             (threads.defaultReply) — say so, where the pending reply would be. -->
+        <span
+          v-else-if="threadReply"
+          class="seg reply"
+          :title="`Lines sent here reply in the thread to ${threadReply.nick}`"
+          ><span class="reply-body"
+            ><i class="fa-solid fa-reply" role="img" aria-label="Replying in thread to"></i
+            ><span class="reply-label">{{ compact ? '' : 'in thread, replying to' }}</span
+            ><NickRef :nick="threadReply.nick" /></span
+        ></span>
       </div>
       <div class="bar-tools">
         <!-- One control for every way a file gets into a message. It used to open
@@ -208,6 +219,7 @@ import {
   type NickStripItem,
 } from '../composables/useComposerOverlay.js';
 import { useRepliesStore } from '../stores/replies.js';
+import { useThreadsStore } from '../stores/threads.js';
 import { replyExcerpt } from '../utils/replyText.js';
 import NickRef from './NickRef.vue';
 import type { EmojiMatch } from '../utils/emojiData.js';
@@ -290,6 +302,8 @@ const { newBelow, stuckToBottom, unreadAnchor } = useScrollState();
 const active = computed(() => networks.activeBuffer);
 const replies = useRepliesStore();
 const pendingReply = computed(() => replies.forKey(networks.activeKey));
+const threads = useThreadsStore();
+const threadReply = computed(() => threads.defaultReply(networks.activeKey));
 const pendingReplyExcerpt = computed(() =>
   pendingReply.value ? replyExcerpt(pendingReply.value.text) : '',
 );

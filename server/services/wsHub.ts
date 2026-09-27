@@ -47,7 +47,14 @@ import {
   maxIdForBuffer,
   maxMessageId,
   typeCountsForUnread,
+  listThread,
 } from '../db/messages.js';
+import {
+  listFollowedThreads,
+  markThreadRead,
+  closeThread,
+  renameThread,
+} from '../db/threadFollows.js';
 import {
   listReadStateForUser,
   getReadState,
@@ -1314,6 +1321,13 @@ export function favoritesChangedFrame(userId: number): WsPayload {
   return { kind: 'favorites-changed', favorites: listFavoritesForUser(userId) };
 }
 
+// The user's followed reply threads, whole — one frame shape for the connect
+// seed and every change after it (a thread followed, a reply in one, read,
+// closed), like favorites-changed. The server does the counting so tabs agree.
+export function threadsChangedFrame(userId: number): WsPayload {
+  return { kind: 'threads-changed', threads: listFollowedThreads(userId) };
+}
+
 // Resolve a verb's optional id-form buffer address (docs/CLIENT_PROTOCOL §6):
 // a numeric `msg.bufferId` wins over `(networkId, target)` and is validated
 // for ownership. Returns the resolved address, `null` for an id that doesn't
@@ -2323,7 +2337,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         ensureBufferExists(eventUserId, decorated.networkId, target);
       }
     }
+    // A reply changed the user's followed threads (ircConnection.persist) —
+    // a server-side fact for the frame below, not part of the row.
+    const threadsChanged = !!(decorated as { threadsChanged?: boolean }).threadsChanged;
+    delete (decorated as { threadsChanged?: boolean }).threadsChanged;
     fanOut(eventUserId, { ...decorated, kind: 'irc' });
+    if (threadsChanged) fanOut(eventUserId, threadsChangedFrame(eventUserId));
     maybePush(eventUserId, decorated);
     // A friend coming online is a presence transition, not a message, so it
     // bypasses maybePush (no `notify`); push it on its own path.
@@ -2715,6 +2734,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // handler covers connect and every favorite/unfavorite/reorder after it.
     // User-level (favorites span networks), one frame per snapshot.
     send(ws, favoritesChangedFrame(userId));
+    // Followed reply threads, the same way: one frame covers connect and after.
+    send(ws, threadsChangedFrame(userId));
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);
     // Walk the shared enumerator ONCE per snapshot and reuse it for both the live
@@ -3713,6 +3734,56 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         if (ids.length === 0) break;
         const found = reactionsForMessages(userId, ids);
         send(ws, { kind: 'reactions-sync', messageIds: ids, reactions: Object.fromEntries(found) });
+        break;
+      }
+      case 'thread': {
+        // A reply thread whole, for the thread view: its first line and every
+        // reply, decorated like a history page. Answered to this socket only;
+        // `token` is echoed so a client can drop a superseded answer.
+        const addr = verbBuffer(userId, msg);
+        const rootMsgid = typeof msg.rootMsgid === 'string' ? msg.rootMsgid : '';
+        if (!addr || addr.networkId == null || !rootMsgid) break;
+        const notifyAlways = bufferNotifyAlways(userId, addr.networkId, addr.target);
+        const thread = listThread(addr.bufferId, rootMsgid);
+        send(ws, {
+          kind: 'thread',
+          networkId: addr.networkId,
+          target: addr.target,
+          bufferId: addr.bufferId,
+          rootMsgid,
+          token: msg.token ?? null,
+          root: thread.root ? decorateMessage(userId, thread.root, notifyAlways) : null,
+          replies: thread.replies.map((e) => decorateMessage(userId, e, notifyAlways)),
+          truncated: thread.truncated,
+        });
+        break;
+      }
+      case 'thread-read': {
+        // The thread view showed replies up to `messageId`. Only a followed
+        // thread has a pointer; the new list reaches every tab.
+        const addr = verbBuffer(userId, msg);
+        const messageId = Number(msg.messageId);
+        if (!addr || typeof msg.rootMsgid !== 'string' || !Number.isInteger(messageId)) break;
+        if (markThreadRead(userId, addr.bufferId, msg.rootMsgid, messageId)) {
+          fanOut(userId, threadsChangedFrame(userId));
+        }
+        break;
+      }
+      case 'thread-rename': {
+        // The user's own name for a thread (blank: back to its first line).
+        const addr = verbBuffer(userId, msg);
+        if (!addr || typeof msg.rootMsgid !== 'string' || typeof msg.name !== 'string') break;
+        renameThread(userId, addr.bufferId, msg.rootMsgid, msg.name);
+        fanOut(userId, threadsChangedFrame(userId));
+        break;
+      }
+      case 'thread-close': {
+        // Off the list until the user posts or is highlighted in it again.
+        const addr = verbBuffer(userId, msg);
+        if (!addr || typeof msg.rootMsgid !== 'string') break;
+        if (closeThread(userId, addr.bufferId, msg.rootMsgid)) {
+          fanOut(userId, threadsChangedFrame(userId));
+        }
         break;
       }
       case 'set-bookmark': {

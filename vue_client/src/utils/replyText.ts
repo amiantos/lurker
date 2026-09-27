@@ -37,3 +37,18 @@ export function stripReplyAddress(text: string, nick: string): string {
   const stripped = text.replace(re, '');
   return stripped || text;
 }
+
+// A thread's name when the user hasn't given it one: its first line as one line
+// of plain text, without the `nick: ` (or `nick, `) it may open with —
+// "amiantos: i do too" names the thread "i do too". Any word shaped like a nick
+// (RFC 2812: a letter or special first, then letters, digits, specials or `-`)
+// counts, whoever it names: whether that nick is in the channel right now is
+// nothing a name should hang on. Never strips to nothing.
+const ADDRESS_RE = /^[A-Za-z[\]\\`_^{|}][A-Za-z0-9[\]\\`_^{|}-]*[:,]\s+/;
+
+export function threadTitle(text: string): string {
+  const plain = replyExcerpt(text);
+  const m = ADDRESS_RE.exec(plain);
+  if (!m) return plain;
+  return plain.slice(m[0].length) || plain;
+}

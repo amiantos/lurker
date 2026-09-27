@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
@@ -174,5 +175,46 @@ describe('useJumpToMessage', () => {
     } finally {
       (socketSend as any).mockReturnValue(true);
     }
+  });
+
+  it('leaves a reply thread for its channel’s lines before jumping there', async () => {
+    const { mount, flushPromises } = await import('@vue/test-utils');
+    const { createRouter, createMemoryHistory } = await import('vue-router');
+    const { defineComponent, h: render } = await import('vue');
+    const store = useBuffersStore();
+    const buf = store.ensure(NET, '#chan', 9);
+    buf.messages.push({ id: 5, networkId: NET, target: '#chan', type: 'message' } as any);
+    h.activeKey = '1::#chan';
+
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/buffer/:id', name: 'buffer', component: { render: () => null } },
+        {
+          path: '/buffer/:id/thread/:root',
+          name: 'buffer-thread',
+          component: { render: () => null },
+        },
+      ],
+    });
+    await router.push('/buffer/9/thread/r');
+    const pendingScrollId = ref<number | null>(null);
+    let jump!: ReturnType<typeof useJumpToMessage>;
+    const Host = defineComponent({
+      setup() {
+        jump = useJumpToMessage({ pendingScrollId });
+        return () => render('div');
+      },
+    });
+    const w = mount(Host, { global: { plugins: [router] } });
+
+    jump({ networkId: NET, target: '#chan', messageId: 5 });
+    // Nothing armed while the thread is still what's on screen…
+    expect(pendingScrollId.value).toBeNull();
+    await flushPromises();
+    // …then the channel's lines, and the jump.
+    expect(router.currentRoute.value.fullPath).toBe('/buffer/9');
+    expect(pendingScrollId.value).toBe(5);
+    w.unmount();
   });
 });

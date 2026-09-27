@@ -3,7 +3,9 @@
 
 import type { Ref } from 'vue';
 import { watch, nextTick } from 'vue';
+import { useRouter, type Router } from 'vue-router';
 import { useBuffersStore } from '../stores/buffers.js';
+import { pushBuffer } from './useBufferRoute.js';
 import { useToastsStore } from '../stores/toasts.js';
 
 // Drive MessageList's pendingScrollId watcher. Arming the same id twice in a row
@@ -60,8 +62,24 @@ export function useJumpToMessage({ pendingScrollId, afterActivate }: JumpToMessa
 ) => void {
   const buffers = useBuffersStore();
   const toasts = useToastsStore();
+  // Absent outside a router (some tests mount the shells bare).
+  const router = useRouter() as Router | undefined;
 
-  return function jumpToMessage({ networkId, target, messageId }: JumpTarget): void {
+  return function jumpToMessage(args: JumpTarget): void {
+    const { networkId, target, messageId } = args;
+    // In a reply thread its channel is the active buffer but its lines aren't
+    // on screen, so activating it below would change nothing you can see. Go
+    // to the lines first — and jump once MessageList is there to scroll.
+    const current = router?.currentRoute.value;
+    if (router && current?.name === 'buffer-thread') {
+      const id = buffers.findByTarget(networkId, target)?.id ?? Number(current.params.id);
+      void pushBuffer(router, id)
+        .then(() => nextTick())
+        .then(() => {
+          if (router.currentRoute.value.name !== 'buffer-thread') jumpToMessage(args);
+        });
+      return;
+    }
     if (typeof target === 'string' && target.startsWith(':server:')) {
       toasts.push({ kind: 'info', title: 'Cannot jump in server buffer', ttlMs: 4000 } as any);
       return;

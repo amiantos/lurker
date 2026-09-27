@@ -651,6 +651,27 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_message_reactions_to_self
       ON message_reactions(network_id, id) WHERE to_self = 1 AND self = 0;
 
+    -- Reply threads the user follows — shown under their channel in the
+    -- sidebar (db/threadFollows.ts). A row appears when the user posts in a
+    -- thread or is highlighted in it; the thread is its root msgid in the
+    -- buffer (messages.reply_root_msgid), not a row id, because the root may
+    -- be a line we never held. read_id is the newest reply seen in the thread
+    -- view; closed hides it until the user posts or is highlighted there again;
+    -- name is what the user called it (NULL: named from its first line).
+    CREATE TABLE IF NOT EXISTS thread_follows (
+      user_id INTEGER NOT NULL,
+      buffer_id INTEGER NOT NULL,
+      root_msgid TEXT NOT NULL,
+      read_id INTEGER NOT NULL DEFAULT 0,
+      closed INTEGER NOT NULL DEFAULT 0,
+      name TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      PRIMARY KEY (user_id, buffer_id, root_msgid),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (buffer_id) REFERENCES buffers(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_thread_follows_buffer ON thread_follows(buffer_id);
+
     -- Saved theme presets: per-user snapshots of the \`themed\` settings-registry
     -- keys (shared/settingsRegistry.ts), stored as one JSON object per theme.
     -- The built-in Dark/Light themes are code (shared/themePresets.ts), never
@@ -1323,8 +1344,10 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
 // the parent's msgid). The line that started the thread stores nothing; it's
 // found by its own msgid. So a whole thread is its root row (idx_messages_msgid)
 // plus every row naming it here, and reply_msgid on each links the tree. Kept
-// for a threaded "forum" view of a channel; nothing reads it for display yet.
+// for the thread view (listThread in db/messages.ts, db/threadFollows.ts).
 ensureColumn('messages', 'reply_root_msgid', 'TEXT');
+// A development database made thread_follows before it had a name.
+ensureColumn('thread_follows', 'name', 'TEXT');
 // A thread's replies in one range: (buffer, root). Partial — replies only.
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root
          ON messages(buffer_id, reply_root_msgid)

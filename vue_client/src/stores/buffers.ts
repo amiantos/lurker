@@ -6,6 +6,7 @@ import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
 import { seenEventCursor } from '../lib/seenEventCursor.js';
+import { threadViewBuffer } from '../lib/threadViewing.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
@@ -662,7 +663,10 @@ export const useBuffersStore = defineStore('buffers', {
         // `bob` while the user sits in the `Bob` buffer reads as inactive and
         // the divider/read-sync below silently skips (#327). Mirrors the same
         // resolve-then-compare applyReadState does.
-        const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
+        const key = bufferKey(buf.networkId, buf.target);
+        // Active but showing a reply thread, not these lines: they stay unread
+        // until the user is back in the channel (lib/threadViewing).
+        const isActive = networks.activeKey === key && threadViewBuffer() !== key;
         if (isActive) {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
@@ -1467,7 +1471,10 @@ export const useBuffersStore = defineStore('buffers', {
       // differently-cased) broadcast target, so badge suppression tracks the
       // buffer the user is actually sitting in. bufferKey() also yields the bare
       // sentinel for the app-scoped system buffer (networkId null).
-      const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
+      // Not while it's showing one of its threads: its own lines aren't on
+      // screen, and they're left unread (pushLive), so their count shows.
+      const key = bufferKey(buf.networkId, buf.target);
+      const isActive = networks.activeKey === key && threadViewBuffer() !== key;
       // Suppress the unread badge for the buffer the user is sitting in.
       // A read-state broadcast can briefly carry a non-zero unread for the
       // active buffer when an IRC event lands before the mark-read echo;
@@ -1535,7 +1542,9 @@ export const useBuffersStore = defineStore('buffers', {
     // phantom divider on the next session. The previous buffer's pointer
     // is already current because pushMessage keeps it synced live while
     // focused (see pushMessage), so leaving it just drops local state.
-    activate(networkId: number | string | null, target: string) {
+    // `opts.thread`: entered to show one of its reply threads, not its lines —
+    // which stay unread, as they do while the thread is up (pushLive).
+    activate(networkId: number | string | null, target: string, opts: { thread?: boolean } = {}) {
       const networks = useNetworksStore();
       // Resolve to the canonical open buffer first (case-insensitive): a DM
       // activated from a member-list nick, /query, the profile modal, or a
@@ -1574,9 +1583,11 @@ export const useBuffersStore = defineStore('buffers', {
       // it below. The divider stays pinned to this snapshot for the
       // duration of the visit (cleared on switch-away).
       if (buf.dividerAfterId == null) buf.dividerAfterId = buf.lastReadId || 0;
-      buf.unread = 0;
-      buf.highlighted = 0;
-      buf.highlightsCapped = false;
+      if (!opts.thread) {
+        buf.unread = 0;
+        buf.highlighted = 0;
+        buf.highlightsCapped = false;
+      }
       // Advance the read pointer to the latest known message id. Server
       // clamps with MAX(), so this is a safe no-op when there's nothing
       // newer than lastReadId. The optimistic local bump prevents a fast
@@ -1593,7 +1604,7 @@ export const useBuffersStore = defineStore('buffers', {
       // up to the stray line would clear unread for messages the user never saw.
       // The reattachToLive fired below does its own mark-read against the real
       // tail once hydrated.
-      if (!buf.detached && !buf.unseeded) {
+      if (!buf.detached && !buf.unseeded && !opts.thread) {
         const lastMsg = buf.messages[buf.messages.length - 1];
         const lastId = lastMsg?.id ?? 0;
         if (lastId > buf.lastReadId) {

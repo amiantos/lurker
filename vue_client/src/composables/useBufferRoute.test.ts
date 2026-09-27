@@ -41,15 +41,24 @@ function applyPath(to: string): void {
   const [path] = to.split('?');
   h.s.route.path = path;
   const members = /^\/buffer\/([^/]+)\/members$/.exec(path);
+  const thread = /^\/buffer\/([^/]+)\/thread\/([^/]+)$/.exec(path);
   const m = /^\/buffer\/([^/]+)$/.exec(path);
-  h.s.route.params = members ? { id: members[1] } : m ? { id: m[1] } : {};
+  h.s.route.params = members
+    ? { id: members[1] }
+    : thread
+      ? { id: thread[1], root: thread[2] }
+      : m
+        ? { id: m[1] }
+        : {};
   h.s.route.name = members
     ? 'buffer-members'
-    : m
-      ? 'buffer'
-      : path === '/system'
-        ? 'system'
-        : 'chat';
+    : thread
+      ? 'buffer-thread'
+      : m
+        ? 'buffer'
+        : path === '/system'
+          ? 'system'
+          : 'chat';
 }
 
 vi.mock('vue-router', () => ({
@@ -319,6 +328,16 @@ describe('useBufferRoute — URL to active buffer', () => {
     await nextTick();
 
     expect(h.activate).toHaveBeenCalledWith(1, '#chan');
+    expect(h.push).not.toHaveBeenCalled();
+  });
+
+  it('opens a reply thread’s buffer without reading its lines', async () => {
+    known('1::#chan', 7);
+    applyPath('/buffer/7/thread/abc');
+    start();
+    await nextTick();
+
+    expect(h.activate).toHaveBeenCalledWith(1, '#chan', { thread: true });
     expect(h.push).not.toHaveBeenCalled();
   });
 

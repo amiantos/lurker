@@ -36,6 +36,10 @@ export interface ReplyParent {
 export interface ReplyContext {
   msgid: string;
   parent: ReplyParent | null;
+  // The msgid at the top of the reply's thread — the parent's own root, or the
+  // parent itself when it has none. What a thread view opens on. Absent only on
+  // a row stored before threads were tracked.
+  root?: string;
 }
 
 // The msgid a line replies to, from its tags. `+reply` is the ratified name;

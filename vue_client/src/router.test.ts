@@ -97,6 +97,12 @@ describe('chat routes', () => {
     expect(router.resolve('/buffer/42/members').params.id).toBe('42');
   });
 
+  it('names a reply thread by its buffer and the msgid that started it', () => {
+    const r = router.resolve(`/buffer/42/thread/${encodeURIComponent('abc/12+x')}`);
+    expect(r.name).toBe('buffer-thread');
+    expect(r.params).toEqual({ id: '42', root: 'abc/12+x' });
+  });
+
   it('keeps /system out of the id-addressed space', () => {
     expect(router.resolve('/system').name).toBe('system');
     expect(router.resolve('/system').params.id).toBeUndefined();
@@ -115,6 +121,7 @@ describe('chat routes', () => {
       router.getRoutes().find((r) => r.name === name)?.components?.default;
     expect(comp('buffer')).toBe(comp('chat'));
     expect(comp('buffer-members')).toBe(comp('chat'));
+    expect(comp('buffer-thread')).toBe(comp('chat'));
   });
 });
 

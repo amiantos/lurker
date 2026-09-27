@@ -14,7 +14,8 @@ import db from '../db/index.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { countHighlightsNewer, listMessages, searchMessages } from '../db/messages.js';
+import { countHighlightsNewer, listMessages, listThread, searchMessages } from '../db/messages.js';
+import { closeThread, listFollowedThreads, markThreadRead } from '../db/threadFollows.js';
 import type { MessageEvent } from '../db/messages.js';
 import { IrcConnection } from './ircConnection.js';
 import ignoreRulesService from './ignoreRulesService.js';
@@ -128,6 +129,7 @@ describe('receiving replies', () => {
       await peerSays(rig, 'bob', '#r1', 'alice: works for me', [`+draft/reply=${parentMsgid}`]);
       const expected = {
         msgid: parentMsgid,
+        root: parentMsgid,
         parent: {
           id: parent.id,
           nick: 'alice',
@@ -157,17 +159,17 @@ describe('receiving replies', () => {
     const rig = await connect('recv2', ['#r2', '#r2b']);
     try {
       await peerSays(rig, 'bob', '#r2', 'to nothing', ['+draft/reply=never-seen']);
-      expect(rowByText(rig, '#r2', 'to nothing').replyTo).toEqual({
-        msgid: 'never-seen',
-        parent: null,
-      });
-      expect(liveByText(rig, 'to nothing').replyTo).toEqual({ msgid: 'never-seen', parent: null });
+      // Its thread starts at the line it names, held or not.
+      const unseen = { msgid: 'never-seen', root: 'never-seen', parent: null };
+      expect(rowByText(rig, '#r2', 'to nothing').replyTo).toEqual(unseen);
+      expect(liveByText(rig, 'to nothing').replyTo).toEqual(unseen);
 
       // A msgid from another buffer is not this buffer's line to quote.
       const elsewhere = await peerSays(rig, 'alice', '#r2b', 'said in #r2b');
       await peerSays(rig, 'bob', '#r2', 'cross-buffer', [`+draft/reply=${elsewhere}`]);
       expect(rowByText(rig, '#r2', 'cross-buffer').replyTo).toEqual({
         msgid: elsewhere,
+        root: elsewhere,
         parent: null,
       });
     } finally {
@@ -185,6 +187,7 @@ describe('receiving replies', () => {
       db.prepare('DELETE FROM messages WHERE id = ?').run(rowByText(rig, '#r3', 'soon gone').id);
       expect(rowByText(rig, '#r3', 'answering it').replyTo).toEqual({
         msgid: parentMsgid,
+        root: parentMsgid,
         parent: null,
       });
     } finally {
@@ -199,15 +202,19 @@ describe('receiving replies', () => {
       expect(added.ok).toBe(true);
       const parentMsgid = await peerSays(rig, 'troll', '#r4', 'something awful');
       await peerSays(rig, 'bob', '#r4', 'ugh', [`+draft/reply=${parentMsgid}`]);
-      expect(rowByText(rig, '#r4', 'ugh').replyTo).toEqual({ msgid: parentMsgid, parent: null });
+      expect(rowByText(rig, '#r4', 'ugh').replyTo).toEqual({
+        msgid: parentMsgid,
+        root: parentMsgid,
+        parent: null,
+      });
     } finally {
       rig.conn.dispose();
     }
   });
 });
 
-// The stored thread root (#993, for a threaded view): read straight off the row,
-// since nothing puts it on the wire yet.
+// The stored thread root (#993, for the thread view): read straight off the
+// row; the wire's copy (replyTo.root) is checked under 'threads' below.
 function rootOf(rig: Rig, target: string, text: string): string | null {
   const id = rowByText(rig, target, text).id;
   return (
@@ -270,6 +277,158 @@ describe('thread roots', () => {
       ircManager.send(userId, rig.network.id, '#t4', 'bob: more to it', { replyTo: parent.id });
       await until(() => rows(rig, '#t4').some((m) => m.text === 'bob: more to it'), 5000, 'echo');
       expect(rootOf(rig, '#t4', 'bob: more to it')).toBe(top);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+});
+
+describe('threads', () => {
+  // The rig's user follows threads across every test here; one buffer's worth.
+  function followed(rig: Rig, target: string) {
+    return listFollowedThreads(userId).filter(
+      (t) => t.networkId === rig.network.id && t.target === target,
+    );
+  }
+
+  it('every reply carries its root on the wire; the first line counts its replies', async () => {
+    const rig = await connect('thr1', ['#th1']);
+    try {
+      const top = await peerSays(rig, 'alice', '#th1', 'thread starter');
+      const r1 = await peerSays(rig, 'bob', '#th1', 'first', [`+draft/reply=${top}`]);
+      await peerSays(rig, 'carol', '#th1', 'nested', [`+draft/reply=${r1}`]);
+      await peerSays(rig, 'dave', '#th1', 'unrelated');
+
+      expect(rowByText(rig, '#th1', 'nested').replyTo?.root).toBe(top);
+      expect(liveByText(rig, 'nested').replyTo).toMatchObject({ msgid: r1, root: top });
+      // Two replies at any depth; nothing on a reply or a plain line.
+      expect(rowByText(rig, '#th1', 'thread starter').threadReplies).toBe(2);
+      expect(rowByText(rig, '#th1', 'first')).not.toHaveProperty('threadReplies');
+      expect(rowByText(rig, '#th1', 'unrelated')).not.toHaveProperty('threadReplies');
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('reads a thread whole, oldest first — and without its first line when that’s gone', async () => {
+    const rig = await connect('thr2', ['#th2']);
+    try {
+      const top = await peerSays(rig, 'alice', '#th2', 'the question');
+      const r1 = await peerSays(rig, 'bob', '#th2', 'answer one', [`+draft/reply=${top}`]);
+      await peerSays(rig, 'dave', '#th2', 'meanwhile');
+      await peerSays(rig, 'carol', '#th2', 'answer two', [`+draft/reply=${r1}`]);
+      const bufferId = rowByText(rig, '#th2', 'the question').bufferId!;
+
+      const thread = listThread(bufferId, top);
+      expect(thread.root?.text).toBe('the question');
+      expect(thread.root?.threadReplies).toBe(2);
+      expect(thread.replies.map((m) => m.text)).toEqual(['answer one', 'answer two']);
+      expect(thread.replies[1].replyTo?.parent?.text).toBe('answer one');
+      expect(thread.truncated).toBe(false);
+      // Past the limit, the newest replies ship: what's being said now.
+      const cut = listThread(bufferId, top, 1);
+      expect(cut.truncated).toBe(true);
+      expect(cut.replies.map((m) => m.text)).toEqual(['answer two']);
+
+      db.prepare('DELETE FROM messages WHERE id = ?').run(thread.root!.id);
+      const orphaned = listThread(bufferId, top);
+      expect(orphaned.root).toBeNull();
+      expect(orphaned.replies).toHaveLength(2);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('follows a thread we post in, and says so on the live frame', async () => {
+    const rig = await connect('thr3', ['#th3']);
+    try {
+      const top = await peerSays(rig, 'alice', '#th3', 'open question');
+      await peerSays(rig, 'bob', '#th3', 'not us', [`+draft/reply=${top}`]);
+      // Other people talking in someone else's thread: not ours.
+      expect(followed(rig, '#th3')).toEqual([]);
+      expect(liveByText(rig, 'not us')).not.toHaveProperty('threadsChanged');
+
+      rig.conn.say('#th3', 'our two cents', { '+draft/reply': top });
+      await until(() => rows(rig, '#th3').some((m) => m.text === 'our two cents'), 5000, 'echo');
+      expect(liveByText(rig, 'our two cents').threadsChanged).toBe(true);
+      const [t] = followed(rig, '#th3');
+      expect(t).toMatchObject({ rootMsgid: top, unread: 0, highlighted: false });
+      expect(t.root).toMatchObject({ nick: 'alice', text: 'open question' });
+
+      // A reply after ours is unread, and changes the list.
+      await peerSays(rig, 'bob', '#th3', 'fair point', [`+draft/reply=${top}`]);
+      expect(liveByText(rig, 'fair point').threadsChanged).toBe(true);
+      expect(followed(rig, '#th3')[0].unread).toBe(1);
+      markThreadRead(userId, t.bufferId, top, rowByText(rig, '#th3', 'fair point').id);
+      expect(followed(rig, '#th3')[0].unread).toBe(0);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('follows a thread that highlights us — by a rule or a reply to our line', async () => {
+    const rig = await connect('thr4', ['#th4', '#th4b']);
+    try {
+      const top = await peerSays(rig, 'alice', '#th4', 'lunch?');
+      await peerSays(rig, 'bob', '#th4', 'thr4 would know', [`+draft/reply=${top}`]);
+      expect(followed(rig, '#th4')).toMatchObject([{ rootMsgid: top, highlighted: true }]);
+
+      const mine = await weSay(rig, '#th4b', 'my idea');
+      await peerSays(rig, 'bob', '#th4b', 'love it', [`+draft/reply=${mine.msgid}`]);
+      expect(followed(rig, '#th4b')).toMatchObject([{ rootMsgid: mine.msgid, unread: 1 }]);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('a closed thread comes back when we post or are highlighted, not when others talk', async () => {
+    const rig = await connect('thr5', ['#th5']);
+    try {
+      const mine = await weSay(rig, '#th5', 'our thread');
+      const r1 = await peerSays(rig, 'bob', '#th5', 'reply to us', [`+draft/reply=${mine.msgid}`]);
+      const [t] = followed(rig, '#th5');
+      expect(closeThread(userId, t.bufferId, mine.msgid!)).toBe(true);
+      expect(followed(rig, '#th5')).toEqual([]);
+
+      // Someone answering bob, deeper in our thread: it stays closed.
+      await peerSays(rig, 'carol', '#th5', 'to bob', [`+draft/reply=${r1}`]);
+      expect(followed(rig, '#th5')).toEqual([]);
+      expect(liveByText(rig, 'to bob')).not.toHaveProperty('threadsChanged');
+
+      await peerSays(rig, 'carol', '#th5', 'thr5: thoughts?', [`+draft/reply=${r1}`]);
+      expect(followed(rig, '#th5')).toMatchObject([{ rootMsgid: mine.msgid }]);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('a thread we started is followed once anyone answers in it', async () => {
+    const rig = await connect('thr6', ['#th6']);
+    try {
+      const theirs = await peerSays(rig, 'alice', '#th6', 'hi all');
+      // Our reply to alice's line starts OUR follow of HER thread…
+      const mine = await weSay(rig, '#th6', 'a thread of our own');
+      // …and bob answering carol inside ours follows ours, though neither
+      // reply is to us or mentions us.
+      const r1 = await peerSays(rig, 'carol', '#th6', 'carol here', [`+draft/reply=${mine.msgid}`]);
+      await peerSays(rig, 'bob', '#th6', 'bob to carol', [`+draft/reply=${r1}`]);
+      expect(followed(rig, '#th6').map((t) => t.rootMsgid)).toEqual([mine.msgid]);
+      expect(theirs).toBeTruthy();
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  it('never follows on a reply from someone ignored', async () => {
+    const rig = await connect('thr7', ['#th7']);
+    try {
+      const added = ignoreRulesService.add(userId, rig.network.id, maskToRuleInput('troll!*@*')!);
+      expect(added.ok).toBe(true);
+      const mine = await weSay(rig, '#th7', 'honest question');
+      await peerSays(rig, 'troll', '#th7', 'thr7: bait', [`+draft/reply=${mine.msgid}`]);
+      expect(followed(rig, '#th7')).toEqual([]);
+      // Nor bumps the count on our line.
+      expect(rowByText(rig, '#th7', 'honest question')).not.toHaveProperty('threadReplies');
     } finally {
       rig.conn.dispose();
     }

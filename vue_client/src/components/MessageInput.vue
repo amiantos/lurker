@@ -181,6 +181,7 @@ import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useRepliesStore } from '../stores/replies.js';
+import { useThreadsStore } from '../stores/threads.js';
 import type { PendingReply } from '../stores/replies.js';
 import { NOT_NICK_CHAR } from '../utils/replyText.js';
 import { MAX_REACTION_GRAPHEMES, isValidReactionValue } from '../../../shared/reactions.js';
@@ -264,6 +265,7 @@ const drafts = useDraftStore();
 // The IRCv3 reply being composed in each buffer (#993), set by a line's Reply
 // action and shown in the status bar. The next chat line sent consumes it.
 const replies = useRepliesStore();
+const threads = useThreadsStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const uploads = useUploadsStore();
@@ -879,20 +881,28 @@ function addressRegex(nick: string): RegExp {
 }
 
 // Hand the active buffer's pending reply to a send, clearing it. The caller
-// puts it back (giveBackReply) when the send never left.
-type TakenReply = { key: string; reply: PendingReply };
+// puts it back (giveBackReply) when the send never left. In a reply thread's
+// view with no Reply picked, a line answers the thread's first line — nothing
+// was pending, so there's nothing to clear or give back (`standing`).
+type TakenReply = { key: string; reply: PendingReply; standing?: true };
 
 function takeReply(): TakenReply | null {
   const key = networks.activeKey;
   const reply = replies.forKey(key);
-  if (!key || !reply) return null;
+  if (!key) return null;
+  if (!reply) {
+    const inThread = threads.defaultReply(key);
+    return inThread ? { key, reply: inThread, standing: true } : null;
+  }
   replies.cancel(key);
   return { key, reply };
 }
 
 function giveBackReply(taken: TakenReply | null): void {
   // Unless another Reply has been started there since.
-  if (taken && !replies.forKey(taken.key)) replies.start(taken.key, taken.reply);
+  if (taken && !taken.standing && !replies.forKey(taken.key)) {
+    replies.start(taken.key, taken.reply);
+  }
 }
 
 // The status bar's × and Escape: drop the pending reply, and take back the
