@@ -33,6 +33,10 @@ import {
   bufferOwnerId,
   retentionBoundaryId,
   deleteRetentionBatch,
+  newRetentionVisit,
+  restartBandWalk,
+  dropBandWalk,
+  resetBandWalksForTests,
   listUserIds,
   deleteNoiseBatch,
   getNoiseCursor,
@@ -139,6 +143,7 @@ let adaptedBatchRows = UNMEASURED;
 /** Test-only: forget what the last tick learned about statement cost. */
 export function resetSweepPacingForTests(): void {
   adaptedBatchRows = UNMEASURED;
+  resetBandWalksForTests();
 }
 
 /** The batch size to use right now, clamped into the option's own range. */
@@ -178,7 +183,20 @@ function measure<T>(run: () => T): { value: T; ms: number } {
  * A targetStatementMs of Infinity needs no special case: nothing can overrun
  * it, so the size only grows and pins to `batchRows`.
  */
-function adaptToStatement(opts: RetentionSweepOptions, ms: number, full: boolean): void {
+function adaptToStatement(
+  opts: RetentionSweepOptions,
+  ms: number,
+  full: boolean,
+  shrinkOnly = false,
+): void {
+  // A statement sized by the batch but not bound by its deletes (a band
+  // window): an overrun still says the size is too big.
+  if (shrinkOnly && !full) {
+    if (ms > opts.targetStatementMs) {
+      adaptedBatchRows = Math.floor(pacedBatchRows(opts) / 2);
+    }
+    return;
+  }
   // ONLY a full batch says anything about per-row cost, in EITHER direction —
   // a full batch is row-bound by construction, because the LIMIT is what
   // stopped the walk.
@@ -258,16 +276,24 @@ export async function runRetentionTick(
     batchesSpent++;
     return value;
   };
-  // Charge the tick AND size the next batch from what this one cost. Every
-  // caller is a row-limited delete returning how many rows it removed, so
-  // `deleted >= rows` is what "the batch was full" means.
-  const chargeSized = (rows: number, run: () => number): number => {
+  // Charge the tick AND size the next batch from what this one cost. `run`
+  // is a row-limited statement that says whether its LIMIT is what stopped it
+  // — the plain deletes by coming back full (see chargeSized), the line-cap
+  // batch by saying so (RetentionBatch.full).
+  const chargeFull = <T extends { full: boolean; shrinkOnly?: boolean }>(run: () => T): T => {
     const { value, ms } = measure(run);
     syncMsSpent += ms;
     batchesSpent++;
-    adaptToStatement(opts, ms, value >= rows);
+    adaptToStatement(opts, ms, value.full, value.shrinkOnly);
     return value;
   };
+  // A row-limited delete returning how many rows it removed: `deleted >=
+  // rows` is what "the batch was full" means.
+  const chargeSized = (rows: number, run: () => number): number =>
+    chargeFull(() => {
+      const deleted = run();
+      return { deleted, full: deleted >= rows };
+    }).deleted;
 
   const pending = takeDirtyBuffers();
   for (let i = 0; i < pending.length; i++) {
@@ -283,7 +309,10 @@ export async function runRetentionTick(
       // chain synchronous work across buffers.
       await yieldToLoop();
       const ownerId = bufferOwnerId(bufferId);
-      if (ownerId === undefined) continue; // buffer deleted; cascade got the rows
+      if (ownerId === undefined) {
+        dropBandWalk(bufferId); // buffer deleted; cascade got the rows
+        continue;
+      }
       let globalLines = capByUser.get(ownerId);
       if (globalLines === undefined) {
         globalLines = userRetentionLines(ownerId);
@@ -293,12 +322,25 @@ export async function runRetentionTick(
       // lookup (one PK probe) is paid per buffer.
       const cap = effectiveRetentionLines(ownerId, bufferId, globalLines);
       result.buffersExamined++;
-      if (cap <= 0) continue; // unlimited
+      if (cap <= 0) {
+        dropBandWalk(bufferId); // unlimited
+        continue;
+      }
 
       // The OFFSET walk is O(cap) index entries — real work, charged like a
       // delete batch.
       const boundaryId = charge(() => retentionBoundaryId(bufferId, cap));
-      if (boundaryId === undefined) continue; // within cap
+      if (boundaryId === undefined) {
+        dropBandWalk(bufferId); // within cap
+        continue;
+      }
+      // Reply threads keep lines below the boundary, but never below the
+      // ceiling this finds — the same O(cap) walk again, continued from the
+      // boundary. Carried between this visit's batches (db/retention.ts).
+      // Its own statement: yield first, so the two O(cap) walks never run as
+      // one block.
+      await yieldToLoop();
+      const visit = charge(() => newRetentionVisit(bufferId, boundaryId, cap));
 
       // "Done" is a short delete batch, NOT an exhausted budget: keying the
       // re-mark on the budget livelocks — with a small budget every capped
@@ -318,12 +360,19 @@ export async function runRetentionTick(
         // cannot help because it is only consulted between statements.
         await yieldToLoop();
         const rows = pacedBatchRows(opts);
-        const deleted = chargeSized(rows, () =>
-          deleteRetentionBatch(bufferId, boundaryId, ownerId, rows),
+        const batch = chargeFull(() =>
+          deleteRetentionBatch(bufferId, boundaryId, ownerId, rows, visit),
         );
-        result.rowsDeleted += deleted;
-        if (deleted < rows) {
-          tailDone = true; // (or only bookmarks left below the boundary)
+        result.rowsDeleted += batch.deleted;
+        if (batch.done) {
+          // A walk begun under an earlier boundary reached the ceiling: the
+          // rows the boundary has moved over since were never looked at. Walk
+          // again from the top — on, if the budget allows; else next time.
+          if (visit.fromBoundary !== boundaryId) {
+            restartBandWalk(visit, boundaryId);
+            continue;
+          }
+          tailDone = true; // (what's left below the boundary is spared)
           break;
         }
       } while (!outOfBudget());
@@ -417,8 +466,10 @@ export async function runRetentionTick(
         } while (!outOfBudget());
         if (!drained) return false; // budget died mid-drain; re-listed next pass
         // the row delete cascades into eight tables — real work
-        if (charge(() => gcDeleteClosedBuffer(userId, bufferId, daysNow)))
+        if (charge(() => gcDeleteClosedBuffer(userId, bufferId, daysNow))) {
           result.buffersCollected++;
+          dropBandWalk(bufferId);
+        }
         // A refusal (reopened, re-closed recently, or a bookmark landed) is
         // simply left alone; the next pass re-derives eligibility from scratch.
         if (outOfBudget()) return false; // user stays at head

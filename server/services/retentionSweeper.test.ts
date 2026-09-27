@@ -172,6 +172,215 @@ describe('runRetentionTick', () => {
     expect(rowIds(bufferId)).toEqual(ids.slice(25));
   });
 
+  describe('reply threads', () => {
+    /** A user whose #chan holds `lines` plain chat lines, each with a msgid
+     *  (`<name>-<i>`) so any of them can start a thread. */
+    function seedTagged(name: string, lines: number) {
+      const user = createUser(name);
+      const net = createNetwork(user.id, { name, host: 'h', port: 6697, tls: true, nick: name });
+      let t = 0;
+      const line = (fields: { msgid?: string; reply?: string; root?: string } = {}) => {
+        const r = insertMessage({
+          networkId: net!.id,
+          target: '#chan',
+          time: new Date(BASE + t++ * 1000).toISOString(),
+          type: 'message',
+          nick: 'someone',
+          text: 'hello',
+          msgid: fields.msgid,
+          replyMsgid: fields.reply,
+          replyRootMsgid: fields.root,
+        });
+        return { id: Number(r.id), bufferId: r.bufferId };
+      };
+      const ids = Array.from({ length: lines }, (_, i) => line({ msgid: `${name}-${i}` }).id);
+      return { userId: user.id, ids, line };
+    }
+
+    async function settle(budget = 100): Promise<void> {
+      let guard = 0;
+      while ((await runRetentionTick({ ...OPTS, maxBatchesPerTick: budget })).backlog) {
+        if (++guard > 30) throw new Error('sweep never converged');
+      }
+    }
+
+    // The review's case against the first cut: at a cap of 5, a reply to the
+    // oldest line pushes that line over the cap — and took the reply with it.
+    it('a reply to a line at the edge keeps both', async () => {
+      const { userId, ids, line } = seedTagged('thr-edge', 5);
+      setUserSetting(userId, 'data.retention.lines', 5);
+      const reply = line({ reply: 'thr-edge-0', root: 'thr-edge-0' });
+
+      await settle();
+
+      // Line 0 is over the cap, but its thread's newest line isn't.
+      expect(rowIds(reply.bufferId)).toEqual([...ids, reply.id]);
+    });
+
+    it('a thread goes whole once its newest line ages out, and not before', async () => {
+      const { userId, ids, line } = seedTagged('thr-whole', 3);
+      const a = line({ msgid: 'thr-whole-a', reply: 'thr-whole-0', root: 'thr-whole-0' });
+      const b = line({ reply: 'thr-whole-a', root: 'thr-whole-0' });
+      setUserSetting(userId, 'data.retention.lines', 4);
+      const later = [line(), line()];
+      const bufferId = a.bufferId;
+
+      await settle();
+      // a is inside the cap, so its whole thread stays; lines 1 and 2 go.
+      expect(rowIds(bufferId)).toEqual([ids[0], a.id, b.id, ...later.map((l) => l.id)]);
+
+      const newer = [line(), line()];
+      await settle();
+      // b has aged out: nothing of the thread is left inside the cap.
+      expect(rowIds(bufferId)).toEqual([...later, ...newer].map((l) => l.id));
+    });
+
+    it('keeps nothing further back than twice the cap: a live thread loses its oldest lines', async () => {
+      const { userId, ids, line } = seedTagged('thr-big', 1);
+      const replies = Array.from({ length: 10 }, () =>
+        line({ reply: 'thr-big-0', root: 'thr-big-0' }),
+      ).map((l) => l.id);
+      setUserSetting(userId, 'data.retention.lines', 4);
+      const last = line(); // the thread is alive: three of its replies are in the cap
+
+      await settle();
+
+      // Eight lines kept, four over the cap — the first line and the oldest
+      // replies are further back than that, and go.
+      expect(rowIds(last.bufferId)).toEqual([...replies.slice(3), last.id]);
+      expect(rowIds(last.bufferId)).not.toContain(ids[0]);
+    });
+
+    it('a thread whose first line we never held is spared the same way', async () => {
+      const { userId, ids, line } = seedTagged('thr-orphan', 3);
+      const early = line({ reply: 'elsewhere', root: 'elsewhere' });
+      const filler = [line(), line()];
+      setUserSetting(userId, 'data.retention.lines', 2);
+      const late = line({ reply: 'elsewhere', root: 'elsewhere' });
+
+      await settle();
+
+      expect(rowIds(late.bufferId)).toEqual([early.id, filler[1].id, late.id]);
+      expect(rowIds(late.bufferId)).not.toContain(ids[2]);
+    });
+
+    it('a first line stored after its replies (backfill) still keeps them', async () => {
+      const { userId, line } = seedTagged('thr-backfill', 0);
+      const reply = line({ reply: 'thr-backfill-q', root: 'thr-backfill-q' });
+      const filler = [line(), line()];
+      setUserSetting(userId, 'data.retention.lines', 2);
+      const root = line({ msgid: 'thr-backfill-q' });
+
+      await settle();
+
+      expect(rowIds(root.bufferId)).toEqual([reply.id, filler[1].id, root.id]);
+    });
+
+    it('walks past a stretch of spared lines bigger than a batch', async () => {
+      const { userId, ids, line } = seedTagged('thr-walk', 5); // 0–3 plain, 4 the root
+      const old = Array.from({ length: 5 }, () =>
+        line({ reply: 'thr-walk-4', root: 'thr-walk-4' }),
+      ).map((l) => l.id);
+      const filler = Array.from({ length: 5 }, () => line()).map((l) => l.id);
+      setUserSetting(userId, 'data.retention.lines', 6);
+      const live = line({ reply: 'thr-walk-4', root: 'thr-walk-4' });
+
+      // Six spared lines sit between the cap and the plain lines under them —
+      // more than a batch of four (OPTS.batchRows).
+      await settle();
+
+      expect(rowIds(live.bufferId)).toEqual([ids[4], ...old, ...filler, live.id]);
+    });
+
+    it('a reply that also started a thread is kept by either', async () => {
+      const { userId, line } = seedTagged('thr-both', 0);
+      // Backfill order: a reply to P lands before P, so it roots at P; then P
+      // arrives, itself a reply in a thread (Q) nothing else keeps alive.
+      const child = line({ reply: 'thr-both-p', root: 'thr-both-p' });
+      const p = line({ msgid: 'thr-both-p', reply: 'thr-both-q', root: 'thr-both-q' });
+      const filler = [line(), line()];
+      const late = line({ reply: 'thr-both-p', root: 'thr-both-p' });
+      setUserSetting(userId, 'data.retention.lines', 2);
+
+      await settle();
+
+      // P's own thread is alive (late is in the cap), so P stays; the child is
+      // further back than twice the cap, which nothing is kept past.
+      expect(rowIds(p.bufferId)).toEqual([p.id, filler[1].id, late.id]);
+      expect(child.id).toBeLessThan(p.id);
+    });
+
+    it('a walk resumed under a moved boundary still reaches what it moved over the cap', async () => {
+      const { userId, line } = seedTagged('thr-resume', 1); // R, the root
+      const replies = Array.from({ length: 10 }, () =>
+        line({ reply: 'thr-resume-0', root: 'thr-resume-0' }),
+      ).map((l) => l.id);
+      const plain = Array.from({ length: 6 }, () => line()).map((l) => l.id);
+      const live = line({ reply: 'thr-resume-0', root: 'thr-resume-0' });
+      setUserSetting(userId, 'data.retention.lines', 8);
+
+      // One tick that stops part-way down the spared band: the two probes, the
+      // lines under the ceiling, one window of the band.
+      const first = await runRetentionTick({ ...OPTS, maxBatchesPerTick: 4 });
+      expect(first.backlog).toBe(true);
+
+      // More lines push two plain ones over the cap, above where that walk
+      // stopped; then the channel goes quiet.
+      const more = [line(), line(), line()].map((l) => l.id);
+      await settle(2);
+
+      expect(rowIds(live.bufferId)).toEqual([
+        ...replies.slice(4),
+        ...plain.slice(2),
+        live.id,
+        ...more,
+      ]);
+    });
+
+    it('a bookmark keeps only its own line', async () => {
+      const { userId, ids, line } = seedTagged('thr-bm', 2);
+      const saved = line({ reply: 'thr-bm-1', root: 'thr-bm-1' });
+      const gone = line({ reply: 'thr-bm-1', root: 'thr-bm-1' });
+      expect(addBookmark(userId, ids[0])).toBe(true);
+      expect(addBookmark(userId, saved.id)).toBe(true);
+      setUserSetting(userId, 'data.retention.lines', 2);
+      const tail = [line(), line()];
+
+      await settle();
+
+      expect(rowIds(gone.bufferId)).toEqual([ids[0], saved.id, ...tail.map((l) => l.id)]);
+    });
+
+    it('a line naming itself as its root is still an ordinary line', async () => {
+      const { userId, line } = seedTagged('thr-self', 0);
+      const loop = line({ msgid: 'thr-self-x', reply: 'thr-self-x', root: 'thr-self-x' });
+      setUserSetting(userId, 'data.retention.lines', 2);
+      const tail = [line(), line()];
+
+      await settle();
+
+      expect(rowIds(loop.bufferId)).toEqual(tail.map((l) => l.id));
+    });
+
+    // What survives can't depend on where a tick's budget ran out: the
+    // decision reads only the two boundaries, which deleting below them never
+    // moves.
+    for (const budget of [100, 2]) {
+      it(`spares the same rows whatever the budget (${budget} statements a tick)`, async () => {
+        const { userId, ids, line } = seedTagged(`thr-budget-${budget}`, 12);
+        // Threads on lines 0 and 5; only line 5's is alive once the cap bites.
+        const r0 = line({ reply: `thr-budget-${budget}-0`, root: `thr-budget-${budget}-0` });
+        const tail = Array.from({ length: 6 }, () => line());
+        const live = line({ reply: `thr-budget-${budget}-5`, root: `thr-budget-${budget}-5` });
+        setUserSetting(userId, 'data.retention.lines', 8);
+
+        await settle(budget);
+
+        expect(rowIds(live.bufferId)).toEqual([ids[5], r0.id, ...tail.map((l) => l.id), live.id]);
+      });
+    }
+  });
+
   it('a tick drains the dirty set; only inserts refill it', async () => {
     const { bufferId } = seedBuffer('ret-dirty', 3);
     // Everything seeded above (and here) is pending until a tick runs…
@@ -657,13 +866,15 @@ describe('pacing', () => {
     const seen: number[] = [];
     vi.spyOn(retentionDb, 'retentionBoundaryId').mockReturnValue(1);
     vi.spyOn(retentionDb, 'deleteRetentionBatch').mockImplementation(
-      (_b: number, _bound: number, _owner: number, limit: number) => {
+      (_b: number, _bound: number, _owner: number, limit: number, _visit: unknown) => {
         seen.push(limit);
         const end = performance.now() + ms(limit);
         while (performance.now() < end) {
           /* block the loop the way a real slow statement does */
         }
-        return full ? limit : Math.max(0, limit - 1);
+        return full
+          ? { deleted: limit, done: false, full: true }
+          : { deleted: Math.max(0, limit - 1), done: true, full: false };
       },
     );
     return seen;
@@ -731,6 +942,39 @@ describe('pacing', () => {
     expect(seen[0]).toBe(64);
     for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeLessThan(seen[i - 1]);
     expect(seen.at(-1)!).toBeLessThanOrEqual(16);
+  });
+
+  // A band window (reply threads) walks `rows` rows but may delete none.
+  function mockBandWindow(ms: number): number[] {
+    const seen: number[] = [];
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockReturnValue(1);
+    vi.spyOn(retentionDb, 'deleteRetentionBatch').mockImplementation(
+      (_b: number, _bound: number, _owner: number, limit: number, _visit: unknown) => {
+        seen.push(limit);
+        const end = performance.now() + ms;
+        while (performance.now() < end) {
+          /* block */
+        }
+        return { deleted: 0, done: false, full: false, shrinkOnly: true };
+      },
+    );
+    return seen;
+  }
+
+  it('a slow band window shrinks the size; a fast one never grows it', async () => {
+    capped('pace-band');
+    await warmUpToMax();
+
+    const slow = mockBandWindow(30);
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 4 });
+    expect(slow[0]).toBe(64);
+    expect(slow.at(-1)!).toBeLessThan(64);
+    vi.restoreAllMocks();
+
+    capped('pace-band-fast');
+    const fast = mockBandWindow(0);
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 6 });
+    expect(new Set(fast).size).toBe(1); // cheap, and deleted nothing: no growth
   });
 
   it('never shrinks below minBatchRows', async () => {

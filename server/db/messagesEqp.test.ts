@@ -353,3 +353,27 @@ describe('read-marker paths', () => {
     expect(detail).not.toMatch(/TEMP B-TREE/);
   });
 });
+
+describe('retention paths', () => {
+  // The band window's delete (db/retention.ts), planned from the text it
+  // prepares: the window rides the per-buffer index, and each thread probe
+  // is a seek.
+  it('the band delete rides the per-buffer index, its thread probes seeks', async () => {
+    const { BAND_DELETE_SQL } = await import('./retention.js');
+    const detail = (
+      db.prepare(`EXPLAIN QUERY PLAN ${BAND_DELETE_SQL}`).all({
+        bufferId: 1,
+        walkFrom: 100,
+        low: 10,
+        ownerId: 1,
+        boundaryId: 100,
+      }) as Array<{ detail: string }>
+    )
+      .map((r) => r.detail)
+      .join(' | ');
+    expect(detail).toMatch(/SEARCH m USING (COVERING )?INDEX idx_messages_buf_unread/);
+    expect(detail).toMatch(/SEARCH r USING (COVERING )?INDEX idx_messages_reply_root/);
+    expect(detail).toMatch(/SEARCH q USING INDEX idx_messages_msgid/);
+    expect(detail).not.toMatch(/SCAN messages/);
+  });
+});

@@ -958,7 +958,11 @@ whose token you've superseded.
 
 **Stored history is NOT append-only.** Instances can enforce a retention
 policy (an operator ceiling and/or a per-user setting) that permanently
-deletes a buffer's oldest rows in the background. Do not treat a message id
+deletes a buffer's oldest rows in the background. A reply thread — the line
+that started it and every reply in it — is kept whole until its newest line is
+past the limit, so a thread's old lines can outlive the plain lines around
+them; but nothing is kept further back than twice the limit, thread or not,
+except bookmarks, which are never deleted. Do not treat a message id
 you once fetched as permanently fetchable: an `around` jump to it can come
 back `anchorMissing`, a `before` page can return fewer rows with
 `hasMoreOlder:false` earlier than history "should" end, and on the IRC
