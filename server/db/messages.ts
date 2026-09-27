@@ -16,7 +16,7 @@ import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
-import { REPLY_EXCERPT_MAX } from '../../shared/replies.js';
+import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
 import type { ReplyContext, ReplyParent } from '../../shared/replies.js';
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
@@ -50,12 +50,15 @@ interface MessageRow {
   // one of the owner's own (from someone else) — see the columns in db/index.ts.
   reply_msgid: string | null;
   reply_to_self: number;
-  // The msgid at the top of this reply's thread (see db/index.ts). Not on the
-  // wire yet — nothing displays threads.
+  // The msgid at the top of this reply's thread (see db/index.ts); rides the
+  // wire as replyTo.root.
   reply_root_msgid: string | null;
   // JSON object from the computed `reply_parent` column (REPLY_COL), NULL when
   // the msgid names no line we hold. Absent — not null — on reads without it.
   reply_parent?: string | null;
+  // From THREAD_REPLIES_COL: replies in the thread this line starts, NULL when
+  // none (or it can't start one). Absent on reads without it.
+  thread_replies?: number | null;
   // 0/1 from the computed `bookmarked` column — see BOOKMARKED_COL. Optional
   // because it exists only on the SELECTs that ask for it.
   bookmarked?: number;
@@ -111,6 +114,9 @@ export interface MessageEvent {
   // The stamp, not replyTo.parent — the parent can be gone or late, the stamp
   // is what every count and feed read.
   replyToSelf?: true;
+  // Replies in the thread this line starts (THREAD_REPLIES_COL). Absent when
+  // none, like `bookmarked`, and on reads that don't count them.
+  threadReplies?: number;
   [key: string]: unknown;
 }
 
@@ -322,6 +328,26 @@ const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS NULL THE
     ORDER BY p.id DESC LIMIT 1
   ) END AS reply_parent`;
 
+// How many replies hang off a line that started a thread — every row naming
+// it as root (reply_root_msgid), at any depth. What the client draws as
+// "N replies" under the line and opens the thread view from. Only a chat line
+// with a msgid that isn't itself a reply can start a thread (replyRootFor), so
+// every other row costs the CASE; a candidate root costs one seek on the
+// reply-only partial index — INDEXED BY because nothing runs ANALYZE. NULL,
+// not 0, when there are none, so rowToEvent can leave the field absent.
+const THREAD_REPLIES_COL = (alias: string) => `CASE
+    WHEN ${alias}.msgid IS NULL OR ${alias}.reply_root_msgid IS NOT NULL
+      OR ${alias}.type NOT IN ${REPLY_LINE_TYPES_SQL} THEN NULL
+    ELSE (
+      SELECT NULLIF(count(*), 0) FROM messages t INDEXED BY idx_messages_reply_root
+       WHERE t.buffer_id = ${alias}.buffer_id AND t.reply_root_msgid = ${alias}.msgid
+    ) END AS thread_replies`;
+
+// Everything a timeline read carries beside the row itself: the reader's
+// bookmark, the reactions on it, the line it answers, and the thread it starts.
+const TIMELINE_COLS = (alias: string) =>
+  `${BOOKMARKED_COL(alias)}, ${REACTIONS_COL(alias)}, ${REPLY_COL(alias)}, ${THREAD_REPLIES_COL(alias)}`;
+
 function parseReplyParent(raw: string | null | undefined): ReplyParent | null {
   if (!raw) return null;
   try {
@@ -364,7 +390,7 @@ export function findReplyParent(
 const replyRootStmt = db.prepare(`
   SELECT reply_root_msgid AS root FROM messages
   WHERE network_id = ? AND msgid = ? AND +buffer_id = ?
-    AND type IN ('message', 'action', 'notice')
+    AND type IN ${REPLY_LINE_TYPES_SQL}
   ORDER BY id DESC LIMIT 1
 `);
 
@@ -459,7 +485,10 @@ function rowToEvent(row: MessageRow): MessageEvent {
   if (row.reply_to_self === 1) event.replyToSelf = true;
   if (row.reply_msgid && row.reply_parent !== undefined) {
     event.replyTo = { msgid: row.reply_msgid, parent: parseReplyParent(row.reply_parent) };
+    if (row.reply_root_msgid) event.replyTo.root = row.reply_root_msgid;
   }
+  delete event.threadReplies;
+  if (row.thread_replies) event.threadReplies = row.thread_replies;
   return event;
 }
 
@@ -484,15 +513,15 @@ function listMessagesById(
   if (afterId) {
     const rows = db
       .prepare(
-        `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE buffer_id = ? AND id > ?
+        `SELECT *, ${TIMELINE_COLS('messages')} FROM messages WHERE buffer_id = ? AND id > ?
        ORDER BY id ASC LIMIT ?`,
       )
       .all(bufferId, afterId, limit) as MessageRow[];
     return rows.map(rowToEvent);
   }
   const sql = before
-    ? `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
-    : `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ?`;
+    ? `SELECT *, ${TIMELINE_COLS('messages')} FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT ?`
+    : `SELECT *, ${TIMELINE_COLS('messages')} FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ?`;
   const params = before ? [bufferId, before, limit] : [bufferId, limit];
   const rows = db.prepare(sql).all(...params) as MessageRow[];
   return rows.map(rowToEvent).toReversed();
@@ -652,7 +681,7 @@ function listMessagesCountedById(
   }
   const rows = db
     .prepare(
-      `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ASC`,
+      `SELECT *, ${TIMELINE_COLS('messages')} FROM messages WHERE ${conds.join(' AND ')} ORDER BY id ASC`,
     )
     .all(...params) as MessageRow[];
   return rows.map(rowToEvent);
@@ -683,7 +712,7 @@ export function listMessagesAround(
       ? undefined
       : (db
           .prepare(
-            `SELECT *, ${BOOKMARKED_COL('messages')}, ${REACTIONS_COL('messages')}, ${REPLY_COL('messages')} FROM messages WHERE id = ? AND buffer_id = ?`,
+            `SELECT *, ${TIMELINE_COLS('messages')} FROM messages WHERE id = ? AND buffer_id = ?`,
           )
           .get(anchorId, bufferId) as MessageRow | undefined);
   if (bufferId === undefined || !anchorRow) {
@@ -704,6 +733,52 @@ export function listMessagesAround(
     events,
     hasMoreOlder: hasOlderThanById(bufferId, oldestId),
     hasMoreNewer: hasNewerThanById(bufferId, newestId),
+  };
+}
+
+// ─── Reply threads ──────────────────────────────────────────────────────────
+
+// Most replies one thread read ships. A thread is read whole (the view is a
+// tree, which a page cut mid-way would leave hanging), so this only bounds the
+// frame: past it the oldest replies ship and `truncated` says so. Far beyond
+// any conversation; a bridge that replies to everything can still get there.
+export const THREAD_MAX_REPLIES = 1000;
+
+const threadRootStmt = db.prepare(`
+  SELECT m.*, ${TIMELINE_COLS('m')} FROM messages m
+   WHERE m.network_id = (SELECT network_id FROM buffers WHERE id = ?)
+     AND m.msgid = ? AND +m.buffer_id = ? AND m.type IN ${REPLY_LINE_TYPES_SQL}
+   ORDER BY m.id DESC LIMIT 1
+`);
+
+// INDEXED BY: the reply-only partial index holds the thread in id order, and
+// nothing runs ANALYZE, so the planner could otherwise walk the buffer.
+const threadRepliesStmt = db.prepare(`
+  SELECT m.*, ${TIMELINE_COLS('m')} FROM messages m INDEXED BY idx_messages_reply_root
+   WHERE m.buffer_id = ? AND m.reply_root_msgid = ?
+   ORDER BY m.id ASC LIMIT ?
+`);
+
+/**
+ * A reply thread in one buffer: the line that started it (found by msgid, the
+ * newest copy, as REPLY_COL finds a parent) and every reply naming it as root,
+ * oldest first, with the timeline columns. `root` is null when we don't hold
+ * that line — retention took it, or it predates our history — and the replies
+ * still come back. The caller owns the ownership check on `bufferId`.
+ */
+export function listThread(
+  bufferId: number,
+  rootMsgid: string,
+  limit = THREAD_MAX_REPLIES,
+): { root: MessageEvent | null; replies: MessageEvent[]; truncated: boolean } {
+  const rootRow = threadRootStmt.get(bufferId, rootMsgid, bufferId) as MessageRow | undefined;
+  const rows = threadRepliesStmt.all(bufferId, rootMsgid, limit + 1) as MessageRow[];
+  const truncated = rows.length > limit;
+  if (truncated) rows.length = limit;
+  return {
+    root: rootRow ? rowToEvent(rootRow) : null,
+    replies: rows.map(rowToEvent),
+    truncated,
   };
 }
 

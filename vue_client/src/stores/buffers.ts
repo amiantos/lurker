@@ -6,6 +6,7 @@ import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
 import { seenEventCursor } from '../lib/seenEventCursor.js';
+import { threadViewBuffer } from '../lib/threadViewing.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
@@ -662,7 +663,10 @@ export const useBuffersStore = defineStore('buffers', {
         // `bob` while the user sits in the `Bob` buffer reads as inactive and
         // the divider/read-sync below silently skips (#327). Mirrors the same
         // resolve-then-compare applyReadState does.
-        const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
+        const key = bufferKey(buf.networkId, buf.target);
+        // Active but showing a reply thread, not these lines: they stay unread
+        // until the user is back in the channel (lib/threadViewing).
+        const isActive = networks.activeKey === key && threadViewBuffer() !== key;
         if (isActive) {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary

@@ -36,6 +36,7 @@ import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
 import { replyMsgidFromTags } from '../../shared/replies.js';
+import { noteThreadReply } from '../db/threadFollows.js';
 import type { ReplyContext } from '../../shared/replies.js';
 import { evaluateIgnores } from '../../shared/ignoreMatch.js';
 import * as chanlistDb from '../db/chanlist.js';
@@ -1260,10 +1261,10 @@ export class IrcConnection {
         const bufferId = resolveBufferIdByNetwork(this.network.id, event.target as string);
         const parent =
           bufferId === undefined ? null : findReplyParent(this.network.id, bufferId, replyMsgid);
-        replyTo = { msgid: replyMsgid, parent };
         replyToSelf = !!parent?.self && !event.self;
-        // The top of its thread, for a threaded view (see db/index.ts).
+        // The top of its thread, for the thread view (see db/index.ts).
         replyRootMsgid = replyRootFor(this.network.id, bufferId, replyMsgid);
+        replyTo = { msgid: replyMsgid, parent, root: replyRootMsgid };
       }
       let matchedRuleId: number | null = null;
       let fromIgnored = false;
@@ -1320,6 +1321,22 @@ export class IrcConnection {
       if (replyTo) enriched.replyTo = replyTo;
       if (replyToSelf) enriched.replyToSelf = true;
       enriched.fromIgnored = fromIgnored;
+      // A reply can put its thread on the user's followed list (they posted,
+      // or were highlighted, or it's their thread), or change one already on
+      // it — flag it so wsHub sends every client the new list. Someone
+      // ignored never does.
+      if (replyRootMsgid && !fromIgnored) {
+        try {
+          const changed = noteThreadReply(this.network.user_id, bufferId, replyRootMsgid, {
+            id: Number(id),
+            self: !!event.self,
+            highlighted: matchedRuleId != null || replyToSelf,
+          });
+          if (changed) enriched.threadsChanged = true;
+        } catch (e) {
+          console.warn('[threads] follow-on-insert failed:', (e as Error)?.message || e);
+        }
+      }
     }
 
     this.onEvent(enriched);

@@ -536,6 +536,14 @@ export const EXPORT_TABLES = Object.freeze({
       'an archive without them still restores every line they were on',
   },
 
+  thread_follows: {
+    mode: 'skip',
+    reason:
+      'which reply threads sit in the sidebar and how far each was read — view state that ' +
+      'follows from the replies themselves: posting or being highlighted in a thread again ' +
+      'puts it back',
+  },
+
   instance_settings: {
     mode: 'skip',
     reason: 'instance-level operational settings (e.g. uploads.allow_user_defined), not user data',

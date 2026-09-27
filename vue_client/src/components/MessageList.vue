@@ -126,7 +126,7 @@
             <ReplyQuote
               v-if="row.m?.replyTo"
               :parent="row.replyParent ?? null"
-              @jump="onReplyContextClick"
+              @jump="onReplyContextClick(row.m, $event)"
             />
             <span
               v-if="row.m?.relaySource && !row.continuationAuthor"
@@ -154,6 +154,10 @@
               :message="row.m"
               :interactive="!row.m.e2e"
               @measured="repinAfterPreviewGrowth(true)"
+            /><ThreadChip
+              v-if="row.m?.threadReplies"
+              :count="Number(row.m.threadReplies)"
+              @open="openThreadAt(row.m)"
             />
           </span>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
@@ -179,7 +183,7 @@
             <ReplyQuote
               v-if="row.m?.replyTo"
               :parent="row.replyParent ?? null"
-              @jump="onReplyContextClick"
+              @jump="onReplyContextClick(row.m, $event)"
             />
             <span
               v-if="row.m?.relaySource && !row.continuationAuthor"
@@ -330,6 +334,10 @@
               :message="row.m"
               :interactive="row.m.type !== 'notice' && !row.m.e2e"
               @measured="repinAfterPreviewGrowth(true)"
+            /><ThreadChip
+              v-if="row.m?.threadReplies"
+              :count="Number(row.m.threadReplies)"
+              @open="openThreadAt(row.m)"
             />
           </span>
         </template>
@@ -388,6 +396,9 @@ import {
 import type { RenderSegment } from '../utils/nickColor.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import ReplyQuote from './ReplyQuote.vue';
+import ThreadChip from './ThreadChip.vue';
+import { pushThread } from '../composables/useThreadRoute.js';
+import { useRouter } from 'vue-router';
 import {
   formatTimestamp,
   formatDuration,
@@ -476,6 +487,8 @@ interface ChatMessage {
   // IRCv3 reply (#993): the line this one answers, as the server resolved it by
   // msgid within the buffer — see shared/replies.ts.
   replyTo?: ReplyContext;
+  // Replies in the thread this line starts (stores/threads.ts keeps it live).
+  threadReplies?: number;
   [key: string]: unknown;
 }
 
@@ -528,6 +541,7 @@ const props = withDefaults(
   { pendingScrollId: null },
 );
 
+const router = useRouter();
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const settings = useSettingsStore();
@@ -1632,17 +1646,34 @@ function shownParent(
   return parent;
 }
 
-function onReplyContextClick(parent: ReplyParent | null | undefined): void {
+// A reply's quote opens its thread, on the reply that was clicked. A row stored
+// before threads were tracked has no root to open: it jumps to the answered
+// line instead, through the shared pipeline (scrolled to if loaded, else a
+// slice around it, detaching the buffer), as a search hit does.
+function onReplyContextClick(
+  m: ChatMessage | undefined,
+  parent: ReplyParent | null | undefined,
+): void {
   const buf = buffer.value;
   if (!parent || !buf || buf.networkId == null) return;
-  // The shared jump pipeline: scrolls to the line if it's loaded, else loads a
-  // slice around it (detaching the buffer), as a search hit does.
+  const root = m?.replyTo?.root;
+  if (root && buf.id != null) {
+    pushThread(router, buf.id, root, m?.id ?? null);
+    return;
+  }
   emitJumpIntent({
     kind: 'jump',
     networkId: buf.networkId,
     target: buf.target,
     messageId: parent.id,
   });
+}
+
+// The `╰─ N replies` under a line that started a thread.
+function openThreadAt(m: ChatMessage | undefined): void {
+  const buf = buffer.value;
+  if (!m?.msgid || !buf || buf.id == null) return;
+  pushThread(router, buf.id, String(m.msgid));
 }
 
 // Template helpers for consolidation row items — vue-tsc can't narrow

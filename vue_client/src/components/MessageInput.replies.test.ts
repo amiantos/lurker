@@ -15,6 +15,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useRepliesStore } from '../stores/replies.js';
+import { useThreadsStore } from '../stores/threads.js';
 import { addressNick, cancelComposerReply } from '../composables/useComposerOverlay.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
@@ -89,6 +90,53 @@ describe('composing a reply', () => {
   afterEach(() => {
     for (const wrapper of mounted) wrapper.unmount();
     mounted = [];
+  });
+
+  it('in a thread view, answers the thread’s first line unless a Reply is picked', async () => {
+    seed();
+    useThreadsStore().view = {
+      networkId: 1,
+      target: '#chan',
+      bufferId: 9,
+      rootMsgid: 'r',
+      root: {
+        id: 7,
+        msgid: 'r',
+        networkId: 1,
+        target: '#chan',
+        type: 'message',
+        nick: 'alice',
+        text: 'q',
+      },
+      replies: [],
+      loading: false,
+      truncated: false,
+      token: 1,
+    };
+    const el = await composer();
+    await type(el, 'in the thread');
+    await press(el, 'Enter');
+    expect(sent()[0]).toEqual(expect.objectContaining({ text: 'in the thread', replyTo: 7 }));
+    // Nothing was pending, so nothing is handed back or left behind.
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+
+    // A picked Reply wins, and the next line answers the first line again.
+    useRepliesStore().start(KEY, REPLY);
+    await type(el, 'to alice');
+    await press(el, 'Enter');
+    await type(el, 'and again');
+    await press(el, 'Enter');
+    expect(
+      sent()
+        .slice(1)
+        .map((m) => m.replyTo),
+    ).toEqual([42, 7]);
+
+    // Out of the thread view, a line is a line.
+    useThreadsStore().close();
+    await type(el, 'plain');
+    await press(el, 'Enter');
+    expect(sent()[3]).not.toHaveProperty('replyTo');
   });
 
   it('sends the next line as the reply, and uses the reply up', async () => {

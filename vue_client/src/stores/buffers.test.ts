@@ -33,6 +33,7 @@ vi.mock('../composables/useSocket.js', () => ({
 import { useBuffersStore, bufferNeedsHydration, windowAroundAnchor } from './buffers.js';
 import { useSettingsStore } from './settings.js';
 import { socketSend } from '../composables/useSocket.js';
+import { setThreadViewBuffer } from '../lib/threadViewing.js';
 
 // The store always seeds the app-scoped system buffer (#355). These tests assert
 // on network-buffer counts (fork/removal semantics), so filter it out.
@@ -211,6 +212,23 @@ describe('case-insensitive buffer identity (#327)', () => {
     expect(socketSend).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'mark-read', networkId: 1, target: 'Bob', messageId: 2 }),
     );
+  });
+
+  it('holds live read-sync while the active buffer shows one of its threads instead', () => {
+    const store = useBuffersStore();
+    store.pushMessage(dm('Bob', 1));
+    h.activeKey = '1::Bob';
+    vi.mocked(socketSend).mockClear();
+
+    setThreadViewBuffer('1::Bob');
+    store.pushMessage(dm('Bob', 2));
+    // Not on screen: still unread, and the server isn't told otherwise.
+    expect(store.byKey('1::Bob')!.lastReadId).toBe(0);
+    expect(socketSend).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'mark-read' }));
+
+    setThreadViewBuffer(null);
+    store.pushMessage(dm('Bob', 3));
+    expect(store.byKey('1::Bob')!.lastReadId).toBe(3);
   });
 
   it('activates the existing buffer under a divergent case and keeps activeKey canonical', () => {

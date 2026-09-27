@@ -110,8 +110,21 @@
         </button>
       </div>
       <div class="topic-meta">
-        <span v-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
-        <template v-if="active && topic">
+        <!-- In a reply thread the channel name leads back to the channel, and
+             the thread stands where the topic would. -->
+        <template v-if="threadRoute && active">
+          <button
+            type="button"
+            class="link buffer"
+            :title="`Back to ${bufferLabel}`"
+            @click="leaveThread"
+          >
+            {{ bufferLabel }}
+          </button>
+          <span class="thread-crumb">╰─ thread</span>
+        </template>
+        <span v-else-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
+        <template v-if="active && topic && !threadRoute">
           <!-- A channel topic is user prose: auto-link it and open the full
                view on click. A DM's pseudo-topic is the peer's ident@host —
                an identity string, not prose; auto-linking turns the host into
@@ -237,10 +250,15 @@
     </header>
     <div class="topic-divider"></div>
 
-    <MessageList ref="messageListRef" :pending-scroll-id="pendingScrollId" />
+    <ThreadView v-if="threadRoute" compose-inline />
+    <MessageList v-else ref="messageListRef" :pending-scroll-id="pendingScrollId" />
     <MemberList v-if="showMembers && hasNicklist" />
     <StatusBar />
-    <MessageInput v-if="hasInput" ref="messageInputRef" />
+    <!-- One composer. In a reply thread it moves under the line being answered
+         (ThreadView renders the slot); everywhere else it sits here. -->
+    <Teleport v-if="hasInput" defer :to="threadComposeTo ?? 'body'" :disabled="!threadComposeTo">
+      <MessageInput ref="messageInputRef" />
+    </Teleport>
 
     <NetworkForm
       v-if="networkEditor.isOpen"
@@ -330,6 +348,11 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
+import ThreadView from '../components/ThreadView.vue';
+import { useThreadRoute } from '../composables/useThreadRoute.js';
+import { useThreadsStore } from '../stores/threads.js';
+import { useRepliesStore } from '../stores/replies.js';
+import { pushBuffer } from '../composables/useBufferRoute.js';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import StatusBar from '../components/StatusBar.vue';
@@ -427,6 +450,34 @@ const pendingScrollId = ref<number | null>(null);
 const { showSearch, showHighlights, searchScope, highlightScope, openSearch, openHighlights } =
   useBufferSearchScope();
 const messageInputRef = ref<{ focus: () => void } | null>(null);
+
+// ─── Reply threads (#993) ──────────────────────────────────────────────────
+const threadRoute = useThreadRoute();
+const threads = useThreadsStore();
+const replies = useRepliesStore();
+
+// Where the composer goes: under the thread line being answered, when there is
+// one on screen. The slot is ThreadView's (composeSlotId).
+const threadComposeTo = computed((): string | null => {
+  if (!threadRoute.value) return null;
+  const pending = replies.forKey(networks.activeKey);
+  const v = threads.view;
+  if (!pending || !v) return null;
+  const held =
+    v.root?.id === pending.messageId || v.replies.some((r) => r.id === pending.messageId);
+  return held ? `#thread-compose-${pending.messageId}` : null;
+});
+
+// Moving a focused element in the DOM drops its focus; give it back.
+watch(threadComposeTo, async () => {
+  await nextTick();
+  messageInputRef.value?.focus();
+});
+
+function leaveThread(): void {
+  const id = threadRoute.value?.bufferId;
+  if (id != null) pushBuffer(router, id);
+}
 const messageListRef = ref<{ scrollByPage: (dir: number) => void } | null>(null);
 
 // Any modal open? Type-ahead must not steal focus from a modal's own fields.
@@ -895,6 +946,10 @@ useChatBootstrap({ onJump: onJumpToMessage });
   background: var(--border);
   height: 1px;
 }
+.topic .thread-crumb {
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
 .topic .buffer {
   color: var(--accent);
 }
@@ -928,7 +983,8 @@ button.topic-text:focus-visible {
    Vue 3 scoped CSS attaches the parent's data-v attribute to a child
    component's root element, so .message-list / .members / .input here
    match the rendered roots of MessageList / MemberList / MessageInput. */
-.message-list {
+.message-list,
+.thread-view {
   grid-area: messages;
 }
 .members {

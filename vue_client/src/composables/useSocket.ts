@@ -28,6 +28,7 @@ import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useThreadsStore } from '../stores/threads.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useUploadsStore } from '../stores/uploads.js';
@@ -270,6 +271,8 @@ function applyEvent(event: any): boolean {
       // them here.
       const { news, shown } = take();
       if (!news) break;
+      // A reply joins its thread wherever that's on screen (stores/threads).
+      if (event.replyTo?.root) useThreadsStore().applyLive(event);
       // A live message is the one case where growth is expected and harmless: it lands at the
       // bottom, where the list's existing stick-to-bottom logic follows it down. Only for a row
       // that went in — a detached buffer draws it when it reattaches, and primes it then.
@@ -292,6 +295,7 @@ function applyEvent(event: any): boolean {
     }
     case 'notice':
       if (!take().news) break;
+      if (event.replyTo?.root) useThreadsStore().applyLive(event);
       notifyForEvent(event);
       break;
     // For events that carry an id AND mutate buffer state (member list,
@@ -881,6 +885,26 @@ function handleMessage(raw: string): void {
         payload.speakers,
       );
     }
+    return;
+  }
+  if (payload.kind === 'thread') {
+    // The thread view's whole slice (stores/threads.ts).
+    useBookmarksStore().noteFromEvents(payload.replies, payload.networkId);
+    useReactionsStore().noteFromEvents(payload.replies, payload.networkId);
+    if (payload.root) {
+      useBookmarksStore().noteFromEvents([payload.root], payload.networkId);
+      useReactionsStore().noteFromEvents([payload.root], payload.networkId);
+    }
+    primeEventPreviews(
+      payload.root ? [payload.root, ...payload.replies] : payload.replies,
+      payload.networkId,
+      payload.target,
+    );
+    useThreadsStore().applyThread(payload);
+    return;
+  }
+  if (payload.kind === 'threads-changed') {
+    useThreadsStore().applyFollowed(payload.threads);
     return;
   }
   if (payload.kind === 'irc') {

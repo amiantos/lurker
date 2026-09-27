@@ -106,6 +106,11 @@ const adoptNotifyStmt = db.prepare(
 const adoptDraftStmt = db.prepare(
   `UPDATE OR IGNORE user_drafts SET buffer_id = ? WHERE buffer_id = ?`,
 );
+// followed threads: a thread is its root msgid in the buffer, and the rows
+// moved above carry it, so the follow moves too; the survivor's wins a tie.
+const adoptThreadFollowsStmt = db.prepare(
+  `UPDATE OR IGNORE thread_follows SET buffer_id = ? WHERE buffer_id = ?`,
+);
 const draftBodyStmt = db.prepare(
   `SELECT body FROM user_drafts WHERE user_id = ? AND buffer_id = ?`,
 );
@@ -163,6 +168,7 @@ export function absorbBufferRow(
   adoptPinStmt.run(survivor.id, absorbed.id);
   adoptFavoriteStmt.run(survivor.id, absorbed.id);
   adoptNicklistStmt.run(survivor.id, absorbed.id);
+  adoptThreadFollowsStmt.run(survivor.id, absorbed.id);
   adoptNotifyStmt.run(survivor.id, absorbed.id);
   adoptDraftStmt.run(survivor.id, absorbed.id);
   mergeChannelPropsStmt.run({ survivor: survivor.id, absorbed: absorbed.id });

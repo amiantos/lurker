@@ -17,6 +17,7 @@ import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 import * as jumpIntent from '../composables/useJumpIntent.js';
+import * as threadRoute from '../composables/useThreadRoute.js';
 import { useSettingsStore } from '../stores/settings.js';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -146,6 +147,7 @@ describe('MessageList — replies', () => {
     expect(ownText(rowOf(w, r.id))).toBe('alice: noon');
   });
 
+  // A reply stored before threads were tracked carries no root to open.
   it('jumps to the answered line from the keyboard, and offers nothing when it’s gone', async () => {
     const jump = vi.spyOn(jumpIntent, 'emitJumpIntent');
     const p = line('alice', 'what time is it?', { msgid: 'm1' });
@@ -165,6 +167,35 @@ describe('MessageList — replies', () => {
     expect(missing.attributes('role')).toBeUndefined();
     expect(missing.attributes('tabindex')).toBeUndefined();
     jump.mockRestore();
+  });
+
+  it('opens the reply’s thread, on that reply, when the quote carries its root', async () => {
+    const open = vi.spyOn(threadRoute, 'pushThread').mockImplementation(() => {});
+    const jump = vi.spyOn(jumpIntent, 'emitJumpIntent');
+    const p = line('alice', 'what time is it?', { msgid: 'm1' });
+    const r = line('bob', 'noon', {
+      replyTo: { msgid: 'm1', root: 'm1', parent: parent({ id: p.id }) },
+    });
+    const w = mountWith([p, r]);
+    await rowOf(w, r.id).find('.reply-quote').trigger('click');
+    expect(open).toHaveBeenCalledWith(undefined, 9, 'm1', r.id);
+    expect(jump).not.toHaveBeenCalled();
+    open.mockRestore();
+    jump.mockRestore();
+  });
+
+  it('counts the replies under a line that started a thread, and opens it from there', async () => {
+    const open = vi.spyOn(threadRoute, 'pushThread').mockImplementation(() => {});
+    const p = line('alice', 'what time is it?', { msgid: 'm1', threadReplies: 2 });
+    const one = line('carol', 'lunch?', { msgid: 'm2', threadReplies: 1 });
+    const plain = line('dave', 'hi', { msgid: 'm3' });
+    const w = mountWith([p, one, plain]);
+    expect(rowOf(w, p.id).find('.thread-chip').text()).toBe('╰─2 replies');
+    expect(rowOf(w, one.id).find('.thread-chip').text()).toBe('╰─1 reply');
+    expect(rowOf(w, plain.id).find('.thread-chip').exists()).toBe(false);
+    await rowOf(w, p.id).find('.thread-chip').trigger('click');
+    expect(open).toHaveBeenCalledWith(undefined, 9, 'm1');
+    open.mockRestore();
   });
 
   it('quotes a /me and a notice the way IRC writes them', () => {

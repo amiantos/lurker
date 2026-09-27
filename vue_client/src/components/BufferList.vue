@@ -259,6 +259,10 @@
                 >
                   <i class="fa-solid fa-ellipsis-vertical"></i>
                 </button>
+                <ThreadRows
+                  v-if="buf.kind === 'channel' && threads.forBuffer(buf.id).length"
+                  :threads="threads.forBuffer(buf.id)"
+                />
               </li>
             </template>
           </draggable>
@@ -306,6 +310,10 @@
               >
                 <i class="fa-solid fa-ellipsis-vertical"></i>
               </button>
+              <ThreadRows
+                v-if="buf.kind === 'channel' && threads.forBuffer(buf.id).length"
+                :threads="threads.forBuffer(buf.id)"
+              />
             </li>
           </ul>
         </div>
@@ -348,6 +356,10 @@ import {
 } from 'vue';
 import { useRouter } from 'vue-router';
 import draggable from 'vuedraggable';
+import ThreadRows from './ThreadRows.vue';
+import { useThreadsStore } from '../stores/threads.js';
+import { useThreadRoute } from '../composables/useThreadRoute.js';
+import { pushBuffer } from '../composables/useBufferRoute.js';
 import { useNetworksStore, type Network, type PeerPresenceEntry } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
@@ -383,6 +395,8 @@ const networkActions = useNetworkActions();
 const networkEditor = useNetworkEditor();
 const joinChannelModal = useJoinChannelModal();
 const router = useRouter();
+const threads = useThreadsStore();
+const threadRoute = useThreadRoute();
 
 // The + in the LURKER header opens the add-network editor (the button moved off
 // the sidebar footer — #411). The modal itself is rendered by the chat shell
@@ -743,10 +757,16 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
 
 function select(networkId: number, target: string): void {
   buffers.activate(networkId, target);
+  // From one of this channel's threads, the channel is already the active
+  // buffer — so nothing moved; go to its lines.
+  const id = buffers.findByTarget(networkId, target)?.id;
+  if (id != null && threadRoute.value?.bufferId === id) pushBuffer(router, id);
 }
 
+// In one of its threads the channel stays the active buffer, but the thread's
+// row is the one showing where you are.
 function isActive(networkId: number, target: string): boolean {
-  return networks.activeKey === `${networkId}::${target}`;
+  return networks.activeKey === `${networkId}::${target}` && !threadRoute.value;
 }
 
 function stateClass(networkId: number): string {
@@ -1269,7 +1289,10 @@ onBeforeUnmount(() => {
   position: absolute;
   left: var(--space-6);
   top: 0;
-  height: 50%;
+  /* The first line's middle, not 50%: a channel with followed threads nested
+     under it (ThreadRows) is taller than its own row. The same point as 50%
+     on a one-line row — padding plus half the 1.55 line. */
+  height: calc(var(--space-1) + 0.775em);
   width: 8px;
   border-left: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
@@ -1280,7 +1303,7 @@ onBeforeUnmount(() => {
   content: '';
   position: absolute;
   left: var(--space-6);
-  top: 50%;
+  top: calc(var(--space-1) + 0.775em);
   bottom: 0;
   width: 0;
   border-left: 1px solid var(--border);
@@ -1290,11 +1313,11 @@ onBeforeUnmount(() => {
    buffers below), the last pinned row's spine must continue down through the
    divider — otherwise the └─ terminator would break the line. :has() scopes
    the override so an all-pinned network still terminates with └─ correctly. */
-.channels.pinned:has(+ .pin-divider) li:last-child::after {
+.channels.pinned:has(+ .pin-divider) > li:last-child::after {
   content: '';
   position: absolute;
   left: var(--space-6);
-  top: 50%;
+  top: calc(var(--space-1) + 0.775em);
   bottom: 0;
   width: 0;
   border-left: 1px solid var(--border);
@@ -1308,6 +1331,30 @@ onBeforeUnmount(() => {
 .channels li.active {
   background: var(--bg-soft);
   border-left-color: var(--accent);
+}
+/* A channel with threads under it: its threads wrap onto their own lines, and
+   its hover and active shading stay on its own row — painted as an image so
+   it can be sized to the row, where a background-color fills the whole box. */
+.channels li:has(> .threads) {
+  flex-wrap: wrap;
+  row-gap: 0;
+  background-repeat: no-repeat;
+  background-origin: border-box;
+  background-size: 100% calc(2 * var(--space-1) + 1.55em);
+}
+.channels li:has(> .threads).active {
+  background-color: transparent;
+  border-left-color: transparent;
+  background-image: linear-gradient(to right, var(--accent) 2px, var(--bg-soft) 2px);
+}
+@media (hover: hover) {
+  .channels li:has(> .threads):hover {
+    background-color: transparent;
+    background-image: linear-gradient(var(--bg-soft), var(--bg-soft));
+  }
+  .channels li:has(> .threads).active:hover {
+    background-image: linear-gradient(to right, var(--accent) 2px, var(--bg-soft) 2px);
+  }
 }
 .channels li.unread .label {
   color: var(--buffer-unread);
@@ -1368,7 +1415,7 @@ onBeforeUnmount(() => {
 .channels .row-actions {
   position: absolute;
   right: var(--space-2);
-  top: 50%;
+  top: calc(var(--space-1) + 0.775em);
   transform: translateY(-50%);
   padding: 0 var(--space-2);
   background: var(--bg-soft);
