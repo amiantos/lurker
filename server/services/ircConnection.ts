@@ -35,7 +35,7 @@ import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
 import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
-import { replyMsgidFromTags } from '../../shared/replies.js';
+import { REPLY_LINE_TYPES, replyMsgidFromTags } from '../../shared/replies.js';
 import { noteThreadReply } from '../db/threadFollows.js';
 import type { ReplyContext } from '../../shared/replies.js';
 import { evaluateIgnores } from '../../shared/ignoreMatch.js';
@@ -1251,7 +1251,7 @@ export class IrcConnection {
       const replyMsgid =
         typeof event.replyMsgid === 'string' &&
         event.replyMsgid &&
-        (event.type === 'message' || event.type === 'action' || event.type === 'notice')
+        REPLY_LINE_TYPES.includes(event.type)
           ? event.replyMsgid
           : undefined;
       let replyTo: ReplyContext | undefined;
