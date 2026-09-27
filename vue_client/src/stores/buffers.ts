@@ -1471,7 +1471,10 @@ export const useBuffersStore = defineStore('buffers', {
       // differently-cased) broadcast target, so badge suppression tracks the
       // buffer the user is actually sitting in. bufferKey() also yields the bare
       // sentinel for the app-scoped system buffer (networkId null).
-      const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
+      // Not while it's showing one of its threads: its own lines aren't on
+      // screen, and they're left unread (pushLive), so their count shows.
+      const key = bufferKey(buf.networkId, buf.target);
+      const isActive = networks.activeKey === key && threadViewBuffer() !== key;
       // Suppress the unread badge for the buffer the user is sitting in.
       // A read-state broadcast can briefly carry a non-zero unread for the
       // active buffer when an IRC event lands before the mark-read echo;

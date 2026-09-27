@@ -25,10 +25,11 @@
       loading thread…
     </div>
     <template v-else>
-      <template v-for="row in rows" :key="row.line?.id ?? 'root'">
+      <template v-for="(row, i) in rows" :key="row.line?.id ?? 'root'">
         <div
           class="t-line"
           :class="lineClass(row)"
+          :style="{ order: i * 2 }"
           :data-msg-id="row.line?.id ?? null"
           @click="onLineClick($event, row.line)"
         >
@@ -110,26 +111,35 @@
             </button>
           </div>
         </div>
-        <!-- The composer's slot, under the line being answered. -->
-        <div
-          v-if="composeInline && row.line && pending?.messageId === row.line.id"
-          class="t-line t-compose"
-        >
-          <span class="time"></span>
-          <div class="t-main">
-            <span
-              v-for="(on, i) in [...row.rails, ...(row.depth > 0 ? [!row.last] : [])]"
-              :key="i"
-              class="g"
-              :class="on ? 'rail' : 'blank'"
-              aria-hidden="true"
-            ></span>
-            <span class="g" :class="row.hasChildren ? 'tee' : 'elbow'" aria-hidden="true"></span>
-            <div :id="composeSlotId(row.line.id)" class="t-slot"></div>
-          </div>
-        </div>
       </template>
-      <div v-if="view.truncated" class="notice">
+      <!-- The composer's slot. ONE element for the life of the view, drawn under
+           the line being answered by grid order rather than by where it sits in
+           the DOM: the shell's Teleport targets it by id, and a Teleport resolves
+           a changed target while its parent patches — before this view has drawn
+           a new one — so a slot per line would be missing when it's looked up. -->
+      <div
+        v-show="composeRow"
+        class="t-line t-compose"
+        :style="{ order: composeRow ? composeRow.index * 2 + 1 : 0 }"
+      >
+        <span class="time"></span>
+        <div class="t-main">
+          <span
+            v-for="(on, k) in composeRow?.rails ?? []"
+            :key="k"
+            class="g"
+            :class="on ? 'rail' : 'blank'"
+            aria-hidden="true"
+          ></span>
+          <span
+            class="g"
+            :class="composeRow?.row.hasChildren ? 'tee' : 'elbow'"
+            aria-hidden="true"
+          ></span>
+          <div id="thread-compose" class="t-slot"></div>
+        </div>
+      </div>
+      <div v-if="view.truncated" class="notice" :style="{ order: rows.length * 2 }">
         this thread is longer than can be shown at once — its oldest replies are above
       </div>
     </template>
@@ -163,7 +173,6 @@ import { useRepliesStore } from '../stores/replies.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useViewport } from '../composables/useViewport.js';
 import { useThreadRoute } from '../composables/useThreadRoute.js';
-import { pushBuffer } from '../composables/useBufferRoute.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { useMessageActions } from '../composables/useMessageActions.js';
@@ -179,8 +188,9 @@ import { formatTimestamp } from '../utils/timestamp.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { RenderSegment } from '../utils/nickColor.js';
 import { isDccChatTarget } from '../../../shared/channels.js';
+import { REPLY_LINE_TYPES } from '../../../shared/replies.js';
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     // Desktop teleports the composer under the line being answered; mobile
     // keeps it at the bottom, over the keyboard.
@@ -239,7 +249,17 @@ watch(
   },
   { immediate: true },
 );
-onBeforeUnmount(() => threads.close());
+onBeforeUnmount(() => {
+  // Back to the channel's own lines: they've been arriving unread while the
+  // thread was up (buffers.pushLive), and returning to an already-active buffer
+  // activates nothing — so read them in here, as entering it would.
+  const v = threads.view;
+  const now = router.currentRoute.value;
+  threads.close();
+  if (v && now.name === 'buffer' && Number(now.params.id) === v.bufferId) {
+    buffers.activate(v.networkId, v.target);
+  }
+});
 
 // The buffer arrives over the socket after a cold deep link; open once it does.
 watch(
@@ -250,9 +270,15 @@ watch(
   },
 );
 
-// Read as it's shown: on load, and as replies arrive while it's open.
+// Read as it's shown: on load, as replies arrive while it's open — and when
+// the server's count for it moves, since a reply's `irc` frame lands before
+// the `threads-changed` that counts it.
 watch(
-  () => [view.value?.loading, view.value?.replies.length],
+  () => [
+    view.value?.loading,
+    view.value?.replies.length,
+    view.value && threads.unreadFor(view.value.bufferId, view.value.rootMsgid),
+  ],
   () => threads.markViewRead(),
 );
 
@@ -364,7 +390,7 @@ function replyable(m: ThreadMessage): boolean {
   return (
     !!m.msgid &&
     !m.e2e &&
-    (m.type === 'message' || m.type === 'action' || m.type === 'notice') &&
+    REPLY_LINE_TYPES.includes(m.type) &&
     !!view.value &&
     !isDccChatTarget(view.value.target)
   );
@@ -383,14 +409,22 @@ function startReply(m: ThreadMessage): void {
   if (m.nick && !m.self) addressNick(String(m.nick));
 }
 
-function composeSlotId(id: number): string {
-  return `thread-compose-${id}`;
-}
+// Where the composer's slot goes: after the line being answered, with that
+// line's rails carried down (plus its own, when it has later siblings).
+const composeRow = computed(() => {
+  if (!props.composeInline) return null;
+  const id = pending.value?.messageId;
+  if (id == null) return null;
+  const index = rows.value.findIndex((r) => r.line?.id === id);
+  if (index < 0) return null;
+  const row = rows.value[index];
+  return { index, row, rails: [...row.rails, ...(row.depth > 0 ? [!row.last] : [])] };
+});
 
 // ─── Actions ─────────────────────────────────────────────────────────────
 
 function eligible(m: ThreadMessage): boolean {
-  return m.type === 'message' || m.type === 'action' || m.type === 'notice';
+  return REPLY_LINE_TYPES.includes(m.type);
 }
 
 const actionContext: MessageContext = {
@@ -438,17 +472,13 @@ function onLineClick(e: MouseEvent, m: ThreadMessage | null): void {
   );
 }
 
-// The line where it sits in the channel: leave the thread, then the shared
-// jump pipeline scrolls to it (loading a slice around it if need be).
-async function viewInChannel(m: ThreadMessage): Promise<void> {
+// The line where it sits in the channel, through the shared jump pipeline —
+// which leaves the thread view for the channel's lines first.
+function viewInChannel(m: ThreadMessage): void {
   const v = view.value;
   if (!v) return;
-  pushBuffer(router, v.bufferId);
-  await nextTick();
   emitJumpIntent({ kind: 'jump', networkId: v.networkId, target: v.target, messageId: m.id });
 }
-
-defineExpose({ composeSlotId });
 </script>
 
 <style scoped>

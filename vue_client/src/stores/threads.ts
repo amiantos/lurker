@@ -7,6 +7,8 @@ import { bufferKey, useBuffersStore } from './buffers.js';
 import type { BufferMessage } from './buffers.js';
 import type { PendingReply } from './replies.js';
 import type { ReplyContext } from '../../../shared/replies.js';
+import { REPLY_LINE_TYPES } from '../../../shared/replies.js';
+import { isDccChatTarget } from '../../../shared/channels.js';
 import { setThreadViewBuffer } from '../lib/threadViewing.js';
 
 // Reply threads (IRCv3 replies, #993): a thread is the line that started it
@@ -74,6 +76,12 @@ export const useThreadsStore = defineStore('threads', {
       (state) =>
       (bufferId: number, rootMsgid: string): boolean =>
         state.followed.some((t) => t.bufferId === bufferId && t.rootMsgid === rootMsgid),
+    // The server's unread count for a followed thread; null when not followed.
+    unreadFor:
+      (state) =>
+      (bufferId: number, rootMsgid: string): number | null =>
+        state.followed.find((t) => t.bufferId === bufferId && t.rootMsgid === rootMsgid)?.unread ??
+        null,
     // The buffer key whose thread is on screen, or null.
     viewKey: (state): string | null =>
       state.view ? bufferKey(state.view.networkId, state.view.target) : null,
@@ -146,10 +154,11 @@ export const useThreadsStore = defineStore('threads', {
         v.replies.push(event);
         if (v.root) v.root.threadReplies = (v.root.threadReplies ?? 0) + 1;
       }
+      // The line carrying that msgid is the root by definition — even one that
+      // is itself a reply stored before threads were tracked, which the server
+      // counts the same way (replyRootFor roots at it).
       const buf = useBuffersStore().byId(event.bufferId);
-      const line = buf?.messages.find((m) => m.msgid === root && !(m as ThreadMessage).replyTo) as
-        | ThreadMessage
-        | undefined;
+      const line = buf?.messages.find((m) => m.msgid === root) as ThreadMessage | undefined;
       if (line) line.threadReplies = (line.threadReplies ?? 0) + 1;
     },
 
@@ -184,9 +193,12 @@ export const useThreadsStore = defineStore('threads', {
     // do. As a PendingReply so the composer's send path takes it as-is.
     defaultReply(key: string | null | undefined): PendingReply | null {
       const v = this.view;
-      if (!key || !v || this.viewKey !== key) return null;
+      if (!key || !v || this.viewKey !== key || isDccChatTarget(v.target)) return null;
       const line = v.root ?? v.replies[0];
-      if (!line || !line.msgid) return null;
+      // The same bar a line's own `reply` has to clear (ThreadView.replyable):
+      // never an encrypted line — the server sends no reply tags there, and a
+      // plaintext line naming one would say what it answers.
+      if (!line || !line.msgid || line.e2e || !REPLY_LINE_TYPES.includes(line.type)) return null;
       return {
         messageId: line.id,
         nick: String(line.nick ?? ''),

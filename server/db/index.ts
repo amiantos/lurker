@@ -1342,7 +1342,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
 // the parent's msgid). The line that started the thread stores nothing; it's
 // found by its own msgid. So a whole thread is its root row (idx_messages_msgid)
 // plus every row naming it here, and reply_msgid on each links the tree. Kept
-// for the thread view (db/threads.ts) and retention, which takes a thread whole.
+// for the thread view (listThread in db/messages.ts, db/threadFollows.ts).
 ensureColumn('messages', 'reply_root_msgid', 'TEXT');
 // A thread's replies in one range: (buffer, root). Partial — replies only.
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root

@@ -256,7 +256,7 @@
     <StatusBar />
     <!-- One composer. In a reply thread it moves under the line being answered
          (ThreadView renders the slot); everywhere else it sits here. -->
-    <Teleport v-if="hasInput" defer :to="threadComposeTo ?? 'body'" :disabled="!threadComposeTo">
+    <Teleport v-if="hasInput" defer :to="threadComposeTo" :disabled="!threadComposeOn">
       <MessageInput ref="messageInputRef" />
     </Teleport>
 
@@ -457,19 +457,22 @@ const threads = useThreadsStore();
 const replies = useRepliesStore();
 
 // Where the composer goes: under the thread line being answered, when there is
-// one on screen. The slot is ThreadView's (composeSlotId).
-const threadComposeTo = computed((): string | null => {
-  if (!threadRoute.value) return null;
+// one on screen. ThreadView keeps ONE slot (#thread-compose) for its whole life
+// and moves it with grid order, so the target the Teleport resolves never
+// changes while the view is up — it only switches on and off. ThreadView comes
+// before the Teleport in the template, so on entering a thread the slot is
+// mounted by the time the Teleport looks for it.
+const threadComposeTo = computed(() => (threadRoute.value ? '#thread-compose' : 'body'));
+const threadComposeOn = computed((): boolean => {
+  if (!threadRoute.value) return false;
   const pending = replies.forKey(networks.activeKey);
   const v = threads.view;
-  if (!pending || !v) return null;
-  const held =
-    v.root?.id === pending.messageId || v.replies.some((r) => r.id === pending.messageId);
-  return held ? `#thread-compose-${pending.messageId}` : null;
+  if (!pending || !v) return false;
+  return v.root?.id === pending.messageId || v.replies.some((r) => r.id === pending.messageId);
 });
 
 // Moving a focused element in the DOM drops its focus; give it back.
-watch(threadComposeTo, async () => {
+watch(threadComposeOn, async () => {
   await nextTick();
   messageInputRef.value?.focus();
 });

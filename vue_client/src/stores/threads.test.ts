@@ -133,6 +133,32 @@ describe('threads store', () => {
     expect(threads.defaultReply('1::#chan')).toMatchObject({ messageId: 2, nick: 'bob' });
   });
 
+  it('never sends a plain line tagged as a reply to an encrypted first line', () => {
+    const threads = useThreadsStore();
+    threads.open(9, 'r');
+    const token = sent().at(-1)!.token as number;
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'r',
+      token,
+      root: msg(1, { msgid: 'r', e2e: true }),
+      replies: [],
+    });
+    expect(threads.defaultReply('1::#chan')).toBeNull();
+  });
+
+  it('counts a reply on its first line even when that line is itself an older reply', () => {
+    const threads = useThreadsStore();
+    const buffers = useBuffersStore();
+    // Stored before threads were tracked: a reply with no root of its own, so
+    // the server roots the new reply at it.
+    buffers.byId(9)!.messages = [
+      msg(1, { msgid: 'old', replyTo: { msgid: 'gone', parent: null } }),
+    ] as never;
+    threads.applyLive(msg(2, { replyTo: { msgid: 'old', root: 'old', parent: null } }));
+    expect((buffers.byId(9)!.messages[0] as ThreadMessage).threadReplies).toBe(1);
+  });
+
   it('moves the read pointer only for a followed thread with something unread', () => {
     const threads = useThreadsStore();
     threads.open(9, 'r');

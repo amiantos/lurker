@@ -9,7 +9,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
-import { createRouter, createMemoryHistory, type Router } from 'vue-router';
+import { createRouter, createMemoryHistory, useRoute, type Router } from 'vue-router';
+import { defineComponent, h } from 'vue';
 import ThreadView from './ThreadView.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -141,15 +142,30 @@ describe('ThreadView', () => {
       line(2, 'bob', 'answer', 'm1'),
       line(3, 'carol', 'more', 'm1'),
     ]);
-    expect(w.find('.t-compose').exists()).toBe(false);
+    expect(w.find('.t-compose').isVisible()).toBe(false);
 
     await w.find('[data-msg-id="2"] .t-reply').trigger('click');
     expect(useRepliesStore().forKey('1::#chan')).toMatchObject({ messageId: 2, nick: 'bob' });
     const slot = w.find('.t-compose');
-    expect(slot.find('#thread-compose-2').exists()).toBe(true);
-    // Right under bob's line, before carol's.
-    const order = w.findAll('.t-line').map((el) => el.attributes('data-msg-id') ?? 'slot');
-    expect(order).toEqual(['1', '2', 'slot', '3']);
+    expect(slot.isVisible()).toBe(true);
+    expect(slot.find('#thread-compose').exists()).toBe(true);
+    // Drawn right under bob's line, before carol's — by grid order: the slot
+    // itself stays one element, wherever it's drawn.
+    const drawnOrder = w
+      .findAll('.t-line')
+      .map((el) => ({
+        id: el.attributes('data-msg-id') ?? 'slot',
+        order: Number((el.element as HTMLElement).style.order),
+      }))
+      .sort((a, b) => a.order - b.order)
+      .map((x) => x.id);
+    expect(drawnOrder).toEqual(['1', '2', 'slot', '3']);
+
+    // Another line: the same slot moves.
+    const el = slot.element;
+    await w.find('[data-msg-id="3"] .t-reply').trigger('click');
+    expect(w.find('.t-compose').element).toBe(el);
+    expect(Number((el as HTMLElement).style.order)).toBe(5);
   });
 
   it('keeps the composer at the bottom where it can’t move (mobile)', async () => {
@@ -157,7 +173,68 @@ describe('ThreadView', () => {
     await answer(line(1, 'alice', 'question'), [line(2, 'bob', 'answer', 'm1')]);
     await w.find('[data-msg-id="2"] .t-reply').trigger('click');
     expect(useRepliesStore().forKey('1::#chan')?.messageId).toBe(2);
-    expect(w.find('.t-compose').exists()).toBe(false);
+    expect(w.find('.t-compose').isVisible()).toBe(false);
+  });
+
+  it('reads a reply the server counts after it lands', async () => {
+    await mountAt('/buffer/9/thread/m1');
+    await answer(line(1, 'alice', 'question'), [line(2, 'bob', 'answer', 'm1')]);
+    const followed = {
+      networkId: 1,
+      bufferId: 9,
+      target: '#chan',
+      rootMsgid: 'm1',
+      root: null,
+      highlighted: false,
+      lastReplyId: 3,
+      lastReplyTime: '',
+    };
+    useThreadsStore().applyFollowed([{ ...followed, unread: 0 }]);
+    // The reply's `irc` frame first — nothing is unread yet, so nothing to read…
+    useThreadsStore().applyLive(line(3, 'carol', 'late', 'm1'));
+    await flushPromises();
+    const reads = () =>
+      vi
+        .mocked(socketSend)
+        .mock.calls.filter((c) => (c[0] as { type: string }).type === 'thread-read');
+    expect(reads()).toHaveLength(0);
+    // …then the `threads-changed` that counts it.
+    useThreadsStore().applyFollowed([{ ...followed, unread: 1 }]);
+    await flushPromises();
+    expect(reads().at(-1)?.[0]).toMatchObject({ type: 'thread-read', messageId: 3 });
+  });
+
+  it('back on the channel’s lines, reads what arrived while the thread was up', async () => {
+    const activate = vi.spyOn(useBuffersStore(), 'activate');
+    // As the shell does it: the route takes the view down.
+    const Shell = defineComponent({
+      setup() {
+        const route = useRoute();
+        return () => (route.name === 'buffer-thread' ? h(ThreadView) : null);
+      },
+    });
+    router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: '/buffer/:id', name: 'buffer', component: Shell },
+        { path: '/buffer/:id/thread/:root', name: 'buffer-thread', component: Shell },
+        { path: '/buffer/:id/members', name: 'buffer-members', component: Shell },
+      ],
+    });
+    await router.push('/buffer/9/thread/m1');
+    wrapper = mount(Shell, { global: { plugins: [router] }, attachTo: document.body });
+    await flushPromises();
+
+    // To somewhere else first: nothing read.
+    await router.push('/buffer/9/members');
+    await flushPromises();
+    expect(activate).not.toHaveBeenCalled();
+
+    await router.push('/buffer/9/thread/m1');
+    await flushPromises();
+    await router.push('/buffer/9');
+    await flushPromises();
+    expect(activate).toHaveBeenCalledWith(1, '#chan');
   });
 
   it('closes the view when it goes', async () => {

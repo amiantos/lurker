@@ -69,7 +69,7 @@
           class="icon back"
           :title="backTitle"
           :aria-label="backTitle"
-          @click="threadRoute ? goBufferFromThread() : goList()"
+          @click="threadRoute ? goBufferFromMembers() : goList()"
         >
           <i class="fa-solid fa-arrow-left"></i>
           <span v-if="hlChip.show.value" class="hl-chip" aria-hidden="true">{{
@@ -540,12 +540,8 @@ function goBufferFromMembers() {
   backOrPush(router, route.params.id ? `/buffer/${route.params.id}` : '/');
 }
 
-// A thread's back is its channel — or, opened from the channel, the history
-// entry that is (same fallback reasoning as the members screen).
+// A thread's back is its channel, the way the members screen's is.
 const threadRoute = useThreadRoute();
-function goBufferFromThread() {
-  backOrPush(router, route.params.id ? `/buffer/${route.params.id}` : '/');
-}
 
 function goMembers() {
   // The ACTIVE buffer's id, not route.params.id: the button belongs to the

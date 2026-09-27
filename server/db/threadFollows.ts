@@ -140,11 +140,19 @@ export function markThreadRead(
   return readStmt.run(messageId, userId, bufferId, rootMsgid, messageId).changes > 0;
 }
 
-const openFollowsStmt = db.prepare(`
+// Every follow, closed ones included: a closed follow is only ever cleared
+// here (see listFollowedThreads). Whether the buffer is open is the client's
+// to judge — it shows threads under open channel rows only, and a buffer that
+// reopens has its threads there without a new list.
+const followsStmt = db.prepare(`
   SELECT f.buffer_id AS bufferId, f.root_msgid AS rootMsgid, f.read_id AS readId,
-         b.network_id AS networkId, b.target AS target
+         f.closed AS closed, b.network_id AS networkId, b.target AS target
     FROM thread_follows f JOIN buffers b ON b.id = f.buffer_id
-   WHERE f.user_id = ? AND f.closed = 0 AND b.state != 'closed'
+   WHERE f.user_id = ?
+`);
+
+const forgetStmt = db.prepare(`
+  DELETE FROM thread_follows WHERE user_id = ? AND buffer_id = ? AND root_msgid = ?
 `);
 
 // The thread's newest reply. INDEXED BY for the reason listThread gives.
@@ -170,17 +178,23 @@ const rootExcerptStmt = db.prepare(`
 `);
 
 /**
- * The user's followed threads, for the sidebar: every open follow in an open
- * buffer that still has a reply we hold, minus those quiet for
- * THREAD_QUIET_DAYS with nothing unread. Newest activity first. One seek per
- * follow on the reply index; the list is bounded by what the user follows.
+ * The user's followed threads, for the sidebar: every open follow that still
+ * has a reply we hold, minus those quiet for THREAD_QUIET_DAYS with nothing
+ * unread. Newest activity first. A few seeks per follow on the reply index.
+ *
+ * It also forgets what can't come back to the list: a follow whose replies
+ * retention took, and one — open or closed — quiet past the same horizon with
+ * nothing unread. Posting or being highlighted there again follows it anew, so
+ * nothing is lost but the row; keeping them would make this walk, run on every
+ * reply in a followed thread, grow with everything the user ever followed.
  */
 export function listFollowedThreads(userId: number, now = Date.now()): FollowedThread[] {
   const quietBefore = new Date(now - THREAD_QUIET_DAYS * 86_400_000).toISOString();
-  const follows = openFollowsStmt.all(userId) as Array<{
+  const follows = followsStmt.all(userId) as Array<{
     bufferId: number;
     rootMsgid: string;
     readId: number;
+    closed: number;
     networkId: number;
     target: string;
   }>;
@@ -189,12 +203,23 @@ export function listFollowedThreads(userId: number, now = Date.now()): FollowedT
     const last = lastReplyStmt.get(f.bufferId, f.rootMsgid) as
       | { id: number; time: string }
       | undefined;
-    if (!last) continue; // retention took the thread
+    if (!last) {
+      forgetStmt.run(userId, f.bufferId, f.rootMsgid); // retention took the thread
+      continue;
+    }
+    const quiet = last.time < quietBefore;
+    if (f.closed) {
+      if (quiet) forgetStmt.run(userId, f.bufferId, f.rootMsgid);
+      continue;
+    }
     const unread = unreadStmt.get(f.bufferId, f.rootMsgid, f.readId) as {
       n: number;
       hl: number | null;
     };
-    if (unread.n === 0 && last.time < quietBefore) continue;
+    if (unread.n === 0 && quiet) {
+      forgetStmt.run(userId, f.bufferId, f.rootMsgid);
+      continue;
+    }
     const root = rootExcerptStmt.get(f.networkId, f.rootMsgid, f.bufferId) as
       | { id: number; nick: string | null; type: string; text: string | null }
       | undefined;
