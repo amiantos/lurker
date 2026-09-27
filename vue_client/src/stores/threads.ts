@@ -10,6 +10,9 @@ import type { ReplyContext } from '../../../shared/replies.js';
 import { REPLY_LINE_TYPES } from '../../../shared/replies.js';
 import { isDccChatTarget } from '../../../shared/channels.js';
 import { setThreadViewBuffer } from '../lib/threadViewing.js';
+import { useNetworksStore } from './networks.js';
+import { useIgnoresStore } from './ignores.js';
+import { threadTitle } from '../utils/replyText.js';
 
 // Reply threads (IRCv3 replies, #993): a thread is the line that started it
 // plus every reply naming it as root (`replyTo.root`), in one buffer.
@@ -28,7 +31,9 @@ export interface FollowedThread {
   bufferId: number;
   target: string;
   rootMsgid: string;
-  root: { id: number; nick: string; type: string; text: string } | null;
+  // The user's own name for it (thread-rename); null names it from its root.
+  name: string | null;
+  root: { id: number; nick: string; type: string; text: string; userhost?: string | null } | null;
   unread: number;
   highlighted: boolean;
   lastReplyId: number;
@@ -82,6 +87,44 @@ export const useThreadsStore = defineStore('threads', {
       (bufferId: number, rootMsgid: string): number | null =>
         state.followed.find((t) => t.bufferId === bufferId && t.rootMsgid === rootMsgid)?.unread ??
         null,
+    // What to call a thread — the sidebar row, the thread view's header: the
+    // user's name for it, else its first line without the `nick: ` it opens
+    // with (threadTitle), else "thread" when that line is gone or from
+    // someone ignored.
+    title(state) {
+      return (bufferId: number, rootMsgid: string): string => {
+        const followed = state.followed.find(
+          (t) => t.bufferId === bufferId && t.rootMsgid === rootMsgid,
+        );
+        if (followed?.name) return followed.name;
+        const v = state.view;
+        const inView = v && v.bufferId === bufferId && v.rootMsgid === rootMsgid ? v : null;
+        const root = followed?.root ?? inView?.root ?? null;
+        const buf = useBuffersStore().byId(bufferId);
+        if (!root || !buf || buf.networkId == null) return 'thread';
+        const networkId = Number(buf.networkId);
+        const nick = String(root.nick ?? '');
+        const self = useNetworksStore().states[networkId]?.nick ?? '';
+        const ignored =
+          (root as { fromIgnored?: boolean }).fromIgnored ||
+          (nick.toLowerCase() !== self.toLowerCase() &&
+            useIgnoresStore().evaluate(networkId, {
+              nick,
+              userhost: (root.userhost as string | null | undefined) ?? null,
+              target: buf.target,
+              text: String(root.text ?? ''),
+              type: String(root.type),
+              isDm: buf.kind === 'dm',
+            }).hide);
+        if (ignored) return 'thread';
+        const known = new Set<string>([self.toLowerCase(), buf.target.toLowerCase()]);
+        for (const mem of buf.members || []) {
+          const n = typeof mem === 'string' ? mem : mem.nick;
+          if (n) known.add(n.toLowerCase());
+        }
+        return threadTitle(String(root.text ?? ''), (w) => known.has(w.toLowerCase())) || 'thread';
+      };
+    },
     // The buffer key whose thread is on screen, or null.
     viewKey: (state): string | null =>
       state.view ? bufferKey(state.view.networkId, state.view.target) : null,
@@ -152,8 +195,10 @@ export const useThreadsStore = defineStore('threads', {
       if (inView) {
         if (v.replies.some((r) => r.id === event.id)) return; // a replay
         v.replies.push(event);
-        if (v.root) v.root.threadReplies = (v.root.threadReplies ?? 0) + 1;
       }
+      // Someone ignored doesn't count (the server's count leaves them out).
+      if (event.fromIgnored) return;
+      if (inView && v.root) v.root.threadReplies = (v.root.threadReplies ?? 0) + 1;
       // The line carrying that msgid is the root by definition — even one that
       // is itself a reply stored before threads were tracked, which the server
       // counts the same way (replyRootFor roots at it).
@@ -178,6 +223,13 @@ export const useThreadsStore = defineStore('threads', {
         rootMsgid: v.rootMsgid,
         messageId: last.id,
       });
+    },
+
+    // The user's own name for a thread; blank names it from its first line again.
+    rename(bufferId: number, rootMsgid: string, name: string) {
+      const t = this.followed.find((x) => x.bufferId === bufferId && x.rootMsgid === rootMsgid);
+      if (t) t.name = name.trim() || null;
+      socketSend({ type: 'thread-rename', bufferId, rootMsgid, name });
     },
 
     // × on a sidebar thread: off the list until we post or are highlighted there.

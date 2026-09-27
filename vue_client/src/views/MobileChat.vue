@@ -85,7 +85,7 @@
              pre-filtered to this buffer (in:<target> on:<network>), members
              toggles the roster, the rest folds into the kebab. The *global*
              search / highlights / saved / uploads live on the list top bar. -->
-        <span v-if="threadRoute" class="title">{{ bufferLabel }} ╰─ thread</span>
+        <span v-if="threadRoute" class="title">{{ bufferLabel }} ╰─ {{ threadTitle }}</span>
         <span v-else-if="isServerBuffer || isVirtual" class="title">{{ bufferLabel }}</span>
         <span class="spacer"></span>
         <button
@@ -254,6 +254,7 @@ import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import ThreadView from '../components/ThreadView.vue';
 import { useThreadRoute } from '../composables/useThreadRoute.js';
+import { useThreadsStore } from '../stores/threads.js';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import StatusBar from '../components/StatusBar.vue';
@@ -542,6 +543,12 @@ function goBufferFromMembers() {
 
 // A thread's back is its channel, the way the members screen's is.
 const threadRoute = useThreadRoute();
+const threadsStore = useThreadsStore();
+const threadTitle = computed(() =>
+  threadRoute.value
+    ? threadsStore.title(threadRoute.value.bufferId, threadRoute.value.rootMsgid)
+    : '',
+);
 
 function goMembers() {
   // The ACTIVE buffer's id, not route.params.id: the button belongs to the

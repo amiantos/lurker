@@ -325,7 +325,10 @@ describe('threads', () => {
       expect(thread.replies.map((m) => m.text)).toEqual(['answer one', 'answer two']);
       expect(thread.replies[1].replyTo?.parent?.text).toBe('answer one');
       expect(thread.truncated).toBe(false);
-      expect(listThread(bufferId, top, 1)).toMatchObject({ truncated: true });
+      // Past the limit, the newest replies ship: what's being said now.
+      const cut = listThread(bufferId, top, 1);
+      expect(cut.truncated).toBe(true);
+      expect(cut.replies.map((m) => m.text)).toEqual(['answer two']);
 
       db.prepare('DELETE FROM messages WHERE id = ?').run(thread.root!.id);
       const orphaned = listThread(bufferId, top);
@@ -424,6 +427,8 @@ describe('threads', () => {
       const mine = await weSay(rig, '#th7', 'honest question');
       await peerSays(rig, 'troll', '#th7', 'thr7: bait', [`+draft/reply=${mine.msgid}`]);
       expect(followed(rig, '#th7')).toEqual([]);
+      // Nor bumps the count on our line.
+      expect(rowByText(rig, '#th7', 'honest question')).not.toHaveProperty('threadReplies');
     } finally {
       rig.conn.dispose();
     }

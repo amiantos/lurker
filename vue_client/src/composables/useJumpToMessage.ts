@@ -5,6 +5,7 @@ import type { Ref } from 'vue';
 import { watch, nextTick } from 'vue';
 import { useRouter, type Router } from 'vue-router';
 import { useBuffersStore } from '../stores/buffers.js';
+import { pushBuffer } from './useBufferRoute.js';
 import { useToastsStore } from '../stores/toasts.js';
 
 // Drive MessageList's pendingScrollId watcher. Arming the same id twice in a row
@@ -71,9 +72,8 @@ export function useJumpToMessage({ pendingScrollId, afterActivate }: JumpToMessa
     // to the lines first — and jump once MessageList is there to scroll.
     const current = router?.currentRoute.value;
     if (router && current?.name === 'buffer-thread') {
-      const id = buffers.findByTarget(networkId, target)?.id ?? current.params.id;
-      void router
-        .push(`/buffer/${String(id)}`)
+      const id = buffers.findByTarget(networkId, target)?.id ?? Number(current.params.id);
+      void pushBuffer(router, id)
         .then(() => nextTick())
         .then(() => {
           if (router.currentRoute.value.name !== 'buffer-thread') jumpToMessage(args);

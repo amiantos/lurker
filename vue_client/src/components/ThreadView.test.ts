@@ -17,6 +17,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useThreadsStore } from '../stores/threads.js';
 import type { ThreadMessage } from '../stores/threads.js';
 import { useRepliesStore } from '../stores/replies.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { socketSend } from '../composables/useSocket.js';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -44,7 +45,7 @@ function line(id: number, nick: string, text: string, parent?: string): ThreadMe
   } as ThreadMessage;
 }
 
-async function mountAt(path: string, props: Record<string, unknown> = {}) {
+async function mountAt(path: string) {
   router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -57,7 +58,7 @@ async function mountAt(path: string, props: Record<string, unknown> = {}) {
     ],
   });
   await router.push(path);
-  wrapper = mount(ThreadView, { props, global: { plugins: [router] }, attachTo: document.body });
+  wrapper = mount(ThreadView, { global: { plugins: [router] }, attachTo: document.body });
   await flushPromises();
   return wrapper;
 }
@@ -136,44 +137,30 @@ describe('ThreadView', () => {
     expect(drawn(w)).toEqual(['original message unavailable', '└─ <bob> still here']);
   });
 
-  it('`reply` starts the reply and opens the composer’s slot under that line', async () => {
-    const w = await mountAt('/buffer/9/thread/m1', { composeInline: true });
+  it('Reply from the hover bar picks the line and marks it; the composer stays put', async () => {
+    useSettingsStore().values = { 'look.message.hover_actions': true } as never;
+    const w = await mountAt('/buffer/9/thread/m1');
     await answer(line(1, 'alice', 'question'), [
       line(2, 'bob', 'answer', 'm1'),
       line(3, 'carol', 'more', 'm1'),
     ]);
-    expect(w.find('.t-compose').isVisible()).toBe(false);
+    const bar = w.find('[data-msg-id="2"] .row-actions');
+    expect(bar.findAll('.row-action').map((b) => b.attributes('aria-label'))).toContain(
+      'Reply to bob',
+    );
+    await bar.find('[aria-label="Reply to bob"]').trigger('click');
 
-    await w.find('[data-msg-id="2"] .t-reply').trigger('click');
     expect(useRepliesStore().forKey('1::#chan')).toMatchObject({ messageId: 2, nick: 'bob' });
-    const slot = w.find('.t-compose');
-    expect(slot.isVisible()).toBe(true);
-    expect(slot.find('#thread-compose').exists()).toBe(true);
-    // Drawn right under bob's line, before carol's — by grid order: the slot
-    // itself stays one element, wherever it's drawn.
-    const drawnOrder = w
-      .findAll('.t-line')
-      .map((el) => ({
-        id: el.attributes('data-msg-id') ?? 'slot',
-        order: Number((el.element as HTMLElement).style.order),
-      }))
-      .sort((a, b) => a.order - b.order)
-      .map((x) => x.id);
-    expect(drawnOrder).toEqual(['1', '2', 'slot', '3']);
-
-    // Another line: the same slot moves.
-    const el = slot.element;
-    await w.find('[data-msg-id="3"] .t-reply').trigger('click');
-    expect(w.find('.t-compose').element).toBe(el);
-    expect(Number((el as HTMLElement).style.order)).toBe(5);
+    expect(w.find('[data-msg-id="2"]').classes()).toContain('replying');
+    expect(w.find('[data-msg-id="3"]').classes()).not.toContain('replying');
+    // No composer of its own, and nothing moved into the view.
+    expect(w.find('textarea').exists()).toBe(false);
   });
 
-  it('keeps the composer at the bottom where it can’t move (mobile)', async () => {
+  it('puts a space between the nick and what they said', async () => {
     const w = await mountAt('/buffer/9/thread/m1');
-    await answer(line(1, 'alice', 'question'), [line(2, 'bob', 'answer', 'm1')]);
-    await w.find('[data-msg-id="2"] .t-reply').trigger('click');
-    expect(useRepliesStore().forKey('1::#chan')?.messageId).toBe(2);
-    expect(w.find('.t-compose').isVisible()).toBe(false);
+    await answer(line(1, 'alice', 'question'), []);
+    expect(w.find('[data-msg-id="1"] .t-body').text()).toMatch(/^<alice> question/);
   });
 
   it('reads a reply the server counts after it lands', async () => {
@@ -184,6 +171,7 @@ describe('ThreadView', () => {
       bufferId: 9,
       target: '#chan',
       rootMsgid: 'm1',
+      name: null,
       root: null,
       highlighted: false,
       lastReplyId: 3,

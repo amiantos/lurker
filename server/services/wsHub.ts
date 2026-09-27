@@ -49,7 +49,12 @@ import {
   typeCountsForUnread,
   listThread,
 } from '../db/messages.js';
-import { listFollowedThreads, markThreadRead, closeThread } from '../db/threadFollows.js';
+import {
+  listFollowedThreads,
+  markThreadRead,
+  closeThread,
+  renameThread,
+} from '../db/threadFollows.js';
 import {
   listReadStateForUser,
   getReadState,
@@ -3762,6 +3767,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         if (markThreadRead(userId, addr.bufferId, msg.rootMsgid, messageId)) {
           fanOut(userId, threadsChangedFrame(userId));
         }
+        break;
+      }
+      case 'thread-rename': {
+        // The user's own name for a thread (blank: back to its first line).
+        const addr = verbBuffer(userId, msg);
+        if (!addr || typeof msg.rootMsgid !== 'string' || typeof msg.name !== 'string') break;
+        renameThread(userId, addr.bufferId, msg.rootMsgid, msg.name);
+        fanOut(userId, threadsChangedFrame(userId));
         break;
       }
       case 'thread-close': {

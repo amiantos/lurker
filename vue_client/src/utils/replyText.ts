@@ -37,3 +37,15 @@ export function stripReplyAddress(text: string, nick: string): string {
   const stripped = text.replace(re, '');
   return stripped || text;
 }
+
+// A thread's name when the user hasn't given it one: its first line as one line
+// of plain text, without the `nick: ` it may open with when that names someone
+// here (`isNick`) — "amiantos: i do too" names the thread "i do too". Only a
+// word followed by punctuation counts, as for stripReplyAddress; never strips
+// to nothing.
+export function threadTitle(text: string, isNick: (word: string) => boolean): string {
+  const plain = replyExcerpt(text);
+  const m = new RegExp(`^(\\S+?)${NOT_NICK_CHAR}+\\s+`, 'u').exec(plain);
+  if (!m || !isNick(m[1])) return plain;
+  return plain.slice(m[0].length) || plain;
+}

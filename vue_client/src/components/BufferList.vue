@@ -259,10 +259,7 @@
                 >
                   <i class="fa-solid fa-ellipsis-vertical"></i>
                 </button>
-                <ThreadRows
-                  v-if="buf.kind === 'channel' && threads.forBuffer(buf.id).length"
-                  :threads="threads.forBuffer(buf.id)"
-                />
+                <ThreadRows v-if="hasThreads(buf)" :threads="threads.forBuffer(buf.id)" />
               </li>
             </template>
           </draggable>
@@ -310,10 +307,7 @@
               >
                 <i class="fa-solid fa-ellipsis-vertical"></i>
               </button>
-              <ThreadRows
-                v-if="buf.kind === 'channel' && threads.forBuffer(buf.id).length"
-                :threads="threads.forBuffer(buf.id)"
-              />
+              <ThreadRows v-if="hasThreads(buf)" :threads="threads.forBuffer(buf.id)" />
             </li>
           </ul>
         </div>
@@ -753,6 +747,11 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
     'peer-away': isPeerAway(buf),
     'peer-offline': isPeerOffline(buf),
   };
+}
+
+// Channels and DMs can hold reply threads; the server console can't.
+function hasThreads(buf: Buffer): boolean {
+  return (buf.kind === 'channel' || buf.kind === 'dm') && threads.forBuffer(buf.id).length > 0;
 }
 
 function select(networkId: number, target: string): void {

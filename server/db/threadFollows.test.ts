@@ -87,12 +87,41 @@ describe('listFollowedThreads', () => {
     expect(rowCount(quiet.bufferId)).toBe(0);
   });
 
+  it('keeps the row of a thread the user named, though it’s quiet and read', () => {
+    const t = thread(10);
+    tf.renameThread(userId, t.bufferId, t.root, 'the plan');
+    tf.markThreadRead(userId, t.bufferId, t.root, t.replyId);
+    expect(listed()).not.toContain(t.root); // quiet: off the list…
+    expect(rowCount(t.bufferId)).toBe(1); // …but its name kept for when it's back
+  });
+
   it('forgets a thread retention took', () => {
     const t = thread(1);
     tf.followThread(userId, t.bufferId, t.root, 0);
     db.prepare(`DELETE FROM messages WHERE buffer_id = ?`).run(t.bufferId);
     expect(listed()).not.toContain(t.root);
     expect(rowCount(t.bufferId)).toBe(0);
+  });
+
+  it('never quotes a first line from someone ignored when it arrived', () => {
+    const target = `#t${seq++}`;
+    const time = new Date(NOW - DAY).toISOString();
+    const put = (extra: Record<string, unknown>) =>
+      insertMessage({
+        networkId,
+        target,
+        time,
+        type: 'message',
+        nick: 'troll',
+        text: 'bait',
+        ...extra,
+      });
+    const { bufferId } = put({ msgid: 'ign-root', fromIgnored: true });
+    put({ nick: 'me', self: true, replyMsgid: 'ign-root', replyRootMsgid: 'ign-root' });
+    tf.followThread(userId, bufferId, 'ign-root', 0);
+    expect(
+      tf.listFollowedThreads(userId, NOW).find((t) => t.rootMsgid === 'ign-root')?.root,
+    ).toBeNull();
   });
 
   it('lists a thread in a closed buffer: the client decides what to show', () => {

@@ -121,7 +121,7 @@
           >
             {{ bufferLabel }}
           </button>
-          <span class="thread-crumb">╰─ thread</span>
+          <span class="thread-crumb">╰─ {{ threadTitle }}</span>
         </template>
         <span v-else-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
         <template v-if="active && topic && !threadRoute">
@@ -250,15 +250,11 @@
     </header>
     <div class="topic-divider"></div>
 
-    <ThreadView v-if="threadRoute" compose-inline />
+    <ThreadView v-if="threadRoute" />
     <MessageList v-else ref="messageListRef" :pending-scroll-id="pendingScrollId" />
     <MemberList v-if="showMembers && hasNicklist" />
     <StatusBar />
-    <!-- One composer. In a reply thread it moves under the line being answered
-         (ThreadView renders the slot); everywhere else it sits here. -->
-    <Teleport v-if="hasInput" defer :to="threadComposeTo" :disabled="!threadComposeOn">
-      <MessageInput ref="messageInputRef" />
-    </Teleport>
+    <MessageInput v-if="hasInput" ref="messageInputRef" />
 
     <NetworkForm
       v-if="networkEditor.isOpen"
@@ -351,7 +347,6 @@ import MessageList from '../components/MessageList.vue';
 import ThreadView from '../components/ThreadView.vue';
 import { useThreadRoute } from '../composables/useThreadRoute.js';
 import { useThreadsStore } from '../stores/threads.js';
-import { useRepliesStore } from '../stores/replies.js';
 import { pushBuffer } from '../composables/useBufferRoute.js';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
@@ -453,29 +448,13 @@ const messageInputRef = ref<{ focus: () => void } | null>(null);
 
 // ─── Reply threads (#993) ──────────────────────────────────────────────────
 const threadRoute = useThreadRoute();
-const threads = useThreadsStore();
-const replies = useRepliesStore();
 
-// Where the composer goes: under the thread line being answered, when there is
-// one on screen. ThreadView keeps ONE slot (#thread-compose) for its whole life
-// and moves it with grid order, so the target the Teleport resolves never
-// changes while the view is up — it only switches on and off. ThreadView comes
-// before the Teleport in the template, so on entering a thread the slot is
-// mounted by the time the Teleport looks for it.
-const threadComposeTo = computed(() => (threadRoute.value ? '#thread-compose' : 'body'));
-const threadComposeOn = computed((): boolean => {
-  if (!threadRoute.value) return false;
-  const pending = replies.forKey(networks.activeKey);
-  const v = threads.view;
-  if (!pending || !v) return false;
-  return v.root?.id === pending.messageId || v.replies.some((r) => r.id === pending.messageId);
-});
-
-// Moving a focused element in the DOM drops its focus; give it back.
-watch(threadComposeOn, async () => {
-  await nextTick();
-  messageInputRef.value?.focus();
-});
+const threadsStore = useThreadsStore();
+const threadTitle = computed(() =>
+  threadRoute.value
+    ? threadsStore.title(threadRoute.value.bufferId, threadRoute.value.rootMsgid)
+    : '',
+);
 
 function leaveThread(): void {
   const id = threadRoute.value?.bufferId;
@@ -952,6 +931,9 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .topic .thread-crumb {
   color: var(--fg-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .topic .buffer {
   color: var(--accent);

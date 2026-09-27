@@ -29,9 +29,11 @@ export interface FollowedThread {
   bufferId: number;
   target: string;
   rootMsgid: string;
+  // What the user called it; null to name it from its first line.
+  name: string | null;
   // The line that started it, excerpted like a reply's quote; null when we
-  // don't hold it.
-  root: Omit<ReplyParent, 'userhost' | 'self'> | null;
+  // don't hold it (or it's from someone ignored).
+  root: Omit<ReplyParent, 'self'> | null;
   // Replies from others the user hasn't seen in the thread view, and whether
   // any of them is a highlight.
   unread: number;
@@ -111,7 +113,30 @@ export function noteThreadReply(
   } else if (rootIsTheirsStmt.get(bufferId, rootMsgid, bufferId)) {
     if (followThreadIfAbsent(userId, bufferId, rootMsgid, readId)) return true;
   }
-  return !!openFollowStmt.get(userId, bufferId, rootMsgid);
+  // Our own post in a thread already listed changes no count: no new list.
+  return !reply.self && !!openFollowStmt.get(userId, bufferId, rootMsgid);
+}
+
+// The longest name a thread takes; the sidebar clips it to width anyway.
+export const THREAD_NAME_MAX = 100;
+
+// Naming follows the thread if it wasn't — renaming one is taking an
+// interest — and leaves open/closed as it was.
+const renameStmt = db.prepare(`
+  INSERT INTO thread_follows (user_id, buffer_id, root_msgid, name) VALUES (?, ?, ?, ?)
+  ON CONFLICT (user_id, buffer_id, root_msgid) DO UPDATE SET name = excluded.name
+`);
+
+/** Call a thread `name` in this user's list; blank clears it back to its
+ *  first line. Only the user sees it — nothing goes to the network. */
+export function renameThread(
+  userId: number,
+  bufferId: number,
+  rootMsgid: string,
+  name: string,
+): void {
+  const clean = name.replace(/\s+/g, ' ').trim().slice(0, THREAD_NAME_MAX);
+  renameStmt.run(userId, bufferId, rootMsgid, clean || null);
 }
 
 const closeStmt = db.prepare(`
@@ -146,7 +171,7 @@ export function markThreadRead(
 // reopens has its threads there without a new list.
 const followsStmt = db.prepare(`
   SELECT f.buffer_id AS bufferId, f.root_msgid AS rootMsgid, f.read_id AS readId,
-         f.closed AS closed, b.network_id AS networkId, b.target AS target
+         f.closed AS closed, f.name AS name, b.network_id AS networkId, b.target AS target
     FROM thread_follows f JOIN buffers b ON b.id = f.buffer_id
    WHERE f.user_id = ?
 `);
@@ -171,9 +196,13 @@ const unreadStmt = db.prepare(`
      AND m.self = 0 AND m.from_ignored = 0 AND m.type IN ${REPLY_LINE_TYPES_SQL}
 `);
 
+// Not from someone ignored when it arrived — the sidebar would put their words
+// back on screen (the same screen as REPLY_PARENT_WHERE's); the client checks
+// who's ignored since.
 const rootExcerptStmt = db.prepare(`
-  SELECT id, nick, type, substr(text, 1, ${REPLY_EXCERPT_MAX}) AS text FROM messages
+  SELECT id, nick, type, substr(text, 1, ${REPLY_EXCERPT_MAX}) AS text, userhost FROM messages
    WHERE network_id = ? AND msgid = ? AND +buffer_id = ? AND type IN ${REPLY_LINE_TYPES_SQL}
+     AND from_ignored = 0
    ORDER BY id DESC LIMIT 1
 `);
 
@@ -195,6 +224,7 @@ export function listFollowedThreads(userId: number, now = Date.now()): FollowedT
     rootMsgid: string;
     readId: number;
     closed: number;
+    name: string | null;
     networkId: number;
     target: string;
   }>;
@@ -207,9 +237,12 @@ export function listFollowedThreads(userId: number, now = Date.now()): FollowedT
       forgetStmt.run(userId, f.bufferId, f.rootMsgid); // retention took the thread
       continue;
     }
+    // A name the user gave it is kept with the row: a quiet thread drops off
+    // the list, but comes back as they called it.
     const quiet = last.time < quietBefore;
+    const forget = quiet && !f.name;
     if (f.closed) {
-      if (quiet) forgetStmt.run(userId, f.bufferId, f.rootMsgid);
+      if (forget) forgetStmt.run(userId, f.bufferId, f.rootMsgid);
       continue;
     }
     const unread = unreadStmt.get(f.bufferId, f.rootMsgid, f.readId) as {
@@ -217,19 +250,32 @@ export function listFollowedThreads(userId: number, now = Date.now()): FollowedT
       hl: number | null;
     };
     if (unread.n === 0 && quiet) {
-      forgetStmt.run(userId, f.bufferId, f.rootMsgid);
+      if (forget) forgetStmt.run(userId, f.bufferId, f.rootMsgid);
       continue;
     }
     const root = rootExcerptStmt.get(f.networkId, f.rootMsgid, f.bufferId) as
-      | { id: number; nick: string | null; type: string; text: string | null }
+      | {
+          id: number;
+          nick: string | null;
+          type: string;
+          text: string | null;
+          userhost: string | null;
+        }
       | undefined;
     out.push({
       networkId: f.networkId,
       bufferId: f.bufferId,
       target: f.target,
       rootMsgid: f.rootMsgid,
+      name: f.name,
       root: root
-        ? { id: root.id, nick: root.nick ?? '', type: root.type, text: root.text ?? '' }
+        ? {
+            id: root.id,
+            nick: root.nick ?? '',
+            type: root.type,
+            text: root.text ?? '',
+            userhost: root.userhost ?? null,
+          }
         : null,
       unread: unread.n,
       highlighted: unread.hl === 1,

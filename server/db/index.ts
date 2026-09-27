@@ -656,13 +656,15 @@ function migrate() {
     -- thread or is highlighted in it; the thread is its root msgid in the
     -- buffer (messages.reply_root_msgid), not a row id, because the root may
     -- be a line we never held. read_id is the newest reply seen in the thread
-    -- view; closed hides it until the user posts or is highlighted there again.
+    -- view; closed hides it until the user posts or is highlighted there again;
+    -- name is what the user called it (NULL: named from its first line).
     CREATE TABLE IF NOT EXISTS thread_follows (
       user_id INTEGER NOT NULL,
       buffer_id INTEGER NOT NULL,
       root_msgid TEXT NOT NULL,
       read_id INTEGER NOT NULL DEFAULT 0,
       closed INTEGER NOT NULL DEFAULT 0,
+      name TEXT,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       PRIMARY KEY (user_id, buffer_id, root_msgid),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -1344,6 +1346,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
 // plus every row naming it here, and reply_msgid on each links the tree. Kept
 // for the thread view (listThread in db/messages.ts, db/threadFollows.ts).
 ensureColumn('messages', 'reply_root_msgid', 'TEXT');
+// A development database made thread_follows before it had a name.
+ensureColumn('thread_follows', 'name', 'TEXT');
 // A thread's replies in one range: (buffer, root). Partial — replies only.
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root
          ON messages(buffer_id, reply_root_msgid)

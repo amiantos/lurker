@@ -147,7 +147,14 @@ describe('reply threads over the socket', () => {
         bufferId,
         target: CHANNEL,
         rootMsgid: 'q',
-        root: { id: ids.question, nick: 'alice', type: 'message', text: 'question' },
+        name: null,
+        root: {
+          id: ids.question,
+          nick: 'alice',
+          type: 'message',
+          text: 'question',
+          userhost: null,
+        },
         unread: 1,
         highlighted: false,
         lastReplyId: ids['follow-up'],
@@ -179,6 +186,23 @@ describe('reply threads over the socket', () => {
       () => otherUserId,
     ).catch((err: Error) => ({ after: [], err }));
     expect(after.some((f) => f.kind === 'thread')).toBe(false);
+  });
+
+  it('`thread-rename` names a thread for this user; blank names it from its first line', async () => {
+    const named = await session(
+      { type: 'thread-rename', bufferId, rootMsgid: 'q', name: '  lunch   plans ' },
+      'threads-changed',
+    );
+    expect(named.after.find((f) => f.kind === 'threads-changed')?.threads).toMatchObject([
+      { rootMsgid: 'q', name: 'lunch plans' },
+    ]);
+    const cleared = await session(
+      { type: 'thread-rename', bufferId, rootMsgid: 'q', name: ' ' },
+      'threads-changed',
+    );
+    expect(cleared.after.find((f) => f.kind === 'threads-changed')?.threads).toMatchObject([
+      { rootMsgid: 'q', name: null },
+    ]);
   });
 
   it('`thread-read` sends the new list; `thread-close` takes the thread off it', async () => {

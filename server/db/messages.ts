@@ -329,7 +329,8 @@ const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS NULL THE
   ) END AS reply_parent`;
 
 // How many replies hang off a line that started a thread — every row naming
-// it as root (reply_root_msgid), at any depth. What the client draws as
+// it as root (reply_root_msgid), at any depth, bar those from someone ignored
+// (who mustn't be able to bump a counter on your line). What the client draws as
 // "N replies" under the line and opens the thread view from. Only a chat line
 // with a msgid that isn't itself a reply can start a thread (replyRootFor), so
 // every other row costs the CASE; a candidate root costs one seek on the
@@ -341,6 +342,7 @@ const THREAD_REPLIES_COL = (alias: string) => `CASE
     ELSE (
       SELECT NULLIF(count(*), 0) FROM messages t INDEXED BY idx_messages_reply_root
        WHERE t.buffer_id = ${alias}.buffer_id AND t.reply_root_msgid = ${alias}.msgid
+         AND t.from_ignored = 0
     ) END AS thread_replies`;
 
 // Everything a timeline read carries beside the row itself: the reader's
@@ -740,7 +742,8 @@ export function listMessagesAround(
 
 // Most replies one thread read ships. A thread is read whole (the view is a
 // tree, which a page cut mid-way would leave hanging), so this only bounds the
-// frame: past it the oldest replies ship and `truncated` says so. Far beyond
+// frame: past it the NEWEST replies ship — what's being talked about now, and
+// what the read pointer is waiting on — and `truncated` says so. Far beyond
 // any conversation; a bridge that replies to everything can still get there.
 export const THREAD_MAX_REPLIES = 1000;
 
@@ -756,13 +759,13 @@ const threadRootStmt = db.prepare(`
 const threadRepliesStmt = db.prepare(`
   SELECT m.*, ${TIMELINE_COLS('m')} FROM messages m INDEXED BY idx_messages_reply_root
    WHERE m.buffer_id = ? AND m.reply_root_msgid = ?
-   ORDER BY m.id ASC LIMIT ?
+   ORDER BY m.id DESC LIMIT ?
 `);
 
 /**
  * A reply thread in one buffer: the line that started it (found by msgid, the
  * newest copy, as REPLY_COL finds a parent) and every reply naming it as root,
- * oldest first, with the timeline columns. `root` is null when we don't hold
+ * oldest first (the newest THREAD_MAX_REPLIES of them), with the timeline columns. `root` is null when we don't hold
  * that line — retention took it, or it predates our history — and the replies
  * still come back. The caller owns the ownership check on `bufferId`.
  */
@@ -777,7 +780,7 @@ export function listThread(
   if (truncated) rows.length = limit;
   return {
     root: rootRow ? rowToEvent(rootRow) : null,
-    replies: rows.map(rowToEvent),
+    replies: rows.map(rowToEvent).toReversed(),
     truncated,
   };
 }

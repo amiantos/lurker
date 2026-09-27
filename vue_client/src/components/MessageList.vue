@@ -395,6 +395,8 @@ import {
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
 import { stripReplyAddress } from '../utils/replyText.js';
+import { parseUserHost } from '../utils/userhost.js';
+import { usePreviewBody } from '../composables/usePreviewBody.js';
 import ReplyQuote from './ReplyQuote.vue';
 import ThreadChip from './ThreadChip.vue';
 import { pushThread } from '../composables/useThreadRoute.js';
@@ -749,20 +751,6 @@ const ignoreTarget = ref<IgnoreTarget | null>(null);
 function eligibleForActions(m: ChatMessage | undefined | null): boolean {
   if (!m || m.id == null) return false;
   return m.type === 'message' || m.type === 'action' || m.type === 'notice';
-}
-
-function parseUserHost(userhost: string | null | undefined): {
-  user: string | null;
-  host: string | null;
-} {
-  if (!userhost) return { user: null, host: null };
-  // Format is nick!user@host; tolerate missing pieces.
-  const bang = userhost.indexOf('!');
-  if (bang < 0) return { user: null, host: null };
-  const rest = userhost.slice(bang + 1);
-  const at = rest.indexOf('@');
-  if (at < 0) return { user: null, host: null };
-  return { user: rest.slice(0, at) || null, host: rest.slice(at + 1) || null };
 }
 
 // One stable context for every row — the handlers read `buffer.value` at call
@@ -2067,46 +2055,8 @@ watch(previewRevision, () => void repinAfterPreviewGrowth());
 // route, so opening it destroys this component and the watcher, and the remount never sees the
 // flip. It now lives in useSocket, which outlives navigation — see `wirePreviewToggles`.
 
-/**
- * Whether an attachment could render at all right now.
- *
- * ⚠ Checked HERE, at the mount site, rather than only inside MessageAttachments. The component
- * was mounted once per message row regardless — 500 instances, each building a computed and
- * running the URL regex — so every user of a default-off feature paid for it on every buffer
- * switch. Hoisting the gate up also means an unrelated settings write can't invalidate a
- * per-row computed 500 times over.
- */
-const previewsActive = computed(
-  () =>
-    config.linkPreviews &&
-    (settings.effective('chat.inline_media.enabled') === true ||
-      settings.effective('chat.link_previews.enabled') === true),
-);
-
-/** Cheap pre-filter: no scheme, no possible attachment. Skips the regex for most rows. */
-function mightHaveLink(text: string | null | undefined): boolean {
-  return !!text && text.includes('://');
-}
-
-/**
- * Whether this row's body goes through MessageBody rather than straight to RenderSegments.
- *
- * ⚠ The gate is unchanged from when it guarded MessageAttachments alone — the cost it exists to
- * avoid is the same one. MessageBody builds a computed and runs the URL regex per instance, and
- * mounting it on all 500 rows made every user of a default-off feature pay for it on every
- * buffer switch. Everything that fails this test renders exactly the component it always did.
- *
- * ⚠ `notice` is excluded even though `hasInlineText` accepts it, matching what the attachments
- * mount did: a notice is a service message, and unfurling links in one means unfurling whatever
- * NickServ or a bot happens to send.
- */
-function previewBody(m: ChatMessage | undefined): boolean {
-  return (
-    (m?.type === 'message' || m?.type === 'action') &&
-    previewsActive.value &&
-    mightHaveLink(m?.text)
-  );
-}
+// The link-preview gate, shared with the thread view (usePreviewBody).
+const previewBody = usePreviewBody();
 
 // Watch the messages array shape so we can react to:
 //   - prepend (older history): pin the OLD first row's viewport position.

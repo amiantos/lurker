@@ -13,10 +13,10 @@
 
   The time column and `<nick>` are the channel's, so a line reads the same in
   both places; the rails are CSS (like the buffer list's), so they run
-  unbroken down a line that wraps. Each line's `reply` opens the composer
-  under it — the shell teleports its one MessageInput into the slot this view
-  renders for the pending reply (DesktopChat); with nothing picked, a line sent
-  from here answers the first line (threads.defaultReply).
+  unbroken down a line that wraps. A line has the message list's own actions
+  (Reply, React, …); the composer stays where it always is, and the line being
+  answered is marked. With nothing picked, a line sent from here answers the
+  first line (threads.defaultReply).
 -->
 
 <template>
@@ -25,11 +25,10 @@
       loading thread…
     </div>
     <template v-else>
-      <template v-for="(row, i) in rows" :key="row.line?.id ?? 'root'">
+      <template v-for="row in rows" :key="row.line?.id ?? 'root'">
         <div
           class="t-line"
           :class="lineClass(row)"
-          :style="{ order: i * 2 }"
           :data-msg-id="row.line?.id ?? null"
           @click="onLineClick($event, row.line)"
         >
@@ -58,8 +57,8 @@
                 >{{ marks(row.line)[0] }}<NickRef :nick="String(row.line.nick ?? '')" />{{
                   marks(row.line)[1]
                 }}</span
-              >
-              <MessageBody
+              >{{ ' '
+              }}<MessageBody
                 v-if="previewBody(row.line)"
                 :text="bodyText(row.line)"
                 :segments="segments(row.line)"
@@ -68,15 +67,7 @@
                 v-else
                 :segments="segments(row.line)"
                 :self-color="selfColor"
-                :network-id="view?.networkId ?? null" /><button
-                v-if="replyable(row.line)"
-                type="button"
-                class="link t-reply"
-                :class="{ active: pending?.messageId === row.line.id }"
-                @click.stop="startReply(row.line)"
-              >
-                reply</button
-              ><ReactionRow
+                :network-id="view?.networkId ?? null" /><ReactionRow
                 v-if="view"
                 :message="{ ...row.line, networkId: view.networkId }"
                 :interactive="row.line.type !== 'notice' && !row.line.e2e"
@@ -112,35 +103,8 @@
           </div>
         </div>
       </template>
-      <!-- The composer's slot. ONE element for the life of the view, drawn under
-           the line being answered by grid order rather than by where it sits in
-           the DOM: the shell's Teleport targets it by id, and a Teleport resolves
-           a changed target while its parent patches — before this view has drawn
-           a new one — so a slot per line would be missing when it's looked up. -->
-      <div
-        v-show="composeRow"
-        class="t-line t-compose"
-        :style="{ order: composeRow ? composeRow.index * 2 + 1 : 0 }"
-      >
-        <span class="time"></span>
-        <div class="t-main">
-          <span
-            v-for="(on, k) in composeRow?.rails ?? []"
-            :key="k"
-            class="g"
-            :class="on ? 'rail' : 'blank'"
-            aria-hidden="true"
-          ></span>
-          <span
-            class="g"
-            :class="composeRow?.row.hasChildren ? 'tee' : 'elbow'"
-            aria-hidden="true"
-          ></span>
-          <div id="thread-compose" class="t-slot"></div>
-        </div>
-      </div>
-      <div v-if="view.truncated" class="notice" :style="{ order: rows.length * 2 }">
-        this thread is longer than can be shown at once — its oldest replies are above
+      <div v-if="view.truncated" class="notice">
+        this thread is longer than can be shown at once — its oldest replies aren’t shown
       </div>
     </template>
   </div>
@@ -186,18 +150,12 @@ import { threadRows } from '../lib/threadTree.js';
 import type { ThreadRow } from '../lib/threadTree.js';
 import { formatTimestamp } from '../utils/timestamp.js';
 import { stripReplyAddress } from '../utils/replyText.js';
+import { parseUserHost } from '../utils/userhost.js';
+import { usePreviewBody } from '../composables/usePreviewBody.js';
+import { onSocketOpen } from '../composables/useSocket.js';
 import type { RenderSegment } from '../utils/nickColor.js';
 import { isDccChatTarget } from '../../../shared/channels.js';
 import { REPLY_LINE_TYPES } from '../../../shared/replies.js';
-
-const props = withDefaults(
-  defineProps<{
-    // Desktop teleports the composer under the line being answered; mobile
-    // keeps it at the bottom, over the keyboard.
-    composeInline?: boolean;
-  }>(),
-  { composeInline: false },
-);
 
 const router = useRouter();
 const threads = useThreadsStore();
@@ -249,7 +207,14 @@ watch(
   },
   { immediate: true },
 );
+// A dropped socket's gap-fill reaches the channel, not this view: ask again.
+const offOpen = onSocketOpen(() => {
+  const v = threads.view;
+  if (v) threads.open(v.bufferId, v.rootMsgid);
+});
+
 onBeforeUnmount(() => {
+  offOpen();
   // Back to the channel's own lines: they've been arriving unread while the
   // thread was up (buffers.pushLive), and returning to an already-active buffer
   // activates nothing — so read them in here, as entering it would.
@@ -325,9 +290,10 @@ function lineClass(row: ThreadRow<ThreadMessage>) {
   };
 }
 
-// Someone ignored since the line arrived — the server only screens who was
-// ignored at the time. The line keeps its place so its replies keep theirs.
+// Someone ignored — when it arrived (the server's stamp) or since. The line
+// keeps its place so its replies keep theirs.
 function hidden(m: ThreadMessage): boolean {
+  if (m.fromIgnored) return true;
   if (m.self || !m.nick || view.value == null) return false;
   return ignores.evaluate(view.value.networkId, {
     nick: String(m.nick),
@@ -366,26 +332,13 @@ function segments(m: ThreadMessage): RenderSegment[] {
   return nicks.splitText(bodyText(m), nickSet.value, selfLower.value) as RenderSegment[];
 }
 
-const previewsActive = computed(
-  () =>
-    config.linkPreviews &&
-    (settings.effective('chat.inline_media.enabled') === true ||
-      settings.effective('chat.link_previews.enabled') === true),
-);
-
-// Same gate as the message list's: a notice never unfurls.
-function previewBody(m: ThreadMessage): boolean {
-  return (
-    (m.type === 'message' || m.type === 'action') &&
-    previewsActive.value &&
-    String(m.text ?? '').includes('://')
-  );
-}
+// The message list's link-preview gate: a notice never unfurls.
+const previewBody = usePreviewBody();
 
 // ─── Replying ────────────────────────────────────────────────────────────
 
-// Any chat line with a msgid — our own included: in a thread, adding to what
-// you said is ordinary. The server re-checks it (replySendMsgid).
+// Whether Reply can make a real reply of this line (MessageList's rule): it
+// needs the msgid the reply names. The server re-checks it (replySendMsgid).
 function replyable(m: ThreadMessage): boolean {
   return (
     !!m.msgid &&
@@ -396,30 +349,21 @@ function replyable(m: ThreadMessage): boolean {
   );
 }
 
+// The Reply action, as in the channel: the line becomes the pending reply
+// (marked here, named in the status bar) and the composer addresses its author.
 function startReply(m: ThreadMessage): void {
   const key = channelKey.value;
-  if (!key) return;
-  if (pending.value?.messageId === m.id) return;
-  replies.start(key, {
-    messageId: m.id,
-    nick: String(m.nick ?? ''),
-    type: m.type,
-    text: String(m.text ?? ''),
-  });
-  if (m.nick && !m.self) addressNick(String(m.nick));
+  if (!key || !m.nick) return;
+  if (replyable(m) && pending.value?.messageId !== m.id) {
+    replies.start(key, {
+      messageId: m.id,
+      nick: String(m.nick),
+      type: m.type,
+      text: String(m.text ?? ''),
+    });
+  }
+  addressNick(String(m.nick));
 }
-
-// Where the composer's slot goes: after the line being answered, with that
-// line's rails carried down (plus its own, when it has later siblings).
-const composeRow = computed(() => {
-  if (!props.composeInline) return null;
-  const id = pending.value?.messageId;
-  if (id == null) return null;
-  const index = rows.value.findIndex((r) => r.line?.id === id);
-  if (index < 0) return null;
-  const row = rows.value[index];
-  return { index, row, rails: [...row.rails, ...(row.depth > 0 ? [!row.last] : [])] };
-});
 
 // ─── Actions ─────────────────────────────────────────────────────────────
 
@@ -433,12 +377,11 @@ const actionContext: MessageContext = {
   },
   onReply: (msg: MessageLike) => startReply(msg as ThreadMessage),
   onIgnore: (msg: MessageLike) => {
-    const at = String(msg.userhost ?? '').split('!')[1] ?? '';
-    const [user, host] = at.includes('@') ? at.split('@') : [null, null];
+    const { user, host } = parseUserHost(msg.userhost);
     ignoreTarget.value = {
       nick: msg.nick ?? '',
-      user: user || null,
-      host: host || null,
+      user,
+      host,
       networkId: view.value?.networkId ?? null,
     };
   },
@@ -449,8 +392,7 @@ function asLike(m: ThreadMessage): MessageLike {
 }
 
 function actionsFor(m: ThreadMessage): MessageAction[] {
-  // `reply` is on the line itself here.
-  return messageActions.buildActions(asLike(m)).filter((a) => a.key !== 'reply');
+  return messageActions.buildActions(asLike(m));
 }
 
 function runAction(key: MessageActionKey, m: ThreadMessage): void {
@@ -510,12 +452,20 @@ function viewInChannel(m: ThreadMessage): void {
   grid-template-columns: subgrid;
   position: relative;
 }
-.t-line:hover,
+.t-line:hover {
+  background: var(--bg-soft);
+}
+/* The line the composer is answering: the accent bar the active buffer row
+   wears, over the hover shade. After .highlight, so it shows on one too. */
 .t-line.replying {
   background: var(--bg-soft);
+  box-shadow: inset 2px 0 var(--accent);
 }
 .t-line.highlight {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
+}
+.t-line.highlight.replying {
+  box-shadow: inset 2px 0 var(--accent);
 }
 .t-line.scroll-target {
   animation: scroll-target-pulse 1.5s ease-out;
@@ -586,32 +536,6 @@ function viewInChannel(m: ThreadMessage): void {
 }
 .t-nick {
   white-space: nowrap;
-}
-
-.t-reply {
-  margin-left: 1ch;
-  color: var(--fg-muted);
-  opacity: 0;
-}
-.t-line:hover .t-reply,
-.t-reply:focus-visible,
-.t-reply.active {
-  opacity: 1;
-}
-.t-reply.active {
-  color: var(--accent);
-}
-/* No hover to reveal it on touch: always there, quietly. */
-@media (hover: none) {
-  .t-reply {
-    opacity: 0.6;
-  }
-}
-
-.t-compose .t-slot {
-  flex: 1;
-  min-width: 0;
-  padding: var(--space-1) 0;
 }
 
 /* The message list's hover bar. */

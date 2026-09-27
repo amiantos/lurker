@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { replyExcerpt, stripReplyAddress } from './replyText.js';
+import { replyExcerpt, stripReplyAddress, threadTitle } from './replyText.js';
 
 describe('stripReplyAddress', () => {
   it('drops the address to the author being answered', () => {
@@ -39,5 +39,25 @@ describe('replyExcerpt', () => {
     expect(replyExcerpt('\x02bold\x02 and \x0304red\x03\nsecond line')).toBe(
       'bold and red second line',
     );
+  });
+});
+
+describe('threadTitle', () => {
+  const here = (w: string) => ['amiantos', 'bob_'].includes(w.toLowerCase());
+
+  it('drops the address a first line opens with when it names someone here', () => {
+    expect(threadTitle('amiantos: i do too', here)).toBe('i do too');
+    expect(threadTitle('Amiantos, i do too', here)).toBe('i do too');
+    expect(threadTitle('bob_: hi', here)).toBe('hi');
+  });
+
+  it('keeps a first word that isn’t a nick here, and a line that is only the address', () => {
+    expect(threadTitle('Note: the build is broken', here)).toBe('Note: the build is broken');
+    expect(threadTitle('https://example.com is down', here)).toBe('https://example.com is down');
+    expect(threadTitle('amiantos: ', here)).toBe('amiantos:');
+  });
+
+  it('is plain text on one line', () => {
+    expect(threadTitle('\x02bold\x02 and\nmore', here)).toBe('bold and more');
   });
 });
