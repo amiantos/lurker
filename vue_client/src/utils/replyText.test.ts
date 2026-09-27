@@ -43,21 +43,21 @@ describe('replyExcerpt', () => {
 });
 
 describe('threadTitle', () => {
-  const here = (w: string) => ['amiantos', 'bob_'].includes(w.toLowerCase());
-
-  it('drops the address a first line opens with when it names someone here', () => {
-    expect(threadTitle('amiantos: i do too', here)).toBe('i do too');
-    expect(threadTitle('Amiantos, i do too', here)).toBe('i do too');
-    expect(threadTitle('bob_: hi', here)).toBe('hi');
+  it('drops the address a first line opens with, whoever it names', () => {
+    expect(threadTitle('amiantos: i do too')).toBe('i do too');
+    expect(threadTitle('Amiantos, i do too')).toBe('i do too');
+    expect(threadTitle('bob_: hi')).toBe('hi');
+    expect(threadTitle('[away]|joe: back yet?')).toBe('back yet?');
   });
 
-  it('keeps a first word that isn’t a nick here, and a line that is only the address', () => {
-    expect(threadTitle('Note: the build is broken', here)).toBe('Note: the build is broken');
-    expect(threadTitle('https://example.com is down', here)).toBe('https://example.com is down');
-    expect(threadTitle('amiantos: ', here)).toBe('amiantos:');
+  it('keeps what isn’t an address, and a line that is only one', () => {
+    expect(threadTitle('https://example.com is down')).toBe('https://example.com is down');
+    expect(threadTitle('9lives: not a nick')).toBe('9lives: not a nick');
+    expect(threadTitle('two words: no')).toBe('two words: no');
+    expect(threadTitle('amiantos: ')).toBe('amiantos:');
   });
 
   it('is plain text on one line', () => {
-    expect(threadTitle('\x02bold\x02 and\nmore', here)).toBe('bold and more');
+    expect(threadTitle('\x02bold\x02 and\nmore')).toBe('bold and more');
   });
 });

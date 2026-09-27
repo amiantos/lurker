@@ -117,12 +117,7 @@ export const useThreadsStore = defineStore('threads', {
               isDm: buf.kind === 'dm',
             }).hide);
         if (ignored) return 'thread';
-        const known = new Set<string>([self.toLowerCase(), buf.target.toLowerCase()]);
-        for (const mem of buf.members || []) {
-          const n = typeof mem === 'string' ? mem : mem.nick;
-          if (n) known.add(n.toLowerCase());
-        }
-        return threadTitle(String(root.text ?? ''), (w) => known.has(w.toLowerCase())) || 'thread';
+        return threadTitle(String(root.text ?? '')) || 'thread';
       };
     },
     // The buffer key whose thread is on screen, or null.
