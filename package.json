@@ -70,7 +70,7 @@
     "@types/ws": "^8.18.2",
     "@types/yauzl": "^3.4.0",
     "@vitest/coverage-v8": "^5.0.3",
-    "concurrently": "^10.0.5",
+    "concurrently": "^10.0.6",
     "happy-dom": "^20.14.5",
     "http_ece": "1.2.0",
     "oxfmt": "^0.71.0",
