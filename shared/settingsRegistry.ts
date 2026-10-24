@@ -464,9 +464,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       '"compact" forces the two-line layout (nick + time on top, body ' +
       'below) everywhere — useful on low-resolution desktop displays ' +
       'where the columns squeeze the body too far. In compact mode ' +
-      'repeated authors always collapse, and only the head line of each ' +
-      'run shows a time, so the timestamp collapse setting below does ' +
-      'not apply.',
+      'repeated authors always collapse (notices too, in runs of their ' +
+      'own), and only the head line of each run shows a time, so the ' +
+      'timestamp collapse setting below does not apply.',
   },
   {
     key: 'look.message.collapse_authors',

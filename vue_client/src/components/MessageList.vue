@@ -108,11 +108,11 @@
         :data-msg-id="row.m?.id ?? null"
         @click="onMessageRowClick($event, row.m)"
       >
-        <template v-if="compactMode && row.m?.type === 'message'">
+        <template v-if="compactMode && headed(row.m)">
           <!-- The author's avatar (#607), in the gutter every row reserves
                while avatars are on; only the run's first row draws one. -->
           <NickAvatar
-            v-if="showAvatars && !row.continuationAuthor"
+            v-if="showAvatars && !row.continuationAuthor && row.m?.type === 'message'"
             class="avatar"
             :nick="row.m?.nick ?? ''"
             :network-id="buffer?.networkId ?? null"
@@ -120,13 +120,25 @@
             interactive
             @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
           />
-          <!-- Compact-mode message rows: nick and a right-aligned timestamp
-             on a head line above the body. The head is omitted entirely on
-             author continuations so a run of same-author messages reads as
-             one block under one time; continuation rows show no time. -->
+          <!-- Compact-mode message and notice rows: nick and a right-aligned
+             timestamp on a head line above the body. The head is omitted
+             entirely on author continuations so a run of same-author messages
+             reads as one block under one time; continuation rows show no time.
+             A notice's head keeps IRC's own mark for it, `-nick-` (#1180): the
+             one thing separating "NickServ said this" from "NickServ noticed
+             this". Printed as the standard layout prints it and the apps
+             caption it — plain text in the nick's colour, no glyph, no avatar,
+             no menu: a notice's "nick" is often not a person at all (the
+             server's hostname, Lurker's own `lurker` and `DCC` status lines),
+             and a display-name or avatar lookup on one would dress a status
+             line as whoever holds that nick. -->
           <div v-if="!row.continuationAuthor" class="head">
-            <span class="prefix" :class="prefixClass(row.m)"
+            <span
+              class="prefix"
+              :class="prefixClass(row.m)"
+              :style="row.m?.type === 'message' ? null : prefixStyle(row.m)"
               ><NickRef
+                v-if="row.m?.type === 'message'"
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
@@ -134,7 +146,8 @@
                 :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-            /></span>
+              /><template v-else>{{ prefixText(row.m) }}</template></span
+            >
             <!-- Where the relayed speaker is from, beside the name it qualifies
                  (as the iOS app places it), muted and unbracketed; the bot
                  itself is the tooltip. -->
@@ -176,7 +189,7 @@
             /><ReactionRow
               v-if="row.m && reactable(row.m)"
               :message="row.m"
-              :interactive="!row.m.e2e"
+              :interactive="row.m.type !== 'notice' && !row.m.e2e"
               @measured="repinAfterPreviewGrowth(true)"
             />
           </span>
@@ -797,6 +810,14 @@ function eligibleForActions(m: ChatMessage | undefined | null): boolean {
   return m.type === 'message' || m.type === 'action' || m.type === 'notice';
 }
 
+// The row types whose prefix is a nick (coloured as one): messages and
+// notices. These are the rows the compact layout gives a head line (nick +
+// time) and groups into author runs. An action names its actor in its body
+// and stays a single line, as every event row does.
+function headed(m: ChatMessage | undefined): boolean {
+  return m?.type === 'message' || m?.type === 'notice';
+}
+
 function parseUserHost(userhost: string | null | undefined): {
   user: string | null;
   host: string | null;
@@ -1138,8 +1159,8 @@ const collapseTimestampsEnabled = computed(
 );
 
 // look.message.layout: auto / standard / compact. Compact swaps the 3-column
-// subgrid for a two-line stack (head: nick + time, body below) on
-// `type === 'message'` rows; other row types stay single-line. Auto picks
+// subgrid for a two-line stack (head: nick + time, body below) on message and
+// notice rows (`headed`); other row types stay single-line. Auto picks
 // compact on mobile-width viewports so phone users get the reflow by default.
 const layoutSetting = computed(() => settings.effective('look.message.layout') || 'auto');
 const compactMode = computed(() => {
@@ -1151,7 +1172,9 @@ const compactMode = computed(() => {
 // Compact mode forces author collapsing — the head is the only place the
 // nick appears, and without collapsing the buffer is wall-to-wall headers.
 // It ignores timestamp collapsing: a message's time lives on its head, so
-// every head shows one and continuation rows show none.
+// every head shows one and continuation rows show none. Notices collapse
+// there too (#1180), in runs of their own: their head carries the nick as a
+// message's does, where the standard layout's `-nick-` prefix is the line's.
 const effectiveCollapseAuthors = computed(() => compactMode.value || collapseAuthorsEnabled.value);
 // Avatars (#607) live in the compact layout only: the standard grid has no
 // column for them. The setting is read here so the gutter class and the tile
@@ -1545,6 +1568,7 @@ const renderRows = computed((): RenderRow[] => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     collapseDisplay(final as any, {
       collapseAuthors: effectiveCollapseAuthors.value,
+      collapseNotices: compactMode.value,
       authorWindowMs: collapseAuthorsWindowMs.value,
       collapseTimestamps: effectiveCollapseTimestamps.value,
       formatTime: (iso) => time(iso),
@@ -1670,7 +1694,7 @@ function joinAccountSuffix(m: ChatMessage | undefined): string {
 
 function prefixClass(m: ChatMessage | undefined) {
   return {
-    nick: m?.type === 'message' || m?.type === 'notice',
+    nick: headed(m),
     'action-marker': m?.type === 'action',
     italic: m?.type === 'action' && actionItalic.value,
     self: m?.self,
@@ -1685,7 +1709,7 @@ function prefixClass(m: ChatMessage | undefined) {
 }
 
 function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
-  if (m?.type === 'message' || m?.type === 'notice') {
+  if (m && headed(m)) {
     if (m.self) return { color: selfColor.value as string };
     const c = nicks.color(m.nick ?? '');
     return c ? { color: c } : null;

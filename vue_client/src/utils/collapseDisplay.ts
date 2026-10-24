@@ -8,17 +8,25 @@
 //
 //   continuationAuthor: true  — suppress the nick prefix on this row because
 //                               the previous visible row was a plain message
-//                               from the same author within the gap window.
+//                               (or, with collapseNotices, a notice) of the
+//                               same type from the same author within the
+//                               gap window.
 //
 //   continuationTime: true    — suppress the timestamp on this row because
 //                               the previous visible row displayed the same
 //                               formatted time string.
 //
-// Only `type === 'message'` participates in author collapsing. Actions and
-// notices have a distinct prefix shape (`*` / `-nick-`) and embed the nick
-// into the body text, so collapsing them would either break visual identity
-// or require body-string surgery; keep them as anchors. System events
-// (join/part/etc.) and consolidation summary rows break the author run.
+// Only `type === 'message'` participates in author collapsing, plus notices
+// when `collapseNotices` is set (the compact layout, #1180). In the standard
+// layout a notice's `-nick-` prefix belongs to its line, as an action's `*`
+// does, so collapsing it would break the visual identity; keep them as
+// anchors. The compact head carries the nick for a notice as it does for a
+// message, so there a bot's run of notices groups under one head. The type is
+// part of the run's identity: a notice never continues a message run or the
+// reverse (the apps' MessageGrouping rule — NOTICE means "don't reply to
+// this", and one head over both would erase the distinction the sender
+// chose). Actions name their own actor and stay anchors everywhere. System
+// events (join/part/etc.) and consolidation summary rows break the author run.
 //
 // Time collapsing applies to every row that displays a time (chat rows,
 // system rows, consolidation rows). Dividers carry no time and reset both
@@ -50,6 +58,8 @@ export interface DisplayRow {
 
 export interface CollapseOptions {
   collapseAuthors?: boolean;
+  // Notices collapse into runs of their own kind too (compact layout only).
+  collapseNotices?: boolean;
   collapseTimestamps?: boolean;
   formatTime?: (iso: string | undefined) => string;
   authorWindowMs?: number;
@@ -57,6 +67,7 @@ export interface CollapseOptions {
 
 export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {}): DisplayRow[] {
   const collapseAuthors = !!options.collapseAuthors;
+  const collapseNotices = collapseAuthors && !!options.collapseNotices;
   const collapseTimestamps = !!options.collapseTimestamps;
   if (!collapseAuthors && !collapseTimestamps) return rows;
 
@@ -81,15 +92,23 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
     const timeMs = iso ? Date.parse(iso) || 0 : 0;
     const timeStr = collapseTimestamps ? formatTime(iso) : '';
 
-    if (collapseAuthors && !row.consolidation && row.m?.type === 'message') {
+    const type = row.consolidation ? undefined : row.m?.type;
+    if (
+      collapseAuthors &&
+      row.m &&
+      (type === 'message' || (collapseNotices && type === 'notice'))
+    ) {
       // Self flag is part of the visual identity (self color vs. nick color),
       // so a self message after a non-self message from the same nick must
       // not collapse — even though that's a deeply unusual case. So is where a
       // relayed speaker is from: a bridged `alice` is not the local `alice`,
       // and anyone on a bridged platform can pick an IRC regular's nick —
       // folding them into one run is misattribution, not polish (the iOS
-      // port's MessageGrouping.sameAuthor folds on the same three).
-      const key = `${row.m.self ? '1' : '0'}:${row.m.nick || ''}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
+      // port's MessageGrouping.sameAuthor folds on the same three). And so is
+      // the type: a notice and a message from one nick are two runs. Nick
+      // case is not: servers send a nick inconsistently cased, the colour
+      // hash folds it, and so do the apps and the reply-quote run check.
+      const key = `${type}:${row.m.self ? '1' : '0'}:${(row.m.nick || '').toLowerCase()}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
       // The delta must be non-negative: rows carry server-time, which a
       // bouncer replay can stamp OLDER than the preceding row's. A negative
       // delta would trivially pass the window check and collapse a replayed
