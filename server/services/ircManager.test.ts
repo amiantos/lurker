@@ -699,3 +699,71 @@ describe('ircManager and a connection’s user frames', () => {
     }
   });
 });
+
+// Account restrictions (shared/accountRestrictions.ts): the connect gate holds
+// an account to its host list, and restrictUser drops what the list no longer
+// allows without touching what it does.
+describe('ircManager account restrictions', () => {
+  let setUserRestrictions: typeof import('../db/users.js').setUserRestrictions;
+
+  beforeAll(async () => {
+    ({ setUserRestrictions } = await import('../db/users.js'));
+  });
+
+  function netOn(userId: number, name: string, host: string) {
+    const net = createNetwork(userId, { name, host, port: 6697, tls: true, nick: 'x' });
+    if (!net) throw new Error('createNetwork returned undefined');
+    return net;
+  }
+
+  it("startNetwork refuses a host outside the account's list", () => {
+    const user = createUser('irc-held');
+    const net = netOn(user.id, 'libera', 'irc.libera.chat');
+    setUserRestrictions(user.id, { networks: ['irc.lurker.chat'], uploads: true });
+    expect(ircManager.startNetwork(user.id, net.id)).toBeNull();
+    expect(ircManager.getConnection(user.id, net.id)).toBeNull();
+    expect(ircManager.connectGate(user.id, net.id)).toMatchObject({
+      ok: false,
+      reason: 'irc.libera.chat is not permitted for this account',
+    });
+  });
+
+  it('restrictUser drops the connections the new list refuses and keeps the rest', () => {
+    const user = createUser('irc-narrowed');
+    const home = netOn(user.id, 'home', 'irc.lurker.chat');
+    const away = netOn(user.id, 'away', 'irc.libera.chat');
+    const homeConn = ircManager.startNetwork(user.id, home.id, { deferrable: true });
+    const awayConn = ircManager.startNetwork(user.id, away.id, { deferrable: true });
+    expect(homeConn).not.toBeNull();
+    expect(awayConn).not.toBeNull();
+
+    const events: unknown[] = [];
+    const onRestricted = (e: unknown) => events.push(e);
+    ircManager.on('user-restricted', onRestricted);
+    try {
+      const restrictions = { networks: ['irc.lurker.chat'], uploads: true };
+      setUserRestrictions(user.id, restrictions);
+      ircManager.restrictUser(user.id, restrictions);
+      expect(ircManager.getConnection(user.id, away.id)).toBeNull();
+      expect(ircManager.getConnection(user.id, home.id)).toBe(homeConn);
+      expect(events).toEqual([{ userId: user.id, restrictions }]);
+    } finally {
+      ircManager.off('user-restricted', onRestricted);
+      ircManager.disposeNetwork(user.id, home.id, 'test over');
+      connectScheduler.reset();
+    }
+  });
+
+  it('restrictUser with no host list drops nothing', () => {
+    const user = createUser('irc-uploads-only');
+    const net = netOn(user.id, 'n', 'irc.libera.chat');
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true });
+    try {
+      ircManager.restrictUser(user.id, { networks: null, uploads: false });
+      expect(ircManager.getConnection(user.id, net.id)).toBe(conn);
+    } finally {
+      ircManager.disposeNetwork(user.id, net.id, 'test over');
+      connectScheduler.reset();
+    }
+  });
+});

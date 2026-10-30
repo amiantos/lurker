@@ -7,6 +7,7 @@ import { ref, onMounted, watch, effectScope } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
+import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useThemesStore } from '../stores/themes.js';
 import { AVATAR_SET_POINTER_KEY, useAvatarSetsStore } from '../stores/avatarSets.js';
@@ -1015,7 +1016,13 @@ function handleMessage(raw: string): void {
     // The account was paused/resumed out-of-band (operator or control plane).
     // Flip the whole UI into/out of read-only in place; the server has already
     // torn down or re-established the IRC connections.
-    useAuthStore().setPaused(!!payload.paused);
+    const auth = useAuthStore();
+    auth.setPaused(!!payload.paused);
+    // Only when present: a pause/resume frame carries no restrictions, and
+    // absence is not "none".
+    if (payload.restrictions && typeof payload.restrictions === 'object') {
+      auth.setRestrictions(payload.restrictions as AccountRestrictions);
+    }
     return;
   }
   if (payload.kind === 'settings') {

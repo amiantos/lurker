@@ -1157,3 +1157,87 @@ describe('own metadata (#1189)', () => {
     expect((await bobAgent.delete(`/api/networks/${net.id}/metadata`)).status).toBe(404);
   });
 });
+
+// An account held to a host list (shared/accountRestrictions.ts) on an
+// otherwise open instance: the same gates as the lockdown, per account.
+describe('account network restrictions', () => {
+  let heldAgent: LurkerTestAgent;
+  let held: User;
+
+  beforeAll(async () => {
+    const { createUser, setUserRestrictions } = await import('../db/users.js');
+    held = createUser('net-held');
+    setUserRestrictions(held.id, { networks: ['irc.lurker.chat'], uploads: true });
+    heldAgent = await createAuthedAgent(app, held.id);
+  });
+
+  beforeEach(() => fakeManager.reset());
+
+  it('refuses to create a network off the list, naming the account as the reason', async () => {
+    const res = await makeNet(heldAgent, { name: 'libera', host: 'irc.libera.chat' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/this account/);
+    expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(false);
+  });
+
+  it('creates a network on the list', async () => {
+    const res = await makeNet(heldAgent, { name: 'home', host: 'IRC.Lurker.Chat' });
+    expect(res.status).toBe(201);
+    expect(res.body.network.blocked).toBe(false);
+  });
+
+  it('refuses to repoint a listed network off the list', async () => {
+    const created = await makeNet(heldAgent, { name: 'home2', host: 'irc.lurker.chat' });
+    const res = await heldAgent
+      .patch(`/api/networks/${created.body.network.id}`)
+      .send({ host: 'irc.libera.chat' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/this account/);
+  });
+
+  it("refuses a proxy of the account's own", async () => {
+    const created = await makeNet(heldAgent, { name: 'home3', host: 'irc.lurker.chat' });
+    const res = await heldAgent.patch(`/api/networks/${created.body.network.id}`).send({
+      proxy_enabled: true,
+      proxy_type: 'socks5',
+      proxy_host: '127.0.0.1',
+      proxy_port: 9050,
+    });
+    expect(res.status).toBe(403);
+  });
+
+  // Restricted after the fact: the row survives, reads as blocked, and cannot
+  // connect — the lockdown's contract, per account.
+  describe('a network the account owned before it was restricted', () => {
+    async function makeStranded(): Promise<number> {
+      const { setUserRestrictions } = await import('../db/users.js');
+      setUserRestrictions(held.id, { networks: null, uploads: true });
+      const created = await makeNet(heldAgent, { name: 'old', host: 'irc.libera.chat' });
+      setUserRestrictions(held.id, { networks: ['irc.lurker.chat'], uploads: true });
+      fakeManager.reset();
+      return created.body.network.id as number;
+    }
+
+    it('is reported as blocked, and survives', async () => {
+      const id = await makeStranded();
+      const res = await heldAgent.get('/api/networks');
+      const row = res.body.networks.find((n: { id: number }) => n.id === id);
+      expect(row).toBeTruthy();
+      expect(row.blocked).toBe(true);
+    });
+
+    it('cannot be connected or reconnected', async () => {
+      const id = await makeStranded();
+      expect((await heldAgent.post(`/api/networks/${id}/connect`)).status).toBe(403);
+      expect((await heldAgent.post(`/api/networks/${id}/reconnect`)).status).toBe(403);
+      expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(false);
+      expect(fakeManager.calls.some(([m]) => m === 'restartNetwork')).toBe(false);
+    });
+
+    it('is not blocked for a different, unrestricted account', async () => {
+      const res = await makeNet(aliceAgent, { name: 'alice-libera', host: 'irc.libera.chat' });
+      expect(res.status).toBe(201);
+      expect(res.body.network.blocked).toBe(false);
+    });
+  });
+});

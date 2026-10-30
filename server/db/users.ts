@@ -4,6 +4,11 @@
 import db from './index.js';
 import { ensureSystemBuffer } from './buffers.js';
 import { nonConformingReason } from '../../shared/username.js';
+import {
+  restrictionsFromStored,
+  serializeAccountRestrictions,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
 
 /** User account roles. The first registered user is promoted to 'admin'. */
 export type UserRole = 'admin' | 'user';
@@ -21,10 +26,13 @@ export interface User {
   // Admin-set identd override (#643), NULL for "derive from the username".
   // Never writable by the account it belongs to — see shared/ident.ts.
   ident: string | null;
+  // Stored per-account restrictions (shared/accountRestrictions.ts), NULL for
+  // none. Read through restrictionsOf(), never parsed at a call site.
+  restrictions: string | null;
 }
 
 // One list, so a column added to `User` can't reach one lookup and miss another.
-const USER_COLUMNS = 'id, username, role, created_at, last_seen_at, is_paused, ident';
+const USER_COLUMNS = 'id, username, role, created_at, last_seen_at, is_paused, ident, restrictions';
 
 // Usernames are matched case-insensitively: 'Brad' and 'brad' are one account.
 // Exact match wins first, so a grandfathered case-twin pair (two rows that
@@ -118,6 +126,24 @@ export function setUserPaused(userId: number, paused: boolean): boolean {
   const info = db
     .prepare('UPDATE users SET is_paused = ? WHERE id = ?')
     .run(paused ? 1 : 0, userId);
+  return info.changes > 0;
+}
+
+// The account's restrictions as an object. A missing row (an id nothing
+// matched) reads as unrestricted, which is right for every caller: they have
+// already answered 404 or are about to.
+export function restrictionsOf(user: Pick<User, 'restrictions'> | undefined): AccountRestrictions {
+  return restrictionsFromStored(user?.restrictions);
+}
+
+// Replace the account's restrictions. Writes NULL for the unrestricted shape so
+// the column stays empty for the norm. The caller owns the side effects of a
+// transition — dropping connections the new set no longer allows — since this
+// only writes the row. Returns false only when no row matched.
+export function setUserRestrictions(userId: number, restrictions: AccountRestrictions): boolean {
+  const info = db
+    .prepare('UPDATE users SET restrictions = ? WHERE id = ?')
+    .run(serializeAccountRestrictions(restrictions), userId);
   return info.changes > 0;
 }
 

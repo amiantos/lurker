@@ -35,7 +35,8 @@ import {
 } from '../db/dccTransfers.js';
 import { dccFileBytes } from './dccPaths.js';
 import { findUserById } from '../db/users.js';
-import { isNetworkHostAllowed } from './networkPolicy.js';
+import { ACCOUNT_REFUSAL, hostAllowedChecker, networkRefusal } from './networkPolicy.js';
+import type { AccountRestrictions } from '../../shared/accountRestrictions.js';
 import { effectiveSetting } from './settingsService.js';
 import {
   getNetworkAwayState,
@@ -452,8 +453,15 @@ class IrcManager extends EventEmitter {
     if (findUserById(userId)?.is_paused) return { ok: false, reason: 'this account is paused' };
     const network = getNetwork(networkId, userId);
     if (!network) return { ok: false, reason: 'this network no longer exists' };
-    if (!isNetworkHostAllowed(network.host)) {
-      return { ok: false, reason: `${network.host} is not permitted by this instance` };
+    const refusal = networkRefusal(network.host, userId);
+    if (refusal) {
+      return {
+        ok: false,
+        reason:
+          refusal === ACCOUNT_REFUSAL
+            ? `${network.host} is not permitted for this account`
+            : `${network.host} is not permitted by this instance`,
+      };
     }
     return { ok: true, network };
   }
@@ -1492,6 +1500,30 @@ class IrcManager extends EventEmitter {
   resumeUser(userId: number): void {
     this.initForUser(userId);
     this.emit('user-resumed', { userId });
+  }
+
+  // The account's restrictions changed (admin, or the control plane). Drop
+  // every live connection the new host list no longer allows — a restriction
+  // that waited for the next reconnect would let a limited account keep
+  // chatting wherever it already was — and leave the rest alone. Call AFTER
+  // setUserRestrictions so a retry timer firing mid-teardown meets the closed
+  // gate. Emits 'user-restricted' so wsHub can tell open tabs what changed.
+  //
+  // Only ever a narrowing here: a restriction LIFTED reconnects nothing by
+  // itself. Autoconnect networks that were refused have no connection object
+  // left (gateReconnect drops it), so the user's next Connect — or the next
+  // boot — brings them back through the ordinary path.
+  restrictUser(userId: number, restrictions: AccountRestrictions): void {
+    const userMap = this.byUser.get(userId);
+    if (userMap && restrictions.networks !== null) {
+      const allowed = hostAllowedChecker(userId);
+      // stopNetwork deletes from the map as we go; a Map iterator tolerates that.
+      for (const [networkId, conn] of userMap) {
+        if (allowed(conn.network.host)) continue;
+        this.stopNetwork(userId, networkId, ACCOUNT_REFUSAL);
+      }
+    }
+    this.emit('user-restricted', { userId, restrictions });
   }
 
   shutdown(): void {

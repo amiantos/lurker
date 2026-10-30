@@ -418,3 +418,51 @@ describe('/api/upload-sessions', () => {
     });
   });
 });
+
+describe('an account held off the uploaders', () => {
+  let heldAgent: LurkerTestAgent;
+  let heldId: number;
+
+  beforeAll(async () => {
+    const { createUser, setUserRestrictions } = await import('../db/users.js');
+    heldId = createUser('sess-held').id;
+    setUserRestrictions(heldId, { networks: null, uploads: false });
+    heldAgent = await createAuthedAgent(app, heldId);
+  });
+
+  it('cannot open an upload or avatar session', async () => {
+    for (const purpose of ['upload', 'avatar']) {
+      const res = await open(
+        { purpose, size: 4, filename: 'a.txt', mime: 'text/plain' },
+        heldAgent,
+      );
+      expect([purpose, res.status]).toStrictEqual([purpose, 403]);
+      expect(res.body.error).toBe('uploads are not enabled for this account');
+    }
+  });
+
+  // An import stays on this disk; it is not the CDN and is not withheld.
+  it('can still open an import session', async () => {
+    const res = await open({ purpose: 'import', size: 4, filename: 'a.zip' }, heldAgent);
+    expect(res.status).toBe(201);
+    await heldAgent.delete(`/api/upload-sessions/${res.body.id}`);
+  });
+
+  // The restriction landed while the chunks were in flight.
+  it('refuses to complete a session opened before the restriction', async () => {
+    const { setUserRestrictions } = await import('../db/users.js');
+    setUserRestrictions(heldId, { networks: null, uploads: true });
+    const file = text(1);
+    const created = await open(
+      { purpose: 'upload', size: file.length, filename: 'late.txt', mime: 'text/plain' },
+      heldAgent,
+    );
+    expect(created.status).toBe(201);
+    for (let at = 0; at < file.length; at += CHUNK) {
+      await put(created.body.id, at, file.subarray(at, at + CHUNK), heldAgent);
+    }
+    setUserRestrictions(heldId, { networks: null, uploads: false });
+    const done = await heldAgent.post(`/api/upload-sessions/${created.body.id}/complete`).send({});
+    expect(done.status).toBe(403);
+  });
+});

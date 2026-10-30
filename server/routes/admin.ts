@@ -4,7 +4,16 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { listUsers, findUserById, countAdmins, setUserPaused, setUserIdent } from '../db/users.js';
+import {
+  listUsers,
+  findUserById,
+  countAdmins,
+  setUserPaused,
+  setUserIdent,
+  restrictionsOf,
+  setUserRestrictions,
+} from '../db/users.js';
+import { parseAccountRestrictions, sameRestrictions } from '../../shared/accountRestrictions.js';
 import type { User } from '../db/users.js';
 import {
   createInvite,
@@ -143,6 +152,9 @@ router.get('/users', (_req: Request, res: Response) => {
       // re-deriving the rule in the client.
       ident: u.ident,
       effectiveIdent: effectiveIdent(u),
+      // What this account may connect to and whether it may upload
+      // (shared/accountRestrictions.ts); the unrestricted norm for most rows.
+      restrictions: restrictionsOf(u),
       // Another account answers this same ident — neither is attributable until
       // the operator assigns one of them something else.
       identConflict: (identCounts.get(effectiveIdent(u).toLowerCase()) ?? 0) > 1,
@@ -231,6 +243,51 @@ router.put('/users/:id/ident', (req: Request, res: Response) => {
     effectiveIdent: effectiveIdent(updated),
     appliesOnNextConnect: true,
   });
+});
+
+// Replace an account's restrictions (shared/accountRestrictions.ts). Whole set,
+// not a patch, same contract as the node route the control plane uses. Live
+// connections the new host list no longer allows are dropped at once; nothing
+// is deleted, and lifting the restriction brings every network back as it was.
+router.put('/users/:id/restrictions', (req: Request, res: Response) => {
+  if (isNodeMode()) {
+    // Hosted restrictions are the control plane's verdict (a plan, a trial);
+    // a cell-local edit would be overwritten on its next heartbeat.
+    res
+      .status(409)
+      .json({ error: 'restrictions are managed by the control plane in node edition' });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const next = parseAccountRestrictions(req.body);
+  if (!next) {
+    res.status(400).json({
+      error: 'body must be { networks: string[] | null, uploads: boolean }',
+    });
+    return;
+  }
+  const target = findUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  // Restricting yourself would close the one account that can undo it; the UI
+  // disables it too, but guard the route as the source of truth.
+  if (target.id === req.user!.id) {
+    res.status(409).json({ error: 'cannot restrict yourself' });
+    return;
+  }
+  if (sameRestrictions(restrictionsOf(target), next)) {
+    res.json({ ok: true, unchanged: true, restrictions: next });
+    return;
+  }
+  setUserRestrictions(id, next);
+  ircManager.restrictUser(id, next);
+  res.json({ ok: true, restrictions: next });
 });
 
 router.delete('/users/:id', (req: Request, res: Response) => {

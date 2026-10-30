@@ -66,6 +66,8 @@ import { dccRoot } from './dccPaths.js';
 import { dccUploadIsStale, dccUsageBytes, pendingDccUploadBytes } from '../db/dccTransfers.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { formatBytes } from './dcc.js';
+import { findUserById, restrictionsOf } from '../db/users.js';
+import { UPLOADS_RESTRICTED } from '../../shared/accountRestrictions.js';
 
 /** Where sessions keep their bytes. Owner-only, files 0600: an import is an
  *  archive with the source account's network passwords in it. */
@@ -225,6 +227,16 @@ function bytesStillToCome(): number {
   return total;
 }
 
+// The purposes that put a file on the instance's uploaders, which is what an
+// account restriction withholds. An import stays on this disk and a DCC send
+// goes peer-to-peer, so neither is the CDN and neither is gated here.
+function refuseIfUploadsRestricted(userId: number, purpose: unknown): void {
+  if (purpose !== 'upload' && purpose !== 'avatar') return;
+  if (!restrictionsOf(findUserById(userId)).uploads) {
+    throw new UploadRequestError(403, UPLOADS_RESTRICTED);
+  }
+}
+
 export function createUploadSession(
   user: { id: number; isAdmin: boolean },
   body: Record<string, unknown>,
@@ -238,6 +250,7 @@ export function createUploadSession(
   ) {
     throw new UploadRequestError(400, "purpose must be 'upload', 'avatar', 'import' or 'dcc-send'");
   }
+  refuseIfUploadsRestricted(user.id, purpose);
   if (purpose === 'dcc-send') {
     if (!dccSendEnabledForUser(user.id)) {
       throw new UploadRequestError(403, 'DCC sending is not enabled for this account');
@@ -463,6 +476,10 @@ export async function finishUploadSession(
       offset,
     });
   }
+  // Checked again here, not only at create: a restriction that landed while
+  // the chunks were in flight must still keep the assembled file off the
+  // uploader.
+  refuseIfUploadsRestricted(userId, row.purpose);
   busy.add(id);
   let result: UploadSessionResult = {
     status: 500,

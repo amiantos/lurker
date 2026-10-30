@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 // Edition + node secret are read at request time; set them before importing the
 // router. vitest runs each test file in its own process, so this is scoped here.
@@ -525,5 +525,77 @@ describe('node control API — revoke a tenant’s OAuth apps', () => {
     const owner = createUser('oauth-revoke-noauth');
     const res = await createAnonAgent(app).post(`/api/node/users/${owner.id}/oauth/revoke`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe('node control API — restrictions', () => {
+  let ircManager: typeof import('../services/ircManager.js').default;
+  let restrictionsOf: typeof import('../db/users.js').restrictionsOf;
+
+  beforeAll(async () => {
+    ircManager = (await import('../services/ircManager.js')).default;
+    ({ restrictionsOf } = await import('../db/users.js'));
+  });
+
+  async function provision(username: string): Promise<number> {
+    const res = await createAnonAgent(app)
+      .post('/api/node/users')
+      .set('Authorization', AUTH)
+      .send({ username });
+    return res.body.id;
+  }
+  function put(id: number, body: unknown) {
+    return createAnonAgent(app)
+      .put(`/api/node/users/${id}/restrictions`)
+      .set('Authorization', AUTH)
+      .send(body as object);
+  }
+
+  it('applies a restriction and hands it to the manager', async () => {
+    const id = await provision('restrict-me');
+    const spy = vi.spyOn(ircManager, 'restrictUser');
+    const res = await put(id, { networks: ['IRC.Lurker.Chat'], uploads: false });
+    expect(res.status).toBe(200);
+    expect(res.body.restrictions).toStrictEqual({ networks: ['irc.lurker.chat'], uploads: false });
+    expect(restrictionsOf(findUserById(id))).toStrictEqual({
+      networks: ['irc.lurker.chat'],
+      uploads: false,
+    });
+    expect(spy).toHaveBeenCalledWith(id, { networks: ['irc.lurker.chat'], uploads: false });
+    spy.mockRestore();
+  });
+
+  // The control plane re-asserts what it believes on every heartbeat.
+  it('is a quiet no-op when nothing changes', async () => {
+    const id = await provision('restrict-same');
+    await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    const spy = vi.spyOn(ircManager, 'restrictUser');
+    const again = await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    expect(again.status).toBe(200);
+    expect(again.body.unchanged).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('lifts a restriction with the unrestricted shape', async () => {
+    const id = await provision('restrict-lift');
+    await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    const res = await put(id, { networks: null, uploads: true });
+    expect(res.status).toBe(200);
+    expect(findUserById(id)?.restrictions).toBeNull();
+  });
+
+  it('400s a malformed body and leaves the row alone', async () => {
+    const id = await provision('restrict-bad');
+    expect((await put(id, { networks: 'irc.lurker.chat' })).status).toBe(400);
+    expect((await put(id, { uploads: 'no' })).status).toBe(400);
+    expect(findUserById(id)?.restrictions).toBeNull();
+  });
+
+  it('404s an unknown tenant and 409s the admin account', async () => {
+    expect((await put(999999, { networks: null, uploads: true })).status).toBe(404);
+    const admin = createUser('restrict-admin', { role: 'admin' });
+    expect((await put(admin.id, { networks: [], uploads: false })).status).toBe(409);
+    expect(findUserById(admin.id)?.restrictions).toBeNull();
   });
 });

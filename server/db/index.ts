@@ -1445,6 +1445,13 @@ ensureColumn('users', 'is_paused', 'INTEGER NOT NULL DEFAULT 0');
 // shared IP from another, so letting members pick it defeats the identd.
 ensureColumn('users', 'ident', 'TEXT');
 
+// Per-account restrictions (shared/accountRestrictions.ts): a JSON object
+// naming the hosts this account may connect to and whether it may upload, or
+// NULL — the norm — for no restrictions. Set by the admin (standalone) or pushed
+// by the control plane (node edition); like is_paused, the cell mirrors the
+// verdict and never learns the reason.
+ensureColumn('users', 'restrictions', 'TEXT');
+
 // Roles: 'admin' can manage invites and other users; 'user' is everyone else.
 // On a fresh install the first user (created via /api/auth/setup) is promoted
 // to admin by routes/auth.js. On an existing single-user install pre-dating

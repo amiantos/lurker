@@ -28,6 +28,8 @@ import {
 import { configuredBaseUrl, publicBaseUrl } from '../utils/publicOrigin.js';
 import { capText } from '../utils/capText.js';
 import { hasFreeSpaceFor } from '../utils/diskSpace.js';
+import { restrictionsOf } from '../db/users.js';
+import { UPLOADS_RESTRICTED } from '../../shared/accountRestrictions.js';
 import {
   processUpload,
   providerErrorStatus,
@@ -38,6 +40,17 @@ import {
 
 const router = Router();
 router.use(requireAuth);
+
+// An account held off the uploaders (shared/accountRestrictions.ts) is refused
+// before multer reads a byte of the body, not after the file has been spooled
+// to disk and then thrown away.
+function refuseIfUploadsRestricted(req: Request, res: Response, next: NextFunction): void {
+  if (!restrictionsOf(req.user!).uploads) {
+    res.status(403).json({ error: UPLOADS_RESTRICTED });
+    return;
+  }
+  next();
+}
 
 // Warn once (per process) the first time a local-upload link is built from
 // request headers because PUBLIC_BASE_URL isn't set. That fallback is the only
@@ -148,62 +161,67 @@ const uploadToDisk = (req: Request, res: Response, next: NextFunction): void => 
   });
 };
 
-router.post('/', uploadToDisk, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!req.file) {
-      res.status(400).json({ error: 'no file uploaded' });
-      return;
-    }
+router.post(
+  '/',
+  refuseIfUploadsRestricted,
+  uploadToDisk,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ error: 'no file uploaded' });
+        return;
+      }
 
-    // Per-upload override (design decision 9): send this one file somewhere
-    // other than your default. Multipart, so it arrives as a string field. An
-    // override that isn't in the caller's allowed set is a 400, never a silent
-    // reroute to their default (decision 15).
-    const requestedRaw = (req.body as { uploaderId?: unknown } | undefined)?.uploaderId;
-    const requestedId = requestedRaw == null || requestedRaw === '' ? null : Number(requestedRaw);
-    if (requestedId != null && !Number.isInteger(requestedId)) {
-      res.status(400).json({ error: 'uploaderId must be an integer' });
-      return;
-    }
+      // Per-upload override (design decision 9): send this one file somewhere
+      // other than your default. Multipart, so it arrives as a string field. An
+      // override that isn't in the caller's allowed set is a 400, never a silent
+      // reroute to their default (decision 15).
+      const requestedRaw = (req.body as { uploaderId?: unknown } | undefined)?.uploaderId;
+      const requestedId = requestedRaw == null || requestedRaw === '' ? null : Number(requestedRaw);
+      if (requestedId != null && !Number.isInteger(requestedId)) {
+        res.status(400).json({ error: 'uploaderId must be an integer' });
+        return;
+      }
 
-    // Correlation token for the progress events (#545). The client's own random
-    // string, arriving as a multipart text field like uploaderId does.
-    const tokenRaw = (req.body as { progressToken?: unknown } | undefined)?.progressToken;
+      // Correlation token for the progress events (#545). The client's own random
+      // string, arriving as a multipart text field like uploaderId does.
+      const tokenRaw = (req.body as { progressToken?: unknown } | undefined)?.progressToken;
 
-    // What the file is for: an ordinary upload, or an avatar the profile editor
-    // has cropped (#1189). A field like the others, sent before the file.
-    const purpose = (req.body as { purpose?: unknown } | undefined)?.purpose ?? 'upload';
-    if (purpose !== 'upload' && purpose !== 'avatar') {
-      res.status(400).json({ error: "purpose must be 'upload' or 'avatar'" });
-      return;
-    }
+      // What the file is for: an ordinary upload, or an avatar the profile editor
+      // has cropped (#1189). A field like the others, sent before the file.
+      const purpose = (req.body as { purpose?: unknown } | undefined)?.purpose ?? 'upload';
+      if (purpose !== 'upload' && purpose !== 'avatar') {
+        res.status(400).json({ error: "purpose must be 'upload' or 'avatar'" });
+        return;
+      }
 
-    const uploaded = await processUpload({
-      userId: req.user!.id,
-      isAdmin: req.user!.role === 'admin',
-      tempPath: req.file.path,
-      size: req.file.size,
-      claimedMime: req.file.mimetype,
-      originalName: req.file.originalname,
-      requestedUploaderId: requestedId,
-      progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
-      avatar: purpose === 'avatar',
-      baseUrl: () => requestBaseUrl(req),
-    });
-    res.json(uploaded);
-  } catch (err) {
-    if (err instanceof UploadRequestError) {
-      res.status(err.status).json({ error: err.message, ...err.extra });
-      return;
+      const uploaded = await processUpload({
+        userId: req.user!.id,
+        isAdmin: req.user!.role === 'admin',
+        tempPath: req.file.path,
+        size: req.file.size,
+        claimedMime: req.file.mimetype,
+        originalName: req.file.originalname,
+        requestedUploaderId: requestedId,
+        progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
+        avatar: purpose === 'avatar',
+        baseUrl: () => requestBaseUrl(req),
+      });
+      res.json(uploaded);
+    } catch (err) {
+      if (err instanceof UploadRequestError) {
+        res.status(err.status).json({ error: err.message, ...err.extra });
+        return;
+      }
+      next(err);
+    } finally {
+      // Every exit takes the temp file with it: success, 4xx/5xx, driver failure,
+      // or a throw. (A client abort never reaches the handler — multer unlinks its
+      // own partial file — and sweepTempUploads() catches anything a crash left.)
+      await discardTemp(req.file);
     }
-    next(err);
-  } finally {
-    // Every exit takes the temp file with it: success, 4xx/5xx, driver failure,
-    // or a throw. (A client abort never reaches the handler — multer unlinks its
-    // own partial file — and sweepTempUploads() catches anything a crash left.)
-    await discardTemp(req.file);
-  }
-});
+  },
+);
 
 // Can rows produced by this configured uploader have their bytes destroyed?
 // Same resolution the DELETE gate uses (loadDriverForRef → deletableWith), so

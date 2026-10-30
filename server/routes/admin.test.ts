@@ -20,10 +20,12 @@ const fakeManager = {
   disposed: [] as Array<[number, string]>,
   suspended: [] as number[],
   resumed: [] as number[],
+  restricted: [] as Array<[number, unknown]>,
   reset() {
     this.disposed = [];
     this.suspended = [];
     this.resumed = [];
+    this.restricted = [];
   },
   disposeUser(userId: number, reason: string) {
     this.disposed.push([userId, reason]);
@@ -36,8 +38,19 @@ const fakeManager = {
   resumeUser(userId: number) {
     this.resumed.push(userId);
   },
+  restrictUser(userId: number, restrictions: unknown) {
+    this.restricted.push([userId, restrictions]);
+  },
 };
 vi.mock('../services/ircManager.js', () => ({ default: fakeManager }));
+
+// The edition is read once and cached, so a route guarded by isNodeMode() can't
+// be flipped through the env mid-file. Switchable here; standalone by default.
+const edition = vi.hoisted(() => ({ node: false }));
+vi.mock('../utils/edition.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/edition.js')>()),
+  isNodeMode: () => edition.node,
+}));
 
 let app: Express;
 let adminAgent: LurkerTestAgent;
@@ -729,5 +742,75 @@ describe('identdEnabled in engine mode (#1138)', () => {
     link.start();
     await until(() => link.state === 'refused', 3000, 'link refused');
     expect(await identdEnabled()).toBe(false);
+  });
+});
+
+describe('PUT /api/admin/users/:id/restrictions', () => {
+  let target: User;
+
+  beforeAll(async () => {
+    target = (await import('../db/users.js')).createUser('restrict-target');
+  });
+
+  async function restrictionsOf(id: number): Promise<unknown> {
+    const res = await adminAgent.get('/api/admin/users');
+    return res.body.users.find((u: { id: number }) => u.id === id).restrictions;
+  }
+
+  it('403 for a non-admin', async () => {
+    const res = await userAgent
+      .put(`/api/admin/users/${user.id}/restrictions`)
+      .send({ networks: [], uploads: false });
+    expect(res.status).toBe(403);
+    expect(await restrictionsOf(user.id)).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  it('applies a restriction, reports it in the roster, and tells the manager', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${target.id}/restrictions`)
+      .send({ networks: ['irc.lurker.chat'], uploads: false });
+    expect(res.status).toBe(200);
+    expect(await restrictionsOf(target.id)).toStrictEqual({
+      networks: ['irc.lurker.chat'],
+      uploads: false,
+    });
+    expect(fakeManager.restricted).toEqual([
+      [target.id, { networks: ['irc.lurker.chat'], uploads: false }],
+    ]);
+  });
+
+  it('lifts it again', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${target.id}/restrictions`)
+      .send({ networks: null, uploads: true });
+    expect(res.status).toBe(200);
+    expect(await restrictionsOf(target.id)).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  it('400s a malformed body', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${target.id}/restrictions`)
+      .send({ networks: [42] });
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses to restrict yourself', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${admin.id}/restrictions`)
+      .send({ networks: [], uploads: false });
+    expect(res.status).toBe(409);
+  });
+
+  it('409s in node edition — the control plane owns it', async () => {
+    edition.node = true;
+    try {
+      const res = await adminAgent
+        .put(`/api/admin/users/${target.id}/restrictions`)
+        .send({ networks: [], uploads: false });
+      expect(res.status).toBe(409);
+      expect(await restrictionsOf(target.id)).toStrictEqual({ networks: null, uploads: true });
+    } finally {
+      edition.node = false;
+    }
   });
 });

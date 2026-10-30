@@ -2687,6 +2687,18 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     fanOut(userId, { kind: 'account-state', paused: false });
   });
 
+  // Restrictions changed: the same frame, carrying the new set so an open tab
+  // narrows (or widens) its picker and attach button in place. `paused` rides
+  // along unchanged so a client that reads the frame as "the account's state"
+  // is not told something false by its absence.
+  ircManager.on('user-restricted', ({ userId, restrictions }) => {
+    fanOut(userId, {
+      kind: 'account-state',
+      paused: findUserById(userId)?.is_paused === 1,
+      restrictions,
+    });
+  });
+
   httpServer.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
     if (!req.url || !req.url.startsWith('/ws')) return;
     // #574: reject a cross-site browser upgrade before we touch auth or the DB.

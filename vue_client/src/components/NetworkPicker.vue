@@ -94,9 +94,19 @@
     <!-- Locked down: no manual entry, because the server would refuse the host
          anyway (403). Say why rather than leaving a dead end where the escape
          hatch used to be. -->
-    <button v-if="presets.allowUserDefined" type="button" class="manual" @click="$emit('manual')">
+    <button
+      v-if="presets.allowUserDefined && !allowedHosts"
+      type="button"
+      class="manual"
+      @click="$emit('manual')"
+    >
       Enter details manually →
     </button>
+    <!-- Two lockdowns, two sentences: the instance's is the admin's to change,
+         the account's is this account's alone. -->
+    <p v-else-if="allowedHosts" class="locked">
+      This account can only connect to the networks listed above.
+    </p>
     <p v-else class="locked">This server only allows the networks listed above.</p>
   </div>
 </template>
@@ -110,12 +120,20 @@ import {
   type NetworkPreset,
 } from '../utils/builtinNetworks.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
+import { useAuthStore } from '../stores/auth.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { FunnelIcon, HashIcon, UsersIcon } from '@lucide/vue';
 
 defineEmits<{ select: [net: NetworkPreset]; manual: [] }>();
 
 const presets = useNetworkPresetsStore();
+const auth = useAuthStore();
+// The account's own host list (shared/accountRestrictions.ts), or null for any.
+// Narrows what is offered below; the server refuses the rest regardless.
+const allowedHosts = computed<Set<string> | null>(() => {
+  const hosts = auth.allowedNetworkHosts;
+  return hosts ? new Set(hosts) : null;
+});
 // Idempotent (the store coalesces in-flight fetches), and failing is fine: the
 // store stays permissive and empty, so the picker degrades to exactly the
 // builtins-only list it showed before this feature existed.
@@ -131,7 +149,9 @@ function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
 }
 
-const showTagFilter = computed(() => presets.allowUserDefined && builtinNetworkTags.length > 0);
+const showTagFilter = computed(
+  () => presets.allowUserDefined && !allowedHosts.value && builtinNetworkTags.length > 0,
+);
 
 const query = ref('');
 const onQueryInput = useImeSafeInput(query);
@@ -161,9 +181,14 @@ function formatCount(n: number): string {
 // public networks they are not permitted to connect to. The server enforces this
 // independently (services/networkPolicy) — this is the UI keeping its promise
 // not to offer what the connect path would refuse.
-const offered = computed<NetworkPreset[]>(() =>
-  presets.allowUserDefined ? [...presets.presets, ...builtinNetworks] : [...presets.presets],
-);
+const offered = computed<NetworkPreset[]>(() => {
+  const all = presets.allowUserDefined
+    ? [...presets.presets, ...builtinNetworks]
+    : [...presets.presets];
+  // An account held to a host list sees only those hosts, from either tier.
+  const hosts = allowedHosts.value;
+  return hosts ? all.filter((n) => hosts.has(n.host.toLowerCase())) : all;
+});
 
 const filtered = computed<NetworkPreset[]>(() => {
   const q = query.value.trim().toLowerCase();

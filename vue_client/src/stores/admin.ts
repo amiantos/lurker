@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { defineStore } from 'pinia';
+import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 import { api, type ApiError } from '../api.js';
 import type { RelayStatus } from '../../../shared/relayStatus.js';
 import type { AdminUploader, UploaderDriver } from '../utils/uploaders.js';
@@ -19,6 +20,8 @@ export interface AdminUser {
   effectiveIdent?: string;
   /** Another account answers this same ident — neither one attributes anything. */
   identConflict?: boolean;
+  /** What the account may connect to and whether it may upload. */
+  restrictions?: AccountRestrictions;
   /**
    * Expiry of this account's outstanding recovery link, or null for none (#855).
    * The link itself is never returned — only its hash is stored — so this can
@@ -190,6 +193,14 @@ export const useAdminStore = defineStore('admin', {
     // Pass null (or '') to fall back to deriving the ident from the username.
     // Patches the changed row from the response so the edit lands immediately,
     // then refetches for the conflict flags (see below).
+    async setUserRestrictions(id: number, restrictions: AccountRestrictions) {
+      const res = await api(`/api/admin/users/${id}/restrictions`, {
+        method: 'PUT',
+        body: restrictions,
+      });
+      const u = this.users.find((x) => x.id === id);
+      if (u) u.restrictions = res.restrictions;
+    },
     async setUserIdent(id: number, ident: string | null) {
       const res = await api(`/api/admin/users/${id}/ident`, { method: 'PUT', body: { ident } });
       this.usersFetchSeq++;

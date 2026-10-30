@@ -25,6 +25,7 @@ import {
   userHasPassword,
   setPasswordHash,
   listUsers,
+  restrictionsOf,
 } from '../db/users.js';
 import { inviteStatus, consumeInvite } from '../db/invites.js';
 import {
@@ -946,6 +947,7 @@ router.get('/me', requireAuth, (req: Request, res: Response) => {
       username: req.user!.username,
       role: req.user!.role,
       is_paused: !!req.user!.is_paused,
+      restrictions: restrictionsOf(req.user!),
     },
   });
 });

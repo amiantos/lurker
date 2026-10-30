@@ -14,7 +14,10 @@ import {
   findUserByUsername,
   usernameTaken,
   setUserPaused,
+  restrictionsOf,
+  setUserRestrictions,
 } from '../db/users.js';
+import { parseAccountRestrictions, sameRestrictions } from '../../shared/accountRestrictions.js';
 import { markUploadRemovedById } from '../db/uploadHistory.js';
 import { deleteOAuthForUser, upsertAppFromFleet } from '../db/oauth.js';
 import { validateRegistration } from '../services/oauth.js';
@@ -210,6 +213,47 @@ router.post('/users/:id/resume', (req: Request, res: Response) => {
   setUserPaused(id, false);
   ircManager.resumeUser(id);
   res.json({ ok: true });
+});
+
+// Replace a tenant's restrictions (shared/accountRestrictions.ts): the hosts
+// the account may connect to and whether it may upload. Body is the whole set,
+// never a patch, so the control plane's reconciliation can PUT what it believes
+// on every heartbeat — in BOTH directions, since a lift that failed to land is
+// a paying customer locked out, not a safe default. Idempotent: an unchanged
+// set is a quiet no-op, so that sweep neither drops connections nor re-fans the
+// account-state frame. The cell applies the restriction and never learns why.
+router.put('/users/:id/restrictions', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const next = parseAccountRestrictions(req.body);
+  if (!next) {
+    res.status(400).json({
+      error: 'body must be { networks: string[] | null, uploads: boolean }',
+    });
+    return;
+  }
+  const target = findUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  // The operator's admin account is not a tenant (mirrors pause/delete).
+  if (target.role === 'admin') {
+    res.status(409).json({ error: 'refusing to restrict an admin account' });
+    return;
+  }
+  if (sameRestrictions(restrictionsOf(target), next)) {
+    res.json({ ok: true, unchanged: true, restrictions: next });
+    return;
+  }
+  // Row first, so a reconnect timer firing during the teardown below meets the
+  // closed gate rather than slipping back in (same order as pause).
+  setUserRestrictions(id, next);
+  ircManager.restrictUser(id, next);
+  res.json({ ok: true, restrictions: next });
 });
 
 // Moderation takedown: the control plane has removed an upload's object from
