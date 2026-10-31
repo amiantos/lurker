@@ -115,6 +115,25 @@ describe('InvitesPane limits on a new invite', () => {
     ]);
   });
 
+  it('will not create a link whose account could connect nowhere', async () => {
+    const wrapper = mountPane([]);
+    const store = useAdminStore();
+    const createInvite = vi.fn<(opts?: unknown) => Promise<AdminInvite>>();
+    store.createInvite = createInvite as unknown as typeof store.createInvite;
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'generate invite link')!
+      .trigger('click');
+    // "any network" off with the host box empty: an empty list.
+    await wrapper.findAll('.modal input[type="checkbox"]')[0].setValue(false);
+    const create = wrapper.findAll('.modal button').find((b) => b.text() === 'Create link')!;
+    expect(create.attributes('disabled')).toBeDefined();
+    expect(wrapper.find('.modal').text()).toContain('List at least one network');
+    await wrapper.find('.modal form').trigger('submit');
+    await flush();
+    expect(createInvite).not.toHaveBeenCalled();
+  });
+
   it('tags a listed invite that carries restrictions', () => {
     const wrapper = mountPane([
       invite({

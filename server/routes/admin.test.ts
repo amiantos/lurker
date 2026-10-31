@@ -621,6 +621,16 @@ describe('invites', () => {
     expect((await adminAgent.get('/api/admin/invites')).body.invites.length).toBe(before);
   });
 
+  // A new account with nowhere to connect is a dead end, not a plan.
+  it('400s an invite that allows no network at all', async () => {
+    const before = (await adminAgent.get('/api/admin/invites')).body.invites.length;
+    const res = await adminAgent
+      .post('/api/admin/invites')
+      .send({ restrictions: { networks: [], uploads: true } });
+    expect(res.status).toBe(400);
+    expect((await adminAgent.get('/api/admin/invites')).body.invites.length).toBe(before);
+  });
+
   it('default expiry is 7 days when not supplied', async () => {
     const create = await adminAgent.post('/api/admin/invites').send({});
     expect(create.status).toBe(200);

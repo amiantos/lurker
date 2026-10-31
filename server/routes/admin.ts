@@ -495,7 +495,9 @@ router.get('/invites', (req: Request, res: Response) => {
 
 // `restrictions` (shared/accountRestrictions.ts), optional: what the account
 // this invite creates is born with. Omitted means none; present, it is the
-// whole set or a 400, as on the per-user route.
+// whole set or a 400, as on the per-user route. An EMPTY host list is refused
+// here even though the per-user route allows it: a new account with nowhere
+// to connect is a link to a dead end, not a plan.
 router.post('/invites', (req: Request, res: Response) => {
   const requested = Number(req.body?.expiresInDays);
   const expiresInDays = Number.isFinite(requested) && requested > 0 ? requested : 7;
@@ -506,6 +508,10 @@ router.post('/invites', (req: Request, res: Response) => {
       res.status(400).json({
         error: 'restrictions must be { networks: string[] | null, uploads: boolean }',
       });
+      return;
+    }
+    if (parsed.networks !== null && parsed.networks.length === 0) {
+      res.status(400).json({ error: 'an invite must allow at least one network' });
       return;
     }
     restrictions = parsed;

@@ -28,10 +28,7 @@
           <fieldset class="limits">
             <legend>the account it creates</legend>
             <RestrictionsFields v-model="restrictions" :disabled="busy" />
-            <p class="hint">
-              Hosts it may connect to, comma-separated; an empty list means none. You can change
-              these later under users.
-            </p>
+            <p v-if="noNetworks" class="hint warn">List at least one network, or allow any.</p>
           </fieldset>
           <p v-if="error" class="error">{{ error }}</p>
         </div>
@@ -39,7 +36,7 @@
           <button type="button" class="btn-secondary" :disabled="busy" @click="$emit('close')">
             Cancel
           </button>
-          <button type="submit" class="btn-primary" :disabled="busy">
+          <button type="submit" class="btn-primary" :disabled="busy || noNetworks">
             {{ busy ? 'Creating…' : 'Create link' }}
           </button>
         </footer>
@@ -49,7 +46,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import AppModal from '../AppModal.vue';
 import RestrictionsFields from '../RestrictionsFields.vue';
 import { useAdminStore, type AdminInvite } from '../../stores/admin.js';
@@ -66,8 +63,14 @@ const expiresInDays = ref(7);
 const restrictions = ref<AccountRestrictions>({ ...UNRESTRICTED });
 const busy = ref(false);
 const error = ref('');
+// A link whose account could connect nowhere is a dead end; the server refuses
+// it too, this just says so before the click.
+const noNetworks = computed(
+  () => restrictions.value.networks !== null && restrictions.value.networks.length === 0,
+);
 
 async function create(): Promise<void> {
+  if (noNetworks.value) return;
   error.value = '';
   busy.value = true;
   try {
@@ -111,5 +114,8 @@ async function create(): Promise<void> {
 .hint {
   color: var(--fg-muted);
   margin: 0;
+}
+.hint.warn {
+  color: var(--warn);
 }
 </style>
