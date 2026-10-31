@@ -22,7 +22,7 @@
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
           <BookmarkIcon />
         </button>
-        <button class="icon" title="Shares" @click="showUploads = true">
+        <button v-if="auth.canUpload" class="icon" title="Shares" @click="showUploads = true">
           <ShareIcon />
         </button>
         <DccButton class="icon" />
