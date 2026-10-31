@@ -561,7 +561,11 @@ describe('node control API — restrictions', () => {
       networks: ['irc.lurker.chat'],
       uploads: false,
     });
-    expect(spy).toHaveBeenCalledWith(id, { networks: ['irc.lurker.chat'], uploads: false });
+    expect(spy).toHaveBeenCalledWith(
+      id,
+      { networks: ['irc.lurker.chat'], uploads: false },
+      { networks: null, uploads: true },
+    );
     spy.mockRestore();
   });
 
@@ -577,12 +581,20 @@ describe('node control API — restrictions', () => {
     spy.mockRestore();
   });
 
-  it('lifts a restriction with the unrestricted shape', async () => {
+  it('lifts a restriction with the unrestricted shape, telling the manager what it was', async () => {
     const id = await provision('restrict-lift');
     await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    const spy = vi.spyOn(ircManager, 'restrictUser');
     const res = await put(id, { networks: null, uploads: true });
     expect(res.status).toBe(200);
     expect(findUserById(id)?.restrictions).toBeNull();
+    // The old list is what decides which autoconnect networks come back.
+    expect(spy).toHaveBeenCalledWith(
+      id,
+      { networks: null, uploads: true },
+      { networks: ['irc.lurker.chat'], uploads: false },
+    );
+    spy.mockRestore();
   });
 
   it('400s a malformed body and leaves the row alone', async () => {

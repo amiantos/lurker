@@ -20,7 +20,7 @@ const fakeManager = {
   disposed: [] as Array<[number, string]>,
   suspended: [] as number[],
   resumed: [] as number[],
-  restricted: [] as Array<[number, unknown]>,
+  restricted: [] as Array<[number, unknown, unknown]>,
   reset() {
     this.disposed = [];
     this.suspended = [];
@@ -38,8 +38,8 @@ const fakeManager = {
   resumeUser(userId: number) {
     this.resumed.push(userId);
   },
-  restrictUser(userId: number, restrictions: unknown) {
-    this.restricted.push([userId, restrictions]);
+  restrictUser(userId: number, next: unknown, prev: unknown) {
+    this.restricted.push([userId, next, prev]);
   },
 };
 vi.mock('../services/ircManager.js', () => ({ default: fakeManager }));
@@ -775,7 +775,11 @@ describe('PUT /api/admin/users/:id/restrictions', () => {
       uploads: false,
     });
     expect(fakeManager.restricted).toEqual([
-      [target.id, { networks: ['irc.lurker.chat'], uploads: false }],
+      [
+        target.id,
+        { networks: ['irc.lurker.chat'], uploads: false },
+        { networks: null, uploads: true },
+      ],
     ]);
   });
 
@@ -799,6 +803,21 @@ describe('PUT /api/admin/users/:id/restrictions', () => {
       .put(`/api/admin/users/${admin.id}/restrictions`)
       .send({ networks: [], uploads: false });
     expect(res.status).toBe(409);
+  });
+
+  // Another admin (or a row that failed closed) may have left one behind; the
+  // last admin standing has to be able to take it off.
+  it('lets you lift a restriction on yourself', async () => {
+    const { setUserRestrictions } = await import('../db/users.js');
+    setUserRestrictions(admin.id, { networks: [], uploads: false });
+    const res = await adminAgent
+      .put(`/api/admin/users/${admin.id}/restrictions`)
+      .send({ networks: null, uploads: true });
+    expect(res.status).toBe(200);
+    expect(await restrictionsOf(admin.id)).toStrictEqual({ networks: null, uploads: true });
+    expect(fakeManager.restricted).toEqual([
+      [admin.id, { networks: null, uploads: true }, { networks: [], uploads: false }],
+    ]);
   });
 
   it('409s in node edition — the control plane owns it', async () => {

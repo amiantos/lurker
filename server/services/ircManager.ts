@@ -35,8 +35,12 @@ import {
 } from '../db/dccTransfers.js';
 import { dccFileBytes } from './dccPaths.js';
 import { findUserById } from '../db/users.js';
-import { ACCOUNT_REFUSAL, hostAllowedChecker, networkRefusal } from './networkPolicy.js';
-import type { AccountRestrictions } from '../../shared/accountRestrictions.js';
+import { ACCOUNT_REFUSAL, networkRefusal } from './networkPolicy.js';
+import {
+  foldHost,
+  UNRESTRICTED,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
 import { effectiveSetting } from './settingsService.js';
 import {
   getNetworkAwayState,
@@ -1502,28 +1506,58 @@ class IrcManager extends EventEmitter {
     this.emit('user-resumed', { userId });
   }
 
-  // The account's restrictions changed (admin, or the control plane). Drop
-  // every live connection the new host list no longer allows — a restriction
-  // that waited for the next reconnect would let a limited account keep
-  // chatting wherever it already was — and leave the rest alone. Call AFTER
-  // setUserRestrictions so a retry timer firing mid-teardown meets the closed
-  // gate. Emits 'user-restricted' so wsHub can tell open tabs what changed.
+  // The account's restrictions changed (admin, or the control plane), from
+  // `prev` to `next`. Call AFTER setUserRestrictions so a retry timer firing
+  // mid-teardown meets the closed gate. Emits 'user-restricted' so wsHub can
+  // tell open tabs what changed.
   //
-  // Only ever a narrowing here: a restriction LIFTED reconnects nothing by
-  // itself. Autoconnect networks that were refused have no connection object
-  // left (gateReconnect drops it), so the user's next Connect — or the next
-  // boot — brings them back through the ordinary path.
-  restrictUser(userId: number, restrictions: AccountRestrictions): void {
+  // Narrowing: drop every live connection the new host list no longer allows
+  // (a restriction that waited for the next reconnect would let a limited
+  // account keep chatting wherever it already was) and leave the rest alone.
+  // Like suspendUser, disconnect() with the DEFAULT quit: the policy is the
+  // account's business, not something every channel it was in gets told.
+  //
+  // Widening: autoconnect networks the OLD list refused have no connection
+  // object left (gateReconnect drops it), so nothing would bring them back
+  // before the next boot — and for a hosted account that just paid, "your
+  // networks come back after the next cell update" is the lockout this route
+  // exists to prevent. Start them the way resumeUser does. Only networks the
+  // old list refused: one the user disconnected by hand stays disconnected.
+  restrictUser(
+    userId: number,
+    next: AccountRestrictions,
+    prev: AccountRestrictions = UNRESTRICTED,
+  ): void {
     const userMap = this.byUser.get(userId);
-    if (userMap && restrictions.networks !== null) {
-      const allowed = hostAllowedChecker(userId);
-      // stopNetwork deletes from the map as we go; a Map iterator tolerates that.
+    if (userMap && next.networks !== null) {
+      const allowed = new Set(next.networks);
+      // Deleting from the map as we go; a Map iterator tolerates that.
       for (const [networkId, conn] of userMap) {
-        if (allowed(conn.network.host)) continue;
-        this.stopNetwork(userId, networkId, ACCOUNT_REFUSAL);
+        if (allowed.has(foldHost(conn.network.host))) continue;
+        systemLog.log({
+          userId,
+          scope: `net:${conn.network.name}`,
+          fields: { networkId },
+          text: `Stopping: ${ACCOUNT_REFUSAL}`,
+        });
+        try {
+          conn.disconnect();
+        } catch (_) {
+          /* ignore */
+        }
+        userMap.delete(networkId);
       }
     }
-    this.emit('user-restricted', { userId, restrictions });
+    if (prev.networks !== null) {
+      const was = new Set(prev.networks);
+      for (const network of listNetworksForUser(userId)) {
+        if (!network.autoconnect || was.has(foldHost(network.host))) continue;
+        // connectGate re-reads the row the caller just wrote, so a host the
+        // new list still refuses is a null here, not a connection.
+        this.startNetwork(userId, network.id, { deferrable: true });
+      }
+    }
+    this.emit('user-restricted', { userId, restrictions: next });
   }
 
   shutdown(): void {

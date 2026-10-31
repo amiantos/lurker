@@ -245,14 +245,15 @@ router.put('/users/:id/restrictions', (req: Request, res: Response) => {
     res.status(409).json({ error: 'refusing to restrict an admin account' });
     return;
   }
-  if (sameRestrictions(restrictionsOf(target), next)) {
+  const prev = restrictionsOf(target);
+  if (sameRestrictions(prev, next)) {
     res.json({ ok: true, unchanged: true, restrictions: next });
     return;
   }
   // Row first, so a reconnect timer firing during the teardown below meets the
   // closed gate rather than slipping back in (same order as pause).
   setUserRestrictions(id, next);
-  ircManager.restrictUser(id, next);
+  ircManager.restrictUser(id, next, prev);
   res.json({ ok: true, restrictions: next });
 });
 

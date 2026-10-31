@@ -229,7 +229,8 @@ function bytesStillToCome(): number {
 
 // The purposes that put a file on the instance's uploaders, which is what an
 // account restriction withholds. An import stays on this disk and a DCC send
-// goes peer-to-peer, so neither is the CDN and neither is gated here.
+// goes peer-to-peer, so neither is the CDN and neither is gated here. An early
+// refusal, so no chunk is accepted for a file processUpload would then refuse.
 function refuseIfUploadsRestricted(userId: number, purpose: unknown): void {
   if (purpose !== 'upload' && purpose !== 'avatar') return;
   if (!restrictionsOf(findUserById(userId)).uploads) {
@@ -476,10 +477,8 @@ export async function finishUploadSession(
       offset,
     });
   }
-  // Checked again here, not only at create: a restriction that landed while
-  // the chunks were in flight must still keep the assembled file off the
-  // uploader.
-  refuseIfUploadsRestricted(userId, row.purpose);
+  // A restriction that landed while the chunks were in flight is caught by
+  // processUpload when `use` hands it the assembled file; nothing to redo here.
   busy.add(id);
   let result: UploadSessionResult = {
     status: 500,

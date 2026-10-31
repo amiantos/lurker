@@ -121,6 +121,7 @@ import {
 } from '../utils/builtinNetworks.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useAuthStore } from '../stores/auth.js';
+import { foldHost } from '../../../shared/accountRestrictions.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { FunnelIcon, HashIcon, UsersIcon } from '@lucide/vue';
 
@@ -187,7 +188,29 @@ const offered = computed<NetworkPreset[]>(() => {
     : [...presets.presets];
   // An account held to a host list sees only those hosts, from either tier.
   const hosts = allowedHosts.value;
-  return hosts ? all.filter((n) => hosts.has(n.host.toLowerCase())) : all;
+  if (!hosts) return all;
+  const listed = all.filter((n) => hosts.has(foldHost(n.host)));
+  // A host on the list that is neither a builtin nor an instance preset
+  // (standalone: an admin holding an account to their own server) still has to
+  // be reachable, and manual entry is gone, so it gets a bare row: the host as
+  // its name, TLS on the standard port, the same defaults manual entry starts
+  // from. The server would accept it; the picker must offer it.
+  const known = new Set(listed.map((n) => foldHost(n.host)));
+  for (const host of hosts) {
+    if (known.has(host)) continue;
+    listed.push({
+      name: host,
+      host,
+      port: 6697,
+      tls: true,
+      website: '',
+      users: null,
+      channels: null,
+      saslLikelyRequired: false,
+      tags: [],
+    });
+  }
+  return listed;
 });
 
 const filtered = computed<NetworkPreset[]>(() => {

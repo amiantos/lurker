@@ -13,7 +13,11 @@ import {
   restrictionsOf,
   setUserRestrictions,
 } from '../db/users.js';
-import { parseAccountRestrictions, sameRestrictions } from '../../shared/accountRestrictions.js';
+import {
+  isUnrestricted,
+  parseAccountRestrictions,
+  sameRestrictions,
+} from '../../shared/accountRestrictions.js';
 import type { User } from '../db/users.js';
 import {
   createInvite,
@@ -276,17 +280,20 @@ router.put('/users/:id/restrictions', (req: Request, res: Response) => {
     return;
   }
   // Restricting yourself would close the one account that can undo it; the UI
-  // disables it too, but guard the route as the source of truth.
-  if (target.id === req.user!.id) {
+  // disables it too, but guard the route as the source of truth. LIFTING your
+  // own is the harmless direction, and for the last admin standing it is the
+  // only way out of a restriction another admin left behind.
+  if (target.id === req.user!.id && !isUnrestricted(next)) {
     res.status(409).json({ error: 'cannot restrict yourself' });
     return;
   }
-  if (sameRestrictions(restrictionsOf(target), next)) {
+  const prev = restrictionsOf(target);
+  if (sameRestrictions(prev, next)) {
     res.json({ ok: true, unchanged: true, restrictions: next });
     return;
   }
   setUserRestrictions(id, next);
-  ircManager.restrictUser(id, next);
+  ircManager.restrictUser(id, next, prev);
   res.json({ ok: true, restrictions: next });
 });
 

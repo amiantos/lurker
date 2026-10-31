@@ -740,16 +740,56 @@ describe('ircManager account restrictions', () => {
     const events: unknown[] = [];
     const onRestricted = (e: unknown) => events.push(e);
     ircManager.on('user-restricted', onRestricted);
+    // The quit the room sees: the default, never the policy text. The
+    // restriction is the account's business, not the channel's.
+    const quit = vi.spyOn(awayConn!, 'disconnect');
     try {
       const restrictions = { networks: ['irc.lurker.chat'], uploads: true };
       setUserRestrictions(user.id, restrictions);
       ircManager.restrictUser(user.id, restrictions);
       expect(ircManager.getConnection(user.id, away.id)).toBeNull();
       expect(ircManager.getConnection(user.id, home.id)).toBe(homeConn);
+      expect(quit.mock.calls).toEqual([[]]);
       expect(events).toEqual([{ userId: user.id, restrictions }]);
     } finally {
       ircManager.off('user-restricted', onRestricted);
       ircManager.disposeNetwork(user.id, home.id, 'test over');
+      connectScheduler.reset();
+    }
+  });
+
+  // The other direction: a lift brings back the autoconnect networks the old
+  // list refused, which have no connection object left to retry on their own.
+  it('restrictUser brings back autoconnect networks a lifted list refused', () => {
+    const user = createUser('irc-lifted');
+    const home = netOn(user.id, 'home', 'irc.lurker.chat');
+    const away = netOn(user.id, 'away', 'irc.libera.chat');
+    const manual = createNetwork(user.id, {
+      name: 'manual',
+      host: 'irc.oftc.net',
+      port: 6697,
+      tls: true,
+      nick: 'x',
+      autoconnect: false,
+    })!;
+    const held = { networks: ['irc.lurker.chat'], uploads: true };
+    setUserRestrictions(user.id, held);
+    const homeConn = ircManager.startNetwork(user.id, home.id, { deferrable: true });
+    expect(homeConn).not.toBeNull();
+    expect(ircManager.startNetwork(user.id, away.id)).toBeNull();
+    try {
+      // Widened to Libera only: Libera comes back, the kept connection is
+      // untouched, a network the user never autoconnects stays down, and a
+      // host the new list still refuses is still refused.
+      const next = { networks: ['irc.lurker.chat', 'irc.libera.chat'], uploads: true };
+      setUserRestrictions(user.id, next);
+      ircManager.restrictUser(user.id, next, held);
+      expect(ircManager.getConnection(user.id, home.id)).toBe(homeConn);
+      expect(ircManager.getConnection(user.id, away.id)).not.toBeNull();
+      expect(ircManager.getConnection(user.id, manual.id)).toBeNull();
+    } finally {
+      ircManager.disposeNetwork(user.id, home.id, 'test over');
+      ircManager.disposeNetwork(user.id, away.id, 'test over');
       connectScheduler.reset();
     }
   });

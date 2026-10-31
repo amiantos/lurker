@@ -82,6 +82,21 @@ describe('uploads.upload — browser-leg progress', () => {
   });
 });
 
+describe('uploads.upload — account restrictions', () => {
+  it('refuses before the wire when the account may not upload', async () => {
+    const { useAuthStore } = await import('./auth.js');
+    const auth = useAuthStore();
+    auth.user = { id: 1, username: 'held', role: 'user' } as NonNullable<typeof auth.user>;
+    auth.setRestrictions({ networks: null, uploads: false });
+    const store = useUploadsStore();
+    await expect(store.upload(new Blob(['x']), 'x.txt')).rejects.toThrow(
+      'uploads are not enabled for this account',
+    );
+    expect(apiMultipart).not.toHaveBeenCalled();
+    expect(store.current).toBeNull();
+  });
+});
+
 describe('uploads.applyProgress', () => {
   it('advances through the phases the browser cannot see', () => {
     const uploads = useUploadsStore();

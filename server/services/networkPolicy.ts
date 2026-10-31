@@ -83,20 +83,28 @@ export function mayUseProxy(userId?: number): boolean {
 // stale cache here would mean a lockdown that doesn't lock down.
 export function hostAllowedChecker(userId?: number): (host: string) => boolean {
   const instance = instanceChecker();
-  const own = userId == null ? null : restrictionsOf(findUserById(userId)).networks;
+  const own = ownHosts(userId);
   if (own === null) return instance;
-  const allowed = new Set(own);
-  return (host: string) => instance(host) && allowed.has(foldHost(host || ''));
+  return (host: string) => instance(host) && own.has(foldHost(host || ''));
 }
 
 // The reason a host is refused for this account, or null when it is allowed.
 // The instance's answer comes first: a host the admin never listed is refused
 // for everyone, and telling the account it is the one being limited would send
-// the person to the wrong door.
+// the person to the wrong door. Each tier is resolved once: this runs on every
+// connect, including the boot-time autoconnect fan-out.
 export function networkRefusal(host: string, userId: number): string | null {
   if (!instanceChecker()(host)) return INSTANCE_REFUSAL;
-  if (!hostAllowedChecker(userId)(host)) return ACCOUNT_REFUSAL;
+  const own = ownHosts(userId);
+  if (own !== null && !own.has(foldHost(host || ''))) return ACCOUNT_REFUSAL;
   return null;
+}
+
+// The account's own host list as a set, or null when it has none.
+function ownHosts(userId?: number): Set<string> | null {
+  if (userId == null) return null;
+  const own = restrictionsOf(findUserById(userId)).networks;
+  return own === null ? null : new Set(own);
 }
 
 function instanceChecker(): (host: string) => boolean {

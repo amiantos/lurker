@@ -176,10 +176,12 @@
           <button
             v-if="!config.isNode"
             class="link"
-            :disabled="u.id === auth.user?.id || adminBusy"
+            :disabled="(u.id === auth.user?.id && !isLimited(u)) || adminBusy"
             :title="
               u.id === auth.user?.id
-                ? 'cannot limit yourself'
+                ? isLimited(u)
+                  ? 'lift the limits on your own account'
+                  : 'cannot limit yourself'
                 : 'limit which networks this account may join and whether it may upload'
             "
             @click="onEditLimits(u)"
@@ -244,6 +246,7 @@ import { formatRelative } from '../../utils/timestamp.js';
 // Same module the server derives and validates idents with, so the input's cap
 // can't drift from what the route accepts.
 import { MAX_IDENT_LENGTH } from '../../../../shared/ident.js';
+import { isUnrestricted } from '../../../../shared/accountRestrictions.js';
 
 const auth = useAuthStore();
 const adminStore = useAdminStore();
@@ -278,8 +281,7 @@ const limitsHostsDraft = ref('');
 const limitsUploadsDraft = ref(true);
 
 function isLimited(user: AdminUser): boolean {
-  const r = user.restrictions;
-  return !!r && (r.networks !== null || r.uploads === false);
+  return !!user.restrictions && !isUnrestricted(user.restrictions);
 }
 function limitsSummary(user: AdminUser): string {
   const r = user.restrictions;

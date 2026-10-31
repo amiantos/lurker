@@ -50,7 +50,8 @@
               <button
                 type="button"
                 class="btn-secondary"
-                :disabled="locked || uploading"
+                :disabled="locked || uploading || !auth.canUpload"
+                :title="auth.canUpload ? '' : 'uploads are not enabled for this account'"
                 @click="fileInput?.click()"
               >
                 {{ uploading ? 'Uploading…' : 'Upload…' }}
@@ -144,6 +145,7 @@ import AppModal from './AppModal.vue';
 import RenderSegments from './RenderSegments.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useUploadsStore } from '../stores/uploads.js';
+import { useAuthStore } from '../stores/auth.js';
 import { useProfileEditor } from '../composables/useProfileEditor.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
@@ -168,6 +170,7 @@ const FIELDS = METADATA_SUB_KEYS as Field[];
 
 const networks = useNetworksStore();
 const uploads = useUploadsStore();
+const auth = useAuthStore();
 const editor = useProfileEditor();
 
 const form = reactive<Record<Field, string>>(blank());

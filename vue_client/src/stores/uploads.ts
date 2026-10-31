@@ -4,6 +4,8 @@
 import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import { mimeMatchesKind, type UploadKind } from '../../../shared/uploadKinds.js';
+import { UPLOADS_RESTRICTED } from '../../../shared/accountRestrictions.js';
+import { useAuthStore } from './auth.js';
 import { api, apiMultipart } from '../api.js';
 import { uploadInChunks } from '../lib/chunkedUpload.js';
 import { makeClientId } from '../utils/clientId.js';
@@ -223,6 +225,10 @@ export const useUploadsStore = defineStore('uploads', {
       // never inserted.
       { avatar = false, insert = !avatar }: { avatar?: boolean; insert?: boolean } = {},
     ) {
+      // An account held off the uploaders (shared/accountRestrictions.ts). The
+      // composer and status bar hide their buttons; this is the gate for every
+      // caller that doesn't, thrown so the caller's own failure path shows it.
+      if (!useAuthStore().canUpload) throw new Error(UPLOADS_RESTRICTED);
       if (this.current) return; // Single concurrent upload — keeps the status bar coherent.
       const token = makeClientId();
       const fd = new FormData();
