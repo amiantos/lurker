@@ -99,9 +99,15 @@ describe('InvitesPane limits on a new invite', () => {
     await wrapper.find('.modal form').trigger('submit');
     await flush();
     expect(createInvite.mock.calls.at(-1)).toEqual([{ expiresInDays: 7 }]);
-    // Created: the modal is gone and the fresh link is shown.
+    // Created: the modal moves to its second stage, the link with copy and done.
+    expect(wrapper.find('.modal .url').text()).toContain('tok-new');
+    // Copied on arrival where the clipboard allows it, so the button may
+    // already be giving its feedback.
+    expect(
+      wrapper.findAll('.modal button').some((b) => /^(copy link|copied)$/.test(b.text())),
+    ).toBe(true);
+    await button('Done').trigger('click');
     expect(wrapper.find('.modal').exists()).toBe(false);
-    expect(wrapper.find('.invite-fresh').text()).toContain('tok-new');
 
     await button('generate invite link').trigger('click');
     const checks = wrapper.findAll('.modal input[type="checkbox"]');

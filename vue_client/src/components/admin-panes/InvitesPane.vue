@@ -26,12 +26,8 @@
       <button class="link" :disabled="adminBusy" @click="composing = true">
         generate invite link
       </button>
-      <span v-if="lastCreatedInviteUrl" class="invite-fresh" title="copied to clipboard">
-        <code>{{ lastCreatedInviteUrl }}</code>
-        <button class="link" @click="copyInviteUrl(lastCreatedInviteUrl)">copy</button>
-      </span>
     </div>
-    <NewInviteModal v-if="composing" @close="composing = false" @created="onCreated" />
+    <NewInviteModal v-if="composing" @close="composing = false" />
     <ul v-if="invites.length" class="device-list">
       <li v-for="inv in invites" :key="inv.token" class="device invite-row">
         <span class="ua">
@@ -86,7 +82,6 @@ const invites = computed(() => adminStore.invites);
 
 const adminError = ref('');
 const adminBusy = ref(false);
-const lastCreatedInviteUrl = ref('');
 const composing = ref(false);
 
 onMounted(() => {
@@ -99,17 +94,6 @@ onMounted(() => {
     adminError.value = e.message;
   });
 });
-
-function onCreated(invite: AdminInvite) {
-  composing.value = false;
-  adminError.value = '';
-  lastCreatedInviteUrl.value = invite.url;
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(invite.url).catch(() => {
-      /* clipboard is best-effort */
-    });
-  }
-}
 
 async function onDeleteInvite(invite: AdminInvite) {
   // Take the decision from the row we were handed, not by re-reading the store
@@ -129,14 +113,6 @@ async function onDeleteInvite(invite: AdminInvite) {
     adminBusy.value = false;
   }
 }
-
-function copyInviteUrl(url: string) {
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(url).catch(() => {
-      /* ignore */
-    });
-  }
-}
 </script>
 
 <style src="../settings-panes/panes.css"></style>
@@ -147,17 +123,6 @@ function copyInviteUrl(url: string) {
   gap: var(--space-6);
   padding: 0 0 var(--space-5);
   flex-wrap: wrap;
-}
-.invite-fresh {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  color: var(--fg-muted);
-}
-.invite-fresh code {
-  background: var(--bg-soft);
-  padding: 1px var(--space-2);
-  word-break: break-all;
 }
 .invite-row .ua {
   display: flex;

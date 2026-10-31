@@ -2,11 +2,12 @@
   Copyright (c) 2026 Brad Root
   SPDX-License-Identifier: MPL-2.0
 
-  Configure an invite link, then create it. Everything the link's account is
-  born with is decided here, before the link exists: how long the link lasts,
-  and the restrictions the account starts with (shared/accountRestrictions.ts),
+  Two stages. First, configure an invite link: how long it lasts, and the
+  restrictions the account it creates starts with (shared/accountRestrictions.ts),
   so a limited account never exists unrestricted between acceptance and the
-  Users pane. Emits `created` with the new invite; the pane shows the URL.
+  Users pane. Then the link itself, copied to the clipboard on arrival, with a
+  copy button for when that was refused, and done. The store already lists the
+  new invite; the pane needs nothing from here but `close`.
 -->
 
 <template>
@@ -14,8 +15,26 @@
        card a containing block, so rendered in place it would cover only the
        pane's column, not the page. -->
   <Teleport to="body">
-    <AppModal word="invite" title="new invite link" size="sm" @close="$emit('close')">
-      <form class="modal-form" @submit.prevent="create">
+    <AppModal
+      word="invite"
+      :title="created ? 'invite link' : 'new invite link'"
+      size="sm"
+      @close="$emit('close')"
+    >
+      <div v-if="created" class="modal-form">
+        <div class="invite-form">
+          <p class="hint">Share this link. It works once.</p>
+          <code class="url">{{ created.url }}</code>
+          <p v-if="summary" class="hint">{{ summary }}</p>
+        </div>
+        <footer class="modal-footer">
+          <button type="button" class="btn-secondary" @click="copy(created.url)">
+            {{ copied ? 'copied' : 'copy link' }}
+          </button>
+          <button type="button" class="btn-primary" @click="$emit('close')">Done</button>
+        </footer>
+      </div>
+      <form v-else class="modal-form" @submit.prevent="create">
         <div class="invite-form">
           <label>
             <span>link expires in</span>
@@ -50,19 +69,25 @@ import { computed, ref } from 'vue';
 import AppModal from '../AppModal.vue';
 import RestrictionsFields from '../RestrictionsFields.vue';
 import { useAdminStore, type AdminInvite } from '../../stores/admin.js';
+import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
+import { describeRestrictions } from '../../utils/accountRestrictions.js';
 import {
   isUnrestricted,
   UNRESTRICTED,
   type AccountRestrictions,
 } from '../../../../shared/accountRestrictions.js';
 
-const emit = defineEmits<{ close: []; created: [invite: AdminInvite] }>();
+defineEmits<{ close: [] }>();
 
 const adminStore = useAdminStore();
 const expiresInDays = ref(7);
 const restrictions = ref<AccountRestrictions>({ ...UNRESTRICTED });
 const busy = ref(false);
 const error = ref('');
+// Stage two: the link that was made.
+const created = ref<AdminInvite | null>(null);
+const { copied, copy } = useCopyFeedback();
+const summary = computed(() => describeRestrictions(created.value?.restrictions));
 // A link whose account could connect nowhere is a dead end; the server refuses
 // it too, this just says so before the click.
 const noNetworks = computed(
@@ -78,7 +103,10 @@ async function create(): Promise<void> {
       expiresInDays: expiresInDays.value,
       ...(isUnrestricted(restrictions.value) ? {} : { restrictions: restrictions.value }),
     });
-    emit('created', invite);
+    created.value = invite;
+    // Best effort, like every copy in the app: the button is there for when
+    // the clipboard refuses without a gesture.
+    void copy(invite.url);
   } catch (e: any) {
     error.value = e.message || 'failed to create invite';
   } finally {
@@ -117,5 +145,12 @@ async function create(): Promise<void> {
 }
 .hint.warn {
   color: var(--warn);
+}
+.url {
+  display: block;
+  background: var(--bg-soft);
+  padding: var(--space-2) var(--space-3);
+  word-break: break-all;
+  user-select: all;
 }
 </style>
