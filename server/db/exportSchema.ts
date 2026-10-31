@@ -64,6 +64,7 @@ const USERS_SKIPPED_COLUMNS: Record<string, string> = Object.freeze({
   created_at: 'tracked locally by each instance',
   is_paused: 'account access state, owned by the local instance / control plane',
   ident: 'admin-assigned identd name; the importing instance’s admin owns who is called what',
+  restrictions: 'per-account limits, owned by the local instance / control plane like is_paused',
 });
 
 // scope values control how the exporter filters rows for a given userId.

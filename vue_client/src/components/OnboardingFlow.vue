@@ -41,11 +41,14 @@
       <span v-else>Choose a nick and where to land.</span>
     </template>
 
-    <NetworkPicker v-if="step === 'pick'" @select="onPick" @manual="onManual" />
+    <NetworkPicker v-if="step === 'pick'" auto-pick-sole @select="onPick" @manual="onManual" />
 
     <form v-else class="modal-form" @submit.prevent="submit">
       <div class="setup">
-        <button type="button" class="back-link" @click="back">← pick a different network</button>
+        <!-- Not when the picker chose for them: there is no different network. -->
+        <button v-if="!solePick" type="button" class="back-link" @click="back">
+          ← pick a different network
+        </button>
 
         <!-- Manual entry has no preset behind it, so the connection details the
              picker would have supplied have to be asked for. -->
@@ -173,6 +176,8 @@ const auth = useAuthStore();
 const onboarding = useOnboarding();
 
 const step = ref<'pick' | 'setup'>('pick');
+// The picker picked the one network on offer; nothing to go back to.
+const solePick = ref(false);
 const picked = ref<NetworkPreset | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -216,7 +221,8 @@ function toggle(channel: string): void {
   else selected.value.push(channel);
 }
 
-function onPick(net: NetworkPreset): void {
+function onPick(net: NetworkPreset, auto = false): void {
+  solePick.value = auto;
   picked.value = net;
   form.name = net.name;
   form.host = net.host;

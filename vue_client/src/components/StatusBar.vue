@@ -133,8 +133,8 @@
           type="button"
           class="tool-btn"
           :class="{ on: overlay.uploadMenuOpen }"
-          :disabled="!sendable"
-          title="attach a file"
+          :disabled="!sendable || !auth.canUpload"
+          :title="auth.canUpload ? 'attach a file' : 'uploads are not enabled for this account'"
           aria-label="attach a file"
           :aria-expanded="overlay.uploadMenuOpen"
           @mousedown.prevent
@@ -645,7 +645,7 @@ function onToggleColorPicker() {
 const uploadMenuBtnEl = ref<HTMLButtonElement | null>(null);
 
 function onToggleUploadMenu() {
-  if (!sendable.value) return;
+  if (!sendable.value || !auth.canUpload) return;
   const open = !overlay.uploadMenuOpen;
   if (open) setColorPickerOpen(false);
   setUploadMenuOpen(open);

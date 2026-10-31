@@ -43,6 +43,7 @@
           {{ u.username }}
           <span v-if="u.role === 'admin'" class="role-tag">admin</span>
           <span v-if="u.isPaused" class="paused-tag">paused</span>
+          <span v-if="isLimited(u)" class="limited-tag" :title="limitsSummary(u)"> limited </span>
           <span
             v-if="adminStore.identdEnabled !== false && u.effectiveIdent"
             class="ident-tag"
@@ -110,6 +111,25 @@
           </small>
         </form>
 
+        <!-- Inline limits editor: the same fields an invite is created with
+             (RestrictionsFields), so what an account was born with and what it
+             is changed to are edited the same way. -->
+        <form
+          v-if="editingLimitsFor === u.id"
+          class="limits-edit"
+          @submit.prevent="onSaveLimits(u)"
+        >
+          <RestrictionsFields v-model="limitsDraft" :disabled="adminBusy" />
+          <button type="submit" class="link" :disabled="adminBusy">save</button>
+          <button type="button" class="link" :disabled="adminBusy" @click="editingLimitsFor = null">
+            cancel
+          </button>
+          <small class="muted">
+            Hosts this account may connect to, comma-separated; an empty list means none.
+            Connections outside the list drop at once; nothing is deleted.
+          </small>
+        </form>
+
         <!-- Shown once, under the row it belongs to. Only the hash is stored, so
              there is no later screen that can show this URL again — an admin who
              loses it issues another, which kills this one. -->
@@ -140,6 +160,23 @@
             @click="onEditIdent(u)"
           >
             ident
+          </button>
+          <button
+            v-if="!config.isNode"
+            class="link"
+            :disabled="(u.role === 'admin' && !isLimited(u)) || adminBusy"
+            :title="
+              u.role === 'admin'
+                ? isLimited(u)
+                  ? 'lift the limits on this admin account'
+                  : u.id === auth.user?.id
+                    ? 'cannot limit yourself'
+                    : 'cannot limit an admin'
+                : 'limit which networks this account may join and whether it may upload'
+            "
+            @click="onEditLimits(u)"
+          >
+            limits
           </button>
           <button
             v-if="!config.isNode"
@@ -199,6 +236,13 @@ import { formatRelative } from '../../utils/timestamp.js';
 // Same module the server derives and validates idents with, so the input's cap
 // can't drift from what the route accepts.
 import { MAX_IDENT_LENGTH } from '../../../../shared/ident.js';
+import {
+  isUnrestricted,
+  UNRESTRICTED,
+  type AccountRestrictions,
+} from '../../../../shared/accountRestrictions.js';
+import { describeRestrictions } from '../../utils/accountRestrictions.js';
+import RestrictionsFields from '../RestrictionsFields.vue';
 
 const auth = useAuthStore();
 const adminStore = useAdminStore();
@@ -226,6 +270,35 @@ const adminBusy = ref(false);
 // id of the row whose ident is being edited (one at a time), plus its draft.
 const editingIdentFor = ref<number | null>(null);
 const identDraft = ref('');
+
+// Same shape for the limits editor.
+const editingLimitsFor = ref<number | null>(null);
+const limitsDraft = ref<AccountRestrictions>({ ...UNRESTRICTED });
+
+function isLimited(user: AdminUser): boolean {
+  return !!user.restrictions && !isUnrestricted(user.restrictions);
+}
+function limitsSummary(user: AdminUser): string {
+  return describeRestrictions(user.restrictions);
+}
+function onEditLimits(user: AdminUser) {
+  adminError.value = '';
+  const r = user.restrictions;
+  limitsDraft.value = r ? { ...r } : { ...UNRESTRICTED };
+  editingLimitsFor.value = editingLimitsFor.value === user.id ? null : user.id;
+}
+async function onSaveLimits(user: AdminUser) {
+  adminError.value = '';
+  adminBusy.value = true;
+  try {
+    await adminStore.setUserRestrictions(user.id, limitsDraft.value);
+    editingLimitsFor.value = null;
+  } catch (e: any) {
+    adminError.value = e.message || 'failed to set limits';
+  } finally {
+    adminBusy.value = false;
+  }
+}
 
 // The one recovery link minted this session, if any. Held in the component
 // rather than the store because it is not state — it is a value that exists for
@@ -373,6 +446,18 @@ async function onResumeUser(user: AdminUser) {
 
 <style src="../settings-panes/panes.css"></style>
 <style scoped>
+.user-row .limited-tag {
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  padding: 0 var(--space-2);
+  text-transform: uppercase;
+}
+.user-row .limits-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+}
 .user-row .ident-tag {
   color: var(--fg-muted);
   border: 1px solid var(--border);

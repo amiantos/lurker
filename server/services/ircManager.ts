@@ -34,8 +34,13 @@ import {
   type DccTransferRow,
 } from '../db/dccTransfers.js';
 import { dccFileBytes } from './dccPaths.js';
-import { findUserById } from '../db/users.js';
-import { isNetworkHostAllowed } from './networkPolicy.js';
+import { findUserById, restrictionsOf } from '../db/users.js';
+import { ACCOUNT_REFUSAL, PROXY_REFUSAL, networkRefusal } from './networkPolicy.js';
+import {
+  foldHost,
+  UNRESTRICTED,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
 import { effectiveSetting } from './settingsService.js';
 import {
   getNetworkAwayState,
@@ -449,11 +454,20 @@ class IrcManager extends EventEmitter {
     userId: number,
     networkId: number,
   ): { ok: true; network: Network } | { ok: false; reason: string } {
-    if (findUserById(userId)?.is_paused) return { ok: false, reason: 'this account is paused' };
+    const user = findUserById(userId);
+    if (user?.is_paused) return { ok: false, reason: 'this account is paused' };
     const network = getNetwork(networkId, userId);
     if (!network) return { ok: false, reason: 'this network no longer exists' };
-    if (!isNetworkHostAllowed(network.host)) {
-      return { ok: false, reason: `${network.host} is not permitted by this instance` };
+    // The row just read, not the id: this runs once per network at boot.
+    const refusal = networkRefusal(network.host, user ? restrictionsOf(user) : userId);
+    if (refusal) {
+      return {
+        ok: false,
+        reason:
+          refusal === ACCOUNT_REFUSAL
+            ? `${network.host} is not permitted for this account`
+            : `${network.host} is not permitted by this instance`,
+      };
     }
     return { ok: true, network };
   }
@@ -1492,6 +1506,75 @@ class IrcManager extends EventEmitter {
   resumeUser(userId: number): void {
     this.initForUser(userId);
     this.emit('user-resumed', { userId });
+  }
+
+  // The account's restrictions changed (admin, or the control plane), from
+  // `prev` to `next`. Call AFTER setUserRestrictions so a retry timer firing
+  // mid-teardown meets the closed gate. Emits 'user-restricted' so wsHub can
+  // tell open tabs what changed.
+  //
+  // Narrowing: drop every live connection the new host list no longer allows
+  // (a restriction that waited for the next reconnect would let a limited
+  // account keep chatting wherever it already was) and leave the rest alone.
+  // Like suspendUser, disconnect() with the DEFAULT quit: the policy is the
+  // account's business, not something every channel it was in gets told.
+  //
+  // Widening: autoconnect networks the OLD list refused have no connection
+  // object left (gateReconnect drops it), so nothing would bring them back
+  // before the next boot — and for a hosted account that just paid, "your
+  // networks come back after the next cell update" is the lockout this route
+  // exists to prevent. Start them the way resumeUser does. Only networks the
+  // old list refused: one the user disconnected by hand stays disconnected.
+  restrictUser(
+    userId: number,
+    next: AccountRestrictions,
+    prev: AccountRestrictions = UNRESTRICTED,
+  ): void {
+    const userMap = this.byUser.get(userId);
+    if (userMap && next.networks !== null) {
+      const allowed = new Set(next.networks);
+      // Deleting from the map as we go; a Map iterator tolerates that.
+      for (const [networkId, conn] of userMap) {
+        // A proxy of the user's own is a second destination the list never
+        // named (mayUseProxy is false for a held account), so a proxied
+        // connection goes even when its nominal host is allowed.
+        const proxied = !!conn.network.proxy_enabled;
+        if (!proxied && allowed.has(foldHost(conn.network.host))) continue;
+        systemLog.log({
+          userId,
+          scope: `net:${conn.network.name}`,
+          fields: { networkId },
+          text: `Stopping: ${proxied ? PROXY_REFUSAL : ACCOUNT_REFUSAL}`,
+        });
+        try {
+          conn.disconnect();
+        } catch (_) {
+          /* ignore */
+        }
+        userMap.delete(networkId);
+      }
+    }
+    if (prev.networks !== null) {
+      const was = new Set(prev.networks);
+      const now = next.networks === null ? null : new Set(next.networks);
+      for (const network of listNetworksForUser(userId)) {
+        if (!network.autoconnect) continue;
+        // What the old list refused AND the new one allows: a host off the old
+        // list and on (or under no) new list, or any proxied network on a full
+        // lift. Under a list the dial would refuse a proxied one again
+        // (proxyBlockedReason), and the row stays. Judged against both lists so
+        // an uploads-only change, or a list that merely shrank, starts nothing.
+        const host = foldHost(network.host);
+        const refused = network.proxy_enabled
+          ? now === null
+          : !was.has(host) && (now === null || now.has(host));
+        if (!refused) continue;
+        // connectGate re-reads the row the caller just wrote, so a host the
+        // new list still refuses is a null here, not a connection.
+        this.startNetwork(userId, network.id, { deferrable: true });
+      }
+    }
+    this.emit('user-restricted', { userId, restrictions: next });
   }
 
   shutdown(): void {

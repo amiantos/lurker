@@ -6,6 +6,7 @@ import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
 import { api, clearAuthRecoveryGuard } from '../api.js';
 import { resetSession } from '../composables/useSessionReset.js';
 import { useConfigStore } from './config.js';
+import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 
 export interface AuthUser {
   id: number;
@@ -15,6 +16,11 @@ export interface AuthUser {
   // disconnected from IRC and barred from sending. Seeded by /api/auth/me and
   // flipped live by the server's 'account-state' WS event (see setPaused).
   is_paused?: boolean;
+  // What this account may connect to and whether it may upload
+  // (shared/accountRestrictions.ts). Seeded by /api/auth/me and replaced live
+  // by the same 'account-state' event when it carries one. Absent on an older
+  // server, which the getters read as unrestricted.
+  restrictions?: AccountRestrictions;
 }
 
 export interface SetupStatus {
@@ -50,6 +56,11 @@ export const useAuthStore = defineStore('auth', {
     // the admin panel + its entry buttons, the /admin route guard) keys off this
     // rather than re-deriving `user?.role === 'admin'` at each call site.
     isAdmin: (s): boolean => s.user?.role === 'admin',
+    // The hosts this account may connect to, or null for any. The picker hides
+    // what the server would refuse; the server still refuses it.
+    allowedNetworkHosts: (s): string[] | null => s.user?.restrictions?.networks ?? null,
+    // Whether the attach button has anywhere to send a file.
+    canUpload: (s): boolean => s.user?.restrictions?.uploads !== false,
   },
   actions: {
     // Adopt a freshly-established session. Every sign-in / setup / invite path
@@ -66,6 +77,10 @@ export const useAuthStore = defineStore('auth', {
     // enters/leaves read-only without a reload.
     setPaused(paused: boolean) {
       if (this.user) this.user.is_paused = paused;
+    },
+    // Live replacement from the same event, when it carries the set.
+    setRestrictions(restrictions: AccountRestrictions) {
+      if (this.user) this.user.restrictions = restrictions;
     },
     async fetchMe() {
       if (inflight) return inflight; // a fetch is in flight — share its result

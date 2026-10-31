@@ -6531,8 +6531,9 @@ export class IrcConnection {
     }
     // The instance lockdown applies on the connect path too, not only on write
     // — an admin who closes the instance must close the connections it already
-    // has, the same way isNetworkHostAllowed is re-checked here.
-    if (!mayUseProxy()) {
+    // has, the same way isNetworkHostAllowed is re-checked here. Judged for
+    // this network's owner: an account held to a host list is locked down too.
+    if (!mayUseProxy(this.network.user_id)) {
       return 'this server does not allow connecting through a proxy of your own';
     }
     // ⚠⚠ Engine mode dials in ANOTHER process. An engine below protocol minor 5

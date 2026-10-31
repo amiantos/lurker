@@ -20,10 +20,12 @@ const fakeManager = {
   disposed: [] as Array<[number, string]>,
   suspended: [] as number[],
   resumed: [] as number[],
+  restricted: [] as Array<[number, unknown, unknown]>,
   reset() {
     this.disposed = [];
     this.suspended = [];
     this.resumed = [];
+    this.restricted = [];
   },
   disposeUser(userId: number, reason: string) {
     this.disposed.push([userId, reason]);
@@ -36,8 +38,19 @@ const fakeManager = {
   resumeUser(userId: number) {
     this.resumed.push(userId);
   },
+  restrictUser(userId: number, next: unknown, prev: unknown) {
+    this.restricted.push([userId, next, prev]);
+  },
 };
 vi.mock('../services/ircManager.js', () => ({ default: fakeManager }));
+
+// The edition is read once and cached, so a route guarded by isNodeMode() can't
+// be flipped through the env mid-file. Switchable here; standalone by default.
+const edition = vi.hoisted(() => ({ node: false }));
+vi.mock('../utils/edition.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/edition.js')>()),
+  isNodeMode: () => edition.node,
+}));
 
 let app: Express;
 let adminAgent: LurkerTestAgent;
@@ -583,6 +596,78 @@ describe('invites', () => {
     expect(list2.body.invites.find((i: { token: string }) => i.token === token)).toBeFalsy();
   });
 
+  // The restrictions the account is born with ride the invite, so a limited
+  // account never exists unrestricted between acceptance and the Users pane.
+  it('creates an invite carrying restrictions, and lists them', async () => {
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    const create = await adminAgent.post('/api/admin/invites').send({ restrictions: held });
+    expect(create.status).toBe(200);
+    expect(create.body.invite.restrictions).toStrictEqual(held);
+    const list = await adminAgent.get('/api/admin/invites');
+    const row = list.body.invites.find(
+      (i: { token: string }) => i.token === create.body.invite.token,
+    );
+    expect(row.restrictions).toStrictEqual(held);
+    const plain = await adminAgent.post('/api/admin/invites').send({});
+    expect(plain.body.invite.restrictions).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  it('400s an invite whose restrictions are malformed, creating nothing', async () => {
+    const before = (await adminAgent.get('/api/admin/invites')).body.invites.length;
+    const res = await adminAgent
+      .post('/api/admin/invites')
+      .send({ restrictions: { uploads: false } });
+    expect(res.status).toBe(400);
+    expect((await adminAgent.get('/api/admin/invites')).body.invites.length).toBe(before);
+  });
+
+  // A new account with nowhere to connect is a dead end, not a plan.
+  it('400s an invite that allows no network at all', async () => {
+    const before = (await adminAgent.get('/api/admin/invites')).body.invites.length;
+    const res = await adminAgent
+      .post('/api/admin/invites')
+      .send({ restrictions: { networks: [], uploads: true } });
+    expect(res.status).toBe(400);
+    expect((await adminAgent.get('/api/admin/invites')).body.invites.length).toBe(before);
+  });
+
+  // Under an instance lockdown the presets ARE the allowed hosts; a list the
+  // instance would refuse is a dead end for the account, so it is refused here.
+  it('400s an invite listing a host the instance lockdown refuses', async () => {
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const { createInstanceNetwork, deleteInstanceNetwork } =
+      await import('../db/instanceNetworks.js');
+    const preset = createInstanceNetwork({ name: 'Home', host: 'irc.lurker.chat' });
+    setAllowUserDefinedNetworks(false);
+    try {
+      const off = await adminAgent
+        .post('/api/admin/invites')
+        .send({ restrictions: { networks: ['irc.libera.chat'], uploads: true } });
+      expect(off.status).toBe(400);
+      expect(off.body.error).toBe('irc.libera.chat is not allowed by this server');
+      const on = await adminAgent
+        .post('/api/admin/invites')
+        .send({ restrictions: { networks: ['irc.lurker.chat'], uploads: true } });
+      expect(on.status).toBe(200);
+      // The same rule on the per-user route.
+      const put = await adminAgent
+        .put(`/api/admin/users/${user.id}/restrictions`)
+        .send({ networks: ['irc.libera.chat'], uploads: true });
+      expect(put.status).toBe(400);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+      deleteInstanceNetwork(preset.id);
+    }
+  });
+
+  it('names the host when one cannot be on a list', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${user.id}/restrictions`)
+      .send({ networks: ['irc.example.org:6697'], uploads: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('irc.example.org:6697: hostnames only, no port');
+  });
+
   it('default expiry is 7 days when not supplied', async () => {
     const create = await adminAgent.post('/api/admin/invites').send({});
     expect(create.status).toBe(200);
@@ -729,5 +814,104 @@ describe('identdEnabled in engine mode (#1138)', () => {
     link.start();
     await until(() => link.state === 'refused', 3000, 'link refused');
     expect(await identdEnabled()).toBe(false);
+  });
+});
+
+describe('PUT /api/admin/users/:id/restrictions', () => {
+  let target: User;
+
+  beforeAll(async () => {
+    target = (await import('../db/users.js')).createUser('restrict-target');
+  });
+
+  async function restrictionsOf(id: number): Promise<unknown> {
+    const res = await adminAgent.get('/api/admin/users');
+    return res.body.users.find((u: { id: number }) => u.id === id).restrictions;
+  }
+
+  it('403 for a non-admin', async () => {
+    const res = await userAgent
+      .put(`/api/admin/users/${user.id}/restrictions`)
+      .send({ networks: [], uploads: false });
+    expect(res.status).toBe(403);
+    expect(await restrictionsOf(user.id)).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  it('applies a restriction, reports it in the roster, and tells the manager', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${target.id}/restrictions`)
+      .send({ networks: ['irc.lurker.chat'], uploads: false });
+    expect(res.status).toBe(200);
+    expect(await restrictionsOf(target.id)).toStrictEqual({
+      networks: ['irc.lurker.chat'],
+      uploads: false,
+    });
+    expect(fakeManager.restricted).toEqual([
+      [
+        target.id,
+        { networks: ['irc.lurker.chat'], uploads: false },
+        { networks: null, uploads: true },
+      ],
+    ]);
+  });
+
+  it('lifts it again', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${target.id}/restrictions`)
+      .send({ networks: null, uploads: true });
+    expect(res.status).toBe(200);
+    expect(await restrictionsOf(target.id)).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  it('400s a malformed body', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${target.id}/restrictions`)
+      .send({ networks: [42] });
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses to restrict yourself', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${admin.id}/restrictions`)
+      .send({ networks: [], uploads: false });
+    expect(res.status).toBe(409);
+  });
+
+  it('refuses to restrict another admin', async () => {
+    const { createUser } = await import('../db/users.js');
+    const other = createUser('restrict-other-admin', { role: 'admin' });
+    const res = await adminAgent
+      .put(`/api/admin/users/${other.id}/restrictions`)
+      .send({ networks: ['irc.lurker.chat'], uploads: true });
+    expect(res.status).toBe(409);
+    expect(await restrictionsOf(other.id)).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  // A row that failed closed may have left one behind; the last admin standing
+  // has to be able to take it off.
+  it('lets you lift a restriction on yourself', async () => {
+    const { setUserRestrictions } = await import('../db/users.js');
+    setUserRestrictions(admin.id, { networks: [], uploads: false });
+    const res = await adminAgent
+      .put(`/api/admin/users/${admin.id}/restrictions`)
+      .send({ networks: null, uploads: true });
+    expect(res.status).toBe(200);
+    expect(await restrictionsOf(admin.id)).toStrictEqual({ networks: null, uploads: true });
+    expect(fakeManager.restricted).toEqual([
+      [admin.id, { networks: null, uploads: true }, { networks: [], uploads: false }],
+    ]);
+  });
+
+  it('409s in node edition — the control plane owns it', async () => {
+    edition.node = true;
+    try {
+      const res = await adminAgent
+        .put(`/api/admin/users/${target.id}/restrictions`)
+        .send({ networks: [], uploads: false });
+      expect(res.status).toBe(409);
+      expect(await restrictionsOf(target.id)).toStrictEqual({ networks: null, uploads: true });
+    } finally {
+      edition.node = false;
+    }
   });
 });

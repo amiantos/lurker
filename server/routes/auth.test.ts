@@ -339,6 +339,40 @@ describe('POST /api/auth/invite/:token/password', () => {
     expect(res.body.user.role).toBe('user');
   });
 
+  // The account is born with the invite's restrictions: there is no moment in
+  // which the new user could add Libera before an admin limited them.
+  it('creates the account with the restrictions the invite carries', async () => {
+    const { findUserByUsername, restrictionsOf } = await import('../db/users.js');
+    const { createInvite } = await import('../db/invites.js');
+    const admin = findUserByUsername('firstadmin')!;
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    const invite = createInvite(admin.id, { expiresInDays: 1, restrictions: held })!;
+    // The landing page can say what the account will be held to.
+    const probe = await testRequest(app).get(`/api/auth/invite/${invite.token}`);
+    expect(probe.body).toStrictEqual({ valid: true, restrictions: held });
+    const res = await testRequest(app).post(`/api/auth/invite/${invite.token}/password`).send({
+      username: 'born-held',
+      password: 'longenoughpw',
+    });
+    expect(res.status).toBe(200);
+    expect(restrictionsOf(findUserByUsername('born-held')!)).toStrictEqual(held);
+  });
+
+  // The passkey path creates the row at /options, before the credential
+  // exists, so that is where the restrictions have to land.
+  it('the passkey path creates the account with them too', async () => {
+    const { findUserByUsername, restrictionsOf } = await import('../db/users.js');
+    const { createInvite } = await import('../db/invites.js');
+    const admin = findUserByUsername('firstadmin')!;
+    const held = { networks: [], uploads: false };
+    const invite = createInvite(admin.id, { expiresInDays: 1, restrictions: held })!;
+    const res = await testRequest(app)
+      .post(`/api/auth/invite/${invite.token}/options`)
+      .send({ username: 'born-held-passkey' });
+    expect(res.status).toBe(200);
+    expect(restrictionsOf(findUserByUsername('born-held-passkey')!)).toStrictEqual(held);
+  });
+
   it('rejects re-use of a consumed invite', async () => {
     const { findUserByUsername } = await import('../db/users.js');
     const { createInvite } = await import('../db/invites.js');

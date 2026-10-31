@@ -192,3 +192,37 @@ describe('auth store — every session-establishing path re-arms', () => {
     expect(auth.user).toEqual(USER);
   });
 });
+
+describe('auth store — account restrictions', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it('reads an older server (no field) as unrestricted', () => {
+    const store = useAuthStore();
+    store.adoptSession({ ...USER });
+    expect(store.allowedNetworkHosts).toBeNull();
+    expect(store.canUpload).toBe(true);
+  });
+
+  it('exposes the host list and the upload switch from /me', () => {
+    const store = useAuthStore();
+    store.adoptSession({
+      ...USER,
+      restrictions: { networks: ['irc.lurker.chat'], uploads: false },
+    });
+    expect(store.allowedNetworkHosts).toStrictEqual(['irc.lurker.chat']);
+    expect(store.canUpload).toBe(false);
+  });
+
+  it('replaces the set live from account-state', () => {
+    const store = useAuthStore();
+    store.adoptSession({
+      ...USER,
+      restrictions: { networks: ['irc.lurker.chat'], uploads: false },
+    });
+    store.setRestrictions({ networks: null, uploads: true });
+    expect(store.allowedNetworkHosts).toBeNull();
+    expect(store.canUpload).toBe(true);
+  });
+});

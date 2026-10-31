@@ -4,7 +4,23 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import { listUsers, findUserById, countAdmins, setUserPaused, setUserIdent } from '../db/users.js';
+import {
+  listUsers,
+  findUserById,
+  countAdmins,
+  setUserPaused,
+  setUserIdent,
+  restrictionsOf,
+  setUserRestrictions,
+} from '../db/users.js';
+import {
+  isUnrestricted,
+  readAccountRestrictions,
+  restrictionsFromStored,
+  sameRestrictions,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
+import { hostOffInstanceList } from '../services/networkPolicy.js';
 import type { User } from '../db/users.js';
 import {
   createInvite,
@@ -85,6 +101,8 @@ function publicInvite(row: any, { origin }: { origin: string }): Record<string, 
     expiresAt: row.expiresAt,
     usedAt: row.usedAt,
     usedByUsername: row.usedByUsername || null,
+    // What the redeeming account is born with; the unrestricted norm for most.
+    restrictions: restrictionsFromStored(row.restrictions),
     createdByUsername: row.createdByUsername || null,
     status: deriveInviteStatus(row),
   };
@@ -143,6 +161,9 @@ router.get('/users', (_req: Request, res: Response) => {
       // re-deriving the rule in the client.
       ident: u.ident,
       effectiveIdent: effectiveIdent(u),
+      // What this account may connect to and whether it may upload
+      // (shared/accountRestrictions.ts); the unrestricted norm for most rows.
+      restrictions: restrictionsOf(u),
       // Another account answers this same ident — neither is attributable until
       // the operator assigns one of them something else.
       identConflict: (identCounts.get(effectiveIdent(u).toLowerCase()) ?? 0) > 1,
@@ -231,6 +252,65 @@ router.put('/users/:id/ident', (req: Request, res: Response) => {
     effectiveIdent: effectiveIdent(updated),
     appliesOnNextConnect: true,
   });
+});
+
+// Replace an account's restrictions (shared/accountRestrictions.ts). Whole set,
+// not a patch, same contract as the node route the control plane uses. Live
+// connections the new host list no longer allows are dropped at once; nothing
+// is deleted, and lifting the restriction brings every network back as it was.
+router.put('/users/:id/restrictions', (req: Request, res: Response) => {
+  if (isNodeMode()) {
+    // Hosted restrictions are the control plane's verdict (a plan, a trial);
+    // a cell-local edit would be overwritten on its next heartbeat.
+    res
+      .status(409)
+      .json({ error: 'restrictions are managed by the control plane in node edition' });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const read = readAccountRestrictions(req.body);
+  if (read.error !== undefined) {
+    res.status(400).json({ error: read.error });
+    return;
+  }
+  const next = read.restrictions;
+  // A list the instance lockdown would refuse is a dead end, not a limit.
+  const off = hostOffInstanceList(next.networks);
+  if (off) {
+    res.status(400).json({ error: `${off} is not allowed by this server` });
+    return;
+  }
+  const target = findUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  // No admin account is restricted (the node route says the same): an admin
+  // can undo it from this screen, so it would only be theatre, and on your
+  // own row it would close the one account that can undo it. LIFTING is the
+  // harmless direction, and for the last admin standing it is the only way
+  // out of a restriction a row that failed closed left behind.
+  if (target.role === 'admin' && !isUnrestricted(next)) {
+    res.status(409).json({
+      error:
+        target.id === req.user!.id
+          ? 'cannot restrict yourself'
+          : 'refusing to restrict an admin account',
+    });
+    return;
+  }
+  const prev = restrictionsOf(target);
+  if (sameRestrictions(prev, next)) {
+    res.json({ ok: true, unchanged: true, restrictions: next });
+    return;
+  }
+  setUserRestrictions(id, next);
+  ircManager.restrictUser(id, next, prev);
+  res.json({ ok: true, restrictions: next });
 });
 
 router.delete('/users/:id', (req: Request, res: Response) => {
@@ -419,11 +499,34 @@ router.get('/invites', (req: Request, res: Response) => {
   res.json({ invites: listInvites().map((r) => publicInvite(r, { origin })) });
 });
 
+// `restrictions` (shared/accountRestrictions.ts), optional: what the account
+// this invite creates is born with. Omitted means none; present, it is the
+// whole set or a 400, as on the per-user route. An EMPTY host list is refused
+// here even though the per-user route allows it: a new account with nowhere
+// to connect is a link to a dead end, not a plan.
 router.post('/invites', (req: Request, res: Response) => {
   const requested = Number(req.body?.expiresInDays);
   const expiresInDays = Number.isFinite(requested) && requested > 0 ? requested : 7;
+  let restrictions: AccountRestrictions | undefined;
+  if (req.body?.restrictions !== undefined) {
+    const read = readAccountRestrictions(req.body.restrictions);
+    if (read.error !== undefined) {
+      res.status(400).json({ error: read.error });
+      return;
+    }
+    if (read.restrictions.networks !== null && read.restrictions.networks.length === 0) {
+      res.status(400).json({ error: 'an invite must allow at least one network' });
+      return;
+    }
+    const off = hostOffInstanceList(read.restrictions.networks);
+    if (off) {
+      res.status(400).json({ error: `${off} is not allowed by this server` });
+      return;
+    }
+    restrictions = read.restrictions;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const row = createInvite(req.user!.id, { expiresInDays }) as any;
+  const row = createInvite(req.user!.id, { expiresInDays, restrictions }) as any;
   const full = listInvites().find((r) => r.token === row?.token);
   const origin = originFromRequest(req);
   res.json({ invite: publicInvite(full || row, { origin }) });

@@ -94,15 +94,25 @@
     <!-- Locked down: no manual entry, because the server would refuse the host
          anyway (403). Say why rather than leaving a dead end where the escape
          hatch used to be. -->
-    <button v-if="presets.allowUserDefined" type="button" class="manual" @click="$emit('manual')">
+    <button
+      v-if="presets.allowUserDefined && !allowedHosts"
+      type="button"
+      class="manual"
+      @click="$emit('manual')"
+    >
       Enter details manually →
     </button>
+    <!-- Two lockdowns, two sentences: the instance's is the admin's to change,
+         the account's is this account's alone. -->
+    <p v-else-if="allowedHosts" class="locked">
+      This account can only connect to the networks listed above.
+    </p>
     <p v-else class="locked">This server only allows the networks listed above.</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   builtinNetworks,
   builtinNetworkTags,
@@ -110,12 +120,27 @@ import {
   type NetworkPreset,
 } from '../utils/builtinNetworks.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
+import { useAuthStore } from '../stores/auth.js';
+import { foldHost } from '../../../shared/accountRestrictions.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { FunnelIcon, HashIcon, UsersIcon } from '@lucide/vue';
 
-defineEmits<{ select: [net: NetworkPreset]; manual: [] }>();
+// `autoPickSole`: when the list would hold exactly one network and there is
+// no manual entry to fall back on, pick it rather than show a list of one.
+// The emit carries `auto: true` so the parent can hide its "pick a different
+// network" path, which would otherwise land right back here. Opt-in, because
+// the add-network form has a back link to this picker that would loop.
+const props = defineProps<{ autoPickSole?: boolean }>();
+const emit = defineEmits<{ select: [net: NetworkPreset, auto?: boolean]; manual: [] }>();
 
 const presets = useNetworkPresetsStore();
+const auth = useAuthStore();
+// The account's own host list (shared/accountRestrictions.ts), or null for any.
+// Narrows what is offered below; the server refuses the rest regardless.
+const allowedHosts = computed<Set<string> | null>(() => {
+  const hosts = auth.allowedNetworkHosts;
+  return hosts ? new Set(hosts) : null;
+});
 // Idempotent (the store coalesces in-flight fetches), and failing is fine: the
 // store stays permissive and empty, so the picker degrades to exactly the
 // builtins-only list it showed before this feature existed.
@@ -131,7 +156,9 @@ function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
 }
 
-const showTagFilter = computed(() => presets.allowUserDefined && builtinNetworkTags.length > 0);
+const showTagFilter = computed(
+  () => presets.allowUserDefined && !allowedHosts.value && builtinNetworkTags.length > 0,
+);
 
 const query = ref('');
 const onQueryInput = useImeSafeInput(query);
@@ -161,8 +188,53 @@ function formatCount(n: number): string {
 // public networks they are not permitted to connect to. The server enforces this
 // independently (services/networkPolicy) — this is the UI keeping its promise
 // not to offer what the connect path would refuse.
-const offered = computed<NetworkPreset[]>(() =>
-  presets.allowUserDefined ? [...presets.presets, ...builtinNetworks] : [...presets.presets],
+const offered = computed<NetworkPreset[]>(() => {
+  const all = presets.allowUserDefined
+    ? [...presets.presets, ...builtinNetworks]
+    : [...presets.presets];
+  // An account held to a host list sees only those hosts, from either tier.
+  const hosts = allowedHosts.value;
+  if (!hosts) return all;
+  const listed = all.filter((n) => hosts.has(foldHost(n.host)));
+  // A host on the list that is neither a builtin nor an instance preset
+  // (standalone: an admin holding an account to their own server) still has to
+  // be reachable, and manual entry is gone, so it gets a bare row: the host as
+  // its name, TLS on the standard port, the same defaults manual entry starts
+  // from. The server would accept it; the picker must offer it. Not under an
+  // instance lockdown, though: there the presets ARE the allowed hosts, and a
+  // host on the account's list but off the instance's is refused regardless.
+  if (!presets.allowUserDefined) return listed;
+  const known = new Set(listed.map((n) => foldHost(n.host)));
+  for (const host of hosts) {
+    if (known.has(host)) continue;
+    listed.push({
+      name: host,
+      host,
+      port: 6697,
+      tls: true,
+      website: '',
+      users: null,
+      channels: null,
+      saslLikelyRequired: false,
+      tags: [],
+    });
+  }
+  return listed;
+});
+
+// Once the presets are known: one network, no manual entry, no choice to make.
+// Guarded so it fires once, and only on a settled list.
+let autoPicked = false;
+watch(
+  [() => presets.loaded, offered],
+  ([loaded, list]) => {
+    if (!props.autoPickSole || autoPicked || !loaded) return;
+    const manualEntry = presets.allowUserDefined && !allowedHosts.value;
+    if (manualEntry || list.length !== 1) return;
+    autoPicked = true;
+    emit('select', list[0], true);
+  },
+  { immediate: true },
 );
 
 const filtered = computed<NetworkPreset[]>(() => {

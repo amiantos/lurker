@@ -144,6 +144,19 @@ describe('POST', () => {
     expect(rows.find((r) => r.url === location)?.filename).toBe('photo.png');
   });
 
+  // An account held off the uploaders (shared/accountRestrictions.ts) is
+  // refused on this path too, not only on the web app's routes: the gate is in
+  // processUpload, which every uploader-bound path goes through.
+  it('answers 403 for an account held off the uploaders', async () => {
+    const user = await seedUser();
+    users.setUserRestrictions(user.id, { networks: null, uploads: false });
+    const res = await upload(basic(user.username, PASSWORD), png);
+    expect(res.status).toBe(403);
+    expect(res.text).toBe('uploads are not enabled for this account');
+    const { listUploads } = await import('../db/uploadHistory.js');
+    expect(listUploads(user.id, {})).toEqual([]);
+  });
+
   // #1131: the single-request path checks the free-disk floor a session does.
   it('answers 507 when the disk has no room for the file', async () => {
     const user = await seedUser();

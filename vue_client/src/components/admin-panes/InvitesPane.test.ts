@@ -55,8 +55,13 @@ function mountPane(invites: AdminInvite[]): VueWrapper {
   store.fetchInvites = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   deleteInvite = vi.fn<(token: string) => Promise<void>>().mockResolvedValue(undefined);
   store.deleteInvite = deleteInvite as unknown as typeof store.deleteInvite;
-  return mount(InvitesPane);
+  // The new-invite modal teleports to body; stubbed, it renders in place so
+  // the tests can find it under the wrapper.
+  return mount(InvitesPane, { global: { stubs: { Teleport: true } } });
 }
+
+// Let a resolved store call and the re-render that follows it settle.
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 // The row action is the last button in each row.
 function rowButton(wrapper: VueWrapper, token: string) {
@@ -69,6 +74,84 @@ function rowButton(wrapper: VueWrapper, token: string) {
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.restoreAllMocks();
+});
+
+describe('InvitesPane limits on a new invite', () => {
+  it('sends the restrictions with the create call once they are set', async () => {
+    const wrapper = mountPane([]);
+    const store = useAdminStore();
+    const createInvite = vi
+      .fn<(opts?: unknown) => Promise<AdminInvite>>()
+      .mockResolvedValue(invite({ token: 'tok-new' }));
+    store.createInvite = createInvite as unknown as typeof store.createInvite;
+    const button = (text: string) =>
+      wrapper.findAll('button').find((b) => b.text() === text) ??
+      (() => {
+        throw new Error(`no button ${text}`);
+      })();
+
+    // The button opens the modal; nothing is created until it says so, and
+    // with nothing set the call carries no restrictions at all.
+    await button('generate invite link').trigger('click');
+    expect(wrapper.find('.modal').exists()).toBe(true);
+    expect(createInvite).not.toHaveBeenCalled();
+    // happy-dom does not run implicit submission from a button click.
+    await wrapper.find('.modal form').trigger('submit');
+    await flush();
+    expect(createInvite.mock.calls.at(-1)).toEqual([{ expiresInDays: 7 }]);
+    // Created: the modal moves to its second stage, the link with copy and done.
+    expect(wrapper.find('.modal .url').text()).toContain('tok-new');
+    // Copied on arrival where the clipboard allows it, so the button may
+    // already be giving its feedback.
+    expect(
+      wrapper.findAll('.modal button').some((b) => /^(copy link|copied)$/.test(b.text())),
+    ).toBe(true);
+    await button('Done').trigger('click');
+    expect(wrapper.find('.modal').exists()).toBe(false);
+
+    await button('generate invite link').trigger('click');
+    const checks = wrapper.findAll('.modal input[type="checkbox"]');
+    await checks[0].setValue(false);
+    await wrapper.find('.modal input:not([type="checkbox"])').setValue('irc.lurker.chat');
+    await checks[1].setValue(false);
+    await wrapper.find('.modal form').trigger('submit');
+    await flush();
+    expect(createInvite.mock.calls.at(-1)).toEqual([
+      { expiresInDays: 7, restrictions: { networks: ['irc.lurker.chat'], uploads: false } },
+    ]);
+  });
+
+  it('will not create a link whose account could connect nowhere', async () => {
+    const wrapper = mountPane([]);
+    const store = useAdminStore();
+    const createInvite = vi.fn<(opts?: unknown) => Promise<AdminInvite>>();
+    store.createInvite = createInvite as unknown as typeof store.createInvite;
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'generate invite link')!
+      .trigger('click');
+    // "any network" off with the host box empty: an empty list.
+    await wrapper.findAll('.modal input[type="checkbox"]')[0].setValue(false);
+    const create = wrapper.findAll('.modal button').find((b) => b.text() === 'Create link')!;
+    expect(create.attributes('disabled')).toBeDefined();
+    expect(wrapper.find('.modal').text()).toContain('List at least one network');
+    await wrapper.find('.modal form').trigger('submit');
+    await flush();
+    expect(createInvite).not.toHaveBeenCalled();
+  });
+
+  it('tags a listed invite that carries restrictions', () => {
+    const wrapper = mountPane([
+      invite({
+        token: 'tok-held',
+        restrictions: { networks: ['irc.lurker.chat'], uploads: false },
+      }),
+      PENDING,
+    ]);
+    const tags = wrapper.findAll('.invite-limited');
+    expect(tags).toHaveLength(1);
+    expect(tags[0].attributes('title')).toBe('networks: irc.lurker.chat · no uploads');
+  });
 });
 
 describe('InvitesPane row action (#590)', () => {

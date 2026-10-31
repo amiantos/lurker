@@ -33,6 +33,8 @@ import {
   type ResolvedUploader,
 } from './uploadProviders/resolve.js';
 import { insertUpload } from '../db/uploadHistory.js';
+import { findUserById, restrictionsOf } from '../db/users.js';
+import { UPLOADS_RESTRICTED } from '../../shared/accountRestrictions.js';
 import { hostedDeletable } from './hostedUploadDelete.js';
 import { reportUploadSoon } from './moderationReport.js';
 
@@ -115,6 +117,15 @@ function absolutizeUrl(url: string, storesRemotely: boolean, baseUrl: () => stri
 }
 
 export async function processUpload(input: UploadInput): Promise<UploadOutput> {
+  // An account held off the uploaders (shared/accountRestrictions.ts) is
+  // refused HERE, because this is the one function every path that puts a
+  // file on an uploader goes through: the web route, a chunked session's
+  // finish, and the bouncer's soju.im/FILEHOST. The routes that can refuse
+  // earlier (before a body is spooled, before chunks are accepted) also do,
+  // but this is the gate that cannot be missed by a new entry point.
+  if (!restrictionsOf(findUserById(input.userId)).uploads) {
+    throw new UploadRequestError(403, UPLOADS_RESTRICTED);
+  }
   // No control characters in the name: it goes into a provider's multipart
   // header and the uploads list, and a `filename*` can percent-encode a CR or LF.
   const originalName = (input.originalName || '').replace(/\p{Cc}/gu, '');

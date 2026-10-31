@@ -22,7 +22,12 @@
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
           <BookmarkIcon />
         </button>
-        <button class="icon" title="Shares" @click="showUploads = true">
+        <button
+          class="icon"
+          :disabled="!auth.canUpload"
+          :title="auth.canUpload ? 'Shares' : 'uploads are not enabled for this account'"
+          @click="showUploads = true"
+        >
           <ShareIcon />
         </button>
         <DccButton class="icon" />

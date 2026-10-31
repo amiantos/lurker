@@ -20,19 +20,25 @@
     <p v-if="adminError" class="error inline">{{ adminError }}</p>
 
     <div class="invite-actions">
-      <button class="link" :disabled="adminBusy" @click="onCreateInvite">
+      <!-- Configure first, then create: the link's expiry and what its account
+           is born with are decided in the modal, so nothing about a link can
+           be changed after it exists. -->
+      <button class="link" :disabled="adminBusy" @click="composing = true">
         generate invite link
       </button>
-      <span v-if="lastCreatedInviteUrl" class="invite-fresh" title="copied to clipboard">
-        <code>{{ lastCreatedInviteUrl }}</code>
-        <button class="link" @click="copyInviteUrl(lastCreatedInviteUrl)">copy</button>
-      </span>
     </div>
+    <NewInviteModal v-if="composing" @close="composing = false" />
     <ul v-if="invites.length" class="device-list">
       <li v-for="inv in invites" :key="inv.token" class="device invite-row">
         <span class="ua">
           <code class="invite-url">{{ inv.url }}</code>
           <span class="invite-status" :class="`status-${inv.status}`">{{ inv.status }}</span>
+          <span
+            v-if="describeRestrictions(inv.restrictions)"
+            class="invite-limited"
+            :title="describeRestrictions(inv.restrictions)"
+            >limited</span
+          >
           <span v-if="inv.usedByUsername" class="invite-used"> → {{ inv.usedByUsername }}</span>
         </span>
         <span class="last-seen" :title="inv.expiresAt ?? undefined">
@@ -67,6 +73,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
 import type { AdminInvite } from '../../stores/admin.js';
 import { formatRelative } from '../../utils/timestamp.js';
+import { describeRestrictions } from '../../utils/accountRestrictions.js';
+import NewInviteModal from './NewInviteModal.vue';
 
 const adminStore = useAdminStore();
 
@@ -74,7 +82,7 @@ const invites = computed(() => adminStore.invites);
 
 const adminError = ref('');
 const adminBusy = ref(false);
-const lastCreatedInviteUrl = ref('');
+const composing = ref(false);
 
 onMounted(() => {
   // Refetch on every pane activation. The store cache stays correct for THIS
@@ -86,25 +94,6 @@ onMounted(() => {
     adminError.value = e.message;
   });
 });
-
-async function onCreateInvite() {
-  adminError.value = '';
-  adminBusy.value = true;
-  lastCreatedInviteUrl.value = '';
-  try {
-    const invite = await adminStore.createInvite();
-    lastCreatedInviteUrl.value = invite.url;
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(invite.url).catch(() => {
-        /* clipboard is best-effort */
-      });
-    }
-  } catch (e: any) {
-    adminError.value = e.message || 'failed to create invite';
-  } finally {
-    adminBusy.value = false;
-  }
-}
 
 async function onDeleteInvite(invite: AdminInvite) {
   // Take the decision from the row we were handed, not by re-reading the store
@@ -124,14 +113,6 @@ async function onDeleteInvite(invite: AdminInvite) {
     adminBusy.value = false;
   }
 }
-
-function copyInviteUrl(url: string) {
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(url).catch(() => {
-      /* ignore */
-    });
-  }
-}
 </script>
 
 <style src="../settings-panes/panes.css"></style>
@@ -142,17 +123,6 @@ function copyInviteUrl(url: string) {
   gap: var(--space-6);
   padding: 0 0 var(--space-5);
   flex-wrap: wrap;
-}
-.invite-fresh {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-3);
-  color: var(--fg-muted);
-}
-.invite-fresh code {
-  background: var(--bg-soft);
-  padding: 1px var(--space-2);
-  word-break: break-all;
 }
 .invite-row .ua {
   display: flex;
@@ -185,5 +155,11 @@ function copyInviteUrl(url: string) {
 }
 .invite-used {
   color: var(--fg-muted);
+}
+.invite-limited {
+  text-transform: uppercase;
+  color: var(--warn);
+  border: 1px solid var(--warn);
+  padding: 0 var(--space-2);
 }
 </style>

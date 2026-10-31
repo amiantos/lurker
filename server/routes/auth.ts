@@ -25,8 +25,10 @@ import {
   userHasPassword,
   setPasswordHash,
   listUsers,
+  restrictionsOf,
 } from '../db/users.js';
-import { inviteStatus, consumeInvite } from '../db/invites.js';
+import { inviteStatus, consumeInvite, inviteRestrictions } from '../db/invites.js';
+import { isUnrestricted } from '../../shared/accountRestrictions.js';
 import {
   findLiveRecoveryToken,
   getRecoveryTokenForUser,
@@ -338,11 +340,14 @@ router.post('/setup/password', (req: Request, res: Response) => {
 // ---------- invite redemption ----------
 
 // Public status probe. Returns the bare minimum the UI needs to render the
-// landing page — no info about who created the invite or for whom.
+// landing page — no info about who created the invite or for whom. The
+// restrictions the account will be born with ARE the invitee's business, so
+// they ride along when there are any; the holder of the link is the invitee.
 router.get('/invite/:token', (req: Request<{ token: string }>, res: Response) => {
   const result = inviteStatus(req.params.token);
   if (result.status === 'valid') {
-    res.json({ valid: true });
+    const restrictions = inviteRestrictions(result.invite);
+    res.json({ valid: true, ...(isUnrestricted(restrictions) ? {} : { restrictions }) });
     return;
   }
   if (result.status === 'expired') {
@@ -370,8 +375,11 @@ router.post('/invite/:token/options', async (req: Request<{ token: string }>, re
   // Create the user up-front so we have a stable webauthn user handle for the
   // registration options. If the user abandons the flow we end up with a
   // username-squatter the admin can remove, mirroring the existing setup
-  // flow's tradeoff.
-  const user = createUser(requested, { role: 'user' });
+  // flow's tradeoff. Born with the invite's restrictions, not given them later.
+  const user = createUser(requested, {
+    role: 'user',
+    restrictions: inviteRestrictions(result.invite),
+  });
   const { rpID, rpName } = rpConfig();
   const options = await generateRegistrationOptions({
     rpName,
@@ -490,7 +498,10 @@ router.post('/invite/:token/password', (req: Request<{ token: string }>, res: Re
     res.status(409).json({ error: 'username already taken' });
     return;
   }
-  const user = createUser(requested, { role: 'user' });
+  const user = createUser(requested, {
+    role: 'user',
+    restrictions: inviteRestrictions(result.invite),
+  });
   // Atomic consume — only one parallel redemption can win. If we lose,
   // tear down the user we just created and surface the conflict.
   if (!consumeInvite(req.params.token, user.id)) {
@@ -946,6 +957,7 @@ router.get('/me', requireAuth, (req: Request, res: Response) => {
       username: req.user!.username,
       role: req.user!.role,
       is_paused: !!req.user!.is_paused,
+      restrictions: restrictionsOf(req.user!),
     },
   });
 });

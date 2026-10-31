@@ -17,7 +17,7 @@ registerVerb({
     'Connect (or reconnect) a configured network. Idempotent: a no-op if already connected unless ' +
     '`force` is true, which tears down the existing connection and dials fresh. Connection is ' +
     'asynchronous — watch the server buffer for registration. Returns { ok: false, error: ' +
-    '"locked-down" } when this instance\'s admin does not allow the network\'s host, or ' +
+    '"locked-down" } when this instance or this account is not allowed the network\'s host, or ' +
     '{ ok: false, error: "failed" } if the connection could not be started (e.g. the account is ' +
     'paused).',
   scope: 'read-write',
@@ -43,7 +43,7 @@ registerVerb({
     // (routes/networks.ts); startNetwork still enforces it, but silently.
     const network = getNetwork(networkId, ctx.userId);
     if (!network) return { ok: false, error: 'unknown-network' };
-    if (!isNetworkHostAllowed(network.host)) return { ok: false, error: 'locked-down' };
+    if (!isNetworkHostAllowed(network.host, ctx.userId)) return { ok: false, error: 'locked-down' };
     const conn =
       input.force === true
         ? ircManager.restartNetwork(ctx.userId, networkId)

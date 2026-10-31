@@ -3,6 +3,11 @@
 
 import crypto from 'crypto';
 import db from './index.js';
+import {
+  restrictionsFromStored,
+  serializeAccountRestrictions,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
 
 /** A row from `invite_tokens` (camelCase aliased columns). */
 export interface InviteToken {
@@ -12,6 +17,13 @@ export interface InviteToken {
   usedByUserId: number | null;
   usedAt: string | null;
   createdAt: string;
+  /** The restrictions the redeeming account is born with, stored form (NULL = none). */
+  restrictions: string | null;
+}
+
+/** The restrictions an invite hands the account it creates. */
+export function inviteRestrictions(invite: { restrictions: string | null }): AccountRestrictions {
+  return restrictionsFromStored(invite.restrictions);
 }
 
 /** InviteToken row joined with creator/redeemer usernames. */
@@ -35,7 +47,10 @@ function generateToken(): string {
 
 export function createInvite(
   createdBy: number,
-  { expiresInDays = 7 }: { expiresInDays?: number } = {},
+  {
+    expiresInDays = 7,
+    restrictions,
+  }: { expiresInDays?: number; restrictions?: AccountRestrictions } = {},
 ): InviteToken | null {
   const token = generateToken();
   const expiresAt =
@@ -44,10 +59,15 @@ export function createInvite(
       : null;
   db.prepare(
     `
-    INSERT INTO invite_tokens (token, created_by, expires_at)
-    VALUES (?, ?, ?)
+    INSERT INTO invite_tokens (token, created_by, expires_at, restrictions)
+    VALUES (?, ?, ?, ?)
   `,
-  ).run(token, createdBy, expiresAt);
+  ).run(
+    token,
+    createdBy,
+    expiresAt,
+    restrictions ? serializeAccountRestrictions(restrictions) : null,
+  );
   return getInvite(token);
 }
 
@@ -59,7 +79,7 @@ export function getInvite(token: string | null | undefined): InviteToken | null 
         `
     SELECT token, created_by AS createdBy, expires_at AS expiresAt,
            used_by_user_id AS usedByUserId, used_at AS usedAt,
-           created_at AS createdAt
+           created_at AS createdAt, restrictions
     FROM invite_tokens WHERE token = ?
   `,
       )
@@ -73,7 +93,7 @@ export function listInvites(): InviteTokenWithUsers[] {
       `
     SELECT i.token, i.created_by AS createdBy, i.expires_at AS expiresAt,
            i.used_by_user_id AS usedByUserId, i.used_at AS usedAt,
-           i.created_at AS createdAt,
+           i.created_at AS createdAt, i.restrictions,
            c.username AS createdByUsername,
            u.username AS usedByUsername
     FROM invite_tokens i

@@ -24,6 +24,7 @@
       <template v-else>
         <p class="subtitle">Welcome — pick a username and password.</p>
         <p class="warning">Only use a Lurker instance belonging to yourself or a close friend!</p>
+        <p v-if="limitsNote" class="hint">{{ limitsNote }}</p>
         <form @submit.prevent="onAccept">
           <label>
             <span>Username</span>
@@ -72,6 +73,8 @@ import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../stores/auth.js';
 import WordBackdrop from '../components/WordBackdrop.vue';
 import { USERNAME_PATTERN, MAX_USERNAME_LENGTH } from '../../../shared/username.js';
+import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
+import { describeRestrictionsForMember } from '../utils/accountRestrictions.js';
 import { blockImeEnter, useImeSafeInput } from '../composables/useImeSafeInput.js';
 
 const route = useRoute();
@@ -81,6 +84,9 @@ const auth = useAuthStore();
 interface InviteStatus {
   valid: boolean;
   expired?: boolean;
+  // What the account will be held to (shared/accountRestrictions.ts), present
+  // only when the invite carries a restriction.
+  restrictions?: AccountRestrictions;
 }
 
 const status = ref<InviteStatus | null>(null);
@@ -97,6 +103,7 @@ const canSubmit = computed(() => {
 });
 
 const submitLabel = computed(() => (working.value ? 'Creating account…' : 'Create account'));
+const limitsNote = computed(() => describeRestrictionsForMember(status.value?.restrictions));
 
 onMounted(async () => {
   try {

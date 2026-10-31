@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 
 // Edition + node secret are read at request time; set them before importing the
 // router. vitest runs each test file in its own process, so this is scoped here.
@@ -525,5 +525,121 @@ describe('node control API — revoke a tenant’s OAuth apps', () => {
     const owner = createUser('oauth-revoke-noauth');
     const res = await createAnonAgent(app).post(`/api/node/users/${owner.id}/oauth/revoke`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe('node control API — restrictions', () => {
+  let ircManager: typeof import('../services/ircManager.js').default;
+  let restrictionsOf: typeof import('../db/users.js').restrictionsOf;
+
+  beforeAll(async () => {
+    ircManager = (await import('../services/ircManager.js')).default;
+    ({ restrictionsOf } = await import('../db/users.js'));
+  });
+
+  async function provision(username: string): Promise<number> {
+    const res = await createAnonAgent(app)
+      .post('/api/node/users')
+      .set('Authorization', AUTH)
+      .send({ username });
+    return res.body.id;
+  }
+  function put(id: number, body: unknown) {
+    return createAnonAgent(app)
+      .put(`/api/node/users/${id}/restrictions`)
+      .set('Authorization', AUTH)
+      .send(body as object);
+  }
+
+  // On provision, in the same INSERT as the row: a free account never exists
+  // unrestricted, not even until the first heartbeat reassert.
+  it('provisions an account born with its restrictions', async () => {
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    const res = await createAnonAgent(app)
+      .post('/api/node/users')
+      .set('Authorization', AUTH)
+      .send({ username: 'born-held', restrictions: held });
+    expect(res.status).toBe(201);
+    expect(restrictionsOf(findUserById(res.body.id))).toStrictEqual(held);
+  });
+
+  it('400s a provision whose restrictions are malformed, creating no account', async () => {
+    const { findUserByUsername } = await import('../db/users.js');
+    const res = await createAnonAgent(app)
+      .post('/api/node/users')
+      .set('Authorization', AUTH)
+      .send({ username: 'born-bad', restrictions: { networks: 'irc.lurker.chat' } });
+    expect(res.status).toBe(400);
+    expect(findUserByUsername('born-bad')).toBeUndefined();
+  });
+
+  it('applies a restriction and hands it to the manager', async () => {
+    const id = await provision('restrict-me');
+    const spy = vi.spyOn(ircManager, 'restrictUser');
+    const res = await put(id, { networks: ['IRC.Lurker.Chat'], uploads: false });
+    expect(res.status).toBe(200);
+    expect(res.body.restrictions).toStrictEqual({ networks: ['irc.lurker.chat'], uploads: false });
+    expect(restrictionsOf(findUserById(id))).toStrictEqual({
+      networks: ['irc.lurker.chat'],
+      uploads: false,
+    });
+    expect(spy).toHaveBeenCalledWith(
+      id,
+      { networks: ['irc.lurker.chat'], uploads: false },
+      { networks: null, uploads: true },
+    );
+    spy.mockRestore();
+  });
+
+  // The control plane re-asserts what it believes on every heartbeat.
+  it('is a quiet no-op when nothing changes', async () => {
+    const id = await provision('restrict-same');
+    await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    const spy = vi.spyOn(ircManager, 'restrictUser');
+    const again = await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    expect(again.status).toBe(200);
+    expect(again.body.unchanged).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('lifts a restriction with the unrestricted shape, telling the manager what it was', async () => {
+    const id = await provision('restrict-lift');
+    await put(id, { networks: ['irc.lurker.chat'], uploads: false });
+    const spy = vi.spyOn(ircManager, 'restrictUser');
+    const res = await put(id, { networks: null, uploads: true });
+    expect(res.status).toBe(200);
+    expect(findUserById(id)?.restrictions).toBeNull();
+    // The old list is what decides which autoconnect networks come back.
+    expect(spy).toHaveBeenCalledWith(
+      id,
+      { networks: null, uploads: true },
+      { networks: ['irc.lurker.chat'], uploads: false },
+    );
+    spy.mockRestore();
+  });
+
+  it('400s a malformed body and leaves the row alone', async () => {
+    const id = await provision('restrict-bad');
+    expect((await put(id, { networks: 'irc.lurker.chat' })).status).toBe(400);
+    expect((await put(id, { uploads: 'no' })).status).toBe(400);
+    expect(findUserById(id)?.restrictions).toBeNull();
+  });
+
+  it('404s an unknown tenant and 409s the admin account', async () => {
+    expect((await put(999999, { networks: null, uploads: true })).status).toBe(404);
+    const admin = createUser('restrict-admin', { role: 'admin' });
+    expect((await put(admin.id, { networks: [], uploads: false })).status).toBe(409);
+    expect(findUserById(admin.id)?.restrictions).toBeNull();
+  });
+
+  // A row that failed closed has no other way out in node edition, where the
+  // admin route defers here.
+  it('lets the control plane lift a restriction on the admin account', async () => {
+    const { setUserRestrictions } = await import('../db/users.js');
+    const admin = createUser('restrict-admin-lift', { role: 'admin' });
+    setUserRestrictions(admin.id, { networks: [], uploads: false });
+    expect((await put(admin.id, { networks: null, uploads: true })).status).toBe(200);
+    expect(findUserById(admin.id)?.restrictions).toBeNull();
   });
 });

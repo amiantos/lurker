@@ -39,8 +39,12 @@
                one isn't on it (#298). Nothing has been deleted — it simply can't
                connect — so say so, rather than letting the user keep clicking
                Connect on a network that will never come up. -->
-          <span v-if="net.blocked" class="blocked-tag" title="Not allowed by this server's admin">
-            blocked by admin
+          <span
+            v-if="net.blocked"
+            class="blocked-tag"
+            title="This server, or this account's restrictions, do not allow connecting here"
+          >
+            blocked
           </span>
         </li>
       </template>

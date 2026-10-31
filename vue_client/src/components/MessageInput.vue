@@ -2215,7 +2215,7 @@ onMounted(() => {
 });
 
 function onPaste(e: ClipboardEvent): void {
-  if (!sendable.value) return;
+  if (!sendable.value || !auth.canUpload) return;
   if (settings.effective('uploads.paste.enabled') === false) return;
   const file = pastedUploadFile(e);
   if (!file) return;
@@ -2240,7 +2240,7 @@ function onFileSelected(e: Event): void {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = '';
-  if (!file || !sendable.value) return;
+  if (!file || !sendable.value || !auth.canUpload) return;
   uploads.upload(file, file.name).catch(() => {});
 }
 
@@ -2291,7 +2291,7 @@ function onDragLeave() {
 }
 function onDrop(e: DragEvent): void {
   dragOver.value = false;
-  if (!sendable.value) return;
+  if (!sendable.value || !auth.canUpload) return;
   const file = e.dataTransfer?.files?.[0];
   if (!file || !isUploadableType(file.type, file.name)) return;
   uploads.upload(file, file.name).catch(() => {});

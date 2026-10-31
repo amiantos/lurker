@@ -14,7 +14,15 @@ import {
   findUserByUsername,
   usernameTaken,
   setUserPaused,
+  restrictionsOf,
+  setUserRestrictions,
 } from '../db/users.js';
+import {
+  isUnrestricted,
+  readAccountRestrictions,
+  sameRestrictions,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
 import { markUploadRemovedById } from '../db/uploadHistory.js';
 import { deleteOAuthForUser, upsertAppFromFleet } from '../db/oauth.js';
 import { validateRegistration } from '../services/oauth.js';
@@ -84,7 +92,21 @@ router.post('/users', (req: Request, res: Response) => {
     });
     return;
   }
-  const user = createUser(username); // role defaults to 'user'
+  // The account's restrictions ride the provision (shared/accountRestrictions.ts)
+  // and land in the same INSERT as the row: a free account must never exist
+  // unrestricted, not even until the next heartbeat. Optional; the PUT below
+  // changes them later. Malformed is a 400 with no row, so the control plane
+  // hears about it rather than provisioning an open account.
+  let restrictions: AccountRestrictions | undefined;
+  if (req.body?.restrictions !== undefined) {
+    const read = readAccountRestrictions(req.body.restrictions);
+    if (read.error !== undefined) {
+      res.status(400).json({ error: read.error });
+      return;
+    }
+    restrictions = read.restrictions;
+  }
+  const user = createUser(username, { restrictions }); // role defaults to 'user'
   res.status(201).json({ id: user.id, username: user.username });
 });
 
@@ -210,6 +232,50 @@ router.post('/users/:id/resume', (req: Request, res: Response) => {
   setUserPaused(id, false);
   ircManager.resumeUser(id);
   res.json({ ok: true });
+});
+
+// Replace a tenant's restrictions (shared/accountRestrictions.ts): the hosts
+// the account may connect to and whether it may upload. Body is the whole set,
+// never a patch, so the control plane's reconciliation can PUT what it believes
+// on every heartbeat — in BOTH directions, since a lift that failed to land is
+// a paying customer locked out, not a safe default. Idempotent: an unchanged
+// set is a quiet no-op, so that sweep neither drops connections nor re-fans the
+// account-state frame. The cell applies the restriction and never learns why.
+router.put('/users/:id/restrictions', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const read = readAccountRestrictions(req.body);
+  if (read.error !== undefined) {
+    res.status(400).json({ error: read.error });
+    return;
+  }
+  const next = read.restrictions;
+  const target = findUserById(id);
+  if (!target) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  // The operator's admin account is not a tenant (mirrors pause/delete). A
+  // LIFT is allowed, as on the admin route: a row that failed closed would
+  // otherwise have no way out in node edition, where the admin route defers
+  // here.
+  if (target.role === 'admin' && !isUnrestricted(next)) {
+    res.status(409).json({ error: 'refusing to restrict an admin account' });
+    return;
+  }
+  const prev = restrictionsOf(target);
+  if (sameRestrictions(prev, next)) {
+    res.json({ ok: true, unchanged: true, restrictions: next });
+    return;
+  }
+  // Row first, so a reconnect timer firing during the teardown below meets the
+  // closed gate rather than slipping back in (same order as pause).
+  setUserRestrictions(id, next);
+  ircManager.restrictUser(id, next, prev);
+  res.json({ ok: true, restrictions: next });
 });
 
 // Moderation takedown: the control plane has removed an upload's object from

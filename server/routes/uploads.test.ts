@@ -1239,3 +1239,21 @@ describe('media uploads (#515)', () => {
     await waitForNoTemps();
   });
 });
+
+describe('an account held off the uploaders', () => {
+  it('is refused before a byte of the body is read', async () => {
+    const { createUser, setUserRestrictions } = await import('../db/users.js');
+    const held = createUser('upload-held');
+    setUserRestrictions(held.id, { networks: null, uploads: false });
+    const heldAgent = await createAuthedAgent(app, held.id);
+    disk.asked.length = 0;
+    const res = await heldAgent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'photo.png', contentType: 'image/png' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('uploads are not enabled for this account');
+    // The disk floor runs inside the multer wrapper, so no ask proves the body
+    // was never spooled.
+    expect(disk.asked).toHaveLength(0);
+  });
+});

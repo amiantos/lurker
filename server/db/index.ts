@@ -1445,6 +1445,13 @@ ensureColumn('users', 'is_paused', 'INTEGER NOT NULL DEFAULT 0');
 // shared IP from another, so letting members pick it defeats the identd.
 ensureColumn('users', 'ident', 'TEXT');
 
+// Per-account restrictions (shared/accountRestrictions.ts): a JSON object
+// naming the hosts this account may connect to and whether it may upload, or
+// NULL — the norm — for no restrictions. Set by the admin (standalone) or pushed
+// by the control plane (node edition); like is_paused, the cell mirrors the
+// verdict and never learns the reason.
+ensureColumn('users', 'restrictions', 'TEXT');
+
 // Roles: 'admin' can manage invites and other users; 'user' is everyone else.
 // On a fresh install the first user (created via /api/auth/setup) is promoted
 // to admin by routes/auth.js. On an existing single-user install pre-dating
@@ -2840,6 +2847,14 @@ if (schemaVersion < 20) {
     }
   }
 }
+
+// The restrictions an invite's account is born with (shared/accountRestrictions.ts),
+// copied onto the user row at redemption, so a limited account never exists
+// unrestricted, not even between "accepted" and "the admin got to the Users
+// pane". Added AFTER the v20 rebuild above: that swap recreates the table from
+// its own column list, and a column added before it would not survive on an
+// install coming up from v19.
+ensureColumn('invite_tokens', 'restrictions', 'TEXT');
 
 // #994: away moved from one row per user to one row per network. An account
 // that's away now is away on each of its networks, as it was on the wire, so
