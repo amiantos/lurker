@@ -183,8 +183,9 @@ validates a session; `restrictions` is `{networks: string[]|null, uploads: bool}
 - **Paused accounts** (hosted billing): every authed non-GET REST call returns
   `403 {"error":"account paused"}` (except logout and exports), and write-verbs
   on the WS return `{kind:'error', text:'account paused'}`. The
-  `{kind:'account-state', paused:bool}` frame notifies live. Treat paused as
-  read-only mode, not an error loop.
+  `{kind:'account-state', paused:bool}` frame notifies live, and one rides
+  every connect burst right behind the snapshot, so a reconnecting client
+  learns the current state. Treat paused as read-only mode, not an error loop.
 - **Account restrictions:** an account may be held to a list of IRC hosts
   and/or kept off the uploaders (set by the admin, or by the control plane for a
   hosted plan). `GET /api/auth/me` carries `restrictions:
@@ -196,8 +197,8 @@ validates a session; `restrictions` is `{networks: string[]|null, uploads: bool}
   `403 {"error":"this account is limited to the networks it has been allowed"}`
   and `blocked: true` on the row, uploads and upload sessions with
   `403 {"error":"uploads are not enabled for this account"}`. The same
-  `account-state` frame carries a new `restrictions` object when the set
-  changes; apply it only when present.
+  `account-state` frame carries the `restrictions` object on connect and when
+  the set changes; apply it only when present.
 - **No CSRF tokens** exist; browser security rests on `SameSite=Lax` + the CORS
   allowlist (`CORS_ORIGIN` env, credentials mode). Native clients are unaffected.
 - Global JSON body limit: **1 MB** (`app.ts:67`).

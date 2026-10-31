@@ -760,6 +760,45 @@ describe('ircManager account restrictions', () => {
 
   // The other direction: a lift brings back the autoconnect networks the old
   // list refused, which have no connection object left to retry on their own.
+  // A proxy of the user's own is the escape the list would otherwise leave
+  // open: the connection goes even though its host is allowed, and comes back
+  // only when the list is lifted altogether.
+  it('restrictUser drops a proxied connection to an allowed host, and a full lift restores it', () => {
+    const user = createUser('irc-proxied');
+    const viaProxy = createNetwork(user.id, {
+      name: 'home-via-proxy',
+      host: 'irc.lurker.chat',
+      port: 6697,
+      tls: true,
+      nick: 'x',
+      proxy_enabled: true,
+      proxy_type: 'socks5',
+      proxy_host: '127.0.0.1',
+      proxy_port: 1080,
+    })!;
+    const conn = ircManager.startNetwork(user.id, viaProxy.id, { deferrable: true });
+    expect(conn).not.toBeNull();
+    try {
+      const held = { networks: ['irc.lurker.chat'], uploads: true };
+      setUserRestrictions(user.id, held);
+      ircManager.restrictUser(user.id, held);
+      expect(ircManager.getConnection(user.id, viaProxy.id)).toBeNull();
+
+      // Widening to a second host is not a lift: still no proxy.
+      const wider = { networks: ['irc.lurker.chat', 'irc.libera.chat'], uploads: true };
+      setUserRestrictions(user.id, wider);
+      ircManager.restrictUser(user.id, wider, held);
+      expect(ircManager.getConnection(user.id, viaProxy.id)).toBeNull();
+
+      setUserRestrictions(user.id, { networks: null, uploads: true });
+      ircManager.restrictUser(user.id, { networks: null, uploads: true }, wider);
+      expect(ircManager.getConnection(user.id, viaProxy.id)).not.toBeNull();
+    } finally {
+      ircManager.disposeNetwork(user.id, viaProxy.id, 'test over');
+      connectScheduler.reset();
+    }
+  });
+
   it('restrictUser brings back autoconnect networks a lifted list refused', () => {
     const user = createUser('irc-lifted');
     const home = netOn(user.id, 'home', 'irc.lurker.chat');

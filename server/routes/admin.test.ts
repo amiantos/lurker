@@ -805,8 +805,18 @@ describe('PUT /api/admin/users/:id/restrictions', () => {
     expect(res.status).toBe(409);
   });
 
-  // Another admin (or a row that failed closed) may have left one behind; the
-  // last admin standing has to be able to take it off.
+  it('refuses to restrict another admin', async () => {
+    const { createUser } = await import('../db/users.js');
+    const other = createUser('restrict-other-admin', { role: 'admin' });
+    const res = await adminAgent
+      .put(`/api/admin/users/${other.id}/restrictions`)
+      .send({ networks: ['irc.lurker.chat'], uploads: true });
+    expect(res.status).toBe(409);
+    expect(await restrictionsOf(other.id)).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  // A row that failed closed may have left one behind; the last admin standing
+  // has to be able to take it off.
   it('lets you lift a restriction on yourself', async () => {
     const { setUserRestrictions } = await import('../db/users.js');
     setUserRestrictions(admin.id, { networks: [], uploads: false });

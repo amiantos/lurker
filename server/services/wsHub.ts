@@ -30,7 +30,7 @@ import { channelMutesUnread, evaluateIgnores, type IgnoreVerdict } from './ignor
 import ignoreRulesService from './ignoreRulesService.js';
 import { parseIgnoreInput, maskToRuleInput } from './ignoreRuleInput.js';
 import { findSession } from '../db/sessions.js';
-import { findUserById, touchUserLastSeen } from '../db/users.js';
+import { findUserById, restrictionsOf, touchUserLastSeen } from '../db/users.js';
 import { advertisedUploadLimits } from './uploadLimits.js';
 import {
   listMessages,
@@ -2927,6 +2927,20 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),
     });
+    // The account's current state, with every snapshot. The same frame is
+    // otherwise sent only on a change, so a tab that was away when the change
+    // landed (or a fresh login, whose response carries neither field) would
+    // run on what it last knew until something changed again. Behind the
+    // snapshot, which every client reads as the first frame, and ahead of the
+    // terminator below, which has to stay the burst's last word.
+    const account = findUserById(userId);
+    if (account) {
+      send(ws, {
+        kind: 'account-state',
+        paused: account.is_paused === 1,
+        restrictions: restrictionsOf(account),
+      });
+    }
     // Drafts ship once per snapshot, separate from per-buffer backlog frames —
     // the keying is global to the user, not per-buffer, so a single message is
     // cheaper than fanning a body field into every backlog row.

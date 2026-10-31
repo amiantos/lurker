@@ -49,8 +49,11 @@ export function foldHost(host: string): string {
 
 /**
  * Validate a restrictions object from a request body. Returns null when it is
- * malformed — a caller answers 400, never guesses. Hosts are folded and
- * de-duplicated; an empty list is legal and means "no networks at all".
+ * malformed — a caller answers 400, never guesses. The set is WHOLE: both
+ * fields present, nothing else. A field left out is not "unchanged" and not
+ * "allowed"; reading an omission as a grant is how a half-written body would
+ * quietly lift a restriction. Hosts are folded and de-duplicated; an empty
+ * list is legal and means "no networks at all".
  */
 export function parseAccountRestrictions(input: unknown): AccountRestrictions | null {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
@@ -58,8 +61,9 @@ export function parseAccountRestrictions(input: unknown): AccountRestrictions | 
   for (const key of Object.keys(obj)) {
     if (key !== 'networks' && key !== 'uploads') return null;
   }
+  if (!('networks' in obj) || !('uploads' in obj)) return null;
   let networks: string[] | null = null;
-  if (obj.networks !== undefined && obj.networks !== null) {
+  if (obj.networks !== null) {
     if (!Array.isArray(obj.networks)) return null;
     const seen = new Set<string>();
     for (const item of obj.networks) {
@@ -72,8 +76,8 @@ export function parseAccountRestrictions(input: unknown): AccountRestrictions | 
     // caller listed them in (sameRestrictions is a string compare).
     networks = [...seen].toSorted();
   }
-  if (obj.uploads !== undefined && typeof obj.uploads !== 'boolean') return null;
-  return { networks, uploads: obj.uploads === undefined ? true : obj.uploads };
+  if (typeof obj.uploads !== 'boolean') return null;
+  return { networks, uploads: obj.uploads };
 }
 
 /**
@@ -85,13 +89,14 @@ export function serializeAccountRestrictions(r: AccountRestrictions): string | n
 }
 
 /**
- * Read the stored form back. Only our own validated writes reach the column,
- * so a value that fails to parse is corruption — and a restriction that fails
- * to read must fail CLOSED (nothing allowed), never silently open an account
- * up. The admin or control plane re-sets it; nothing is lost.
+ * Read the stored form back. NULL is the one unrestricted sentinel. Only our
+ * own validated writes reach the column, so anything else that fails to parse
+ * (an empty string included) is corruption — and a restriction that fails to
+ * read must fail CLOSED (nothing allowed), never silently open an account up.
+ * The admin or control plane re-sets it; nothing is lost.
  */
 export function restrictionsFromStored(raw: string | null | undefined): AccountRestrictions {
-  if (raw == null || raw === '') return UNRESTRICTED;
+  if (raw == null) return UNRESTRICTED;
   try {
     const parsed = parseAccountRestrictions(JSON.parse(raw));
     if (parsed) return parsed;

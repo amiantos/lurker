@@ -111,19 +111,26 @@
           </small>
         </form>
 
-        <!-- Inline limits editor (shared/accountRestrictions.ts). Hosts are a
-             comma-separated list; blank means any host this server allows. The
-             server folds and de-duplicates, so the admin can type freely. -->
+        <!-- Inline limits editor (shared/accountRestrictions.ts). "Any network"
+             is its own switch rather than an empty host box: an empty list is a
+             real value (no networks at all), and saving an account that has one
+             must not quietly turn it into "any". The server folds and
+             de-duplicates the hosts, so the admin can type freely. -->
         <form
           v-if="editingLimitsFor === u.id"
           class="limits-edit"
           @submit.prevent="onSaveLimits(u)"
         >
+          <label class="check">
+            <input v-model="limitsAnyDraft" type="checkbox" />
+            <span>any network</span>
+          </label>
           <label>
             <span>networks</span>
             <input
               v-model="limitsHostsDraft"
-              placeholder="any"
+              :disabled="limitsAnyDraft"
+              :placeholder="limitsAnyDraft ? 'any' : 'none'"
               spellcheck="false"
               autocapitalize="off"
             />
@@ -137,8 +144,8 @@
             cancel
           </button>
           <small class="muted">
-            Hosts this account may connect to, comma-separated. Leave blank for any. Connections
-            outside the list drop at once; nothing is deleted.
+            Hosts this account may connect to, comma-separated; an empty list means none.
+            Connections outside the list drop at once; nothing is deleted.
           </small>
         </form>
 
@@ -176,12 +183,14 @@
           <button
             v-if="!config.isNode"
             class="link"
-            :disabled="(u.id === auth.user?.id && !isLimited(u)) || adminBusy"
+            :disabled="(u.role === 'admin' && !isLimited(u)) || adminBusy"
             :title="
-              u.id === auth.user?.id
+              u.role === 'admin'
                 ? isLimited(u)
-                  ? 'lift the limits on your own account'
-                  : 'cannot limit yourself'
+                  ? 'lift the limits on this admin account'
+                  : u.id === auth.user?.id
+                    ? 'cannot limit yourself'
+                    : 'cannot limit an admin'
                 : 'limit which networks this account may join and whether it may upload'
             "
             @click="onEditLimits(u)"
@@ -277,6 +286,7 @@ const identDraft = ref('');
 
 // Same shape for the limits editor.
 const editingLimitsFor = ref<number | null>(null);
+const limitsAnyDraft = ref(true);
 const limitsHostsDraft = ref('');
 const limitsUploadsDraft = ref(true);
 
@@ -296,6 +306,7 @@ function limitsSummary(user: AdminUser): string {
 function onEditLimits(user: AdminUser) {
   adminError.value = '';
   const r = user.restrictions;
+  limitsAnyDraft.value = !r || r.networks === null;
   limitsHostsDraft.value = r?.networks ? r.networks.join(', ') : '';
   limitsUploadsDraft.value = r ? r.uploads : true;
   editingLimitsFor.value = editingLimitsFor.value === user.id ? null : user.id;
@@ -309,7 +320,7 @@ async function onSaveLimits(user: AdminUser) {
       .map((h) => h.trim())
       .filter(Boolean);
     await adminStore.setUserRestrictions(user.id, {
-      networks: hosts.length ? hosts : null,
+      networks: limitsAnyDraft.value ? null : hosts,
       uploads: limitsUploadsDraft.value,
     });
     editingLimitsFor.value = null;

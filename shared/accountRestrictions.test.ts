@@ -13,20 +13,29 @@ import {
 describe('parseAccountRestrictions', () => {
   it('folds, de-duplicates and sorts hosts', () => {
     expect(
-      parseAccountRestrictions({ networks: [' IRC.Lurker.Chat ', 'irc.lurker.chat', 'a.b'] }),
+      parseAccountRestrictions({
+        networks: [' IRC.Lurker.Chat ', 'irc.lurker.chat', 'a.b'],
+        uploads: true,
+      }),
     ).toStrictEqual({ networks: ['a.b', 'irc.lurker.chat'], uploads: true });
   });
 
-  it('reads a missing uploads flag as allowed and a missing list as any', () => {
-    expect(parseAccountRestrictions({})).toStrictEqual({ networks: null, uploads: true });
-    expect(parseAccountRestrictions({ uploads: false })).toStrictEqual({
+  it('reads null as any host and accepts the unrestricted norm', () => {
+    expect(parseAccountRestrictions({ networks: null, uploads: true })).toStrictEqual({
       networks: null,
-      uploads: false,
+      uploads: true,
     });
   });
 
+  // Whole set or nothing: a body missing a field is never "the rest is allowed".
+  it('refuses a body missing either field', () => {
+    for (const partial of [{}, { uploads: false }, { networks: [] }, { networks: null }]) {
+      expect([partial, parseAccountRestrictions(partial)]).toStrictEqual([partial, null]);
+    }
+  });
+
   it('keeps an empty list as "no networks at all"', () => {
-    expect(parseAccountRestrictions({ networks: [] })?.networks).toStrictEqual([]);
+    expect(parseAccountRestrictions({ networks: [], uploads: true })?.networks).toStrictEqual([]);
   });
 
   it('refuses anything that is not the documented shape', () => {
@@ -40,7 +49,7 @@ describe('parseAccountRestrictions', () => {
       { networks: ['a b'] },
       { networks: ['a,b'] },
       { networks: ['x'.repeat(254)] },
-      { uploads: 'no' },
+      { networks: null, uploads: 'no' },
       { networks: null, uploads: true, extra: 1 },
     ]) {
       expect([bad, parseAccountRestrictions(bad)]).toStrictEqual([bad, null]);
@@ -64,6 +73,11 @@ describe('stored form', () => {
   // and a restriction that cannot be read must not read as "no restriction".
   it('fails closed on a value it cannot read', () => {
     expect(restrictionsFromStored('{not json')).toStrictEqual({ networks: [], uploads: false });
+    expect(restrictionsFromStored('')).toStrictEqual({ networks: [], uploads: false });
+    expect(restrictionsFromStored('{"uploads":false}')).toStrictEqual({
+      networks: [],
+      uploads: false,
+    });
     expect(restrictionsFromStored('{"networks":"x"}')).toStrictEqual({
       networks: [],
       uploads: false,
@@ -73,8 +87,8 @@ describe('stored form', () => {
 
 describe('sameRestrictions', () => {
   it('ignores the order hosts were listed in', () => {
-    const a = parseAccountRestrictions({ networks: ['b.example', 'a.example'] })!;
-    const b = parseAccountRestrictions({ networks: ['a.example', 'b.example'] })!;
+    const a = parseAccountRestrictions({ networks: ['b.example', 'a.example'], uploads: true })!;
+    const b = parseAccountRestrictions({ networks: ['a.example', 'b.example'], uploads: true })!;
     expect(sameRestrictions(a, b)).toBe(true);
     expect(sameRestrictions(a, { ...a, uploads: false })).toBe(false);
   });

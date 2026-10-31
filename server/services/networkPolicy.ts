@@ -37,6 +37,7 @@ import { foldHost } from '../../shared/accountRestrictions.js';
 // different next steps for the person reading them.
 export const INSTANCE_REFUSAL = 'this server only allows the networks its admin has listed';
 export const ACCOUNT_REFUSAL = 'this account is limited to the networks it has been allowed';
+export const PROXY_REFUSAL = 'this account may not connect through a proxy of its own';
 
 // Hosts are compared case-insensitively (DNS is), and on host ALONE — not
 // host:port. The meaningful boundary is *which server you are talking to*; an

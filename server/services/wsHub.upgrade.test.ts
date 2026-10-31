@@ -72,6 +72,59 @@ function connect(headers: Record<string, string>): Promise<Record<string, unknow
   });
 }
 
+// Every frame until `kind` arrives (or the timer runs out).
+function connectUntil(
+  headers: Record<string, string>,
+  kind: string,
+): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url, { headers });
+    const frames: Record<string, unknown>[] = [];
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error(`timed out waiting for a ${kind} frame`));
+    }, 5000);
+    ws.on('message', (raw) => {
+      const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
+      frames.push(frame);
+      if (frame.kind !== kind) return;
+      clearTimeout(timer);
+      ws.close();
+      // A copy: frames already in the socket's buffer keep arriving in this
+      // tick, after resolve, and would land in the array the test is reading.
+      resolve([...frames]);
+    });
+    ws.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+describe('/ws connect', () => {
+  // A tab away when the account was paused or restricted learns the current
+  // state on reconnect, not on the next change; a fresh login's response
+  // carries neither field, so this is where it comes from.
+  it("seeds the account's state after the snapshot", async () => {
+    const { setUserRestrictions } = await import('../db/users.js');
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    setUserRestrictions(userId, held);
+    try {
+      const { token } = createSession(userId);
+      const frames = await connectUntil({ Authorization: `Bearer ${token}` }, 'account-state');
+      expect(frames[0]?.kind).toBe('snapshot');
+      expect(frames.some((f) => f.kind === 'backlog-complete')).toBe(false);
+      expect(frames.at(-1)).toStrictEqual({
+        kind: 'account-state',
+        paused: false,
+        restrictions: held,
+      });
+    } finally {
+      setUserRestrictions(userId, { networks: null, uploads: true });
+    }
+  });
+});
+
 describe('/ws upgrade', () => {
   it('opens for a native client presenting ONLY a bearer token', async () => {
     const { token } = createSession(userId);

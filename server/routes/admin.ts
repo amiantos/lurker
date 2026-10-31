@@ -279,12 +279,18 @@ router.put('/users/:id/restrictions', (req: Request, res: Response) => {
     res.status(404).json({ error: 'not found' });
     return;
   }
-  // Restricting yourself would close the one account that can undo it; the UI
-  // disables it too, but guard the route as the source of truth. LIFTING your
-  // own is the harmless direction, and for the last admin standing it is the
-  // only way out of a restriction another admin left behind.
-  if (target.id === req.user!.id && !isUnrestricted(next)) {
-    res.status(409).json({ error: 'cannot restrict yourself' });
+  // No admin account is restricted (the node route says the same): an admin
+  // can undo it from this screen, so it would only be theatre, and on your
+  // own row it would close the one account that can undo it. LIFTING is the
+  // harmless direction, and for the last admin standing it is the only way
+  // out of a restriction a row that failed closed left behind.
+  if (target.role === 'admin' && !isUnrestricted(next)) {
+    res.status(409).json({
+      error:
+        target.id === req.user!.id
+          ? 'cannot restrict yourself'
+          : 'refusing to restrict an admin account',
+    });
     return;
   }
   const prev = restrictionsOf(target);

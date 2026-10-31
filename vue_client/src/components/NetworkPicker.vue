@@ -194,7 +194,10 @@ const offered = computed<NetworkPreset[]>(() => {
   // (standalone: an admin holding an account to their own server) still has to
   // be reachable, and manual entry is gone, so it gets a bare row: the host as
   // its name, TLS on the standard port, the same defaults manual entry starts
-  // from. The server would accept it; the picker must offer it.
+  // from. The server would accept it; the picker must offer it. Not under an
+  // instance lockdown, though: there the presets ARE the allowed hosts, and a
+  // host on the account's list but off the instance's is refused regardless.
+  if (!presets.allowUserDefined) return listed;
   const known = new Set(listed.map((n) => foldHost(n.host)));
   for (const host of hosts) {
     if (known.has(host)) continue;

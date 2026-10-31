@@ -35,7 +35,7 @@ import {
 } from '../db/dccTransfers.js';
 import { dccFileBytes } from './dccPaths.js';
 import { findUserById } from '../db/users.js';
-import { ACCOUNT_REFUSAL, networkRefusal } from './networkPolicy.js';
+import { ACCOUNT_REFUSAL, PROXY_REFUSAL, networkRefusal } from './networkPolicy.js';
 import {
   foldHost,
   UNRESTRICTED,
@@ -1533,12 +1533,16 @@ class IrcManager extends EventEmitter {
       const allowed = new Set(next.networks);
       // Deleting from the map as we go; a Map iterator tolerates that.
       for (const [networkId, conn] of userMap) {
-        if (allowed.has(foldHost(conn.network.host))) continue;
+        // A proxy of the user's own is a second destination the list never
+        // named (mayUseProxy is false for a held account), so a proxied
+        // connection goes even when its nominal host is allowed.
+        const proxied = !!conn.network.proxy_enabled;
+        if (!proxied && allowed.has(foldHost(conn.network.host))) continue;
         systemLog.log({
           userId,
           scope: `net:${conn.network.name}`,
           fields: { networkId },
-          text: `Stopping: ${ACCOUNT_REFUSAL}`,
+          text: `Stopping: ${proxied ? PROXY_REFUSAL : ACCOUNT_REFUSAL}`,
         });
         try {
           conn.disconnect();
@@ -1551,7 +1555,14 @@ class IrcManager extends EventEmitter {
     if (prev.networks !== null) {
       const was = new Set(prev.networks);
       for (const network of listNetworksForUser(userId)) {
-        if (!network.autoconnect || was.has(foldHost(network.host))) continue;
+        if (!network.autoconnect) continue;
+        // What the old list refused: a host off it, or any proxied network. A
+        // proxied one comes back only on a full lift; under a list the dial
+        // would refuse it again (proxyBlockedReason), and the row stays.
+        const refused = network.proxy_enabled
+          ? next.networks === null
+          : !was.has(foldHost(network.host));
+        if (!refused) continue;
         // connectGate re-reads the row the caller just wrote, so a host the
         // new list still refuses is a null here, not a connection.
         this.startNetwork(userId, network.id, { deferrable: true });
