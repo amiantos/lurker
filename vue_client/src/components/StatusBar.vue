@@ -133,7 +133,7 @@
           type="button"
           class="tool-btn"
           :class="{ on: overlay.uploadMenuOpen }"
-          :disabled="!sendable || !auth.canUpload"
+          :disabled="!sendable"
           :title="auth.canUpload ? 'attach a file' : auth.uploadsOffTitle"
           aria-label="attach a file"
           :aria-expanded="overlay.uploadMenuOpen"
@@ -218,6 +218,7 @@ import { inFlight, percentReceived, useDccStore } from '../stores/dcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useAccountLimits } from '../composables/useAccountLimits.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import {
   useScrollState,
@@ -282,6 +283,7 @@ const settings = useSettingsStore();
 const uploads = useUploadsStore();
 const ignores = useIgnoresStore();
 const auth = useAuthStore();
+const limits = useAccountLimits();
 const nickColors = useNickColors();
 const composing = useComposing();
 
@@ -645,7 +647,13 @@ function onToggleColorPicker() {
 const uploadMenuBtnEl = ref<HTMLButtonElement | null>(null);
 
 function onToggleUploadMenu() {
-  if (!sendable.value || !auth.canUpload) return;
+  if (!sendable.value) return;
+  // Held from uploading: the button stays live and says why (and, hosted,
+  // the way out) rather than sitting dead in the bar.
+  if (!auth.canUpload) {
+    limits.open();
+    return;
+  }
   const open = !overlay.uploadMenuOpen;
   if (open) setColorPickerOpen(false);
   setUploadMenuOpen(open);
