@@ -9,8 +9,9 @@
 
   "Any network" is its own switch rather than an empty host box: an empty list
   is a real value (no networks at all), and saving a set that has one must not
-  quietly turn it into "any". The server folds and de-duplicates the hosts, so
-  the admin can type freely. Renders as `display: contents`, so the labels flow
+  quietly turn it into "any". The host box appears only once that switch is
+  off. The server folds and de-duplicates the hosts, so the admin can type
+  freely. Renders as `display: contents`, so the labels flow
   in whatever row the parent lays out.
 -->
 
@@ -20,12 +21,14 @@
       <input :checked="any" type="checkbox" :disabled="disabled" @change="onAny" />
       <span>any network</span>
     </label>
-    <label>
+    <!-- Only once "any" is off: under it the box has nothing to say, and the
+         placeholder is the whole tip. -->
+    <label v-if="!any">
       <span>networks</span>
       <input
         :value="hosts"
-        :disabled="disabled || any"
-        :placeholder="any ? 'any' : 'none'"
+        :disabled="disabled"
+        placeholder="hostnames, comma-separated"
         spellcheck="false"
         autocapitalize="off"
         @input="onHosts"

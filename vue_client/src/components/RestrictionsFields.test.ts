@@ -31,19 +31,19 @@ function mountWith(modelValue: AccountRestrictions) {
 }
 
 describe('RestrictionsFields', () => {
-  it('shows an empty list as "none", not as "any"', () => {
+  it('shows an empty list as an empty host box, not as "any"', () => {
     const { checks, hosts } = mountWith({ networks: [], uploads: true });
     expect((checks()[0].element as HTMLInputElement).checked).toBe(false);
-    expect(hosts().attributes('placeholder')).toBe('none');
-    expect(hosts().attributes('disabled')).toBeUndefined();
+    expect(hosts().exists()).toBe(true);
+    expect((hosts().element as HTMLInputElement).value).toBe('');
+    expect(hosts().attributes('placeholder')).toBe('hostnames, comma-separated');
   });
 
-  it('disables the host box under "any network" and emits null for it', async () => {
-    const { checks, emitted } = mountWith({ networks: ['irc.lurker.chat'], uploads: true });
+  it('hides the host box under "any network" and emits null for it', async () => {
+    const { checks, hosts, emitted } = mountWith({ networks: ['irc.lurker.chat'], uploads: true });
     await checks()[0].setValue(true);
     expect(emitted().at(-1)).toStrictEqual({ networks: null, uploads: true });
-    const { hosts: hostsAny } = mountWith({ networks: null, uploads: true });
-    expect(hostsAny().attributes('disabled')).toBeDefined();
+    expect(hosts().exists()).toBe(false);
   });
 
   it('turning "any network" off keeps the hosts that were typed', async () => {
