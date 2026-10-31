@@ -55,7 +55,9 @@ function mountPane(invites: AdminInvite[]): VueWrapper {
   store.fetchInvites = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   deleteInvite = vi.fn<(token: string) => Promise<void>>().mockResolvedValue(undefined);
   store.deleteInvite = deleteInvite as unknown as typeof store.deleteInvite;
-  return mount(InvitesPane);
+  // The new-invite modal teleports to body; stubbed, it renders in place so
+  // the tests can find it under the wrapper.
+  return mount(InvitesPane, { global: { stubs: { Teleport: true } } });
 }
 
 // Let a resolved store call and the re-render that follows it settle.

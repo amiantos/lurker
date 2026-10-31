@@ -10,37 +10,42 @@
 -->
 
 <template>
-  <AppModal word="invite" title="new invite link" size="sm" @close="$emit('close')">
-    <form class="modal-form" @submit.prevent="create">
-      <div class="invite-form">
-        <label>
-          <span>link expires in</span>
-          <select v-model.number="expiresInDays" :disabled="busy">
-            <option :value="1">1 day</option>
-            <option :value="7">7 days</option>
-            <option :value="30">30 days</option>
-          </select>
-        </label>
-        <fieldset class="limits">
-          <legend>the account it creates</legend>
-          <RestrictionsFields v-model="restrictions" :disabled="busy" />
-          <p class="hint">
-            Hosts it may connect to, comma-separated; an empty list means none. You can change these
-            later under users.
-          </p>
-        </fieldset>
-        <p v-if="error" class="error">{{ error }}</p>
-      </div>
-      <footer class="modal-footer">
-        <button type="button" class="btn-secondary" :disabled="busy" @click="$emit('close')">
-          Cancel
-        </button>
-        <button type="submit" class="btn-primary" :disabled="busy">
-          {{ busy ? 'Creating…' : 'Create link' }}
-        </button>
-      </footer>
-    </form>
-  </AppModal>
+  <!-- To body, as ColorPicker does: the settings layout gives a fixed-position
+       card a containing block, so rendered in place it would cover only the
+       pane's column, not the page. -->
+  <Teleport to="body">
+    <AppModal word="invite" title="new invite link" size="sm" @close="$emit('close')">
+      <form class="modal-form" @submit.prevent="create">
+        <div class="invite-form">
+          <label>
+            <span>link expires in</span>
+            <select v-model.number="expiresInDays" :disabled="busy">
+              <option :value="1">1 day</option>
+              <option :value="7">7 days</option>
+              <option :value="30">30 days</option>
+            </select>
+          </label>
+          <fieldset class="limits">
+            <legend>the account it creates</legend>
+            <RestrictionsFields v-model="restrictions" :disabled="busy" />
+            <p class="hint">
+              Hosts it may connect to, comma-separated; an empty list means none. You can change
+              these later under users.
+            </p>
+          </fieldset>
+          <p v-if="error" class="error">{{ error }}</p>
+        </div>
+        <footer class="modal-footer">
+          <button type="button" class="btn-secondary" :disabled="busy" @click="$emit('close')">
+            Cancel
+          </button>
+          <button type="submit" class="btn-primary" :disabled="busy">
+            {{ busy ? 'Creating…' : 'Create link' }}
+          </button>
+        </footer>
+      </form>
+    </AppModal>
+  </Teleport>
 </template>
 
 <script setup lang="ts">
