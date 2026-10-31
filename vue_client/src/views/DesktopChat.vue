@@ -64,7 +64,12 @@
         <button class="link" @click="showBookmarks = true" title="Saved messages">
           <BookmarkIcon />
         </button>
-        <button v-if="auth.canUpload" class="link" @click="showUploads = true" title="Shares">
+        <button
+          class="link"
+          :disabled="!auth.canUpload"
+          :title="auth.canUpload ? 'Shares' : 'uploads are not enabled for this account'"
+          @click="showUploads = true"
+        >
           <ShareIcon />
         </button>
         <DccButton class="link" />

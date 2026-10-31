@@ -128,17 +128,13 @@
              dismisses the keyboard regardless, so preventing the blur only delays
              it into jank) still holds — it has moved onto the menu's own upload
              buttons, which are what actually opens that sheet. -->
-        <!-- Gone, not disabled, for an account held off the uploaders
-             (shared/accountRestrictions.ts): a control that can never work is
-             clutter, not information. -->
         <button
-          v-if="auth.canUpload"
           ref="uploadMenuBtnEl"
           type="button"
           class="tool-btn"
           :class="{ on: overlay.uploadMenuOpen }"
-          :disabled="!sendable"
-          title="attach a file"
+          :disabled="!sendable || !auth.canUpload"
+          :title="auth.canUpload ? 'attach a file' : 'uploads are not enabled for this account'"
           aria-label="attach a file"
           :aria-expanded="overlay.uploadMenuOpen"
           @mousedown.prevent
