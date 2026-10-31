@@ -25,7 +25,7 @@
         <button
           class="icon"
           :disabled="!auth.canUpload"
-          :title="auth.canUpload ? 'Shares' : 'uploads are not enabled for this account'"
+          :title="auth.canUpload ? 'Shares' : auth.uploadsOffTitle"
           @click="showUploads = true"
         >
           <ShareIcon />

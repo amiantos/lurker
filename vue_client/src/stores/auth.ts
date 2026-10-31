@@ -61,6 +61,13 @@ export const useAuthStore = defineStore('auth', {
     allowedNetworkHosts: (s): string[] | null => s.user?.restrictions?.networks ?? null,
     // Whether the attach button has anywhere to send a file.
     canUpload: (s): boolean => s.user?.restrictions?.uploads !== false,
+    // The disabled attach and Shares controls' tooltip. On a hosted cell the
+    // one account held from uploading is a free one, and paying lifts it, so
+    // the tooltip says the way out rather than restating the lock.
+    uploadsOffTitle: (): string =>
+      useConfigStore().isNode
+        ? 'subscribe to upload files'
+        : 'uploads are not enabled for this account',
   },
   actions: {
     // Adopt a freshly-established session. Every sign-in / setup / invite path

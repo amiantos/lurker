@@ -134,7 +134,7 @@
           class="tool-btn"
           :class="{ on: overlay.uploadMenuOpen }"
           :disabled="!sendable || !auth.canUpload"
-          :title="auth.canUpload ? 'attach a file' : 'uploads are not enabled for this account'"
+          :title="auth.canUpload ? 'attach a file' : auth.uploadsOffTitle"
           aria-label="attach a file"
           :aria-expanded="overlay.uploadMenuOpen"
           @mousedown.prevent
