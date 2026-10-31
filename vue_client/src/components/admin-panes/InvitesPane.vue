@@ -20,33 +20,18 @@
     <p v-if="adminError" class="error inline">{{ adminError }}</p>
 
     <div class="invite-actions">
-      <button class="link" :disabled="adminBusy" @click="onCreateInvite">
+      <!-- Configure first, then create: the link's expiry and what its account
+           is born with are decided in the modal, so nothing about a link can
+           be changed after it exists. -->
+      <button class="link" :disabled="adminBusy" @click="composing = true">
         generate invite link
-      </button>
-      <button
-        class="link"
-        :class="{ active: limitsOpen }"
-        :disabled="adminBusy"
-        title="what the account this link creates may connect to and whether it may upload"
-        @click="limitsOpen = !limitsOpen"
-      >
-        {{ isUnrestricted(limitsDraft) ? 'limits' : 'limited' }}
       </button>
       <span v-if="lastCreatedInviteUrl" class="invite-fresh" title="copied to clipboard">
         <code>{{ lastCreatedInviteUrl }}</code>
         <button class="link" @click="copyInviteUrl(lastCreatedInviteUrl)">copy</button>
       </span>
     </div>
-    <!-- The restrictions the account is born with ride the invite, so a limited
-         account never exists unrestricted between acceptance and the Users pane.
-         The draft outlives one link: an admin minting several limited invites
-         sets this once. -->
-    <div v-if="limitsOpen" class="invite-limits">
-      <RestrictionsFields v-model="limitsDraft" :disabled="adminBusy" />
-      <small class="muted">
-        Applied to the account this link creates; change it later under users.
-      </small>
-    </div>
+    <NewInviteModal v-if="composing" @close="composing = false" @created="onCreated" />
     <ul v-if="invites.length" class="device-list">
       <li v-for="inv in invites" :key="inv.token" class="device invite-row">
         <span class="ua">
@@ -92,13 +77,8 @@ import { ref, computed, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
 import type { AdminInvite } from '../../stores/admin.js';
 import { formatRelative } from '../../utils/timestamp.js';
-import {
-  isUnrestricted,
-  UNRESTRICTED,
-  type AccountRestrictions,
-} from '../../../../shared/accountRestrictions.js';
 import { describeRestrictions } from '../../utils/accountRestrictions.js';
-import RestrictionsFields from '../RestrictionsFields.vue';
+import NewInviteModal from './NewInviteModal.vue';
 
 const adminStore = useAdminStore();
 
@@ -107,8 +87,7 @@ const invites = computed(() => adminStore.invites);
 const adminError = ref('');
 const adminBusy = ref(false);
 const lastCreatedInviteUrl = ref('');
-const limitsOpen = ref(false);
-const limitsDraft = ref<AccountRestrictions>({ ...UNRESTRICTED });
+const composing = ref(false);
 
 onMounted(() => {
   // Refetch on every pane activation. The store cache stays correct for THIS
@@ -121,24 +100,14 @@ onMounted(() => {
   });
 });
 
-async function onCreateInvite() {
+function onCreated(invite: AdminInvite) {
+  composing.value = false;
   adminError.value = '';
-  adminBusy.value = true;
-  lastCreatedInviteUrl.value = '';
-  try {
-    const invite = await adminStore.createInvite(
-      isUnrestricted(limitsDraft.value) ? {} : { restrictions: limitsDraft.value },
-    );
-    lastCreatedInviteUrl.value = invite.url;
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(invite.url).catch(() => {
-        /* clipboard is best-effort */
-      });
-    }
-  } catch (e: any) {
-    adminError.value = e.message || 'failed to create invite';
-  } finally {
-    adminBusy.value = false;
+  lastCreatedInviteUrl.value = invite.url;
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(invite.url).catch(() => {
+      /* clipboard is best-effort */
+    });
   }
 }
 
@@ -227,15 +196,5 @@ function copyInviteUrl(url: string) {
   color: var(--warn);
   border: 1px solid var(--warn);
   padding: 0 var(--space-2);
-}
-.invite-limits {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-3);
-  padding: 0 0 var(--space-5);
-}
-.invite-actions .link.active {
-  color: var(--warn);
 }
 </style>

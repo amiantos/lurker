@@ -58,6 +58,9 @@ function mountPane(invites: AdminInvite[]): VueWrapper {
   return mount(InvitesPane);
 }
 
+// Let a resolved store call and the re-render that follows it settle.
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
 // The row action is the last button in each row.
 function rowButton(wrapper: VueWrapper, token: string) {
   const row = wrapper.findAll('.invite-row').find((r) => r.text().includes(token));
@@ -85,18 +88,28 @@ describe('InvitesPane limits on a new invite', () => {
         throw new Error(`no button ${text}`);
       })();
 
-    // Nothing set: the call carries no restrictions at all.
+    // The button opens the modal; nothing is created until it says so, and
+    // with nothing set the call carries no restrictions at all.
     await button('generate invite link').trigger('click');
-    expect(createInvite.mock.calls.at(-1)).toEqual([{}]);
+    expect(wrapper.find('.modal').exists()).toBe(true);
+    expect(createInvite).not.toHaveBeenCalled();
+    // happy-dom does not run implicit submission from a button click.
+    await wrapper.find('.modal form').trigger('submit');
+    await flush();
+    expect(createInvite.mock.calls.at(-1)).toEqual([{ expiresInDays: 7 }]);
+    // Created: the modal is gone and the fresh link is shown.
+    expect(wrapper.find('.modal').exists()).toBe(false);
+    expect(wrapper.find('.invite-fresh').text()).toContain('tok-new');
 
-    await button('limits').trigger('click');
-    const checks = wrapper.findAll('.invite-limits input[type="checkbox"]');
-    await checks[0].setValue(false);
-    await wrapper.find('.invite-limits input:not([type="checkbox"])').setValue('irc.lurker.chat');
-    await checks[1].setValue(false);
     await button('generate invite link').trigger('click');
+    const checks = wrapper.findAll('.modal input[type="checkbox"]');
+    await checks[0].setValue(false);
+    await wrapper.find('.modal input:not([type="checkbox"])').setValue('irc.lurker.chat');
+    await checks[1].setValue(false);
+    await wrapper.find('.modal form').trigger('submit');
+    await flush();
     expect(createInvite.mock.calls.at(-1)).toEqual([
-      { restrictions: { networks: ['irc.lurker.chat'], uploads: false } },
+      { expiresInDays: 7, restrictions: { networks: ['irc.lurker.chat'], uploads: false } },
     ]);
   });
 
