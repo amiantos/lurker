@@ -17,7 +17,11 @@ import {
   restrictionsOf,
   setUserRestrictions,
 } from '../db/users.js';
-import { parseAccountRestrictions, sameRestrictions } from '../../shared/accountRestrictions.js';
+import {
+  parseAccountRestrictions,
+  sameRestrictions,
+  type AccountRestrictions,
+} from '../../shared/accountRestrictions.js';
 import { markUploadRemovedById } from '../db/uploadHistory.js';
 import { deleteOAuthForUser, upsertAppFromFleet } from '../db/oauth.js';
 import { validateRegistration } from '../services/oauth.js';
@@ -87,7 +91,23 @@ router.post('/users', (req: Request, res: Response) => {
     });
     return;
   }
-  const user = createUser(username); // role defaults to 'user'
+  // The account's restrictions ride the provision (shared/accountRestrictions.ts)
+  // and land in the same INSERT as the row: a free account must never exist
+  // unrestricted, not even until the next heartbeat. Optional; the PUT below
+  // changes them later. Malformed is a 400 with no row, so the control plane
+  // hears about it rather than provisioning an open account.
+  let restrictions: AccountRestrictions | undefined;
+  if (req.body?.restrictions !== undefined) {
+    const parsed = parseAccountRestrictions(req.body.restrictions);
+    if (!parsed) {
+      res.status(400).json({
+        error: 'restrictions must be { networks: string[] | null, uploads: boolean }',
+      });
+      return;
+    }
+    restrictions = parsed;
+  }
+  const user = createUser(username, { restrictions }); // role defaults to 'user'
   res.status(201).json({ id: user.id, username: user.username });
 });
 

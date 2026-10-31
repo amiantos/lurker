@@ -16,7 +16,9 @@ import {
 import {
   isUnrestricted,
   parseAccountRestrictions,
+  restrictionsFromStored,
   sameRestrictions,
+  type AccountRestrictions,
 } from '../../shared/accountRestrictions.js';
 import type { User } from '../db/users.js';
 import {
@@ -98,6 +100,8 @@ function publicInvite(row: any, { origin }: { origin: string }): Record<string, 
     expiresAt: row.expiresAt,
     usedAt: row.usedAt,
     usedByUsername: row.usedByUsername || null,
+    // What the redeeming account is born with; the unrestricted norm for most.
+    restrictions: restrictionsFromStored(row.restrictions),
     createdByUsername: row.createdByUsername || null,
     status: deriveInviteStatus(row),
   };
@@ -489,11 +493,25 @@ router.get('/invites', (req: Request, res: Response) => {
   res.json({ invites: listInvites().map((r) => publicInvite(r, { origin })) });
 });
 
+// `restrictions` (shared/accountRestrictions.ts), optional: what the account
+// this invite creates is born with. Omitted means none; present, it is the
+// whole set or a 400, as on the per-user route.
 router.post('/invites', (req: Request, res: Response) => {
   const requested = Number(req.body?.expiresInDays);
   const expiresInDays = Number.isFinite(requested) && requested > 0 ? requested : 7;
+  let restrictions: AccountRestrictions | undefined;
+  if (req.body?.restrictions !== undefined) {
+    const parsed = parseAccountRestrictions(req.body.restrictions);
+    if (!parsed) {
+      res.status(400).json({
+        error: 'restrictions must be { networks: string[] | null, uploads: boolean }',
+      });
+      return;
+    }
+    restrictions = parsed;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const row = createInvite(req.user!.id, { expiresInDays }) as any;
+  const row = createInvite(req.user!.id, { expiresInDays, restrictions }) as any;
   const full = listInvites().find((r) => r.token === row?.token);
   const origin = originFromRequest(req);
   res.json({ invite: publicInvite(full || row, { origin }) });

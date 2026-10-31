@@ -596,6 +596,31 @@ describe('invites', () => {
     expect(list2.body.invites.find((i: { token: string }) => i.token === token)).toBeFalsy();
   });
 
+  // The restrictions the account is born with ride the invite, so a limited
+  // account never exists unrestricted between acceptance and the Users pane.
+  it('creates an invite carrying restrictions, and lists them', async () => {
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    const create = await adminAgent.post('/api/admin/invites').send({ restrictions: held });
+    expect(create.status).toBe(200);
+    expect(create.body.invite.restrictions).toStrictEqual(held);
+    const list = await adminAgent.get('/api/admin/invites');
+    const row = list.body.invites.find(
+      (i: { token: string }) => i.token === create.body.invite.token,
+    );
+    expect(row.restrictions).toStrictEqual(held);
+    const plain = await adminAgent.post('/api/admin/invites').send({});
+    expect(plain.body.invite.restrictions).toStrictEqual({ networks: null, uploads: true });
+  });
+
+  it('400s an invite whose restrictions are malformed, creating nothing', async () => {
+    const before = (await adminAgent.get('/api/admin/invites')).body.invites.length;
+    const res = await adminAgent
+      .post('/api/admin/invites')
+      .send({ restrictions: { uploads: false } });
+    expect(res.status).toBe(400);
+    expect((await adminAgent.get('/api/admin/invites')).body.invites.length).toBe(before);
+  });
+
   it('default expiry is 7 days when not supplied', async () => {
     const create = await adminAgent.post('/api/admin/invites').send({});
     expect(create.status).toBe(200);

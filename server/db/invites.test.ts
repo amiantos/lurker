@@ -17,6 +17,7 @@ let inviteStatus: typeof import('./invites.js').inviteStatus;
 let consumeInvite: typeof import('./invites.js').consumeInvite;
 let deleteInvite: typeof import('./invites.js').deleteInvite;
 let isInviteSpent: typeof import('./invites.js').isInviteSpent;
+let inviteRestrictions: typeof import('./invites.js').inviteRestrictions;
 let deleteUser: typeof import('./users.js').deleteUser;
 let admin: ReturnType<typeof import('./users.js').createUser>;
 let invitee: ReturnType<typeof import('./users.js').createUser>;
@@ -31,6 +32,7 @@ beforeAll(async () => {
     consumeInvite,
     deleteInvite,
     isInviteSpent,
+    inviteRestrictions,
   } = await import('./invites.js'));
   admin = createUser('admin', { role: 'admin' });
   invitee = createUser('invitee');
@@ -50,6 +52,20 @@ describe('invites', () => {
     // 7 days ± a generous buffer for slow runners.
     expect(expMs - before).toBeGreaterThan(6 * 24 * 60 * 60 * 1000);
     expect(expMs - before).toBeLessThan(8 * 24 * 60 * 60 * 1000);
+  });
+
+  // What the redeeming account is born with rides the invite row.
+  it('carries the restrictions the account is born with', () => {
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    const inv = createInvite(admin.id, { restrictions: held })!;
+    expect(inviteRestrictions(getInvite(inv.token)!)).toStrictEqual(held);
+    expect(inviteRestrictions(listInvites().find((i) => i.token === inv.token)!)).toStrictEqual(
+      held,
+    );
+    // The norm stores NULL and reads back as no restrictions.
+    const plain = createInvite(admin.id)!;
+    expect(getInvite(plain.token)!.restrictions).toBeNull();
+    expect(inviteRestrictions(plain)).toStrictEqual({ networks: null, uploads: true });
   });
 
   it('honors a custom expiry', () => {

@@ -91,8 +91,16 @@ export function countAdmins(): number {
     .n;
 }
 
-export function createUser(username: string, { role = 'user' }: { role?: UserRole } = {}): User {
-  const info = db.prepare('INSERT INTO users (username, role) VALUES (?, ?)').run(username, role);
+// `restrictions`: what the account is born with (an invite's, or the control
+// plane's on provision). In the INSERT itself, so there is no moment, however
+// short, in which the row exists unrestricted.
+export function createUser(
+  username: string,
+  { role = 'user', restrictions }: { role?: UserRole; restrictions?: AccountRestrictions } = {},
+): User {
+  const info = db
+    .prepare('INSERT INTO users (username, role, restrictions) VALUES (?, ?, ?)')
+    .run(username, role, restrictions ? serializeAccountRestrictions(restrictions) : null);
   const user = findUserById(info.lastInsertRowid);
   if (!user) throw new Error('createUser: row missing immediately after insert');
   // The app-scoped system buffer is a real registry row (kind 'system',

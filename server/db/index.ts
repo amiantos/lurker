@@ -2848,6 +2848,14 @@ if (schemaVersion < 20) {
   }
 }
 
+// The restrictions an invite's account is born with (shared/accountRestrictions.ts),
+// copied onto the user row at redemption, so a limited account never exists
+// unrestricted, not even between "accepted" and "the admin got to the Users
+// pane". Added AFTER the v20 rebuild above: that swap recreates the table from
+// its own column list, and a column added before it would not survive on an
+// install coming up from v19.
+ensureColumn('invite_tokens', 'restrictions', 'TEXT');
+
 // #994: away moved from one row per user to one row per network. An account
 // that's away now is away on each of its networks, as it was on the wire, so
 // the row is copied to every network the user has; then the old table goes.

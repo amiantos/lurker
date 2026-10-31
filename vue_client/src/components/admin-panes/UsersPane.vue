@@ -111,34 +111,15 @@
           </small>
         </form>
 
-        <!-- Inline limits editor (shared/accountRestrictions.ts). "Any network"
-             is its own switch rather than an empty host box: an empty list is a
-             real value (no networks at all), and saving an account that has one
-             must not quietly turn it into "any". The server folds and
-             de-duplicates the hosts, so the admin can type freely. -->
+        <!-- Inline limits editor: the same fields an invite is created with
+             (RestrictionsFields), so what an account was born with and what it
+             is changed to are edited the same way. -->
         <form
           v-if="editingLimitsFor === u.id"
           class="limits-edit"
           @submit.prevent="onSaveLimits(u)"
         >
-          <label class="check">
-            <input v-model="limitsAnyDraft" type="checkbox" />
-            <span>any network</span>
-          </label>
-          <label>
-            <span>networks</span>
-            <input
-              v-model="limitsHostsDraft"
-              :disabled="limitsAnyDraft"
-              :placeholder="limitsAnyDraft ? 'any' : 'none'"
-              spellcheck="false"
-              autocapitalize="off"
-            />
-          </label>
-          <label class="check">
-            <input v-model="limitsUploadsDraft" type="checkbox" />
-            <span>may upload</span>
-          </label>
+          <RestrictionsFields v-model="limitsDraft" :disabled="adminBusy" />
           <button type="submit" class="link" :disabled="adminBusy">save</button>
           <button type="button" class="link" :disabled="adminBusy" @click="editingLimitsFor = null">
             cancel
@@ -255,7 +236,13 @@ import { formatRelative } from '../../utils/timestamp.js';
 // Same module the server derives and validates idents with, so the input's cap
 // can't drift from what the route accepts.
 import { MAX_IDENT_LENGTH } from '../../../../shared/ident.js';
-import { isUnrestricted } from '../../../../shared/accountRestrictions.js';
+import {
+  isUnrestricted,
+  UNRESTRICTED,
+  type AccountRestrictions,
+} from '../../../../shared/accountRestrictions.js';
+import { describeRestrictions } from '../../utils/accountRestrictions.js';
+import RestrictionsFields from '../RestrictionsFields.vue';
 
 const auth = useAuthStore();
 const adminStore = useAdminStore();
@@ -286,43 +273,25 @@ const identDraft = ref('');
 
 // Same shape for the limits editor.
 const editingLimitsFor = ref<number | null>(null);
-const limitsAnyDraft = ref(true);
-const limitsHostsDraft = ref('');
-const limitsUploadsDraft = ref(true);
+const limitsDraft = ref<AccountRestrictions>({ ...UNRESTRICTED });
 
 function isLimited(user: AdminUser): boolean {
   return !!user.restrictions && !isUnrestricted(user.restrictions);
 }
 function limitsSummary(user: AdminUser): string {
-  const r = user.restrictions;
-  if (!r) return '';
-  const parts: string[] = [];
-  if (r.networks !== null) {
-    parts.push(r.networks.length ? `networks: ${r.networks.join(', ')}` : 'no networks');
-  }
-  if (r.uploads === false) parts.push('no uploads');
-  return parts.join(' · ');
+  return describeRestrictions(user.restrictions);
 }
 function onEditLimits(user: AdminUser) {
   adminError.value = '';
   const r = user.restrictions;
-  limitsAnyDraft.value = !r || r.networks === null;
-  limitsHostsDraft.value = r?.networks ? r.networks.join(', ') : '';
-  limitsUploadsDraft.value = r ? r.uploads : true;
+  limitsDraft.value = r ? { ...r } : { ...UNRESTRICTED };
   editingLimitsFor.value = editingLimitsFor.value === user.id ? null : user.id;
 }
 async function onSaveLimits(user: AdminUser) {
   adminError.value = '';
   adminBusy.value = true;
   try {
-    const hosts = limitsHostsDraft.value
-      .split(',')
-      .map((h) => h.trim())
-      .filter(Boolean);
-    await adminStore.setUserRestrictions(user.id, {
-      networks: limitsAnyDraft.value ? null : hosts,
-      uploads: limitsUploadsDraft.value,
-    });
+    await adminStore.setUserRestrictions(user.id, limitsDraft.value);
     editingLimitsFor.value = null;
   } catch (e: any) {
     adminError.value = e.message || 'failed to set limits';
@@ -488,14 +457,6 @@ async function onResumeUser(user: AdminUser) {
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--space-3);
-}
-.user-row .limits-edit label {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-.user-row .limits-edit input:not([type='checkbox']) {
-  width: 28ch;
 }
 .user-row .ident-tag {
   color: var(--fg-muted);

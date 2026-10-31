@@ -61,6 +61,8 @@ export interface AdminInvite {
   expiresAt: string | null;
   usedAt: string | null;
   usedByUsername?: string | null;
+  /** What the redeeming account is born with (shared/accountRestrictions.ts). */
+  restrictions?: AccountRestrictions;
 }
 
 /** An admin-defined network preset (#298), as the admin API returns it. */
@@ -268,10 +270,16 @@ export const useAdminStore = defineStore('admin', {
         throw e;
       }
     },
-    async createInvite({ expiresInDays }: { expiresInDays?: number } = {}) {
+    async createInvite({
+      expiresInDays,
+      restrictions,
+    }: { expiresInDays?: number; restrictions?: AccountRestrictions } = {}) {
       const { invite } = await api('/api/admin/invites', {
         method: 'POST',
-        body: expiresInDays ? { expiresInDays } : {},
+        body: {
+          ...(expiresInDays ? { expiresInDays } : {}),
+          ...(restrictions ? { restrictions } : {}),
+        },
       });
       this.invitesFetchSeq++;
       this.invites = [invite, ...this.invites];

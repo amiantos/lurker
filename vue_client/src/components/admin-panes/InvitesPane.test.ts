@@ -71,6 +71,49 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('InvitesPane limits on a new invite', () => {
+  it('sends the restrictions with the create call once they are set', async () => {
+    const wrapper = mountPane([]);
+    const store = useAdminStore();
+    const createInvite = vi
+      .fn<(opts?: unknown) => Promise<AdminInvite>>()
+      .mockResolvedValue(invite({ token: 'tok-new' }));
+    store.createInvite = createInvite as unknown as typeof store.createInvite;
+    const button = (text: string) =>
+      wrapper.findAll('button').find((b) => b.text() === text) ??
+      (() => {
+        throw new Error(`no button ${text}`);
+      })();
+
+    // Nothing set: the call carries no restrictions at all.
+    await button('generate invite link').trigger('click');
+    expect(createInvite.mock.calls.at(-1)).toEqual([{}]);
+
+    await button('limits').trigger('click');
+    const checks = wrapper.findAll('.invite-limits input[type="checkbox"]');
+    await checks[0].setValue(false);
+    await wrapper.find('.invite-limits input:not([type="checkbox"])').setValue('irc.lurker.chat');
+    await checks[1].setValue(false);
+    await button('generate invite link').trigger('click');
+    expect(createInvite.mock.calls.at(-1)).toEqual([
+      { restrictions: { networks: ['irc.lurker.chat'], uploads: false } },
+    ]);
+  });
+
+  it('tags a listed invite that carries restrictions', () => {
+    const wrapper = mountPane([
+      invite({
+        token: 'tok-held',
+        restrictions: { networks: ['irc.lurker.chat'], uploads: false },
+      }),
+      PENDING,
+    ]);
+    const tags = wrapper.findAll('.invite-limited');
+    expect(tags).toHaveLength(1);
+    expect(tags[0].attributes('title')).toBe('networks: irc.lurker.chat · no uploads');
+  });
+});
+
 describe('InvitesPane row action (#590)', () => {
   it('offers a working control on a consumed invite, not a disabled placeholder', async () => {
     const wrapper = mountPane([CONSUMED]);

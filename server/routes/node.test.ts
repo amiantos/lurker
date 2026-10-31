@@ -551,6 +551,28 @@ describe('node control API — restrictions', () => {
       .send(body as object);
   }
 
+  // On provision, in the same INSERT as the row: a free account never exists
+  // unrestricted, not even until the first heartbeat reassert.
+  it('provisions an account born with its restrictions', async () => {
+    const held = { networks: ['irc.lurker.chat'], uploads: false };
+    const res = await createAnonAgent(app)
+      .post('/api/node/users')
+      .set('Authorization', AUTH)
+      .send({ username: 'born-held', restrictions: held });
+    expect(res.status).toBe(201);
+    expect(restrictionsOf(findUserById(res.body.id))).toStrictEqual(held);
+  });
+
+  it('400s a provision whose restrictions are malformed, creating no account', async () => {
+    const { findUserByUsername } = await import('../db/users.js');
+    const res = await createAnonAgent(app)
+      .post('/api/node/users')
+      .set('Authorization', AUTH)
+      .send({ username: 'born-bad', restrictions: { networks: 'irc.lurker.chat' } });
+    expect(res.status).toBe(400);
+    expect(findUserByUsername('born-bad')).toBeUndefined();
+  });
+
   it('applies a restriction and hands it to the manager', async () => {
     const id = await provision('restrict-me');
     const spy = vi.spyOn(ircManager, 'restrictUser');
