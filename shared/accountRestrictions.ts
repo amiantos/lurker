@@ -47,37 +47,71 @@ export function foldHost(host: string): string {
   return host.trim().toLowerCase();
 }
 
+const SHAPE = 'body must be { networks: string[] | null, uploads: boolean }';
+
 /**
- * Validate a restrictions object from a request body. Returns null when it is
- * malformed — a caller answers 400, never guesses. The set is WHOLE: both
- * fields present, nothing else. A field left out is not "unchanged" and not
- * "allowed"; reading an omission as a grant is how a half-written body would
- * quietly lift a restriction. Hosts are folded and de-duplicated; an empty
- * list is legal and means "no networks at all".
+ * Why one typed host cannot be on a list, or null when it can. A host is
+ * compared with a network row's `host` and never resolved, so a port, a
+ * scheme or a path can never match anything: better refused with a reason
+ * than stored and silently useless.
  */
-export function parseAccountRestrictions(input: unknown): AccountRestrictions | null {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-  const obj = input as Record<string, unknown>;
-  for (const key of Object.keys(obj)) {
-    if (key !== 'networks' && key !== 'uploads') return null;
+export function hostProblem(raw: string): string | null {
+  const host = foldHost(raw);
+  if (!host) return 'a host is empty';
+  if (host.length > MAX_HOST_LENGTH) return `${host.slice(0, 40)}…: too long for a hostname`;
+  if (/[\s,]/.test(host)) return `${host}: not a hostname`;
+  if (/\//.test(host)) return `${host}: hostnames only, no scheme or path`;
+  if (host.includes(':')) return `${host}: hostnames only, no port`;
+  return null;
+}
+
+/** The first problem in a typed list, or null. */
+export function hostListProblem(hosts: readonly string[]): string | null {
+  for (const h of hosts) {
+    const problem = hostProblem(h);
+    if (problem) return problem;
   }
-  if (!('networks' in obj) || !('uploads' in obj)) return null;
+  return null;
+}
+
+/**
+ * Validate a restrictions object from a request body, with the reason when it
+ * is refused — a caller answers 400 with it, never guesses. The set is WHOLE:
+ * both fields present. A field left out is not "unchanged" and not "allowed";
+ * reading an omission as a grant is how a half-written body would quietly lift
+ * a restriction. Keys this version does not know are ignored, not refused: the
+ * cell and the control plane are released separately, and the protocol rule is
+ * additive. Hosts are folded and de-duplicated; an empty list is legal and
+ * means "no networks at all".
+ */
+export function readAccountRestrictions(
+  input: unknown,
+): { restrictions: AccountRestrictions; error?: undefined } | { error: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { error: SHAPE };
+  const obj = input as Record<string, unknown>;
+  if (!('networks' in obj) || !('uploads' in obj)) return { error: SHAPE };
   let networks: string[] | null = null;
   if (obj.networks !== null) {
-    if (!Array.isArray(obj.networks)) return null;
+    if (!Array.isArray(obj.networks)) return { error: SHAPE };
     const seen = new Set<string>();
     for (const item of obj.networks) {
-      if (typeof item !== 'string') return null;
-      const host = foldHost(item);
-      if (!host || host.length > MAX_HOST_LENGTH || /[\s,/]/.test(host)) return null;
-      seen.add(host);
+      if (typeof item !== 'string') return { error: SHAPE };
+      const problem = hostProblem(item);
+      if (problem) return { error: problem };
+      seen.add(foldHost(item));
     }
     // Sorted so two writes of the same set compare equal whatever order the
     // caller listed them in (sameRestrictions is a string compare).
     networks = [...seen].toSorted();
   }
-  if (typeof obj.uploads !== 'boolean') return null;
-  return { networks, uploads: obj.uploads };
+  if (typeof obj.uploads !== 'boolean') return { error: SHAPE };
+  return { restrictions: { networks, uploads: obj.uploads } };
+}
+
+/** readAccountRestrictions without the reason: the set, or null when refused. */
+export function parseAccountRestrictions(input: unknown): AccountRestrictions | null {
+  const read = readAccountRestrictions(input);
+  return read.error === undefined ? read.restrictions : null;
 }
 
 /**

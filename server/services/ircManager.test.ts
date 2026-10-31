@@ -833,6 +833,26 @@ describe('ircManager account restrictions', () => {
     }
   });
 
+  // The widening branch judges against BOTH lists: a change that admits no
+  // new host (uploads only, a list that shrank) starts nothing, so the control
+  // plane's reconciliation does not churn through refused connects.
+  it('restrictUser starts nothing when no host is newly allowed', () => {
+    const user = createUser('irc-uploads-flip');
+    netOn(user.id, 'away', 'irc.libera.chat');
+    const held = { networks: ['irc.lurker.chat'], uploads: true };
+    setUserRestrictions(user.id, held);
+    const started = vi.spyOn(ircManager, 'startNetwork');
+    try {
+      const flipped = { networks: ['irc.lurker.chat'], uploads: false };
+      setUserRestrictions(user.id, flipped);
+      ircManager.restrictUser(user.id, flipped, held);
+      expect(started).not.toHaveBeenCalled();
+    } finally {
+      started.mockRestore();
+      connectScheduler.reset();
+    }
+  });
+
   it('restrictUser with no host list drops nothing', () => {
     const user = createUser('irc-uploads-only');
     const net = netOn(user.id, 'n', 'irc.libera.chat');

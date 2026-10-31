@@ -3,7 +3,9 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  hostListProblem,
   parseAccountRestrictions,
+  readAccountRestrictions,
   restrictionsFromStored,
   sameRestrictions,
   serializeAccountRestrictions,
@@ -48,12 +50,36 @@ describe('parseAccountRestrictions', () => {
       { networks: [''] },
       { networks: ['a b'] },
       { networks: ['a,b'] },
-      { networks: ['x'.repeat(254)] },
+      { networks: ['x'.repeat(254)], uploads: true },
+      { networks: ['irc.example.org:6697'], uploads: true },
+      { networks: ['https://irc.example.org'], uploads: true },
       { networks: null, uploads: 'no' },
-      { networks: null, uploads: true, extra: 1 },
     ]) {
       expect([bad, parseAccountRestrictions(bad)]).toStrictEqual([bad, null]);
     }
+  });
+
+  // The cell and the control plane are released separately; a field this
+  // version does not know is not a reason to refuse the ones it does.
+  it('ignores keys it does not know', () => {
+    expect(parseAccountRestrictions({ networks: null, uploads: true, dcc: false })).toStrictEqual({
+      networks: null,
+      uploads: true,
+    });
+  });
+
+  it('says which host is wrong, and why', () => {
+    expect(readAccountRestrictions({ networks: ['irc.example.org:6697'], uploads: true })).toEqual({
+      error: 'irc.example.org:6697: hostnames only, no port',
+    });
+    expect(readAccountRestrictions({ networks: ['irc.example.org/x'], uploads: true })).toEqual({
+      error: 'irc.example.org/x: hostnames only, no scheme or path',
+    });
+    expect(readAccountRestrictions({ uploads: true })).toEqual({
+      error: 'body must be { networks: string[] | null, uploads: boolean }',
+    });
+    expect(hostListProblem(['irc.lurker.chat', ' '])).toBe('a host is empty');
+    expect(hostListProblem(['irc.lurker.chat'])).toBeNull();
   });
 });
 

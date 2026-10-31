@@ -1186,6 +1186,31 @@ describe('account network restrictions', () => {
     expect(res.body.network.blocked).toBe(false);
   });
 
+  // A proxy of the user's own is a destination the list never named: an
+  // older proxied row on an allowed host reads as blocked and Connect says
+  // why, rather than answering ok and failing at the dial.
+  it('marks a proxied row blocked and refuses to connect it, naming the proxy', async () => {
+    const { createNetwork } = await import('../db/networks.js');
+    const row = createNetwork(held.id, {
+      name: 'home-via-proxy',
+      host: 'irc.lurker.chat',
+      port: 6697,
+      tls: true,
+      nick: 'n',
+      proxy_enabled: true,
+      proxy_type: 'socks5',
+      proxy_host: '127.0.0.1',
+      proxy_port: 1080,
+    })!;
+    const list = await heldAgent.get('/api/networks');
+    const mine = list.body.networks.find((n: { id: number }) => n.id === row.id);
+    expect(mine.blocked).toBe(true);
+    const connect = await heldAgent.post(`/api/networks/${row.id}/connect`);
+    expect(connect.status).toBe(403);
+    expect(connect.body.error).toMatch(/proxy/);
+    expect(fakeManager.calls.some(([m]) => m === 'startNetwork')).toBe(false);
+  });
+
   it('refuses to repoint a listed network off the list', async () => {
     const created = await makeNet(heldAgent, { name: 'home2', host: 'irc.lurker.chat' });
     const res = await heldAgent

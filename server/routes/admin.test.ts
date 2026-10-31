@@ -631,6 +631,43 @@ describe('invites', () => {
     expect((await adminAgent.get('/api/admin/invites')).body.invites.length).toBe(before);
   });
 
+  // Under an instance lockdown the presets ARE the allowed hosts; a list the
+  // instance would refuse is a dead end for the account, so it is refused here.
+  it('400s an invite listing a host the instance lockdown refuses', async () => {
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    const { createInstanceNetwork, deleteInstanceNetwork } =
+      await import('../db/instanceNetworks.js');
+    const preset = createInstanceNetwork({ name: 'Home', host: 'irc.lurker.chat' });
+    setAllowUserDefinedNetworks(false);
+    try {
+      const off = await adminAgent
+        .post('/api/admin/invites')
+        .send({ restrictions: { networks: ['irc.libera.chat'], uploads: true } });
+      expect(off.status).toBe(400);
+      expect(off.body.error).toBe('irc.libera.chat is not allowed by this server');
+      const on = await adminAgent
+        .post('/api/admin/invites')
+        .send({ restrictions: { networks: ['irc.lurker.chat'], uploads: true } });
+      expect(on.status).toBe(200);
+      // The same rule on the per-user route.
+      const put = await adminAgent
+        .put(`/api/admin/users/${user.id}/restrictions`)
+        .send({ networks: ['irc.libera.chat'], uploads: true });
+      expect(put.status).toBe(400);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+      deleteInstanceNetwork(preset.id);
+    }
+  });
+
+  it('names the host when one cannot be on a list', async () => {
+    const res = await adminAgent
+      .put(`/api/admin/users/${user.id}/restrictions`)
+      .send({ networks: ['irc.example.org:6697'], uploads: true });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('irc.example.org:6697: hostnames only, no port');
+  });
+
   it('default expiry is 7 days when not supplied', async () => {
     const create = await adminAgent.post('/api/admin/invites').send({});
     expect(create.status).toBe(200);

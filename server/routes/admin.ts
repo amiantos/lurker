@@ -15,11 +15,12 @@ import {
 } from '../db/users.js';
 import {
   isUnrestricted,
-  parseAccountRestrictions,
+  readAccountRestrictions,
   restrictionsFromStored,
   sameRestrictions,
   type AccountRestrictions,
 } from '../../shared/accountRestrictions.js';
+import { hostOffInstanceList } from '../services/networkPolicy.js';
 import type { User } from '../db/users.js';
 import {
   createInvite,
@@ -271,11 +272,16 @@ router.put('/users/:id/restrictions', (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid id' });
     return;
   }
-  const next = parseAccountRestrictions(req.body);
-  if (!next) {
-    res.status(400).json({
-      error: 'body must be { networks: string[] | null, uploads: boolean }',
-    });
+  const read = readAccountRestrictions(req.body);
+  if (read.error !== undefined) {
+    res.status(400).json({ error: read.error });
+    return;
+  }
+  const next = read.restrictions;
+  // A list the instance lockdown would refuse is a dead end, not a limit.
+  const off = hostOffInstanceList(next.networks);
+  if (off) {
+    res.status(400).json({ error: `${off} is not allowed by this server` });
     return;
   }
   const target = findUserById(id);
@@ -503,18 +509,21 @@ router.post('/invites', (req: Request, res: Response) => {
   const expiresInDays = Number.isFinite(requested) && requested > 0 ? requested : 7;
   let restrictions: AccountRestrictions | undefined;
   if (req.body?.restrictions !== undefined) {
-    const parsed = parseAccountRestrictions(req.body.restrictions);
-    if (!parsed) {
-      res.status(400).json({
-        error: 'restrictions must be { networks: string[] | null, uploads: boolean }',
-      });
+    const read = readAccountRestrictions(req.body.restrictions);
+    if (read.error !== undefined) {
+      res.status(400).json({ error: read.error });
       return;
     }
-    if (parsed.networks !== null && parsed.networks.length === 0) {
+    if (read.restrictions.networks !== null && read.restrictions.networks.length === 0) {
       res.status(400).json({ error: 'an invite must allow at least one network' });
       return;
     }
-    restrictions = parsed;
+    const off = hostOffInstanceList(read.restrictions.networks);
+    if (off) {
+      res.status(400).json({ error: `${off} is not allowed by this server` });
+      return;
+    }
+    restrictions = read.restrictions;
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const row = createInvite(req.user!.id, { expiresInDays, restrictions }) as any;

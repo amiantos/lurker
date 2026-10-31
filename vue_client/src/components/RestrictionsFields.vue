@@ -43,17 +43,23 @@
       />
       <span>may upload</span>
     </label>
+    <!-- The server's own check, run as they type, so a port or a URL is
+         named before the save answers 400 with the same words. -->
+    <p v-if="problem" class="warn">{{ problem }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
+import { hostListProblem, type AccountRestrictions } from '../../../shared/accountRestrictions.js';
 
 const props = defineProps<{ modelValue: AccountRestrictions; disabled?: boolean }>();
 const emit = defineEmits<{ 'update:modelValue': [value: AccountRestrictions] }>();
 
 const any = computed(() => props.modelValue.networks === null);
+const problem = computed(() =>
+  props.modelValue.networks === null ? null : hostListProblem(props.modelValue.networks),
+);
 
 // The host box is text while it is being typed; the model holds the parsed
 // list. Re-seeded when the parent swaps the set (a different row opened), not
@@ -108,5 +114,10 @@ function onUploads(e: Event): void {
 }
 .restrictions-fields input:not([type='checkbox']) {
   width: 28ch;
+}
+.restrictions-fields .warn {
+  color: var(--warn);
+  margin: 0;
+  flex-basis: 100%;
 }
 </style>

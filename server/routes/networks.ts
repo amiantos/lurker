@@ -28,6 +28,7 @@ import {
   hostAllowedChecker,
   mayUseProxy,
   networkRefusal,
+  networkRowRefusal,
 } from '../services/networkPolicy.js';
 import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
 import { parseChannelNames } from '../../shared/channels.js';
@@ -156,11 +157,14 @@ function proxyBodyProblem(
 function networkPayload(
   network: Network | undefined | null,
   isAllowed?: (host: string) => boolean,
+  proxyOk?: boolean,
 ): Record<string, unknown> | null {
   if (!network) return null;
   // Judged for the row's OWNER: the instance lockdown and their own account
-  // restrictions both decide whether this row can connect.
+  // restrictions both decide whether this row can connect, and so does a
+  // proxy of their own on an account held to a host list.
   isAllowed ??= (host: string) => isNetworkHostAllowed(host, network.user_id);
+  proxyOk ??= mayUseProxy(network.user_id);
   // client_key is destructured to keep it OUT of `safe` — the private key leaves
   // the server through exactly one route, and never in a listing — and because
   // whether it is THERE decides what the payload says about the pair.
@@ -222,13 +226,16 @@ function networkPayload(
     // isn't on the list (#298). The row survives untouched — it just can't
     // connect — so the client needs this to say why, rather than leaving the user
     // to click Connect and watch nothing happen.
-    blocked: !isAllowed(network.host),
+    blocked: !isAllowed(network.host) || (!!network.proxy_enabled && !proxyOk),
   };
 }
 
 router.get('/', (req: Request, res: Response) => {
   const isAllowed = hostAllowedChecker(req.user!.id);
-  const networks = listNetworksForUser(req.user!.id).map((n) => networkPayload(n, isAllowed));
+  const proxyOk = mayUseProxy(req.user!.id);
+  const networks = listNetworksForUser(req.user!.id).map((n) =>
+    networkPayload(n, isAllowed, proxyOk),
+  );
   res.json({ networks });
 });
 
@@ -579,7 +586,7 @@ router.post('/:id/connect', (req: Request, res: Response) => {
   // startNetwork enforces the lockdown itself (that's the real gate — it also
   // covers boot autoconnect), but it enforces it by returning null. Say so out
   // loud here, or the user clicks Connect and watches nothing whatsoever happen.
-  const refusal = networkRefusal(network.host, req.user!.id);
+  const refusal = networkRowRefusal(network, req.user!.id);
   if (refusal) {
     res.status(403).json({ error: refusal });
     return;
@@ -608,7 +615,7 @@ router.post('/:id/reconnect', (req: Request, res: Response) => {
   }
   // Same as /connect: restartNetwork routes through startNetwork, which refuses
   // silently. Report it instead of a no-op "ok".
-  const refusal = networkRefusal(network.host, req.user!.id);
+  const refusal = networkRowRefusal(network, req.user!.id);
   if (refusal) {
     res.status(403).json({ error: refusal });
     return;

@@ -34,7 +34,7 @@ import {
   type DccTransferRow,
 } from '../db/dccTransfers.js';
 import { dccFileBytes } from './dccPaths.js';
-import { findUserById } from '../db/users.js';
+import { findUserById, restrictionsOf } from '../db/users.js';
 import { ACCOUNT_REFUSAL, PROXY_REFUSAL, networkRefusal } from './networkPolicy.js';
 import {
   foldHost,
@@ -454,10 +454,12 @@ class IrcManager extends EventEmitter {
     userId: number,
     networkId: number,
   ): { ok: true; network: Network } | { ok: false; reason: string } {
-    if (findUserById(userId)?.is_paused) return { ok: false, reason: 'this account is paused' };
+    const user = findUserById(userId);
+    if (user?.is_paused) return { ok: false, reason: 'this account is paused' };
     const network = getNetwork(networkId, userId);
     if (!network) return { ok: false, reason: 'this network no longer exists' };
-    const refusal = networkRefusal(network.host, userId);
+    // The row just read, not the id: this runs once per network at boot.
+    const refusal = networkRefusal(network.host, user ? restrictionsOf(user) : userId);
     if (refusal) {
       return {
         ok: false,
@@ -1554,14 +1556,18 @@ class IrcManager extends EventEmitter {
     }
     if (prev.networks !== null) {
       const was = new Set(prev.networks);
+      const now = next.networks === null ? null : new Set(next.networks);
       for (const network of listNetworksForUser(userId)) {
         if (!network.autoconnect) continue;
-        // What the old list refused: a host off it, or any proxied network. A
-        // proxied one comes back only on a full lift; under a list the dial
-        // would refuse it again (proxyBlockedReason), and the row stays.
+        // What the old list refused AND the new one allows: a host off the old
+        // list and on (or under no) new list, or any proxied network on a full
+        // lift. Under a list the dial would refuse a proxied one again
+        // (proxyBlockedReason), and the row stays. Judged against both lists so
+        // an uploads-only change, or a list that merely shrank, starts nothing.
+        const host = foldHost(network.host);
         const refused = network.proxy_enabled
-          ? next.networks === null
-          : !was.has(foldHost(network.host));
+          ? now === null
+          : !was.has(host) && (now === null || now.has(host));
         if (!refused) continue;
         // connectGate re-reads the row the caller just wrote, so a host the
         // new list still refuses is a null here, not a connection.

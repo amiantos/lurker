@@ -30,7 +30,12 @@
 import { allowUserDefinedNetworks } from '../db/instanceSettings.js';
 import { listEnabledInstanceNetworks } from '../db/instanceNetworks.js';
 import { findUserById, restrictionsOf } from '../db/users.js';
-import { foldHost } from '../../shared/accountRestrictions.js';
+import { foldHost, type AccountRestrictions } from '../../shared/accountRestrictions.js';
+
+// Whose account is being judged: an id (the row is read), or the restrictions
+// a caller already holds (the connect gate has the user row in hand, and the
+// boot-time fan-out must not read it again per network).
+type Who = number | AccountRestrictions;
 
 // Why a host was refused, so a route can say so. The two messages are kept
 // distinct on purpose: "ask your admin to list it" and "this account can't" are
@@ -48,8 +53,8 @@ export const PROXY_REFUSAL = 'this account may not connect through a proxy of it
 //
 // `userId` is optional only for the instance-wide question ("would ANY account
 // be allowed this host?"); every per-request caller passes the account.
-export function isNetworkHostAllowed(host: string, userId?: number): boolean {
-  return hostAllowedChecker(userId)(host);
+export function isNetworkHostAllowed(host: string, who?: Who): boolean {
+  return hostAllowedChecker(who)(host);
 }
 
 // May a user route a network through a proxy of their own choosing? (#303)
@@ -69,9 +74,9 @@ export function isNetworkHostAllowed(host: string, userId?: number): boolean {
 // ⚠ Enforced on write AND re-checked on the connect path, the same shape
 // isNetworkHostAllowed has: a gate only on write is a formality once an admin
 // can flip the switch after the fact.
-export function mayUseProxy(userId?: number): boolean {
+export function mayUseProxy(who?: Who): boolean {
   if (!allowUserDefinedNetworks()) return false;
-  return userId == null || restrictionsOf(findUserById(userId)).networks === null;
+  return ownHosts(who) === null;
 }
 
 // The same predicate with the policy resolved ONCE, for callers testing several
@@ -82,9 +87,9 @@ export function mayUseProxy(userId?: number): boolean {
 // Deliberately a per-call snapshot rather than a cached module-level value: an
 // admin flipping the switch has to take effect on the very next request, and a
 // stale cache here would mean a lockdown that doesn't lock down.
-export function hostAllowedChecker(userId?: number): (host: string) => boolean {
+export function hostAllowedChecker(who?: Who): (host: string) => boolean {
   const instance = instanceChecker();
-  const own = ownHosts(userId);
+  const own = ownHosts(who);
   if (own === null) return instance;
   return (host: string) => instance(host) && own.has(foldHost(host || ''));
 }
@@ -94,17 +99,39 @@ export function hostAllowedChecker(userId?: number): (host: string) => boolean {
 // for everyone, and telling the account it is the one being limited would send
 // the person to the wrong door. Each tier is resolved once: this runs on every
 // connect, including the boot-time autoconnect fan-out.
-export function networkRefusal(host: string, userId: number): string | null {
+export function networkRefusal(host: string, who: Who): string | null {
   if (!instanceChecker()(host)) return INSTANCE_REFUSAL;
-  const own = ownHosts(userId);
+  const own = ownHosts(who);
   if (own !== null && !own.has(foldHost(host || ''))) return ACCOUNT_REFUSAL;
   return null;
 }
 
+// The reason a network ROW cannot connect, or null: its host (the two tiers
+// above), or a proxy of the user's own that the account may not use. What the
+// Connect route and the row's `blocked` flag answer, so a proxied row on an
+// allowed host does not read as connectable and then fail at the dial.
+export function networkRowRefusal(
+  row: { host: string; proxy_enabled?: number | boolean | null; user_id: number },
+  who: Who = row.user_id,
+): string | null {
+  return (
+    networkRefusal(row.host, who) ?? (row.proxy_enabled && !mayUseProxy(who) ? PROXY_REFUSAL : null)
+  );
+}
+
+// A host on an account's list that the INSTANCE would refuse, or null. An
+// admin writing such a list (an invite, the Users pane) is building a dead
+// end: the account could never reach the one place it is allowed.
+export function hostOffInstanceList(hosts: readonly string[] | null): string | null {
+  if (hosts === null) return null;
+  const instance = instanceChecker();
+  return hosts.find((h) => !instance(h)) ?? null;
+}
+
 // The account's own host list as a set, or null when it has none.
-function ownHosts(userId?: number): Set<string> | null {
-  if (userId == null) return null;
-  const own = restrictionsOf(findUserById(userId)).networks;
+function ownHosts(who?: Who): Set<string> | null {
+  if (who == null) return null;
+  const own = (typeof who === 'number' ? restrictionsOf(findUserById(who)) : who).networks;
   return own === null ? null : new Set(own);
 }
 

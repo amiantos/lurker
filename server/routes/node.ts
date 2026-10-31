@@ -18,7 +18,8 @@ import {
   setUserRestrictions,
 } from '../db/users.js';
 import {
-  parseAccountRestrictions,
+  isUnrestricted,
+  readAccountRestrictions,
   sameRestrictions,
   type AccountRestrictions,
 } from '../../shared/accountRestrictions.js';
@@ -98,14 +99,12 @@ router.post('/users', (req: Request, res: Response) => {
   // hears about it rather than provisioning an open account.
   let restrictions: AccountRestrictions | undefined;
   if (req.body?.restrictions !== undefined) {
-    const parsed = parseAccountRestrictions(req.body.restrictions);
-    if (!parsed) {
-      res.status(400).json({
-        error: 'restrictions must be { networks: string[] | null, uploads: boolean }',
-      });
+    const read = readAccountRestrictions(req.body.restrictions);
+    if (read.error !== undefined) {
+      res.status(400).json({ error: read.error });
       return;
     }
-    restrictions = parsed;
+    restrictions = read.restrictions;
   }
   const user = createUser(username, { restrictions }); // role defaults to 'user'
   res.status(201).json({ id: user.id, username: user.username });
@@ -248,20 +247,22 @@ router.put('/users/:id/restrictions', (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid id' });
     return;
   }
-  const next = parseAccountRestrictions(req.body);
-  if (!next) {
-    res.status(400).json({
-      error: 'body must be { networks: string[] | null, uploads: boolean }',
-    });
+  const read = readAccountRestrictions(req.body);
+  if (read.error !== undefined) {
+    res.status(400).json({ error: read.error });
     return;
   }
+  const next = read.restrictions;
   const target = findUserById(id);
   if (!target) {
     res.status(404).json({ error: 'not found' });
     return;
   }
-  // The operator's admin account is not a tenant (mirrors pause/delete).
-  if (target.role === 'admin') {
+  // The operator's admin account is not a tenant (mirrors pause/delete). A
+  // LIFT is allowed, as on the admin route: a row that failed closed would
+  // otherwise have no way out in node edition, where the admin route defers
+  // here.
+  if (target.role === 'admin' && !isUnrestricted(next)) {
     res.status(409).json({ error: 'refusing to restrict an admin account' });
     return;
   }

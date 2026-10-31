@@ -57,6 +57,14 @@ describe('RestrictionsFields', () => {
     });
   });
 
+  it('names a host the server would refuse, as it is typed', async () => {
+    const { hosts, wrapper } = mountWith({ networks: [], uploads: true });
+    await hosts().setValue('irc.example.org:6697');
+    expect(wrapper.find('.warn').text()).toBe('irc.example.org:6697: hostnames only, no port');
+    await hosts().setValue('irc.example.org');
+    expect(wrapper.find('.warn').exists()).toBe(false);
+  });
+
   it('emits the upload switch without touching the list', async () => {
     const { checks, emitted } = mountWith({ networks: ['irc.lurker.chat'], uploads: true });
     await checks()[1].setValue(false);

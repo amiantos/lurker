@@ -632,4 +632,14 @@ describe('node control API — restrictions', () => {
     expect((await put(admin.id, { networks: [], uploads: false })).status).toBe(409);
     expect(findUserById(admin.id)?.restrictions).toBeNull();
   });
+
+  // A row that failed closed has no other way out in node edition, where the
+  // admin route defers here.
+  it('lets the control plane lift a restriction on the admin account', async () => {
+    const { setUserRestrictions } = await import('../db/users.js');
+    const admin = createUser('restrict-admin-lift', { role: 'admin' });
+    setUserRestrictions(admin.id, { networks: [], uploads: false });
+    expect((await put(admin.id, { networks: null, uploads: true })).status).toBe(200);
+    expect(findUserById(admin.id)?.restrictions).toBeNull();
+  });
 });

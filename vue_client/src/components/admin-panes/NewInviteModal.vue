@@ -55,7 +55,7 @@
           <button type="button" class="btn-secondary" :disabled="busy" @click="$emit('close')">
             Cancel
           </button>
-          <button type="submit" class="btn-primary" :disabled="busy || noNetworks">
+          <button type="submit" class="btn-primary" :disabled="busy || noNetworks || badHost">
             {{ busy ? 'Creating…' : 'Create link' }}
           </button>
         </footer>
@@ -72,6 +72,7 @@ import { useAdminStore, type AdminInvite } from '../../stores/admin.js';
 import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
 import { describeRestrictions } from '../../utils/accountRestrictions.js';
 import {
+  hostListProblem,
   isUnrestricted,
   UNRESTRICTED,
   type AccountRestrictions,
@@ -93,9 +94,13 @@ const summary = computed(() => describeRestrictions(created.value?.restrictions)
 const noNetworks = computed(
   () => restrictions.value.networks !== null && restrictions.value.networks.length === 0,
 );
+// A host the server would refuse (the fields say which); nothing to create yet.
+const badHost = computed(
+  () => restrictions.value.networks !== null && !!hostListProblem(restrictions.value.networks),
+);
 
 async function create(): Promise<void> {
-  if (noNetworks.value) return;
+  if (noNetworks.value || badHost.value) return;
   error.value = '';
   busy.value = true;
   try {
