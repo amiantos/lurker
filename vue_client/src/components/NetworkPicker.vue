@@ -112,7 +112,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import {
   builtinNetworks,
   builtinNetworkTags,
@@ -125,7 +125,13 @@ import { foldHost } from '../../../shared/accountRestrictions.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { FunnelIcon, HashIcon, UsersIcon } from '@lucide/vue';
 
-defineEmits<{ select: [net: NetworkPreset]; manual: [] }>();
+// `autoPickSole`: when the list would hold exactly one network and there is
+// no manual entry to fall back on, pick it rather than show a list of one.
+// The emit carries `auto: true` so the parent can hide its "pick a different
+// network" path, which would otherwise land right back here. Opt-in, because
+// the add-network form has a back link to this picker that would loop.
+const props = defineProps<{ autoPickSole?: boolean }>();
+const emit = defineEmits<{ select: [net: NetworkPreset, auto?: boolean]; manual: [] }>();
 
 const presets = useNetworkPresetsStore();
 const auth = useAuthStore();
@@ -215,6 +221,21 @@ const offered = computed<NetworkPreset[]>(() => {
   }
   return listed;
 });
+
+// Once the presets are known: one network, no manual entry, no choice to make.
+// Guarded so it fires once, and only on a settled list.
+let autoPicked = false;
+watch(
+  [() => presets.loaded, offered],
+  ([loaded, list]) => {
+    if (!props.autoPickSole || autoPicked || !loaded) return;
+    const manualEntry = presets.allowUserDefined && !allowedHosts.value;
+    if (manualEntry || list.length !== 1) return;
+    autoPicked = true;
+    emit('select', list[0], true);
+  },
+  { immediate: true },
+);
 
 const filtered = computed<NetworkPreset[]>(() => {
   const q = query.value.trim().toLowerCase();
