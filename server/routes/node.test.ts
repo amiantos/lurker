@@ -68,6 +68,50 @@ describe('node control API — status', () => {
   });
 });
 
+describe('node control API — activity', () => {
+  it('lists every tenant with an ISO UTC last-seen and its paused flag, never the admin', async () => {
+    const users = await import('../db/users.js');
+    const db = (await import('../db/index.js')).default;
+    const admin = createUser('operator-activity', { role: 'admin' });
+    const seen = createUser('tenant-seen');
+    const paused = createUser('tenant-paused');
+    const legacy = createUser('tenant-legacy');
+    // What the store writes (datetime('now'), no zone marker), aged so the test
+    // can tell the wire value came from the row and not from the clock.
+    db.prepare("UPDATE users SET last_seen_at = '2026-01-02 03:04:05' WHERE id = ?").run(seen.id);
+    db.prepare('UPDATE users SET last_seen_at = NULL WHERE id = ?').run(legacy.id);
+    users.setUserPaused(paused.id, true);
+    users.touchUserLastSeen(paused.id);
+
+    const res = await createAnonAgent(app)
+      .get('/api/node/users/activity')
+      .set('Authorization', AUTH);
+    expect(res.status).toBe(200);
+    const byId = new Map<number, { last_seen_at: string | null; is_paused: boolean }>(
+      (res.body.users as { id: number; last_seen_at: string | null; is_paused: boolean }[]).map(
+        (u) => [u.id, u],
+      ),
+    );
+    expect(byId.has(admin.id)).toBe(false);
+    expect(byId.get(seen.id)).toEqual({
+      id: seen.id,
+      last_seen_at: '2026-01-02T03:04:05.000Z',
+      is_paused: false,
+    });
+    expect(byId.get(paused.id)?.is_paused).toBe(true);
+    expect(byId.get(legacy.id)?.last_seen_at).toBeNull();
+    // What a touch writes today comes back as ISO.
+    expect(byId.get(paused.id)?.last_seen_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+    );
+  });
+
+  it('requires the node secret', async () => {
+    const res = await createAnonAgent(app).get('/api/node/users/activity');
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('node control API — provision', () => {
   it('creates a tenant account as role=user and returns its id', async () => {
     const res = await createAnonAgent(app)

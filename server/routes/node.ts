@@ -12,6 +12,7 @@ import {
   createUser,
   findUserById,
   findUserByUsername,
+  listUsers,
   usernameTaken,
   setUserPaused,
   restrictionsOf,
@@ -51,6 +52,32 @@ router.get('/status', (_req: Request, res: Response) => {
     users: { count: countUsers() },
   });
 });
+
+// When each tenant was last seen: `users.last_seen_at`, which every authenticated
+// request and every WebSocket upgrade touches (middleware/auth.ts, wsHub.ts), so
+// a phone that stays signed in for a month counts as present. The control plane
+// reads this to measure idleness where it is measured truthfully, on the cell,
+// and to see an account come back; what it does about either is its business
+// (the cell stays billing-blind). `is_paused` rides along so the control plane
+// can tell a resume that never landed from one that did. Timestamps are ISO
+// 8601 UTC; null for a row no request has touched yet.
+// Mounted before `/users/:id/*`; nothing there answers a GET.
+router.get('/users/activity', (_req: Request, res: Response) => {
+  const users = listUsers()
+    .filter((u) => u.role !== 'admin')
+    .map((u) => ({ id: u.id, last_seen_at: toIsoUtc(u.last_seen_at), is_paused: !!u.is_paused }));
+  res.json({ users });
+});
+
+// SQLite's datetime('now') is 'YYYY-MM-DD HH:MM:SS' in UTC with no zone marker;
+// put it on the wire as ISO 8601 so the reader needs to know nothing about the
+// store. Anything already carrying a zone is passed through as parsed.
+function toIsoUtc(stored: string | null): string | null {
+  if (!stored) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/.test(stored);
+  const ms = new Date(hasZone ? stored : stored.replace(' ', 'T') + 'Z').getTime();
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+}
 
 // Provision a tenant account. The orchestrator owns identity, so this creates
 // the bare account row only; wiring how a provisioned user gets a session on
