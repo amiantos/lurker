@@ -135,7 +135,7 @@
           :class="{ on: overlay.uploadMenuOpen }"
           :disabled="!sendable"
           :title="auth.canUpload ? 'attach a file' : auth.uploadsOffTitle"
-          aria-label="attach a file"
+          :aria-label="auth.canUpload ? 'attach a file' : auth.uploadsOffTitle"
           :aria-expanded="overlay.uploadMenuOpen"
           @mousedown.prevent
           @click="onToggleUploadMenu"
@@ -647,13 +647,14 @@ function onToggleColorPicker() {
 const uploadMenuBtnEl = ref<HTMLButtonElement | null>(null);
 
 function onToggleUploadMenu() {
-  if (!sendable.value) return;
   // Held from uploading: the button stays live and says why (and, hosted,
-  // the way out) rather than sitting dead in the bar.
+  // the way out) rather than sitting dead in the bar. Needs no buffer, so it
+  // answers ahead of the sendable gate.
   if (!auth.canUpload) {
     limits.open();
     return;
   }
+  if (!sendable.value) return;
   const open = !overlay.uploadMenuOpen;
   if (open) setColorPickerOpen(false);
   setUploadMenuOpen(open);

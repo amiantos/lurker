@@ -210,6 +210,7 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
+import { useAccountLimits } from '../composables/useAccountLimits.js';
 import {
   ACTIVE_STATES,
   useDccStore,
@@ -307,6 +308,7 @@ const replies = useRepliesStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const uploads = useUploadsStore();
+const limits = useAccountLimits();
 const dcc = useDccStore();
 const toasts = useToastsStore();
 const ignores = useIgnoresStore();
@@ -2214,12 +2216,19 @@ onMounted(() => {
   });
 });
 
+// Paste, file-pick and drop are the composer's own ways into an upload. Held
+// from uploading, each answers with the limits modal (useAccountLimits.ts)
+// rather than swallowing the file, so the account reads why.
 function onPaste(e: ClipboardEvent): void {
-  if (!sendable.value || !auth.canUpload) return;
+  if (!sendable.value) return;
   if (settings.effective('uploads.paste.enabled') === false) return;
   const file = pastedUploadFile(e);
   if (!file) return;
   e.preventDefault();
+  if (!auth.canUpload) {
+    limits.open();
+    return;
+  }
   uploads.upload(file).catch(() => {
     /* failure visible via status bar */
   });
@@ -2240,7 +2249,11 @@ function onFileSelected(e: Event): void {
   const input = e.target as HTMLInputElement;
   const file = input.files?.[0];
   input.value = '';
-  if (!file || !sendable.value || !auth.canUpload) return;
+  if (!file || !sendable.value) return;
+  if (!auth.canUpload) {
+    limits.open();
+    return;
+  }
   uploads.upload(file, file.name).catch(() => {});
 }
 
@@ -2282,7 +2295,8 @@ function onE2eImportFile(e: Event): void {
 }
 
 function onDragOver(e: DragEvent): void {
-  if (!sendable.value) return;
+  // No drop zone to light for an account that may not upload.
+  if (!sendable.value || !auth.canUpload) return;
   if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
   dragOver.value = true;
 }
@@ -2291,9 +2305,14 @@ function onDragLeave() {
 }
 function onDrop(e: DragEvent): void {
   dragOver.value = false;
-  if (!sendable.value || !auth.canUpload) return;
+  if (!sendable.value) return;
   const file = e.dataTransfer?.files?.[0];
-  if (!file || !isUploadableType(file.type, file.name)) return;
+  if (!file) return;
+  if (!auth.canUpload) {
+    limits.open();
+    return;
+  }
+  if (!isUploadableType(file.type, file.name)) return;
   uploads.upload(file, file.name).catch(() => {});
 }
 

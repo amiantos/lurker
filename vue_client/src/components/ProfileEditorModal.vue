@@ -51,7 +51,7 @@
                 type="button"
                 class="btn-secondary"
                 :disabled="locked || uploading || !auth.canUpload"
-                :title="auth.canUpload ? '' : 'uploads are not enabled for this account'"
+                :title="auth.canUpload ? '' : auth.uploadsOffTitle"
                 @click="fileInput?.click()"
               >
                 {{ uploading ? 'Uploading…' : 'Upload…' }}

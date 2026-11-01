@@ -492,6 +492,7 @@ const messageListRef = ref<{ scrollByPage: (dir: number) => void } | null>(null)
 const anyModalOpen = computed(
   () =>
     networkEditor.isOpen ||
+    limits.isOpen ||
     showHighlights.value ||
     showBookmarks.value ||
     !!channelModal.current.value ||
