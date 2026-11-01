@@ -20,7 +20,9 @@
     @close="$emit('close')"
   >
     <div class="modal-form">
-      <p class="body">{{ config.isNode ? HOSTED_PITCH : sentence }}</p>
+      <div class="body">
+        <p v-for="line in config.isNode ? HOSTED_PITCH : [sentence]" :key="line">{{ line }}</p>
+      </div>
       <footer class="modal-footer">
         <button type="button" class="btn-secondary" @click="$emit('close')">Close</button>
         <a v-if="config.isNode" class="btn-primary subscribe" href="/account">Manage plan</a>
@@ -42,10 +44,11 @@ const config = useConfigStore();
 
 // The hosted service's own words: on a cell the one held account is a free
 // one, so the copy can name what it is and what paying adds.
-const HOSTED_PITCH =
+const HOSTED_PITCH = [
   'Your free Lurker.Chat account can only connect to the Lurker.Chat IRC Server, and you ' +
-  'cannot upload content to the Lurker.Chat CDN. Subscribe for access to all features, and ' +
-  'to connect to any IRC network.';
+    'cannot upload content to the Lurker.Chat CDN.',
+  'Subscribe for access to all features, and to connect to any IRC network.',
+];
 
 // Self-hosted: built from the restriction set itself, so an account held only
 // from uploading is not told about networks, and the other way round.
@@ -61,11 +64,16 @@ const sentence = computed(() => {
 
 <style scoped>
 .body {
-  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
   /* The card pads the sides; adding more here would indent the paragraph
      from the title above it. */
   padding: var(--space-2) 0 var(--space-9);
   line-height: 1.5;
+}
+.body p {
+  margin: 0;
 }
 .subscribe {
   text-decoration: none;
