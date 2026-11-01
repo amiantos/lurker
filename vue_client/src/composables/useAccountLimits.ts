@@ -21,6 +21,12 @@ import { foldHost } from '../../../shared/accountRestrictions.js';
 
 const isOpen = ref(false);
 
+// The modal is the session's: a sign-out mid-pitch must not show it to the
+// next account (useSessionReset.ts).
+export function resetAccountLimits(): void {
+  isOpen.value = false;
+}
+
 export function useAccountLimits() {
   const auth = useAuthStore();
   const networks = useNetworksStore();

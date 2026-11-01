@@ -23,6 +23,7 @@ import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
 import { resetScrollState } from './useScrollState.js';
 import { resetOnboarding } from './useOnboarding.js';
+import { resetAccountLimits } from './useAccountLimits.js';
 import { clearAppBadgeNow } from './useAppBadge.js';
 
 // Wipe every session-scoped piece of client state so the next user (after
@@ -61,6 +62,7 @@ export function resetSession(): void {
   useNetworkPresetsStore().$reset();
   // The flock is the account's; it walks off with the session.
   useSheepStore().reset();
+  resetAccountLimits();
   // Uploaded avatar sets are the account's too; the bundled set's manifest
   // isn't, but refetching it is one cached request.
   useAvatarSetsStore().$reset();

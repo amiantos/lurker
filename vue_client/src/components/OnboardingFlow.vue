@@ -187,7 +187,7 @@ const form = reactive({
   host: '',
   port: 6697,
   tls: true,
-  nick: nickFromUsername(auth.user?.username),
+  nick: nickFromUsername(auth.user?.username, { hosted: config.isNode }),
   sasl_account: '',
   sasl_password: '',
 });

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import { useAccountLimits } from './useAccountLimits.js';
+import { useAccountLimits, resetAccountLimits } from './useAccountLimits.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useNetworksStore, type Network } from '../stores/networks.js';
 
@@ -18,6 +18,17 @@ function setUp(networks: string[] | null, hosts: string[]) {
 }
 
 beforeEach(() => setActivePinia(createPinia()));
+
+describe('useAccountLimits.isOpen', () => {
+  it("closes with the session, so the next account never sees the last one's pitch", () => {
+    setUp(['irc.lurker.chat'], []);
+    const limits = useAccountLimits();
+    limits.open();
+    expect(limits.isOpen.value).toBe(true);
+    resetAccountLimits();
+    expect(useAccountLimits().isOpen.value).toBe(false);
+  });
+});
 
 describe('useAccountLimits.addNetworkHeld', () => {
   it('holds the + once every allowed host has a row, whatever the case', () => {

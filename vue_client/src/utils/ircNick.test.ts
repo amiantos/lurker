@@ -42,9 +42,11 @@ describe('nickFromUsername', () => {
   });
 
   it("seeds Guest for a hosted cell's acct-N account, which is a row number, not a name", () => {
-    expect(nickFromUsername('acct-2')).toBe('Guest');
-    expect(nickFromUsername('acct-12345')).toBe('Guest');
+    expect(nickFromUsername('acct-2', { hosted: true })).toBe('Guest');
+    expect(nickFromUsername('acct-12345', { hosted: true })).toBe('Guest');
+    // A self-hosted user really called acct-2 keeps it.
+    expect(nickFromUsername('acct-2')).toBe('acct-2');
     // Only the exact provision shape; a person who picked such a name keeps it.
-    expect(nickFromUsername('acct-2b')).toBe('acct-2b');
+    expect(nickFromUsername('acct-2b', { hosted: true })).toBe('acct-2b');
   });
 });
