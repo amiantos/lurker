@@ -55,9 +55,10 @@ router.get('/status', (_req: Request, res: Response) => {
 });
 
 // When each tenant was last seen: `users.last_seen_at`, which every authenticated
-// request, every WebSocket upgrade, and every heartbeat pong on an open socket
-// touches (middleware/auth.ts, wsHub.ts), so a phone that stays signed in for a
-// month counts as present for as long as its socket is up. The control plane
+// request (session, API token, or OAuth bearer: middleware/auth.ts, apiAuth.ts),
+// every WebSocket upgrade, and every answered heartbeat on an open socket
+// (wsHub.ts) touches, so a phone that stays signed in for a month counts as
+// present for as long as its socket is up. The control plane
 // reads this to measure idleness where it is measured truthfully, on the cell,
 // and to see an account come back; what it does about either is its business
 // (the cell stays billing-blind). `is_paused` rides along so the control plane

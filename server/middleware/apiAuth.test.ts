@@ -77,6 +77,31 @@ describe('requireApiAuth', () => {
     expect(res.body.hasSession).toBe(false);
   });
 
+  it('counts a request on either bearer as the member being seen', async () => {
+    // The hosted control plane judges idleness from users.last_seen_at; a member
+    // who only ever arrives through an MCP client must not read as gone.
+    const db = (await import('../db/index.js')).default;
+    const lastSeen = (id: number) =>
+      (
+        db.prepare('SELECT last_seen_at FROM users WHERE id = ?').get(id) as {
+          last_seen_at: string | null;
+        }
+      ).last_seen_at;
+    const stale = '2000-01-01 00:00:00';
+
+    const viaToken: User = createUser('mw-seen-token');
+    const t = createToken({ userId: viaToken.id, name: 'mw', scope: 'read' });
+    db.prepare('UPDATE users SET last_seen_at = ? WHERE id = ?').run(stale, viaToken.id);
+    await testRequest(app).get('/protected').set('Authorization', `Bearer ${t.token}`);
+    expect(lastSeen(viaToken.id)).not.toBe(stale);
+
+    const viaOauth: User = createUser('mw-seen-oauth');
+    const token = oauthTokenFor(viaOauth.id);
+    db.prepare('UPDATE users SET last_seen_at = ? WHERE id = ?').run(stale, viaOauth.id);
+    await testRequest(app).get('/protected').set('Authorization', `Bearer ${token}`);
+    expect(lastSeen(viaOauth.id)).not.toBe(stale);
+  });
+
   it('rejects a revoked token', async () => {
     const u: User = createUser('mw-bob');
     const t: CreateTokenResult = createToken({ userId: u.id, name: 'rev', scope: 'read' });

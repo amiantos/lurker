@@ -1993,6 +1993,21 @@ export function refreshDmReadState(userId: number, networkId: number | null): vo
   }
 }
 
+// A pong arrived. The browser auto-answers ping frames; recording the answer
+// is what spares the socket at the next heartbeat sweep. The answer to OUR
+// ping is also the one sign of life a client gives while it only listens, so
+// it keeps `users.last_seen_at` current (the hosted control plane judges
+// idleness from that column, routes/node.ts): a tenant whose socket stays up is
+// present, whatever else it sends. Only that answer counts. Any client can
+// send pong frames at will, outside allowInboundMessage's rate limit, and each
+// touch is a synchronous statement on the shared connection even when the SQL
+// throttle changes nothing, so a pong nobody asked for does no DB work at all.
+// Exported for the test; attachWsHub wires it.
+export function noteHeartbeatPong(ws: LurkerWebSocket, userId: number): void {
+  if (ws.isAlive === false) touchUserLastSeen(userId);
+  ws.isAlive = true;
+}
+
 // One sweep of the liveness heartbeat over a batch of sockets. A socket that
 // hasn't ponged since the previous sweep (isAlive still false) is terminated —
 // firing its 'close' handler → removeSocket → evaluatePresence, which lets
@@ -2810,15 +2825,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       }
     });
 
-    // The browser auto-answers ping frames; this records that the answer
-    // arrived so the next heartbeat sweep spares the socket. It is also the one
-    // sign of life a client gives while it only listens, so it keeps
-    // `users.last_seen_at` current (throttled in SQL to a write a minute): a
-    // tenant whose socket stays up is present, whatever else it sends.
-    ws.on('pong', () => {
-      ws.isAlive = true;
-      touchUserLastSeen(user.id);
-    });
+    ws.on('pong', () => noteHeartbeatPong(ws, user.id));
 
     ws.on('close', () => removeSocket(user.id, ws));
     ws.on('error', () => removeSocket(user.id, ws));
