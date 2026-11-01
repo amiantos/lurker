@@ -3,8 +3,8 @@
 
 // @vitest-environment happy-dom
 
-// The sentence follows the restriction set, and Subscribe appears only where
-// paying lifts it: a hosted cell.
+// A hosted cell gets the service's pitch and a Subscribe link; self-hosted,
+// a sentence that follows the restriction set and nothing to buy.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
@@ -25,15 +25,15 @@ function setUp(restrictions: AccountRestrictions, edition: 'node' | 'standalone'
 beforeEach(() => setActivePinia(createPinia()));
 
 describe('AccountLimitsModal', () => {
-  it('names the hosts and the upload lock, with Subscribe on a hosted cell', () => {
+  it('is the subscribe pitch on a hosted cell', () => {
     const w = setUp({ networks: ['irc.lurker.chat'], uploads: false }, 'node');
-    expect(w.find('.body').text()).toBe(
-      "This account can only connect to irc.lurker.chat, and can't upload files.",
-    );
+    expect(w.find('h2').text()).toBe('Subscribe for all features');
+    expect(w.find('.body').text()).toContain('Your free Lurker.Chat account');
     expect(w.find('a.subscribe').attributes('href')).toBe('/account');
   });
   it('says only what is held, and offers nothing to buy when self-hosted', () => {
     const w = setUp({ networks: null, uploads: false }, 'standalone');
+    expect(w.find('h2').text()).toBe('account limits');
     expect(w.find('.body').text()).toBe("This account can't upload files.");
     expect(w.find('a.subscribe').exists()).toBe(false);
   });
