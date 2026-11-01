@@ -77,6 +77,9 @@ describe('node control API — provision', () => {
     expect(res.status).toBe(201);
     expect(res.body.username).toBe('tenant-alice');
     expect(typeof res.body.id).toBe('number');
+    // Echoes the (unrestricted) set so the orchestrator can tell this cell
+    // honors restrictions at all.
+    expect(res.body.restrictions).toStrictEqual({ networks: null, uploads: true });
     expect(findUserById(res.body.id)?.role).toBe('user');
   });
 
@@ -560,6 +563,7 @@ describe('node control API — restrictions', () => {
       .set('Authorization', AUTH)
       .send({ username: 'born-held', restrictions: held });
     expect(res.status).toBe(201);
+    expect(res.body.restrictions).toStrictEqual(held);
     expect(restrictionsOf(findUserById(res.body.id))).toStrictEqual(held);
   });
 
