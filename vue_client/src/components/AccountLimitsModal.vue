@@ -62,7 +62,9 @@ const sentence = computed(() => {
 <style scoped>
 .body {
   margin: 0;
-  padding: var(--space-6) var(--space-7) var(--space-9);
+  /* The card pads the sides; adding more here would indent the paragraph
+     from the title above it. */
+  padding: var(--space-2) 0 var(--space-9);
   line-height: 1.5;
 }
 .subscribe {
