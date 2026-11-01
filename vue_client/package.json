@@ -11,7 +11,7 @@
     "typecheck": "vue-tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@lucide/vue": "^1.59.0",
+    "@lucide/vue": "^1.61.0",
     "@simplewebauthn/browser": "^14.0.0",
     "pinia": "^4.1.0",
     "vue": "^3.5.44",

@@ -31,7 +31,12 @@ env:
   # the engine's behaviour did not, so self-hosters keep the engine they are running
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
-  ENGINE_TAG_PINNED_RELEASES: ''
+  #
+  # v2.6.3: the engine closure's only change since v2.6.2 is dotenv 18.0.8 →
+  # 18.0.9 (the CLI now accepts an empty DOTENV_PATH; `dotenv/config` is
+  # untouched, so the engine reads its environment the same way). None of the
+  # engine's own files changed.
+  ENGINE_TAG_PINNED_RELEASES: 'v2.6.3'
 
 jobs:
   build-and-push:
