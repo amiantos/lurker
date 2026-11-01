@@ -2810,10 +2810,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       }
     });
 
-    // The browser auto-answers ping frames; this just records that the answer
-    // arrived so the next heartbeat sweep spares the socket.
+    // The browser auto-answers ping frames; this records that the answer
+    // arrived so the next heartbeat sweep spares the socket. It is also the one
+    // sign of life a client gives while it only listens, so it keeps
+    // `users.last_seen_at` current (throttled in SQL to a write a minute): a
+    // tenant whose socket stays up is present, whatever else it sends.
     ws.on('pong', () => {
       ws.isAlive = true;
+      touchUserLastSeen(user.id);
     });
 
     ws.on('close', () => removeSocket(user.id, ws));

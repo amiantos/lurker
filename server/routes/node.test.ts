@@ -80,6 +80,8 @@ describe('node control API — activity', () => {
     // can tell the wire value came from the row and not from the clock.
     db.prepare("UPDATE users SET last_seen_at = '2026-01-02 03:04:05' WHERE id = ?").run(seen.id);
     db.prepare('UPDATE users SET last_seen_at = NULL WHERE id = ?').run(legacy.id);
+    const corrupt = createUser('tenant-corrupt');
+    db.prepare("UPDATE users SET last_seen_at = 'not a date' WHERE id = ?").run(corrupt.id);
     users.setUserPaused(paused.id, true);
     users.touchUserLastSeen(paused.id);
 
@@ -95,15 +97,16 @@ describe('node control API — activity', () => {
     expect(byId.has(admin.id)).toBe(false);
     expect(byId.get(seen.id)).toEqual({
       id: seen.id,
-      last_seen_at: '2026-01-02T03:04:05.000Z',
+      last_seen_at: '2026-01-02T03:04:05Z',
       is_paused: false,
     });
     expect(byId.get(paused.id)?.is_paused).toBe(true);
     expect(byId.get(legacy.id)?.last_seen_at).toBeNull();
+    // A row holding something that is not a time is reported as never seen,
+    // not as a time the reader would then act on.
+    expect(byId.get(corrupt.id)?.last_seen_at).toBeNull();
     // What a touch writes today comes back as ISO.
-    expect(byId.get(paused.id)?.last_seen_at).toMatch(
-      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
-    );
+    expect(byId.get(paused.id)?.last_seen_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   });
 
   it('requires the node secret', async () => {

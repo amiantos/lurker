@@ -26,6 +26,7 @@ import db, { DATABASE_FILE } from '../db/index.js';
 import { fanOutToUser } from './wsHub.js';
 import { buildExportFilename, buildExportZip, countExportMessages } from './exportService.js';
 import * as systemLog from './systemLog.js';
+import { sqliteUtcToIso } from '../utils/sqliteDatetime.js';
 import {
   createExportJob,
   getExportJob,
@@ -80,12 +81,6 @@ function getUsername(userId: number): string {
   return row?.username || 'user';
 }
 
-// SQLite stores datetimes as 'YYYY-MM-DD HH:MM:SS' in UTC. Hand the client an
-// ISO-8601 UTC string it can parse and render relatively.
-function toIso(sqliteDatetime: string | null): string | null {
-  return sqliteDatetime ? sqliteDatetime.replace(' ', 'T') + 'Z' : null;
-}
-
 /** Serialize a job row into the shape the client store/WS consume. */
 export function toClientJob(row: ExportJob): Record<string, unknown> {
   return {
@@ -97,8 +92,8 @@ export function toClientJob(row: ExportJob): Record<string, unknown> {
     filename: row.filename,
     byteSize: row.byte_size,
     error: row.error,
-    createdAt: toIso(row.created_at),
-    expiresAt: toIso(row.expires_at),
+    createdAt: sqliteUtcToIso(row.created_at),
+    expiresAt: sqliteUtcToIso(row.expires_at),
     downloadable: row.status === 'done',
   };
 }
