@@ -66,9 +66,8 @@
         </button>
         <button
           class="link"
-          :disabled="!auth.canUpload"
-          :title="auth.canUpload ? 'Shares' : 'uploads are not enabled for this account'"
-          @click="showUploads = true"
+          :title="auth.canUpload ? 'Shares' : auth.uploadsOffTitle"
+          @click="auth.canUpload ? (showUploads = true) : limits.open()"
         >
           <ShareIcon />
         </button>
@@ -296,6 +295,7 @@
       @close="joinChannelModal.close()"
     />
     <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
+    <AccountLimitsModal v-if="limits.isOpen" @close="limits.close()" />
     <RecentUploadsModal v-if="dcc.panelOpen" view="dcc" @close="dcc.close()" />
     <QuickSwitcher v-if="showSwitcher" @close="showSwitcher = false" />
     <SearchModal
@@ -376,6 +376,8 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
+import AccountLimitsModal from '../components/AccountLimitsModal.vue';
+import { useAccountLimits } from '../composables/useAccountLimits.js';
 import DccButton from '../components/DccButton.vue';
 import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
 import QuickSwitcher from '../components/QuickSwitcher.vue';
@@ -445,6 +447,7 @@ const {
 
 const settings = useSettingsStore();
 const auth = useAuthStore();
+const limits = reactive(useAccountLimits());
 const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
 const reactions = useReactionsStore();
@@ -489,6 +492,7 @@ const messageListRef = ref<{ scrollByPage: (dir: number) => void } | null>(null)
 const anyModalOpen = computed(
   () =>
     networkEditor.isOpen ||
+    limits.isOpen ||
     showHighlights.value ||
     showBookmarks.value ||
     !!channelModal.current.value ||

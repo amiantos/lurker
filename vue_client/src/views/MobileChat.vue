@@ -24,9 +24,8 @@
         </button>
         <button
           class="icon"
-          :disabled="!auth.canUpload"
-          :title="auth.canUpload ? 'Shares' : 'uploads are not enabled for this account'"
-          @click="showUploads = true"
+          :title="auth.canUpload ? 'Shares' : auth.uploadsOffTitle"
+          @click="auth.canUpload ? (showUploads = true) : limits.open()"
         >
           <ShareIcon />
         </button>
@@ -218,6 +217,7 @@
       @close="joinChannelModal.close()"
     />
     <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
+    <AccountLimitsModal v-if="limits.isOpen" @close="limits.close()" />
     <RecentUploadsModal v-if="dcc.panelOpen" view="dcc" @close="dcc.close()" />
     <SearchModal
       v-if="showSearch"
@@ -292,6 +292,8 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
+import AccountLimitsModal from '../components/AccountLimitsModal.vue';
+import { useAccountLimits } from '../composables/useAccountLimits.js';
 import DccButton from '../components/DccButton.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
@@ -339,6 +341,7 @@ const buffers = useBuffersStore();
 const router = useRouter();
 const route = useRoute();
 const auth = useAuthStore();
+const limits = reactive(useAccountLimits());
 
 // Admin panel entry in the mobile top bar.
 const showAdminEntry = computed(() => auth.isAdmin);

@@ -107,7 +107,11 @@ router.post('/users', (req: Request, res: Response) => {
     restrictions = read.restrictions;
   }
   const user = createUser(username, { restrictions }); // role defaults to 'user'
-  res.status(201).json({ id: user.id, username: user.username });
+  // The set the row was born with rides back so the orchestrator can SEE the
+  // cell honored it (an older cell ignores the field and never echoes one).
+  res
+    .status(201)
+    .json({ id: user.id, username: user.username, restrictions: restrictionsOf(user) });
 });
 
 // Deprovision a tenant account: tear down live IRC + WS first (mirrors the

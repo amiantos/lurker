@@ -13,6 +13,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 
 function setUp(opts: { allowUserDefined: boolean; restrictions?: AccountRestrictions }) {
@@ -63,5 +64,27 @@ describe('NetworkPicker auto-pick', () => {
     });
     const wrapper = mount(NetworkPicker);
     expect(wrapper.emitted('select')).toBeUndefined();
+  });
+});
+
+// The account lockdown's sentence names the way out only where there is one:
+// on a hosted cell paying lifts it, and the control plane's account page is on
+// this origin. A self-hosted instance has no such page, so no link.
+describe('NetworkPicker held account', () => {
+  const held = { networks: ['irc.lurker.chat', 'irc.libera.chat'], uploads: false };
+  it('links to the account page on a hosted cell', () => {
+    setUp({ allowUserDefined: true, restrictions: held });
+    useConfigStore().edition = 'node';
+    const wrapper = mount(NetworkPicker);
+    const locked = wrapper.find('.locked');
+    expect(locked.text()).toContain('This account can only connect');
+    expect(locked.find('a').attributes('href')).toBe('/account');
+    expect(locked.find('a').text()).toBe('Subscribe to add any network.');
+  });
+  it('says only the lock when self-hosted', () => {
+    setUp({ allowUserDefined: true, restrictions: held });
+    const wrapper = mount(NetworkPicker);
+    expect(wrapper.find('.locked').exists()).toBe(true);
+    expect(wrapper.find('.locked a').exists()).toBe(false);
   });
 });

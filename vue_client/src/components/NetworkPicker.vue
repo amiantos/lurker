@@ -103,9 +103,12 @@
       Enter details manually →
     </button>
     <!-- Two lockdowns, two sentences: the instance's is the admin's to change,
-         the account's is this account's alone. -->
+         the account's is this account's alone. On a hosted cell a held account
+         is a free one and paying lifts it, so the sentence says where: the
+         control plane's account page, on this origin. -->
     <p v-else-if="allowedHosts" class="locked">
       This account can only connect to the networks listed above.
+      <a v-if="config.isNode" href="/account">Subscribe to add any network.</a>
     </p>
     <p v-else class="locked">This server only allows the networks listed above.</p>
   </div>
@@ -121,6 +124,7 @@ import {
 } from '../utils/builtinNetworks.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import { foldHost } from '../../../shared/accountRestrictions.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { FunnelIcon, HashIcon, UsersIcon } from '@lucide/vue';
@@ -135,6 +139,7 @@ const emit = defineEmits<{ select: [net: NetworkPreset, auto?: boolean]; manual:
 
 const presets = useNetworkPresetsStore();
 const auth = useAuthStore();
+const config = useConfigStore();
 // The account's own host list (shared/accountRestrictions.ts), or null for any.
 // Narrows what is offered below; the server refuses the rest regardless.
 const allowedHosts = computed<Set<string> | null>(() => {
@@ -410,6 +415,9 @@ const filtered = computed<NetworkPreset[]>(() => {
   margin: 0;
   padding: var(--space-2) 0;
   color: var(--fg-muted);
+}
+.locked a {
+  color: var(--accent);
 }
 .manual {
   align-self: flex-start;

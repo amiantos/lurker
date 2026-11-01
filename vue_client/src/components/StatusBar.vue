@@ -133,9 +133,9 @@
           type="button"
           class="tool-btn"
           :class="{ on: overlay.uploadMenuOpen }"
-          :disabled="!sendable || !auth.canUpload"
-          :title="auth.canUpload ? 'attach a file' : 'uploads are not enabled for this account'"
-          aria-label="attach a file"
+          :disabled="!sendable"
+          :title="auth.canUpload ? 'attach a file' : auth.uploadsOffTitle"
+          :aria-label="auth.canUpload ? 'attach a file' : auth.uploadsOffTitle"
           :aria-expanded="overlay.uploadMenuOpen"
           @mousedown.prevent
           @click="onToggleUploadMenu"
@@ -218,6 +218,7 @@ import { inFlight, percentReceived, useDccStore } from '../stores/dcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useAccountLimits } from '../composables/useAccountLimits.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import {
   useScrollState,
@@ -282,6 +283,7 @@ const settings = useSettingsStore();
 const uploads = useUploadsStore();
 const ignores = useIgnoresStore();
 const auth = useAuthStore();
+const limits = useAccountLimits();
 const nickColors = useNickColors();
 const composing = useComposing();
 
@@ -645,7 +647,14 @@ function onToggleColorPicker() {
 const uploadMenuBtnEl = ref<HTMLButtonElement | null>(null);
 
 function onToggleUploadMenu() {
-  if (!sendable.value || !auth.canUpload) return;
+  // Held from uploading: the button stays live and says why (and, hosted,
+  // the way out) rather than sitting dead in the bar. Needs no buffer, so it
+  // answers ahead of the sendable gate.
+  if (!auth.canUpload) {
+    limits.open();
+    return;
+  }
+  if (!sendable.value) return;
   const open = !overlay.uploadMenuOpen;
   if (open) setColorPickerOpen(false);
   setUploadMenuOpen(open);

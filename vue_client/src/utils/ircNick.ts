@@ -18,10 +18,21 @@ const BAD_LEADING = /^[\d-]+/;
 // this only seeds an editable field, it doesn't constrain what a user can type.
 const MAX_SEED_LENGTH = 16;
 
+// A hosted cell's accounts are provisioned as `acct-<id>` (shared/ident.ts):
+// the control plane's row number, not a name anyone chose, so it says nothing
+// about what they want to be called. Seed the one nick that admits as much.
+// Only on a hosted cell (`hosted`): a self-hosted user may be called acct-2.
+const HOSTED_ACCOUNT = /^acct-\d+$/;
+const HOSTED_SEED = 'Guest';
+
 // Best-effort nick suggestion from an account name. Returns '' when nothing
 // usable survives (an all-emoji username), which leaves the field empty for the
 // user to fill in rather than prefilling something the server will reject.
-export function nickFromUsername(username: string | undefined | null): string {
+export function nickFromUsername(
+  username: string | undefined | null,
+  { hosted = false }: { hosted?: boolean } = {},
+): string {
+  if (hosted && HOSTED_ACCOUNT.test((username ?? '').trim())) return HOSTED_SEED;
   return (username ?? '')
     .replace(DISALLOWED, '')
     .replace(BAD_LEADING, '')
