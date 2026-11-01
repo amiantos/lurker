@@ -4,7 +4,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { findActiveByHash, hashToken, touchLastUsed } from '../db/apiTokens.js';
 import { findTokenByRaw, touchTokenLastUsed } from '../db/oauth.js';
-import { findUserById } from '../db/users.js';
+import { findUserById, touchUserLastSeen } from '../db/users.js';
 
 // Authentication for the MCP endpoint. Two bearer credentials work here:
 //
@@ -17,7 +17,10 @@ import { findUserById } from '../db/users.js';
 //     would send them round the approval again and again.
 //
 // `req.user` is populated to the same shape requireAuth sets so handlers can't
-// tell the credential apart; `req.session` is intentionally absent.
+// tell the credential apart; `req.session` is intentionally absent. Like
+// requireAuth, a request that gets through touches `users.last_seen_at`: a
+// member who reaches Lurker only through an MCP client is present all the same,
+// and the hosted control plane judges idleness from that column (routes/node.ts).
 export function requireApiAuth(req: Request, res: Response, next: NextFunction): void {
   const header = req.headers.authorization || '';
   const match = /^Bearer\s+(\S+)$/.exec(header);
@@ -37,6 +40,7 @@ export function requireApiAuth(req: Request, res: Response, next: NextFunction):
     req.user = user;
     req.apiToken = { id: tokenRow.id, scope: tokenRow.scope };
     touchLastUsed(tokenRow.id);
+    touchUserLastSeen(user.id);
     next();
     return;
   }
@@ -50,5 +54,6 @@ export function requireApiAuth(req: Request, res: Response, next: NextFunction):
   req.user = user;
   req.oauthToken = { id: oauth.id, appId: oauth.appId };
   touchTokenLastUsed(oauth.id);
+  touchUserLastSeen(user.id);
   next();
 }

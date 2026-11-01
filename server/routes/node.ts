@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireNodeAuth } from '../middleware/nodeAuth.js';
 import { getEdition } from '../utils/edition.js';
+import { sqliteUtcToIso } from '../utils/sqliteDatetime.js';
 import { APP_VERSION } from '../utils/userAgent.js';
 import { isValidUsername } from '../../shared/username.js';
 import {
@@ -12,6 +13,7 @@ import {
   createUser,
   findUserById,
   findUserByUsername,
+  listUsers,
   usernameTaken,
   setUserPaused,
   restrictionsOf,
@@ -50,6 +52,28 @@ router.get('/status', (_req: Request, res: Response) => {
     version: APP_VERSION,
     users: { count: countUsers() },
   });
+});
+
+// When each tenant was last seen: `users.last_seen_at`, which every authenticated
+// request (session, API token, or OAuth bearer: middleware/auth.ts, apiAuth.ts),
+// every WebSocket upgrade, and every answered heartbeat on an open socket
+// (wsHub.ts) touches, so a phone that stays signed in for a month counts as
+// present for as long as its socket is up. The control plane
+// reads this to measure idleness where it is measured truthfully, on the cell,
+// and to see an account come back; what it does about either is its business
+// (the cell stays billing-blind). `is_paused` rides along so the control plane
+// can tell a resume that never landed from one that did. Timestamps are ISO
+// 8601 UTC; null for a row no request has touched yet.
+// Mounted before `/users/:id/*`; nothing there answers a GET.
+router.get('/users/activity', (_req: Request, res: Response) => {
+  const users = listUsers()
+    .filter((u) => u.role !== 'admin')
+    .map((u) => ({
+      id: u.id,
+      last_seen_at: sqliteUtcToIso(u.last_seen_at),
+      is_paused: !!u.is_paused,
+    }));
+  res.json({ users });
 });
 
 // Provision a tenant account. The orchestrator owns identity, so this creates
