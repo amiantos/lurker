@@ -7,8 +7,8 @@
   What a held account can't do, where it just tried to (useAccountLimits.ts):
   the add-network +, attach, Shares. On a hosted cell a held account is a free
   one and paying lifts it, so the modal is the subscribe pitch: the service's
-  own words, and a Subscribe link to the control plane's account page on this
-  origin. Self-hosted, the admin set the limits and a sentence built from the
+  own words, and a button to the control plane's account page on this origin,
+  named for where it lands (the page's Plan section) rather than for the sale. Self-hosted, the admin set the limits and a sentence built from the
   restriction set is the whole answer.
 -->
 
@@ -23,7 +23,7 @@
       <p class="body">{{ config.isNode ? HOSTED_PITCH : sentence }}</p>
       <footer class="modal-footer">
         <button type="button" class="btn-secondary" @click="$emit('close')">Close</button>
-        <a v-if="config.isNode" class="btn-primary subscribe" href="/account">Subscribe</a>
+        <a v-if="config.isNode" class="btn-primary subscribe" href="/account">Manage plan</a>
       </footer>
     </div>
   </AppModal>
