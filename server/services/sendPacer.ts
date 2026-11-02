@@ -177,6 +177,8 @@ export class SendPacer {
   /** Set by drop(): the next empty report goes without the hold. */
   private emptyAtOnce = false;
   private seq = 0;
+  /** Items told dropped by a refusal since the last drop() — see `refuse`. */
+  private toldAtRefusal = new Set<Entry>();
   private readonly now: () => number;
   private readonly maxKeyed: number;
 
@@ -312,7 +314,10 @@ export class SendPacer {
     this.clearTimer();
     this.emptyAtOnce = true;
     this.noteDepth();
-    const told = new Set<Entry>();
+    // Seeded with what a refusal already told (see `refuse`), then forgotten:
+    // the next socket's items are new.
+    const told = this.toldAtRefusal;
+    this.toldAtRefusal = new Set();
     for (const entry of dropped) this.tellDropped(entry, told);
   }
 
@@ -444,19 +449,9 @@ export class SendPacer {
     }
     const last = items.length - 1;
     const expanded: Entry[] = items.map((item, i) => {
-      const own: Entry = {
-        priority: entry.priority,
-        // Asked again at each line's own turn.
-        live: entry.live,
-        ...(typeof item === 'function'
-          ? { build: item }
-          : typeof item === 'string'
-            ? { text: item }
-            : typeof item.text === 'function'
-              ? { build: lazyLine(item), onDropped: item.onDropped }
-              : { text: item.text, onSent: item.onSent, onDropped: item.onDropped }),
-      };
-      own.origin = entry;
+      const own = this.entryFor(item, entry);
+      // Asked again at each line's own turn.
+      own.live = entry.live;
       if (i === last && entry.onSent) {
         const sent = own.onSent;
         own.onSent = (at) => {
@@ -475,12 +470,7 @@ export class SendPacer {
   // told dropped) or a thunk failed to build.
   private sendAtOnce(entry: Entry): boolean {
     if (entry.unit) {
-      for (const line of entry.unit) {
-        if (!this.push(line)) {
-          this.tellDropped(entry, new Set());
-          return false;
-        }
-      }
+      for (const line of entry.unit) if (!this.push(line)) return this.refuse(entry);
       if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(this.now()));
       return true;
     }
@@ -490,41 +480,42 @@ export class SendPacer {
       built = entry.build();
     } catch (err) {
       console.warn('[irc] send: an item failed to build and was dropped:', err);
-      this.tellDropped(entry, new Set());
-      return false;
+      return this.refuse(entry);
     }
     const items = built === null ? [] : Array.isArray(built) ? built : [built];
-    const priority = entry.priority;
     // Each line is the item's (`origin`), so a refusal tells the item once,
     // through sendNow, and the item's own onSent follows only if all of it went.
     for (const item of items) {
-      const went =
-        typeof item === 'function'
-          ? this.sendAtOnce({ priority, build: item, origin: entry })
-          : typeof item === 'string'
-            ? this.sendNow({ priority, text: item, origin: entry }, false)
-            : typeof item.text === 'function'
-              ? this.sendAtOnce({
-                  priority,
-                  build: lazyLine(item),
-                  onDropped: item.onDropped,
-                  origin: entry,
-                })
-              : this.sendNow(
-                  {
-                    priority,
-                    text: item.text,
-                    onSent: item.onSent,
-                    onDropped: item.onDropped,
-                    origin: entry,
-                  },
-                  false,
-                );
+      const own = this.entryFor(item, entry);
+      const went = own.build ? this.sendAtOnce(own) : this.sendNow(own, false);
       if (!went) return false;
     }
     if (items.length && entry.onSent)
       this.guarded('an onSent hook', () => entry.onSent!(this.now()));
     return true;
+  }
+
+  // One item of what a thunk built, as the entry that goes in its place: the
+  // thunk is its `origin`, so a drop tells the thunk too. One mapping for the
+  // queued path (expand) and the pre-registration one (sendAtOnce), so a field
+  // a Line carries reaches both.
+  private entryFor(item: string | Line | (() => Built), origin: Entry): Entry {
+    const priority = origin.priority;
+    if (typeof item === 'function') return { priority, build: item, origin };
+    if (typeof item === 'string') return { priority, text: item, origin };
+    if (typeof item.text === 'function')
+      return { priority, build: lazyLine(item), onDropped: item.onDropped, origin };
+    return { priority, text: item.text, onSent: item.onSent, onDropped: item.onDropped, origin };
+  }
+
+  // The socket refused `entry`'s line, or it failed to build: told dropped,
+  // once. ⚠ What was told here is remembered until the next drop(): a refusal
+  // stops the drain with the item's siblings still queued, and the close's
+  // drop() walks each of them to the same origin — which must not hear it
+  // again. Always false, so a caller can `return this.refuse(entry)`.
+  private refuse(entry: Entry): false {
+    this.tellDropped(entry, this.toldAtRefusal);
+    return false;
   }
 
   // One line to the socket. False when the socket refused it (see
@@ -542,10 +533,7 @@ export class SendPacer {
   // entry (and what it expanded from) has been told dropped and nothing charged.
   private sendNow(entry: Entry, charge: boolean): boolean {
     const text = entry.text!;
-    if (!this.push(text)) {
-      this.tellDropped(entry, new Set());
-      return false;
-    }
+    if (!this.push(text)) return this.refuse(entry);
     const at = this.now();
     if (charge) this.charge(this.costOf(text), at);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
@@ -558,8 +546,7 @@ export class SendPacer {
       // What went before the refusal is charged: the server read it.
       if (!this.push(line)) {
         if (cost) this.charge(cost, this.now());
-        this.tellDropped(entry, new Set());
-        return false;
+        return this.refuse(entry);
       }
       cost += this.costOf(line);
     }

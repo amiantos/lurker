@@ -506,6 +506,21 @@ describe('SendPacer', () => {
       expect(onDropped).toHaveBeenCalledOnce();
     });
 
+    it('tells a queued thunk once, though the close drops the lines it still had waiting', () => {
+      fill();
+      const onDropped = vi.fn<() => void>();
+      pacer.write(() => ['PRIVMSG #c :a', 'PRIVMSG #c :b', 'PRIVMSG #c :c'], { onDropped });
+      refusing = true;
+      // The thunk expands at its turn; its first line is refused and the drain
+      // stops with `b` and `c` still queued, each pointing back at the thunk.
+      vi.advanceTimersByTime(2000);
+      expect(onDropped).toHaveBeenCalledOnce();
+      expect(pacer.pending).toBe(2);
+      pacer.drop();
+      expect(onDropped).toHaveBeenCalledOnce();
+      expect(pacer.pending).toBe(0);
+    });
+
     it('tells a unit once when a line of it is refused, keeping what went', () => {
       const onSent = vi.fn<(at: number) => void>();
       const onDropped = vi.fn<() => void>();

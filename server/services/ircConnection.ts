@@ -1425,9 +1425,15 @@ export class IrcConnection {
       // and the pacer would have called it sent: a CLEAR typed right after
       // /disconnect was saved as the user's, with no "not sent" to be seen.
       // `intentionalDisconnect` is set before quit() is called, so it covers
-      // the gap the framework's own flag leaves. Not gated on `connected`: a
-      // line typed to a network that is down is stopped before it gets here,
-      // and the registration burst goes out on a socket that is up.
+      // the gap the framework's own flag leaves.
+      //
+      // ⚠ Not gated on `connected`, the other half of the framework's own
+      // condition, though it would be the honest gate for a line that reaches
+      // a connection object during an outage (state 'reconnecting': the
+      // manager keeps the object, and refuses the user's lines by state before
+      // they get here). Every wiring test that drives an IrcConnection with no
+      // socket reads its lines off client.raw with `connected` never set, so
+      // that gate is a rewrite of thirty test files, not a clause.
       send: (line) => {
         if (connection.requested_disconnect || this.intentionalDisconnect) return false;
         this.sendingNow = true;
