@@ -588,6 +588,25 @@ describe('closeBuffer parts only a channel we are on', () => {
     ircManager.connectionsForUser(userId).delete(network.id);
   });
 
+  it('reads the PART behind a client-written prefix too (#1116)', async () => {
+    // A server strips a `:prefix` a client wrote and acts on the verb, so the
+    // mark has to be made for that shape as well — or the duplicate is back.
+    const { network, conn } = await connected('closeprefixpart', ['#prefixpart']);
+    ircd.hold = (cmd) => cmd === 'PART';
+    conn.raw(':closeprefixpart!u@h PART #prefixpart :bye');
+    expect(conn.mayBeJoined('#prefixpart')).toBe(false);
+
+    closeBuffer(userId, network.id, '#prefixpart');
+    await probe(conn, 'closeprefixpart', 'prefixpartprobe');
+
+    expect(sentTo('closeprefixpart').filter((line) => /PART #prefixpart/.test(line))).toEqual([
+      ':closeprefixpart!u@h PART #prefixpart :bye',
+    ]);
+    ircd.hold = null;
+    conn.dispose();
+    ircManager.connectionsForUser(userId).delete(network.id);
+  });
+
   it('treats JOIN 0 as a part of every channel', async () => {
     // JOIN 0 leaves them all at once (RFC 2812 3.2.1), which is what a bouncer
     // client's JOIN 0 relays to. Every channel is on its way out, so none of

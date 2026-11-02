@@ -49,13 +49,26 @@ export function isSinglePeerTarget(target: string): boolean {
   if (!target || /[,\s\u0000-\u001f]/.test(target)) return false;
   // A server or host mask (`$$*`, `$#*.net`): an oper's broadcast to everyone.
   if (target.startsWith('$')) return false;
-  // A STATUSMSG prefix can itself be a channel sigil (`+`, `&`), so every way of reading the
-  // leading run is tried: `%+room` is the `+room` channel to the halfops.
+  return channelReadings(target).length === 0;
+}
+
+/** STATUSMSG prefixes a server may take in front of a channel name (`@#room` reaches its ops). */
+const STATUSMSG_PREFIXES = '~&@%+';
+
+/**
+ * Every channel `target` could be read as naming, STATUSMSG prefixes peeled one at a time.
+ *
+ * A STATUSMSG prefix can itself be a channel sigil (`+`, `&`), so every way of reading the
+ * leading run is kept: `%+room` is the `+room` channel to the halfops, and `+room` itself.
+ * Empty for a nick. Anything judging what a line to `target` reaches must check them all.
+ */
+export function channelReadings(target: string): string[] {
+  const out: string[] = [];
   for (let t = target; t; t = t.slice(1)) {
-    if (isChannelTarget(t)) return false;
-    if (!'~&@%+'.includes(t[0])) break;
+    if (isChannelTarget(t)) out.push(t);
+    if (!STATUSMSG_PREFIXES.includes(t[0])) break;
   }
-  return true;
+  return out;
 }
 
 /**

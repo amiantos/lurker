@@ -133,6 +133,7 @@ import {
 import { DEFAULT_HOSTLEN, MAX_HOSTLEN, textBudget } from '../../shared/wireBudget.js';
 import type { MultilineLimits } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
+import { cleartextE2eLeak } from './e2e/rawGuard.js';
 import type { UserNotice } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
@@ -6182,8 +6183,9 @@ export class IrcConnection {
    *  takeRawMonitor and noteOutgoingCommand beside it: raw() is the one path
    *  every slash command and member-menu action takes. */
   private noteRawMembership(line: string): void {
-    // The verb, past an IRCv3 tag block the caller may have put in front of it.
-    const parsed = /^\s*(?:@\S+\s+)?(JOIN|PART)\s+(\S+)/i.exec(line);
+    // The verb, past an IRCv3 tag block or a `:prefix` the caller may have put
+    // in front of it — a server strips both and acts on the verb all the same.
+    const parsed = /^\s*(?:@\S+\s+)?(?::\S+\s+)?(JOIN|PART)\s+(\S+)/i.exec(line);
     if (!parsed) return;
     const targets = parsed[2];
     if (parsed[1].toUpperCase() === 'PART') return this.notePartSent(targets);
@@ -12077,6 +12079,19 @@ export class IrcConnection {
           return;
         }
         try {
+          // A connect command is a raw line the user wrote, run on every
+          // (re)connect with no echo: the same silent cleartext leak the other
+          // raw doors refuse (#1116), repeated automatically.
+          const leak = cleartextE2eLeak(this.network.user_id, this.network.id, line);
+          if (leak) {
+            this.publishEphemeral({
+              type: 'e2e',
+              level: 'warn',
+              target: leak.channel,
+              text: `connect command: a raw ${leak.command} isn't encrypted — not sent on this E2E channel`,
+            });
+            continue;
+          }
           if (this.takeRawMonitor(line)) continue;
           // A METADATA * CLEAR here is the user's like any other (#1189).
           const onMetadataSent = this.noteRawMetadata(line, 'user');

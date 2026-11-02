@@ -1333,6 +1333,82 @@ describe('agent control verbs', () => {
       expect(conn.sent).toEqual([]);
     });
 
+    // #1116: the guard once read "the first two words", so anything that moved the verb
+    // or named the channel another way went out in the clear.
+    it('reads past a tag block and a client-written prefix', () => {
+      setChannelConfig(owner.id, net.id, { channel: '#secret', enabled: true, mode: 'normal' });
+      const conn = live();
+      const refused = { ok: false, error: 'e2e-channel-use-send-message' };
+      const lines = [
+        '@+draft/reply=abc PRIVMSG #secret :plain',
+        '@label=x;time=2026-01-01T00:00:00.000Z privmsg #secret :plain',
+        ':me!u@h PRIVMSG #secret :plain',
+        '@+draft/reply=abc :me PRIVMSG #secret :plain',
+      ];
+      const got = lines.map((line) => [
+        line,
+        callVerb('send_raw', rwCtx(owner.id), { networkId: net.id, line }),
+      ]);
+      expect(got).toEqual(lines.map((line) => [line, refused]));
+      expect(conn.sent).toEqual([]);
+    });
+
+    it('refuses the other verbs the manager refuses in the clear: NOTICE and TAGMSG', () => {
+      setChannelConfig(owner.id, net.id, { channel: '#secret', enabled: true, mode: 'normal' });
+      const conn = live();
+      // Not "use send_message": a notice resent as a message is a different thing said.
+      const refused = { ok: false, error: 'e2e-channel-no-cleartext' };
+      const lines = ['NOTICE #secret :plain', '@+draft/react=👍;+draft/reply=abc TAGMSG #secret'];
+      const got = lines.map((line) => [
+        line,
+        callVerb('send_raw', rwCtx(owner.id), { networkId: net.id, line }),
+      ]);
+      expect(got).toEqual(lines.map((line) => [line, refused]));
+      expect(conn.sent).toEqual([]);
+    });
+
+    it('checks every channel in a comma list', () => {
+      setChannelConfig(owner.id, net.id, { channel: '#secret', enabled: true, mode: 'normal' });
+      const conn = live();
+      const refused = { ok: false, error: 'e2e-channel-use-send-message' };
+      const lines = [
+        'PRIVMSG #public,#secret :plain',
+        'PRIVMSG #secret,#public :plain',
+        'PRIVMSG bob,#public,,#secret :plain',
+      ];
+      const got = lines.map((line) => [
+        line,
+        callVerb('send_raw', rwCtx(owner.id), { networkId: net.id, line }),
+      ]);
+      expect(got).toEqual(lines.map((line) => [line, refused]));
+      expect(conn.sent).toEqual([]);
+      // A list with no E2E channel in it is still the user's to send.
+      expect(
+        callVerb('send_raw', rwCtx(owner.id), {
+          networkId: net.id,
+          line: 'PRIVMSG #public,bob :plain',
+        }),
+      ).toMatchObject({ ok: true });
+      expect(conn.sent).toEqual(['PRIVMSG #public,bob :plain']);
+    });
+
+    it('judges the line raw() will write: NUL stripped, case folded, STATUSMSG peeled', () => {
+      setChannelConfig(owner.id, net.id, { channel: '#secret', enabled: true, mode: 'normal' });
+      const conn = live();
+      const refused = { ok: false, error: 'e2e-channel-use-send-message' };
+      const lines = [
+        'PRIVMSG\u0000 #secret :plain',
+        'PRIVMSG #SECRET :plain',
+        'PRIVMSG @#secret :plain',
+      ];
+      const got = lines.map((line) => [
+        line,
+        callVerb('send_raw', rwCtx(owner.id), { networkId: net.id, line }),
+      ]);
+      expect(got).toEqual(lines.map((line) => [line, refused]));
+      expect(conn.sent).toEqual([]);
+    });
+
     it('still allows non-PRIVMSG commands and other channels', () => {
       setChannelConfig(owner.id, net.id, {
         channel: '#secret',

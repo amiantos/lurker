@@ -18,6 +18,7 @@ import cookieParser from 'cookie-parser';
 import ircManager, { resolveAwayScope } from './ircManager.js';
 import type { IrcConnection } from './ircConnection.js';
 import { e2eManager } from './e2e/manager.js';
+import { cleartextE2eLeak } from './e2e/rawGuard.js';
 import { MAX_IMPORT_BYTES } from './e2e/portable.js';
 import settingsService, { cachedSetting, forgetCachedSettings } from './settingsService.js';
 import themesService from './themesService.js';
@@ -3482,7 +3483,23 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           rejectField(ws, msg, 'line');
           break;
         }
-        ircManager.getConnection(userId, msg.networkId as number)?.raw(msg.line);
+        {
+          const conn = ircManager.getConnection(userId, msg.networkId as number);
+          if (!conn) break;
+          // `/quote PRIVMSG #secret :…` is the same silent cleartext leak the MCP
+          // send_raw verb refuses (#1116): nothing encrypts here and nothing echoes.
+          const leak = cleartextE2eLeak(userId, msg.networkId as number, msg.line);
+          if (leak) {
+            conn.publishEphemeral({
+              type: 'e2e',
+              level: 'warn',
+              target: leak.channel,
+              text: `a raw ${leak.command} isn't encrypted — not sent on this E2E channel`,
+            });
+            break;
+          }
+          conn.raw(msg.line);
+        }
         break;
       case 'probe-presence': {
         // Client just activated a DM — refresh its presence cache so the
