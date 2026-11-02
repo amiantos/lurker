@@ -429,6 +429,11 @@ describe('after a fresh registration', () => {
     try {
       await until(() => conn.ownMetadataOnServer()?.status === 'old', 5000, 'listed');
       // The server's record moves on without a change Lurker saves (a read).
+      // ⚠ The fake's own store moves with it. Like ergo, the fake answers the
+      // SUB with a 774 pointing at `*ALL SYNC`, and the sync's batch replays
+      // its store a few ms on — under load that landed AFTER the injected read
+      // and put `old` back, so the wait below never saw `elsewhere` (#1259).
+      ircd.setMetadata('racer', 'status', 'elsewhere');
       ircd.inject('racer', ':fake.server BATCH +r2 metadata racer');
       ircd.inject('racer', '@batch=r2 :fake.server 761 racer racer status * :elsewhere');
       ircd.inject('racer', ':fake.server BATCH -r2');
