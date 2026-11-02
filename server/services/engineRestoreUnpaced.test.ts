@@ -72,13 +72,22 @@ describe('the re-attach walk against the flood clock', () => {
     // the five-line burst budget would need 38 s, and the six WHOs alone 12 s;
     // paced by the replies alone they take a few round trips. The bounds are
     // loose for a loaded suite and still well under either charged figure.
-    await harness.until(() => steps().length === CHANNELS.length * 3, 10000, 'the whole walk sent');
+    // The last channel's WHO is drawn by its 366, which lands after its MODE
+    // went: wait for the WHOs too, not only the walk's own lines.
+    const whos = () => wire.filter((w) => w.dir === '>' && /^WHO #u\d\b/.test(w.line));
+    await harness.until(
+      () => steps().length === CHANNELS.length * 3 && whos().length === CHANNELS.length,
+      10000,
+      'the whole walk and its WHOs sent',
+    );
     const sent = steps();
     expect(sent.at(-1)!.t - sent[0].t).toBeLessThan(8000);
-    // The WHO each NAMES reply drew went too, inside the same span.
-    const whos = wire.filter((w) => w.dir === '>' && /^WHO #u\d\b/.test(w.line));
-    expect(whos.map((w) => w.line.split(' ')[1]).toSorted()).toEqual([...CHANNELS].toSorted());
-    expect(whos.at(-1)!.t - sent[0].t).toBeLessThan(8000);
+    expect(
+      whos()
+        .map((w) => w.line.split(' ')[1])
+        .toSorted(),
+    ).toEqual([...CHANNELS].toSorted());
+    expect(whos().at(-1)!.t - sent[0].t).toBeLessThan(8000);
     for (const ch of CHANNELS) {
       expect(sent.map((w) => w.line)).toEqual(
         expect.arrayContaining([`NAMES ${ch}`, `TOPIC ${ch}`, `MODE ${ch}`]),
