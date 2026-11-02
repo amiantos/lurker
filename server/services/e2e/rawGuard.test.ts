@@ -5,7 +5,7 @@
 // words" didn't see, and the legitimate lines the guard must leave alone.
 
 import '../../test-utils/isolateDb.js';
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { createUser } from '../../db/users.js';
 import { createNetwork } from '../../db/networks.js';
 import { e2eManager } from './manager.js';
@@ -71,6 +71,22 @@ describe('cleartextE2eLeak', () => {
     expect(targets.map((t) => [t, leak(`PRIVMSG ${t} :plain`)?.channel])).toEqual(
       targets.map((t) => [t, '#secret']),
     );
+  });
+
+  it('refuses rather than sends when the keyring cannot be read', () => {
+    const spy = vi.spyOn(e2eManager, 'enabledChannelsByFold').mockImplementation(() => {
+      throw new Error('SQLITE_BUSY');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(leak('PRIVMSG #open :plain')).toEqual({ command: 'PRIVMSG', channel: '#open' });
+      expect(leak('NOTICE bob,@#open :plain')).toEqual({ command: 'NOTICE', channel: '#open' });
+      // Not a line that could leak: no read, no refusal.
+      expect(leak('MODE #open +o bob')).toBeNull();
+    } finally {
+      spy.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   it('leaves everything else alone', () => {

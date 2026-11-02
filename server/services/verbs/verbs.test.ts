@@ -1356,7 +1356,8 @@ describe('agent control verbs', () => {
     it('refuses the other verbs the manager refuses in the clear: NOTICE and TAGMSG', () => {
       setChannelConfig(owner.id, net.id, { channel: '#secret', enabled: true, mode: 'normal' });
       const conn = live();
-      const refused = { ok: false, error: 'e2e-channel-use-send-message' };
+      // Not "use send_message": a notice resent as a message is a different thing said.
+      const refused = { ok: false, error: 'e2e-channel-no-cleartext' };
       const lines = ['NOTICE #secret :plain', '@+draft/react=👍;+draft/reply=abc TAGMSG #secret'];
       const got = lines.map((line) => [
         line,
@@ -1373,7 +1374,7 @@ describe('agent control verbs', () => {
       const lines = [
         'PRIVMSG #public,#secret :plain',
         'PRIVMSG #secret,#public :plain',
-        'NOTICE bob,#public,,#secret :plain',
+        'PRIVMSG bob,#public,,#secret :plain',
       ];
       const got = lines.map((line) => [
         line,

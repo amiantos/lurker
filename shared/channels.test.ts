@@ -6,6 +6,7 @@ import {
   ensureChannelPrefix,
   isChannelTarget,
   isSinglePeerTarget,
+  channelReadings,
   parseChannelNames,
   stripChannelPrefix,
 } from './channels.js';
@@ -56,6 +57,20 @@ describe('isSinglePeerTarget', () => {
     for (const t of ['bob,#room', 'bob,carol', 'bob carol', 'bob\r', '', '$$*', '$#*.net']) {
       expect(isSinglePeerTarget(t)).toBe(false);
     }
+  });
+});
+
+describe('channelReadings', () => {
+  it('peels STATUSMSG prefixes one at a time, keeping every channel reading', () => {
+    expect(channelReadings('#room')).toEqual(['#room']);
+    expect(channelReadings('@#room')).toEqual(['#room']);
+    expect(channelReadings('%+room')).toEqual(['+room']);
+    expect(channelReadings('+#room')).toEqual(['+#room', '#room']);
+    expect(channelReadings('~&x')).toEqual(['&x']);
+  });
+
+  it('is empty for a nick, a mask or nothing', () => {
+    for (const t of ['bob', '@bob', '$$*', '']) expect(channelReadings(t)).toEqual([]);
   });
 });
 

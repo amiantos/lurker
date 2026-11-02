@@ -3,29 +3,30 @@
 
 // Would this raw line put cleartext on an E2E channel?
 //
-// Two doors hand a line the user wrote straight to IrcConnection.raw(): the MCP
-// send_raw verb and the web client's `/quote` (wsHub 'raw'). Nothing on that path
-// encrypts and nothing echoes, so a PRIVMSG to an encrypted channel leaks silently
-// at both ends. Both doors ask here, so the answer is one answer.
+// Three doors hand a line the user wrote straight to IrcConnection.raw(): the MCP
+// send_raw verb, the web client's `/quote` (wsHub 'raw') and a network's connect
+// commands. Nothing on that path encrypts and nothing echoes, so a PRIVMSG to an
+// encrypted channel leaks silently at both ends. Every door asks here, so the
+// answer is one answer.
 //
 // ⚠ The line is read the way the SERVER will read it, not as "the first two words"
 // (#1116): past a tag block and a client-written `:prefix` (a server strips both),
-// with the control characters raw() strips already gone, every target of a comma
-// list, a STATUSMSG prefix (`@#chan` reaches the channel's ops) peeled off, and the
-// channel matched by the network's case folding. Each of those was a way through.
+// on ASCII spaces alone, with the control characters raw() strips already gone,
+// every target of a comma list, a STATUSMSG prefix (`@#chan` reaches the channel's
+// ops) peeled off, and the channel matched by the network's case folding. Each of
+// those was a way through.
+//
+// ⚠ Fails CLOSED: if the keyring can't be read, the line is refused, not sent. The
+// encrypting path (e2eManager.checkOutgoing) lets the same error stop the send.
 
 import { parseLine } from '../bouncerClientFilter.js';
-import { isChannelTarget } from '../../../shared/channels.js';
+import { channelReadings } from '../../../shared/channels.js';
+import { foldTargetFor } from '../../db/buffers.js';
 import { e2eManager } from './manager.js';
 
 /** The verbs ircManager refuses in the clear on an E2E channel: a message, a notice
  *  (no encrypted form) and a TAGMSG (a reaction or typing). */
 const CLEARTEXT_VERBS = new Set(['PRIVMSG', 'NOTICE', 'TAGMSG']);
-
-/** STATUSMSG prefixes a server may take in front of a channel name. `+` and `&` are also
- *  channel sigils, so every reading of the leading run is tried (shared/channels.ts does the
- *  same for a DCC target). */
-const STATUSMSG_PREFIXES = '~&@%+';
 
 export interface CleartextLeak {
   /** The verb as the server will read it, upper-cased. */
@@ -36,7 +37,8 @@ export interface CleartextLeak {
 
 /**
  * The E2E channel a raw `line` would deliver cleartext to, or null when it would not.
- * Never throws: a line that doesn't parse is not a PRIVMSG.
+ * Never throws: a line that doesn't parse is not a PRIVMSG, and a keyring that can't
+ * be read is a refusal.
  */
 export function cleartextE2eLeak(
   userId: number,
@@ -47,13 +49,19 @@ export function cleartextE2eLeak(
   // eslint-disable-next-line no-control-regex
   const msg = parseLine(line.replace(/[\u000d\u000a\u0000]/g, '').replace(/^ +/, ''));
   if (!msg || !CLEARTEXT_VERBS.has(msg.command)) return null;
-  for (const target of (msg.params[0] ?? '').split(',')) {
-    for (let t = target; t; t = t.slice(1)) {
-      if (isChannelTarget(t)) {
-        const channel = e2eManager.enabledChannelMatching(userId, networkId, t);
-        if (channel !== null) return { command: msg.command, channel };
-      }
-      if (!STATUSMSG_PREFIXES.includes(t[0])) break;
+  const targets = (msg.params[0] ?? '').split(',');
+  let enabled: Map<string, string>;
+  try {
+    enabled = e2eManager.enabledChannelsByFold(userId, networkId);
+  } catch (err) {
+    console.warn(`e2e raw guard: refusing ${msg.command}, keyring unreadable: ${String(err)}`);
+    const channel = targets.flatMap(channelReadings)[0] ?? targets[0];
+    return { command: msg.command, channel };
+  }
+  for (const target of targets) {
+    for (const reading of channelReadings(target)) {
+      const channel = enabled.get(foldTargetFor(networkId, reading));
+      if (channel !== undefined) return { command: msg.command, channel };
     }
   }
   return null;

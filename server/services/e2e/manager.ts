@@ -334,23 +334,23 @@ export class E2eManager {
   }
 
   /**
-   * The E2E-enabled channel `target` names, by the network's own case folding, or null.
+   * The E2E-enabled channels of a network, keyed by the network's own case folding of their
+   * names, valued by the spelling the config holds.
    *
    * ⚠ Configs are keyed by the channel name the server used, and `isChannelEnabled` matches
    * that name exactly — right for every path that gets its target from a buffer, and a hole
    * for one that gets it from a line the user typed (#1116): the server folds `#Secret` onto
    * `#secret`, so a guard that doesn't is a guard the shift key defeats.
+   *
+   * ⚠ Throws what the keyring throws, unlike `isChannelEnabled`: the caller is a
+   * confidentiality guard, and "couldn't read the config" must not read as "not encrypted".
    */
-  enabledChannelMatching(userId: number, networkId: number, target: string): string | null {
-    try {
-      const want = foldTargetFor(networkId, target);
-      for (const cfg of keyring.listChannelConfigs(userId, networkId)) {
-        if (cfg.enabled && foldTargetFor(networkId, cfg.channel) === want) return cfg.channel;
-      }
-    } catch (err) {
-      console.warn(`e2e enabledChannelMatching ${target}: ${(err as Error).message}`);
+  enabledChannelsByFold(userId: number, networkId: number): Map<string, string> {
+    const out = new Map<string, string>();
+    for (const cfg of keyring.listChannelConfigs(userId, networkId)) {
+      if (cfg.enabled) out.set(foldTargetFor(networkId, cfg.channel), cfg.channel);
     }
-    return null;
+    return out;
   }
 
   // ─── outbound handshake ──────────────────────────────────────────────────────

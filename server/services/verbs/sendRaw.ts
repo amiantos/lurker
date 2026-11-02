@@ -20,8 +20,9 @@ registerVerb({
     'include a trailing CRLF. Powerful and unguarded — it runs as you, so it can do anything ' +
     'your IRC session can. Do NOT use it for PRIVMSG: send_message applies end-to-end ' +
     'encryption on channels that have it enabled, and a raw PRIVMSG bypasses that and ' +
-    'transmits cleartext — so a raw PRIVMSG, NOTICE or TAGMSG naming an E2E channel is ' +
-    'refused (error "e2e-channel-use-send-message"), however the line is written. ' +
+    'transmits cleartext — so a raw PRIVMSG naming an E2E channel is refused (error ' +
+    '"e2e-channel-use-send-message"), however the line is written, as is a raw NOTICE or ' +
+    'TAGMSG there ("e2e-channel-no-cleartext": those have no encrypted form at all). ' +
     'Prefer the dedicated verb wherever one exists (send_message, ' +
     'send_notice, send_action, join_channel, part_channel, set_nick, set_topic, whois). ' +
     "Server replies (WHOIS, LIST, …) arrive asynchronously in the network's server buffer, " +
@@ -54,8 +55,16 @@ registerVerb({
     // encrypts on an E2E channel and refuses to fall through on failure; this
     // path has neither, and the sender gets no local echo either, so a leak
     // would be silent at both ends. Refuse and name the verb that does it right.
-    if (cleartextE2eLeak(ctx.userId, networkId, line)) {
-      return { ok: false, error: 'e2e-channel-use-send-message' };
+    const leak = cleartextE2eLeak(ctx.userId, networkId, line);
+    if (leak) {
+      // A notice or a reaction has no encrypted form, so no verb "does it right"
+      // — a code that sent the agent to send_message would turn a notice into
+      // a message.
+      return {
+        ok: false,
+        error:
+          leak.command === 'PRIVMSG' ? 'e2e-channel-use-send-message' : 'e2e-channel-no-cleartext',
+      };
     }
     conn.raw(line);
     return { ok: true, serverBuffer: conn.serverTarget() };
