@@ -110,7 +110,7 @@ describe('a socket that dies with a query still queued', () => {
       prefixModes: () => new Set(['o', 'v']),
     });
     const dropped: string[] = [];
-    router.send('user', 'WHOIS bob', undefined, undefined, () => dropped.push('WHOIS bob'));
+    router.send('user', 'WHOIS bob', undefined, { onDropped: () => dropped.push('WHOIS bob') });
     router.reset();
     expect(dropped).toEqual(['WHOIS bob']);
   });

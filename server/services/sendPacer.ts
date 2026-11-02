@@ -19,8 +19,23 @@
 //
 // Not paced: anything written before registration (the registration burst,
 // which an engine re-attach's transport swallows and a server gives grace),
-// uncharged; and PING, PONG and QUIT, which waiting would only make wrong,
-// charged since the server charges them.
+// uncharged; PING, PONG and QUIT, which waiting would only make wrong,
+// charged since the server charges them; and an item sent `unpaced`, which
+// is not made to wait on the clock for itself — it goes when its turn in its
+// lane comes, still behind whatever waits ahead of it in the lanes. That is the
+// re-attach's channel walk (NAMES/TOPIC/MODE per channel, and the WHO each
+// NAMES reply draws): the server's own replies pace it already, one channel
+// at a time, the next not asked until the last is answered (#840) — and a
+// server that has stopped processing us answers nothing, so the walk stops
+// with it. Making those lines wait here as well stacked one throttle on the
+// other: each step waited 6 s for a clock the replies had already proven
+// wrong, and held its turn at the process-wide cap (#842) the whole time, so
+// a 42-connection cell took 221 s to learn its topics and member lists again.
+// Charged, though, since the server charges them, but never counted past the
+// budget: a line the server has answered is a line it has processed, and it
+// processes only while its clock is under the budget — so what the user types
+// behind the walk waits the one budget, not the walk's whole length, and goes
+// into a server that can take it.
 //
 // An item is a line, a thunk that makes its line(s) when its turn comes (a
 // REKEY to a nick resolved at send time, an E2E message encrypted at send
@@ -56,7 +71,8 @@ const COST_PER_100_BYTES_MS = 1000;
 export const BURST_BUDGET_MS = 10_000;
 /** The most keyed items (handshake replies) allowed to wait at once. */
 const DEFAULT_MAX_KEYED = 20;
-const UNPACED = /^(?:@\S+ )?(?:PING|PONG|QUIT)\b/i;
+/** Past the lanes altogether, and charged in full: see the header. */
+const IMMEDIATE = /^(?:@\S+ )?(?:PING|PONG|QUIT)\b/i;
 /** How long the queue stays empty before it is reported empty: the connect
  *  walk and a restore send one line at a time, each waiting its 2 s alone, and
  *  "1 waiting" blinking once per line reads as a fault. A rise is reported at
@@ -104,6 +120,11 @@ export interface WriteOptions {
   onSent?: (at: number) => void;
   /** Called when the item is dropped with its socket, or over the keyed cap. */
   onDropped?: () => void;
+  /** Not made to wait on the clock for itself (still behind what waits ahead
+   *  of it in the lanes); charged, but never counted past the budget: a line
+   *  the server's replies pace already (the header's third exception). Not
+   *  the PING/PONG/QUIT bypass, which skips the lanes and is charged in full. */
+  unpaced?: boolean;
 }
 
 export interface SendHandle {
@@ -152,6 +173,7 @@ interface Entry {
   onDropped?: () => void;
   /** The item this one expanded from, for cancel(). */
   origin?: Entry;
+  unpaced?: boolean;
 }
 
 // A line whose text is made when it goes, as a thunk making that line.
@@ -205,6 +227,7 @@ export class SendPacer {
       live: opts.live,
       onSent: opts.onSent,
       onDropped: opts.onDropped,
+      unpaced: opts.unpaced,
     };
     // Before registration, straight out and uncharged. The held lines, if any,
     // were written to a registered connection and wait for it to come back;
@@ -217,7 +240,7 @@ export class SendPacer {
     }
     // PING, PONG and QUIT too, since waiting would only make them late; the
     // server charges them, so they are charged.
-    if (entry.text !== undefined && UNPACED.test(entry.text)) {
+    if (entry.text !== undefined && IMMEDIATE.test(entry.text)) {
       this.sendNow(entry, true);
       return { cancel: () => false };
     }
@@ -250,7 +273,10 @@ export class SendPacer {
   }
 
   /** Send `lines` back to back, as one unit, and charge for all of them after. */
-  unit(lines: string[], opts: WriteOptions = {}): SendHandle {
+  unit(
+    lines: string[],
+    opts: Pick<WriteOptions, 'priority' | 'onSent' | 'onDropped'> = {},
+  ): SendHandle {
     if (this.disposed || lines.length === 0) {
       if (opts.onDropped) this.guarded('an onDropped hook', opts.onDropped);
       return { cancel: () => false };
@@ -395,7 +421,7 @@ export class SendPacer {
         // so what it builds is as fresh as it can be; a unit is admitted on
         // its first line and goes whole. Unpaced, nothing waits: not even for
         // what a unit charged past the budget before the switch was flipped.
-        if (this.paced()) {
+        if (this.paced() && !head.unpaced) {
           const ahead = this.since - this.now();
           const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
           const over = ahead + cost - BURST_BUDGET_MS;
@@ -452,6 +478,7 @@ export class SendPacer {
       const own = this.entryFor(item, entry);
       // Asked again at each line's own turn.
       own.live = entry.live;
+      own.unpaced = entry.unpaced;
       if (i === last && entry.onSent) {
         const sent = own.onSent;
         own.onSent = (at) => {
@@ -535,7 +562,7 @@ export class SendPacer {
     const text = entry.text!;
     if (!this.push(text)) return this.refuse(entry);
     const at = this.now();
-    if (charge) this.charge(this.costOf(text), at);
+    if (charge) this.charge(this.costOf(text), at, entry.unpaced === true);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
     return true;
   }
@@ -587,8 +614,12 @@ export class SendPacer {
     return this.paced() ? costOf(line) : 0;
   }
 
-  private charge(cost: number, at: number): void {
-    this.since = Math.max(this.since, at) + cost;
+  // `capped`: an unpaced line's charge counts only up to the budget (the
+  // header's third exception) — and never lowers what a unit already charged
+  // past it.
+  private charge(cost: number, at: number, capped = false): void {
+    const charged = Math.max(this.since, at) + cost;
+    this.since = capped ? Math.min(charged, Math.max(this.since, at + BURST_BUDGET_MS)) : charged;
   }
 
   private schedule(wait: number): void {

@@ -56,10 +56,17 @@ export type ReplyOwner = Asker | 'unasked' | 'nobody';
 // off (a 774 for a SYNC), an error ended it, or nothing came in time.
 export type QueryEnd = 'replied' | 'postponed' | 'error' | 'timeout';
 
-import type { SendHandle, SendPriority } from './sendPacer.js';
+import type { SendHandle, SendPriority, WriteOptions } from './sendPacer.js';
 
 /** A line handed to the connection's queue, which can be taken back before it goes. */
 export type Written = SendHandle;
+
+/** What goes with a line handed to send(): the send queue's own options that
+ *  pass through (a `lurker` asker's lane is `low` unless said), and how the
+ *  query ended, if the line is one. */
+export type SendOptions = Pick<WriteOptions, 'onSent' | 'onDropped' | 'priority' | 'unpaced'> & {
+  onEnd?: (how: QueryEnd) => void;
+};
 
 export interface ReplyRouterOptions {
   /**
@@ -71,6 +78,7 @@ export interface ReplyRouterOptions {
     onSent?: (at: number) => void,
     onDropped?: () => void,
     priority?: SendPriority,
+    unpaced?: boolean,
   ): Written | void;
   /** Whether a query can go out now. One that can't ends at once. */
   canSend(): boolean;
@@ -273,6 +281,8 @@ interface Query extends Spec {
   onDropped: (() => void) | undefined;
   priority: SendPriority | undefined;
   onEnd: ((how: QueryEnd) => void) | undefined;
+  /** Past the send queue's clock (sendPacer.ts): the replies pace this one. */
+  unpaced: boolean | undefined;
 }
 
 interface Settle {
@@ -343,19 +353,12 @@ export class ReplyRouter {
    * it, an error ended it, or it timed out — and never when its socket went
    * first.
    */
-  send(
-    asker: Asker,
-    line: string,
-    build?: () => string,
-    onSent?: (at: number) => void,
-    onDropped?: () => void,
-    priority?: SendPriority,
-    onEnd?: (how: QueryEnd) => void,
-  ): void {
+  send(asker: Asker, line: string, build?: () => string, opts: SendOptions = {}): void {
+    const { onSent, onDropped, priority, onEnd, unpaced } = opts;
     const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
     if (!found) {
-      this.opts.write(line, onSent, onDropped, lane);
+      this.opts.write(line, onSent, onDropped, lane, unpaced);
       return;
     }
     this.dispatch({
@@ -371,6 +374,7 @@ export class ReplyRouter {
       onDropped,
       priority: lane,
       onEnd,
+      unpaced,
     });
   }
 
@@ -495,6 +499,7 @@ export class ReplyRouter {
       },
       query.onDropped,
       query.priority,
+      query.unpaced,
     );
     // A line with nothing ahead of it has gone by now.
     if (!query.sent) query.written = written ?? null;

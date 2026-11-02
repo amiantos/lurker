@@ -116,6 +116,51 @@ describe('SendPacer', () => {
       expect(pacer.pending).toBe(1);
     });
 
+    it('sends an unpaced item at its turn past the budget, charged only up to the budget', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT); // the budget, spent
+      const log: string[] = [];
+      pacer.write('NAMES #c', { priority: 'low', unpaced: true, onSent: () => log.push('names') });
+      pacer.write('TOPIC #c', { priority: 'low', unpaced: true });
+      pacer.write(() => ['MODE #c', { text: 'MODE #d', onSent: () => log.push('mode') }], {
+        priority: 'low',
+        unpaced: true,
+      });
+      expect(sent.slice(5)).toEqual(['NAMES #c', 'TOPIC #c', 'MODE #c', 'MODE #d']);
+      expect(log).toEqual(['names', 'mode']);
+      expect(pacer.pending).toBe(0);
+      // The clock stayed at the budget: the next paced line waits 2 s, as it
+      // would behind the five SHORTs alone, not 8 s more for the four lines.
+      pacer.write(SHORT);
+      expect(sent).toHaveLength(9);
+      vi.advanceTimersByTime(1999);
+      expect(sent).toHaveLength(9);
+      vi.advanceTimersByTime(1);
+      expect(sent).toHaveLength(10);
+    });
+
+    it('charges an unpaced line up to the budget when the clock is under it', () => {
+      pacer.write(SHORT); // 2 s ahead
+      for (const l of ['NAMES #c', 'TOPIC #c', 'MODE #c', 'NAMES #d', 'TOPIC #d']) {
+        pacer.write(l, { priority: 'low', unpaced: true });
+      }
+      expect(sent).toHaveLength(6);
+      // 2 + 5 × 2 = 12 s of charge, counted as the budget's 10: a paced line
+      // now waits 2 s. Uncharged it would have gone at once.
+      pacer.write(SHORT);
+      expect(sent).toHaveLength(6);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(7);
+    });
+
+    it('an unpaced item still waits its turn behind a paced one in its lane', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write('MONITOR + a,b', { priority: 'low' });
+      pacer.write('NAMES #c', { priority: 'low', unpaced: true });
+      expect(pacer.pending).toBe(2);
+      vi.advanceTimersByTime(2000);
+      expect(sent.slice(5)).toEqual(['MONITOR + a,b', 'NAMES #c']);
+    });
+
     it('sends everything at once before registration, uncharged', () => {
       ready = false;
       for (let i = 0; i < 8; i++) pacer.write(LONG);

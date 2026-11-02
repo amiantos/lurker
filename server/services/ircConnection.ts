@@ -339,7 +339,11 @@ const RESTORE_STEP_DEADLINE_MS = 10_000;
 // turn in the queue (#1149). The deadline above counts from the last request
 // going; behind a long paste that is later than now, and the slot, shared by
 // every connection in the process, must come back regardless. Past this the
-// walk moves on; the requests still go, and their replies are the restore's.
+// slot is given back — but the walk waits for the requests to go before it
+// asks the next channel. ⚠ Not "moves on": its lines are unpaced (rawQuiet),
+// so a walk that queued channel after channel behind one paste would send
+// them all in one burst the moment the paste cleared, with no reply between
+// them to pace it — past solanum's 20-line receive queue at seven channels.
 const RESTORE_STEP_SLOT_CAP_MS = 60_000;
 // The terminal reply of each request a restore step makes. Indexed by an
 // arbitrary numeric, so the value is `| undefined` — that is what makes the
@@ -1566,8 +1570,8 @@ export class IrcConnection {
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.replies = new ReplyRouter({
-      write: (line, onSent, onDropped, priority) =>
-        this.sendPacer.write(line, { onSent, onDropped, priority }),
+      write: (line, onSent, onDropped, priority, unpaced) =>
+        this.sendPacer.write(line, { onSent, onDropped, priority, unpaced }),
       canSend: () => this.state === 'connected',
       fold: (name) => foldTargetFor(this.network.id, name),
       isJoined: (channel) => this.isChannelJoined(channel),
@@ -4157,7 +4161,7 @@ export class IrcConnection {
             `on network ${this.network.id}; away-notify keeps it live`,
         );
       } else if (syncAway) {
-        this.sendAwaySyncWho(eventChannel);
+        this.sendAwaySyncWho(eventChannel, inRestore);
       }
       const ms = Date.now() - tHandler;
       if (IRC_HANDLER_WARN_MS > 0 && ms >= IRC_HANDLER_WARN_MS) {
@@ -4904,13 +4908,14 @@ export class IrcConnection {
     const epoch = this.ownMetadataEpoch;
     // Lurker's own query, low lane: behind the connect commands, so a NickServ
     // identify there goes first. Run after the line that ended it is read.
-    this.replies.send('lurker', 'METADATA * LIST', undefined, undefined, undefined, undefined, () =>
-      setImmediate(() => {
-        if (epoch !== this.ownMetadataEpoch || this.disposed) return;
-        this.ownMetadataSettled = true;
-        if (this.ownMetadataReconcileWanted) this.reconcileOwnMetadata();
-      }),
-    );
+    this.replies.send('lurker', 'METADATA * LIST', undefined, {
+      onEnd: () =>
+        setImmediate(() => {
+          if (epoch !== this.ownMetadataEpoch || this.disposed) return;
+          this.ownMetadataSettled = true;
+          if (this.ownMetadataReconcileWanted) this.reconcileOwnMetadata();
+        }),
+    });
   }
 
   /**
@@ -5110,10 +5115,7 @@ export class IrcConnection {
         'lurker',
         `METADATA ${target} SYNC`,
         sync ? () => `METADATA ${sync.nick} SYNC` : undefined,
-        undefined,
-        undefined,
-        undefined,
-        sync ? (how) => this.endPeerSync(sync, how) : undefined,
+        { onEnd: sync ? (how) => this.endPeerSync(sync, how) : undefined },
       );
     }, delay);
     timer.unref?.();
@@ -6988,13 +6990,22 @@ export class IrcConnection {
       // a backlog that is later than now, and a deadline counted from here
       // would move the walk on with nothing asked. The quiet window moves with
       // it, so the replies still print as the restore's and not as history.
-      // Until then the step holds its slot for at most RESTORE_STEP_SLOT_CAP_MS.
+      // Until then the step holds its slot for at most RESTORE_STEP_SLOT_CAP_MS;
+      // past that the shared slot goes back and the step stays, waiting for
+      // its own requests to go before the walk asks the next channel. Nothing
+      // to give back once they have gone: the deadline timer has the step then.
       const moveOn = () => {
         this.restoreTimer = null;
         if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
       };
       this.restoreTimer = setTimeout(
-        moveOn,
+        () => {
+          this.restoreTimer = null;
+          if (this.restoreStep !== step) return;
+          const slot = this.restoreSlot;
+          this.restoreSlot = null;
+          slot?.release();
+        },
         Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_SLOT_CAP_MS', RESTORE_STEP_SLOT_CAP_MS)),
       );
       let owed = 3;
@@ -7091,20 +7102,25 @@ export class IrcConnection {
 
   // A restore's own request. Its reply is Lurker's, so it reaches neither the
   // server buffer nor a bouncer client (replyRouter.ts).
+  // Unpaced (sendPacer.ts): the walk is paced by the server's replies, one
+  // channel at a time, and making its lines wait on the send queue's clock as
+  // well made every step wait 6 s while holding its turn at the process-wide
+  // cap — 221 s for a 42-connection cell to see its topics again.
   private rawQuiet(command: string, arg: string, onSent?: () => void): void {
-    this.replies.send('lurker', `${command} ${arg}`, undefined, onSent);
+    this.replies.send('lurker', `${command} ${arg}`, undefined, { onSent, unpaced: true });
   }
 
   // The restore's `MODE <nick>`, asking about the nick we have when it goes: a
   // NICK goes ahead of it (sendPacer.ts, the high lane), and one built with
   // the old nick would ask about someone else and get a 502.
   private requestOwnModes(onSent?: () => void): void {
-    this.replies.send(
-      'lurker',
-      `MODE ${this.currentNick}`,
-      () => `MODE ${this.currentNick}`,
+    // Unpaced like the walk (rawQuiet): one line, answered by one 221, and the
+    // first thing in the low lane at `restored` — waiting on the clock here
+    // would hold every step behind it.
+    this.replies.send('lurker', `MODE ${this.currentNick}`, () => `MODE ${this.currentNick}`, {
       onSent,
-    );
+      unpaced: true,
+    });
   }
 
   // The away-sync WHO, as irc-framework's who() sends it: WHOX where the network
@@ -7113,11 +7129,22 @@ export class IrcConnection {
   // when it's queued, so a client's WHOX carrying the same number can't use it
   // up first. Not who() itself: its queue moves on at any WHO's end, a client's
   // included, and stops for good at one that never comes.
-  private sendAwaySyncWho(channel: string): void {
-    this.replies.send('lurker', `WHO ${channel}`, () =>
-      this.client.network.supports('whox')
-        ? `WHO ${channel} %tcuhsnfdaor,${this.client.whox_token.next()}`
-        : `WHO ${channel}`,
+  // On a restore, unpaced like the walk's own lines (rawQuiet): the router
+  // sends one WHO at a time, the next after the last one's 315, so the server
+  // paces these too — and a WHO waiting on the clock in the low lane sat ahead
+  // of the next channel's NAMES/TOPIC/MODE, so the walk waited 2 s a step on
+  // it all the same. ⚠ Only there: a fresh connect's JOINs are let out by the
+  // clock, and a WHO they draw that the clock didn't count would put Lurker's
+  // count under the server's for the whole autojoin — a drift the unsafe way.
+  private sendAwaySyncWho(channel: string, inRestore: boolean): void {
+    this.replies.send(
+      'lurker',
+      `WHO ${channel}`,
+      () =>
+        this.client.network.supports('whox')
+          ? `WHO ${channel} %tcuhsnfdaor,${this.client.whox_token.next()}`
+          : `WHO ${channel}`,
+      { unpaced: inRestore },
     );
   }
 
@@ -11643,16 +11670,14 @@ export class IrcConnection {
     // total: this is the one path every slash command and member-menu action
     // takes. The user's own line dropped with its socket is said so in the
     // server buffer, which is where a raw line reports.
-    this.replies.send(
-      asker,
-      clean,
-      undefined,
-      () => {
+    this.replies.send(asker, clean, undefined, {
+      onSent: () => {
         this.noteOutgoingCommand(clean);
         onMetadataSent?.();
       },
-      asker === 'user' ? () => this.reportNotSent(this.serverTarget(), clean) : undefined,
-    );
+      onDropped:
+        asker === 'user' ? () => this.reportNotSent(this.serverTarget(), clean) : undefined,
+    });
   }
   // Whether the network negotiated IRCv3 message-tags. Client-only tags
   // (+typing, +draft/react, …) and TAGMSG only mean anything to a server that
@@ -12097,22 +12122,18 @@ export class IrcConnection {
           const onMetadataSent = this.noteRawMetadata(line, 'user');
           lastSent = false;
           onLastSent = null;
-          this.replies.send(
-            'user',
-            line,
-            undefined,
-            () => {
+          this.replies.send('user', line, undefined, {
+            onSent: () => {
               onMetadataSent?.();
               lastSent = true;
               const next = onLastSent;
               onLastSent = null;
               next?.();
             },
-            undefined,
             // Ahead of chat, with the autojoin: IDENTIFY before JOIN, both
             // before anything a client says meanwhile.
-            'high',
-          );
+            priority: 'high',
+          });
         } catch (_) {
           /* ignore */
         }

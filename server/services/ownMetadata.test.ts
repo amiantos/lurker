@@ -148,24 +148,34 @@ describe('saving', () => {
     const network = makeNetwork('mirror');
     saveNetworkMetadata(userId, network.id, 'status', 'old');
     ircd.setMetadata('mirror', 'status', 'old');
-    const { conn } = await connect(network);
+    const { conn, me } = await connect(network);
+    // Four round trips through the fake ircd; on CI this once sat at the 5 s
+    // test budget with no step named, so each wait says where it stood and
+    // what crossed the wire last.
+    const heard: string[] = [];
+    conn.client.on('raw', (ev: { line: string; from_server: boolean }) => {
+      if (ev.from_server) heard.push(ev.line);
+    });
+    const wire = () =>
+      `sent=${JSON.stringify(me.sent.slice(-8))} heard=${JSON.stringify(heard.slice(-8))} ` +
+      `onServer=${JSON.stringify(conn.ownMetadataOnServer())} saved=${JSON.stringify(saved(network))}`;
     try {
-      await until(() => conn.ownMetadataOnServer()?.status === 'old', 5000, 'listed');
+      await until(() => conn.ownMetadataOnServer()?.status === 'old', 5000, 'listed', wire);
       // A batched 761 is a read (a burst, a LIST): not saved.
       ircd.inject('mirror', ':fake.server BATCH +r1 metadata mirror');
       ircd.inject('mirror', '@batch=r1 :fake.server 761 mirror mirror status * :from a batch');
       ircd.inject('mirror', ':fake.server BATCH -r1');
-      await until(() => conn.ownMetadataOnServer()?.status === 'from a batch', 5000, 'read');
+      await until(() => conn.ownMetadataOnServer()?.status === 'from a batch', 5000, 'read', wire);
       expect(saved(network).status).toBe('old');
       // A bare one is another session's SET.
       ircd.inject('mirror', ':fake.server 761 * mirror status * :from my phone');
-      await until(() => saved(network).status === 'from my phone', 5000, 'saved');
+      await until(() => saved(network).status === 'from my phone', 5000, 'saved', wire);
       ircd.inject('mirror', ':fake.server 766 * mirror status :Key deleted');
-      await until(() => saved(network).status === null, 5000, 'unset saved');
+      await until(() => saved(network).status === null, 5000, 'unset saved', wire);
     } finally {
       conn.disconnect();
     }
-  });
+  }, 25_000);
 
   it("doesn't save a bare line without the batch cap, where a read comes bare too", async () => {
     const unbatched = await FakeIrcd.start({
