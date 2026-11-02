@@ -1566,8 +1566,8 @@ export class IrcConnection {
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.replies = new ReplyRouter({
-      write: (line, onSent, onDropped, priority) =>
-        this.sendPacer.write(line, { onSent, onDropped, priority }),
+      write: (line, onSent, onDropped, priority, unpaced) =>
+        this.sendPacer.write(line, { onSent, onDropped, priority, unpaced }),
       canSend: () => this.state === 'connected',
       fold: (name) => foldTargetFor(this.network.id, name),
       isJoined: (channel) => this.isChannelJoined(channel),
@@ -7091,8 +7091,21 @@ export class IrcConnection {
 
   // A restore's own request. Its reply is Lurker's, so it reaches neither the
   // server buffer nor a bouncer client (replyRouter.ts).
+  // Unpaced (sendPacer.ts): the walk is paced by the server's replies, one
+  // channel at a time, and charging its lines to the send queue's clock as
+  // well made every step wait 6 s while holding its turn at the process-wide
+  // cap — 221 s for a 42-connection cell to see its topics again.
   private rawQuiet(command: string, arg: string, onSent?: () => void): void {
-    this.replies.send('lurker', `${command} ${arg}`, undefined, onSent);
+    this.replies.send(
+      'lurker',
+      `${command} ${arg}`,
+      undefined,
+      onSent,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
   }
 
   // The restore's `MODE <nick>`, asking about the nick we have when it goes: a

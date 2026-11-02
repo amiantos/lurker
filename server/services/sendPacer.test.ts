@@ -116,6 +116,35 @@ describe('SendPacer', () => {
       expect(pacer.pending).toBe(1);
     });
 
+    it('sends an unpaced item at its turn past the budget, and charges nothing for it', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT); // the budget, spent
+      const log: string[] = [];
+      pacer.write('NAMES #c', { priority: 'low', unpaced: true, onSent: () => log.push('names') });
+      pacer.write('TOPIC #c', { priority: 'low', unpaced: true });
+      pacer.write(() => ['MODE #c', { text: 'MODE #d', onSent: () => log.push('mode') }], {
+        priority: 'low',
+        unpaced: true,
+      });
+      expect(sent.slice(5)).toEqual(['NAMES #c', 'TOPIC #c', 'MODE #c', 'MODE #d']);
+      expect(log).toEqual(['names', 'mode']);
+      expect(pacer.pending).toBe(0);
+      // Nothing of that was charged: the next paced line waits for the five
+      // SHORTs alone, 2 s, not for four more lines on top.
+      pacer.write(SHORT);
+      expect(sent).toHaveLength(9);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(10);
+    });
+
+    it('an unpaced item still waits its turn behind a paced one in its lane', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write('MONITOR + a,b', { priority: 'low' });
+      pacer.write('NAMES #c', { priority: 'low', unpaced: true });
+      expect(pacer.pending).toBe(2);
+      vi.advanceTimersByTime(2000);
+      expect(sent.slice(5)).toEqual(['MONITOR + a,b', 'NAMES #c']);
+    });
+
     it('sends everything at once before registration, uncharged', () => {
       ready = false;
       for (let i = 0; i < 8; i++) pacer.write(LONG);

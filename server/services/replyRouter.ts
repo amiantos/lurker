@@ -71,6 +71,7 @@ export interface ReplyRouterOptions {
     onSent?: (at: number) => void,
     onDropped?: () => void,
     priority?: SendPriority,
+    unpaced?: boolean,
   ): Written | void;
   /** Whether a query can go out now. One that can't ends at once. */
   canSend(): boolean;
@@ -273,6 +274,8 @@ interface Query extends Spec {
   onDropped: (() => void) | undefined;
   priority: SendPriority | undefined;
   onEnd: ((how: QueryEnd) => void) | undefined;
+  /** Past the send queue's clock (sendPacer.ts): the replies pace this one. */
+  unpaced: boolean | undefined;
 }
 
 interface Settle {
@@ -351,11 +354,12 @@ export class ReplyRouter {
     onDropped?: () => void,
     priority?: SendPriority,
     onEnd?: (how: QueryEnd) => void,
+    unpaced?: boolean,
   ): void {
     const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
     if (!found) {
-      this.opts.write(line, onSent, onDropped, lane);
+      this.opts.write(line, onSent, onDropped, lane, unpaced);
       return;
     }
     this.dispatch({
@@ -371,6 +375,7 @@ export class ReplyRouter {
       onDropped,
       priority: lane,
       onEnd,
+      unpaced,
     });
   }
 
@@ -495,6 +500,7 @@ export class ReplyRouter {
       },
       query.onDropped,
       query.priority,
+      query.unpaced,
     );
     // A line with nothing ahead of it has gone by now.
     if (!query.sent) query.written = written ?? null;

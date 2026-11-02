@@ -19,8 +19,19 @@
 //
 // Not paced: anything written before registration (the registration burst,
 // which an engine re-attach's transport swallows and a server gives grace),
-// uncharged; and PING, PONG and QUIT, which waiting would only make wrong,
-// charged since the server charges them.
+// uncharged; PING, PONG and QUIT, which waiting would only make wrong,
+// charged since the server charges them; and an item sent `unpaced`, which
+// goes when its turn in its lane comes whatever the clock says, uncharged.
+// That is the re-attach's channel walk (NAMES/TOPIC/MODE per channel): the
+// server's own replies pace it already, one channel at a time, the next not
+// asked until the last is answered (#840) — and a server that has stopped
+// reading us answers nothing, so the walk stops with it. Charging those lines
+// here as well stacked one throttle on the other: each step waited 6 s for a
+// clock the replies had already proven wrong, and held its turn at the
+// process-wide cap (#842) the whole time, so a 42-connection cell took 221 s
+// to learn its topics and member lists again. Uncharged, since a line the
+// server has answered is a line it has read, and it reads only while its
+// clock is under the budget.
 //
 // An item is a line, a thunk that makes its line(s) when its turn comes (a
 // REKEY to a nick resolved at send time, an E2E message encrypted at send
@@ -104,6 +115,9 @@ export interface WriteOptions {
   onSent?: (at: number) => void;
   /** Called when the item is dropped with its socket, or over the keyed cap. */
   onDropped?: () => void;
+  /** Goes at its turn whatever the clock says, and charges nothing: a line
+   *  the server's replies pace already (the header's third exception). */
+  unpaced?: boolean;
 }
 
 export interface SendHandle {
@@ -152,6 +166,7 @@ interface Entry {
   onDropped?: () => void;
   /** The item this one expanded from, for cancel(). */
   origin?: Entry;
+  unpaced?: boolean;
 }
 
 // A line whose text is made when it goes, as a thunk making that line.
@@ -205,6 +220,7 @@ export class SendPacer {
       live: opts.live,
       onSent: opts.onSent,
       onDropped: opts.onDropped,
+      unpaced: opts.unpaced,
     };
     // Before registration, straight out and uncharged. The held lines, if any,
     // were written to a registered connection and wait for it to come back;
@@ -395,7 +411,7 @@ export class SendPacer {
         // so what it builds is as fresh as it can be; a unit is admitted on
         // its first line and goes whole. Unpaced, nothing waits: not even for
         // what a unit charged past the budget before the switch was flipped.
-        if (this.paced()) {
+        if (this.paced() && !head.unpaced) {
           const ahead = this.since - this.now();
           const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
           const over = ahead + cost - BURST_BUDGET_MS;
@@ -419,7 +435,7 @@ export class SendPacer {
         // been told, and what still waits is left for drop() at the close,
         // which tells each item once. Pressing on would refuse them one by
         // one here, and tell a thunk's origin once per line.
-        const went = head.unit ? this.sendUnit(head) : this.sendNow(head, true);
+        const went = head.unit ? this.sendUnit(head) : this.sendNow(head, !head.unpaced);
         if (!went) return;
       }
     } finally {
@@ -452,6 +468,7 @@ export class SendPacer {
       const own = this.entryFor(item, entry);
       // Asked again at each line's own turn.
       own.live = entry.live;
+      own.unpaced = entry.unpaced;
       if (i === last && entry.onSent) {
         const sent = own.onSent;
         own.onSent = (at) => {
