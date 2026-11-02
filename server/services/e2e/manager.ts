@@ -56,6 +56,7 @@ import {
 } from './portable.js';
 import { encodeChunk, freshMsgid, parseChunk } from './wire.js';
 import * as keyring from '../../db/e2e.js';
+import { foldTargetFor } from '../../db/buffers.js';
 import { RateLimiter } from './rateLimiter.js';
 import { ReplayCache } from './replayCache.js';
 
@@ -330,6 +331,26 @@ export class E2eManager {
       console.warn(`e2e isChannelEnabled ${channel}: ${(err as Error).message}`);
       return false;
     }
+  }
+
+  /**
+   * The E2E-enabled channel `target` names, by the network's own case folding, or null.
+   *
+   * ⚠ Configs are keyed by the channel name the server used, and `isChannelEnabled` matches
+   * that name exactly — right for every path that gets its target from a buffer, and a hole
+   * for one that gets it from a line the user typed (#1116): the server folds `#Secret` onto
+   * `#secret`, so a guard that doesn't is a guard the shift key defeats.
+   */
+  enabledChannelMatching(userId: number, networkId: number, target: string): string | null {
+    try {
+      const want = foldTargetFor(networkId, target);
+      for (const cfg of keyring.listChannelConfigs(userId, networkId)) {
+        if (cfg.enabled && foldTargetFor(networkId, cfg.channel) === want) return cfg.channel;
+      }
+    } catch (err) {
+      console.warn(`e2e enabledChannelMatching ${target}: ${(err as Error).message}`);
+    }
+    return null;
   }
 
   // ─── outbound handshake ──────────────────────────────────────────────────────

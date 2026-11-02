@@ -132,10 +132,13 @@ Send a raw IRC protocol line verbatim on a network — the escape hatch for any
 command without a dedicated verb: `MODE #chan +o nick`, `KICK #chan bob :spam`,
 `INVITE bob #chan`, `OPER user pass`, and so on. No parsing, no trailing CRLF.
 **Powerful and unguarded — it runs as you.** Prefer a dedicated verb wherever
-one exists. A `PRIVMSG` to a channel with end-to-end encryption enabled is
-**rejected** (`e2e-channel-use-send-message`) rather than sent: this path has
+one exists. A `PRIVMSG`, `NOTICE` or `TAGMSG` naming a channel with end-to-end
+encryption enabled is **rejected** (`e2e-channel-use-send-message`) rather than
+sent, however the line is written — behind a tag block or a `:prefix`, in any
+case, inside a comma list, or to a STATUSMSG target like `@#chan`: this path has
 none of `send_message`'s encryption, and no local echo either, so a leak here
-would be silent at both ends.
+would be silent at both ends. Notices and reactions have no encrypted form, so
+`send_notice` refuses them on such a channel too.
 
 Server replies (WHOIS, LIST, …) arrive asynchronously in the network's server
 buffer, whose target is the literal `:server:<networkId>`. That buffer is

@@ -1391,6 +1391,23 @@ describe('agent control verbs', () => {
       expect(conn.sent).toEqual(['PRIVMSG #public,bob :plain']);
     });
 
+    it('judges the line raw() will write: NUL stripped, case folded, STATUSMSG peeled', () => {
+      setChannelConfig(owner.id, net.id, { channel: '#secret', enabled: true, mode: 'normal' });
+      const conn = live();
+      const refused = { ok: false, error: 'e2e-channel-use-send-message' };
+      const lines = [
+        'PRIVMSG\u0000 #secret :plain',
+        'PRIVMSG #SECRET :plain',
+        'PRIVMSG @#secret :plain',
+      ];
+      const got = lines.map((line) => [
+        line,
+        callVerb('send_raw', rwCtx(owner.id), { networkId: net.id, line }),
+      ]);
+      expect(got).toEqual(lines.map((line) => [line, refused]));
+      expect(conn.sent).toEqual([]);
+    });
+
     it('still allows non-PRIVMSG commands and other channels', () => {
       setChannelConfig(owner.id, net.id, {
         channel: '#secret',

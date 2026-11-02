@@ -2,30 +2,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { registerVerb } from '../verbRegistry.js';
-import { e2eManager } from '../e2e/manager.js';
-import { contextKey, isChannelContext } from '../e2e/context.js';
+import { cleartextE2eLeak } from '../e2e/rawGuard.js';
 import { writableConnection } from './liveConn.js';
 
 /** Authenticated caller context passed to every verb handler. */
 interface VerbContext {
   userId: number;
   scope: string;
-}
-
-/**
- * The targets a raw line would deliver cleartext to, or none if it isn't that kind of line.
- *
- * ⚠ Read the way ircConnection's noteRawMembership reads a raw JOIN/PART, not as "the first
- * two words" (#1116): a leading IRCv3 tag block and a client-written `:prefix` both move the
- * verb along the line, and a server strips both and delivers the PRIVMSG all the same. The
- * verbs are the three ircManager refuses in the clear on an E2E channel — PRIVMSG, NOTICE
- * (no encrypted form) and TAGMSG (a reaction) — and a comma list names every channel in it,
- * so one E2E channel anywhere in the list is a leak.
- */
-function cleartextTargets(line: string): string[] {
-  const parsed = /^\s*(?:@\S+\s+)?(?::\S+\s+)?(?:PRIVMSG|NOTICE|TAGMSG)\s+(\S+)/i.exec(line);
-  if (!parsed) return [];
-  return parsed[1].split(',').filter((t) => t !== '');
 }
 
 registerVerb({
@@ -37,7 +20,9 @@ registerVerb({
     'include a trailing CRLF. Powerful and unguarded — it runs as you, so it can do anything ' +
     'your IRC session can. Do NOT use it for PRIVMSG: send_message applies end-to-end ' +
     'encryption on channels that have it enabled, and a raw PRIVMSG bypasses that and ' +
-    'transmits cleartext. Prefer the dedicated verb wherever one exists (send_message, ' +
+    'transmits cleartext — so a raw PRIVMSG, NOTICE or TAGMSG naming an E2E channel is ' +
+    'refused (error "e2e-channel-use-send-message"), however the line is written. ' +
+    'Prefer the dedicated verb wherever one exists (send_message, ' +
     'send_notice, send_action, join_channel, part_channel, set_nick, set_topic, whois). ' +
     "Server replies (WHOIS, LIST, …) arrive asynchronously in the network's server buffer, " +
     'whose target is the literal ":server:<networkId>" — that buffer is not listed by ' +
@@ -69,12 +54,9 @@ registerVerb({
     // encrypts on an E2E channel and refuses to fall through on failure; this
     // path has neither, and the sender gets no local echo either, so a leak
     // would be silent at both ends. Refuse and name the verb that does it right.
-    const leak = cleartextTargets(line).find(
-      (target) =>
-        isChannelContext(target) &&
-        e2eManager.isChannelEnabled(ctx.userId, networkId, contextKey(target, '')),
-    );
-    if (leak !== undefined) return { ok: false, error: 'e2e-channel-use-send-message' };
+    if (cleartextE2eLeak(ctx.userId, networkId, line)) {
+      return { ok: false, error: 'e2e-channel-use-send-message' };
+    }
     conn.raw(line);
     return { ok: true, serverBuffer: conn.serverTarget() };
   },

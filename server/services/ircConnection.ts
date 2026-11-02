@@ -6182,8 +6182,9 @@ export class IrcConnection {
    *  takeRawMonitor and noteOutgoingCommand beside it: raw() is the one path
    *  every slash command and member-menu action takes. */
   private noteRawMembership(line: string): void {
-    // The verb, past an IRCv3 tag block the caller may have put in front of it.
-    const parsed = /^\s*(?:@\S+\s+)?(JOIN|PART)\s+(\S+)/i.exec(line);
+    // The verb, past an IRCv3 tag block or a `:prefix` the caller may have put
+    // in front of it — a server strips both and acts on the verb all the same.
+    const parsed = /^\s*(?:@\S+\s+)?(?::\S+\s+)?(JOIN|PART)\s+(\S+)/i.exec(line);
     if (!parsed) return;
     const targets = parsed[2];
     if (parsed[1].toUpperCase() === 'PART') return this.notePartSent(targets);
