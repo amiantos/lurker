@@ -113,8 +113,10 @@ export interface SendHandle {
 }
 
 export interface SendPacerOptions {
-  /** Write one line to the socket now. */
-  send: (line: string) => void;
+  /** Write one line to the socket now. `false` means the socket would not
+   *  take it (a QUIT is on its way out): the item is told dropped, not sent,
+   *  and nothing is charged for it. Anything else means it went. */
+  send: (line: string) => boolean | void;
   /** Whether the connection is registered and can take a line. */
   ready: () => boolean;
   /** Whether the next line must keep waiting although the connection is
@@ -408,8 +410,12 @@ export class SendPacer {
           continue;
         }
         this.noteDepth();
-        if (head.unit) this.sendUnit(head);
-        else this.sendNow(head, true);
+        // A refusal means the socket is on its way out: the refused item has
+        // been told, and what still waits is left for drop() at the close,
+        // which tells each item once. Pressing on would refuse them one by
+        // one here, and tell a thunk's origin once per line.
+        const went = head.unit ? this.sendUnit(head) : this.sendNow(head, true);
+        if (!went) return;
       }
     } finally {
       this.draining = false;
@@ -464,55 +470,103 @@ export class SendPacer {
     this.noteDepth();
   }
 
-  // Past the queue, uncharged: a line written before registration.
-  private sendAtOnce(entry: Entry): void {
+  // Past the queue, uncharged: a line written before registration. True if
+  // everything went; false once the socket refused a line (the item has been
+  // told dropped) or a thunk failed to build.
+  private sendAtOnce(entry: Entry): boolean {
     if (entry.unit) {
-      for (const line of entry.unit) this.guarded('send', () => this.opts.send(line));
+      for (const line of entry.unit) {
+        if (!this.push(line)) {
+          this.tellDropped(entry, new Set());
+          return false;
+        }
+      }
       if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(this.now()));
-      return;
+      return true;
     }
-    if (!entry.build) {
-      this.sendNow(entry, false);
-      return;
-    }
+    if (!entry.build) return this.sendNow(entry, false);
     let built: Built;
     try {
       built = entry.build();
     } catch (err) {
       console.warn('[irc] send: an item failed to build and was dropped:', err);
       this.tellDropped(entry, new Set());
-      return;
+      return false;
     }
     const items = built === null ? [] : Array.isArray(built) ? built : [built];
     const priority = entry.priority;
+    // Each line is the item's (`origin`), so a refusal tells the item once,
+    // through sendNow, and the item's own onSent follows only if all of it went.
     for (const item of items) {
-      if (typeof item === 'function') this.sendAtOnce({ priority, build: item });
-      else if (typeof item === 'string') this.sendNow({ priority, text: item }, false);
-      else if (typeof item.text === 'function')
-        this.sendAtOnce({ priority, build: lazyLine(item) });
-      else this.sendNow({ priority, text: item.text, onSent: item.onSent }, false);
+      const went =
+        typeof item === 'function'
+          ? this.sendAtOnce({ priority, build: item, origin: entry })
+          : typeof item === 'string'
+            ? this.sendNow({ priority, text: item, origin: entry }, false)
+            : typeof item.text === 'function'
+              ? this.sendAtOnce({
+                  priority,
+                  build: lazyLine(item),
+                  onDropped: item.onDropped,
+                  origin: entry,
+                })
+              : this.sendNow(
+                  {
+                    priority,
+                    text: item.text,
+                    onSent: item.onSent,
+                    onDropped: item.onDropped,
+                    origin: entry,
+                  },
+                  false,
+                );
+      if (!went) return false;
     }
     if (items.length && entry.onSent)
       this.guarded('an onSent hook', () => entry.onSent!(this.now()));
+    return true;
   }
 
-  private sendNow(entry: Entry, charge: boolean): void {
+  // One line to the socket. False when the socket refused it (see
+  // SendPacerOptions.send); a `send` that throws is warned about and counts as
+  // gone, as it always has — the hook contract is about the socket's answer.
+  private push(line: string): boolean {
+    let went = true;
+    this.guarded('send', () => {
+      went = this.opts.send(line) !== false;
+    });
+    return went;
+  }
+
+  // True if the line went; false if the socket refused it, in which case the
+  // entry (and what it expanded from) has been told dropped and nothing charged.
+  private sendNow(entry: Entry, charge: boolean): boolean {
     const text = entry.text!;
-    this.guarded('send', () => this.opts.send(text));
+    if (!this.push(text)) {
+      this.tellDropped(entry, new Set());
+      return false;
+    }
     const at = this.now();
     if (charge) this.charge(this.costOf(text), at);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
+    return true;
   }
 
-  private sendUnit(entry: Entry): void {
+  private sendUnit(entry: Entry): boolean {
     let cost = 0;
     for (const line of entry.unit!) {
-      this.guarded('send', () => this.opts.send(line));
+      // What went before the refusal is charged: the server read it.
+      if (!this.push(line)) {
+        if (cost) this.charge(cost, this.now());
+        this.tellDropped(entry, new Set());
+        return false;
+      }
       cost += this.costOf(line);
     }
     const at = this.now();
     this.charge(cost, at);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
+    return true;
   }
 
   private wanted(entry: Entry): boolean {

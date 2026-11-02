@@ -201,6 +201,30 @@ describe('saving', () => {
     }
   });
 
+  it("saves nothing for a CLEAR typed right after /disconnect, and says it wasn't sent", async () => {
+    // #1259, deterministically. The test above raced this: it waited for the
+    // SERVER to see us go, and our own socket's 'close' — which is what moved
+    // the state off 'connected' — could still be a tick away. Here nothing is
+    // waited for at all: the QUIT has been handed to the socket and the CLEAR
+    // follows it, to a server that has stopped reading us.
+    const network = makeNetwork('quitter');
+    saveNetworkMetadata(userId, network.id, 'status', 'kept');
+    const { conn, events } = await connect(network);
+    try {
+      conn.disconnect();
+      expect(conn.state).toBe('connected'); // the close has not run yet
+      conn.raw('METADATA * CLEAR');
+      expect(saved(network)).toEqual({ status: 'kept' });
+      expect(events.filter((e) => e.type === 'error').map((e) => e.text)).toEqual([
+        'not sent (connection dropped): METADATA * CLEAR',
+      ]);
+      await until(() => conn.state === 'disconnected', 5000, 'closed');
+      expect(saved(network)).toEqual({ status: 'kept' });
+    } finally {
+      conn.dispose();
+    }
+  });
+
   it("a SET the server refused doesn't hold its key back from the next re-set", async () => {
     const network = makeNetwork('held');
     const { conn, me } = await connect(network);

@@ -155,6 +155,10 @@ declare module 'irc-framework' {
     connection: {
       end(): void;
       connected: boolean;
+      /** Set once a QUIT has been written (`end()` with a line sets it in the
+       *  write's callback, not before); write() then drops every line in
+       *  silence until the next connect(). */
+      requested_disconnect: boolean;
       /** Date.now() at registration, false before it and after a close. */
       registered: number | false;
       /** Sets `registered`; called by the framework's own 'registered' listener. */

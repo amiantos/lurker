@@ -469,6 +469,35 @@ describe('what the user sees', () => {
     conn.dispose();
   });
 
+  it('reports a line typed after /disconnect as not sent, rather than writing it behind the QUIT', () => {
+    // #1259. The framework drops a line in silence once its QUIT has gone,
+    // and the one that squeezes out first reaches a server that has already
+    // read the QUIT. Neither arrives; both used to be called sent.
+    const { conn, lines, published } = backlog();
+    conn.disconnect();
+    expect(lines.at(-1)).toMatch(/^QUIT\b/);
+    // Both wait behind the budget. The first is refused at its turn and told;
+    // the drain stops there, and the second is told once, at the close.
+    conn.say('#c', 'late');
+    conn.raw('PRIVMSG carol :late raw');
+    vi.advanceTimersByTime(2000);
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ target: '#c', text: 'not sent (connection dropped): late' }),
+    ]);
+    vi.advanceTimersByTime(10_000);
+    expect(published.filter((e) => e.type === 'error')).toHaveLength(1);
+    conn.client.emit('close');
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ target: '#c', text: 'not sent (connection dropped): late' }),
+      expect.objectContaining({
+        target: ':server:1',
+        text: 'not sent (connection dropped): PRIVMSG carol :late raw',
+      }),
+    ]);
+    expect(lines.filter((l) => l.includes('late'))).toEqual([]);
+    conn.dispose();
+  });
+
   it('reports what was still waiting when the app lets go of an engine-held socket', () => {
     // An engine-mode shutdown detaches; the socket lives on in the engine but
     // the queue dies with this process, so its lines are reported, not lost.
