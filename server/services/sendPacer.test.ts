@@ -116,7 +116,7 @@ describe('SendPacer', () => {
       expect(pacer.pending).toBe(1);
     });
 
-    it('sends an unpaced item at its turn past the budget, and charges nothing for it', () => {
+    it('sends an unpaced item at its turn past the budget, charged only up to the budget', () => {
       for (let i = 0; i < 5; i++) pacer.write(SHORT); // the budget, spent
       const log: string[] = [];
       pacer.write('NAMES #c', { priority: 'low', unpaced: true, onSent: () => log.push('names') });
@@ -128,12 +128,28 @@ describe('SendPacer', () => {
       expect(sent.slice(5)).toEqual(['NAMES #c', 'TOPIC #c', 'MODE #c', 'MODE #d']);
       expect(log).toEqual(['names', 'mode']);
       expect(pacer.pending).toBe(0);
-      // Nothing of that was charged: the next paced line waits for the five
-      // SHORTs alone, 2 s, not for four more lines on top.
+      // The clock stayed at the budget: the next paced line waits 2 s, as it
+      // would behind the five SHORTs alone, not 8 s more for the four lines.
       pacer.write(SHORT);
       expect(sent).toHaveLength(9);
-      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(1999);
+      expect(sent).toHaveLength(9);
+      vi.advanceTimersByTime(1);
       expect(sent).toHaveLength(10);
+    });
+
+    it('charges an unpaced line up to the budget when the clock is under it', () => {
+      pacer.write(SHORT); // 2 s ahead
+      for (const l of ['NAMES #c', 'TOPIC #c', 'MODE #c', 'NAMES #d', 'TOPIC #d']) {
+        pacer.write(l, { priority: 'low', unpaced: true });
+      }
+      expect(sent).toHaveLength(6);
+      // 2 + 5 × 2 = 12 s of charge, counted as the budget's 10: a paced line
+      // now waits 2 s. Uncharged it would have gone at once.
+      pacer.write(SHORT);
+      expect(sent).toHaveLength(6);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(7);
     });
 
     it('an unpaced item still waits its turn behind a paced one in its lane', () => {

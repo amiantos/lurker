@@ -31,9 +31,10 @@ let wire: WireLine[];
 beforeAll(async () => {
   harness = await startEngineHarness({
     secret: SECRET,
-    // Paced like production (the suite default is 0 = free), and no away-sync
-    // WHO: that one IS charged, deliberately, and is not what this measures.
-    env: { LURKER_SEND_PACING: '1', LURKER_RESTORE_WHO_MAX_MEMBERS: '0' },
+    // Paced like production (the suite default is 0 = free). The away-sync
+    // WHO stays on, as in production: it sits in the same lane ahead of the
+    // next channel's step, so a charged one would hold the walk too.
+    env: { LURKER_SEND_PACING: '1' },
   });
   wire = harness.wire;
   const user = createUser('restore-unpaced');
@@ -67,11 +68,13 @@ describe('the re-attach walk against the flood clock', () => {
     harness.tap(conn2, 'unpaced');
     await harness.until(() => conn2.state === 'connected', 5000, 'reattached');
     const steps = () => wire.filter((w) => w.dir === '>' && STEP_LINE.test(w.line));
-    // Eighteen lines. Charged, the thirteen past the five-line burst budget
-    // would need 26 s; paced by the replies alone they take a few round trips.
-    await harness.until(() => steps().length === CHANNELS.length * 3, 6000, 'the whole walk sent');
+    // Eighteen lines plus six WHOs. Waiting on the clock, the nineteen past
+    // the five-line burst budget would need 38 s, and the six WHOs alone 12 s;
+    // paced by the replies alone they take a few round trips. The bounds are
+    // loose for a loaded suite and still well under either charged figure.
+    await harness.until(() => steps().length === CHANNELS.length * 3, 10000, 'the whole walk sent');
     const sent = steps();
-    expect(sent.at(-1)!.t - sent[0].t).toBeLessThan(4000);
+    expect(sent.at(-1)!.t - sent[0].t).toBeLessThan(8000);
     for (const ch of CHANNELS) {
       expect(sent.map((w) => w.line)).toEqual(
         expect.arrayContaining([`NAMES ${ch}`, `TOPIC ${ch}`, `MODE ${ch}`]),
@@ -79,5 +82,5 @@ describe('the re-attach walk against the flood clock', () => {
     }
     conn2.dispose();
     ircManager.connectionsForUser(userId).delete(network.id);
-  }, 20_000);
+  }, 30_000);
 });

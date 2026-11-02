@@ -61,6 +61,20 @@ import type { SendHandle, SendPriority } from './sendPacer.js';
 /** A line handed to the connection's queue, which can be taken back before it goes. */
 export type Written = SendHandle;
 
+/** What goes with a line handed to send(). */
+export interface SendOptions {
+  /** Called once the line has gone (every reply timer starts there). */
+  onSent?: (at: number) => void;
+  /** Called when the line is dropped with its socket. */
+  onDropped?: () => void;
+  /** The send queue's lane; Lurker's own questions go `low` unless said. */
+  priority?: SendPriority;
+  /** How the query ended, if the line is one. */
+  onEnd?: (how: QueryEnd) => void;
+  /** Past the send queue's clock (sendPacer.ts): the replies pace this one. */
+  unpaced?: boolean;
+}
+
 export interface ReplyRouterOptions {
   /**
    * Put a line on the wire: now, or in its turn behind what waits (#1149). A
@@ -346,16 +360,8 @@ export class ReplyRouter {
    * it, an error ended it, or it timed out — and never when its socket went
    * first.
    */
-  send(
-    asker: Asker,
-    line: string,
-    build?: () => string,
-    onSent?: (at: number) => void,
-    onDropped?: () => void,
-    priority?: SendPriority,
-    onEnd?: (how: QueryEnd) => void,
-    unpaced?: boolean,
-  ): void {
+  send(asker: Asker, line: string, build?: () => string, opts: SendOptions = {}): void {
+    const { onSent, onDropped, priority, onEnd, unpaced } = opts;
     const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
     if (!found) {
