@@ -342,11 +342,13 @@ describe('every timer starts at send', () => {
         restoreQuiet: Map<string, { until: number }>;
       };
       priv.onEnginePhase('restored', {});
-      // The umode MODE, the AWAY, then #a's three requests, each waiting its
-      // turn.
-      expect(lines).toHaveLength(5);
-      while (lines.at(-1) !== 'MODE #a') vi.advanceTimersByTime(2000);
-      expect(lines.slice(-3)).toEqual(['NAMES #a', 'TOPIC #a', 'MODE #a']);
+      // The umode MODE goes at once (unpaced); the AWAY waits its turn on the
+      // spent budget, and #a's three requests, unpaced themselves, wait behind
+      // it in the lane and go with it.
+      expect(lines).toHaveLength(6);
+      expect(lines.at(-1)).toBe('MODE alice');
+      vi.advanceTimersByTime(2000);
+      expect(lines.slice(-4)).toEqual(['AWAY', 'NAMES #a', 'TOPIC #a', 'MODE #a']);
       // The deadline has not run from the start of the step: it is #a's still.
       expect(priv.restoreStep?.key).toBe('#a');
       expect(priv.restoreQuiet.get('#a')?.until).toBe(Date.now() + 10_000);
@@ -359,31 +361,47 @@ describe('every timer starts at send', () => {
     }
   });
 
-  it('a restore step gives its slot back after the cap, its requests still going later', () => {
+  it('a restore step gives its slot back after the cap, and waits for its own requests to go', () => {
     process.env.LURKER_RESTORE_STEP_SLOT_CAP_MS = '100';
+    process.env.LURKER_RESTORE_STEP_DEADLINE_MS = '500';
     process.env.LURKER_RESTORE_QUIET_MS = '10000';
     try {
       const { conn, lines } = backlog({ join: ['#a', '#b'] });
       const priv = conn as unknown as {
         onEnginePhase(phase: string, info: Record<string, unknown>): void;
         restoreStep: { key: string } | null;
+        restoreSlot: object | null;
         restoreQuiet: Map<string, { until: number }>;
       };
+      // A paste ahead of the walk in the queue: six more lines on a spent budget.
+      for (let i = 0; i < 6; i++) conn.say('#fill', `paste ${i}`);
       priv.onEnginePhase('restored', {});
       expect(priv.restoreStep?.key).toBe('#a');
-      // #a's requests wait behind the budget; the cap moves the walk on.
+      expect(priv.restoreSlot).not.toBeNull();
+      // #a's requests wait behind the paste; the cap gives the shared slot
+      // back, but the walk stays on #a — a second channel's requests queued
+      // now would go with #a's in one burst once the paste cleared.
       vi.advanceTimersByTime(100);
       expect(lines).not.toContain('NAMES #a');
-      expect(priv.restoreStep?.key).toBe('#b');
-      // They still go, and their replies are the restore's: the quiet window
-      // moves with the last of them.
-      while (lines.at(-1) !== 'MODE #a') vi.advanceTimersByTime(2000);
-      // Refreshed at that send (the window set when the restore began, 10 s
-      // from then, is long past).
+      expect(priv.restoreSlot).toBeNull();
+      expect(priv.restoreStep?.key).toBe('#a');
+      // The six pasted lines and the AWAY ahead in the low lane, 2 s each;
+      // #a's requests go with the AWAY, unpaced.
+      vi.advanceTimersByTime(7 * 2000);
+      // Nothing of #b's walk yet (its join-time MODE is the join's, not the walk's).
+      expect(lines.filter((l) => /^(NAMES|TOPIC) #b$/.test(l))).toEqual([]);
+      expect(lines.slice(-3)).toEqual(['NAMES #a', 'TOPIC #a', 'MODE #a']);
+      // Their replies are the restore's: the quiet window moves with the last
+      // of them (the window set when the restore began, 10 s from then, is past).
       expect(priv.restoreQuiet.get('#a')?.until).toBeGreaterThan(Date.now() + 9_000);
+      // Unanswered, the deadline moves the walk on to #b, under a new slot.
+      vi.advanceTimersByTime(500);
+      expect(priv.restoreStep?.key).toBe('#b');
+      expect(priv.restoreSlot).not.toBeNull();
       conn.dispose();
     } finally {
       delete process.env.LURKER_RESTORE_STEP_SLOT_CAP_MS;
+      delete process.env.LURKER_RESTORE_STEP_DEADLINE_MS;
       delete process.env.LURKER_RESTORE_QUIET_MS;
     }
   });
@@ -605,12 +623,16 @@ describe('lanes', () => {
 
   it("the restore's own MODE asks about the nick we have when it goes", () => {
     // A NICK goes ahead of it (the high lane); built at write it would ask
-    // about the old nick and get a 502.
+    // about the old nick and get a 502. Unpaced, it goes at once when nothing
+    // is ahead of it, with the nick we have then; behind a NICK waiting on the
+    // budget, it goes after it, with the nick that NICK asked for.
     const { conn, lines } = backlog();
+    conn.raw('NICK bob');
     (conn as unknown as { requestOwnModes(): void }).requestOwnModes();
     (conn as unknown as { currentNick: string }).currentNick = 'bob';
+    expect(lines).toHaveLength(5);
     vi.advanceTimersByTime(2000);
-    expect(lines.at(-1)).toBe('MODE bob');
+    expect(lines.slice(-2)).toEqual(['NICK bob', 'MODE bob']);
     conn.dispose();
   });
 

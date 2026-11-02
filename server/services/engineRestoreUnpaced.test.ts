@@ -75,6 +75,10 @@ describe('the re-attach walk against the flood clock', () => {
     await harness.until(() => steps().length === CHANNELS.length * 3, 10000, 'the whole walk sent');
     const sent = steps();
     expect(sent.at(-1)!.t - sent[0].t).toBeLessThan(8000);
+    // The WHO each NAMES reply drew went too, inside the same span.
+    const whos = wire.filter((w) => w.dir === '>' && /^WHO #u\d\b/.test(w.line));
+    expect(whos.map((w) => w.line.split(' ')[1]).toSorted()).toEqual([...CHANNELS].toSorted());
+    expect(whos.at(-1)!.t - sent[0].t).toBeLessThan(8000);
     for (const ch of CHANNELS) {
       expect(sent.map((w) => w.line)).toEqual(
         expect.arrayContaining([`NAMES ${ch}`, `TOPIC ${ch}`, `MODE ${ch}`]),

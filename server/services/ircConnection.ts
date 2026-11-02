@@ -339,7 +339,11 @@ const RESTORE_STEP_DEADLINE_MS = 10_000;
 // turn in the queue (#1149). The deadline above counts from the last request
 // going; behind a long paste that is later than now, and the slot, shared by
 // every connection in the process, must come back regardless. Past this the
-// walk moves on; the requests still go, and their replies are the restore's.
+// slot is given back — but the walk waits for the requests to go before it
+// asks the next channel. ⚠ Not "moves on": its lines are unpaced (rawQuiet),
+// so a walk that queued channel after channel behind one paste would send
+// them all in one burst the moment the paste cleared, with no reply between
+// them to pace it — past solanum's 20-line receive queue at seven channels.
 const RESTORE_STEP_SLOT_CAP_MS = 60_000;
 // The terminal reply of each request a restore step makes. Indexed by an
 // arbitrary numeric, so the value is `| undefined` — that is what makes the
@@ -4157,7 +4161,7 @@ export class IrcConnection {
             `on network ${this.network.id}; away-notify keeps it live`,
         );
       } else if (syncAway) {
-        this.sendAwaySyncWho(eventChannel);
+        this.sendAwaySyncWho(eventChannel, inRestore);
       }
       const ms = Date.now() - tHandler;
       if (IRC_HANDLER_WARN_MS > 0 && ms >= IRC_HANDLER_WARN_MS) {
@@ -6986,13 +6990,22 @@ export class IrcConnection {
       // a backlog that is later than now, and a deadline counted from here
       // would move the walk on with nothing asked. The quiet window moves with
       // it, so the replies still print as the restore's and not as history.
-      // Until then the step holds its slot for at most RESTORE_STEP_SLOT_CAP_MS.
+      // Until then the step holds its slot for at most RESTORE_STEP_SLOT_CAP_MS;
+      // past that the shared slot goes back and the step stays, waiting for
+      // its own requests to go before the walk asks the next channel. Nothing
+      // to give back once they have gone: the deadline timer has the step then.
       const moveOn = () => {
         this.restoreTimer = null;
         if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
       };
       this.restoreTimer = setTimeout(
-        moveOn,
+        () => {
+          this.restoreTimer = null;
+          if (this.restoreStep !== step) return;
+          const slot = this.restoreSlot;
+          this.restoreSlot = null;
+          slot?.release();
+        },
         Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_SLOT_CAP_MS', RESTORE_STEP_SLOT_CAP_MS)),
       );
       let owed = 3;
@@ -7101,8 +7114,12 @@ export class IrcConnection {
   // NICK goes ahead of it (sendPacer.ts, the high lane), and one built with
   // the old nick would ask about someone else and get a 502.
   private requestOwnModes(onSent?: () => void): void {
+    // Unpaced like the walk (rawQuiet): one line, answered by one 221, and the
+    // first thing in the low lane at `restored` — waiting on the clock here
+    // would hold every step behind it.
     this.replies.send('lurker', `MODE ${this.currentNick}`, () => `MODE ${this.currentNick}`, {
-      onSent: onSent,
+      onSent,
+      unpaced: true,
     });
   }
 
@@ -7112,11 +7129,14 @@ export class IrcConnection {
   // when it's queued, so a client's WHOX carrying the same number can't use it
   // up first. Not who() itself: its queue moves on at any WHO's end, a client's
   // included, and stops for good at one that never comes.
-  // Unpaced like the walk's own lines (rawQuiet): the router sends one WHO at
-  // a time, the next after the last one's 315, so the server paces these too
-  // — and a charged WHO in the low lane sat ahead of the next channel's
-  // NAMES/TOPIC/MODE, so the walk waited 2 s a step on it all the same.
-  private sendAwaySyncWho(channel: string): void {
+  // On a restore, unpaced like the walk's own lines (rawQuiet): the router
+  // sends one WHO at a time, the next after the last one's 315, so the server
+  // paces these too — and a WHO waiting on the clock in the low lane sat ahead
+  // of the next channel's NAMES/TOPIC/MODE, so the walk waited 2 s a step on
+  // it all the same. ⚠ Only there: a fresh connect's JOINs are let out by the
+  // clock, and a WHO they draw that the clock didn't count would put Lurker's
+  // count under the server's for the whole autojoin — a drift the unsafe way.
+  private sendAwaySyncWho(channel: string, inRestore: boolean): void {
     this.replies.send(
       'lurker',
       `WHO ${channel}`,
@@ -7124,7 +7144,7 @@ export class IrcConnection {
         this.client.network.supports('whox')
           ? `WHO ${channel} %tcuhsnfdaor,${this.client.whox_token.next()}`
           : `WHO ${channel}`,
-      { unpaced: true },
+      { unpaced: inRestore },
     );
   }
 
@@ -12110,9 +12130,9 @@ export class IrcConnection {
               onLastSent = null;
               next?.();
             },
-            priority: // Ahead of chat, onEnd: with the autojoin: IDENTIFY before JOIN, unpaced: both
-              // before anything a client says meanwhile.
-              'high',
+            // Ahead of chat, with the autojoin: IDENTIFY before JOIN, both
+            // before anything a client says meanwhile.
+            priority: 'high',
           });
         } catch (_) {
           /* ignore */

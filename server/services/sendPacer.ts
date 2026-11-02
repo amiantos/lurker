@@ -21,7 +21,8 @@
 // which an engine re-attach's transport swallows and a server gives grace),
 // uncharged; PING, PONG and QUIT, which waiting would only make wrong,
 // charged since the server charges them; and an item sent `unpaced`, which
-// goes when its turn in its lane comes whatever the clock says. That is the
+// is not made to wait on the clock for itself — it goes when its turn in its
+// lane comes, still behind whatever waits ahead of it in the lanes. That is the
 // re-attach's channel walk (NAMES/TOPIC/MODE per channel, and the WHO each
 // NAMES reply draws): the server's own replies pace it already, one channel
 // at a time, the next not asked until the last is answered (#840) — and a
@@ -70,7 +71,8 @@ const COST_PER_100_BYTES_MS = 1000;
 export const BURST_BUDGET_MS = 10_000;
 /** The most keyed items (handshake replies) allowed to wait at once. */
 const DEFAULT_MAX_KEYED = 20;
-const UNPACED = /^(?:@\S+ )?(?:PING|PONG|QUIT)\b/i;
+/** Past the lanes altogether, and charged in full: see the header. */
+const IMMEDIATE = /^(?:@\S+ )?(?:PING|PONG|QUIT)\b/i;
 /** How long the queue stays empty before it is reported empty: the connect
  *  walk and a restore send one line at a time, each waiting its 2 s alone, and
  *  "1 waiting" blinking once per line reads as a fault. A rise is reported at
@@ -118,9 +120,10 @@ export interface WriteOptions {
   onSent?: (at: number) => void;
   /** Called when the item is dropped with its socket, or over the keyed cap. */
   onDropped?: () => void;
-  /** Goes at its turn whatever the clock says; charged, but never counted
-   *  past the budget: a line the server's replies pace already (the header's
-   *  third exception). */
+  /** Not made to wait on the clock for itself (still behind what waits ahead
+   *  of it in the lanes); charged, but never counted past the budget: a line
+   *  the server's replies pace already (the header's third exception). Not
+   *  the PING/PONG/QUIT bypass, which skips the lanes and is charged in full. */
   unpaced?: boolean;
 }
 
@@ -237,7 +240,7 @@ export class SendPacer {
     }
     // PING, PONG and QUIT too, since waiting would only make them late; the
     // server charges them, so they are charged.
-    if (entry.text !== undefined && UNPACED.test(entry.text)) {
+    if (entry.text !== undefined && IMMEDIATE.test(entry.text)) {
       this.sendNow(entry, true);
       return { cancel: () => false };
     }

@@ -56,24 +56,17 @@ export type ReplyOwner = Asker | 'unasked' | 'nobody';
 // off (a 774 for a SYNC), an error ended it, or nothing came in time.
 export type QueryEnd = 'replied' | 'postponed' | 'error' | 'timeout';
 
-import type { SendHandle, SendPriority } from './sendPacer.js';
+import type { SendHandle, SendPriority, WriteOptions } from './sendPacer.js';
 
 /** A line handed to the connection's queue, which can be taken back before it goes. */
 export type Written = SendHandle;
 
-/** What goes with a line handed to send(). */
-export interface SendOptions {
-  /** Called once the line has gone (every reply timer starts there). */
-  onSent?: (at: number) => void;
-  /** Called when the line is dropped with its socket. */
-  onDropped?: () => void;
-  /** The send queue's lane; Lurker's own questions go `low` unless said. */
-  priority?: SendPriority;
-  /** How the query ended, if the line is one. */
+/** What goes with a line handed to send(): the send queue's own options that
+ *  pass through (a `lurker` asker's lane is `low` unless said), and how the
+ *  query ended, if the line is one. */
+export type SendOptions = Pick<WriteOptions, 'onSent' | 'onDropped' | 'priority' | 'unpaced'> & {
   onEnd?: (how: QueryEnd) => void;
-  /** Past the send queue's clock (sendPacer.ts): the replies pace this one. */
-  unpaced?: boolean;
-}
+};
 
 export interface ReplyRouterOptions {
   /**
