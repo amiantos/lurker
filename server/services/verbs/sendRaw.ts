@@ -12,6 +12,22 @@ interface VerbContext {
   scope: string;
 }
 
+/**
+ * The targets a raw line would deliver cleartext to, or none if it isn't that kind of line.
+ *
+ * ⚠ Read the way ircConnection's noteRawMembership reads a raw JOIN/PART, not as "the first
+ * two words" (#1116): a leading IRCv3 tag block and a client-written `:prefix` both move the
+ * verb along the line, and a server strips both and delivers the PRIVMSG all the same. The
+ * verbs are the three ircManager refuses in the clear on an E2E channel — PRIVMSG, NOTICE
+ * (no encrypted form) and TAGMSG (a reaction) — and a comma list names every channel in it,
+ * so one E2E channel anywhere in the list is a leak.
+ */
+function cleartextTargets(line: string): string[] {
+  const parsed = /^\s*(?:@\S+\s+)?(?::\S+\s+)?(?:PRIVMSG|NOTICE|TAGMSG)\s+(\S+)/i.exec(line);
+  if (!parsed) return [];
+  return parsed[1].split(',').filter((t) => t !== '');
+}
+
 registerVerb({
   name: 'send_raw',
   description:
@@ -53,14 +69,12 @@ registerVerb({
     // encrypts on an E2E channel and refuses to fall through on failure; this
     // path has neither, and the sender gets no local echo either, so a leak
     // would be silent at both ends. Refuse and name the verb that does it right.
-    const [rawCommand = '', rawTarget = ''] = line.split(/\s+/, 2);
-    if (
-      rawCommand.toUpperCase() === 'PRIVMSG' &&
-      isChannelContext(rawTarget) &&
-      e2eManager.isChannelEnabled(ctx.userId, networkId, contextKey(rawTarget, ''))
-    ) {
-      return { ok: false, error: 'e2e-channel-use-send-message' };
-    }
+    const leak = cleartextTargets(line).find(
+      (target) =>
+        isChannelContext(target) &&
+        e2eManager.isChannelEnabled(ctx.userId, networkId, contextKey(target, '')),
+    );
+    if (leak !== undefined) return { ok: false, error: 'e2e-channel-use-send-message' };
     conn.raw(line);
     return { ok: true, serverBuffer: conn.serverTarget() };
   },
