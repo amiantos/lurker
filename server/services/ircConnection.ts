@@ -1416,13 +1416,33 @@ export class IrcConnection {
     this.sendPacer = new SendPacer({
       // Through client.raw, the one method everything outbound already shares
       // (and the one tests observe); the flag lets it past the queue below.
+      //
+      // ⚠ Refused, and said so, once a disconnect is under way (#1259). The
+      // framework's write() drops every line in silence once its QUIT has
+      // gone (`requested_disconnect`, which end() sets only in the QUIT's
+      // write callback), and the line that squeezes out before that reaches a
+      // server that has already read our QUIT. Either way nothing arrives,
+      // and the pacer would have called it sent: a CLEAR typed right after
+      // /disconnect was saved as the user's, with no "not sent" to be seen.
+      // `intentionalDisconnect` is set before quit() is called, so it covers
+      // the gap the framework's own flag leaves.
+      //
+      // ⚠ Not gated on `connected`, the other half of the framework's own
+      // condition, though it would be the honest gate for a line that reaches
+      // a connection object during an outage (state 'reconnecting': the
+      // manager keeps the object, and refuses the user's lines by state before
+      // they get here). Every wiring test that drives an IrcConnection with no
+      // socket reads its lines off client.raw with `connected` never set, so
+      // that gate is a rewrite of thirty test files, not a clause.
       send: (line) => {
+        if (connection.requested_disconnect || this.intentionalDisconnect) return false;
         this.sendingNow = true;
         try {
           this.client.raw(line);
         } finally {
           this.sendingNow = false;
         }
+        return true;
       },
       // Registered by the framework's flag, or by our own: our 'registered'
       // handler runs before the framework sets its flag, and what the handler
@@ -4824,19 +4844,41 @@ export class IrcConnection {
   // refuses isn't re-sent at every connect; a CLEAR is saved as it goes. Only
   // on a socket that can carry it: disconnected, the line is dropped and said
   // so like any other. Lurker's own re-sets are what was saved already.
-  private noteRawMetadata(line: string, asker: Asker): void {
-    if (asker === 'lurker' || this.ownMetadataRefusal()) return;
+  //
+  // Returns what to do when the line has GONE: the CLEAR's save. ⚠ Not done
+  // here, at write, however connected we look: the test for #1259 wrote a
+  // CLEAR after the server had dropped us and before our socket's 'close'
+  // had run, and the CLEAR was saved for a line that never went. The pacer's
+  // onSent is the one place that knows the line reached the socket, and a
+  // CLEAR queued behind a backlog and dropped with the socket saves nothing
+  // the same way.
+  //
+  // ⚠ The save clears the rows as they were NOW, when the CLEAR was typed. A
+  // value the profile editor saves while the CLEAR waits its turn is newer
+  // than it, and its re-set follows the CLEAR out, so the server ends with
+  // that value: a save that nulled it would have the re-set read null and
+  // send an unset instead (Codex, on the first cut of this).
+  private noteRawMetadata(line: string, asker: Asker): (() => void) | undefined {
+    if (asker === 'lurker' || this.ownMetadataRefusal()) return undefined;
     const write = parseOwnMetadataWrite(line, (target) => this.isSelfNick(target));
-    if (!write) return;
+    if (!write) return undefined;
     if (write !== 'clear') {
       this.ownMetadataPending.set(write.key, write.value);
-      return;
+      return undefined;
     }
+    let asOf: Map<string, string | null> | undefined;
     try {
-      clearNetworkMetadata(this.network.user_id, this.network.id);
+      asOf = listNetworkMetadata(this.network.id);
     } catch (e) {
-      console.warn('[metadata] save failed:', (e as Error)?.message || e);
+      console.warn('[metadata] read failed:', (e as Error)?.message || e);
     }
+    return () => {
+      try {
+        clearNetworkMetadata(this.network.user_id, this.network.id, asOf);
+      } catch (e) {
+        console.warn('[metadata] save failed:', (e as Error)?.message || e);
+      }
+    };
   }
 
   // After a fresh registration (or the cap landing on a held socket): ask the
@@ -11587,7 +11629,7 @@ export class IrcConnection {
     // eslint-disable-next-line no-control-regex
     const clean = line.replace(/[\u000d\u000a\u0000]/g, '');
     if (this.takeRawMonitor(clean)) return;
-    this.noteRawMetadata(clean, asker);
+    const onMetadataSent = this.noteRawMetadata(clean, asker);
     // A raw JOIN/PART changes membership just as join()/part() do, and nothing
     // else would record it. Recorded as intent, at write: the close that
     // would drop the line forgets the membership with it.
@@ -11603,7 +11645,10 @@ export class IrcConnection {
       asker,
       clean,
       undefined,
-      () => this.noteOutgoingCommand(clean),
+      () => {
+        this.noteOutgoingCommand(clean);
+        onMetadataSent?.();
+      },
       asker === 'user' ? () => this.reportNotSent(this.serverTarget(), clean) : undefined,
     );
   }
@@ -12034,7 +12079,7 @@ export class IrcConnection {
         try {
           if (this.takeRawMonitor(line)) continue;
           // A METADATA * CLEAR here is the user's like any other (#1189).
-          this.noteRawMetadata(line, 'user');
+          const onMetadataSent = this.noteRawMetadata(line, 'user');
           lastSent = false;
           onLastSent = null;
           this.replies.send(
@@ -12042,6 +12087,7 @@ export class IrcConnection {
             line,
             undefined,
             () => {
+              onMetadataSent?.();
               lastSent = true;
               const next = onLastSent;
               onLastSent = null;

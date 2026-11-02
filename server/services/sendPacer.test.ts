@@ -47,7 +47,9 @@ describe('SendPacer', () => {
     ready = true;
     depths = [];
     pacer = new SendPacer({
-      send: (l) => sent.push(l),
+      send: (l) => {
+        sent.push(l);
+      },
       ready: () => ready,
       onDepth: (n) => depths.push(n),
       maxKeyed: 2,
@@ -437,13 +439,119 @@ describe('SendPacer', () => {
     expect(sent).toHaveLength(5);
   }
 
+  describe('a line the socket refuses (#1259)', () => {
+    // `send` answers false once a disconnect is under way: the framework would
+    // drop the line in silence, so the pacer must not call it sent.
+    let refusing: boolean;
+    beforeEach(() => {
+      refusing = false;
+      pacer.dispose();
+      pacer = new SendPacer({
+        send: (l) => {
+          if (refusing) return false;
+          sent.push(l);
+        },
+        ready: () => ready,
+        onDepth: (n) => depths.push(n),
+      });
+    });
+
+    it('tells an immediate line dropped, not sent, and charges nothing for it', () => {
+      const onSent = vi.fn<(at: number) => void>();
+      const onDropped = vi.fn<() => void>();
+      refusing = true;
+      pacer.write(LONG, { onSent, onDropped });
+      expect(sent).toEqual([]);
+      expect(onSent).not.toHaveBeenCalled();
+      expect(onDropped).toHaveBeenCalledOnce();
+      // Uncharged: five short lines still fit the budget exactly, as they do
+      // from a clean start. Had the refused line been charged, the fifth waits.
+      refusing = false;
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      expect(sent).toHaveLength(5);
+    });
+
+    it('tells a line written before registration the same way', () => {
+      const onDropped = vi.fn<() => void>();
+      ready = false;
+      refusing = true;
+      pacer.write('NICK alice', { onDropped });
+      expect(sent).toEqual([]);
+      expect(onDropped).toHaveBeenCalledOnce();
+    });
+
+    it('stops draining, leaving the rest for drop() to tell once each', () => {
+      fill();
+      const told: string[] = [];
+      pacer.write('PRIVMSG #c :first', { onDropped: () => told.push('first') });
+      pacer.write('PRIVMSG #c :second', { onDropped: () => told.push('second') });
+      refusing = true;
+      vi.advanceTimersByTime(2000);
+      expect(told).toEqual(['first']);
+      expect(pacer.pending).toBe(1);
+      vi.advanceTimersByTime(10_000);
+      expect(told).toEqual(['first']);
+      pacer.drop();
+      expect(told).toEqual(['first', 'second']);
+      expect(sent).toHaveLength(5);
+    });
+
+    it('tells a thunk once, through the line it made, and never calls it sent', () => {
+      const onSent = vi.fn<(at: number) => void>();
+      const onDropped = vi.fn<() => void>();
+      refusing = true;
+      pacer.write(() => ['PRIVMSG #c :a', 'PRIVMSG #c :b'], { onSent, onDropped });
+      expect(sent).toEqual([]);
+      expect(onSent).not.toHaveBeenCalled();
+      expect(onDropped).toHaveBeenCalledOnce();
+    });
+
+    it('tells a queued thunk once, though the close drops the lines it still had waiting', () => {
+      fill();
+      const onDropped = vi.fn<() => void>();
+      pacer.write(() => ['PRIVMSG #c :a', 'PRIVMSG #c :b', 'PRIVMSG #c :c'], { onDropped });
+      refusing = true;
+      // The thunk expands at its turn; its first line is refused and the drain
+      // stops with `b` and `c` still queued, each pointing back at the thunk.
+      vi.advanceTimersByTime(2000);
+      expect(onDropped).toHaveBeenCalledOnce();
+      expect(pacer.pending).toBe(2);
+      pacer.drop();
+      expect(onDropped).toHaveBeenCalledOnce();
+      expect(pacer.pending).toBe(0);
+    });
+
+    it('tells a unit once when a line of it is refused, keeping what went', () => {
+      const onSent = vi.fn<(at: number) => void>();
+      const onDropped = vi.fn<() => void>();
+      let lines = 0;
+      pacer = new SendPacer({
+        send: (l) => {
+          // The socket goes away between the batch's first and second line.
+          if (lines++ >= 1) return false;
+          sent.push(l);
+        },
+        ready: () => ready,
+      });
+      pacer.unit(['BATCH +x draft/multiline #c', '@batch=x PRIVMSG #c :a', 'BATCH -x'], {
+        onSent,
+        onDropped,
+      });
+      expect(sent).toEqual(['BATCH +x draft/multiline #c']);
+      expect(onSent).not.toHaveBeenCalled();
+      expect(onDropped).toHaveBeenCalledOnce();
+    });
+  });
+
   describe('flood protection off (#1193)', () => {
     let paced: boolean;
     beforeEach(() => {
       paced = true;
       pacer.dispose();
       pacer = new SendPacer({
-        send: (l) => sent.push(l),
+        send: (l) => {
+          sent.push(l);
+        },
         ready: () => ready,
         onDepth: (n) => depths.push(n),
         paced: () => paced,
@@ -493,7 +601,9 @@ describe('SendPacer', () => {
       let hold = true;
       pacer.dispose();
       pacer = new SendPacer({
-        send: (l) => sent.push(l),
+        send: (l) => {
+          sent.push(l);
+        },
         ready: () => ready,
         holding: () => hold,
         paced: () => false,
@@ -528,7 +638,9 @@ describe('SendPacer', () => {
     it('keeps what waits waiting while holding() says so, though the connection is ready', () => {
       let holding = false;
       pacer = new SendPacer({
-        send: (l) => sent.push(l),
+        send: (l) => {
+          sent.push(l);
+        },
         ready: () => ready,
         holding: () => holding,
       });
