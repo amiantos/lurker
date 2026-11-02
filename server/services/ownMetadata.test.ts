@@ -225,6 +225,36 @@ describe('saving', () => {
     }
   });
 
+  it("a CLEAR that waits its turn doesn't undo a profile value saved meanwhile", async () => {
+    // The save happens when the CLEAR GOES (see the test above), so a value
+    // saved while it waited behind a backlog is newer than it — and the
+    // re-set that save queued follows the CLEAR out, so the server keeps it.
+    const network = makeNetwork('queued');
+    saveNetworkMetadata(userId, network.id, 'status', 'old');
+    const { conn } = await connect(network);
+    try {
+      await until(() => ircd.metadata.get('queued')?.get('status') === 'old', 5000, 'set');
+      process.env.LURKER_SEND_PACING = '1';
+      // Five lines fill the budget; the CLEAR waits its 2 s behind them.
+      for (let i = 0; i < 5; i++) conn.raw(`PRIVMSG someone :fill ${i}`);
+      conn.raw('METADATA * CLEAR');
+      // The profile editor, while it waits.
+      saveNetworkMetadata(userId, network.id, 'status', 'new');
+      conn.reconcileOwnMetadata();
+      await until(
+        () => ircd.metadata.get('queued')?.get('status') === 'new',
+        8000,
+        'new on server',
+      );
+      expect(saved(network).status).toBe('new');
+      // The CLEAR still cleared what it was typed over.
+      expect(saved(network).avatar).toBeNull();
+    } finally {
+      process.env.LURKER_SEND_PACING = '0';
+      conn.disconnect();
+    }
+  });
+
   it("a SET the server refused doesn't hold its key back from the next re-set", async () => {
     const network = makeNetwork('held');
     const { conn, me } = await connect(network);
@@ -433,11 +463,17 @@ describe('after a fresh registration', () => {
       // SUB with a 774 pointing at `*ALL SYNC`, and the sync's batch replays
       // its store a few ms on — under load that landed AFTER the injected read
       // and put `old` back, so the wait below never saw `elsewhere` (#1259).
-      ircd.setMetadata('racer', 'status', 'elsewhere');
+      // Written to the store directly: `setMetadata` would also broadcast a
+      // bare 761, which Lurker saves as another session's SET, and then there
+      // is nothing stale left for the reconcile to be tempted by.
+      ircd.metadata.get('racer')!.set('status', 'elsewhere');
       ircd.inject('racer', ':fake.server BATCH +r2 metadata racer');
       ircd.inject('racer', '@batch=r2 :fake.server 761 racer racer status * :elsewhere');
       ircd.inject('racer', ':fake.server BATCH -r2');
       await until(() => conn.ownMetadataOnServer()?.status === 'elsewhere', 5000, 'read');
+      // The saved row is stale now: exactly what the reconcile below would
+      // re-set, were the user's SET not pending.
+      expect(saved(network).status).toBe('old');
       // The user's SET goes, and a reconcile runs before its answer.
       conn.raw('METADATA * SET status :typed-new');
       conn.reconcileOwnMetadata();

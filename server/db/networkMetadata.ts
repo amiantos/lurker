@@ -74,8 +74,24 @@ export const saveNetworkMetadataMany = db.transaction(
  * `METADATA * CLEAR`: every saved key becomes a saved unset, and so does every
  * key Lurker shows — a server that kept one Lurker never saved (set from
  * another client) has it cleared at the next connect too.
+ *
+ * `asOf` is the saved rows as they were when the CLEAR was TYPED, for a save
+ * that happens when the line goes (#1259): a key saved since — the profile
+ * editor, while the CLEAR waited its turn behind a backlog — is newer than the
+ * CLEAR and keeps its value, as it does on the server, where the re-set that
+ * save queued follows the CLEAR out. Without it, every key goes.
  */
-export const clearNetworkMetadata = db.transaction((userId: number, networkId: number): void => {
-  clearStmt.run(networkId);
-  for (const key of METADATA_SUB_KEYS) upsertStmt.run({ networkId, userId, key, value: null });
-});
+export const clearNetworkMetadata = db.transaction(
+  (userId: number, networkId: number, asOf?: Map<string, string | null>): void => {
+    if (!asOf) {
+      clearStmt.run(networkId);
+      for (const key of METADATA_SUB_KEYS) upsertStmt.run({ networkId, userId, key, value: null });
+      return;
+    }
+    const now = listNetworkMetadata(networkId);
+    for (const key of new Set([...now.keys(), ...METADATA_SUB_KEYS])) {
+      if ((now.get(key) ?? null) !== (asOf.get(key) ?? null)) continue;
+      upsertStmt.run({ networkId, userId, key, value: null });
+    }
+  },
+);

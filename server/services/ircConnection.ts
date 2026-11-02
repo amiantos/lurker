@@ -4852,6 +4852,12 @@ export class IrcConnection {
   // onSent is the one place that knows the line reached the socket, and a
   // CLEAR queued behind a backlog and dropped with the socket saves nothing
   // the same way.
+  //
+  // ⚠ The save clears the rows as they were NOW, when the CLEAR was typed. A
+  // value the profile editor saves while the CLEAR waits its turn is newer
+  // than it, and its re-set follows the CLEAR out, so the server ends with
+  // that value: a save that nulled it would have the re-set read null and
+  // send an unset instead (Codex, on the first cut of this).
   private noteRawMetadata(line: string, asker: Asker): (() => void) | undefined {
     if (asker === 'lurker' || this.ownMetadataRefusal()) return undefined;
     const write = parseOwnMetadataWrite(line, (target) => this.isSelfNick(target));
@@ -4860,9 +4866,15 @@ export class IrcConnection {
       this.ownMetadataPending.set(write.key, write.value);
       return undefined;
     }
+    let asOf: Map<string, string | null> | undefined;
+    try {
+      asOf = listNetworkMetadata(this.network.id);
+    } catch (e) {
+      console.warn('[metadata] read failed:', (e as Error)?.message || e);
+    }
     return () => {
       try {
-        clearNetworkMetadata(this.network.user_id, this.network.id);
+        clearNetworkMetadata(this.network.user_id, this.network.id, asOf);
       } catch (e) {
         console.warn('[metadata] save failed:', (e as Error)?.message || e);
       }
