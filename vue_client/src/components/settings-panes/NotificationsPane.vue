@@ -32,7 +32,15 @@
 
     <ul v-if="otherSubscriptions.length" class="device-list">
       <li v-for="sub in otherSubscriptions" :key="sub.id" class="device">
-        <span class="ua">{{ deviceLabel(sub) }}</span>
+        <span class="ua">
+          {{ deviceLabel(sub) }}
+          <span
+            v-if="!sub.enabled"
+            class="muted"
+            title="Push kept failing for this device; enable push again from it."
+            >disabled</span
+          >
+        </span>
         <span class="last-seen" :title="sub.last_seen_at"
           >last seen {{ formatRelative(sub.last_seen_at) }}</span
         >
@@ -91,6 +99,11 @@
       </li>
     </ul>
     <p v-else-if="pushSubsStore.logLoaded" class="muted small">Nothing in the last week.</p>
+    <p v-if="pushSubsStore.logHasMore">
+      <button class="link" type="button" :disabled="olderBusy" @click="onOlderLog">
+        {{ olderBusy ? 'loading…' : 'show older' }}
+      </button>
+    </p>
 
     <hr class="hl-sep" />
     <h3 class="subhead">alerts</h3>
@@ -306,6 +319,7 @@ interface StoredPushSub extends PushSubscription {
   id: string;
   transport: string;
   user_agent: string | null;
+  enabled: boolean;
   last_seen_at: string;
 }
 
@@ -319,6 +333,7 @@ const pushError = ref('');
 const pushBusy = ref(false);
 const testBusy = ref(false);
 const testResult = ref('');
+const olderBusy = ref(false);
 const currentEndpoint = ref<string | null>(null);
 
 const thisClientEnabled = computed(() => {
@@ -422,12 +437,14 @@ async function onSendTest() {
   testBusy.value = true;
   testResult.value = '';
   try {
-    const { sent, dropped, devices } = await pushSubsStore.sendTest();
-    if (devices === 0) testResult.value = 'no device to send to';
-    else if (sent === 0 && dropped === 0) testResult.value = 'held for every device — see the log';
-    else {
+    const { sent, dropped, devices, disabled } = await pushSubsStore.sendTest();
+    const off = disabled ? ` (${disabled} disabled after repeated failures)` : '';
+    if (devices === 0) testResult.value = `no device to send to${off}`;
+    else if (sent === 0 && dropped === 0) {
+      testResult.value = `held for every device — see the log${off}`;
+    } else {
       const n = sent === 1 ? '1 device' : `${sent} devices`;
-      testResult.value = dropped ? `sent to ${n}, ${dropped} failed` : `sent to ${n}`;
+      testResult.value = (dropped ? `sent to ${n}, ${dropped} failed` : `sent to ${n}`) + off;
     }
   } catch (e: any) {
     testResult.value =
@@ -464,6 +481,17 @@ function onVolumeInput(kindKey: string, raw: string) {
 
 function removeAlwaysNotify(networkId: number, target: string) {
   channelNotify.setNotifyAlways(networkId, target, false);
+}
+
+async function onOlderLog() {
+  olderBusy.value = true;
+  try {
+    await pushSubsStore.fetchOlderLog();
+  } catch (e: any) {
+    pushError.value = e.message || 'failed to load older rows';
+  } finally {
+    olderBusy.value = false;
+  }
 }
 
 async function onEnableThisClient() {

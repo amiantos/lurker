@@ -102,26 +102,35 @@ export function recordPushLog(userId: number, entry: PushLogEntry, at = new Date
   );
 }
 
-export function listPushLogForUser(userId: number, limit: number): PushLogRow[] {
+/**
+ * Newest first. `before` is a keyset cursor — the smallest id the caller has —
+ * so a week that outgrows one page stays reachable; ids rise with time, so
+ * ordering by id alone is ordering by time.
+ */
+export function listPushLogForUser(
+  userId: number,
+  limit: number,
+  before: number | null = null,
+): PushLogRow[] {
   return stmt(
     'forUser',
-    'SELECT * FROM push_log WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT ?',
-  ).all(userId, limit) as PushLogRow[];
+    `SELECT * FROM push_log WHERE user_id = ? AND (? IS NULL OR id < ?)
+     ORDER BY id DESC LIMIT ?`,
+  ).all(userId, before, before, limit) as PushLogRow[];
 }
 
 /** Every user's rows (admin), optionally one user's, with the username joined on. */
 export function listPushLog(
   limit: number,
   userId: number | null = null,
+  before: number | null = null,
 ): (PushLogRow & { username: string | null })[] {
-  const where = userId === null ? '' : 'WHERE l.user_id = ?';
-  const params = userId === null ? [limit] : [userId, limit];
-  return db
-    .prepare(
-      `SELECT l.*, u.username FROM push_log l LEFT JOIN users u ON u.id = l.user_id
-       ${where} ORDER BY l.at DESC, l.id DESC LIMIT ?`,
-    )
-    .all(...params) as (PushLogRow & { username: string | null })[];
+  return stmt(
+    'all',
+    `SELECT l.*, u.username FROM push_log l LEFT JOIN users u ON u.id = l.user_id
+     WHERE (? IS NULL OR l.user_id = ?) AND (? IS NULL OR l.id < ?)
+     ORDER BY l.id DESC LIMIT ?`,
+  ).all(userId, userId, before, before, limit) as (PushLogRow & { username: string | null })[];
 }
 
 /** Drop rows older than PUSH_LOG_DAYS. Returns how many went. */

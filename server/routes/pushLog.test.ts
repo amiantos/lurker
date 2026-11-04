@@ -90,6 +90,18 @@ describe('GET /api/push/log', () => {
     expect(res.body.log[0]).not.toHaveProperty('text');
   });
 
+  it('pages older rows with before', async () => {
+    for (let i = 0; i < 3; i++) {
+      pushLog.recordPushLog(alice.id, { ...subject, outcome: 'suppressed', reason: 'no_devices' });
+    }
+    const top = (await aliceAgent.get('/api/push/log?limit=2')).body.log;
+    const older = (await aliceAgent.get(`/api/push/log?limit=2&before=${top[1].id}`)).body.log;
+    expect(older).toHaveLength(1);
+    expect(older[0].id).toBeLessThan(top[1].id);
+    // A cursor that isn't an id means the top.
+    expect((await aliceAgent.get('/api/push/log?before=x')).body.log).toHaveLength(3);
+  });
+
   it('takes a limit and ignores a bad one', async () => {
     for (let i = 0; i < 3; i++) {
       pushLog.recordPushLog(alice.id, { ...subject, outcome: 'suppressed', reason: 'no_devices' });
@@ -117,7 +129,7 @@ describe('POST /api/push/test', () => {
   it('reports nothing sent for a user with no devices', async () => {
     const res = await aliceAgent.post('/api/push/test');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 0 });
+    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 0, disabled: 0 });
     expect(sendNotification).not.toHaveBeenCalled();
   });
 
@@ -130,7 +142,7 @@ describe('POST /api/push/test', () => {
       auth: 'a',
     });
     const res = await aliceAgent.post('/api/push/test');
-    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 1 });
+    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 1, disabled: 0 });
     expect(pushLog.listPushLogForUser(alice.id, 10)).toMatchObject([
       { kind: 'test', outcome: 'suppressed', reason: 'relay_off' },
     ]);
@@ -169,7 +181,7 @@ describe('POST /api/push/test', () => {
     sendNotification.mockResolvedValue({ statusCode: 201 });
     const res = await aliceAgent.post('/api/push/test');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sent: 2, dropped: 0, devices: 2 });
+    expect(res.body).toEqual({ sent: 2, dropped: 0, devices: 2, disabled: 0 });
     expect(sendNotification).toHaveBeenCalledTimes(2);
     // What the device will show, with routing keys every parser accepts (the
     // iOS relay extension refuses an empty target) and nothing to open.
@@ -210,6 +222,22 @@ describe('POST /api/push/test', () => {
       sent: 1,
       dropped: 0,
       devices: 1,
+      disabled: 0,
     });
+  });
+
+  it('says how many devices the strike rule switched off, and does not try them', async () => {
+    pushDb.upsertSubscription(alice.id, {
+      transport: 'webpush',
+      endpoint: 'https://push.example/alice-off',
+      p256dh: 'k',
+      auth: 'a',
+    });
+    const [sub] = pushDb.listAllForUser(alice.id);
+    pushDb.disableSubscription(sub.id);
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    const res = await aliceAgent.post('/api/push/test');
+    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 0, disabled: 1 });
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 });

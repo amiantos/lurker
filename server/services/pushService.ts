@@ -116,6 +116,22 @@ function logSubject(message: PushPayload): PushLogSubject {
   };
 }
 
+/**
+ * A failure diagnostic fit for the log (#1272): the sender's one-liner with the
+ * subscription's endpoint or token cut out. A push service's error body can
+ * echo the request URL, and for the relay that URL carries the device token —
+ * which the admin pane shows and the copy button hands on. The warn lines keep
+ * the full text; the table never gets it.
+ */
+function redactedFailure(sub: PushSubscription, verdict: string, described: string): string {
+  const short = describeSub(sub);
+  let text = described.split(sub.endpoint).join(short);
+  // A relay endpoint's last path segment is the token; a body may echo just that.
+  const tail = sub.endpoint.split('/').filter(Boolean).at(-1);
+  if (tail && tail.length >= 16) text = text.split(tail).join(short);
+  return `${verdict}: ${text}`.slice(0, 300);
+}
+
 /** The HTTP status a sender's failure carried, when it carried one. */
 function failureStatus(err: unknown): number | null {
   // web-push says statusCode; the APNs and FCM errors say status.
@@ -225,7 +241,7 @@ export async function deliver(
     log({
       ...subject,
       outcome: 'failed',
-      reason: `${verdict}: ${sender.describe(r.reason)}`.slice(0, 500),
+      reason: redactedFailure(sub, verdict, sender.describe(r.reason)),
       transport: sub.transport,
       device: describeSub(sub),
       status: failureStatus(r.reason),

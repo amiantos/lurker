@@ -458,4 +458,15 @@ describe('GET /api/admin/push/log', () => {
     expect(one.body.log).toMatchObject([{ username: 'adminpush-user' }]);
     expect((await adminAgent.get('/api/admin/push/log?user=bob')).status).toBe(400);
   });
+
+  it('pages older rows with before', async () => {
+    for (let i = 0; i < 3; i++) {
+      pushLog.recordPushLog(admin.id, { ...subject, outcome: 'suppressed', reason: 'no_devices' });
+    }
+    const top = (await adminAgent.get('/api/admin/push/log?limit=2')).body.log;
+    const older = (await adminAgent.get(`/api/admin/push/log?limit=2&before=${top[1].id}`)).body
+      .log;
+    expect(older).toHaveLength(1);
+    expect(older[0].id).toBeLessThan(top[1].id);
+  });
 });

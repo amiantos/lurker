@@ -52,7 +52,7 @@ vi.mock('./push/index.js', () => ({
         stubs[transport].send(sub, payload, content),
       classify: (err: unknown) => stubs[transport].classify(err),
       onFailure: (err: unknown, verdict: string) => stubs[transport].onFailure(err, verdict),
-      describe: () => 'described',
+      describe: (err: unknown) => (err instanceof Error ? err.message : 'described'),
     }) as unknown as PushSender,
   warnUnconfiguredOnce: () => {},
 }));
@@ -348,8 +348,34 @@ describe('deliver writes the push log', () => {
     stubs.apns.classify = vi.fn<ClassifyFn>(() => 'permanent');
     await pushService.deliver(user.id, payload);
     expect(pushLog.listPushLogForUser(user.id, 10)).toMatchObject([
-      { outcome: 'failed', transport: 'apns', status: 410, reason: 'permanent: described' },
+      { outcome: 'failed', transport: 'apns', status: 410, reason: 'permanent: nope' },
     ]);
+  });
+
+  it('keeps the endpoint and the device token out of a stored failure', async () => {
+    // A push service's error body can echo the request URL; for the relay that
+    // URL carries the device token, and the admin pane shows the reason.
+    const token = 'a'.repeat(64);
+    const endpoint = `https://push.lurker.chat/relay-to/apns/production/${token}`;
+    const settings = await import('../db/instanceSettings.js');
+    settings.setPushRelayEnabled(true);
+    try {
+      addWebpush(user.id, endpoint);
+      stubs.webpush.send = vi.fn<SendFn>(async () => {
+        throw Object.assign(
+          new Error(`status=403 body=<p>No such device ${endpoint}</p> token ${token}`),
+          { statusCode: 403 },
+        );
+      });
+      await pushService.deliver(user.id, payload);
+      const [row] = pushLog.listPushLogForUser(user.id, 10);
+      expect(row.outcome).toBe('failed');
+      expect(row.reason).not.toContain(token);
+      expect(row.reason).toContain('strike: status=403');
+      expect(row.reason).toContain('push.lurker.chat');
+    } finally {
+      settings.setPushRelayEnabled(false);
+    }
   });
 
   it('records a relay device dropped while the relay is off', async () => {

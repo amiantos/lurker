@@ -21,7 +21,7 @@ import { pushRelayEnabled } from '../db/instanceSettings.js';
 import { RELAY_ORIGIN, relayDeviceCount, setRelayEnabled } from '../services/push/relay.js';
 import { peekRelayStatus, relayStatus, type RelayStatus } from '../services/push/relayStatus.js';
 import { listPushLog } from '../db/pushLog.js';
-import { parseLogLimit } from './push.js';
+import { parseBefore, parseLogLimit } from './push.js';
 
 const router = Router();
 
@@ -103,7 +103,9 @@ router.get('/log', (req: Request, res: Response) => {
       return;
     }
   }
-  res.json({ log: listPushLog(parseLogLimit(req.query.limit), userId) });
+  res.json({
+    log: listPushLog(parseLogLimit(req.query.limit), userId, parseBefore(req.query.before)),
+  });
 });
 
 export default router;

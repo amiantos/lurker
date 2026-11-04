@@ -208,8 +208,20 @@ export function parseLogLimit(raw: unknown): number {
   return Math.min(n, PUSH_LOG_MAX_LIMIT);
 }
 
+/** `?before=<id>`: the page below that row. Absent or malformed means the top. */
+export function parseBefore(raw: unknown): number | null {
+  if (raw === undefined) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 router.get('/log', (req: Request, res: Response) => {
-  res.json({ log: listPushLogForUser(req.user!.id, parseLogLimit(req.query.limit)) });
+  const log = listPushLogForUser(
+    req.user!.id,
+    parseLogLimit(req.query.limit),
+    parseBefore(req.query.before),
+  );
+  res.json({ log });
 });
 
 // The user's open sockets, as push sees them: a client reporting itself
@@ -225,7 +237,9 @@ router.get('/clients', (req: Request, res: Response) => {
 //
 // `devices` is how many enabled subscriptions the account has, so the pane can
 // tell "nothing to send to" from "every device was held" (relay off, no
-// credentials) when sent and dropped are both zero.
+// credentials) when sent and dropped are both zero. `disabled` counts the
+// registrations the strike rule switched off (#441): the test goes where real
+// pushes go, and a device real pushes no longer reach is said so, not tried.
 //
 // Real pushes are paced by IRC; this one is paced here: one per account per
 // TEST_PUSH_COOLDOWN_MS, or the button becomes a way to pour pushes into the
@@ -244,7 +258,9 @@ router.post('/test', async (req: Request, res: Response) => {
     return;
   }
   lastTestAt.set(userId, now);
-  const devices = listAllForUser(userId).filter((s) => s.enabled).length;
+  const all = listAllForUser(userId);
+  const devices = all.filter((s) => s.enabled).length;
+  const disabled = all.length - devices;
   const result = await deliver(userId, {
     kind: 'test',
     // Routing keys every client parses (the iOS relay extension refuses an
@@ -256,7 +272,7 @@ router.post('/test', async (req: Request, res: Response) => {
     text: 'Lurker can reach this device.',
     time: new Date().toISOString(),
   });
-  res.json({ ...result, devices });
+  res.json({ ...result, devices, disabled });
 });
 
 /** Tests only: forget every cooldown. */

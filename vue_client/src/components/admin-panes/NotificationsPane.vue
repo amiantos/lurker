@@ -109,6 +109,11 @@
       </li>
     </ul>
     <p v-else-if="store.pushLogLoaded" class="muted small">Nothing in the last week.</p>
+    <p v-if="store.pushLogHasMore">
+      <button class="link" type="button" :disabled="olderBusy" @click="olderLog">
+        {{ olderBusy ? 'loading…' : 'show older' }}
+      </button>
+    </p>
   </section>
 </template>
 
@@ -138,6 +143,18 @@ function copyLog() {
 function reloadLog() {
   store.fetchPushLog().catch(() => {});
   store.fetchPresence().catch(() => {});
+}
+
+const olderBusy = ref(false);
+async function olderLog() {
+  olderBusy.value = true;
+  try {
+    await store.fetchOlderPushLog();
+  } catch (e: any) {
+    error.value = e.message || 'failed to load older rows';
+  } finally {
+    olderBusy.value = false;
+  }
 }
 
 function socketSummary(row: AdminPresenceRow): string {

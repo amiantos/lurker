@@ -1212,7 +1212,7 @@ function migrate() {
       device TEXT,
       status INTEGER
     );
-    CREATE INDEX IF NOT EXISTS idx_push_log_user_at ON push_log(user_id, at DESC);
+    CREATE INDEX IF NOT EXISTS idx_push_log_user_id ON push_log(user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(at);
   `);
 }

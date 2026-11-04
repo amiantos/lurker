@@ -82,6 +82,25 @@ describe('recordPushLog / listPushLogForUser', () => {
   });
 });
 
+describe('paging with before', () => {
+  it('serves the rows below a cursor, for one user and for everyone', () => {
+    const u = users.createUser('pushlog-h');
+    for (let i = 0; i < 5; i++) {
+      log.recordPushLog(u.id, { ...subject, outcome: 'suppressed', reason: 'quiet_hours' });
+    }
+    const top = log.listPushLogForUser(u.id, 2);
+    expect(top).toHaveLength(2);
+    const next = log.listPushLogForUser(u.id, 2, top[1].id);
+    expect(next).toHaveLength(2);
+    expect(next[0].id).toBeLessThan(top[1].id);
+    const last = log.listPushLogForUser(u.id, 2, next[1].id);
+    expect(last).toHaveLength(1);
+    expect(log.listPushLogForUser(u.id, 2, last[0].id)).toEqual([]);
+    const adminNext = log.listPushLog(2, u.id, top[1].id);
+    expect(adminNext.map((r) => r.id)).toEqual(next.map((r) => r.id));
+  });
+});
+
 describe('listPushLog (admin)', () => {
   it('spans every user with the username joined on, or one user when asked', () => {
     const a = users.createUser('pushlog-d');

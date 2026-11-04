@@ -1852,15 +1852,15 @@ actually deliver**. This is the source of truth — check it before asking the O
 for notification permission. `relay` appears only when the admin has turned on
 the self-hosted push relay (see below).
 
-| Endpoint                                  | Notes                                                                                                                           |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/push/devices`                  | `{token, transport: 'apns'\|'fcm'}` → `201`. Token validated by shape only. `503` if the transport isn't configured server-side |
-| `DELETE /api/push/devices`                | `{token}` — **call before `POST /api/auth/logout`**, while the session still authenticates                                      |
-| `POST/GET/DELETE /api/push/subscriptions` | Web Push (VAPID) subscription CRUD                                                                                              |
-| `POST /api/push/heartbeat`                | `{endpoint}` — Web Push liveness                                                                                                |
-| `GET /api/push/log?limit=`                | `{log: [...]}` — the caller's push log (#1272): one row per push attempt, newest first, 7 days. `limit` 1–1000, default 100     |
-| `GET /api/push/clients`                   | `{clients: [{userAgent, connectedAt, visible}]}` — the caller's open sockets, as the push gate sees them                        |
-| `POST /api/push/test`                     | → `{sent, dropped}`. A `kind: 'test'` push to every one of the caller's devices, skipping every gate; logged like any other     |
+| Endpoint                                  | Notes                                                                                                                                                                           |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/push/devices`                  | `{token, transport: 'apns'\|'fcm'}` → `201`. Token validated by shape only. `503` if the transport isn't configured server-side                                                 |
+| `DELETE /api/push/devices`                | `{token}` — **call before `POST /api/auth/logout`**, while the session still authenticates                                                                                      |
+| `POST/GET/DELETE /api/push/subscriptions` | Web Push (VAPID) subscription CRUD                                                                                                                                              |
+| `POST /api/push/heartbeat`                | `{endpoint}` — Web Push liveness                                                                                                                                                |
+| `GET /api/push/log?limit=&before=`        | `{log: [...]}` — the caller's push log (#1272): one row per push attempt, newest first, 7 days. `limit` 1–1000 (default 100); `before=<id>` pages older                         |
+| `GET /api/push/clients`                   | `{clients: [{userAgent, connectedAt, visible}]}` — the caller's open sockets, as the push gate sees them                                                                        |
+| `POST /api/push/test`                     | → `{sent, dropped, devices, disabled}`. A `kind: 'test'` push to every enabled device, skipping every gate; logged like any other. `429` + `Retry-After` within 5 s of the last |
 
 A push log row is `{id, at, kind, network_id, network_name, target, nick,
 message_id, outcome, reason, transport, device, status}`. `outcome` is `sent`
