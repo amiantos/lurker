@@ -6,6 +6,7 @@ import type { AccountRestrictions } from '../../../shared/accountRestrictions.js
 import { api, type ApiError } from '../api.js';
 import type { RelayStatus } from '../../../shared/relayStatus.js';
 import type { AdminUploader, UploaderDriver } from '../utils/uploaders.js';
+import type { LiveClient, PushLogRow } from '../utils/pushLog.js';
 
 export interface AdminUser {
   id: number;
@@ -101,6 +102,22 @@ export interface AdminPushConfig {
 
 export type { RelayStatus as AdminRelayStatus } from '../../../shared/relayStatus.js';
 
+/** GET /api/admin/presence: a connected user and the sockets holding them so. */
+export interface AdminPresenceRow {
+  userId: number;
+  username: string | null;
+  openSockets: number;
+  visibleSockets: number;
+  sockets: LiveClient[];
+  away: {
+    networkId: number;
+    active: boolean;
+    autoSet: boolean;
+    since: string | null;
+    message: string | null;
+  }[];
+}
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: [] as AdminUser[],
@@ -152,6 +169,10 @@ export const useAdminStore = defineStore('admin', {
     invitesFetchSeq: 0,
     lockoutsFetchSeq: 0,
     pushFetchSeq: 0,
+    // The push log and connected clients (#1272), under Admin → Notifications.
+    pushLog: [] as PushLogRow[],
+    pushLogLoaded: false,
+    presence: [] as AdminPresenceRow[],
     loading: false,
     error: '',
   }),
@@ -383,6 +404,15 @@ export const useAdminStore = defineStore('admin', {
       // Refetch rather than assign: the server 409s this when no presets exist,
       // and the throw must leave the checkbox showing the truth, not the attempt.
       await this.fetchNetworkPresets();
+    },
+    async fetchPushLog() {
+      const { log } = await api('/api/admin/push/log');
+      this.pushLog = log || [];
+      this.pushLogLoaded = true;
+    },
+    async fetchPresence() {
+      const { presence } = await api('/api/admin/presence');
+      this.presence = presence || [];
     },
     async fetchPush() {
       const seq = ++this.pushFetchSeq;
