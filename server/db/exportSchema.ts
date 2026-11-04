@@ -701,6 +701,13 @@ export const EXPORT_TABLES = Object.freeze({
       'web-push endpoints + VAPID keys are per-server; user re-subscribes per device on the target',
   },
 
+  push_log: {
+    mode: 'skip',
+    reason:
+      'a week of push diagnostics (#1272) about devices and gates on THIS server; ' +
+      'meaningless on another, and gone in seven days anyway',
+  },
+
   invite_tokens: {
     mode: 'skip',
     reason: 'admin/instance-scoped invitation state, not user data',
