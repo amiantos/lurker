@@ -313,3 +313,84 @@ describe('deliver acts on the failure class', () => {
     expect(left[0].transport).toBe('webpush');
   });
 });
+
+// The push log (#1272): deliver() writes what became of each device, and why a
+// push went nowhere, so a "no notification" report can be read off the server.
+describe('deliver writes the push log', () => {
+  let pushLog: typeof import('../db/pushLog.js');
+  beforeAll(async () => {
+    pushLog = await import('../db/pushLog.js');
+  });
+
+  it('records one sent row per device, with the status the sender resolved', async () => {
+    addWebpush(user.id, `https://push.test/${user.id}`);
+    addNative(user.id, 'fcm', `fcm-${user.id}`);
+    stubs.webpush.send = vi.fn<SendFn>(async () => 201 as unknown as void);
+    stubs.fcm.send = vi.fn<SendFn>(async () => 200 as unknown as void);
+    await pushService.deliver(user.id, payload);
+    const rows = pushLog.listPushLogForUser(user.id, 10);
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => [r.transport, r.device, r.status, r.outcome]).toSorted()).toEqual([
+      // A native token is close to a credential: its first 8 characters and an
+      // ellipsis, the form the warn lines use. A Web Push device is its host.
+      ['fcm', `${`fcm-${user.id}`.slice(0, 8)}…`, 200, 'sent'],
+      ['webpush', 'push.test', 201, 'sent'],
+    ]);
+    // What it was about rides on every row; the text never does.
+    expect(rows[0]).toMatchObject({ kind: 'dm', network_name: 'Libera', target: 'bob' });
+  });
+
+  it('records a failed row with the verdict and the status the error carried', async () => {
+    addNative(user.id, 'apns', `apns-${user.id}`);
+    stubs.apns.send = vi.fn<SendFn>(async () => {
+      throw Object.assign(new Error('nope'), { status: 410 });
+    });
+    stubs.apns.classify = vi.fn<ClassifyFn>(() => 'permanent');
+    await pushService.deliver(user.id, payload);
+    expect(pushLog.listPushLogForUser(user.id, 10)).toMatchObject([
+      { outcome: 'failed', transport: 'apns', status: 410, reason: 'permanent: described' },
+    ]);
+  });
+
+  it('records a relay device dropped while the relay is off', async () => {
+    // The opt-in holds at the door: this test DB never turned the relay on.
+    addWebpush(user.id, `https://push.lurker.chat/relay-to/apns/${user.id}`);
+    await pushService.deliver(user.id, payload);
+    expect(stubs.webpush.send).not.toHaveBeenCalled();
+    expect(pushLog.listPushLogForUser(user.id, 10)).toMatchObject([
+      { outcome: 'suppressed', reason: 'relay_off', device: 'push.lurker.chat' },
+    ]);
+  });
+
+  it('records a device skipped for want of credentials', async () => {
+    addNative(user.id, 'apns', `apns-${user.id}`);
+    stubs.apns.configured = false;
+    await pushService.deliver(user.id, payload);
+    expect(pushLog.listPushLogForUser(user.id, 10)).toMatchObject([
+      { outcome: 'suppressed', reason: 'unconfigured', transport: 'apns' },
+    ]);
+  });
+
+  it('records a push dropped for size, once, with no device', async () => {
+    addWebpush(user.id, `https://push.test/${user.id}`);
+    addNative(user.id, 'apns', `apns-${user.id}`);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The target is never cut (a tap has to land in the buffer), so a 240-char
+    // one of control characters is what no amount of trimming can fit.
+    await pushService.deliver(user.id, {
+      ...payload,
+      kind: 'kicked',
+      target: `#${'\x10'.repeat(240)}`,
+    });
+    warn.mockRestore();
+    expect(stubs.webpush.send).not.toHaveBeenCalled();
+    expect(pushLog.listPushLogForUser(user.id, 10)).toMatchObject([
+      { outcome: 'suppressed', reason: 'oversize', device: null },
+    ]);
+  });
+
+  it('writes nothing for a user with no devices (maybePush logs that one)', async () => {
+    await pushService.deliver(user.id, payload);
+    expect(pushLog.listPushLogForUser(user.id, 10)).toHaveLength(0);
+  });
+});

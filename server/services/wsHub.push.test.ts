@@ -849,3 +849,84 @@ describe('an ignored sender cannot open a DM', () => {
     }
   });
 });
+
+// The push log (#1272): every way maybePush holds a push is a row naming the
+// gate, so "I didn't get a notification" can be answered from the server.
+describe('maybePush writes the push log', () => {
+  let pushLog: typeof import('../db/pushLog.js');
+  let db: typeof import('../db/index.js').default;
+  beforeAll(async () => {
+    pushLog = await import('../db/pushLog.js');
+    db = (await import('../db/index.js')).default;
+  });
+  beforeEach(() => {
+    db.prepare('DELETE FROM push_log').run();
+  });
+
+  async function reasons(): Promise<string[]> {
+    await settle();
+    return pushLog.listPushLogForUser(userId, 10).map((r) => `${r.outcome}:${r.reason}`);
+  }
+
+  it('names the visible client that held a DM push', async () => {
+    const close = await connectWithPresence(true);
+    try {
+      emitDm();
+      expect(await reasons()).toEqual(['suppressed:visible_client']);
+      const [row] = pushLog.listPushLogForUser(userId, 10);
+      expect(row).toMatchObject({ kind: 'dm', target: 'bob', nick: 'bob', message_id: 1 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('names a missing device, a disabled kind, a manual away, and quiet hours', async () => {
+    hasSubsMock = vi.fn<(userId: number) => boolean>(() => false);
+    emitDm();
+    expect(await reasons()).toEqual(['suppressed:no_devices']);
+    db.prepare('DELETE FROM push_log').run();
+
+    hasSubsMock = vi.fn<(userId: number) => boolean>(() => true);
+    setUserSetting(userId, 'notifications.dm.enabled', false);
+    emitDm();
+    expect(await reasons()).toEqual(['suppressed:kind_disabled']);
+    db.prepare('DELETE FROM push_log').run();
+    deleteUserSetting(userId, 'notifications.dm.enabled');
+
+    setUserSetting(userId, 'notifications.push.mute_when_away', true);
+    writeAwayMarker(userId, networkId, { awayDatetime: new Date().toISOString(), autoSet: false });
+    emitDm();
+    expect(await reasons()).toEqual(['suppressed:manual_away']);
+    db.prepare('DELETE FROM push_log').run();
+    writeBackMarker(networkId, new Date().toISOString());
+
+    setUserSetting(userId, 'system.timezone', 'UTC');
+    const nowUtcMin = nowUtcMinutes();
+    setUserSetting(userId, 'notifications.push.quiet_hours.enabled', true);
+    setUserSetting(userId, 'notifications.push.quiet_hours.start', hhmm(nowUtcMin - 60));
+    setUserSetting(userId, 'notifications.push.quiet_hours.end', hhmm(nowUtcMin + 60));
+    emitDm();
+    expect(await reasons()).toEqual(['suppressed:quiet_hours']);
+  });
+
+  it('writes nothing when the push goes to deliver(), and nothing for own lines', async () => {
+    emitDm();
+    expect(await pushed()).toBe(true);
+    expect(await reasons()).toEqual([]);
+    emitDm({ self: true, nick: 'pushuser' });
+    expect(await reasons()).toEqual([]);
+  });
+
+  it('records the kind a channel highlight would have pushed as', async () => {
+    const close = await connectWithPresence(true);
+    try {
+      emitChannel({ matched: true });
+      await settle();
+      expect(pushLog.listPushLogForUser(userId, 10)).toMatchObject([
+        { kind: 'highlight', target: '#lurker', reason: 'visible_client' },
+      ]);
+    } finally {
+      await close();
+    }
+  });
+});
