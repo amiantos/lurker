@@ -1190,6 +1190,30 @@ function migrate() {
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- Push log (#1272): one row per push ATTEMPT per user, so "I didn't get a
+    -- notification" has evidence. A 'suppressed' row names the gate that
+    -- stopped it (maybePush / deliver), a 'sent' or 'failed' row is one device
+    -- with the push service's answer. Never the message text: kind, where,
+    -- who, which message, which device. Pruned to 7 days (prunePushLog).
+    CREATE TABLE IF NOT EXISTS push_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      at TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      network_id INTEGER,
+      network_name TEXT,
+      target TEXT,
+      nick TEXT,
+      message_id INTEGER,
+      outcome TEXT NOT NULL,
+      reason TEXT,
+      transport TEXT,
+      device TEXT,
+      status INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_log_user_at ON push_log(user_id, at DESC);
+    CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(at);
   `);
 }
 

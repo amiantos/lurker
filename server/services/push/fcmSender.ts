@@ -195,7 +195,7 @@ export const fcmSender: PushSender = {
     sub: PushSubscription,
     payload: PushPayload,
     content: NotificationContent,
-  ): Promise<void> {
+  ): Promise<number> {
     const creds = configuredFcm();
     if (!creds) throw new Error('FCM is not configured');
     const token = await accessToken.get();
@@ -212,7 +212,7 @@ export const fcmSender: PushSender = {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
     );
-    if (res.ok) return;
+    if (res.ok) return res.status;
     const text = await res.text();
     let reason: string | null = null;
     let tokenRejected = false;

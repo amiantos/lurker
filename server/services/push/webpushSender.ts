@@ -72,17 +72,18 @@ export const webpushSender: PushSender = {
     sub: PushSubscription,
     payload: PushPayload,
     content: NotificationContent,
-  ): Promise<void> {
+  ): Promise<number> {
     if (sub.transport !== 'webpush') {
       // Unreachable: pushService dispatches by sub.transport. Narrows the union
       // so p256dh/auth are known present, and states the invariant out loud.
       throw new Error(`webpushSender received a ${sub.transport} subscription`);
     }
-    await webpush.sendNotification(
+    const res = await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
       webpushBody(payload, content),
       webpushOptions(payload),
     );
+    return res.statusCode;
   },
 
   classify(err: unknown): FailureClass {

@@ -21,7 +21,16 @@
 
 import { stripFormatting } from './textMatch.js';
 
-export type PushPayloadKind = 'dm' | 'highlight' | 'always_notify' | 'friend_online' | 'kicked';
+export type PushPayloadKind =
+  | 'dm'
+  | 'highlight'
+  | 'always_notify'
+  | 'friend_online'
+  | 'kicked'
+  // POST /api/push/test (#1272): the user asking whether push reaches this
+  // device. Every client renders an unknown kind as title + body (Android files
+  // it under Kind.OTHER), so the button needs no app change.
+  | 'test';
 
 /**
  * The semantic push payload wsHub hands to pushService. Deliberately typed (it
@@ -131,6 +140,7 @@ function title(payload: PushPayload): string {
   }
   if (payload.kind === 'friend_online') return friendOnlineTitle(payload);
   if (payload.kind === 'kicked') return kickedTitle(payload);
+  if (payload.kind === 'test') return 'Test notification';
   return `${payload.nick || 'someone'} in ${payload.target || ''}`;
 }
 
@@ -292,6 +302,8 @@ export function composeNotification(payload: PushPayload): NotificationContent {
         ? `${bufferTag(payload)}::presence`
         : payload.kind === 'kicked'
           ? `${bufferTag(payload)}::kick`
-          : bufferTag(payload),
+          : payload.kind === 'test'
+            ? 'test'
+            : bufferTag(payload),
   };
 }

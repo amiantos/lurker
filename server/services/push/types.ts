@@ -52,8 +52,16 @@ export interface PushSender {
   /** Human-readable reason a transport is unconfigured, for a one-time log. */
   configHint(): string;
 
-  /** Deliver, or throw. Throwing is what feeds classify(). */
-  send(sub: PushSubscription, payload: PushPayload, content: NotificationContent): Promise<void>;
+  /**
+   * Deliver, or throw. Throwing is what feeds classify(). Resolves with the
+   * push service's HTTP status when there was one, for the push log (#1272):
+   * the relay's 201 is the receipt that APNs/FCM accepted the push.
+   */
+  send(
+    sub: PushSubscription,
+    payload: PushPayload,
+    content: NotificationContent,
+  ): Promise<number | void>;
 
   /**
    * Read-only verdict on a failure. Pure: callers may classify the same error

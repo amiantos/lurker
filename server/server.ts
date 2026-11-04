@@ -29,6 +29,7 @@ import { purgeExpiredSessions } from './db/sessions.js';
 import { purgeExpiredRecoveryTokens } from './db/accountRecovery.js';
 import { purgeOAuth } from './db/oauth.js';
 import { sweepExpiredPreviews } from './db/linkPreviews.js';
+import { prunePushLog } from './db/pushLog.js';
 import { sweepPreviewCache } from './services/previewCache/index.js';
 import { startRetentionSweeper } from './services/retentionSweeper.js';
 import { listGrandfatheredUsernames } from './db/users.js';
@@ -173,6 +174,9 @@ setInterval(() => purgeExpiredRecoveryTokens(), 60 * 60 * 1000).unref();
 // registration endpoint lets anyone write to.
 bootPass('OAuth purge', () => purgeOAuth());
 setInterval(() => purgeOAuth(), 60 * 60 * 1000).unref();
+// The push log (#1272) keeps a week; nothing reads past that, so the rest goes.
+bootPass('push log prune', () => prunePushLog());
+setInterval(() => prunePushLog(), 60 * 60 * 1000).unref();
 
 // link_previews is a cache with a TTL, so lapsed rows have to actually go — without this it
 // only ever grows. Deliberately NOT gated on previewsEnabled(): an operator who turns the

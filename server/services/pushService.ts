@@ -7,6 +7,7 @@ import { prepareNotification, type PushPayload } from './notificationContent.js'
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import { relayAllows } from './push/relay.js';
 import { resolveVapidSubject, type VapidSubject } from './push/vapidSubject.js';
+import { recordPushLog, type PushLogSubject } from '../db/pushLog.js';
 import {
   listEnabledForUser,
   hasEnabledForUser,
@@ -103,6 +104,26 @@ function describeSub(sub: PushSubscription): string {
   return `${sub.endpoint.slice(0, 8)}…`;
 }
 
+/** The push log's view of a payload (#1272): what it's about, never its text. */
+function logSubject(message: PushPayload): PushLogSubject {
+  return {
+    kind: message.kind,
+    networkId: message.networkId,
+    networkName: message.networkName,
+    target: message.target,
+    nick: message.nick ?? null,
+    messageId: message.messageId ?? null,
+  };
+}
+
+/** The HTTP status a sender's failure carried, when it carried one. */
+function failureStatus(err: unknown): number | null {
+  // web-push says statusCode; the APNs and FCM errors say status.
+  const e = err as { statusCode?: unknown; status?: unknown } | null;
+  const status = e?.statusCode ?? e?.status;
+  return typeof status === 'number' ? status : null;
+}
+
 export async function deliver(
   userId: number,
   message: PushPayload,
@@ -112,6 +133,17 @@ export async function deliver(
   ensureVapid();
   const subs = listEnabledForUser(userId);
   if (!subs.length) return { sent: 0, dropped: 0 };
+  // Every exit below writes to the push log (#1272): the suppressed ones by
+  // reason, the attempted ones per device with the service's answer. Logging
+  // must never fail a push, so each write is best-effort.
+  const subject = logSubject(message);
+  const log = (entry: Parameters<typeof recordPushLog>[1]) => {
+    try {
+      recordPushLog(userId, entry);
+    } catch (err) {
+      console.warn('[push] log write failed:', (err as Error)?.message || err);
+    }
+  };
 
   // Clamped, composed and fitted once, here, so no transport can be handed a
   // message over its size cap. Composition is transport-neutral and identical
@@ -126,6 +158,7 @@ export async function deliver(
       `[push] dropped a ${payload.kind} push for user ${userId}: over 4 KB even with ` +
         'its text cut (an extreme channel or nick name)',
     );
+    log({ ...subject, outcome: 'suppressed', reason: 'oversize' });
     return { sent: 0, dropped: 0 };
   }
 
@@ -140,11 +173,25 @@ export async function deliver(
   const deliverable = subs.filter((sub) => {
     if (sub.transport === 'webpush' && !relayAllows(sub.endpoint)) {
       deleteById(sub.id, sub.user_id);
+      log({
+        ...subject,
+        outcome: 'suppressed',
+        reason: 'relay_off',
+        transport: sub.transport,
+        device: describeSub(sub),
+      });
       return false;
     }
     const sender = senderFor(sub.transport);
     if (sender.isConfigured()) return true;
     warnUnconfiguredOnce(sender);
+    log({
+      ...subject,
+      outcome: 'suppressed',
+      reason: 'unconfigured',
+      transport: sub.transport,
+      device: describeSub(sub),
+    });
     return false;
   });
   if (!deliverable.length) return { sent: 0, dropped: 0 };
@@ -163,11 +210,26 @@ export async function deliver(
       } catch (_) {
         /* ignore */
       }
+      log({
+        ...subject,
+        outcome: 'sent',
+        transport: sub.transport,
+        device: describeSub(sub),
+        status: r.value ?? null,
+      });
       return;
     }
     dropped += 1;
     const sender = senderFor(sub.transport);
     const verdict = sender.classify(r.reason);
+    log({
+      ...subject,
+      outcome: 'failed',
+      reason: `${verdict}: ${sender.describe(r.reason)}`.slice(0, 500),
+      transport: sub.transport,
+      device: describeSub(sub),
+      status: failureStatus(r.reason),
+    });
     // Anything the failure should CHANGE (invalidate a cached provider token,
     // drop a poisoned connection) happens here, not inside classify() — which is
     // a pure verdict and is called for logging as well as for control flow.
