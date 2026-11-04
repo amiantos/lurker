@@ -408,3 +408,54 @@ describe('the relay status check (RELAY_PLAN.md §6.5)', () => {
     });
   });
 });
+
+// The push log, admin side (#1272): every user's rows with the username on
+// each, or one user's; never a plain user's to read.
+describe('GET /api/admin/push/log', () => {
+  let pushLog: typeof import('../db/pushLog.js');
+  beforeAll(async () => {
+    pushLog = await import('../db/pushLog.js');
+  });
+  beforeEach(() => {
+    db.prepare('DELETE FROM push_log').run();
+  });
+
+  const subject = { kind: 'highlight', networkId: 1, networkName: 'Libera', target: '#lurker' };
+
+  it('is admin-only', async () => {
+    expect((await userAgent.get('/api/admin/push/log')).status).toBe(403);
+  });
+
+  it('lists every user, newest first, naming each', async () => {
+    pushLog.recordPushLog(plainUser.id, {
+      ...subject,
+      outcome: 'suppressed',
+      reason: 'no_devices',
+    });
+    pushLog.recordPushLog(admin.id, {
+      ...subject,
+      outcome: 'sent',
+      transport: 'webpush',
+      device: 'push.lurker.chat',
+      status: 201,
+    });
+    const res = await adminAgent.get('/api/admin/push/log');
+    expect(res.status).toBe(200);
+    expect(res.body.log).toMatchObject([
+      { username: 'adminpush-root', outcome: 'sent', status: 201 },
+      { username: 'adminpush-user', outcome: 'suppressed', reason: 'no_devices' },
+    ]);
+  });
+
+  it('narrows to one user, and refuses a user that is not an id', async () => {
+    pushLog.recordPushLog(plainUser.id, {
+      ...subject,
+      outcome: 'suppressed',
+      reason: 'no_devices',
+    });
+    pushLog.recordPushLog(admin.id, { ...subject, outcome: 'suppressed', reason: 'no_devices' });
+    const one = await adminAgent.get(`/api/admin/push/log?user=${plainUser.id}`);
+    expect(one.body.log).toMatchObject([{ username: 'adminpush-user' }]);
+    expect((await adminAgent.get('/api/admin/push/log?user=bob')).status).toBe(400);
+  });
+});

@@ -930,3 +930,42 @@ describe('maybePush writes the push log', () => {
     }
   });
 });
+
+// The "current clients" lists (#1272): each socket says what connected, when,
+// and whether it claims to be visible — the quantity push keys on.
+describe('live clients', () => {
+  it('lists an open socket with its user agent and presence, and drops it on close', async () => {
+    const { liveClientsForUser, presenceDiagnostics } = await import('./wsHub.js');
+    expect(liveClientsForUser(userId)).toEqual([]);
+    const { token } = createSession(userId);
+    const ws = new WebSocket(url, {
+      headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'TestClient/1.0' },
+    });
+    const close = () =>
+      new Promise<void>((resolve) => {
+        ws.on('close', () => resolve());
+        ws.close();
+      });
+    try {
+      await nextMessage(ws, 'the connect snapshot');
+      expect(liveClientsForUser(userId)).toMatchObject([
+        { userAgent: 'TestClient/1.0', visible: false },
+      ]);
+      expect(typeof liveClientsForUser(userId)[0].connectedAt).toBe('string');
+      ws.send(JSON.stringify({ type: 'presence', visible: true }));
+      ws.send(JSON.stringify({ type: 'snapshot' }));
+      await nextMessage(ws, 'the snapshot barrier after presence', 'snapshot');
+      expect(liveClientsForUser(userId)).toMatchObject([{ visible: true }]);
+      // The admin diagnostic carries the same per-socket detail.
+      const row = presenceDiagnostics().find((r) => r.userId === userId);
+      expect(row).toMatchObject({
+        openSockets: 1,
+        visibleSockets: 1,
+        sockets: [{ userAgent: 'TestClient/1.0', visible: true }],
+      });
+    } finally {
+      await close();
+    }
+    expect(liveClientsForUser(userId)).toEqual([]);
+  });
+});

@@ -4,8 +4,10 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { getPublicKey } from '../services/pushService.js';
+import { getPublicKey, deliver } from '../services/pushService.js';
 import { senderFor } from '../services/push/index.js';
+import { listPushLogForUser } from '../db/pushLog.js';
+import { liveClientsForUser } from '../services/wsHub.js';
 import { advertisedRelay, relayAllows } from '../services/push/relay.js';
 import {
   upsertSubscription,
@@ -192,6 +194,44 @@ router.post('/heartbeat', (req: Request, res: Response) => {
   }
   const updated = heartbeatByEndpoint(req.user!.id, endpoint);
   res.json({ ok: true, present: updated });
+});
+
+// The push log (#1272): what this server did with each push that would have
+// reached the user, kept 7 days. A suppressed row names the gate; a sent row
+// is one device with the push service's answer. Newest first.
+export const PUSH_LOG_DEFAULT_LIMIT = 100;
+export const PUSH_LOG_MAX_LIMIT = 1000;
+
+export function parseLogLimit(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) return PUSH_LOG_DEFAULT_LIMIT;
+  return Math.min(n, PUSH_LOG_MAX_LIMIT);
+}
+
+router.get('/log', (req: Request, res: Response) => {
+  res.json({ log: listPushLogForUser(req.user!.id, parseLogLimit(req.query.limit)) });
+});
+
+// The user's open sockets, as push sees them: a client reporting itself
+// visible is why a push was held. Snapshot of the registry, mutates nothing.
+router.get('/clients', (req: Request, res: Response) => {
+  res.json({ clients: liveClientsForUser(req.user!.id) });
+});
+
+// Does push reach this account's devices at all? Every gate maybePush applies
+// is skipped on purpose — a visible tab, quiet hours, a disabled kind are the
+// usual reasons a real push is held, and this asks about the pipe, not the
+// policy. Logged like any other push, so the row is right there to read.
+router.post('/test', async (req: Request, res: Response) => {
+  const result = await deliver(req.user!.id, {
+    kind: 'test',
+    networkId: 0,
+    networkName: 'Lurker',
+    target: '',
+    text: 'Lurker can reach this device.',
+    time: new Date().toISOString(),
+  });
+  res.json(result);
 });
 
 export default router;
