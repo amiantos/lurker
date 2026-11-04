@@ -1867,12 +1867,15 @@ message_id, outcome, reason, transport, device, status}`. `outcome` is `sent`
 (one row per device; `status` is the push service's HTTP status — the relay's
 `201` means APNs/FCM accepted it), `failed` (`reason` is the sender's verdict
 and diagnostic) or `suppressed` (`reason` names the gate: `visible_client`,
-`no_devices`, `kind_disabled`, `manual_away`, `quiet_hours`, `oversize`,
-`relay_off`, `unconfigured`). A row never carries the message text. New reasons
-may appear; show an unknown one as-is.
+`kind_disabled`, `manual_away`, `quiet_hours`, `oversize`, `relay_off`,
+`unconfigured`). An account with no device registered gets no rows at all. A
+row never carries the message text. New reasons may appear; show an unknown
+one as-is.
 
-A `kind: 'test'` push carries `title` and `body` like any other and no buffer
-to open; a tap should do nothing beyond showing the app.
+A `kind: 'test'` push carries `title` and `body` like any other, and
+placeholder routing keys (`networkId: 0`, `target: 'test'`, no `bufferId`) so
+every parser accepts it. There is nothing to open: a tap should do nothing
+beyond showing the app.
 
 > ### ⚠ Native push is effectively first-party-only today
 >

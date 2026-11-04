@@ -880,13 +880,20 @@ describe('maybePush writes the push log', () => {
     }
   });
 
-  it('names a missing device, a disabled kind, a manual away, and quiet hours', async () => {
+  it('writes nothing for an account with no device, even with a client visible', async () => {
+    // A row per line for every push-less account would say what the device
+    // list already says; the device check stays the silent first bail.
     hasSubsMock = vi.fn<(userId: number) => boolean>(() => false);
-    emitDm();
-    expect(await reasons()).toEqual(['suppressed:no_devices']);
-    db.prepare('DELETE FROM push_log').run();
+    const close = await connectWithPresence(true);
+    try {
+      emitDm();
+      expect(await reasons()).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
 
-    hasSubsMock = vi.fn<(userId: number) => boolean>(() => true);
+  it('names a disabled kind, a manual away, and quiet hours', async () => {
     setUserSetting(userId, 'notifications.dm.enabled', false);
     emitDm();
     expect(await reasons()).toEqual(['suppressed:kind_disabled']);

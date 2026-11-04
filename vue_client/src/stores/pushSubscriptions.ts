@@ -33,7 +33,7 @@ export const usePushSubscriptionsStore = defineStore('pushSubscriptions', {
       this.clients = clients || [];
     },
     /** A push to every device, gates skipped; the log gets its rows. */
-    async sendTest(): Promise<{ sent: number; dropped: number }> {
+    async sendTest(): Promise<{ sent: number; dropped: number; devices: number }> {
       const result = await api('/api/push/test', { method: 'POST' });
       await this.fetchLog().catch(() => {});
       return result;

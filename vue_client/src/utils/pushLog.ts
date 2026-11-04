@@ -35,7 +35,6 @@ export interface LiveClient {
 /** What held a push, as a reader would say it. The server's names are the keys. */
 export const SUPPRESSED_REASONS: Record<string, string> = {
   visible_client: 'a client was visible',
-  no_devices: 'no device is registered',
   kind_disabled: 'this kind of alert is off',
   manual_away: 'muted while away',
   quiet_hours: 'quiet hours',
@@ -98,8 +97,8 @@ export function outcomeLabel(row: PushLogRow): string {
  * oldest first so it reads as a timeline, every field the server kept.
  */
 export function pushLogText(rows: PushLogRow[]): string {
-  return rows
-    .toReversed()
+  return [...rows]
+    .reverse()
     .map((r) => {
       const who = r.username ? `${r.username} ` : '';
       return `${r.at} ${who}${kindLabel(r.kind)} ${subjectLabel(r)} — ${outcomeLabel(r)}`;

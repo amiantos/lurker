@@ -222,16 +222,46 @@ router.get('/clients', (req: Request, res: Response) => {
 // is skipped on purpose — a visible tab, quiet hours, a disabled kind are the
 // usual reasons a real push is held, and this asks about the pipe, not the
 // policy. Logged like any other push, so the row is right there to read.
+//
+// `devices` is how many enabled subscriptions the account has, so the pane can
+// tell "nothing to send to" from "every device was held" (relay off, no
+// credentials) when sent and dropped are both zero.
+//
+// Real pushes are paced by IRC; this one is paced here: one per account per
+// TEST_PUSH_COOLDOWN_MS, or the button becomes a way to pour pushes into the
+// relay and APNs/FCM. 429 with Retry-After, like the relay's own cap.
+export const TEST_PUSH_COOLDOWN_MS = 5_000;
+const lastTestAt = new Map<number, number>();
+
 router.post('/test', async (req: Request, res: Response) => {
-  const result = await deliver(req.user!.id, {
+  const userId = req.user!.id;
+  const now = Date.now();
+  const last = lastTestAt.get(userId) ?? 0;
+  if (now - last < TEST_PUSH_COOLDOWN_MS) {
+    const retryAfter = Math.ceil((TEST_PUSH_COOLDOWN_MS - (now - last)) / 1000);
+    res.setHeader('Retry-After', String(retryAfter));
+    res.status(429).json({ error: `wait ${retryAfter}s between test pushes`, retryAfter });
+    return;
+  }
+  lastTestAt.set(userId, now);
+  const devices = listAllForUser(userId).filter((s) => s.enabled).length;
+  const result = await deliver(userId, {
     kind: 'test',
+    // Routing keys every client parses (the iOS relay extension refuses an
+    // empty target). Nothing to open: sw.js skips the jump for this kind, and
+    // the apps land where they would anyway.
     networkId: 0,
     networkName: 'Lurker',
-    target: '',
+    target: 'test',
     text: 'Lurker can reach this device.',
     time: new Date().toISOString(),
   });
-  res.json(result);
+  res.json({ ...result, devices });
 });
+
+/** Tests only: forget every cooldown. */
+export function resetTestPushCooldowns(): void {
+  lastTestAt.clear();
+}
 
 export default router;

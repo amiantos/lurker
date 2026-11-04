@@ -37,10 +37,13 @@ let bob: User;
 let pushLog: typeof import('../db/pushLog.js');
 let pushDb: typeof import('../db/pushSubscriptions.js');
 let db: typeof import('../db/index.js').default;
+let resetTestPushCooldowns: () => void;
 
 beforeAll(async () => {
   const { createUser } = await import('../db/users.js');
-  const router = (await import('./push.js')).default;
+  const pushRoutes = await import('./push.js');
+  const router = pushRoutes.default;
+  ({ resetTestPushCooldowns } = pushRoutes);
   pushLog = await import('../db/pushLog.js');
   pushDb = await import('../db/pushSubscriptions.js');
   db = (await import('../db/index.js')).default;
@@ -58,6 +61,7 @@ beforeEach(() => {
   db.prepare('DELETE FROM push_log').run();
   db.prepare('DELETE FROM push_subscriptions').run();
   sendNotification.mockReset();
+  resetTestPushCooldowns();
 });
 
 const subject = { kind: 'dm', networkId: 1, networkName: 'Libera', target: 'bob', nick: 'bob' };
@@ -113,8 +117,34 @@ describe('POST /api/push/test', () => {
   it('reports nothing sent for a user with no devices', async () => {
     const res = await aliceAgent.post('/api/push/test');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sent: 0, dropped: 0 });
+    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 0 });
     expect(sendNotification).not.toHaveBeenCalled();
+  });
+
+  it('counts the devices so "all held" reads differently from "none"', async () => {
+    // A relay device while the relay is off: deliver() holds it (relay_off).
+    pushDb.upsertSubscription(alice.id, {
+      transport: 'webpush',
+      endpoint: 'https://push.lurker.chat/relay-to/apns/x',
+      p256dh: 'k',
+      auth: 'a',
+    });
+    const res = await aliceAgent.post('/api/push/test');
+    expect(res.body).toEqual({ sent: 0, dropped: 0, devices: 1 });
+    expect(pushLog.listPushLogForUser(alice.id, 10)).toMatchObject([
+      { kind: 'test', outcome: 'suppressed', reason: 'relay_off' },
+    ]);
+  });
+
+  it('allows one test per account every few seconds, per account', async () => {
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    expect((await aliceAgent.post('/api/push/test')).status).toBe(200);
+    const again = await aliceAgent.post('/api/push/test');
+    expect(again.status).toBe(429);
+    expect(Number(again.headers['retry-after'])).toBeGreaterThan(0);
+    expect(again.body.retryAfter).toBeGreaterThan(0);
+    // Another account is not held by alice's cooldown.
+    expect((await bobAgent.post('/api/push/test')).status).toBe(200);
   });
 
   it("sends a test to every one of the caller's devices and logs each", async () => {
@@ -139,15 +169,19 @@ describe('POST /api/push/test', () => {
     sendNotification.mockResolvedValue({ statusCode: 201 });
     const res = await aliceAgent.post('/api/push/test');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ sent: 2, dropped: 0 });
+    expect(res.body).toEqual({ sent: 2, dropped: 0, devices: 2 });
     expect(sendNotification).toHaveBeenCalledTimes(2);
-    // What the device will show.
+    // What the device will show, with routing keys every parser accepts (the
+    // iOS relay extension refuses an empty target) and nothing to open.
     const body = JSON.parse(sendNotification.mock.calls[0][1] as string);
     expect(body).toMatchObject({
       kind: 'test',
       title: 'Test notification',
       body: 'Lurker can reach this device.',
+      networkId: 0,
+      target: 'test',
     });
+    expect(body.bufferId).toBeUndefined();
     // Each device's row, with the service's answer; bob has none.
     expect(pushLog.listPushLogForUser(alice.id, 10)).toMatchObject([
       { kind: 'test', outcome: 'sent', status: 201, device: 'push.example' },
@@ -172,6 +206,10 @@ describe('POST /api/push/test', () => {
       auth: 'a',
     });
     sendNotification.mockResolvedValue({ statusCode: 201 });
-    expect((await aliceAgent.post('/api/push/test')).body).toEqual({ sent: 1, dropped: 0 });
+    expect((await aliceAgent.post('/api/push/test')).body).toEqual({
+      sent: 1,
+      dropped: 0,
+      devices: 1,
+    });
   });
 });

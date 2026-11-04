@@ -2309,8 +2309,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     if (!decorated || !decorated.notify) return;
     if (decorated.self) return;
     // From here on this is a push that WOULD have gone out, and every way it
-    // doesn't is a row in the push log (#1272). `kindKey` is settled first so a
-    // suppressed row says what kind of push it was.
+    // doesn't (past the device check) is a row in the push log (#1272).
+    // `kindKey` is settled first so a suppressed row says what kind it was.
     const kindKey: PushPayloadKind = decorated.selfKicked
       ? 'kicked'
       : decorated.dm
@@ -2327,15 +2327,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       nick: decorated.nick,
       messageId: decorated.id,
     };
-    if (userHasVisibleClient(userId)) {
-      logSuppressed(userId, subject, 'visible_client');
-      return;
-    }
     // No push device subscribed → nothing to deliver, and no reason to compute
     // the badge total below (it's an O(buffers) scan). deliver() would no-op on
     // an empty subscription set anyway — bail before the work (#451 review).
-    if (!pushService.hasSubscriptions(userId)) {
-      logSuppressed(userId, subject, 'no_devices');
+    // Not logged: it would be a row per line for every account that never
+    // registered a device, saying what the device list already says.
+    if (!pushService.hasSubscriptions(userId)) return;
+    if (userHasVisibleClient(userId)) {
+      logSuppressed(userId, subject, 'visible_client');
       return;
     }
     // The ignore/mute veto — a hide-level or NONOTIFY rule (a muted
@@ -2393,8 +2392,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // Same early bail the message path uses: deliver() runs ensureVapid()
     // BEFORE its own empty-subscription check, so without this every
     // came-online event on a push-less account still does VAPID + DB work.
-    // Nothing is logged before the favorite check: every peer of every DM comes
-    // online, and only a favorite's doing so is a push that didn't happen.
+    if (!pushService.hasSubscriptions(userId)) return;
+    // Nothing is logged before the favorite check either: every peer of every
+    // DM comes online, and only a favorite's doing so is a push that didn't happen.
     if (!isFavoriteDmPeer(userId, networkId, nick)) return;
     const network = ircManager.getConnection(userId, networkId)?.network;
     const subject = {
@@ -2404,10 +2404,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       target: nick,
       nick,
     };
-    if (!pushService.hasSubscriptions(userId)) {
-      logSuppressed(userId, subject, 'no_devices');
-      return;
-    }
     if (userHasVisibleClient(userId)) {
       logSuppressed(userId, subject, 'visible_client');
       return;

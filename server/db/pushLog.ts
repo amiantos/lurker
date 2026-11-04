@@ -12,8 +12,16 @@
 // Never the message text. The admin view shows every user's rows.
 
 import db from './index.js';
+import type { Statement } from 'better-sqlite3';
 
 export const PUSH_LOG_DAYS = 7;
+
+// Prepared once, on first use: a write per held highlight sits on the WS
+// fan-out path, and better-sqlite3 re-plans anything prepared per call.
+const stmts: Record<string, Statement> = {};
+function stmt(key: string, sql: string): Statement {
+  return (stmts[key] ??= db.prepare(sql));
+}
 
 export type PushLogOutcome = 'sent' | 'failed' | 'suppressed';
 
@@ -25,7 +33,6 @@ export type PushLogOutcome = 'sent' | 'failed' | 'suppressed';
  */
 export type PushSuppressedReason =
   | 'visible_client'
-  | 'no_devices'
   | 'kind_disabled'
   | 'not_favorite'
   | 'manual_away'
@@ -73,7 +80,8 @@ export interface PushLogEntry extends PushLogSubject {
 }
 
 export function recordPushLog(userId: number, entry: PushLogEntry, at = new Date()): void {
-  db.prepare(
+  stmt(
+    'insert',
     `INSERT INTO push_log (user_id, at, kind, network_id, network_name, target, nick, message_id,
                            outcome, reason, transport, device, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -95,9 +103,10 @@ export function recordPushLog(userId: number, entry: PushLogEntry, at = new Date
 }
 
 export function listPushLogForUser(userId: number, limit: number): PushLogRow[] {
-  return db
-    .prepare('SELECT * FROM push_log WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT ?')
-    .all(userId, limit) as PushLogRow[];
+  return stmt(
+    'forUser',
+    'SELECT * FROM push_log WHERE user_id = ? ORDER BY at DESC, id DESC LIMIT ?',
+  ).all(userId, limit) as PushLogRow[];
 }
 
 /** Every user's rows (admin), optionally one user's, with the username joined on. */
@@ -118,5 +127,5 @@ export function listPushLog(
 /** Drop rows older than PUSH_LOG_DAYS. Returns how many went. */
 export function prunePushLog(now = new Date()): number {
   const cutoff = new Date(now.getTime() - PUSH_LOG_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  return db.prepare('DELETE FROM push_log WHERE at < ?').run(cutoff).changes;
+  return stmt('prune', 'DELETE FROM push_log WHERE at < ?').run(cutoff).changes;
 }

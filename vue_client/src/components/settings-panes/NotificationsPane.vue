@@ -422,14 +422,18 @@ async function onSendTest() {
   testBusy.value = true;
   testResult.value = '';
   try {
-    const { sent, dropped } = await pushSubsStore.sendTest();
-    if (sent === 0 && dropped === 0) testResult.value = 'no device to send to';
+    const { sent, dropped, devices } = await pushSubsStore.sendTest();
+    if (devices === 0) testResult.value = 'no device to send to';
+    else if (sent === 0 && dropped === 0) testResult.value = 'held for every device — see the log';
     else {
       const n = sent === 1 ? '1 device' : `${sent} devices`;
       testResult.value = dropped ? `sent to ${n}, ${dropped} failed` : `sent to ${n}`;
     }
   } catch (e: any) {
-    testResult.value = e.message || 'failed to send';
+    testResult.value =
+      e?.status === 429
+        ? 'one test every few seconds — try again shortly'
+        : e.message || 'failed to send';
   } finally {
     testBusy.value = false;
   }
