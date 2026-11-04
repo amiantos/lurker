@@ -1858,6 +1858,21 @@ the self-hosted push relay (see below).
 | `DELETE /api/push/devices`                | `{token}` — **call before `POST /api/auth/logout`**, while the session still authenticates                                      |
 | `POST/GET/DELETE /api/push/subscriptions` | Web Push (VAPID) subscription CRUD                                                                                              |
 | `POST /api/push/heartbeat`                | `{endpoint}` — Web Push liveness                                                                                                |
+| `GET /api/push/log?limit=`                | `{log: [...]}` — the caller's push log (#1272): one row per push attempt, newest first, 7 days. `limit` 1–1000, default 100     |
+| `GET /api/push/clients`                   | `{clients: [{userAgent, connectedAt, visible}]}` — the caller's open sockets, as the push gate sees them                        |
+| `POST /api/push/test`                     | → `{sent, dropped}`. A `kind: 'test'` push to every one of the caller's devices, skipping every gate; logged like any other     |
+
+A push log row is `{id, at, kind, network_id, network_name, target, nick,
+message_id, outcome, reason, transport, device, status}`. `outcome` is `sent`
+(one row per device; `status` is the push service's HTTP status — the relay's
+`201` means APNs/FCM accepted it), `failed` (`reason` is the sender's verdict
+and diagnostic) or `suppressed` (`reason` names the gate: `visible_client`,
+`no_devices`, `kind_disabled`, `manual_away`, `quiet_hours`, `oversize`,
+`relay_off`, `unconfigured`). A row never carries the message text. New reasons
+may appear; show an unknown one as-is.
+
+A `kind: 'test'` push carries `title` and `body` like any other and no buffer
+to open; a tap should do nothing beyond showing the app.
 
 > ### ⚠ Native push is effectively first-party-only today
 >
