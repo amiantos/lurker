@@ -225,6 +225,7 @@ export const NON_BUFFER_TARGET_TABLES: readonly string[] = [
   'system_messages', // scope = message origin ('lurker')
   'uploader_config', // scope = 'instance' | 'user'
   'buffers', // target/target_folded ARE the name — the one place it lives
+  'push_log', // a week of diagnostics (#1272): target is what a push was ABOUT, never resolved back
 ];
 
 /**

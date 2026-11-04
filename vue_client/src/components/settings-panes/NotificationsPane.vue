@@ -32,7 +32,15 @@
 
     <ul v-if="otherSubscriptions.length" class="device-list">
       <li v-for="sub in otherSubscriptions" :key="sub.id" class="device">
-        <span class="ua">{{ deviceLabel(sub) }}</span>
+        <span class="ua">
+          {{ deviceLabel(sub) }}
+          <span
+            v-if="!sub.enabled"
+            class="muted"
+            title="Push kept failing for this device; enable push again from it."
+            >disabled</span
+          >
+        </span>
         <span class="last-seen" :title="sub.last_seen_at"
           >last seen {{ formatRelative(sub.last_seen_at) }}</span
         >
@@ -47,6 +55,54 @@
     </ul>
     <p v-else-if="pushSubsStore.loaded && thisClientEnabled" class="muted small">
       No other devices registered.
+    </p>
+
+    <p class="test-push">
+      <button class="link" type="button" :disabled="pushBusy || testBusy" @click="onSendTest">
+        {{ testBusy ? 'sending…' : 'send a test push' }}
+      </button>
+      <span v-if="testResult" class="muted small">{{ testResult }}</span>
+    </p>
+    <p class="muted small">
+      A test skips every rule below and goes to every device, so it answers whether push reaches you
+      at all. The log underneath says what happened to each real one.
+    </p>
+
+    <hr class="hl-sep" />
+    <h3 class="subhead">current clients</h3>
+    <p class="section-desc">
+      Push fires only while none of these is visible. A tab you left in front, or the app open on
+      your phone, is the usual reason a notification stayed put.
+    </p>
+    <ul v-if="pushSubsStore.clients.length" class="device-list">
+      <li v-for="(c, i) in pushSubsStore.clients" :key="i" class="device">
+        <span class="ua">{{ clientLabel(c.userAgent) }}</span>
+        <span class="last-seen">{{ c.visible ? 'visible' : 'in the background' }}</span>
+        <span v-if="c.connectedAt" class="last-seen" :title="c.connectedAt"
+          >since {{ formatRelative(c.connectedAt) }}</span
+        >
+      </li>
+    </ul>
+    <p v-else class="muted small">No client is connected.</p>
+
+    <hr class="hl-sep" />
+    <h3 class="subhead">recent pushes</h3>
+    <p class="section-desc">
+      Every notification this server tried to send you in the last week, and what became of it. A
+      "sent" line means the push service took it; after that it's the device's.
+    </p>
+    <ul v-if="pushSubsStore.log.length" class="push-log">
+      <li v-for="row in pushSubsStore.log" :key="row.id" class="push-row" :class="row.outcome">
+        <span class="when" :title="row.at">{{ formatDateTime(row.at) }}</span>
+        <span class="what">{{ kindLabel(row.kind) }} · {{ subjectLabel(row) }}</span>
+        <span class="how">{{ outcomeLabel(row) }}</span>
+      </li>
+    </ul>
+    <p v-else-if="pushSubsStore.logLoaded" class="muted small">Nothing in the last week.</p>
+    <p v-if="pushSubsStore.logHasMore">
+      <button class="link" type="button" :disabled="olderBusy" @click="onOlderLog">
+        {{ olderBusy ? 'loading…' : 'show older' }}
+      </button>
     </p>
 
     <hr class="hl-sep" />
@@ -241,7 +297,8 @@ import { usePushSubscriptionsStore } from '../../stores/pushSubscriptions.js';
 import type { PushSubscription } from '../../stores/pushSubscriptions.js';
 import { useChannelNotifyStore } from '../../stores/channelNotify.js';
 import { useNetworksStore } from '../../stores/networks.js';
-import { formatRelative } from '../../utils/timestamp.js';
+import { formatRelative, formatDateTime } from '../../utils/timestamp.js';
+import { clientLabel, kindLabel, outcomeLabel, subjectLabel } from '../../utils/pushLog.js';
 import { getOption } from '../../utils/settingsRegistry.js';
 import { playSound } from '../../composables/useHighlightNotifier.js';
 import IconButton from '../IconButton.vue';
@@ -262,6 +319,7 @@ interface StoredPushSub extends PushSubscription {
   id: string;
   transport: string;
   user_agent: string | null;
+  enabled: boolean;
   last_seen_at: string;
 }
 
@@ -273,6 +331,9 @@ const networksStore = useNetworksStore();
 const pushSupported = isPushSupported();
 const pushError = ref('');
 const pushBusy = ref(false);
+const testBusy = ref(false);
+const testResult = ref('');
+const olderBusy = ref(false);
 const currentEndpoint = ref<string | null>(null);
 
 const thisClientEnabled = computed(() => {
@@ -364,7 +425,36 @@ onMounted(() => {
     });
     refreshPushState();
   }
+  // The log and the client list are about the account, not this browser, so
+  // they load even where push itself isn't supported.
+  pushSubsStore.fetchLog().catch((e: any) => {
+    pushError.value = e.message || 'failed to load the push log';
+  });
+  pushSubsStore.fetchClients().catch(() => {});
 });
+
+async function onSendTest() {
+  testBusy.value = true;
+  testResult.value = '';
+  try {
+    const { sent, dropped, devices, disabled } = await pushSubsStore.sendTest();
+    const off = disabled ? ` (${disabled} disabled after repeated failures)` : '';
+    if (devices === 0) testResult.value = `no device to send to${off}`;
+    else if (sent === 0 && dropped === 0) {
+      testResult.value = `held for every device — see the log${off}`;
+    } else {
+      const n = sent === 1 ? '1 device' : `${sent} devices`;
+      testResult.value = (dropped ? `sent to ${n}, ${dropped} failed` : `sent to ${n}`) + off;
+    }
+  } catch (e: any) {
+    testResult.value =
+      e?.status === 429
+        ? 'one test every few seconds — try again shortly'
+        : e.message || 'failed to send';
+  } finally {
+    testBusy.value = false;
+  }
+}
 
 async function onCommit(key: string, value: SettingValue) {
   try {
@@ -391,6 +481,17 @@ function onVolumeInput(kindKey: string, raw: string) {
 
 function removeAlwaysNotify(networkId: number, target: string) {
   channelNotify.setNotifyAlways(networkId, target, false);
+}
+
+async function onOlderLog() {
+  olderBusy.value = true;
+  try {
+    await pushSubsStore.fetchOlderLog();
+  } catch (e: any) {
+    pushError.value = e.message || 'failed to load older rows';
+  } finally {
+    olderBusy.value = false;
+  }
 }
 
 async function onEnableThisClient() {
@@ -437,29 +538,49 @@ async function onRemoveOther(sub: StoredPushSub) {
 function deviceLabel(sub: StoredPushSub): string {
   if (sub.transport === 'apns') return 'Lurker for iOS';
   if (sub.transport === 'fcm') return 'Lurker for Android';
-  return formatUA(sub.user_agent);
-}
-
-function formatUA(ua: string | null | undefined): string {
-  if (!ua) return 'unknown device';
-  // Cheap parser: extract a recognizable browser + OS pair from a UA string.
-  let browser = 'browser';
-  if (/Firefox\//.test(ua)) browser = 'Firefox';
-  else if (/Edg\//.test(ua)) browser = 'Edge';
-  else if (/Chrome\//.test(ua)) browser = 'Chrome';
-  else if (/Safari\//.test(ua)) browser = 'Safari';
-  let os = '';
-  if (/iPhone|iPad/.test(ua)) os = 'iOS';
-  else if (/Android/.test(ua)) os = 'Android';
-  else if (/Mac OS X/.test(ua)) os = 'macOS';
-  else if (/Windows/.test(ua)) os = 'Windows';
-  else if (/Linux/.test(ua)) os = 'Linux';
-  return os ? `${browser} on ${os}` : browser;
+  return clientLabel(sub.user_agent);
 }
 </script>
 
 <style src="./panes.css"></style>
 <style scoped>
+.test-push {
+  display: flex;
+  align-items: center;
+  gap: 1ch;
+  margin: 0 0 var(--space-2);
+}
+.push-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.push-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--space-6);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.push-row:first-child {
+  border-top: none;
+}
+.push-row .when {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.push-row .how {
+  grid-column: 2;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.push-row.sent .how {
+  color: var(--fg);
+}
+.push-row.failed .how {
+  color: var(--bad);
+}
 .this-client {
   display: flex;
   align-items: center;

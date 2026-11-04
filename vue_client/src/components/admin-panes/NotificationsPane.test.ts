@@ -47,6 +47,10 @@ async function mountPane(initial: AdminPushConfig): Promise<VueWrapper> {
   store.refreshRelayStatus = refreshStatus as unknown as typeof store.refreshRelayStatus;
   setRelay = vi.fn<(enabled: boolean) => Promise<number>>().mockResolvedValue(0);
   store.setPushRelayEnabled = setRelay as unknown as typeof store.setPushRelayEnabled;
+  // The pane also loads the push log and the connected clients (#1272); neither
+  // is this file's subject, and neither may reach for a server.
+  store.fetchPushLog = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  store.fetchPresence = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const wrapper = mount(NotificationsPane);
   await flushPromises();
   return wrapper;

@@ -49,7 +49,7 @@ const payload: PushPayload = {
 };
 
 const send = () => apnsSender.send(sub, payload, composeNotification(payload));
-const failureOf = (p: Promise<void>) =>
+const failureOf = (p: Promise<unknown>) =>
   p.then(
     () => null,
     (e: unknown) => e,

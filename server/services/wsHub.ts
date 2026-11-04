@@ -107,6 +107,8 @@ import {
   getChannelFlags,
 } from '../db/channelNotify.js';
 import { getNetworkAwayState, isAwayRow, listNetworkAwayStates } from '../db/networkAwayState.js';
+import { recordPushLog, type PushLogEntry, type PushSuppressedReason } from '../db/pushLog.js';
+import type { PushPayloadKind } from './notificationContent.js';
 import {
   evaluatePresence,
   clearAutoAway,
@@ -130,6 +132,10 @@ interface LurkerWebSocket extends WebSocket {
   userId?: number;
   sinceId?: number;
   presence?: { visible: boolean };
+  // What connected and when, for the "current clients" lists (#1272): a user
+  // seeing "Safari on macOS, visible" is the answer to why a push was held.
+  userAgent?: string | null;
+  connectedAt?: string;
   // Liveness flag for the heartbeat reaper (see sweepWsHeartbeat). Set true on
   // connect and on every pong; set false right before each ping. A socket still
   // false at the next sweep missed a full interval's pong and is terminated as
@@ -2043,10 +2049,19 @@ export function sweepWsHeartbeat(sockets: Iterable<LurkerWebSocket>): number {
 // operator watch a dead socket (e.g. a slept laptop) get reaped by the
 // heartbeat and the user flip to away, confirming the fix on a live cell.
 // Mutates nothing.
+export interface LiveClient {
+  userAgent: string | null;
+  connectedAt: string | null;
+  visible: boolean;
+}
+
 export interface PresenceDiagnosticRow {
   userId: number;
   openSockets: number;
   visibleSockets: number;
+  // One per open socket (#1272), so the admin pane can say WHICH client is
+  // holding a user visible. Additive: the counts above are what older readers use.
+  sockets: LiveClient[];
   // One entry per network that has an away row (#994).
   away: {
     networkId: number;
@@ -2057,15 +2072,34 @@ export interface PresenceDiagnosticRow {
   }[];
 }
 
+function liveClient(ws: LurkerWebSocket): LiveClient {
+  return {
+    userAgent: ws.userAgent ?? null,
+    connectedAt: ws.connectedAt ?? null,
+    visible: !!ws.presence?.visible,
+  };
+}
+
+/** A user's own open sockets, for Settings → Notifications (#1272). */
+export function liveClientsForUser(userId: number): LiveClient[] {
+  const out: LiveClient[] = [];
+  for (const ws of socketsByUser.get(userId) ?? []) {
+    if (ws.readyState === ws.OPEN) out.push(liveClient(ws));
+  }
+  return out;
+}
+
 export function presenceDiagnostics(): PresenceDiagnosticRow[] {
   const rows: PresenceDiagnosticRow[] = [];
   for (const [userId, set] of socketsByUser) {
     let openSockets = 0;
     let visibleSockets = 0;
+    const sockets: LiveClient[] = [];
     for (const ws of set) {
       if (ws.readyState !== ws.OPEN) continue;
       openSockets += 1;
       if (ws.presence?.visible) visibleSockets += 1;
+      sockets.push(liveClient(ws));
     }
     // A user key lingers while their set is non-empty, but every socket in it
     // can be mid-teardown (CLOSING/CLOSED) before the 'close' handler prunes it.
@@ -2076,6 +2110,7 @@ export function presenceDiagnostics(): PresenceDiagnosticRow[] {
       userId,
       openSockets,
       visibleSockets,
+      sockets,
       away: listNetworkAwayStates(userId).map((awayRow) => ({
         networkId: awayRow.network_id,
         active: isAwayRow(awayRow),
@@ -2215,10 +2250,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // /away on the network the push comes from (when mute_when_away is on —
   // auto-away is the case push matters most, so it's not gated) and the user's
   // configured quiet-hours window.
-  function pushQuietOrAway(userId: number, networkId: number): boolean {
+  // Returns the gate that holds the push, or null: the push log names it (#1272).
+  function pushQuietOrAway(userId: number, networkId: number): PushSuppressedReason | null {
     if (effectiveSetting(userId, 'notifications.push.mute_when_away')) {
       const away = getNetworkAwayState(networkId);
-      if (isAwayRow(away) && !away!.auto_set) return true;
+      if (isAwayRow(away) && !away!.auto_set) return 'manual_away';
     }
     if (effectiveSetting(userId, 'notifications.push.quiet_hours.enabled')) {
       const startMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.start'));
@@ -2226,10 +2262,25 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       if (startMin != null && endMin != null) {
         const tz = effectiveSetting(userId, 'system.timezone');
         const currentMin = currentMinutesInZone(new Date(), tz);
-        if (isInQuietWindow(currentMin, startMin, endMin)) return true;
+        if (isInQuietWindow(currentMin, startMin, endMin)) return 'quiet_hours';
       }
     }
-    return false;
+    return null;
+  }
+
+  // A push that maybePush held back, in the log (#1272). Rows for what
+  // deliver() does with the ones that get through are written there. Best
+  // effort: the log never gets to break the gate chain.
+  function logSuppressed(
+    userId: number,
+    subject: Omit<PushLogEntry, 'outcome' | 'reason'>,
+    reason: PushSuppressedReason,
+  ): void {
+    try {
+      recordPushLog(userId, { ...subject, outcome: 'suppressed', reason });
+    } catch (err) {
+      console.warn('[push] log write failed:', (err as Error)?.message || err);
+    }
   }
 
   // The user's ignore verdict for a decorated event. Thin wrapper over the
@@ -2257,11 +2308,35 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   function maybePush(userId: number, decorated: DecoratedEvent): void {
     if (!decorated || !decorated.notify) return;
     if (decorated.self) return;
-    if (userHasVisibleClient(userId)) return;
+    // From here on this is a push that WOULD have gone out, and every way it
+    // doesn't (past the device check) is a row in the push log (#1272).
+    // `kindKey` is settled first so a suppressed row says what kind it was.
+    const kindKey: PushPayloadKind = decorated.selfKicked
+      ? 'kicked'
+      : decorated.dm
+        ? 'dm'
+        : decorated.matched
+          ? 'highlight'
+          : 'always_notify';
+    const network = ircManager.getConnection(userId, decorated.networkId)?.network;
+    const subject = {
+      kind: kindKey,
+      networkId: decorated.networkId,
+      networkName: network?.name || `net:${decorated.networkId}`,
+      target: decorated.target,
+      nick: decorated.nick,
+      messageId: decorated.id,
+    };
     // No push device subscribed → nothing to deliver, and no reason to compute
     // the badge total below (it's an O(buffers) scan). deliver() would no-op on
     // an empty subscription set anyway — bail before the work (#451 review).
+    // Not logged: it would be a row per line for every account that never
+    // registered a device, saying what the device list already says.
     if (!pushService.hasSubscriptions(userId)) return;
+    if (userHasVisibleClient(userId)) {
+      logSuppressed(userId, subject, 'visible_client');
+      return;
+    }
     // The ignore/mute veto — a hide-level or NONOTIFY rule (a muted
     // channel/network/sender — issue #359) — is already folded into
     // `decorated.notify` by decorateMessage, so the `notify` gate above has
@@ -2272,34 +2347,28 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // render filter stay reactive client-side, so /unignore still reveals. A
     // NOHIGHLIGHT rule deliberately does NOT freeze push — the message is still
     // visible, it just doesn't highlight.
-    // Signal kind in priority order: kicked beats DM beats matched beats
-    // always_notify. The `kind` doubles as the settings-key namespace, so
-    // picking a single priority winner here means a DM that also matched a rule
-    // still delivers as one notification, gated by the DM master toggle.
-    // `kicked` leads because it's the only one that can't overlap — a kick is
-    // never a DM and never matches a highlight — so its position is a statement
-    // about reading order, not a tiebreak.
-    const kindKey = decorated.selfKicked
-      ? 'kicked'
-      : decorated.dm
-        ? 'dm'
-        : decorated.matched
-          ? 'highlight'
-          : 'always_notify';
-    if (!effectiveSetting(userId, `notifications.${kindKey}.enabled`)) return;
-    if (pushQuietOrAway(userId, decorated.networkId)) return;
-    const network = ircManager.getConnection(userId, decorated.networkId)?.network;
+    // Signal kind in priority order (kindKey above): kicked beats DM beats
+    // matched beats always_notify. The `kind` doubles as the settings-key
+    // namespace, so picking a single priority winner means a DM that also
+    // matched a rule still delivers as one notification, gated by the DM master
+    // toggle. `kicked` leads because it's the only one that can't overlap — a
+    // kick is never a DM and never matches a highlight — so its position is a
+    // statement about reading order, not a tiebreak.
+    if (!effectiveSetting(userId, `notifications.${kindKey}.enabled`)) {
+      logSuppressed(userId, subject, 'kind_disabled');
+      return;
+    }
+    const held = pushQuietOrAway(userId, decorated.networkId);
+    if (held) {
+      logSuppressed(userId, subject, held);
+      return;
+    }
     pushService
       .deliver(userId, {
-        kind: kindKey,
-        networkId: decorated.networkId,
-        networkName: network?.name || `net:${decorated.networkId}`,
-        target: decorated.target,
+        ...subject,
         bufferId: decorated.bufferId,
-        nick: decorated.nick,
         text: decorated.text,
         time: decorated.time,
-        messageId: decorated.id,
         // Current unread-highlight total so the SW can set the app-icon badge
         // (#451). The triggering message is already persisted at this point, so
         // the count includes it.
@@ -2324,11 +2393,30 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // BEFORE its own empty-subscription check, so without this every
     // came-online event on a push-less account still does VAPID + DB work.
     if (!pushService.hasSubscriptions(userId)) return;
-    if (userHasVisibleClient(userId)) return;
-    if (!effectiveSetting(userId, 'notifications.friend_online.enabled')) return;
+    // Nothing is logged before the favorite check either: every peer of every
+    // DM comes online, and only a favorite's doing so is a push that didn't happen.
     if (!isFavoriteDmPeer(userId, networkId, nick)) return;
-    if (pushQuietOrAway(userId, networkId)) return;
     const network = ircManager.getConnection(userId, networkId)?.network;
+    const subject = {
+      kind: 'friend_online' as const,
+      networkId,
+      networkName: network?.name || `net:${networkId}`,
+      target: nick,
+      nick,
+    };
+    if (userHasVisibleClient(userId)) {
+      logSuppressed(userId, subject, 'visible_client');
+      return;
+    }
+    if (!effectiveSetting(userId, 'notifications.friend_online.enabled')) {
+      logSuppressed(userId, subject, 'kind_disabled');
+      return;
+    }
+    const held = pushQuietOrAway(userId, networkId);
+    if (held) {
+      logSuppressed(userId, subject, held);
+      return;
+    }
     pushService
       .deliver(userId, {
         kind: 'friend_online',
@@ -2755,6 +2843,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       lurkerWs.protocolVersion = clientVersion ?? PROTOCOL_VERSION;
       lurkerWs.presence = { visible: false };
       lurkerWs.isAlive = true;
+      lurkerWs.userAgent = req.headers['user-agent']?.slice(0, 300) ?? null;
+      lurkerWs.connectedAt = new Date().toISOString();
       lurkerWs.accountPaused = user.is_paused === 1;
       if (oauthTokenId !== null) lurkerWs.oauthTokenId = oauthTokenId;
       addSocket(user.id, lurkerWs);

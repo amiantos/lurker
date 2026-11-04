@@ -22,6 +22,25 @@ How Lurker keeps you informed across all your devices.
 - Enabling push so you're notified even when no tab is open.
 - Per-device behavior and presence.
 
+## Checking push
+
+A notification that never arrived has a trail. Under **Settings → Notifications**:
+
+- **send a test push** goes to every device you have registered, skipping quiet
+  hours, the visible-client rule and every other gate. If the test arrives and a
+  real one didn't, a rule held the real one.
+- **current clients** lists what is connected to your account right now and
+  whether it reports itself visible. Push fires only while nothing is visible,
+  so a tab left in front, or the app open on your phone, is the usual reason.
+- **recent pushes** is the last week of notifications the server tried to send
+  you, each with what happened: _held_ and the rule, _sent_ and the push
+  service's answer, or _failed_ and why. A "sent" line means the push service
+  accepted it; whether the device showed it is then up to the device (Focus
+  modes, notification permission, the app force-quit).
+
+An admin sees everyone's log and connected clients under **Admin →
+Notifications**, with a copy button for pasting it into a bug report.
+
 ## The iOS and Android apps
 
 - The apps use native push. On lurker.chat it's built in. On a self-hosted server the

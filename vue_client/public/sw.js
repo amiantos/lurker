@@ -101,17 +101,24 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
   const { networkId, target, messageId, bufferId } = data;
+  // A test push (#1272) is about the pipe, not a buffer: its routing keys are
+  // placeholders, so a tap only brings the app forward.
+  const nowhere = data.kind === 'test';
   event.waitUntil(
     (async () => {
       const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of list) {
         if (client.url.includes(self.registration.scope.replace(/\/$/, ''))) {
           client.focus();
-          client.postMessage({ kind: 'jump', networkId, target, messageId });
+          if (!nowhere) client.postMessage({ kind: 'jump', networkId, target, messageId });
           return;
         }
       }
       if (self.clients.openWindow) {
+        if (nowhere) {
+          await self.clients.openWindow('/');
+          return;
+        }
         // Cold launch: the app isn't running, so the only channel for the jump
         // target is the URL (a postMessage would race the not-yet-registered
         // listener). Prefer the id form — it's a real client route, so the app

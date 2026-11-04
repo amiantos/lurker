@@ -6,6 +6,10 @@ import type { AccountRestrictions } from '../../../shared/accountRestrictions.js
 import { api, type ApiError } from '../api.js';
 import type { RelayStatus } from '../../../shared/relayStatus.js';
 import type { AdminUploader, UploaderDriver } from '../utils/uploaders.js';
+import type { LiveClient, PushLogRow } from '../utils/pushLog.js';
+
+/** The server's default page of push log rows; a full page means there may be more. */
+const PUSH_LOG_PAGE = 100;
 
 export interface AdminUser {
   id: number;
@@ -101,6 +105,22 @@ export interface AdminPushConfig {
 
 export type { RelayStatus as AdminRelayStatus } from '../../../shared/relayStatus.js';
 
+/** GET /api/admin/presence: a connected user and the sockets holding them so. */
+export interface AdminPresenceRow {
+  userId: number;
+  username: string | null;
+  openSockets: number;
+  visibleSockets: number;
+  sockets: LiveClient[];
+  away: {
+    networkId: number;
+    active: boolean;
+    autoSet: boolean;
+    since: string | null;
+    message: string | null;
+  }[];
+}
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: [] as AdminUser[],
@@ -152,6 +172,13 @@ export const useAdminStore = defineStore('admin', {
     invitesFetchSeq: 0,
     lockoutsFetchSeq: 0,
     pushFetchSeq: 0,
+    // The push log and connected clients (#1272), under Admin → Notifications.
+    pushLog: [] as PushLogRow[],
+    pushLogLoaded: false,
+    pushLogHasMore: false,
+    pushLogSeq: 0,
+    presence: [] as AdminPresenceRow[],
+    presenceSeq: 0,
     loading: false,
     error: '',
   }),
@@ -383,6 +410,32 @@ export const useAdminStore = defineStore('admin', {
       // Refetch rather than assign: the server 409s this when no presets exist,
       // and the throw must leave the checkbox showing the truth, not the attempt.
       await this.fetchNetworkPresets();
+    },
+    // Answers land in request order or not at all (the refresh button can
+    // overlap the pane's first load).
+    async fetchPushLog() {
+      const seq = ++this.pushLogSeq;
+      const { log } = await api('/api/admin/push/log');
+      if (seq !== this.pushLogSeq) return;
+      this.pushLog = log || [];
+      this.pushLogLoaded = true;
+      this.pushLogHasMore = this.pushLog.length >= PUSH_LOG_PAGE;
+    },
+    async fetchOlderPushLog() {
+      const last = this.pushLog.at(-1);
+      if (!last) return;
+      const seq = ++this.pushLogSeq;
+      const { log } = await api(`/api/admin/push/log?before=${last.id}`);
+      if (seq !== this.pushLogSeq) return;
+      const older: PushLogRow[] = log || [];
+      this.pushLog = [...this.pushLog, ...older];
+      this.pushLogHasMore = older.length >= PUSH_LOG_PAGE;
+    },
+    async fetchPresence() {
+      const seq = ++this.presenceSeq;
+      const { presence } = await api('/api/admin/presence');
+      if (seq !== this.presenceSeq) return;
+      this.presence = presence || [];
     },
     async fetchPush() {
       const seq = ++this.pushFetchSeq;

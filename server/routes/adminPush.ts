@@ -20,6 +20,8 @@ import { PUSH_TRANSPORTS } from '../db/pushSubscriptions.js';
 import { pushRelayEnabled } from '../db/instanceSettings.js';
 import { RELAY_ORIGIN, relayDeviceCount, setRelayEnabled } from '../services/push/relay.js';
 import { peekRelayStatus, relayStatus, type RelayStatus } from '../services/push/relayStatus.js';
+import { listPushLog } from '../db/pushLog.js';
+import { parseBefore, parseLogLimit } from './push.js';
 
 const router = Router();
 
@@ -86,6 +88,24 @@ router.put('/relay', async (req: Request, res: Response) => {
   }
   const removed = setRelayEnabled(enabled);
   res.json({ ...payload(status), removed });
+});
+
+// Every user's push log (#1272), newest first, with the username on each row;
+// `?user=<id>` narrows it to one. What an admin pastes into a bug report when
+// someone says the relay dropped a notification.
+router.get('/log', (req: Request, res: Response) => {
+  const raw = req.query.user;
+  let userId: number | null = null;
+  if (raw !== undefined) {
+    userId = Number(raw);
+    if (!Number.isInteger(userId) || userId < 1) {
+      res.status(400).json({ error: 'user must be a positive integer' });
+      return;
+    }
+  }
+  res.json({
+    log: listPushLog(parseLogLimit(req.query.limit), userId, parseBefore(req.query.before)),
+  });
 });
 
 export default router;

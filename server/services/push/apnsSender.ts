@@ -249,7 +249,7 @@ export const apnsSender: PushSender = {
     sub: PushSubscription,
     payload: PushPayload,
     content: NotificationContent,
-  ): Promise<void> {
+  ): Promise<number> {
     const creds = configuredApns();
     if (!creds) throw new Error('APNs is not configured');
     const jwt = await providerToken.get();
@@ -295,6 +295,8 @@ export const apnsSender: PushSender = {
       });
       req.end(body);
     });
+    // Resolved only on Apple's 200 (above); the push log records it as such.
+    return 200;
   },
 
   classify(err: unknown): FailureClass {

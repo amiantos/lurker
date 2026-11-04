@@ -66,17 +66,101 @@
         <p v-else class="muted small">While this is off, the apps never contact {{ relayHost }}.</p>
       </template>
     </template>
+
+    <hr class="hl-sep" />
+    <h3 class="subhead">connected clients</h3>
+    <p class="section-desc">
+      Who is connected right now, and whether a client of theirs reports itself visible. Push for a
+      user is held while one does.
+    </p>
+    <ul v-if="store.presence.length" class="device-list">
+      <li v-for="row in store.presence" :key="row.userId" class="device stacked">
+        <span class="ua">{{ row.username ?? `user ${row.userId}` }}</span>
+        <span class="last-seen">{{ socketSummary(row) }}</span>
+        <ul class="sockets">
+          <li v-for="(c, i) in row.sockets" :key="i" class="muted small">{{ clientText(c) }}</li>
+        </ul>
+      </li>
+    </ul>
+    <p v-else class="muted small">Nobody is connected.</p>
+
+    <hr class="hl-sep" />
+    <h3 class="subhead">recent pushes</h3>
+    <p class="section-desc">
+      Every push this server tried to send in the last week, newest first. A "sent" line with a 201
+      from {{ relayHost || 'the push service' }} means the relay forwarded it and Apple or Google
+      accepted it; a "held" line names the rule that stopped it. Copy the log to send along with a
+      bug report.
+    </p>
+    <p class="log-actions">
+      <button class="link" type="button" :disabled="!store.pushLog.length" @click="copyLog">
+        {{ logCopied ? 'copied' : 'copy as text' }}
+      </button>
+      <button class="link" type="button" @click="reloadLog">refresh</button>
+    </p>
+    <ul v-if="store.pushLog.length" class="push-log">
+      <li v-for="row in store.pushLog" :key="row.id" class="push-row" :class="row.outcome">
+        <span class="when" :title="row.at">{{ formatDateTime(row.at) }}</span>
+        <span class="what">
+          <strong>{{ row.username ?? `user ${row.user_id}` }}</strong> · {{ kindLabel(row.kind) }} ·
+          {{ subjectLabel(row) }}
+        </span>
+        <span class="how">{{ outcomeLabel(row) }}</span>
+      </li>
+    </ul>
+    <p v-else-if="store.pushLogLoaded" class="muted small">Nothing in the last week.</p>
+    <p v-if="store.pushLogHasMore">
+      <button class="link" type="button" :disabled="olderBusy" @click="olderLog">
+        {{ olderBusy ? 'loading…' : 'show older' }}
+      </button>
+    </p>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { useAdminStore } from '../../stores/admin.js';
+import { useAdminStore, type AdminPresenceRow } from '../../stores/admin.js';
 import type { RelayStatus } from '../../../../shared/relayStatus.js';
 import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
+import { formatDateTime } from '../../utils/timestamp.js';
+import {
+  clientText,
+  kindLabel,
+  outcomeLabel,
+  pushLogText,
+  subjectLabel,
+} from '../../utils/pushLog.js';
 
 const store = useAdminStore();
 const { copied, copy } = useCopyFeedback();
+// The log's copy button ticks on its own, not with the key's.
+const { copied: logCopied, copy: copyText } = useCopyFeedback();
+
+function copyLog() {
+  copyText(pushLogText(store.pushLog));
+}
+
+function reloadLog() {
+  store.fetchPushLog().catch(() => {});
+  store.fetchPresence().catch(() => {});
+}
+
+const olderBusy = ref(false);
+async function olderLog() {
+  olderBusy.value = true;
+  try {
+    await store.fetchOlderPushLog();
+  } catch (e: any) {
+    error.value = e.message || 'failed to load older rows';
+  } finally {
+    olderBusy.value = false;
+  }
+}
+
+function socketSummary(row: AdminPresenceRow): string {
+  const n = row.openSockets === 1 ? '1 client' : `${row.openSockets} clients`;
+  return row.visibleSockets ? `${n}, ${row.visibleSockets} visible` : `${n}, none visible`;
+}
 const error = ref('');
 const busy = ref(false);
 
@@ -151,6 +235,9 @@ async function load() {
   // old; ask for it now. Only while opted in — otherwise nothing contacts the
   // relay until the admin presses "check".
   if (store.push?.relay.enabled) store.refreshRelayStatus().catch(() => {});
+  // The log and the client list stand on their own: a failed load of either
+  // leaves its section empty, not the pane.
+  reloadLog();
 }
 
 // The checkbox flips itself before we know whether the change will stick, and
@@ -187,6 +274,48 @@ onMounted(load);
 
 <style src="../settings-panes/panes.css"></style>
 <style scoped>
+.sockets {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  grid-column: 1 / -1;
+}
+.log-actions {
+  display: flex;
+  gap: 1ch;
+  margin: 0 0 var(--space-3);
+}
+.push-log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.push-row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  column-gap: var(--space-6);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.push-row:first-child {
+  border-top: none;
+}
+.push-row .when {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.push-row .how {
+  grid-column: 2;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+.push-row.sent .how {
+  color: var(--fg);
+}
+.push-row.failed .how {
+  color: var(--bad);
+}
 .key-row {
   display: flex;
   align-items: center;
