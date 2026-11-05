@@ -64,6 +64,8 @@ describe('useMessageActions', () => {
       expect(keys(mine())).toContain('delete');
       // Never without a msgid to name, nor off a network.
       expect(keys(mine({ msgid: undefined }))).not.toContain('delete');
+      // Your own encrypted line can go too: a REDACT carries no content.
+      expect(keys(mine({ e2e: true }))).toContain('delete');
       useNetworksStore().states = { 1: { state: 'disconnected', canRedact: true } } as never;
       expect(keys(mine())).not.toContain('delete');
     });

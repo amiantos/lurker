@@ -1264,6 +1264,7 @@ function handleMessage(raw: string): void {
   }
   if (payload.kind === 'reactions-sync') {
     useReactionsStore().applySync(payload);
+    useRedactionsStore().applySync(payload);
     return;
   }
   if (payload.kind === 'thread') {

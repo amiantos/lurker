@@ -1556,8 +1556,9 @@ const renderRows = computed((): RenderRow[] => {
     // A reply: its quote, and its text without the address the quote makes
     // redundant (useReplyQuote).
     // A deleted line (#1013) shows its placeholder in place of its words,
-    // whether it was read back that way or deleted while on screen.
-    const redaction = redactions.get(m);
+    // whether it was read back that way or deleted while on screen. Network
+    // lines only: the system buffer's rows have an id space of their own.
+    const redaction = networkId != null ? redactions.get(m) : undefined;
     if (redaction) mDisplay = { ...mDisplay, text: '', redaction };
     let replyParent: ReplyParent | null = null;
     let replyContinued = false;

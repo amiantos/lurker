@@ -9,6 +9,8 @@
 
 import { defineStore } from 'pinia';
 import { useReactionsStore } from './reactions.js';
+import { useHighlightsStore } from './highlights.js';
+import { useDraftStore } from './drafts.js';
 import type { Redaction } from '../../../shared/redaction.js';
 
 export interface RedactedFrame {
@@ -58,9 +60,40 @@ export const useRedactionsStore = defineStore('redactions', {
       if (!Number.isFinite(id)) return;
       const redaction: Redaction = { by: frame.by, time: frame.time };
       if (frame.reason) redaction.reason = frame.reason;
+      this.noteDeleted(id, redaction);
+    },
+
+    // The answer to `sync-reactions` names the deletions among the lines the
+    // client asked about (`redactions`), for a line deleted while this socket
+    // was away. A deletion is for good, so nothing here is ever taken back.
+    applySync(frame: { redactions?: Record<string, Redaction> }) {
+      for (const [key, redaction] of Object.entries(frame.redactions ?? {})) {
+        const id = Number(key);
+        if (Number.isFinite(id) && redaction) this.noteDeleted(id, redaction);
+      }
+    },
+
+    // A line is gone, live: everything that copied its words lets go of them.
+    noteDeleted(id: number, redaction: Redaction) {
       this.byMessage.set(id, redaction);
-      // The server took the line's reactions down with it; so does the view.
-      useReactionsStore().byMessage.delete(id);
+      // The server took the line's reactions down with it; so does the view,
+      // and so does the activity feed, whose reaction items quote the line.
+      const reactions = useReactionsStore();
+      reactions.byMessage.delete(id);
+      const feed = useHighlightsStore();
+      for (let i = feed.items.length - 1; i >= 0; i--) {
+        const it = feed.items[i];
+        if (it.kind === 'reaction' && Number(it.id) === id) feed.items.splice(i, 1);
+      }
+      // A picker open on it, or a reply being written to it: neither can go
+      // anywhere now. The draft's words stay; only the reply link goes.
+      if (reactions.picker.open && Number(reactions.picker.messageId) === id) {
+        reactions.closePicker();
+      }
+      const drafts = useDraftStore();
+      for (const [key, reply] of Object.entries(drafts.replies)) {
+        if (reply && Number(reply.messageId) === id) drafts.setReplyForKey(key, null);
+      }
     },
   },
 });

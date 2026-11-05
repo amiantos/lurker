@@ -658,13 +658,22 @@ function rowToEvent(row: MessageRow): MessageEvent {
 // TAGMSG — and a TAGMSG is never stored as a line, so a REDACT naming a
 // reaction's msgid finds nothing and is ignored, as the spec says to).
 const redactTargetStmt = db.prepare(`
-  SELECT id, buffer_id, nick, self FROM messages
+  SELECT id, buffer_id, nick, self, time, text FROM messages
   WHERE network_id = ? AND msgid = ? AND +buffer_id = ? AND type IN ${REPLY_LINE_TYPES_SQL}
   ORDER BY id DESC LIMIT 1
 `);
 const redactStmt = db.prepare(`
   UPDATE messages SET text = NULL, redacted_at = @time, redacted_by = @by, redact_reason = @reason
   WHERE id = @id AND redacted_at IS NULL
+`);
+// A notice to a closed DM is stored twice: its home row, and a mirror in the
+// server buffer with no msgid (ircConnection's closed-buffer mirror). The REDACT
+// names the home row; the mirror is the same words under the same nick at the
+// same server time, and goes with it.
+const mirrorRowsStmt = db.prepare(`
+  SELECT id, buffer_id FROM messages
+  WHERE network_id = ? AND mirrored = 1 AND redacted_at IS NULL
+    AND nick IS ? AND time = ? AND text IS ?
 `);
 
 export interface RedactInput {
@@ -683,6 +692,9 @@ export interface RedactedLine {
   // The line's author, as stored, and whether it was the user's own.
   nick: string | null;
   self: boolean;
+  // Server-buffer mirrors of the line (a notice to a closed DM), blanked with
+  // it; each wants a frame of its own, in its buffer.
+  mirrors: Array<{ id: number; bufferId: number }>;
 }
 
 // Apply a REDACT: the text goes (the FTS trigger drops it from search on the
@@ -694,14 +706,70 @@ export interface RedactedLine {
 // and publishes nothing).
 export const redactMessage = db.transaction((r: RedactInput): RedactedLine | null => {
   const row = redactTargetStmt.get(r.networkId, r.msgid, r.bufferId) as
-    | { id: number; buffer_id: number; nick: string | null; self: number }
+    | {
+        id: number;
+        buffer_id: number;
+        nick: string | null;
+        self: number;
+        time: string;
+        text: string | null;
+      }
     | undefined;
   if (!row) return null;
-  const info = redactStmt.run({ id: row.id, time: r.time, by: r.by, reason: r.reason ?? null });
+  const stamp = { time: r.time, by: r.by, reason: r.reason ?? null };
+  const info = redactStmt.run({ id: row.id, ...stamp });
   if (info.changes === 0) return null;
   removeAllReactions(row.id, r.time);
-  return { id: row.id, bufferId: row.buffer_id, nick: row.nick, self: row.self === 1 };
+  const mirrors: Array<{ id: number; bufferId: number }> = [];
+  if (row.text !== null) {
+    const rows = mirrorRowsStmt.all(r.networkId, row.nick, row.time, row.text) as Array<{
+      id: number;
+      buffer_id: number;
+    }>;
+    for (const m of rows) {
+      if (redactStmt.run({ id: m.id, ...stamp }).changes > 0) {
+        mirrors.push({ id: m.id, bufferId: m.buffer_id });
+      }
+    }
+  }
+  return { id: row.id, bufferId: row.buffer_id, nick: row.nick, self: row.self === 1, mirrors };
 });
+
+// The deletions among a set of the user's lines, for a client re-syncing after
+// a resume (the same reason reactionsForMessages exists): a `message-redacted`
+// frame only reaches sockets that were connected, and a resume ships only new
+// rows, so a line deleted while the client held it would keep its words until
+// a reload. Ownership is in the join. Chunked under SQLite's variable limit.
+const REDACTION_SYNC_CHUNK = 500;
+export function redactionsForMessages(
+  userId: number,
+  messageIds: number[],
+): Map<number, Redaction> {
+  const out = new Map<number, Redaction>();
+  for (let i = 0; i < messageIds.length; i += REDACTION_SYNC_CHUNK) {
+    const chunk = messageIds.slice(i, i + REDACTION_SYNC_CHUNK);
+    const rows = db
+      .prepare(
+        `SELECT m.id, m.redacted_at, m.redacted_by, m.redact_reason
+         FROM messages m
+         JOIN networks n ON n.id = m.network_id
+         WHERE n.user_id = ? AND m.redacted_at IS NOT NULL
+           AND m.id IN (${chunk.map(() => '?').join(', ')})`,
+      )
+      .all(userId, ...chunk) as Array<{
+      id: number;
+      redacted_at: string;
+      redacted_by: string | null;
+      redact_reason: string | null;
+    }>;
+    for (const row of rows) {
+      const redaction: Redaction = { by: row.redacted_by ?? '', time: row.redacted_at };
+      if (row.redact_reason) redaction.reason = row.redact_reason;
+      out.set(row.id, redaction);
+    }
+  }
+  return out;
+}
 
 // A line of the user's to send a REDACT for, by its id: the network and target
 // the REDACT goes to, and the msgid it names. Null when the line isn't theirs

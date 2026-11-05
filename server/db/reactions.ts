@@ -24,10 +24,11 @@ export interface ReactionParent {
 // msgid they learned elsewhere — scoping to the buffer keeps a reaction sent to
 // #a from appearing on a line in #b. A msgid can repeat within a buffer (the
 // closed-buffer NOTICE mirror; a replaying upstream): the newest copy wins,
-// which is the one a reader is looking at.
+// which is the one a reader is looking at. Not a deleted line (#1013): its
+// reactions came down with it, and none goes back up.
 const parentStmt = db.prepare(`
   SELECT id, buffer_id, self FROM messages
-  WHERE network_id = ? AND msgid = ? AND +buffer_id = ?
+  WHERE network_id = ? AND msgid = ? AND +buffer_id = ? AND redacted_at IS NULL
   ORDER BY id DESC LIMIT 1
 `);
 
@@ -171,6 +172,7 @@ const sendTargetStmt = db.prepare(`
   WHERE m.id = ? AND n.user_id = ?
     AND m.type IN ('message', 'action')
     AND m.msgid IS NOT NULL AND m.msgid != ''
+    AND m.redacted_at IS NULL
 `);
 
 export interface ReactionSendTarget {

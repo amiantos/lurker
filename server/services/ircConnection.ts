@@ -4762,6 +4762,19 @@ export class IrcConnection {
       self: line.self,
       time,
     });
+    // The server-buffer mirror of a notice to a closed DM went with it.
+    for (const mirror of line.mirrors) {
+      this.publishEphemeral({
+        type: 'message-redacted',
+        target: this.serverTarget(),
+        bufferId: mirror.bufferId,
+        messageId: mirror.id,
+        by,
+        reason,
+        self: line.self,
+        time,
+      });
+    }
   }
 
   // `FAIL REDACT <code> <target> [<msgid> …] :<text>` — the network refused a

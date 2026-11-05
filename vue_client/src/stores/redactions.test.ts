@@ -5,6 +5,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { useRedactionsStore } from './redactions.js';
 import { useReactionsStore } from './reactions.js';
+import { useHighlightsStore } from './highlights.js';
+import { useDraftStore } from './drafts.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -51,5 +53,50 @@ describe('redactions store', () => {
     });
     expect(store.get({ id: 5 })).toEqual({ by: 'bob', reason: 'typo', time: t });
     expect(reactions.byMessage.has(5)).toBe(false);
+  });
+
+  it('lets go of every copy of the words: the activity feed, the picker, a pending reply', () => {
+    const store = useRedactionsStore();
+    const reactions = useReactionsStore();
+    const feed = useHighlightsStore();
+    const drafts = useDraftStore();
+    feed.items = [
+      { kind: 'reaction', id: 5, reactionId: 1, nick: 'carol', value: '👍', text: 'gone' },
+      { kind: 'reaction', id: 6, reactionId: 2, nick: 'carol', value: '👍', text: 'stays' },
+      { kind: 'highlight', id: 5, nick: 'bob', text: 'gone' },
+    ] as never;
+    reactions.picker = { open: true, messageId: 5, networkId: 1, nick: 'bob', text: 'gone' };
+    drafts.setReplyForKey('1::#chan', { messageId: 5, nick: 'bob', type: 'message', text: 'gone' });
+    drafts.setReplyForKey('1::#other', {
+      messageId: 6,
+      nick: 'bob',
+      type: 'message',
+      text: 'stays',
+    });
+
+    store.applyFrame({
+      networkId: 1,
+      bufferId: 9,
+      target: '#chan',
+      messageId: 5,
+      by: 'bob',
+      self: false,
+      time: t,
+    });
+    // Reaction items quoting the line go; the highlight item stays, and draws
+    // the placeholder from the store like any row.
+    expect(feed.items.map((it) => `${it.kind}:${it.id}`)).toEqual(['reaction:6', 'highlight:5']);
+    expect(reactions.picker.open).toBe(false);
+    expect(drafts.replyForKey('1::#chan')).toBeNull();
+    expect(drafts.replyForKey('1::#other')?.messageId).toBe(6);
+  });
+
+  it('takes the deletions a resume sync names', () => {
+    const store = useRedactionsStore();
+    store.applySync({ redactions: { '7': { by: 'opal', time: t }, '8': { by: 'bob', time: t } } });
+    expect(store.get({ id: 7 })).toEqual({ by: 'opal', time: t });
+    expect(store.get({ id: 8 })).toEqual({ by: 'bob', time: t });
+    store.applySync({});
+    expect(store.get({ id: 7 })).toEqual({ by: 'opal', time: t });
   });
 });

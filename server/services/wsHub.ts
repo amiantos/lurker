@@ -53,6 +53,7 @@ import {
   listThread,
   listBufferThreads,
   redactSendTarget,
+  redactionsForMessages,
 } from '../db/messages.js';
 import { listFollowedThreads, markAllThreadsRead, markThreadRead } from '../db/threadFollows.js';
 import {
@@ -4173,7 +4174,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           .slice(0, MAX_REACTION_SYNC_IDS);
         if (ids.length === 0) break;
         const found = reactionsForMessages(userId, ids);
-        send(ws, { kind: 'reactions-sync', messageIds: ids, reactions: Object.fromEntries(found) });
+        // And the lines among them deleted meanwhile (#1013): a deletion's
+        // frame was lost the same way a reaction's was. Additive on the frame.
+        const deleted = redactionsForMessages(userId, ids);
+        send(ws, {
+          kind: 'reactions-sync',
+          messageIds: ids,
+          reactions: Object.fromEntries(found),
+          redactions: Object.fromEntries(deleted),
+        });
         break;
       }
       case 'thread': {

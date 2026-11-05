@@ -104,7 +104,13 @@ export function redactionsGoOut(networkId: number | null | undefined): boolean {
 // which is who ergo lets delete. The network has the last word (a FAIL); this
 // only keeps the action off lines where it could do nothing.
 export function deletable(m: MessageLike): boolean {
-  if (!replyable(m) || m.redaction) return false;
+  // Not replyable(): that rule refuses an E2E line because a reply TAG would be
+  // cleartext about it, and a REDACT carries no content (its reason stays off
+  // the wire on an E2E channel — ircManager.redact). Your own encrypted line
+  // can go like any other.
+  if (m.id == null || !m.msgid || m.redaction) return false;
+  if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') return false;
+  if (!m.target || m.target.startsWith(':') || isDccChatTarget(m.target)) return false;
   const networkId = m.networkId ?? m.network_id;
   if (!redactionsGoOut(networkId)) return false;
   if (m.self) return true;
