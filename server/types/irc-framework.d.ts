@@ -67,7 +67,7 @@ declare module 'irc-framework' {
     engineHooks?: {
       onTransport?(transport: unknown): void;
       onPhase?(phase: string, info: Record<string, unknown>): void;
-      onAck?(socket: string, seq: number): void;
+      onLine?(socket: string, seq: number, deliver: () => void): void;
     };
     /**
      * Proxy this connection's socket through a SOCKS5 / HTTP CONNECT proxy

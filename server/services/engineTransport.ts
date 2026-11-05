@@ -72,11 +72,12 @@ export interface EnginePhaseInfo {
 export interface EngineHooks {
   onTransport?(transport: EngineTransport): void;
   onPhase?(phase: EnginePhase, info: EnginePhaseInfo): void;
-  // Once per delivered batch, after every handler for its lines has run (so
-  // after every row they persist is written): everything at or below `seq`
-  // on `socket` is done with. The durable form of the ack that follows it
-  // (#1068). Not called for an engine that names no socket.
-  onAck?(socket: string, seq: number): void;
+  // Wraps the delivery of one line (#1068): the hook must call `deliver()`
+  // exactly once, and may run it inside a transaction with whatever it wants
+  // committed beside the line's rows (the catch-up mark). Only for an engine
+  // that names its sockets; otherwise, and without the hook, the line is
+  // delivered directly.
+  onLine?(socket: string, seq: number, deliver: () => void): void;
 }
 
 const RESTORE_MARK = '__lurker_restore__';
@@ -421,7 +422,10 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     if (this.backlog !== null) this.backlog++;
     this.deliveringSeq = frame.seq;
     try {
-      this.emit('line', frame.line);
+      const emit = () => void this.emit('line', frame.line);
+      if (this.socket !== null && this.hooks?.onLine)
+        this.hooks.onLine(this.socket, frame.seq, emit);
+      else emit();
     } finally {
       this.deliveringSeq = null;
     }
@@ -433,10 +437,6 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
       this.ackQueued = true;
       queueMicrotask(() => {
         this.ackQueued = false;
-        // The mark first, and whatever became of the transport meanwhile: the
-        // rows are written, and a process taken over or cut off in this very
-        // batch is exactly the one whose successor needs them accounted for.
-        if (this.socket !== null) this.hooks?.onAck?.(this.socket, this.ackSeq);
         if (!this.ended && this.connected)
           this.link.send({ op: 'ack', id: this.id, seq: this.ackSeq });
       });

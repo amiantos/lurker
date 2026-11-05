@@ -84,8 +84,8 @@ interface Timeline {
   // Lines from the engine between `restored` and `live`: the backlog `live`
   // reports a count of.
   catchUpLines: number;
-  // What the transport said it had done with, per batch (#1068).
-  acks: Array<{ socket: string; seq: number }>;
+  // Each line's delivery as the onLine hook saw it (#1068).
+  marks: Array<{ socket: string; seq: number }>;
   // transport.deliveringSeq as each server line's handlers saw it.
   seqs: Array<number | null>;
 }
@@ -100,7 +100,7 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
     closes: [],
     transport: null,
     catchUpLines: 0,
-    acks: [],
+    marks: [],
     seqs: [],
   };
   const client = new IRC.Client();
@@ -142,7 +142,10 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
         t.events.push(`phase:${phase}`);
         t.phases.push({ phase: phase as EnginePhase, info: info as EnginePhaseInfo });
       },
-      onAck: (socket: string, seq: number) => t.acks.push({ socket, seq }),
+      onLine: (socket: string, seq: number, deliver: () => void) => {
+        deliver();
+        t.marks.push({ socket, seq });
+      },
     },
   } as ConnectOptions);
   return { client, t };
@@ -297,7 +300,7 @@ describe('EngineTransport', () => {
     await ircd.waitForLine((l) => /^PRIVMSG #two :?back$/.test(l));
   }, 20000);
 
-  it('hands each line’s seq to its handlers, and reports what it acked under the socket’s name (#1068)', async () => {
+  it('delivers each line through the hook, under its seq and the socket’s name (#1068)', async () => {
     const id = `t:${++counter}`;
     const linkA = newLink();
     const a = makeClient(linkA, id, 'seqer');
@@ -318,21 +321,15 @@ describe('EngineTransport', () => {
     expect(a.t.seqs.every((s) => typeof s === 'number')).toBe(true);
     expect(a.t.seqs).toEqual([...a.t.seqs].toSorted((x, y) => (x as number) - (y as number)));
     expect(a.t.transport!.deliveringSeq).toBeNull();
-    // The acks are coalesced, so there are fewer than the lines; the last one
-    // covers the last line, and all of them name one socket.
-    await until(
-      () => a.t.acks.at(-1)?.seq === a.t.seqs.at(-1),
-      'the last ack covers the last line',
-      () => ({ acks: a.t.acks, seqs: a.t.seqs }),
-    );
-    expect(a.t.acks.length).toBeLessThanOrEqual(a.t.seqs.length);
-    const socket = a.t.acks[0].socket;
+    // One hook call per line, with that line's seq, all naming one socket.
+    expect(a.t.marks.map((m) => m.seq)).toEqual(a.t.seqs);
+    const socket = a.t.marks[0].socket;
     expect(typeof socket).toBe('string');
     expect(socket).not.toBe('');
-    expect(a.t.acks.every((x) => x.socket === socket)).toBe(true);
+    expect(a.t.marks.every((x) => x.socket === socket)).toBe(true);
 
     // The next process is told the same name at `attached`: what the first
-    // acked under it still counts.
+    // stored under it still counts.
     linkA.simulateLoss();
     await until(
       () => a.t.events.some((e) => e.startsWith('socket close:')),

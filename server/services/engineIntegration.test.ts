@@ -22,7 +22,6 @@ import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import db from '../db/index.js';
 import * as messagesDb from '../db/messages.js';
-import { getEngineMark } from '../db/engineMarks.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { setUserPaused } from '../db/users.js';
@@ -338,25 +337,40 @@ describe('IrcConnection through the engine', () => {
     const buffered = () => engine.info(engineId)?.bufferedLines ?? 0;
 
     // The process "dies" between the row and the ack: the line's handlers have
-    // run (the row is written, and the manager has fanned the message out),
-    // the link is destroyed on the next tick — ahead of the microtask that
-    // writes the mark and sends the ack. The mark write still runs; the ack
-    // goes nowhere. The engine therefore re-delivers the line at re-attach.
+    // run (the row and the mark are committed, the manager has fanned the
+    // message out), and the link is destroyed on the next tick — ahead of the
+    // microtask that sends the ack, which goes nowhere. The engine therefore
+    // re-delivers the line at re-attach. A second line is sent in the same
+    // tick: it reaches the engine with no link to deliver it on, so it is
+    // backlog too, above the mark — the positive control, the line the probe
+    // IS asked about.
+    const untagged = (text: string) =>
+      ircd.sendRaw('lurk', `:peer!~peer@peer.fake PRIVMSG #stay :${text}`);
     const onEvent = (e: Ev) => {
       if (e.type !== 'message' || e.text !== 'ack lost') return;
       ircManager.off('event', onEvent);
-      process.nextTick(() => EngineLink.shared().simulateLoss());
+      process.nextTick(() => {
+        untagged('while cut');
+        EngineLink.shared().simulateLoss();
+      });
     };
     ircManager.on('event', onEvent);
     managerEvents.length = 0;
     // Untagged, as Libera or ZNC would send it: with a msgid the index seek
     // settles the repeat on its own, and this is about the line that has none.
-    ircd.sendRaw('lurk', ':peer!~peer@peer.fake PRIVMSG #stay :ack lost');
+    untagged('ack lost');
     await until(() => count('ack lost') === 1, 5000, 'the line was stored once');
-    // Never acked: the engine still holds it.
-    await until(() => buffered() >= 1, 5000, 'the engine kept the unacked line');
-    const mark = getEngineMark(network.id);
-    expect(mark).not.toBeNull();
+    // Neither acked: the engine still holds both.
+    await until(() => buffered() >= 2, 5000, 'the engine kept both unacked lines');
+    const marks = () =>
+      db
+        .prepare('SELECT socket, seq FROM engine_marks WHERE network_id = ?')
+        .all(network.id) as Array<{
+        socket: string;
+        seq: number;
+      }>;
+    expect(marks()).toHaveLength(1);
+    expect(marks()[0].seq).toBeGreaterThan(0);
 
     await until(
       () => {
@@ -373,9 +387,15 @@ describe('IrcConnection through the engine', () => {
     // Acked by the new attach, so the engine let go of it.
     await until(() => buffered() === 0, 5000, 'the backlog was acked');
 
-    // Once, still — and settled by the mark: the probe was never asked about it.
+    // Both once. The stored one was settled by the mark — the probe was never
+    // asked about it — while the one above the mark went through the probe,
+    // as every line did before.
     expect(count('ack lost')).toBe(1);
+    expect(count('while cut')).toBe(1);
+    expect(probe.mock.calls.some((c) => c[4] === 'while cut')).toBe(true);
     expect(probe.mock.calls.some((c) => c[4] === 'ack lost')).toBe(false);
+    // Acked under the new attach, and the only row is this socket's.
+    expect(marks()).toHaveLength(1);
     // A fresh line after `live` is new, and stored.
     ircd.sendRaw('lurk', ':peer!~peer@peer.fake PRIVMSG #stay :after the mark');
     await until(() => count('after the mark') === 1, 5000, 'a live line after re-attach');

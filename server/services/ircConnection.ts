@@ -94,7 +94,7 @@ import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../../shared/ident.js';
 import { validateClientCertPair, isClientCertProblem } from '../utils/clientCert.js';
 import { networkProxy, setNetworkUserModes } from '../db/networks.js';
-import { getEngineMark, setEngineMark } from '../db/engineMarks.js';
+import { getEngineMark, pruneEngineMarks, deliverUnderMark } from '../db/engineMarks.js';
 import { isProxyProblem } from '../../shared/proxy.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
 import { mayUseProxy } from './networkPolicy.js';
@@ -1357,12 +1357,13 @@ export class IrcConnection {
   // original is at or below it, and the catch-up's own rows are above it
   // (hasRecentMessageLike). Null outside a catch-up.
   private catchUpMaxId: number | null = null;
-  // The engine catch-up mark (#1068, db/engineMarks.ts): the highest engine
-  // line seq a previous process finished with on THIS socket. A backlog line
-  // at or below it was processed to the end — row written, ack owed — and is
-  // skipped outright, no probe. Null outside a catch-up, for an engine that
-  // names no socket, and when the stored mark is another socket's.
-  private catchUpMark: number | null = null;
+  // The engine's id for the socket this catch-up is on (#1068): the key the
+  // catch-up mark (db/engineMarks.ts) is read under, per backlog line. Null
+  // outside a catch-up and for an engine that names no socket.
+  private catchUpSocket: string | null = null;
+  // Whether the line being delivered has written a message row so far: what
+  // decides, at the end of its transaction, whether the mark moves.
+  private persistedInLine = false;
   // This catch-up's line for stdout, written at `live` (engineReattachLog.ts).
   // Null outside a catch-up.
   private reattachLog: Reattach | null = null;
@@ -1752,6 +1753,7 @@ export class IrcConnection {
       } catch (e) {
         console.warn('[ignore/highlight] match-on-insert failed:', (e as Error)?.message || e);
       }
+      this.persistedInLine = true;
       const { id, alt, bufferId } = insertMessage({
         networkId: this.network.id,
         target: event.target as string,
@@ -6830,19 +6832,13 @@ export class IrcConnection {
           this.engineTransport = t as EngineTransport;
         },
         onPhase: (phase, info) => this.onEnginePhase(phase as EnginePhase, info as EnginePhaseInfo),
-        onAck: (socket, seq) => {
-          // The mark is advisory — a missed write costs a batch of probes,
-          // not a line — and this runs in a microtask, where a throw would be
-          // the process.
-          try {
-            setEngineMark(this.network.id, socket, seq);
-          } catch (e) {
-            console.warn(
-              `[engine] network ${this.network.id}: catch-up mark not written:`,
-              (e as Error)?.message || e,
-            );
-          }
-        },
+        // One transaction per line: its rows and the mark land together.
+        onLine: (socket, seq, deliver) =>
+          deliverUnderMark(this.network.id, socket, seq, () => {
+            this.persistedInLine = false;
+            deliver();
+            return this.persistedInLine;
+          }),
       },
     };
   }
@@ -6851,6 +6847,8 @@ export class IrcConnection {
     switch (phase) {
       case 'dialing':
         this.resetRestoreState();
+        // A fresh socket: no stored seq is about it.
+        pruneEngineMarks(this.network.id, null);
         // A new socket's accept list starts empty, and 'socket close' never
         // saw the old one go.
         this.resetAcceptState();
@@ -6867,8 +6865,8 @@ export class IrcConnection {
         this.restoring = true;
         this.catchingUp = true;
         this.catchUpMaxId = maxMessageId();
-        const mark = info.socket ? getEngineMark(this.network.id) : null;
-        this.catchUpMark = mark && mark.socket === info.socket ? mark.seq : null;
+        this.catchUpSocket = info.socket ?? null;
+        pruneEngineMarks(this.network.id, this.catchUpSocket);
         this.restoreUnattended = !!info.unattended;
         // The engine's channel set is the truth about the socket. Anything we
         // still think we are in but the engine doesn't (kicked or parted while
@@ -6965,7 +6963,7 @@ export class IrcConnection {
       case 'live':
         this.catchingUp = false;
         this.catchUpMaxId = null;
-        this.catchUpMark = null;
+        this.catchUpSocket = null;
         if (this.reattachLog) reattachLive(this.reattachLog, info.backlog ?? 0);
         this.reattachLog = null;
         // Only now is the picture complete: the replay said which channels the
@@ -6993,7 +6991,7 @@ export class IrcConnection {
     this.restoring = false;
     this.catchingUp = false;
     this.catchUpMaxId = null;
-    this.catchUpMark = null;
+    this.catchUpSocket = null;
     if (this.reattachLog) reattachAbandoned(this.reattachLog);
     this.reattachLog = null;
     this.restoreUnattended = false;
@@ -7329,15 +7327,16 @@ export class IrcConnection {
     const target = event.target as string;
     const type = event.type;
     if (!target || !type) return false;
-    // Exact, first (#1068): the engine numbers what it delivers, and a line at
-    // or below the mark was finished by the process before this one. Above
-    // it the line is usually new, but not certainly — the last process may
-    // have written the row and died before the mark — so the probes below
-    // still get their say. Only while the backlog is being delivered: a live
-    // line's seq is above any mark, and outside the engine there is no seq.
-    if (this.catchingUp && this.catchUpMark !== null) {
+    // Exact, first (#1068): the engine numbers what it delivers, and a line
+    // at or below the mark had its rows written, by whichever process wrote
+    // them. Read per line, not once at `attached`: a predecessor that outlived
+    // its claim can still be finishing a batch — and raising the mark — while
+    // this backlog arrives. Above the mark the probes below get their say.
+    // Only while the backlog is being delivered: a live line's seq is above
+    // any mark, and outside the engine there is no seq.
+    if (this.catchingUp && this.catchUpSocket !== null) {
       const seq = this.engineTransport?.deliveringSeq ?? null;
-      if (seq !== null && seq <= this.catchUpMark) return true;
+      if (seq !== null && seq <= this.readCatchUpMark(this.catchUpSocket)) return true;
     }
     const nick = (event.nick as string | undefined) ?? null;
     const text = (event.text as string | undefined) ?? null;
@@ -7351,6 +7350,20 @@ export class IrcConnection {
         maxId: this.catchUpMaxId ?? undefined,
       })
     );
+  }
+
+  // The mark, or 0 when there is none — or when the read fails: the mark is
+  // a shortcut past the probes, not a thing a line may be lost over.
+  private readCatchUpMark(socket: string): number {
+    try {
+      return getEngineMark(this.network.id, socket) ?? 0;
+    } catch (e) {
+      console.warn(
+        `[engine] network ${this.network.id}: catch-up mark not read:`,
+        (e as Error)?.message || e,
+      );
+      return 0;
+    }
   }
 
   // Engine mode shutdown: leave the IRC socket in the engine for the next app
