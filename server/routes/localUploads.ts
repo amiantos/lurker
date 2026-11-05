@@ -14,7 +14,9 @@
 //     else is forced to download, which auto-neutralizes SVG/HTML/JS
 //   - X-Content-Type-Options: nosniff backstops the text/plain fallback so a
 //     browser won't sniff-and-execute
-//   - Content-Security-Policy: default-src 'none'; sandbox on every response
+//   - Content-Security-Policy: default-src 'none'; media-src 'self'; sandbox on
+//     every response, plus Access-Control-Allow-Origin: * (see the handler for
+//     why a playable video needs both)
 //   - the key is regex-validated and the resolved path asserted to stay inside
 //     the storage root → path traversal is impossible by construction
 
@@ -143,7 +145,22 @@ router.get('/:key', async (req: Request, res: Response) => {
   // Content-Type is already present — so the sniffed type always wins).
   res.setHeader('Content-Type', mime);
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  // ⚠ `media-src 'self'` and the CORS header are what let a shared clip PLAY when
+  // its link is opened directly (#1271). Chrome renders a top-level video as a
+  // synthesized document with a `<video crossorigin="anonymous">` inside it, and
+  // that document is subject to this very response's CSP: under a bare
+  // `default-src 'none'` the player blocks its own source ("Loading media from …
+  // violates … 'default-src'"). `sandbox` then gives that document an opaque
+  // origin, so its anonymous media fetch is cross-origin and needs an
+  // Access-Control-Allow-Origin. Both proven with headless Chrome: 'self' alone
+  // moves the failure from CSP to CORS; 'self' plus `*` plays. `*` costs nothing
+  // here — every file on this route is public by its unguessable key and takes no
+  // cookie — and it replaces the credentialed per-origin value cors() set upstream,
+  // which the anonymous fetch could not use anyway. Images were never affected
+  // (Chrome's image document is exempt), and `sandbox` stays: it is the backstop
+  // that keeps a mis-sniffed body from ever running as a page.
+  res.setHeader('Content-Security-Policy', "default-src 'none'; media-src 'self'; sandbox");
+  res.setHeader('Access-Control-Allow-Origin', '*');
   // The random key already carries a safe extension; use it as the download name.
   res.setHeader('Content-Disposition', inline ? 'inline' : `attachment; filename="${key}"`);
 

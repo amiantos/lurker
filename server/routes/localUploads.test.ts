@@ -58,6 +58,30 @@ describe('GET /uploads/:key', () => {
     expect(res.headers['cache-control']).toContain('immutable');
   });
 
+  // #1271: a video link opened directly in Chrome is rendered as a document that
+  // carries THIS response's CSP, and its `<video crossorigin="anonymous">` is both a
+  // media-src check against it and a cross-origin fetch (sandbox → opaque origin).
+  // Without media-src 'self' AND a wildcard CORS header the player blocks itself.
+  it('serves a video with media-src self and an open CORS header so it plays top-level', async () => {
+    const mp4 = Buffer.concat([
+      Buffer.from([0, 0, 0, 0x18]), // ftyp box, 24 bytes
+      Buffer.from('ftypisom'),
+      Buffer.alloc(4), // minor version
+      Buffer.from('isommp42'), // compatible brands
+      Buffer.alloc(64),
+    ]);
+    const url = await put(mp4, 'clip.mp4', 'video/mp4');
+
+    const res = await agent.get(url);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('video/mp4');
+    expect(res.headers['content-disposition']).toBe('inline');
+    expect(res.headers['content-security-policy']).toBe(
+      "default-src 'none'; media-src 'self'; sandbox",
+    );
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+
   it('honors a Range request with 206 partial content (via res.sendFile)', async () => {
     const png = await sharp({
       create: { width: 8, height: 8, channels: 3, background: { r: 1, g: 2, b: 3 } },
