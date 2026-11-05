@@ -23,6 +23,8 @@ let messagesDb: typeof import('../db/messages.js');
 let hashPassword: typeof import('./password.js').hashPassword;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 let ircd: FakeIrcd;
+// A network without the cap.
+let plainIrcd: FakeIrcd;
 
 type Client = Awaited<ReturnType<import('../test-utils/bouncerHarness.js').Harness['connect']>>;
 type Conn = import('./ircConnection.js').IrcConnection;
@@ -50,12 +52,14 @@ beforeAll(async () => {
   messagesDb = await import('../db/messages.js');
   ({ hashPassword } = await import('./password.js'));
   ircd = await FakeIrcd.start({ caps: [...DEFAULT_CAPS, REDACTION_CAP] });
+  plainIrcd = await FakeIrcd.start();
   harness = await harnessMod.startHarness();
 });
 
 afterAll(async () => {
   harness.stop();
   await ircd.close();
+  await plainIrcd.close();
   ctx.cleanup();
 });
 
@@ -70,7 +74,7 @@ afterEach(() => {
 
 let seq = 0;
 
-async function seedLive(): Promise<Live> {
+async function seedLive(on: FakeIrcd = ircd): Promise<Live> {
   seq += 1;
   const nick = `lurk${seq}`;
   const password = 'hunter2hunter2';
@@ -79,7 +83,7 @@ async function seedLive(): Promise<Live> {
   const network = networks.createNetwork(user.id, {
     name: 'fake',
     host: '127.0.0.1',
-    port: ircd.port,
+    port: on.port,
     tls: false,
     nick,
     autoconnect: false,
@@ -238,6 +242,17 @@ describe('a client’s REDACT', () => {
       messagesDb.listMessages(live.networkId, '#rd3', { limit: 50 }).find((m) => m.msgid === msgid)
         ?.text,
     ).toBe('not yours');
+  });
+
+  it('on a network without the cap is answered with a notice, and nothing goes up', async () => {
+    const live = await seedLive(plainIrcd);
+    // The client asks anyway (a 302 client sees the pass-through caps before
+    // binding; the bind takes this one back), and the REDACT itself is refused.
+    const c = await attach(live, ['message-tags']);
+    await joinedChannel(live, c, '#rd6');
+    c.send('REDACT #rd6 whatever');
+    await c.waitFor((l) => commandOf(l) === 'NOTICE' && l.includes("doesn't support deleting"));
+    expect(sentBy(live).some((l) => l.startsWith('REDACT'))).toBe(false);
   });
 
   it('for a line Lurker does not hold is answered with a notice, and nothing goes up', async () => {
