@@ -110,10 +110,8 @@ export function deletable(m: MessageLike): boolean {
   if (m.self) return true;
   if (!m.target || !isChannelTarget(m.target) || networkId == null) return false;
   const networks = useNetworksStore();
-  const own = networks.states[networkId]?.nick;
-  if (!own) return false;
   const members = useBuffersStore().findByTarget(networkId, m.target)?.members ?? [];
-  const me = members.find((x) => x.nick.toLowerCase() === own.toLowerCase());
+  const me = members.find((x) => networks.isOwnNick(networkId, x.nick));
   return !!me && me.modes.length > 0;
 }
 

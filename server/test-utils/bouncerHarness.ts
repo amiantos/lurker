@@ -14,6 +14,7 @@
 // bouncer forwards back upstream (client → network).
 
 import net from 'net';
+import { REDACTION_CAP } from '../../shared/redaction.js';
 import tls from 'tls';
 import { EventEmitter, once } from 'node:events';
 import ircManager from '../services/ircManager.js';
@@ -70,7 +71,7 @@ export const UPSTREAM_CAPS = [
   'echo-message',
   'extended-monitor',
   'draft/metadata-2',
-  'draft/message-redaction',
+  REDACTION_CAP,
 ];
 
 // Minimal stand-in for IrcConnection covering exactly what bouncer.ts reads.
@@ -183,7 +184,7 @@ export class FakeUpstream {
   }
 
   supportsRedaction(): boolean {
-    return (this.client.network?.cap?.enabled ?? []).includes('draft/message-redaction');
+    return (this.client.network?.cap?.enabled ?? []).includes(REDACTION_CAP);
   }
 
   // IrcConnection.sendTyping, minus its gates (a refused target, an offline

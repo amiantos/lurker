@@ -52,6 +52,7 @@ import {
   typeCountsForUnread,
   listThread,
   listBufferThreads,
+  redactSendTarget,
 } from '../db/messages.js';
 import { listFollowedThreads, markAllThreadsRead, markThreadRead } from '../db/threadFollows.js';
 import {
@@ -4142,7 +4143,22 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const messageId = Number(msg.messageId);
         if (!Number.isFinite(messageId) || messageId <= 0) break;
         const reason = typeof msg.reason === 'string' ? msg.reason.slice(0, 400) : undefined;
-        ircManager.redact(userId, messageId, reason);
+        // The user confirmed a delete, so a request that can't even go out is
+        // said, in the line's buffer, the way a refusal from the network is.
+        // Unlike a reaction, where silence is the rule: nobody confirms those.
+        const dest = redactSendTarget(userId, messageId);
+        if (!dest) {
+          send(ws, { kind: 'error', text: "Couldn't delete the message: it has no message id" });
+          break;
+        }
+        if (!ircManager.redact(userId, messageId, reason)) {
+          send(ws, {
+            kind: 'error',
+            networkId: dest.networkId,
+            target: dest.target,
+            text: "Couldn't delete the message: not connected, or this network can't delete messages",
+          });
+        }
         break;
       }
       case 'sync-reactions': {

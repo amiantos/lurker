@@ -18,6 +18,7 @@
 //   - PING from the server is a method call, so tests decide when it happens.
 
 import net from 'node:net';
+import { REDACTION_CAP } from '../../shared/redaction.js';
 import tls from 'node:tls';
 import { EventEmitter, once } from 'node:events';
 import { generate as generateSelfSigned } from 'selfsigned';
@@ -333,7 +334,7 @@ export class FakeIrcd extends EventEmitter {
       : [this.client(target), sender].filter((c): c is FakeClient => !!c);
     const seen = new Set<FakeClient>();
     for (const c of recipients) {
-      if (seen.has(c) || !c.caps.has('draft/message-redaction')) continue;
+      if (seen.has(c) || !c.caps.has(REDACTION_CAP)) continue;
       seen.add(c);
       this.tagged(c, line, `m${++this.msgidCounter}`);
     }
@@ -647,8 +648,7 @@ export class FakeIrcd extends EventEmitter {
       // negotiated the cap, the sender included: ergo sends it back to the
       // deleting session, and that echo is what a client acts on.
       case 'REDACT': {
-        if (!c.caps.has('draft/message-redaction'))
-          return this.num(c, '421', 'REDACT', 'Unknown command');
+        if (!c.caps.has(REDACTION_CAP)) return this.num(c, '421', 'REDACT', 'Unknown command');
         const target = p[0] ?? '';
         const msgid = p[1] ?? '';
         const owner = this.msgidOwner.get(msgid);

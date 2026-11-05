@@ -18,11 +18,12 @@ let addBookmark: typeof import('./bookmarks.js').addBookmark;
 let removeBookmark: typeof import('./bookmarks.js').removeBookmark;
 let isBookmarked: typeof import('./bookmarks.js').isBookmarked;
 let listBookmarksForUser: typeof import('./bookmarks.js').listBookmarksForUser;
+let redactMessage: typeof import('./messages.js').redactMessage;
 
 beforeAll(async () => {
   ({ createUser, deleteUser } = await import('./users.js'));
   ({ createNetwork } = await import('./networks.js'));
-  ({ insertMessage, listMessages } = await import('./messages.js'));
+  ({ insertMessage, listMessages, redactMessage } = await import('./messages.js'));
   ({ addBookmark, removeBookmark, isBookmarked, listBookmarksForUser } =
     await import('./bookmarks.js'));
 });
@@ -121,6 +122,42 @@ describe('bookmarks', () => {
     expect(page1[0].networkName).toBe('irc');
     const page2 = listBookmarksForUser(u.id, { before: page1[1].id, limit: 2 });
     expect(page2.map((r) => r.id)).toEqual([ids[2], ids[1]]);
+  });
+
+  it('lists a saved line that was deleted as its placeholder (#1013)', () => {
+    const u = createUser('bm-redact');
+    const net = mkNetwork(u.id, 'irc');
+    const id = Number(
+      insertMessage({
+        networkId: net!.id,
+        target: '#meta',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'eve',
+        text: 'take this back',
+        self: false,
+        msgid: 'm-gone',
+      }).id,
+    );
+    addBookmark(u.id, id);
+    const bufferId = listMessages(net!.id, '#meta').find((m) => m.id === id)!.bufferId!;
+    expect(
+      redactMessage({
+        networkId: net!.id,
+        bufferId,
+        msgid: 'm-gone',
+        by: 'opal',
+        reason: 'off topic',
+        time: '2026-11-05T00:00:00.000Z',
+      }),
+    ).toMatchObject({ id });
+    const row = listBookmarksForUser(u.id, { limit: 10 }).find((r) => r.id === id)!;
+    expect(row.text).toBeNull();
+    expect(row.redaction).toEqual({
+      by: 'opal',
+      reason: 'off topic',
+      time: '2026-11-05T00:00:00.000Z',
+    });
   });
 
   it('cascades on user delete', () => {

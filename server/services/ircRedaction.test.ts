@@ -13,7 +13,12 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { listMessages, searchMessages, redactSendTarget } from '../db/messages.js';
+import {
+  hasSameMessageWithMsgid,
+  listMessages,
+  searchMessages,
+  redactSendTarget,
+} from '../db/messages.js';
 import type { MessageEvent } from '../db/messages.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
@@ -194,6 +199,26 @@ describe('a REDACT from the network', () => {
     }
   });
 
+  it('still counts as stored when an upstream replays the line with its words', async () => {
+    const rig = await connect('recv7', '#d7');
+    try {
+      const msgid = await peerSays(rig, 'bob', '#d7', 'replayed later');
+      const stored = () =>
+        hasSameMessageWithMsgid(rig.network.id, '#d7', msgid, 'message', 'bob', 'replayed later');
+      expect(stored()).toBe(true);
+      ircd.redact('bob', '#d7', msgid);
+      await until(() => redactedFrames(rig).length === 1, 5000, 'frame');
+      // A bouncer upstream's playback after a drop carries the words again; the
+      // deleted row is the same line, not a new one beside its placeholder.
+      expect(stored()).toBe(true);
+      ircd.say('bob', '#d7', 'replayed later');
+      await peerSays(rig, 'bob', '#d7', 'barrier');
+      expect(rows(rig, '#d7').filter((m) => m.text === 'replayed later')).toHaveLength(1);
+    } finally {
+      dispose(rig);
+    }
+  });
+
   it('lands a DM REDACT addressed to us in the sender’s buffer', async () => {
     const rig = await connect('recv5');
     try {
@@ -237,7 +262,11 @@ describe('deleting a line of ours', () => {
     try {
       const msgid = await iSay(rig, '#s1', 'typo');
       const row = rowByMsgid(rig, '#s1', msgid);
-      expect(redactSendTarget(userId, row.id)).toMatchObject({ target: '#s1', msgid, self: true });
+      expect(redactSendTarget(userId, row.id)).toEqual({
+        networkId: rig.network.id,
+        target: '#s1',
+        msgid,
+      });
       expect(ircManager.redact(userId, row.id, 'meant the other channel')).toBe(true);
       await until(() => redactedFrames(rig).length === 1, 5000, 'our own REDACT echoed');
       expect(sentBy(rig)).toContain(`REDACT #s1 ${msgid} :meant the other channel`);

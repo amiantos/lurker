@@ -4,6 +4,7 @@
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useRedactionsStore } from '../stores/redactions.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { QuotedLine, ReplyContext } from '../../../shared/replies.js';
 
@@ -15,6 +16,7 @@ export function useReplyQuote() {
   const ignores = useIgnoresStore();
   const relayBots = useRelayBotsStore();
   const networks = useNetworksStore();
+  const redactions = useRedactionsStore();
 
   // `line` is the reply as it displays (a relayed line already unwrapped).
   // `parent`: the answered line as the quote shows it — null for "unavailable",
@@ -50,6 +52,11 @@ export function useReplyQuote() {
       ignores.isMessageHidden(networkId, { ...parent, target })
     ) {
       parent = null;
+    }
+    // The answered line deleted while this reply was on screen (#1013): the
+    // quote copied its words into this row; the store knows they're gone.
+    if (parent && !parent.redacted && redactions.get({ id: parent.id })) {
+      parent = { ...parent, text: '', redacted: true };
     }
     const relayed = parent ? relayBots.unwrap(networkId, parent) : null;
     if (parent && relayed) {

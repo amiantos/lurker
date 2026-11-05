@@ -6,6 +6,10 @@
 // draw the placeholder). The line's text is gone — NULL on the row — and this
 // says that it went, when, by whom, and why if a reason came. Absent on a line
 // that wasn't deleted, like `bookmarked`.
+// The capability, spelled once: requested by the connection, offered by the
+// bouncer while the network has it, and what the client filter gates REDACT on.
+export const REDACTION_CAP = 'draft/message-redaction';
+
 export interface Redaction {
   // The nick that sent the REDACT: the author, or an op who removed it.
   by: string;

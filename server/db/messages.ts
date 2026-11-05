@@ -658,7 +658,7 @@ function rowToEvent(row: MessageRow): MessageEvent {
 // TAGMSG — and a TAGMSG is never stored as a line, so a REDACT naming a
 // reaction's msgid finds nothing and is ignored, as the spec says to).
 const redactTargetStmt = db.prepare(`
-  SELECT id, buffer_id, nick, self, redacted_at FROM messages
+  SELECT id, buffer_id, nick, self FROM messages
   WHERE network_id = ? AND msgid = ? AND +buffer_id = ? AND type IN ${REPLY_LINE_TYPES_SQL}
   ORDER BY id DESC LIMIT 1
 `);
@@ -689,19 +689,14 @@ export interface RedactedLine {
 // same write), the row says who deleted it and when, and every reaction on it
 // comes down — in one transaction, so a read between the two can't see a
 // deleted line still wearing its reactions. Null when the msgid names no line
-// we hold in that buffer, or one already deleted: a second REDACT for the same
-// line (two sessions, a replay) changes nothing and publishes nothing.
+// we hold in that buffer, or one already deleted (the UPDATE's own guard: a
+// second REDACT for the same line — two sessions, a replay — changes nothing
+// and publishes nothing).
 export const redactMessage = db.transaction((r: RedactInput): RedactedLine | null => {
   const row = redactTargetStmt.get(r.networkId, r.msgid, r.bufferId) as
-    | {
-        id: number;
-        buffer_id: number;
-        nick: string | null;
-        self: number;
-        redacted_at: string | null;
-      }
+    | { id: number; buffer_id: number; nick: string | null; self: number }
     | undefined;
-  if (!row || row.redacted_at) return null;
+  if (!row) return null;
   const info = redactStmt.run({ id: row.id, time: r.time, by: r.by, reason: r.reason ?? null });
   if (info.changes === 0) return null;
   removeAllReactions(row.id, r.time);
@@ -715,7 +710,7 @@ export const redactMessage = db.transaction((r: RedactInput): RedactedLine | nul
 // target, or is already deleted. Whether the network will ALLOW it is the
 // network's answer (a FAIL), not ours: the spec says to let the user try.
 const redactSendStmt = db.prepare(`
-  SELECT m.network_id, m.msgid, m.nick, m.self, b.target, b.kind
+  SELECT m.network_id, m.msgid, b.target, b.kind
   FROM messages m
   JOIN networks n ON n.id = m.network_id
   JOIN buffers b ON b.id = m.buffer_id
@@ -729,31 +724,16 @@ export interface RedactSendTarget {
   networkId: number;
   target: string;
   msgid: string;
-  nick: string | null;
-  self: boolean;
 }
 
 export function redactSendTarget(userId: number, messageId: number): RedactSendTarget | null {
   const row = redactSendStmt.get(messageId, userId) as
-    | {
-        network_id: number;
-        msgid: string;
-        nick: string | null;
-        self: number;
-        target: string;
-        kind: string;
-      }
+    | { network_id: number; msgid: string; target: string; kind: string }
     | undefined;
   if (!row) return null;
   // `server` (the :server:N console) and `dcc` (=nick) are not IRC targets.
   if (row.kind !== 'channel' && row.kind !== 'dm') return null;
-  return {
-    networkId: row.network_id,
-    target: row.target,
-    msgid: row.msgid,
-    nick: row.nick,
-    self: row.self === 1,
-  };
+  return { networkId: row.network_id, target: row.target, msgid: row.msgid };
 }
 
 // `before` paginates backward (returns up to `limit` events with id < before).
@@ -1789,13 +1769,16 @@ export function hasMessageForTarget(networkId: number, target: string): boolean 
 // Whether this message is already stored: the same msgid in the same buffer,
 // with the same kind, sender and text (IrcConnection.alreadyPersisted). A server
 // can send a message twice. The buffer, sender and text have to match too, so a
-// server that reuses a msgid for a different message loses nothing. A seek on
-// idx_messages_msgid: `+buffer_id` keeps the planner off the per-buffer index,
-// which would walk the buffer.
+// server that reuses a msgid for a different message loses nothing. A deleted
+// row (#1013) has no text to match and counts anyway: an upstream replaying the
+// line with its words (a bouncer's playback after a drop) must not bring back,
+// beside the placeholder, what was deleted. A seek on idx_messages_msgid:
+// `+buffer_id` keeps the planner off the per-buffer index, which would walk the
+// buffer.
 const sameMessageStmt = db.prepare(
   `SELECT 1 FROM messages
    WHERE network_id = ? AND msgid = ?
-     AND +buffer_id = ? AND type = ? AND nick IS ? AND text IS ?
+     AND +buffer_id = ? AND type = ? AND nick IS ? AND (text IS ? OR redacted_at IS NOT NULL)
    LIMIT 1`,
 );
 export function hasSameMessageWithMsgid(

@@ -104,6 +104,37 @@ describe('MessageList — deleted lines', () => {
     expect(row.find('.reaction-row, .reactions').exists()).toBe(false);
   });
 
+  it('turns a reply’s quote into "message deleted" when the parent goes while on screen', async () => {
+    const p = line('alice', 'my password is hunter2');
+    const r = line('bob', 'alice: change it', {
+      replyTo: {
+        msgid: p.msgid,
+        parent: {
+          id: p.id,
+          nick: 'alice',
+          type: 'message',
+          text: 'my password is hunter2',
+          userhost: 'alice!~a@host',
+          self: false,
+        },
+      },
+    });
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.reply-quote .reply-text').text()).toContain('hunter2');
+    useRedactionsStore().applyFrame({
+      networkId: 1,
+      bufferId: 9,
+      target: '#chan',
+      messageId: p.id,
+      by: 'alice',
+      self: false,
+      time: T,
+    });
+    await nextTick();
+    expect(rowOf(w, r.id).find('.reply-quote .reply-text').text()).toBe('<alice> message deleted');
+    expect(rowOf(w, p.id).find('.body .deleted').text()).toBe('message deleted');
+  });
+
   it('quotes a deleted parent as deleted, not as unavailable', () => {
     const p = line('alice', null as never, { redaction: { by: 'alice', time: T } });
     const r = line('bob', 'alice: still?', {

@@ -59,9 +59,7 @@ import {
 } from '../db/buffers.js';
 import { unfavoriteBuffer, isFavoriteDmPeer } from '../db/favoriteBuffers.js';
 import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
-
-// IRCv3 draft/message-redaction (#1013): deleting a line, and hearing of one.
-const REDACTION_CAP = 'draft/message-redaction';
+import { REDACTION_CAP } from '../../shared/redaction.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
 import { REPLY_LINE_TYPES, replyMsgidFromTags } from '../../shared/replies.js';

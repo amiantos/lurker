@@ -52,6 +52,7 @@
 //   and any other attached client holds auto-away off (presence.ts).
 
 import net from 'net';
+import { REDACTION_CAP } from '../../shared/redaction.js';
 import tls from 'tls';
 import fs from 'fs';
 import { StringDecoder } from 'node:string_decoder';
@@ -186,7 +187,7 @@ const PASSTHROUGH_CAPS = [
   // that asked for them (the filter gates the command on the cap); a client's
   // own REDACT takes the web app's road (handleClientRedact). Offered only
   // while the network has it, since every REDACT a client sees comes from it.
-  'draft/message-redaction',
+  REDACTION_CAP,
 ];
 
 // A line that could be metadata: the command, after an optional tag and
