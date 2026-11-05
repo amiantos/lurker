@@ -19,8 +19,10 @@
 
 // MUST be first: redirects DATABASE_PATH before anything opens the db.
 import '../test-utils/isolateDb.js';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import db from '../db/index.js';
+import * as messagesDb from '../db/messages.js';
+import { getEngineMark } from '../db/engineMarks.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { setUserPaused } from '../db/users.js';
@@ -36,6 +38,10 @@ import { until as poll } from '../test-utils/until.js';
 import { TestLink } from '../test-utils/engineLink.js';
 import { instanceId } from '../db/instanceId.js';
 import { EngineLink, engineConnectionId, isOurConnectionId } from './engineLink.js';
+
+// The real module, every export wrapped so a test can ask whether the content
+// probe was consulted (#1068).
+vi.mock('../db/messages.js', { spy: true });
 
 const SECRET = 'integration-secret';
 
@@ -322,6 +328,58 @@ describe('IrcConnection through the engine', () => {
     expect(count('new in catch-up')).toBe(1);
     conn.catchingUp = false;
   });
+
+  it('skips a re-delivered line by its engine seq, with no content probe (#1068)', async () => {
+    const conn = ircManager.getConnection(userId, network.id)!;
+    expect(conn.state).toBe('connected');
+    const probe = vi.mocked(messagesDb.hasRecentMessageLike);
+    probe.mockClear();
+    const count = (text: string) => rows().filter((r) => r.text === text).length;
+    const buffered = () => engine.info(engineId)?.bufferedLines ?? 0;
+
+    // The process "dies" between the row and the ack: the line's handlers have
+    // run (the row is written, and the manager has fanned the message out),
+    // the link is destroyed on the next tick — ahead of the microtask that
+    // writes the mark and sends the ack. The mark write still runs; the ack
+    // goes nowhere. The engine therefore re-delivers the line at re-attach.
+    const onEvent = (e: Ev) => {
+      if (e.type !== 'message' || e.text !== 'ack lost') return;
+      ircManager.off('event', onEvent);
+      process.nextTick(() => EngineLink.shared().simulateLoss());
+    };
+    ircManager.on('event', onEvent);
+    managerEvents.length = 0;
+    // Untagged, as Libera or ZNC would send it: with a msgid the index seek
+    // settles the repeat on its own, and this is about the line that has none.
+    ircd.sendRaw('lurk', ':peer!~peer@peer.fake PRIVMSG #stay :ack lost');
+    await until(() => count('ack lost') === 1, 5000, 'the line was stored once');
+    // Never acked: the engine still holds it.
+    await until(() => buffered() >= 1, 5000, 'the engine kept the unacked line');
+    const mark = getEngineMark(network.id);
+    expect(mark).not.toBeNull();
+
+    await until(
+      () => {
+        const trail = stateEvents(managerEvents);
+        return (
+          trail.includes('reconnecting') &&
+          trail.lastIndexOf('connected') > trail.indexOf('reconnecting')
+        );
+      },
+      5000,
+      'reconnecting → connected',
+    );
+    await until(() => !conn.catchingUp, 5000, 'live');
+    // Acked by the new attach, so the engine let go of it.
+    await until(() => buffered() === 0, 5000, 'the backlog was acked');
+
+    // Once, still — and settled by the mark: the probe was never asked about it.
+    expect(count('ack lost')).toBe(1);
+    expect(probe.mock.calls.some((c) => c[4] === 'ack lost')).toBe(false);
+    // A fresh line after `live` is new, and stored.
+    ircd.sendRaw('lurk', ':peer!~peer@peer.fake PRIVMSG #stay :after the mark');
+    await until(() => count('after the mark') === 1, 5000, 'a live line after re-attach');
+  }, 20000);
 
   it('restartNetwork dials afresh: no restore of the quitting session, no reconnect row', async () => {
     const before = ircManager.getConnection(userId, network.id)!;

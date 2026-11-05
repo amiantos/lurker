@@ -181,6 +181,11 @@ network and says so, rather than connecting without it. Settings → About shows
 which engine you have. Pull the engine image (its tag doesn't move; its contents
 do) and restart it.
 
+One more is quieter. An engine from Lurker 2.7.0 or later names each IRC
+socket, and the app uses that to know exactly which of the lines handed over
+after a restart it has already stored, instead of guessing from their
+contents. An older engine works as before; the guess is just less exact.
+
 **While the app is down**, the engine keeps what arrives: 4 MiB per connection, 256 MiB in total, tunable with `LURKER_ENGINE_BUFFER_BYTES` and `LURKER_ENGINE_BUFFER_TOTAL_BYTES`. Past the cap the oldest lines go and the app notes where the hole is. Deploys take seconds; the buffer covers hours of ordinary traffic.
 
 ---

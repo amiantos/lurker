@@ -35,7 +35,7 @@
 // is held back at replay time for the same reason: see replaySet.
 
 import net from 'node:net';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import tls from 'node:tls';
 import { EventEmitter } from 'node:events';
 import { ircLineParser } from 'irc-framework';
@@ -87,6 +87,7 @@ export interface FrameSink {
 export interface AttachedPayload {
   local: Endpoint;
   remote: Endpoint;
+  socket: string;
   replay: string[];
   nick: string | null;
   channels: string[];
@@ -140,6 +141,11 @@ function prefixNick(prefix: string | undefined): string {
 
 export class EngineUpstream extends EventEmitter {
   readonly id: string;
+  // This socket's identity on the wire to the app (protocol minor 6): the app
+  // stores the highest line seq it has persisted beside it, and seqs count
+  // from 1 on every dial, so a fresh dial under the same id must never look
+  // like the socket whose seqs were stored.
+  readonly socketId: string = randomUUID();
   state: 'dialing' | 'open' | 'closed' = 'dialing';
   private dialed = false;
   /** The proxy credentials this socket was dialled with, as a digest. Survives
@@ -480,7 +486,7 @@ export class EngineUpstream extends EventEmitter {
     this.local = local;
     this.remote = remote;
     this.emit('open', local, remote);
-    this.sink?.send({ op: 'open', id: this.id, local, remote });
+    this.sink?.send({ op: 'open', id: this.id, local, remote, socket: this.socketId });
   }
 
   private onData(chunk: string): void {
@@ -759,6 +765,7 @@ export class EngineUpstream extends EventEmitter {
     return {
       local: this.local,
       remote: this.remote,
+      socket: this.socketId,
       replay: this.replaySet(),
       nick: this.nick,
       channels: [...this.channels.values()],

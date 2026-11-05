@@ -711,6 +711,13 @@ export const EXPORT_TABLES = Object.freeze({
       'meaningless on another, and gone in seven days anyway',
   },
 
+  engine_marks: {
+    mode: 'skip',
+    reason:
+      'where THIS instance stands in the engine-held socket’s line numbering (#1068); ' +
+      'another instance speaks to another engine, whose sockets and seqs these never name',
+  },
+
   invite_tokens: {
     mode: 'skip',
     reason: 'admin/instance-scoped invitation state, not user data',

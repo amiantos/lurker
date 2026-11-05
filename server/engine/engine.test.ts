@@ -19,6 +19,7 @@ import { until } from '../test-utils/until.js';
 
 const SECRET = 'spike-secret';
 type Attached = Extract<EngineToApp, { op: 'attached' }>;
+type Open = Extract<EngineToApp, { op: 'open' }>;
 
 let ircd: FakeIrcd;
 let engine: EngineServer;
@@ -913,6 +914,33 @@ describe('review findings', () => {
     await b.waitFor((f) => f.op === 'live' && f.id === id);
     const ops = b.frames.filter((f) => 'id' in f && f.id === id).map((f) => f.op);
     expect(ops.slice(0, 2)).toEqual(['attached', 'gap']);
+  });
+
+  it('names the socket on open and attached, and a fresh dial under the id gets a new name (#1068)', async () => {
+    const id = `sock:${++counter}`;
+    const a = await link();
+    a.send(connectFrame(id));
+    const open = await a.waitFor<Open>((f) => f.op === 'open' && f.id === id);
+    expect(typeof open.socket).toBe('string');
+    expect(open.socket).not.toBe('');
+    a.send({ op: 'write', id, line: 'NICK socknamed' });
+    a.send({ op: 'write', id, line: 'USER socknamed 0 * :s' });
+    await a.waitForLine(id, / 376 /);
+    ackAll(a, id);
+    a.kill();
+    // The next process attaches to the same socket: same name, so the seqs it
+    // stored under that name still count.
+    const b = await link();
+    b.send(connectFrame(id));
+    const attached = await b.waitFor<Attached>((f) => f.op === 'attached' && f.id === id);
+    expect(attached.socket).toBe(open.socket);
+    // A fresh dial restarts the seqs at 1, under a name nothing stored.
+    b.send({ op: 'close', id });
+    await gone(engine, id);
+    b.send(connectFrame(id));
+    const reopen = await b.waitForNew<Open>((f) => f.op === 'open' && f.id === id);
+    expect(typeof reopen.socket).toBe('string');
+    expect(reopen.socket).not.toBe(open.socket);
   });
 
   it('a CONNECT right after a close dials afresh instead of attaching to the dying socket', async () => {
