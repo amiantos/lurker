@@ -18,6 +18,7 @@
 //   - PING from the server is a method call, so tests decide when it happens.
 
 import net from 'node:net';
+import { REDACTION_CAP } from '../../shared/redaction.js';
 import tls from 'node:tls';
 import { EventEmitter, once } from 'node:events';
 import { generate as generateSelfSigned } from 'selfsigned';
@@ -34,6 +35,9 @@ export interface FakeIrcdOptions {
   stripFormatting?: boolean;
   // Advertise these in CAP LS (and ACK them when requested).
   caps?: string[];
+  // Message redaction (#1013): let a client delete ANY line, as a channel op
+  // may on ergo. Without it a client may delete only its own.
+  redactAny?: boolean;
   // false → 422 instead of a MOTD.
   motd?: boolean;
   // Pad the MOTD with this many extra numbered 372 lines. Their lengths vary
@@ -161,6 +165,10 @@ export class FakeIrcd extends EventEmitter {
   // for a test of what the client does when a reply never comes.
   hold: ((cmd: string, params: string[], c: FakeClient) => boolean) | null = null;
   private msgidCounter = 0;
+  // Who sent each line the fake minted a msgid for, by msgid — what a REDACT
+  // is judged against (#1013). A deleted line's entry goes, so a second REDACT
+  // for it answers UNKNOWN_MSGID as ergo does once its history row is gone.
+  private readonly msgidOwner = new Map<string, string>();
   private server!: net.Server;
   port = 0;
   private readonly caps: string[];
@@ -278,6 +286,7 @@ export class FakeIrcd extends EventEmitter {
   // escaped, `+`-prefixed), to every message-tags client on the target.
   tagmsg(from: string, target: string, clientTags: string[]): string {
     const msgid = `m${++this.msgidCounter}`;
+    this.msgidOwner.set(msgid, from);
     const line = `:${from}!~${from}@peer.fake TAGMSG ${target}`;
     const recipients = isChannelTarget(target)
       ? this.members(target)
@@ -292,6 +301,7 @@ export class FakeIrcd extends EventEmitter {
   // (escaped, `+`-prefixed) ride along to message-tags clients, as on TAGMSG.
   say(from: string, target: string, text: string, clientTags: string[] = []): string {
     const msgid = `m${++this.msgidCounter}`;
+    this.msgidOwner.set(msgid, from);
     const body = this.opts.stripFormatting ? stripFormatting(text) : text;
     const line = `:${from}!~${from}@peer.fake PRIVMSG ${target} :${body}`;
     if (isChannelTarget(target)) {
@@ -301,6 +311,33 @@ export class FakeIrcd extends EventEmitter {
       if (c) this.tagged(c, line, msgid, clientTags);
     }
     return msgid;
+  }
+
+  // A REDACT from a synthetic peer (#1013): `from` deleted the line `msgid` in
+  // `target` — its own, or as an op. Delivered to every cap client there; a
+  // DM REDACT reaches the client named as its target.
+  redact(from: string, target: string, msgid: string, reason?: string): void {
+    this.msgidOwner.delete(msgid);
+    this.relayRedact(`${from}!~${from}@peer.fake`, target, msgid, reason, null);
+  }
+
+  private relayRedact(
+    prefix: string,
+    target: string,
+    msgid: string,
+    reason: string | undefined,
+    sender: FakeClient | null,
+  ): void {
+    const line = `:${prefix} REDACT ${target} ${msgid}` + (reason ? ` :${reason}` : '');
+    const recipients = isChannelTarget(target)
+      ? this.members(target)
+      : [this.client(target), sender].filter((c): c is FakeClient => !!c);
+    const seen = new Set<FakeClient>();
+    for (const c of recipients) {
+      if (seen.has(c) || !c.caps.has(REDACTION_CAP)) continue;
+      seen.add(c);
+      this.tagged(c, line, `m${++this.msgidCounter}`);
+    }
   }
 
   setTopic(from: string, channel: string, topic: string): void {
@@ -501,6 +538,7 @@ export class FakeIrcd extends EventEmitter {
         const raw = p[1] ?? '';
         const text = this.opts.stripFormatting ? stripFormatting(raw) : raw;
         const msgid = `m${++this.msgidCounter}`;
+        this.msgidOwner.set(msgid, c.nick ?? '');
         const out = `:${this.hostmask(c)} ${cmd} ${target} :${text}`;
         // Client-only tags (a reply's +reply) are relayed as a real ircd does:
         // only a message-tags sender's, and tagged() only hands them on to
@@ -524,6 +562,7 @@ export class FakeIrcd extends EventEmitter {
         if (!c.caps.has('message-tags')) return this.num(c, '421', 'TAGMSG', 'Unknown command');
         const target = p[0] ?? '';
         const msgid = `m${++this.msgidCounter}`;
+        this.msgidOwner.set(msgid, c.nick ?? '');
         const clientTags = FakeIrcd.clientTagsOf(line);
         const out = `:${this.hostmask(c)} TAGMSG ${target}`;
         const deliver = (m: FakeClient) => {
@@ -602,6 +641,33 @@ export class FakeIrcd extends EventEmitter {
       }
       case 'MOTD':
         return this.sendMotd(c);
+      // Message redaction (draft/message-redaction, #1013), with ergo's rules:
+      // a client may delete its own lines, someone else's only as an op
+      // (`redactAny`), and a msgid the fake never minted — or already deleted —
+      // doesn't exist. The REDACT goes to every member (both DM parties) that
+      // negotiated the cap, the sender included: ergo sends it back to the
+      // deleting session, and that echo is what a client acts on.
+      case 'REDACT': {
+        if (!c.caps.has(REDACTION_CAP)) return this.num(c, '421', 'REDACT', 'Unknown command');
+        const target = p[0] ?? '';
+        const msgid = p[1] ?? '';
+        const owner = this.msgidOwner.get(msgid);
+        if (owner === undefined) {
+          return this.raw(
+            c,
+            `:${this.serverName} FAIL REDACT UNKNOWN_MSGID ${target} ${msgid} :This message does not exist or is too old`,
+          );
+        }
+        if (owner.toLowerCase() !== (c.nick ?? '').toLowerCase() && !this.opts.redactAny) {
+          return this.raw(
+            c,
+            `:${this.serverName} FAIL REDACT REDACT_FORBIDDEN ${target} ${msgid} :You are not authorized to delete this message`,
+          );
+        }
+        this.msgidOwner.delete(msgid);
+        this.relayRedact(this.hostmask(c), target, msgid, p[2], c);
+        return;
+      }
       default:
         return this.num(c, '421', cmd, 'Unknown command');
     }

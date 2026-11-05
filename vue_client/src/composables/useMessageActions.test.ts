@@ -17,6 +17,14 @@ import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
+import { useRedactionsStore } from '../stores/redactions.js';
+import { socketSend } from './useSocket.js';
+
+vi.mock('./useSocket.js', () => ({
+  socketSend: vi.fn<() => boolean>(() => true),
+  socketSendWithAck: vi.fn<() => null>(() => null),
+  onSocketOpen: vi.fn<() => () => void>(() => () => {}),
+}));
 
 function makeCtx(): MessageContext {
   return {
@@ -38,6 +46,90 @@ describe('useMessageActions', () => {
     setActivePinia(createPinia());
     // The context menu is a module-level singleton — reset between cases.
     useContextMenu().close();
+  });
+
+  describe('Delete (#1013)', () => {
+    const T = '2026-11-05T00:00:00.000Z';
+    const mine = (over: Partial<MessageLike> = {}): MessageLike =>
+      other({ self: true, msgid: 'm1', type: 'message', target: '#chan', ...over });
+    const keys = (m: MessageLike) =>
+      useMessageActions()
+        .buildActions(m)
+        .map((a) => a.key);
+
+    it('is offered on your own line once the network can delete', () => {
+      useNetworksStore().states = { 1: { state: 'connected', canRedact: false } } as never;
+      expect(keys(mine())).not.toContain('delete');
+      useNetworksStore().states = { 1: { state: 'connected', canRedact: true } } as never;
+      expect(keys(mine())).toContain('delete');
+      // Never without a msgid to name, nor off a network.
+      expect(keys(mine({ msgid: undefined }))).not.toContain('delete');
+      // Your own encrypted line can go too: a REDACT carries no content.
+      expect(keys(mine({ e2e: true }))).toContain('delete');
+      useNetworksStore().states = { 1: { state: 'disconnected', canRedact: true } } as never;
+      expect(keys(mine())).not.toContain('delete');
+    });
+
+    it("is offered on someone else's line only where you hold a prefix mode", () => {
+      useNetworksStore().states = {
+        1: { state: 'connected', nick: 'me', canRedact: true },
+      } as never;
+      const theirs = other({ msgid: 'm2', type: 'message', target: '#chan' });
+      expect(keys(theirs)).not.toContain('delete');
+      const b = useBuffersStore().ensure(1, '#chan', 9);
+      b.members = [
+        { nick: 'me', modes: [], away: false },
+        { nick: 'bob', modes: [], away: false },
+      ] as never;
+      expect(keys(theirs)).not.toContain('delete');
+      b.members = [{ nick: 'Me', modes: ['o'], away: false }] as never;
+      expect(keys(theirs)).toContain('delete');
+      // A DM has no ops.
+      expect(keys(other({ msgid: 'm3', type: 'message', target: 'bob' }))).not.toContain('delete');
+    });
+
+    it('leaves a deleted line nothing but its link and bookmark', () => {
+      useNetworksStore().states = {
+        1: { state: 'connected', canReact: true, canRedact: true },
+      } as never;
+      const gone = other({
+        msgid: 'm4',
+        type: 'message',
+        target: '#chan',
+        text: '',
+        redaction: { by: 'bob', time: T },
+      });
+      expect(keys(gone)).toEqual(['save', 'ignore']);
+      const mineGone = mine({ text: '', redaction: { by: 'me', time: T } });
+      expect(keys(mineGone)).toEqual(['save']);
+    });
+
+    it('reads a live deletion from the store, not only the row', () => {
+      useNetworksStore().states = {
+        1: { state: 'connected', canReact: true, canRedact: true },
+      } as never;
+      useRedactionsStore().byMessage.set(42, { by: 'bob', time: T });
+      expect(keys(other({ msgid: 'm5', type: 'message', target: '#chan' }))).toEqual([
+        'save',
+        'ignore',
+      ]);
+    });
+
+    it('sends the redact only once confirmed', () => {
+      useNetworksStore().states = { 1: { state: 'connected', canRedact: true } } as never;
+      // No DOM here: the confirm is the browser's, stubbed.
+      const confirm = vi.fn<() => boolean>(() => false);
+      vi.stubGlobal('window', { confirm });
+      try {
+        useMessageActions().run('delete', mine(), makeCtx());
+        expect(socketSend).not.toHaveBeenCalled();
+        confirm.mockReturnValue(true);
+        useMessageActions().run('delete', mine(), makeCtx());
+        expect(socketSend).toHaveBeenCalledWith({ type: 'redact', messageId: 42 });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
   });
 
   describe('buildActions', () => {

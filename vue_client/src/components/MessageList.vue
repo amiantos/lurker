@@ -205,8 +205,14 @@
                  that could hold a link) than `hasInlineText`, so the order is what makes the
                  two mutually exclusive — reversed, every previewable message would render its
                  body twice. It has to be a branch of THIS chain rather than a sibling: see the
-                 note where MessageAttachments used to sit, a few branches down. --><MessageBody
-            v-if="previewBody(row.m)"
+                 note where MessageAttachments used to sit, a few branches down.
+                 The one thing ahead of it: a deleted line's placeholder (#1013), which is
+                 the whole body of a line that has no words left to preview. --><span
+            v-if="row.m?.redaction"
+            class="deleted"
+            >{{ redactionLabel(row.m.redaction, row.m.nick) }}</span
+          ><MessageBody
+            v-else-if="previewBody(row.m)"
             :text="row.m?.text"
             :segments="textSegments(row.m)"
             :self-color="selfColor"
@@ -347,8 +353,9 @@
                  They now render inside MessageBody, which IS the chain's first branch, so the
                  hazard is gone rather than avoided. -->
           <!-- After the chain's LAST branch, so it starts a chain of its own and
-                 re-parents nothing (see the note above). --><ReactionRow
-            v-if="row.m && reactable(row.m)"
+                 re-parents nothing (see the note above). A deleted line's
+                 reactions came down with it (#1013). --><ReactionRow
+            v-if="row.m && reactable(row.m) && !row.m.redaction"
             :message="row.m"
             :interactive="row.m.type !== 'notice' && !row.m.e2e"
             @measured="repinAfterPreviewGrowth(true)"
@@ -403,6 +410,9 @@ import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
+import { useRedactionsStore } from '../stores/redactions.js';
+import { redactionLabel } from '../../../shared/redaction.js';
+import type { Redaction } from '../../../shared/redaction.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { socketSend } from '../composables/useSocket.js';
@@ -527,6 +537,10 @@ interface ChatMessage {
   // newest came. Kept live by stores/threads.applyLive. A thread is named by
   // its first line's msgid.
   thread?: ThreadStats;
+  // The line was deleted (#1013): the server blanked its text and this says
+  // who and when. On rows read back; a live deletion rides the redactions
+  // store, which renderRows asks.
+  redaction?: Redaction;
   msgid?: string;
   [key: string]: unknown;
 }
@@ -588,6 +602,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const ignores = useIgnoresStore();
 const replyQuote = useReplyQuote();
+const redactions = useRedactionsStore();
 const replies = useRepliesStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
@@ -1540,6 +1555,11 @@ const renderRows = computed((): RenderRow[] => {
     }
     // A reply: its quote, and its text without the address the quote makes
     // redundant (useReplyQuote).
+    // A deleted line (#1013) shows its placeholder in place of its words,
+    // whether it was read back that way or deleted while on screen. Network
+    // lines only: the system buffer's rows have an id space of their own.
+    const redaction = networkId != null ? redactions.get(m) : undefined;
+    if (redaction) mDisplay = { ...mDisplay, text: '', redaction };
     let replyParent: ReplyParent | null = null;
     let replyContinued = false;
     if (m.replyTo) {
@@ -2995,6 +3015,12 @@ watch(
    than assumed — had it rewritten the argument too, the nick-alignment fix would have been dead
    as well and nothing would have said so. */
 .body.meta-body {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+/* A deleted line's placeholder (#1013): muted and italic, like a quote of
+   something that isn't there. */
+.body .deleted {
   color: var(--fg-muted);
   font-style: italic;
 }

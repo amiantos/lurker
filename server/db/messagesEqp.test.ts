@@ -77,7 +77,7 @@ describe('repeat probe', () => {
     const detail = plan(
       `SELECT 1 FROM messages
        WHERE network_id = 1 AND msgid = 'm'
-         AND +buffer_id = 1 AND type = 'message' AND nick IS 'n' AND text IS 't'
+         AND +buffer_id = 1 AND type = 'message' AND nick IS 'n' AND (text IS 't' OR redacted_at IS NOT NULL)
        LIMIT 1`,
     );
     expect(detail).toMatch(/USING INDEX idx_messages_msgid/);

@@ -32,7 +32,8 @@
       >
         <span v-if="t.root && !hiddenRoot(t.root)" class="root"
           >{{ marks(t.root.type)[0] }}<NickRef :nick="t.root.nick" />{{ marks(t.root.type)[1] }}
-          {{ excerpt(t.root.text) }}</span
+          <template v-if="rootDeleted(t.root)">message deleted</template
+          ><template v-else>{{ excerpt(t.root.text) }}</template></span
         >
         <span v-else class="root missing">original message unavailable</span>
         <span class="meta"
@@ -51,6 +52,7 @@ import NickRef from './NickRef.vue';
 import { useThreadsStore } from '../stores/threads.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useRedactionsStore } from '../stores/redactions.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
 import { formatRelative } from '../utils/timestamp.js';
@@ -59,6 +61,12 @@ import { quoteMarks } from '../../../shared/replies.js';
 
 const props = defineProps<{ bufferId: number }>();
 const threads = useThreadsStore();
+const redactions = useRedactionsStore();
+
+// The root was deleted (#1013): as the list read it, or since.
+function rootDeleted(root: { id: number; redacted?: true }): boolean {
+  return !!root.redacted || !!redactions.get(root);
+}
 const buffers = useBuffersStore();
 const ignores = useIgnoresStore();
 

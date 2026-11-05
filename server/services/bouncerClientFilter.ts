@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import { REDACTION_CAP } from '../../shared/redaction.js';
+
 // What an attached bouncer client may receive, given the caps it negotiated.
 //
 // Lurker's connection to a network negotiates caps of its own (irc-framework
@@ -201,7 +203,7 @@ const CAP_GATED_COMMANDS: Record<string, string> = {
   ACCOUNT: 'account-notify',
   CHGHOST: 'chghost',
   SETNAME: 'setname',
-  REDACT: 'draft/message-redaction',
+  REDACT: REDACTION_CAP,
   MARKREAD: 'draft/read-marker',
   METADATA: 'draft/metadata-2',
 };

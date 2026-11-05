@@ -18,6 +18,10 @@ If you know the command, you never need to reach for the mouse.
 ## Common commands
 
 - `/help` — list available commands.
+- `/delete [reason]` — delete the last line you said in this buffer, on a network
+  that supports message deletion (ergo does, when its admin allows it). The line
+  reads _message deleted_ everywhere afterwards, for everyone whose client
+  understands; the reason, if you give one, travels with it.
 - `/network` — view and manage your network connections.
 - `/set`, `/get` — read and change settings from the keyboard.
 - `/away [message]` — set your away status on the current network; `/back` (or

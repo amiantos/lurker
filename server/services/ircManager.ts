@@ -23,7 +23,7 @@ import {
   deleteBuffer,
   listAutojoinChannels,
 } from '../db/buffers.js';
-import { hasMessageForTarget, replySendMsgid } from '../db/messages.js';
+import { redactSendTarget, hasMessageForTarget, replySendMsgid } from '../db/messages.js';
 import {
   DCC_ACTIVE_STATES,
   deleteQueuedXdcc,
@@ -1246,6 +1246,27 @@ class IrcManager extends EventEmitter {
       return false;
     }
     return conn.sendReaction(dest.target, dest.msgid, value, remove);
+  }
+
+  // Ask the network to delete one of the user's stored lines (#1013): their
+  // own, or someone else's where they hold channel status — the network's
+  // FAIL answers the second, so no local check beyond "a line we hold, with a
+  // msgid, in an IRC target". Nothing is written: the network's REDACT echo
+  // applies it. False when there's nothing to send to — a disconnected
+  // network, a line with no msgid, a network without the cap.
+  redact(userId: number, messageId: number, reason?: string | null): boolean {
+    const dest = redactSendTarget(userId, messageId);
+    if (!dest) return false;
+    const conn = this.writableConnection(userId, dest.networkId);
+    if (!conn) return false;
+    // The REDACT itself is a server command and carries no content; its
+    // reason would be cleartext on an E2E channel, so it stays off the wire.
+    const reasonOut =
+      isChannelContext(dest.target) &&
+      e2eManager.isChannelEnabled(userId, dest.networkId, contextKey(dest.target, ''))
+        ? null
+        : reason;
+    return conn.sendRedact(dest.target, dest.msgid, reasonOut);
   }
 
   // RPE2E command surface (#382). Dispatches a `/e2e …` subcommand on a live

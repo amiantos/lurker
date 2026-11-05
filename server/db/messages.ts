@@ -18,6 +18,8 @@ import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
+import type { Redaction } from '../../shared/redaction.js';
+import { removeAllReactions } from './reactions.js';
 import {
   REPLY_EXCERPT_MAX,
   REPLY_LINE_TYPES_SQL,
@@ -69,6 +71,11 @@ interface MessageRow {
   // The msgid at the top of this reply's thread (see db/index.ts); rides the
   // wire as replyTo.root (#1225).
   reply_root_msgid: string | null;
+  // Message redaction (#1013): when the network said this line was deleted,
+  // by whom, and why — see the columns in db/index.ts. `text` is NULL then.
+  redacted_at: string | null;
+  redacted_by: string | null;
+  redact_reason: string | null;
   // JSON object from the computed `reply_parent` column (REPLY_COL), NULL when
   // the msgid names no line we hold. Absent — not null — on reads without it.
   reply_parent?: string | null;
@@ -134,6 +141,9 @@ export interface MessageEvent {
   // when the newest arrived. Absent when none, like `bookmarked`, and on reads
   // that don't count them — the timeline reads do, as for `replyTo`.
   thread?: ThreadStats;
+  // The line was deleted (#1013): `text` is null and this says when, by whom
+  // and why. Absent on every other line, like `bookmarked`.
+  redaction?: Redaction;
   // The msgid this line replies to, bare — only on the bouncer's history reads
   // (loadHistoryWindow, listRecentMessages), which replay it as the line's
   // +reply tag (#991). Every other read resolves it into replyTo or leaves it off.
@@ -358,7 +368,7 @@ export const HIGHLIGHTED_SQL = (alias: string) =>
 const REPLY_PARENT_JSON = `json_object(
       'id', p.id, 'nick', p.nick, 'type', p.type,
       'text', substr(p.text, 1, ${REPLY_EXCERPT_MAX}), 'userhost', p.userhost,
-      'self', p.self
+      'self', p.self, 'redacted', p.redacted_at IS NOT NULL
     )`;
 const REPLY_PARENT_WHERE = `p.type IN ${REPLY_LINE_TYPES_SQL}
       AND p.from_ignored = 0`;
@@ -487,8 +497,11 @@ export function replyContextOf(row: {
 function parseReplyParent(raw: string | null | undefined): ReplyParent | null {
   if (!raw) return null;
   try {
-    const p = JSON.parse(raw) as Omit<ReplyParent, 'self'> & { self: number };
-    return {
+    const p = JSON.parse(raw) as Omit<ReplyParent, 'self' | 'redacted'> & {
+      self: number;
+      redacted?: number;
+    };
+    const parent: ReplyParent = {
       id: p.id,
       nick: p.nick ?? '',
       type: p.type,
@@ -496,6 +509,8 @@ function parseReplyParent(raw: string | null | undefined): ReplyParent | null {
       userhost: p.userhost ?? null,
       self: p.self === 1,
     };
+    if (p.redacted === 1) parent.redacted = true;
+    return parent;
   } catch (_) {
     return null;
   }
@@ -624,7 +639,169 @@ function rowToEvent(row: MessageRow): MessageEvent {
   delete event.thread;
   const thread = parseThreadCol(row.thread);
   if (thread) event.thread = thread;
+  // And whether it was deleted (#1013): the columns, never a stray key.
+  delete event.redaction;
+  if (row.redacted_at) {
+    const redaction: Redaction = { by: row.redacted_by ?? '', time: row.redacted_at };
+    if (row.redact_reason) redaction.reason = row.redact_reason;
+    event.redaction = redaction;
+  }
   return event;
+}
+
+// --- Message redaction (draft/message-redaction, #1013) ---------------------
+
+// The line a REDACT names, in the buffer it was sent to — the same scoping rule
+// as a reaction's parent (findReactionParent): a msgid is only ever seen by
+// that target's members, and a repeat within a buffer resolves to the newest
+// copy. Only a line someone said can be deleted (the spec: PRIVMSG, NOTICE,
+// TAGMSG — and a TAGMSG is never stored as a line, so a REDACT naming a
+// reaction's msgid finds nothing and is ignored, as the spec says to).
+const redactTargetStmt = db.prepare(`
+  SELECT id, buffer_id, nick, self, time, text FROM messages
+  WHERE network_id = ? AND msgid = ? AND +buffer_id = ? AND type IN ${REPLY_LINE_TYPES_SQL}
+  ORDER BY id DESC LIMIT 1
+`);
+const redactStmt = db.prepare(`
+  UPDATE messages SET text = NULL, redacted_at = @time, redacted_by = @by, redact_reason = @reason
+  WHERE id = @id AND redacted_at IS NULL
+`);
+// A notice to a closed DM is stored twice: its home row, and a mirror in the
+// server buffer with no msgid (ircConnection's closed-buffer mirror). The REDACT
+// names the home row; the mirror is the same words under the same nick at the
+// same server time, and goes with it.
+const mirrorRowsStmt = db.prepare(`
+  SELECT id, buffer_id FROM messages
+  WHERE network_id = ? AND mirrored = 1 AND redacted_at IS NULL
+    AND nick IS ? AND time = ? AND text IS ?
+`);
+
+export interface RedactInput {
+  networkId: number;
+  bufferId: number;
+  msgid: string;
+  by: string;
+  reason?: string | null;
+  time: string;
+}
+
+/** The deleted line, for the frame that tells clients. */
+export interface RedactedLine {
+  id: number;
+  bufferId: number;
+  // The line's author, as stored, and whether it was the user's own.
+  nick: string | null;
+  self: boolean;
+  // Server-buffer mirrors of the line (a notice to a closed DM), blanked with
+  // it; each wants a frame of its own, in its buffer.
+  mirrors: Array<{ id: number; bufferId: number }>;
+}
+
+// Apply a REDACT: the text goes (the FTS trigger drops it from search on the
+// same write), the row says who deleted it and when, and every reaction on it
+// comes down — in one transaction, so a read between the two can't see a
+// deleted line still wearing its reactions. Null when the msgid names no line
+// we hold in that buffer, or one already deleted (the UPDATE's own guard: a
+// second REDACT for the same line — two sessions, a replay — changes nothing
+// and publishes nothing).
+export const redactMessage = db.transaction((r: RedactInput): RedactedLine | null => {
+  const row = redactTargetStmt.get(r.networkId, r.msgid, r.bufferId) as
+    | {
+        id: number;
+        buffer_id: number;
+        nick: string | null;
+        self: number;
+        time: string;
+        text: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  const stamp = { time: r.time, by: r.by, reason: r.reason ?? null };
+  const info = redactStmt.run({ id: row.id, ...stamp });
+  if (info.changes === 0) return null;
+  removeAllReactions(row.id, r.time);
+  const mirrors: Array<{ id: number; bufferId: number }> = [];
+  if (row.text !== null) {
+    const rows = mirrorRowsStmt.all(r.networkId, row.nick, row.time, row.text) as Array<{
+      id: number;
+      buffer_id: number;
+    }>;
+    for (const m of rows) {
+      if (redactStmt.run({ id: m.id, ...stamp }).changes > 0) {
+        mirrors.push({ id: m.id, bufferId: m.buffer_id });
+      }
+    }
+  }
+  return { id: row.id, bufferId: row.buffer_id, nick: row.nick, self: row.self === 1, mirrors };
+});
+
+// The deletions among a set of the user's lines, for a client re-syncing after
+// a resume (the same reason reactionsForMessages exists): a `message-redacted`
+// frame only reaches sockets that were connected, and a resume ships only new
+// rows, so a line deleted while the client held it would keep its words until
+// a reload. Ownership is in the join. Chunked under SQLite's variable limit.
+const REDACTION_SYNC_CHUNK = 500;
+export function redactionsForMessages(
+  userId: number,
+  messageIds: number[],
+): Map<number, Redaction> {
+  const out = new Map<number, Redaction>();
+  for (let i = 0; i < messageIds.length; i += REDACTION_SYNC_CHUNK) {
+    const chunk = messageIds.slice(i, i + REDACTION_SYNC_CHUNK);
+    const rows = db
+      .prepare(
+        `SELECT m.id, m.redacted_at, m.redacted_by, m.redact_reason
+         FROM messages m
+         JOIN networks n ON n.id = m.network_id
+         WHERE n.user_id = ? AND m.redacted_at IS NOT NULL
+           AND m.id IN (${chunk.map(() => '?').join(', ')})`,
+      )
+      .all(userId, ...chunk) as Array<{
+      id: number;
+      redacted_at: string;
+      redacted_by: string | null;
+      redact_reason: string | null;
+    }>;
+    for (const row of rows) {
+      const redaction: Redaction = { by: row.redacted_by ?? '', time: row.redacted_at };
+      if (row.redact_reason) redaction.reason = row.redact_reason;
+      out.set(row.id, redaction);
+    }
+  }
+  return out;
+}
+
+// A line of the user's to send a REDACT for, by its id: the network and target
+// the REDACT goes to, and the msgid it names. Null when the line isn't theirs
+// to ask about (another user's network), has no msgid (an untagged network, a
+// send before echo-message stamped it), sits in a buffer that isn't an IRC
+// target, or is already deleted. Whether the network will ALLOW it is the
+// network's answer (a FAIL), not ours: the spec says to let the user try.
+const redactSendStmt = db.prepare(`
+  SELECT m.network_id, m.msgid, b.target, b.kind
+  FROM messages m
+  JOIN networks n ON n.id = m.network_id
+  JOIN buffers b ON b.id = m.buffer_id
+  WHERE m.id = ? AND n.user_id = ?
+    AND m.type IN ${REPLY_LINE_TYPES_SQL}
+    AND m.msgid IS NOT NULL AND m.msgid != ''
+    AND m.redacted_at IS NULL
+`);
+
+export interface RedactSendTarget {
+  networkId: number;
+  target: string;
+  msgid: string;
+}
+
+export function redactSendTarget(userId: number, messageId: number): RedactSendTarget | null {
+  const row = redactSendStmt.get(messageId, userId) as
+    | { network_id: number; msgid: string; target: string; kind: string }
+    | undefined;
+  if (!row) return null;
+  // `server` (the :server:N console) and `dcc` (=nick) are not IRC targets.
+  if (row.kind !== 'channel' && row.kind !== 'dm') return null;
+  return { networkId: row.network_id, target: row.target, msgid: row.msgid };
 }
 
 // `before` paginates backward (returns up to `limit` events with id < before).
@@ -1660,13 +1837,16 @@ export function hasMessageForTarget(networkId: number, target: string): boolean 
 // Whether this message is already stored: the same msgid in the same buffer,
 // with the same kind, sender and text (IrcConnection.alreadyPersisted). A server
 // can send a message twice. The buffer, sender and text have to match too, so a
-// server that reuses a msgid for a different message loses nothing. A seek on
-// idx_messages_msgid: `+buffer_id` keeps the planner off the per-buffer index,
-// which would walk the buffer.
+// server that reuses a msgid for a different message loses nothing. A deleted
+// row (#1013) has no text to match and counts anyway: an upstream replaying the
+// line with its words (a bouncer's playback after a drop) must not bring back,
+// beside the placeholder, what was deleted. A seek on idx_messages_msgid:
+// `+buffer_id` keeps the planner off the per-buffer index, which would walk the
+// buffer.
 const sameMessageStmt = db.prepare(
   `SELECT 1 FROM messages
    WHERE network_id = ? AND msgid = ?
-     AND +buffer_id = ? AND type = ? AND nick IS ? AND text IS ?
+     AND +buffer_id = ? AND type = ? AND nick IS ? AND (text IS ? OR redacted_at IS NOT NULL)
    LIMIT 1`,
 );
 export function hasSameMessageWithMsgid(

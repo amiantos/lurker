@@ -52,6 +52,8 @@ import {
   typeCountsForUnread,
   listThread,
   listBufferThreads,
+  redactSendTarget,
+  redactionsForMessages,
 } from '../db/messages.js';
 import { listFollowedThreads, markAllThreadsRead, markThreadRead } from '../db/threadFollows.js';
 import {
@@ -2483,6 +2485,33 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       });
       return;
     }
+    // A line was deleted (onRedactLine, #1013): its text is gone and it shows
+    // as a placeholder. Its own frame, as a reaction is: a patch to a line the
+    // client may hold, never a new row, never a reason to reopen a buffer.
+    if ((event as { type?: string }).type === 'message-redacted') {
+      const ev = event as unknown as {
+        networkId: number;
+        bufferId: number;
+        target: string;
+        messageId: number;
+        by: string;
+        reason?: string;
+        self: boolean;
+        time: string;
+      };
+      fanOut(eventUserId, {
+        kind: 'message-redacted',
+        networkId: ev.networkId,
+        bufferId: ev.bufferId,
+        target: ev.target,
+        messageId: ev.messageId,
+        by: ev.by,
+        ...(ev.reason ? { reason: ev.reason } : {}),
+        self: ev.self,
+        time: ev.time,
+      });
+      return;
+    }
     // A buffer changed names (a DM peer's NICK; later, channel RENAME). This
     // is a lifecycle frame, not a message — intercept before decoration so it
     // can't leak to clients as a kind:'irc' row. Fanned to EVERY socket
@@ -4107,6 +4136,32 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         ircManager.react(userId, messageId, msg.value, msg.remove === true);
         break;
       }
+      case 'redact': {
+        // Delete one stored line (#1013): a REDACT to the network, which
+        // answers with its own REDACT (applied, fanned out as
+        // `message-redacted`) or a FAIL REDACT (an error in the buffer).
+        // Nothing is written or echoed here, as with `react`.
+        const messageId = Number(msg.messageId);
+        if (!Number.isFinite(messageId) || messageId <= 0) break;
+        const reason = typeof msg.reason === 'string' ? msg.reason.slice(0, 400) : undefined;
+        // The user confirmed a delete, so a request that can't even go out is
+        // said, in the line's buffer, the way a refusal from the network is.
+        // Unlike a reaction, where silence is the rule: nobody confirms those.
+        const dest = redactSendTarget(userId, messageId);
+        if (!dest) {
+          send(ws, { kind: 'error', text: "Couldn't delete the message: it has no message id" });
+          break;
+        }
+        if (!ircManager.redact(userId, messageId, reason)) {
+          send(ws, {
+            kind: 'error',
+            networkId: dest.networkId,
+            target: dest.target,
+            text: "Couldn't delete the message: not connected, or this network can't delete messages",
+          });
+        }
+        break;
+      }
       case 'sync-reactions': {
         // A resumed client re-reading the reactions on lines it already holds
         // (reactions.ts reactionsForMessages says why). Answered to this socket
@@ -4119,7 +4174,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           .slice(0, MAX_REACTION_SYNC_IDS);
         if (ids.length === 0) break;
         const found = reactionsForMessages(userId, ids);
-        send(ws, { kind: 'reactions-sync', messageIds: ids, reactions: Object.fromEntries(found) });
+        // And the lines among them deleted meanwhile (#1013): a deletion's
+        // frame was lost the same way a reaction's was. Additive on the frame.
+        const deleted = redactionsForMessages(userId, ids);
+        send(ws, {
+          kind: 'reactions-sync',
+          messageIds: ids,
+          reactions: Object.fromEntries(found),
+          redactions: Object.fromEntries(deleted),
+        });
         break;
       }
       case 'thread': {

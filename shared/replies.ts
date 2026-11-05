@@ -28,6 +28,10 @@ export interface ReplyParent {
   // One of the user's own lines — a reply to it from someone else is a
   // highlight, which a client re-evaluating highlight rules must keep.
   self: boolean;
+  // The answered line was deleted (#1013): `text` is empty, and the quote says
+  // "message deleted" rather than "unavailable" — the line is still there to
+  // jump to. Absent otherwise.
+  redacted?: true;
 }
 
 // The answered line as a client quotes it: when it came through a marked relay

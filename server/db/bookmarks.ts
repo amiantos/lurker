@@ -3,6 +3,7 @@
 
 import db from './index.js';
 import { replyContextOf, withReplyCol } from './messages.js';
+import type { Redaction } from '../../shared/redaction.js';
 
 /** A bookmark event row — message fields joined with network_name. */
 export interface BookmarkEvent {
@@ -27,6 +28,9 @@ export interface BookmarkEvent {
 interface BookmarkRow {
   id: number;
   network_id: number;
+  redacted_at: string | null;
+  redacted_by: string | null;
+  redact_reason: string | null;
   target: string;
   time: string;
   type: string;
@@ -150,6 +154,14 @@ export function listBookmarksForUser(
     delete event.replyTo;
     const replyTo = replyContextOf(row);
     if (replyTo) event.replyTo = replyTo;
+    // And whether it was deleted (#1013), as rowToEvent sets it: a saved line
+    // that was deleted is still saved, as its placeholder.
+    delete event.redaction;
+    if (row.redacted_at) {
+      const redaction: Redaction = { by: row.redacted_by ?? '', time: row.redacted_at };
+      if (row.redact_reason) redaction.reason = row.redact_reason;
+      event.redaction = redaction;
+    }
     return event;
   });
 }

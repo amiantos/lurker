@@ -52,6 +52,7 @@
 //   and any other attached client holds auto-away off (presence.ts).
 
 import net from 'net';
+import { REDACTION_CAP } from '../../shared/redaction.js';
 import tls from 'tls';
 import fs from 'fs';
 import { StringDecoder } from 'node:string_decoder';
@@ -182,6 +183,11 @@ const PASSTHROUGH_CAPS = [
   // rest relayed; the network's 761/766 lines go to the clients that asked
   // for that key (wantsMetadataLine).
   METADATA_CAP,
+  // draft/message-redaction (#1013): the network's REDACTs reach the clients
+  // that asked for them (the filter gates the command on the cap); a client's
+  // own REDACT takes the web app's road (handleClientRedact). Offered only
+  // while the network has it, since every REDACT a client sees comes from it.
+  REDACTION_CAP,
 ];
 
 // A line that could be metadata: the command, after an optional tag and
@@ -2854,6 +2860,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       case 'TAGMSG':
         this.handleClientTagmsg(conn, msg);
         return;
+      case 'REDACT':
+        this.handleClientRedact(conn, msg);
+        return;
       default:
         // Everything else (MODE, TOPIC, WHOIS, WHO, NAMES, LIST, KICK, INVITE,
         // NICK, …) forwards verbatim; replies come back via the raw relay.
@@ -3110,6 +3119,31 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       return;
     }
     this.relayRaw(conn, msg);
+  }
+
+  // A client's REDACT on its way to the network (#1013): `REDACT <target>
+  // <msgid> [:reason]`. The line it names is found in the buffer it was sent
+  // to, then it takes the web app's road (ircManager.redact: a line we hold
+  // with a msgid, a writable connection, no reason on an E2E channel). The
+  // network's answer comes back through the relay — its REDACT to every client
+  // that negotiated the cap, the web app included, and a FAIL to all of them,
+  // since a REDACT isn't a query the reply router owns. A refusal here, before
+  // anything went out, is said as a notice, as a reaction's is.
+  private handleClientRedact(conn: IrcConnection, msg: ParsedClientLine): void {
+    const target = msg.params[0] || '';
+    const msgid = msg.params[1] || '';
+    const reason = msg.params[2];
+    if (!target || !msgid || isDccChatTarget(target)) return;
+    if (!conn.supportsRedaction()) {
+      this.notice(`Message not deleted: ${this.network?.name} doesn't support deleting messages`);
+      return;
+    }
+    const bufferId = resolveBufferIdByNetwork(this.networkId, target);
+    const line =
+      bufferId !== undefined ? findReactionParent(this.networkId, bufferId, msgid) : null;
+    if (!line || !ircManager.redact(this.userId, line.id, reason)) {
+      this.notice(`Message not deleted in ${target}`);
+    }
   }
 
   // A client's CTCP on its way to the network. Its VERSION reply gets " via

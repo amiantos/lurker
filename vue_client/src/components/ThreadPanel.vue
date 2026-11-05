@@ -106,6 +106,10 @@
                 >
               </template>
               <span v-if="row.hidden" class="t-body missing">(ignored)</span>
+              <!-- A deleted line (#1013): its placeholder, where its words were. -->
+              <span v-else-if="deletedLabel(row.line)" class="t-body missing">{{
+                deletedLabel(row.line)
+              }}</span>
               <span
                 v-else
                 class="t-body"
@@ -186,6 +190,8 @@ import ThreadList from './ThreadList.vue';
 import ThreadComposer from './ThreadComposer.vue';
 import { threadKey, useThreadsStore } from '../stores/threads.js';
 import type { ThreadMessage } from '../stores/threads.js';
+import { useRedactionsStore } from '../stores/redactions.js';
+import { redactionLabel } from '../../../shared/redaction.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -222,6 +228,13 @@ const props = withDefaults(
 );
 
 const threads = useThreadsStore();
+const redactions = useRedactionsStore();
+
+// The placeholder for a deleted line (#1013), or null for one with its words.
+function deletedLabel(line: ThreadMessage): string | null {
+  const r = redactions.get(line);
+  return r ? redactionLabel(r, line.nick) : null;
+}
 const buffers = useBuffersStore();
 const networks = useNetworksStore();
 const settings = useSettingsStore();

@@ -31,6 +31,7 @@ import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useRedactionsStore } from '../stores/redactions.js';
 import { useThreadsStore } from '../stores/threads.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useDccStore } from '../stores/dcc.js';
@@ -944,6 +945,7 @@ function handleMessage(raw: string): void {
     }
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
     useReactionsStore().noteFromEvents(payload.events, payload.networkId);
+    useRedactionsStore().noteFromEvents(payload.events, payload.networkId);
     primeEventPreviews(payload.events, payload.networkId, payload.target);
     // A gap-fill's replies count on their loaded first lines (stores/threads,
     // #1225): the newest row held BEFORE the fill is the line between a replay
@@ -970,6 +972,7 @@ function handleMessage(raw: string): void {
     // one call covers around/latest/after/before alike.
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
     useReactionsStore().noteFromEvents(payload.events, payload.networkId);
+    useRedactionsStore().noteFromEvents(payload.events, payload.networkId);
     primeEventPreviews(payload.events, payload.networkId, payload.target);
     if (mode === 'around') {
       buffers.applyAroundSlice(payload.networkId, payload.target, payload);
@@ -1255,8 +1258,13 @@ function handleMessage(raw: string): void {
     useReactionsStore().applyFrame(payload);
     return;
   }
+  if (payload.kind === 'message-redacted') {
+    useRedactionsStore().applyFrame(payload);
+    return;
+  }
   if (payload.kind === 'reactions-sync') {
     useReactionsStore().applySync(payload);
+    useRedactionsStore().applySync(payload);
     return;
   }
   if (payload.kind === 'thread') {
@@ -1269,6 +1277,7 @@ function handleMessage(raw: string): void {
     if (payload.networkId != null) {
       useBookmarksStore().noteFromEvents(rows, payload.networkId);
       useReactionsStore().noteFromEvents(rows, payload.networkId);
+      useRedactionsStore().noteFromEvents(rows, payload.networkId);
       primeEventPreviews(rows, payload.networkId, payload.target);
     }
     useThreadsStore().applyThread(payload);
