@@ -2,18 +2,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Express } from 'express';
+import cors from 'cors';
+import express from 'express';
+import type { Express, Router } from 'express';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import sharp from 'sharp';
 import { bufferSource } from '../services/uploadProviders/source.js';
-import { createTestApp, createAnonAgent } from '../test-utils/testApp.js';
+import { createTestApp, createAnonAgent, testRequest } from '../test-utils/testApp.js';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import * as local from '../services/uploadProviders/local.js';
 
 let dir: string;
 let app: Express;
+let router: Router;
 let agent: LurkerTestAgent;
 const prevEnv = process.env.LOCAL_UPLOADS_DIR;
 
@@ -26,7 +29,7 @@ async function put(buffer: Buffer, filename: string, mime: string): Promise<stri
 beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-localserve-'));
   process.env.LOCAL_UPLOADS_DIR = dir;
-  const router = (await import('./localUploads.js')).default;
+  router = (await import('./localUploads.js')).default;
   // Both mounts, mirroring app.ts: the current path plus the legacy alias that
   // keeps pre-#582 links alive.
   app = createTestApp({ '/uploads': router, '/uploads/local': router });
@@ -56,6 +59,52 @@ describe('GET /uploads/:key', () => {
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['content-security-policy']).toContain("default-src 'none'");
     expect(res.headers['cache-control']).toContain('immutable');
+  });
+
+  // #1271: a video link opened directly in Chrome is rendered as a document that
+  // carries THIS response's CSP, and its `<video crossorigin="anonymous">` is both a
+  // media-src check against it and a cross-origin fetch (sandbox → opaque origin).
+  // Without media-src 'self' AND a wildcard CORS header the player blocks itself.
+  it('serves a video with media-src self and an open CORS header so it plays top-level', async () => {
+    const mp4 = Buffer.concat([
+      Buffer.from([0, 0, 0, 0x18]), // ftyp box, 24 bytes
+      Buffer.from('ftypisom'),
+      Buffer.alloc(4), // minor version
+      Buffer.from('isommp42'), // compatible brands
+      Buffer.alloc(64),
+    ]);
+    const url = await put(mp4, 'clip.mp4', 'video/mp4');
+
+    const res = await agent.get(url);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('video/mp4');
+    expect(res.headers['content-disposition']).toBe('inline');
+    expect(res.headers['content-security-policy']).toBe(
+      "default-src 'none'; media-src 'self'; sandbox",
+    );
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+  });
+
+  // In app.ts the app-wide cors() runs ahead of this router with credentials on,
+  // so the handler's wildcard lands on a response that already carries its
+  // per-origin answer. The wildcard must replace that answer whole: `*` next to
+  // `Allow-Credentials: true` is a combination every browser refuses.
+  it('replaces the credentialed CORS answer cors() wrote upstream, not just its origin', async () => {
+    const png = await sharp({
+      create: { width: 8, height: 8, channels: 3, background: { r: 9, g: 9, b: 9 } },
+    })
+      .png()
+      .toBuffer();
+    const url = await put(png, 'cors.png', 'image/png');
+
+    const withCors = express();
+    withCors.use(cors({ origin: ['https://app.example'], credentials: true }));
+    withCors.use('/uploads', router);
+    const res = await testRequest(withCors).get(url).set('Origin', 'https://app.example');
+    expect(res.status).toBe(200);
+    expect(res.headers['access-control-allow-origin']).toBe('*');
+    expect(res.headers['access-control-allow-credentials']).toBeUndefined();
+    expect(res.headers['vary']).toBeUndefined();
   });
 
   it('honors a Range request with 206 partial content (via res.sendFile)', async () => {

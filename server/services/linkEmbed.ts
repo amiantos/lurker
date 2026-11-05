@@ -192,9 +192,10 @@ export function oembedEndpointFor(url: URL): string | null {
  *
  * ⚠⚠ The comment that used to sit here said this existed "so the Vue client's CSP frame-src
  * and this table can't drift apart." **There is no CSP frame-src anywhere in this repo** — the
- * only Content-Security-Policy in the tree is `default-src 'none'; sandbox` on uploaded bytes
- * in `routes/localUploads.ts`, which is a per-response header on a download, not a document
- * policy. This exact false claim is item 30 of `LINK_PREVIEWS_BUG_INVENTORY.md`, found and
+ * only Content-Security-Policy headers in the tree are the per-response `default-src 'none'; …
+ * sandbox` policies on served bytes (`routes/localUploads.ts`, `dcc.ts`, `avatarSets.ts`,
+ * `linkPreview.ts`), each a download or media policy, none a document's. This exact false
+ * claim is item 30 of `LINK_PREVIEWS_BUG_INVENTORY.md`, found and
  * written down once already, and it came back verbatim when the file was carried across
  * untouched. A comment asserting a guarantee is a testable assertion; this one would have led
  * whoever adds Twitch to believe the CSP had them covered.
