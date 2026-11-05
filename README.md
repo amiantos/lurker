@@ -47,6 +47,7 @@ Lurker is a delightful self-hosted IRC bouncer and client with a retro aesthetic
 - `<CrashOverripe> Lurker solves most of my IRC problems - very happy you decided to take it on as more than just a solution for yourself.`
 - `<Samien> Ever since I started using Lurker, things have become so much more convenient. I can use IRC anytime, anywhere—whether at the office, at home, or on the metro—without any restrictions. and it's far way better than irc cloud`
 - `<slakker> welp, Lurker officially won me over as bouncer of choice. dude, you know how fucking handy it is to have what is effectively the most convenient bouncer config tool ever? :D`
+- `<indigo> Weekly appreciation post for Lurker. Nothing else that runs on my VPS brings me as much joy`
 
 # Installation
 
@@ -74,6 +75,10 @@ There's also a [one-shot DigitalOcean deploy script](https://github.com/amiantos
 Just want to use Lurker, without hosting it yourself?
 
 It's **$5/month** for a single user account on an officially managed Lurker instance at [Lurker.Chat](https://lurker.chat).
+
+## Try it out for free
+
+Just want to try it out? You can sign up for a free account that can only access `irc.lurker.chat` at [app.lurker.chat/signup](https://app.lurker.chat/signup).
 
 # Documentation
 
