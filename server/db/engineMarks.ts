@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // The engine catch-up mark (#1068): per network and engine socket, the highest
-// engine line seq this instance has stored a row for.
+// engine line seq this instance has stored a message row for.
 //
 // The engine numbers every inbound line it delivers and re-delivers, after a
 // re-attach, exactly the lines nobody acked (lineBuffer.ts). The next process
@@ -10,20 +10,26 @@
 // outright (IrcConnection.alreadyPersisted), instead of guessing from the
 // line's content whether it has the row already.
 //
-// Written WITH the rows: a line is delivered inside one transaction
-// (deliverUnderMark), and the mark goes in beside whatever rows the line's
-// handlers wrote, so there is no moment at which a row exists without its mark
-// or a mark without its rows. Only a line that wrote a row moves it — a line
-// that persists nothing is harmless to see again, and a cell's hundred idle
-// networks must not each ship a WAL write per server chunk.
+// Written WITH the row, never near it: storeUnderMark runs the insert and the
+// mark in one transaction, so there is no moment at which the row exists
+// without its mark or — the one that would lose a line — the mark without its
+// row. A caught insert failure moves nothing. Only a line that stores a
+// message row moves the mark: a line that stores none is harmless to see
+// again, and a cell's hundred idle networks must not each pay a write per
+// server chunk.
 //
 // Seqs count from 1 on every socket, so a mark means nothing beside another
-// socket: a fresh dial under the same network, a re-dial after the engine
-// restarted. Rows are keyed by the socket id the engine names on `open` and
-// `attached` (protocol minor 6), and a row only ever rises; a process that
-// outlives its claim (a rolling deploy's predecessor, finishing a batch after
-// the successor attached) writes under ITS socket and can never move the
-// successor's row. The rows another socket left are pruned at the next attach.
+// socket. Rows are keyed by the socket id the engine names on `open` and
+// `attached` (protocol minor 6), and the two ways app processes overlap on one
+// database differ in which row they share:
+// - A takeover (a rolling deploy) hands the SAME socket to the successor. Both
+//   write the one row, which only ever rises, and the predecessor may still be
+//   finishing its last batch while the successor's backlog — the same lines —
+//   arrives. storeUnderMark re-reads the mark under the write lock before
+//   inserting, so whichever process gets there second stores nothing.
+// - A fresh dial (the socket died, or the engine restarted) names a NEW socket.
+//   A late write from the predecessor lands in the old socket's own row and can
+//   never touch the new one. The rows other sockets left are pruned at attach.
 // An engine that names no socket writes no mark.
 
 import db from './index.js';
@@ -52,21 +58,27 @@ export function pruneEngineMarks(networkId: number, keep: string | null): void {
   pruneStmt.run(networkId, keep);
 }
 
-// Deliver one engine line and record it, atomically. `deliver` runs the
-// line's handlers and says whether any of them wrote a row; if so the mark
-// rises to `seq` in the same transaction. A handler that throws rolls the
-// line's rows back with it, and the throw continues to the caller — the line
-// then goes unacked, and comes again.
-const deliverTx = db.transaction(
-  (networkId: number, socket: string, seq: number, deliver: () => boolean) => {
-    if (deliver()) setEngineMark(networkId, socket, seq);
+// Store the row a line produced and raise the mark to the line's seq, in one
+// transaction — immediate, so the write lock is held from the re-check on:
+// a read-then-write under a deferred BEGIN fails with BUSY_SNAPSHOT when
+// another connection (a predecessor, Litestream) commits in between, and
+// busy_timeout never gets a say (db/index.ts has the same rule for boot).
+// Null, and nothing stored, when the mark has reached `seq` meanwhile: the
+// predecessor stored this line. A throw from `insert` rolls back and
+// continues to the caller, with the mark where it was.
+const storeTx = db.transaction(
+  <T>(networkId: number, socket: string, seq: number, insert: () => T): T | null => {
+    if (seq <= (getEngineMark(networkId, socket) ?? 0)) return null;
+    const row = insert();
+    setEngineMark(networkId, socket, seq);
+    return row;
   },
 );
-export function deliverUnderMark(
+export function storeUnderMark<T>(
   networkId: number,
   socket: string,
   seq: number,
-  deliver: () => boolean,
-): void {
-  deliverTx(networkId, socket, seq, deliver);
+  insert: () => T,
+): T | null {
+  return storeTx.immediate(networkId, socket, seq, insert) as T | null;
 }

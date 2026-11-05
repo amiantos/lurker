@@ -72,12 +72,6 @@ export interface EnginePhaseInfo {
 export interface EngineHooks {
   onTransport?(transport: EngineTransport): void;
   onPhase?(phase: EnginePhase, info: EnginePhaseInfo): void;
-  // Wraps the delivery of one line (#1068): the hook must call `deliver()`
-  // exactly once, and may run it inside a transaction with whatever it wants
-  // committed beside the line's rows (the catch-up mark). Only for an engine
-  // that names its sockets; otherwise, and without the hook, the line is
-  // delivered directly.
-  onLine?(socket: string, seq: number, deliver: () => void): void;
 }
 
 const RESTORE_MARK = '__lurker_restore__';
@@ -155,11 +149,12 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   private ackSeq = 0;
   private ackQueued = false;
   // The engine's id for the IRC socket, from `open` or `attached`; null from
-  // an engine that predates it (protocol minor 6).
-  private socket: string | null = null;
+  // an engine that predates it (protocol minor 6). With deliveringSeq, what
+  // the catch-up mark (db/engineMarks.ts) is keyed by.
+  socket: string | null = null;
   // The seq of the line being delivered, for the handlers running inside that
-  // delivery (IrcConnection.alreadyPersisted reads it); null between lines,
-  // so anything that runs later — a timer, a deferred publish — sees no seq
+  // delivery (IrcConnection.publish reads it); null between lines, so
+  // anything that runs later — a timer, a deferred publish — sees no seq
   // rather than the last one's.
   deliveringSeq: number | null = null;
 
@@ -327,7 +322,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
       case 'open':
         this.clearReplyTimer();
         this.connected = true;
-        this.socket = frame.socket ?? null;
+        this.socket = frame.socket || null;
         this.emit('extra', 'raw socket connected', {
           localAddress: frame.local.address,
           localPort: frame.local.port,
@@ -381,7 +376,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     this.restoring = true;
     this.swallowed = [];
     this.backlog = 0;
-    this.socket = frame.socket ?? null;
+    this.socket = frame.socket || null;
     this.hooks?.onPhase?.('attached', {
       detachedForMs: frame.detachedForMs,
       nick: frame.nick,
@@ -422,10 +417,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     if (this.backlog !== null) this.backlog++;
     this.deliveringSeq = frame.seq;
     try {
-      const emit = () => void this.emit('line', frame.line);
-      if (this.socket !== null && this.hooks?.onLine)
-        this.hooks.onLine(this.socket, frame.seq, emit);
-      else emit();
+      this.emit('line', frame.line);
     } finally {
       this.deliveringSeq = null;
     }

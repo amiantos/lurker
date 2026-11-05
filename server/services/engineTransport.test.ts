@@ -84,8 +84,6 @@ interface Timeline {
   // Lines from the engine between `restored` and `live`: the backlog `live`
   // reports a count of.
   catchUpLines: number;
-  // Each line's delivery as the onLine hook saw it (#1068).
-  marks: Array<{ socket: string; seq: number }>;
   // transport.deliveringSeq as each server line's handlers saw it.
   seqs: Array<number | null>;
 }
@@ -100,7 +98,6 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
     closes: [],
     transport: null,
     catchUpLines: 0,
-    marks: [],
     seqs: [],
   };
   const client = new IRC.Client();
@@ -141,10 +138,6 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
       onPhase: (phase: string, info: Record<string, unknown>) => {
         t.events.push(`phase:${phase}`);
         t.phases.push({ phase: phase as EnginePhase, info: info as EnginePhaseInfo });
-      },
-      onLine: (socket: string, seq: number, deliver: () => void) => {
-        deliver();
-        t.marks.push({ socket, seq });
       },
     },
   } as ConnectOptions);
@@ -300,7 +293,7 @@ describe('EngineTransport', () => {
     await ircd.waitForLine((l) => /^PRIVMSG #two :?back$/.test(l));
   }, 20000);
 
-  it('delivers each line through the hook, under its seq and the socket’s name (#1068)', async () => {
+  it('hands each line’s seq to its handlers, and names the socket they run on (#1068)', async () => {
     const id = `t:${++counter}`;
     const linkA = newLink();
     const a = makeClient(linkA, id, 'seqer');
@@ -321,12 +314,9 @@ describe('EngineTransport', () => {
     expect(a.t.seqs.every((s) => typeof s === 'number')).toBe(true);
     expect(a.t.seqs).toEqual([...a.t.seqs].toSorted((x, y) => (x as number) - (y as number)));
     expect(a.t.transport!.deliveringSeq).toBeNull();
-    // One hook call per line, with that line's seq, all naming one socket.
-    expect(a.t.marks.map((m) => m.seq)).toEqual(a.t.seqs);
-    const socket = a.t.marks[0].socket;
+    const socket = a.t.transport!.socket;
     expect(typeof socket).toBe('string');
     expect(socket).not.toBe('');
-    expect(a.t.marks.every((x) => x.socket === socket)).toBe(true);
 
     // The next process is told the same name at `attached`: what the first
     // stored under it still counts.
@@ -345,6 +335,7 @@ describe('EngineTransport', () => {
       () => b.t.events,
     );
     expect(b.t.phases.find((p) => p.phase === 'attached')!.info.socket).toBe(socket);
+    expect(b.t.transport!.socket).toBe(socket);
   });
 
   it('reports a takeover to the old process without a socket close', async () => {

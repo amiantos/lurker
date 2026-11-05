@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // The engine catch-up mark (#1068): one row per network and socket, written in
-// the line's own transaction, only when the line wrote a row, never lowered.
+// the same transaction as the message row it counts, never lowered.
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
@@ -66,7 +66,7 @@ describe('engine catch-up mark', () => {
     expect(marks.getEngineMark(id, 'sock-b')).toBeNull();
   });
 
-  it('deliverUnderMark moves the mark only for a line that wrote a row, with the row', () => {
+  it('storeUnderMark stores the row and the mark together, or neither', () => {
     const id = network();
     const say = (text: string) =>
       messages.insertMessage({
@@ -79,26 +79,28 @@ describe('engine catch-up mark', () => {
         self: false,
       });
     const count = () => messages.countOlder(id, '#c', Number.MAX_SAFE_INTEGER);
-    // No row, no mark: a PING, a 353.
-    marks.deliverUnderMark(id, 'sock-a', 1, () => false);
-    expect(marks.getEngineMark(id, 'sock-a')).toBeNull();
     // A row: the mark rises with it.
-    marks.deliverUnderMark(id, 'sock-a', 2, () => {
-      say('two');
-      return true;
-    });
+    expect(marks.storeUnderMark(id, 'sock-a', 2, () => say('two'))).toBeTruthy();
     expect(marks.getEngineMark(id, 'sock-a')).toBe(2);
     expect(count()).toBe(1);
-    // A handler that throws takes the line's row back with it, and the mark
-    // stays where it was: the line is unacked and comes again.
+    // An insert that throws takes nothing with it, and the mark stays: the
+    // line is unacked and comes again.
     expect(() =>
-      marks.deliverUnderMark(id, 'sock-a', 3, () => {
+      marks.storeUnderMark(id, 'sock-a', 3, () => {
         say('three');
-        throw new Error('handler threw');
+        throw new Error('insert failed');
       }),
-    ).toThrow('handler threw');
+    ).toThrow('insert failed');
     expect(marks.getEngineMark(id, 'sock-a')).toBe(2);
     expect(count()).toBe(1);
+    // The mark reached the seq meanwhile (a predecessor stored the line):
+    // nothing is inserted, and the caller is told.
+    marks.setEngineMark(id, 'sock-a', 5);
+    expect(marks.storeUnderMark(id, 'sock-a', 5, () => say('five'))).toBeNull();
+    expect(count()).toBe(1);
+    // Another socket's mark is not this socket's.
+    expect(marks.storeUnderMark(id, 'sock-b', 1, () => say('one on b'))).toBeTruthy();
+    expect(count()).toBe(2);
   });
 
   it('goes with its network', () => {
