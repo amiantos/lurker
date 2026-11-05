@@ -14,7 +14,8 @@
   reads as what was said, not as a sentence starting with a name. One clipped
   line, italic, faded with opacity so the quoted nick keeps its own colour.
   Clicking (or Enter/Space) jumps to the line; with no parent to show it says
-  so and does nothing. Out of the buffer (search, activity, bookmarks — #998)
+  so and does nothing. A deleted parent (#1013) says so too, and still jumps:
+  the line is there, as a placeholder. Out of the buffer (search, activity, bookmarks — #998)
   it's `static`: part of the row, whose click jumps to the reply, where this
   quote is live again.
 -->
@@ -43,7 +44,8 @@
           class="reply-relay"
           :title="`Relayed via ${parent.relayBot}`"
           >[{{ parent.relaySource }}] </span
-        >{{ replyExcerpt(parent.text) }}</template
+        ><template v-if="parent.redacted">message deleted</template
+        ><template v-else>{{ replyExcerpt(parent.text) }}</template></template
       ><template v-else>original message unavailable</template></span
     ></span
   >

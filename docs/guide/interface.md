@@ -22,6 +22,12 @@ A tour of the Lurker window and how messages are organized.
   two messages without the split confirmation. Any line that starts with `> `,
   yours or anyone's, is drawn as a block quote: faded, with a bar where the `> `
   was.
+- **Delete message** on one of your own lines (and on others' where you're an op),
+  on a network that supports message deletion. The line stays in place and reads
+  _message deleted_ — for you, for everyone else on a client that understands, and
+  in search, bookmarks and replies that quoted it. The words are gone from your
+  server, not hidden. `/delete [reason]` does the same for the last thing you
+  said.
 - **Reply threads** (Settings › Chat, experimental, off by default). With it on,
   replies leave the channel: a line that was replied to shows `╰─ 3 replies 4m`
   under it, and that opens the thread beside the channel (over it, on a phone)

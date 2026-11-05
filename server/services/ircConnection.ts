@@ -13,6 +13,7 @@ import {
   maxMessageId,
   findReplyParent,
   replyRootFor,
+  redactMessage,
 } from '../db/messages.js';
 import { renameBuffer as renameDmBuffer } from '../db/renameBuffer.js';
 import { refoldNetworkBuffers } from '../db/refoldBuffers.js';
@@ -58,6 +59,9 @@ import {
 } from '../db/buffers.js';
 import { unfavoriteBuffer, isFavoriteDmPeer } from '../db/favoriteBuffers.js';
 import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
+
+// IRCv3 draft/message-redaction (#1013): deleting a line, and hearing of one.
+const REDACTION_CAP = 'draft/message-redaction';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
 import { REPLY_LINE_TYPES, replyMsgidFromTags } from '../../shared/replies.js';
@@ -1504,6 +1508,9 @@ export class IrcConnection {
     // draft/metadata-2 (IRCv3, #607): display names and avatars. Subscribed
     // to on registration (subscribeMetadata); the lines land in userMetadata.
     this.client.requestCap(METADATA_CAP);
+    // draft/message-redaction (IRCv3, #1013): a REDACT when someone deletes a
+    // line, and the right to send one. No-op where the network doesn't offer it.
+    this.client.requestCap(REDACTION_CAP);
     this.userMetadata = new Map();
     this.peerSyncs = new Map();
     this.metadataSyncTimers = new Map();
@@ -2042,6 +2049,12 @@ export class IrcConnection {
         this.onMetadataLine(rawCommand, msg?.params ?? [], batched);
       } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'METADATA') {
         this.onMetadataFail(msg?.params ?? []);
+      } else if (rawCommand === 'REDACT') {
+        // Message redaction (#1013). Read raw, like METADATA: irc-framework
+        // doesn't model REDACT, and the prefix and @time are wanted whole.
+        this.onRedactLine(msg);
+      } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'REDACT') {
+        this.onRedactFail(msg?.params ?? []);
       }
       // Capture the registration burst for bouncer attach-time replay. 001
       // starts a fresh burst (each (re)registration replaces the last), and
@@ -2186,6 +2199,8 @@ export class IrcConnection {
     on('unknown command', (cmd: { command?: string; params?: string[] }) => {
       const command = (cmd?.command || '').toString();
       const params = Array.isArray(cmd?.params) ? (cmd.params as string[]) : [];
+      // Handled on the raw line (onRedactLine): nothing below applies to it.
+      if (command === 'REDACT') return;
       // These numerics arrive as [nick, <target>, reason] — usually a channel,
       // but see the nick case below.
       const channel = typeof params[1] === 'string' ? params[1] : '';
@@ -4706,6 +4721,73 @@ export class IrcConnection {
     });
   }
 
+  // A REDACT from the network (#1013): `<nick> REDACT <target> <msgid> [:reason]`.
+  // Someone deleted a line — the author, an op, or us (our own comes back the
+  // same way, and that echo is how it's applied). Routed like a reaction: a
+  // channel by name; a DM by the other party, which is the sender when the
+  // REDACT is addressed to us and the target when we sent it. The line is
+  // found by msgid in that buffer; one we don't hold (retention, a reaction's
+  // TAGMSG, a msgid learned elsewhere) is ignored, as the spec requires. A
+  // replayed REDACT (an upstream bouncer's chathistory) applies too: deleting
+  // is idempotent, and a line deleted while we were away is still deleted.
+  private onRedactLine(msg: {
+    nick?: string;
+    prefix?: string;
+    params?: string[];
+    tags?: Record<string, string>;
+  }): void {
+    const params = msg.params ?? [];
+    const eventTarget = params[0] ?? '';
+    const msgid = params[1] ?? '';
+    if (!eventTarget || !msgid) return;
+    const by = msg.nick || msg.prefix || '';
+    const reason = (params[2] ?? '').trim() || undefined;
+    const me = this.currentNick;
+    const toMe =
+      !!me && foldTargetFor(this.network.id, eventTarget) === foldTargetFor(this.network.id, me);
+    const target = isChannelTarget(eventTarget)
+      ? eventTarget
+      : this.canonicalDmTarget(toMe ? by : eventTarget);
+    if (!target) return;
+    const bufferId = resolveBufferIdByNetwork(this.network.id, target);
+    if (bufferId === undefined) return;
+    const time = normalizeEventTime(msg.tags?.time || this.lineArrivedAt?.getTime());
+    const line = redactMessage({ networkId: this.network.id, bufferId, msgid, by, reason, time });
+    if (!line) return;
+    this.publishEphemeral({
+      type: 'message-redacted',
+      target,
+      bufferId: line.bufferId,
+      messageId: line.id,
+      by,
+      reason,
+      self: line.self,
+      time,
+    });
+  }
+
+  // `FAIL REDACT <code> <target> [<msgid> …] :<text>` — the network refused a
+  // delete we sent. Said in the buffer the line is in, where the user asked,
+  // rather than the server buffer nobody is looking at (#816's complaint).
+  private onRedactFail(params: string[]): void {
+    const code = params[1] ?? '';
+    const named = params[2] ?? '';
+    const text = params[params.length - 1] ?? '';
+    const target =
+      named && !named.startsWith('*') && named !== text
+        ? isChannelTarget(named)
+          ? named
+          : this.canonicalDmTarget(named)
+        : this.serverTarget();
+    const why = code ? `${text} (${code})` : text;
+    this.publish({
+      type: 'error',
+      target,
+      text: `Couldn't delete the message: ${why}`,
+      raw: { command: 'FAIL', params },
+    });
+  }
+
   serverTarget(): string {
     return `:server:${this.network.id}`;
   }
@@ -6315,6 +6397,7 @@ export class IrcConnection {
     canAddReaction: boolean;
     canRemoveReaction: boolean;
     canReply: boolean;
+    canRedact: boolean;
   } {
     const known = this.isupportComplete;
     const add = known && this.canSendReactions();
@@ -6324,7 +6407,16 @@ export class IrcConnection {
       canAddReaction: add,
       canRemoveReaction: remove,
       canReply: known && this.canSendReplies(),
+      // Deleting a line (#1013): the network negotiated the cap. Whether a
+      // given line may go is the network's answer, not ours (a FAIL).
+      canRedact: known && this.supportsRedaction(),
     };
+  }
+
+  // Whether the network negotiated draft/message-redaction (#1013): it sends
+  // us a REDACT when a line is deleted, and takes one from us.
+  supportsRedaction(): boolean {
+    return (this.client.network?.cap?.enabled || []).includes(REDACTION_CAP);
   }
 
   private publishReactSupportIfChanged(): void {
@@ -11746,6 +11838,20 @@ export class IrcConnection {
       ...replyTags,
       [remove ? '+draft/unreact' : '+draft/react']: value,
     });
+    return true;
+  }
+
+  // Ask the network to delete the line with `msgid` in `target` (#1013):
+  // `REDACT <target> <msgid> [:reason]`. Writes nothing locally: the network's
+  // REDACT comes back through onRedactLine like anyone else's (ergo sends it
+  // to the deleting session too), and a refusal is a FAIL REDACT that
+  // onRedactFail puts in the buffer. Same "never optimistic" rule as a
+  // reaction. No reason is ever invented for the user (the spec says not to).
+  sendRedact(target: string, msgid: string, reason?: string | null): boolean {
+    if (!this.supportsRedaction()) return false;
+    if (!msgid || /\s/.test(msgid) || msgid.includes('\u0000')) return false;
+    const trimmed = (reason ?? '').trim();
+    this.raw(trimmed ? `REDACT ${target} ${msgid} :${trimmed}` : `REDACT ${target} ${msgid}`);
     return true;
   }
 

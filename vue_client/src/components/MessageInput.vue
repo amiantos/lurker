@@ -193,6 +193,7 @@ import type { SettingOption } from '../../../shared/settingsRegistry.js';
 import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useRedactionsStore } from '../stores/redactions.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
 import type { PendingReply } from '../stores/replies.js';
@@ -298,6 +299,7 @@ import { CircleArrowUpIcon } from '@lucide/vue';
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const reactions = useReactionsStore();
+const redactions = useRedactionsStore();
 const recentBuffers = useRecentBuffersStore();
 const auth = useAuthStore();
 const inputHistory = useInputHistoryStore();
@@ -2706,6 +2708,7 @@ const COMMANDS_LINES = [
   'commands:',
   '  /me <text>             — emote in the current buffer',
   '  /react <emoji|text>    — react to the last line someone else said here',
+  '  /delete [reason]       — delete the last line you said here, where the network allows it',
   '  /slap <nick>           — slap someone around a bit with a large trout',
   '  /shrug [text]          — say your text followed by ¯\\_(ツ)_/¯',
   '  /msg <nick> <text>     — open a DM and send (alias: /query)',
@@ -2889,6 +2892,41 @@ function randomRoomId(): string {
 // /react <emoji|:shortcode:|text> — react to the most recent line someone else
 // said in this buffer (the picker on a line's React action reaches any other).
 // Only lines the server gave a msgid can be reacted to; an encrypted one can't.
+// /delete [reason] — ask the network to delete the most recent line you said
+// here (#1013). Nothing happens locally: the network's REDACT blanks the line
+// when it comes back, and a refusal lands here as an error line. No confirm —
+// typing the command is the ask; the menu's Delete confirms because a tap is
+// not.
+function runDelete(argLine: string, networkId: number, target: string, line: string): boolean {
+  if (!tagSupport(networks.states[networkId]).redact) {
+    localInfo(networkId, target, "this network can't delete messages");
+    return true;
+  }
+  const messages = buffers.findByTarget(networkId, target)?.messages ?? [];
+  let own: (typeof messages)[number] | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.id == null || !m.self) continue;
+    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
+    if (redactions.get(m)) continue;
+    own = m;
+    break;
+  }
+  if (!own) {
+    localInfo(networkId, target, 'nothing of yours here to delete');
+    return true;
+  }
+  if (!own.msgid) {
+    localInfo(networkId, target, "can't delete that line (no message id)");
+    return true;
+  }
+  const reason = argLine.trim();
+  return sendOrToast(
+    { type: 'redact', messageId: Number(own.id), ...(reason ? { reason } : {}) },
+    line,
+  );
+}
+
 function runReact(argLine: string, networkId: number, target: string, line: string): boolean {
   const raw = argLine.trim();
   if (!raw) {
@@ -4117,6 +4155,8 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return runRelay(argLine, networkId, target);
     case 'react':
       return runReact(argLine, networkId, target, line);
+    case 'delete':
+      return runDelete(argLine, networkId, target, line);
     case 'me': {
       // A /me can be the reply (#993) — any other command leaves it pending, and
       // so does an empty /me, which the server refuses without sending anything.

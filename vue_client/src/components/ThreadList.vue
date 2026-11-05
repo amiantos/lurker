@@ -32,7 +32,8 @@
       >
         <span v-if="t.root && !hiddenRoot(t.root)" class="root"
           >{{ marks(t.root.type)[0] }}<NickRef :nick="t.root.nick" />{{ marks(t.root.type)[1] }}
-          {{ excerpt(t.root.text) }}</span
+          <template v-if="t.root.redacted">message deleted</template
+          ><template v-else>{{ excerpt(t.root.text) }}</template></span
         >
         <span v-else class="root missing">original message unavailable</span>
         <span class="meta"

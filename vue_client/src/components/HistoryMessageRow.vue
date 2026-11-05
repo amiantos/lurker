@@ -52,7 +52,9 @@
       />
       <span class="nick" :style="nickStyle">{{ line.nick }}</span>
       <span class="sep">|</span>
-      <span class="text"
+      <!-- A deleted line (#1013): its placeholder, where its words were. -->
+      <span v-if="deleted" class="text deleted">{{ deleted }}</span>
+      <span v-else class="text"
         ><span v-if="line.relaySource" class="relay-via" :title="`Relayed via ${line.relayBot}`"
           >[{{ line.relaySource }}] </span
         ><LinkedText :text="shown.text"
@@ -72,7 +74,10 @@ import LinkedText from './LinkedText.vue';
 import ReplyQuote from './ReplyQuote.vue';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
+import { useRedactionsStore } from '../stores/redactions.js';
 import type { ReplyContext } from '../../../shared/replies.js';
+import { redactionLabel } from '../../../shared/redaction.js';
+import type { Redaction } from '../../../shared/redaction.js';
 import { XIcon } from '@lucide/vue';
 
 // Shared row shape from search/highlights/bookmarks. All callers pass at
@@ -90,6 +95,8 @@ export interface HistoryMessage {
   type?: string;
   // An IRCv3 reply's quote, resolved by the server as on the timeline (#998).
   replyTo?: ReplyContext;
+  // The line was deleted (#1013); the row shows the placeholder instead.
+  redaction?: Redaction;
   [key: string]: unknown;
 }
 
@@ -114,6 +121,13 @@ const settings = useSettingsStore();
 const nicks = useNickColors();
 const replyQuote = useReplyQuote();
 const relayBots = useRelayBotsStore();
+const redactions = useRedactionsStore();
+
+// The placeholder for a deleted line (#1013), or null for one with its words.
+const deleted = computed(() => {
+  const r = redactions.get(props.message);
+  return r ? redactionLabel(r, props.message.nick) : null;
+});
 
 // The line as the timeline shows it: from a marked relay bot, as the person
 // inside the envelope (#996), with the `[source]` label the timeline shows.
@@ -182,6 +196,10 @@ const nickStyle = computed((): CSSProperties | null => {
 </script>
 
 <style scoped>
+.text.deleted {
+  color: var(--fg-muted);
+  font-style: italic;
+}
 .row {
   /* No horizontal padding — the list already insets to the card's content edge
      (padding: 0 var(--card-pad-x) on its scroll container), so the row content

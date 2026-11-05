@@ -70,6 +70,7 @@ export const UPSTREAM_CAPS = [
   'echo-message',
   'extended-monitor',
   'draft/metadata-2',
+  'draft/message-redaction',
 ];
 
 // Minimal stand-in for IrcConnection covering exactly what bouncer.ts reads.
@@ -179,6 +180,10 @@ export class FakeUpstream {
 
   supportsMessageTags(): boolean {
     return this.messageTags;
+  }
+
+  supportsRedaction(): boolean {
+    return (this.client.network?.cap?.enabled ?? []).includes('draft/message-redaction');
   }
 
   // IrcConnection.sendTyping, minus its gates (a refused target, an offline

@@ -1607,6 +1607,16 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root
          ON messages(buffer_id, reply_root_msgid)
          WHERE reply_root_msgid IS NOT NULL`);
 
+// Message redaction (draft/message-redaction, #1013): a line the network said
+// was deleted. Its text goes — set to NULL, so the FTS trigger drops it from
+// search, REPLY_COL quotes nothing, and the chathistory filter (text IS NOT
+// NULL) keeps it out of bouncer replay — and these say that it went: when,
+// by whom (the REDACT's sender, author or op), and the reason if one came.
+// A row with redacted_at set is a placeholder wherever it shows.
+ensureColumn('messages', 'redacted_at', 'TEXT');
+ensureColumn('messages', 'redacted_by', 'TEXT');
+ensureColumn('messages', 'redact_reason', 'TEXT');
+
 // Sender matched the network owner's ignore list at insert time. Stamped on
 // the row so countNewer/countHighlightsNewer can exclude ignored senders
 // without doing a JS-side mask scan over every unread row — the client's

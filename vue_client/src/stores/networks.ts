@@ -121,6 +121,9 @@ export interface NetworkState {
   canAddReaction?: boolean;
   canRemoveReaction?: boolean;
   canReply?: boolean;
+  // Deleting a line (#1013): the network negotiated draft/message-redaction.
+  // Same timing and fallback as the three above.
+  canRedact?: boolean;
   // Bytes of our user@host as the network relays it (or the longest it could
   // be), the input to the composer's split estimate (#1043). Seeded by the
   // snapshot, replaced by `line-budget` frames; absent from a server that
@@ -170,13 +173,19 @@ export function tagSupport(state: NetworkState | null | undefined): {
   react: boolean;
   unreact: boolean;
   reply: boolean;
+  redact: boolean;
 } {
-  if (state?.state !== 'connected') return { react: false, unreact: false, reply: false };
+  if (state?.state !== 'connected') {
+    return { react: false, unreact: false, reply: false, redact: false };
+  }
   const legacy = !!state.canReact;
   return {
     react: state.canAddReaction ?? legacy,
     unreact: state.canRemoveReaction ?? legacy,
     reply: state.canReply ?? legacy,
+    // No legacy answer stands in for this one: a server that never said is a
+    // server that can't.
+    redact: !!state.canRedact,
   };
 }
 
@@ -434,6 +443,7 @@ export const useNetworksStore = defineStore('networks', {
         canAddReaction: event.canAddReaction,
         canRemoveReaction: event.canRemoveReaction,
         canReply: event.canReply,
+        canRedact: event.canRedact,
       };
     },
     applyLineBudget(event: any) {

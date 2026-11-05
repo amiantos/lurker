@@ -173,6 +173,29 @@ Web client only for now.
   you ignored them stay. Reactions aren't replayed to bouncer clients yet (#991).
   <br>`server/services/ircConnection.ts:3926` (receive), `:8321` (send)
 
+### A deleted message is deleted here too
+
+When someone deletes a message on a network that supports it, the line in Lurker
+loses its words and reads _message deleted_ — naming who did it when it wasn't the
+author, and the reason if one was given. Its reactions go with it, replies that
+quoted it quote the deletion instead, and it leaves search, bookmarks, the activity
+view and export. You can delete your own lines the same way (**Delete message** on
+the line, or `/delete [reason]` for the last thing you said), and other people's
+where you're an op, if the network allows that. Nothing is kept: the words are gone
+from your server, not hidden.
+
+- **`draft/message-redaction`**: Lurker asks for it and acts on every `REDACT` the
+  network sends, its own echoed one included. A `REDACT` for a line it doesn't hold
+  — one retention took, a reaction's `TAGMSG`, a msgid learned elsewhere — is ignored,
+  as the spec says. A refusal (`FAIL REDACT …`) lands in the buffer the line is in.
+  The network has the last word on who may delete what; on ergo that is the author
+  (logged in), channel ops, and opers, and only with `allow-individual-delete` on.
+  Attached IRC clients that negotiate the cap get the network's `REDACT`s and can send
+  their own; a deleted line is left out of their playback and `CHATHISTORY`.
+  <br>`server/services/ircConnection.ts` (`onRedactLine`, `sendRedact`),
+  `server/db/messages.ts` (`redactMessage`), `server/services/bouncer.ts`
+  (`handleClientRedact`)
+
 ### You can see when someone is typing
 
 Typing indicators in channels and DMs, both directions — Lurker sends yours and
@@ -237,27 +260,28 @@ to the same always-on connection your browser uses (see
 capabilities Lurker offers _downstream_ are a deliberately short, honest list —
 we advertise only what we actually implement.
 
-| You get                                                                                         | Powered by                                                    |
-| ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Log in with SASL instead of a server password                                                   | `sasl` (PLAIN)                                                |
-| Backlog replays at its original timestamps, not at attach time                                  | `server-time`                                                 |
-| Scrollback on demand — page back through Lurker's full stored history from your terminal client | `draft/chathistory`                                           |
-| Joins, parts, quits, nick changes, kicks, and mode and topic changes in that scrollback         | `draft/event-playback`                                        |
-| What you've read in one client is read in the others, and in the web and iOS apps               | `draft/read-marker`                                           |
-| A client connecting in the background doesn't count as you being here                           | `draft/pre-away`                                              |
-| Your own sent messages echoed back, if your client wants them                                   | `echo-message`                                                |
-| Your outgoing DMs attributed to you correctly in replay                                         | `znc.in/self-message`                                         |
-| Pick your network from a list instead of hardcoding `username/networkname`                      | `soju.im/bouncer-networks`, `soju.im/bouncer-networks-notify` |
-| Message metadata passed through from upstream                                                   | `message-tags`                                                |
-| Network list delivered as one grouped burst                                                     | `batch`                                                       |
-| Attach a file in your client and get a link to send, when `PUBLIC_BASE_URL` is set              | `soju.im/FILEHOST`                                            |
-| People's away, account and host changes, when your network sends them                           | `away-notify`, `account-notify`, `chghost`                    |
-| The same for people you `MONITOR` but share no channel with                                     | `extended-monitor`, `draft/extended-monitor`                  |
-| Accounts on JOINs and on each message, when your network sends them                             | `extended-join`, `account-tag`                                |
-| Display names and avatars, when your network keeps them — SUB to the keys you show              | `draft/metadata-2`                                            |
-| Every prefix and full hostmasks in NAMES, when your network sends them                          | `multi-prefix`, `userhost-in-names`                           |
-| Invites other people get to your channels                                                       | `invite-notify`                                               |
-| Told when a capability comes or goes, such as while your network reconnects                     | `cap-notify`                                                  |
+| You get                                                                                                      | Powered by                                                    |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| Log in with SASL instead of a server password                                                                | `sasl` (PLAIN)                                                |
+| Backlog replays at its original timestamps, not at attach time                                               | `server-time`                                                 |
+| Scrollback on demand — page back through Lurker's full stored history from your terminal client              | `draft/chathistory`                                           |
+| Joins, parts, quits, nick changes, kicks, and mode and topic changes in that scrollback                      | `draft/event-playback`                                        |
+| What you've read in one client is read in the others, and in the web and iOS apps                            | `draft/read-marker`                                           |
+| A client connecting in the background doesn't count as you being here                                        | `draft/pre-away`                                              |
+| Your own sent messages echoed back, if your client wants them                                                | `echo-message`                                                |
+| Your outgoing DMs attributed to you correctly in replay                                                      | `znc.in/self-message`                                         |
+| Pick your network from a list instead of hardcoding `username/networkname`                                   | `soju.im/bouncer-networks`, `soju.im/bouncer-networks-notify` |
+| Message metadata passed through from upstream                                                                | `message-tags`                                                |
+| Network list delivered as one grouped burst                                                                  | `batch`                                                       |
+| Attach a file in your client and get a link to send, when `PUBLIC_BASE_URL` is set                           | `soju.im/FILEHOST`                                            |
+| People's away, account and host changes, when your network sends them                                        | `away-notify`, `account-notify`, `chghost`                    |
+| The same for people you `MONITOR` but share no channel with                                                  | `extended-monitor`, `draft/extended-monitor`                  |
+| Accounts on JOINs and on each message, when your network sends them                                          | `extended-join`, `account-tag`                                |
+| Display names and avatars, when your network keeps them — SUB to the keys you show                           | `draft/metadata-2`                                            |
+| Deleted messages deleted in your client too, and the right to delete your own, when your network supports it | `draft/message-redaction`                                     |
+| Every prefix and full hostmasks in NAMES, when your network sends them                                       | `multi-prefix`, `userhost-in-names`                           |
+| Invites other people get to your channels                                                                    | `invite-notify`                                               |
+| Told when a capability comes or goes, such as while your network reconnects                                  | `cap-notify`                                                  |
 
 Implementation notes worth knowing if you're writing against it:
 
@@ -397,6 +421,7 @@ attaching to Lurker.
 | `+typing`                               |   ✅   |    —    |
 | `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
 | `+reply`, `+draft/reply`                |   ✅   |    —    |
+| `draft/message-redaction`               |   ✅   |   ✅    |
 | `draft/chathistory`                     |   —    |   ✅    |
 | `draft/event-playback`                  |   —    |   ✅    |
 | `draft/read-marker`                     |   —    |   ✅    |
@@ -438,7 +463,6 @@ you, not by spec number.
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `draft/chathistory` (as client) | Backfill missed history from an upstream bouncer or a network that stores it. Note the asymmetry: Lurker _serves_ chathistory downstream but doesn't consume it upstream, so gaps from a Lurker outage can't currently be filled in. |
 | `standard-replies`              | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics.                                                                                                               |
-| `draft/message-redaction`       | When someone deletes a message, it disappears from your view too, rather than persisting forever in Lurker's history.                                                                                                                |
 
 ### Moderate value
 

@@ -115,6 +115,20 @@ export const addReaction = db.transaction((r: ReactionWrite): boolean => {
   return info.changes > 0;
 });
 
+// Every reaction standing on a line, taken down at once: the line was deleted
+// (#1013). Tombstones, not deletes, for the same reason an unreact leaves one —
+// bouncer history replays the unreact, and a replayed react older than it
+// can't bring the reaction back.
+const removeAllStmt = db.prepare(`
+  UPDATE message_reactions SET removed_at = MAX(time, ?)
+  WHERE message_id = ? AND removed_at IS NULL
+`);
+
+/** Tombstone every standing reaction on `messageId`; returns how many went. */
+export function removeAllReactions(messageId: number, time: string): number {
+  return removeAllStmt.run(time, messageId).changes;
+}
+
 const removeSelfStmt = db.prepare(`
   UPDATE message_reactions SET removed_at = MAX(time, ?)
   WHERE message_id = ? AND self = 1 AND value = ? AND removed_at IS NULL

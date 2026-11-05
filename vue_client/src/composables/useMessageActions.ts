@@ -11,11 +11,15 @@ import {
   LinkIcon,
   MessageSquareQuoteIcon,
   MessageSquareReplyIcon,
+  TrashIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useRedactionsStore } from '../stores/redactions.js';
+import { socketSend } from './useSocket.js';
+import type { Redaction } from '../../../shared/redaction.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -45,6 +49,9 @@ export interface MessageLike {
   e2e?: boolean;
   // message / action / notice / … — only the first two can be reacted to.
   type?: string;
+  // The line was deleted (#1013): nothing to copy, quote, answer or react to.
+  // The row's own field; the live overlay is asked too (useRedactionsStore).
+  redaction?: Redaction;
 }
 
 // Whether the Reply action can make a real reply of this line: it needs the
@@ -86,6 +93,30 @@ export function reactionsGoOut(networkId: number | null | undefined): boolean {
   return tagSupport(useNetworksStore().states[networkId]).react;
 }
 
+export function redactionsGoOut(networkId: number | null | undefined): boolean {
+  if (networkId == null) return false;
+  return tagSupport(useNetworksStore().states[networkId]).redact;
+}
+
+// Whether Delete is offered on this line (#1013): a line a REDACT could name
+// (replyable: a msgid, in a channel or DM), on a network that negotiated the
+// cap, and one of ours — or anyone's in a channel where we hold a prefix mode,
+// which is who ergo lets delete. The network has the last word (a FAIL); this
+// only keeps the action off lines where it could do nothing.
+export function deletable(m: MessageLike): boolean {
+  if (!replyable(m) || m.redaction) return false;
+  const networkId = m.networkId ?? m.network_id;
+  if (!redactionsGoOut(networkId)) return false;
+  if (m.self) return true;
+  if (!m.target || !isChannelTarget(m.target) || networkId == null) return false;
+  const networks = useNetworksStore();
+  const own = networks.states[networkId]?.nick;
+  if (!own) return false;
+  const members = useBuffersStore().findByTarget(networkId, m.target)?.members ?? [];
+  const me = members.find((x) => x.nick.toLowerCase() === own.toLowerCase());
+  return !!me && me.modes.length > 0;
+}
+
 export interface MessageContext {
   networkId: number;
   onReply(message: MessageLike): void;
@@ -101,6 +132,7 @@ export type MessageActionKey =
   | 'copyQuote'
   | 'link'
   | 'save'
+  | 'delete'
   | 'ignore';
 
 export interface MessageAction {
@@ -213,6 +245,10 @@ export function useMessageActions(): MessageActionsAPI {
   function buildActions(message: MessageLike | null | undefined): MessageAction[] {
     if (!message) return [];
     const actions: MessageAction[] = [];
+    // A deleted line (#1013) has no words: nothing to react to, answer, quote
+    // or copy. Its link and bookmark still point at the placeholder.
+    const redaction = useRedactionsStore().get(message);
+    if (redaction && !message.redaction) message = { ...message, redaction, text: '' };
 
     // A reaction replies to the line's msgid, so it needs a line a reply could
     // name, on a network that can carry it (canReact — see the server's
@@ -222,6 +258,7 @@ export function useMessageActions(): MessageActionsAPI {
     // Discord and Slack put it: the action people reach for most.
     if (
       replyable(message) &&
+      !message.redaction &&
       message.type !== 'notice' &&
       reactionsGoOut(message.networkId ?? message.network_id)
     ) {
@@ -240,7 +277,10 @@ export function useMessageActions(): MessageActionsAPI {
     // (privateTarget) there's no address, so the reply tag is all it is, and it's
     // offered only where one would go out.
     const unaddressed = !!message.self || privateTarget(message.target);
-    if (addressable && !unaddressed) {
+    if (message.redaction) {
+      // No reply to a deleted line: addressing its author with nothing to
+      // answer is the one thing Reply would still do.
+    } else if (addressable && !unaddressed) {
       actions.push({
         key: 'reply',
         label: `Reply to ${message.nick}`,
@@ -306,6 +346,13 @@ export function useMessageActions(): MessageActionsAPI {
       });
     }
 
+    // Delete (#1013): a REDACT to the network, which answers with the
+    // deletion or a refusal. Last among the line's own actions, before the
+    // one that addresses its author.
+    if (deletable(message)) {
+      actions.push({ key: 'delete', label: 'Delete message', icon: TrashIcon });
+    }
+
     if (addressable) {
       actions.push({ key: 'ignore', label: `Ignore ${message.nick}…`, icon: BanIcon });
     }
@@ -349,6 +396,14 @@ export function useMessageActions(): MessageActionsAPI {
       }
       case 'save':
         bookmarks.toggle(message);
+        break;
+      case 'delete':
+        // Not undoable, so one confirm. Nothing changes here: the line blanks
+        // when the network's REDACT comes back (a `message-redacted` frame),
+        // and a refusal lands in the buffer as an error line.
+        if (message.id == null) break;
+        if (!window.confirm("Delete this message? This can't be undone.")) break;
+        socketSend({ type: 'redact', messageId: Number(message.id) });
         break;
       case 'ignore':
         ctx.onIgnore(message);
