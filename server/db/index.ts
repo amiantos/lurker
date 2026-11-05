@@ -1214,6 +1214,17 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_push_log_user_id ON push_log(user_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_push_log_at ON push_log(at);
+
+    -- The engine catch-up mark (#1068, db/engineMarks.ts): per network and
+    -- engine socket, the highest engine line seq this instance has stored a
+    -- row for. Read at re-attach to skip re-delivered lines exactly; written
+    -- in the same transaction as the rows.
+    CREATE TABLE IF NOT EXISTS engine_marks (
+      network_id INTEGER NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+      socket TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      PRIMARY KEY (network_id, socket)
+    ) WITHOUT ROWID;
   `);
 }
 

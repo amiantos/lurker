@@ -64,6 +64,9 @@ export interface EnginePhaseInfo {
   gap?: Gap;
   // On `live`: the backlog lines delivered since `attached` (#1069).
   backlog?: number;
+  // On `attached`: the engine's id for the IRC socket (protocol minor 6).
+  // Absent from an older engine.
+  socket?: string;
 }
 
 export interface EngineHooks {
@@ -145,6 +148,15 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   // hundred lines is one frame, not a hundred.
   private ackSeq = 0;
   private ackQueued = false;
+  // The engine's id for the IRC socket, from `open` or `attached`; null from
+  // an engine that predates it (protocol minor 6). With deliveringSeq, what
+  // the catch-up mark (db/engineMarks.ts) is keyed by.
+  socket: string | null = null;
+  // The seq of the line being delivered, for the handlers running inside that
+  // delivery (IrcConnection.publish reads it); null between lines, so
+  // anything that runs later — a timer, a deferred publish — sees no seq
+  // rather than the last one's.
+  deliveringSeq: number | null = null;
 
   constructor(readonly options: EngineConnectOptions) {
     super();
@@ -310,6 +322,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
       case 'open':
         this.clearReplyTimer();
         this.connected = true;
+        this.socket = frame.socket || null;
         this.emit('extra', 'raw socket connected', {
           localAddress: frame.local.address,
           localPort: frame.local.port,
@@ -363,12 +376,14 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     this.restoring = true;
     this.swallowed = [];
     this.backlog = 0;
+    this.socket = frame.socket || null;
     this.hooks?.onPhase?.('attached', {
       detachedForMs: frame.detachedForMs,
       nick: frame.nick,
       channels: frame.channels,
       replay: frame.replay.length,
       unattended: frame.unattended,
+      ...(this.socket ? { socket: this.socket } : {}),
     });
     this.emit('extra', 'raw socket connected', {
       localAddress: frame.local.address,
@@ -400,7 +415,12 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
 
   private deliver(frame: Extract<EngineToApp, { op: 'line' }>): void {
     if (this.backlog !== null) this.backlog++;
-    this.emit('line', frame.line);
+    this.deliveringSeq = frame.seq;
+    try {
+      this.emit('line', frame.line);
+    } finally {
+      this.deliveringSeq = null;
+    }
     // By the time emit() returns, irc-framework and every ircConnection handler
     // have run — persistence included, better-sqlite3 being synchronous — so
     // the ack can never get ahead of the row. Coalesced: one frame per batch.

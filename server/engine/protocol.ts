@@ -39,7 +39,13 @@ export const PROTOCOL_MAJOR = 1;
 // while the UI says otherwise. Same shape as the client-certificate gate at
 // minor 2, and for a stronger reason: a missing certificate fails visibly, a
 // missing proxy succeeds.
-export const PROTOCOL_MINOR = 5;
+// minor 6 (#1068): `open` and `attached` name the IRC socket (`socket`), an id
+// minted per dial. Line seqs count from 1 on every socket, so a seq the app
+// has stored means "already persisted" only beside the socket it was counted
+// on: the app keeps (socket, seq) and skips a re-delivered line by it, exactly,
+// instead of guessing from the line's content. An engine below this omits the
+// field, and the app keeps guessing.
+export const PROTOCOL_MINOR = 6;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -166,12 +172,16 @@ export type EngineToApp =
   | { op: 'ping' }
   | { op: 'pong' }
   | { op: 'dialing'; id: string }
-  | { op: 'open'; id: string; local: Endpoint; remote: Endpoint }
+  // `socket` (minor 6) identifies the IRC socket; a fresh dial mints a fresh
+  // one. Line seqs are per socket, so this is what makes a stored seq
+  // meaningful across app processes (see `line`).
+  | { op: 'open'; id: string; local: Endpoint; remote: Endpoint; socket?: string }
   | {
       op: 'attached';
       id: string;
       local: Endpoint;
       remote: Endpoint;
+      socket?: string;
       // Lines to feed the app's fresh irc-framework Client so it believes it just
       // registered: the recorded registration burst, then our own NICK changes in
       // order, then one synthesised JOIN per channel we are in.

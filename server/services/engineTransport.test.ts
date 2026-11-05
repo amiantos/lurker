@@ -84,13 +84,22 @@ interface Timeline {
   // Lines from the engine between `restored` and `live`: the backlog `live`
   // reports a count of.
   catchUpLines: number;
+  // transport.deliveringSeq as each server line's handlers saw it.
+  seqs: Array<number | null>;
 }
 
 let counter = 0;
 
 // A Client through the engine, with everything it sees written to a timeline.
 function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutMs?: number } = {}) {
-  const t: Timeline = { events: [], phases: [], closes: [], transport: null, catchUpLines: 0 };
+  const t: Timeline = {
+    events: [],
+    phases: [],
+    closes: [],
+    transport: null,
+    catchUpLines: 0,
+    seqs: [],
+  };
   const client = new IRC.Client();
   clients.push(client);
   client.requestCap('message-tags');
@@ -103,6 +112,7 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
   client.on('raw', (e: { from_server: boolean }) => {
     const last = t.phases.at(-1)?.phase;
     if (e.from_server && (last === 'restored' || last === 'gap')) t.catchUpLines++;
+    if (e.from_server) t.seqs.push(t.transport?.deliveringSeq ?? null);
   });
   client.on('socket close', (err) => {
     t.events.push(`socket close:${engineCloseCode(err) ?? (err ? 'error' : 'clean')}`);
@@ -282,6 +292,51 @@ describe('EngineTransport', () => {
     // (irc-framework omits the colon when the text has no spaces.)
     await ircd.waitForLine((l) => /^PRIVMSG #two :?back$/.test(l));
   }, 20000);
+
+  it('hands each line’s seq to its handlers, and names the socket they run on (#1068)', async () => {
+    const id = `t:${++counter}`;
+    const linkA = newLink();
+    const a = makeClient(linkA, id, 'seqer');
+    await until(
+      () => a.t.events.includes('registered:seqer'),
+      'a.t.events.includes("registered:seqer")',
+      () => a.t.events,
+    );
+    ircd.say('peer', 'seqer', 'one');
+    await until(
+      () => a.t.events.includes('privmsg:seqer:one'),
+      'a.t.events.includes("privmsg:seqer:one")',
+      () => a.t.events,
+    );
+    // Every server line ran its handlers under its own seq, in delivery order
+    // — and nothing outside a delivery sees one.
+    expect(a.t.seqs.length).toBeGreaterThan(0);
+    expect(a.t.seqs.every((s) => typeof s === 'number')).toBe(true);
+    expect(a.t.seqs).toEqual([...a.t.seqs].toSorted((x, y) => (x as number) - (y as number)));
+    expect(a.t.transport!.deliveringSeq).toBeNull();
+    const socket = a.t.transport!.socket;
+    expect(typeof socket).toBe('string');
+    expect(socket).not.toBe('');
+
+    // The next process is told the same name at `attached`: what the first
+    // stored under it still counts.
+    linkA.simulateLoss();
+    await until(
+      () => a.t.events.some((e) => e.startsWith('socket close:')),
+      'a.t.events.some((e) => e.startsWith("socket close:"))',
+      () => a.t.events,
+    );
+    linkA.stop();
+    const linkB = newLink();
+    const b = makeClient(linkB, id, 'seqer');
+    await until(
+      () => b.t.events.includes('phase:live'),
+      'b.t.events.includes("phase:live")',
+      () => b.t.events,
+    );
+    expect(b.t.phases.find((p) => p.phase === 'attached')!.info.socket).toBe(socket);
+    expect(b.t.transport!.socket).toBe(socket);
+  });
 
   it('reports a takeover to the old process without a socket close', async () => {
     const id = `t:${++counter}`;
