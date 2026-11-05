@@ -155,12 +155,18 @@ router.get('/:key', async (req: Request, res: Response) => {
   // Access-Control-Allow-Origin. Both proven with headless Chrome: 'self' alone
   // moves the failure from CSP to CORS; 'self' plus `*` plays. `*` costs nothing
   // here — every file on this route is public by its unguessable key and takes no
-  // cookie — and it replaces the credentialed per-origin value cors() set upstream,
-  // which the anonymous fetch could not use anyway. Images were never affected
-  // (Chrome's image document is exempt), and `sandbox` stays: it is the backstop
-  // that keeps a mis-sniffed body from ever running as a page.
+  // cookie. Images were never affected (Chrome's image document is exempt), and
+  // `sandbox` stays: it is the backstop that keeps a mis-sniffed body from ever
+  // running as a page.
+  // ⚠ The app-wide cors() ran first and wrote its credentialed answer — a
+  // per-origin Allow-Origin, `Allow-Credentials: true`, `Vary: Origin`. The
+  // wildcard replaces the first; the other two must GO with it: `*` beside
+  // `Allow-Credentials: true` is a combination browsers reject outright, and a
+  // response that no longer varies by Origin must not tell caches it does.
   res.setHeader('Content-Security-Policy', "default-src 'none'; media-src 'self'; sandbox");
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.removeHeader('Access-Control-Allow-Credentials');
+  res.removeHeader('Vary');
   // The random key already carries a safe extension; use it as the download name.
   res.setHeader('Content-Disposition', inline ? 'inline' : `attachment; filename="${key}"`);
 

@@ -352,7 +352,8 @@ function startLoading(nextUrl: string): void {
  *
  * ⚠ THE ONLY MODE SUBJECT TO CORS. An <img> or <video> renders a cross-origin file
  * without the host's permission; READING one requires it. So this works on the `local`
- * driver (same origin) and is at the mercy of the provider anywhere else — catbox, x0,
+ * driver (same origin, and since #1271 it answers any origin, so a split-origin dev or LAN
+ * setup reads too) and is at the mercy of the provider anywhere else — catbox, x0,
  * a CDN. There is no way around that from the client: a proxy on our server would be an
  * SSRF surface and would put every viewed file through our bandwidth.
  *
