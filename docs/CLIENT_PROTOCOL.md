@@ -583,6 +583,7 @@ Common fields on every **persisted** event (`db/messages.ts` `rowToEvent` +
   matched, matchedRuleId,             // highlight decoration
   fromIgnored, notifyAlways, notify,
   msgid?,                             // IRCv3 server message id, when supplied
+  replay?,                            // true on a line fetched after the fact (§9.3)
   bookmarked?,                        // true when you've saved this line
   reactions?,                         // IRCv3 reactions standing on this line
   replyTo?,                           // IRCv3 reply: the line this one answers
@@ -597,6 +598,13 @@ receive time otherwise. Far-future stamps (> ~2 min ahead) fall back to receive
 time. Rows persisted before this existed carry receive time. Because a bouncer
 upstream can replay old messages live, `time` is **not** guaranteed monotonic
 with respect to `id` — order and dedupe by `id`, always (§9.3).
+
+**`replay: true`** marks a line Lurker fetched after the fact rather than heard
+live: a gap filled from the network's history after a reconnect (IRCv3
+`draft/chathistory`), or a bouncer's playback at attach. It is a real row — it
+counts as unread, it carries its original `time` — and `notify` is always
+`false` on it, so nothing toasts or pushes for history. Only the live frame
+carries the flag; a history fetch does not.
 
 **`msgid`** is the server-assigned IRCv3 message id (`message-tags` networks;
 own sends learn theirs via `echo-message`). Absent — not null — on rows from

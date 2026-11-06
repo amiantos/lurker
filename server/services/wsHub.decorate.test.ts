@@ -125,6 +125,13 @@ describe('decorateMessage notify fold', () => {
     expect(d.dm).toBe(true);
   });
 
+  it('a replayed line (a history backfill, #1283) is never a notification', () => {
+    const d = decorateMessage(userId, ev({ replay: true }));
+    expect(d.notify).toBe(false);
+    // Still a DM for everything else: unread, highlight styling, the badge.
+    expect(d.dm).toBe(true);
+  });
+
   it('a hide-level rule clears notify', () => {
     addSenderRule(['ALL']);
     expect(decorateMessage(userId, ev()).notify).toBe(false);

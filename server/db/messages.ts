@@ -118,6 +118,10 @@ export interface MessageEvent {
   // A duplicate of a closed-buffer NOTICE surfaced in the server buffer (#439).
   // Excluded from search/highlights so it doesn't double up its real copy.
   mirrored: boolean;
+  // A line Lurker fetched after the fact (#1283): a history backfill, or a
+  // network's playback at attach. Stored and counted like any row; never a
+  // push or a toast (wsHub.decorateMessage). Only on the live frame.
+  replay?: boolean;
   // IRCv3 server-assigned message id (#450). Only set when the network supplied
   // one — absent (not null) otherwise, so untagged backlogs don't grow a field.
   msgid?: string;
@@ -1931,6 +1935,49 @@ export function hasRecentMessageLike(
   const lo = new Date(t - toleranceMs).toISOString();
   const hi = new Date(t + toleranceMs).toISOString();
   return !!hasLikeStmt.get({ bufferId, maxId, tailRows, type, nick, text, lo, hi });
+}
+
+// The time of the newest conversation line a buffer holds (the rows a
+// CHATHISTORY window counts, chathistoryMsgFilter), or null when it holds none.
+// The anchor of a history backfill (#1283): what was missed is what the
+// network has after this. One seek on idx_messages_buf_time, from the newest
+// end; the filter drops at most a few event rows on the way.
+// `maxId` bounds it to rows stored before a point: the engine's backlog hole
+// (#1283) sits between the last row the previous process stored and the
+// first the backlog kept, and the kept tail is above the attach's maxMessageId.
+const newestConversationStmt = db.prepare(
+  `SELECT time FROM messages WHERE buffer_id = ? AND id <= ? AND ${chathistoryMsgFilter()}
+   ORDER BY time DESC LIMIT 1`,
+);
+export function newestConversationTime(
+  networkId: number,
+  target: string,
+  maxId = Number.MAX_SAFE_INTEGER,
+): string | null {
+  if (!networkId || !target) return null;
+  const bufferId = resolveBufferIdByNetwork(networkId, target);
+  if (bufferId === undefined) return null;
+  const row = newestConversationStmt.get(bufferId, maxId) as { time: string } | undefined;
+  return row?.time ?? null;
+}
+
+// The same across every channel and DM buffer of a network: the newest line
+// the network gave us at all, the lower bound of a CHATHISTORY TARGETS. One
+// seek per buffer, never a scan of the network's rows (idx_messages_net is by
+// id, and MAX(time) over it would read them all).
+const networkBufferIdsStmt = db.prepare(
+  `SELECT id FROM buffers WHERE network_id = ? AND kind IN ('channel', 'dm')`,
+);
+export function newestConversationTimeForNetwork(networkId: number): string | null {
+  if (!networkId) return null;
+  let newest: string | null = null;
+  for (const { id } of networkBufferIdsStmt.all(networkId) as Array<{ id: number }>) {
+    const row = newestConversationStmt.get(id, Number.MAX_SAFE_INTEGER) as
+      | { time: string }
+      | undefined;
+    if (row && (newest === null || row.time > newest)) newest = row.time;
+  }
+  return newest;
 }
 
 // Whether a target has a real (non-notice) conversation — at least one PRIVMSG or

@@ -116,6 +116,18 @@ only works if timestamps are trustworthy.
   same ID, in the same channel or conversation, is stored once. Reactions and replies
   are anchored on it.
   <br>`server/services/ircConnection.ts:2434`
+- **`draft/chathistory`** — what you missed while Lurker was off the network comes
+  back. On a network that keeps history (ergo, soju, another Lurker), every rejoin
+  asks for the lines between the newest one the channel holds and the join, and
+  one `CHATHISTORY TARGETS` per registration finds the conversations that had a
+  line in the meantime. The lines land at their own times, count as unread, and
+  never notify: they are what was missed, not what just happened. Asked for in
+  pages, one request on the wire at a time, behind your own typing; a buffer with
+  nothing stored asks for nothing, since a first join is not an outage. The same
+  path takes a ZNC's playback at attach, which used to be dropped whole, so a
+  bouncer that replays its buffer on every attach no longer doubles anything.
+  With the cap on, ergo and soju also stop replaying at JOIN on their own.
+  <br>`server/services/chathistoryBackfill.ts`, `server/services/ircConnection.ts`
 
 ### Multi-line messages stay one message
 
@@ -423,7 +435,7 @@ attaching to Lurker.
 | `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
 | `+reply`, `+draft/reply`                |   ✅   |    —    |
 | `draft/message-redaction`               |   ✅   |   ✅    |
-| `draft/chathistory`                     |   —    |   ✅    |
+| `draft/chathistory`                     |   ✅   |   ✅    |
 | `draft/event-playback`                  |   —    |   ✅    |
 | `draft/read-marker`                     |   —    |   ✅    |
 | `draft/pre-away`                        |   —    |   ✅    |
@@ -460,10 +472,10 @@ you, not by spec number.
 
 ### High value — natural fits for features Lurker already has
 
-| Capability                      | What it would give you                                                                                                                                                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `draft/chathistory` (as client) | Backfill missed history from an upstream bouncer or a network that stores it. Note the asymmetry: Lurker _serves_ chathistory downstream but doesn't consume it upstream, so gaps from a Lurker outage can't currently be filled in. |
-| `standard-replies`              | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics.                                                                                                               |
+| Capability                         | What it would give you                                                                                                                                         |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `draft/event-playback` (as client) | Joins, parts and quits inside a filled gap. Membership is reconciled by the rejoin's NAMES, so this would only add the rows; left out of the gap-fill for now. |
+| `standard-replies`                 | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics.                                         |
 
 ### Moderate value
 

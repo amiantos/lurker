@@ -86,6 +86,28 @@ export interface FakeIrcdOptions {
   // The metadata cap's value, in place of the default limits: soju's
   // `before-connect,max-keys=0,max-value-bytes=1`, say.
   metadataCapValue?: string;
+  // Keep history and serve `draft/chathistory` (#1283): BETWEEN, AFTER, LATEST
+  // and TARGETS over every PRIVMSG, NOTICE and TAGMSG relayed, bounds
+  // exclusive as on every real server, the `CHATHISTORY=<limit>` ISUPPORT
+  // token (over-limit requests refused, as soju does). `end` puts
+  // `draft/chathistory-end` on a last page, as ergo does and soju doesn't;
+  // `fail` answers every request with that FAIL code; `autoreplay` pushes a
+  // channel's last N lines at JOIN unasked, to a client that did not take
+  // the cap, as ergo does; `advertise: false` keeps the cap out of CAP LS, so
+  // a client that would take it is left with the unasked replay instead.
+  chathistory?:
+    | boolean
+    | { limit?: number; end?: boolean; fail?: string; autoreplay?: number; advertise?: boolean };
+}
+
+// A relayed line as history keeps it: the bare line, its tags apart.
+export interface HistoryLine {
+  time: string;
+  msgid: string;
+  line: string;
+  clientTags: string[];
+  // A DM's two parties, so a TARGETS names the other one.
+  peers?: [string, string];
 }
 
 export interface FakeClient {
@@ -149,6 +171,9 @@ export class FakeIrcd extends EventEmitter {
   readonly clients: FakeClient[] = [];
   readonly registrations: Array<{ nick: string; at: number }> = [];
   readonly topics = new Map<string, string>();
+  // What CHATHISTORY serves (opts.chathistory): a channel's lines under its
+  // lowercase name, a DM's under the folded pair (dmKey), oldest first.
+  readonly history = new Map<string, HistoryLine[]>();
   // Fingerprint → account, i.e. what `/msg NickServ CERT ADD` leaves behind.
   // SASL EXTERNAL succeeds for a client whose presented certfp is in here and
   // fails for one whose isn't, which is the whole of CertFP as a client sees it.
@@ -189,8 +214,31 @@ export class FakeIrcd extends EventEmitter {
       this.caps.push(
         `draft/metadata-2=${opts.metadataCapValue ?? 'max-subs=10,max-keys=10,max-value-bytes=512'}`,
       );
+    if (
+      opts.chathistory &&
+      (typeof opts.chathistory !== 'object' || opts.chathistory.advertise !== false)
+    ) {
+      this.caps.push('draft/chathistory');
+    }
     this.serverName = opts.serverName ?? 'fake.test';
     this.network = opts.network ?? 'FakeNet';
+  }
+
+  private chathistoryOpts(): {
+    limit: number;
+    end: boolean;
+    fail?: string;
+    autoreplay: number;
+  } | null {
+    const o = this.opts.chathistory;
+    if (!o) return null;
+    const given = typeof o === 'object' ? o : {};
+    return {
+      limit: given.limit ?? 100,
+      end: !!given.end,
+      fail: given.fail,
+      autoreplay: given.autoreplay ?? 0,
+    };
   }
 
   static async start(opts: FakeIrcdOptions = {}): Promise<FakeIrcd> {
@@ -288,11 +336,13 @@ export class FakeIrcd extends EventEmitter {
     const msgid = `m${++this.msgidCounter}`;
     this.msgidOwner.set(msgid, from);
     const line = `:${from}!~${from}@peer.fake TAGMSG ${target}`;
+    const time = new Date().toISOString();
+    this.record(target, from, { time, msgid, line, clientTags });
     const recipients = isChannelTarget(target)
       ? this.members(target)
       : [this.client(target)].filter((c): c is FakeClient => !!c);
     for (const c of recipients) {
-      if (c.caps.has('message-tags')) this.tagged(c, line, msgid, clientTags);
+      if (c.caps.has('message-tags')) this.tagged(c, line, msgid, clientTags, time);
     }
     return msgid;
   }
@@ -304,13 +354,164 @@ export class FakeIrcd extends EventEmitter {
     this.msgidOwner.set(msgid, from);
     const body = this.opts.stripFormatting ? stripFormatting(text) : text;
     const line = `:${from}!~${from}@peer.fake PRIVMSG ${target} :${body}`;
+    const time = new Date().toISOString();
+    this.record(target, from, { time, msgid, line, clientTags });
     if (isChannelTarget(target)) {
-      for (const c of this.members(target)) this.tagged(c, line, msgid, clientTags);
+      for (const c of this.members(target)) this.tagged(c, line, msgid, clientTags, time);
     } else {
       const c = this.client(target);
-      if (c) this.tagged(c, line, msgid, clientTags);
+      if (c) this.tagged(c, line, msgid, clientTags, time);
     }
     return msgid;
+  }
+
+  // --- history (opts.chathistory) --------------------------------------------
+
+  private static dmKey(a: string, b: string): string {
+    return 'dm:' + [a.toLowerCase(), b.toLowerCase()].sort().join('|');
+  }
+
+  // Keep a relayed line, whether or not anyone was there to receive it: a
+  // peer talking in a channel the client has dropped out of is the gap.
+  private record(target: string, from: string, entry: HistoryLine): void {
+    if (!this.chathistoryOpts()) return;
+    const key = isChannelTarget(target) ? target.toLowerCase() : FakeIrcd.dmKey(from, target);
+    const lines = this.history.get(key) ?? [];
+    if (!isChannelTarget(target)) entry.peers = [from, target];
+    lines.push(entry);
+    this.history.set(key, lines);
+  }
+
+  // ZNC core's playback at attach (Chan.cpp): the buffer inside a
+  // `znc.in/playback` batch, each line with its original `@time` and, as on
+  // ZNC, no msgid. `lines` are history entries, or bare lines stamped now.
+  zncPlayback(
+    nick: string,
+    target: string,
+    lines: Array<Pick<HistoryLine, 'time' | 'line'> | string>,
+  ): void {
+    const c = this.client(nick);
+    if (!c) return;
+    const ref = `znc${++this.msgidCounter}`;
+    this.raw(c, `:znc.in BATCH +${ref} znc.in/playback ${target}`);
+    for (const l of lines) {
+      const entry = typeof l === 'string' ? { time: new Date().toISOString(), line: l } : l;
+      this.raw(c, `@batch=${ref};time=${entry.time} ${entry.line}`);
+    }
+    this.raw(c, `:znc.in BATCH -${ref}`);
+  }
+
+  // A `chathistory` batch of `lines` for `target`, written to `c` whether it
+  // asked or not (ergo's autoreplay at JOIN is the unasked form).
+  private historyBatch(c: FakeClient, target: string, lines: HistoryLine[], last: boolean): void {
+    const opts = this.chathistoryOpts()!;
+    const ref = `h${++this.msgidCounter}`;
+    const endTag = last && opts.end ? '@draft/chathistory-end ' : '';
+    this.raw(c, `${endTag}:${this.serverName} BATCH +${ref} chathistory ${target}`);
+    for (const l of lines) {
+      const tags = [`batch=${ref}`, `time=${l.time}`, `msgid=${l.msgid}`, ...l.clientTags];
+      this.raw(c, `@${tags.join(';')} ${l.line}`);
+    }
+    this.raw(c, `:${this.serverName} BATCH -${ref}`);
+  }
+
+  private chathistoryFail(c: FakeClient, code: string, sub: string, rest: string[]): void {
+    const tail = rest.length ? ' ' + rest.join(' ') : '';
+    this.raw(
+      c,
+      `:${this.serverName} FAIL CHATHISTORY ${code} ${sub || '*'}${tail} :Messages could not be retrieved`,
+    );
+  }
+
+  // CHATHISTORY <sub> …, the subset the spec's reconnect recipe needs. Bounds
+  // are `timestamp=<iso>` and exclusive; a batch is always oldest-first.
+  private onChathistory(c: FakeClient, p: string[]): void {
+    const opts = this.chathistoryOpts();
+    if (!opts) return this.num(c, '421', 'CHATHISTORY', 'Unknown command');
+    const sub = (p[0] ?? '').toUpperCase();
+    if (opts.fail)
+      return this.chathistoryFail(c, opts.fail, sub, sub === 'TARGETS' ? [] : [p[1] ?? '*']);
+    const bound = (s: string | undefined): string | null | undefined => {
+      if (s === '*') return null;
+      if (!s || !s.startsWith('timestamp=')) return undefined;
+      return s.slice('timestamp='.length);
+    };
+    const limitOf = (s: string | undefined): number | undefined => {
+      const n = Number(s);
+      return Number.isInteger(n) && n > 0 && n <= opts.limit ? n : undefined;
+    };
+    if (sub === 'TARGETS') {
+      const from = bound(p[1]);
+      const to = bound(p[2]);
+      const limit = limitOf(p[3]);
+      if (!from || !to || !limit) return this.chathistoryFail(c, 'INVALID_PARAMS', sub, []);
+      const [lo, hi] = from < to ? [from, to] : [to, from];
+      const found: Array<{ target: string; time: string }> = [];
+      for (const [key, lines] of this.history) {
+        const newest = lines[lines.length - 1];
+        if (!newest || !(newest.time > lo && newest.time < hi)) continue;
+        if (key.startsWith('dm:')) {
+          const peers = newest.peers ?? ['', ''];
+          const mine = (c.nick ?? '').toLowerCase();
+          const other = peers.find((n) => n.toLowerCase() !== mine);
+          if (!peers.some((n) => n.toLowerCase() === mine) || !other) continue;
+          found.push({ target: other, time: newest.time });
+        } else {
+          if (!c.channels.has(key)) continue;
+          found.push({ target: key, time: newest.time });
+        }
+      }
+      found.sort((a, b) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0));
+      const page = found.slice(0, limit);
+      const ref = `t${++this.msgidCounter}`;
+      this.raw(c, `:${this.serverName} BATCH +${ref} draft/chathistory-targets`);
+      for (const f of page) {
+        this.raw(c, `@batch=${ref} :${this.serverName} CHATHISTORY TARGETS ${f.target} ${f.time}`);
+      }
+      this.raw(c, `:${this.serverName} BATCH -${ref}`);
+      return;
+    }
+    const target = p[1] ?? '';
+    if (!target) return this.chathistoryFail(c, 'INVALID_PARAMS', sub, []);
+    const key = isChannelTarget(target)
+      ? target.toLowerCase()
+      : FakeIrcd.dmKey(c.nick ?? '', target);
+    if (isChannelTarget(target) && !c.channels.has(key)) {
+      return this.chathistoryFail(c, 'INVALID_TARGET', sub, [target]);
+    }
+    const all = this.history.get(key) ?? [];
+    let page: HistoryLine[];
+    let last: boolean;
+    if (sub === 'BETWEEN') {
+      const a = bound(p[2]);
+      const b = bound(p[3]);
+      const limit = limitOf(p[4]);
+      if (!a || !b || !limit) return this.chathistoryFail(c, 'INVALID_PARAMS', sub, [target]);
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      const within = all.filter((l) => l.time > lo && l.time < hi);
+      // Forward from the first bound, or backward from it: the page is the
+      // first N or the last N, oldest-first either way (as Lurker serves it).
+      page = a < b ? within.slice(0, limit) : within.slice(-limit);
+      last = within.length <= limit;
+    } else if (sub === 'AFTER') {
+      const a = bound(p[2]);
+      const limit = limitOf(p[3]);
+      if (!a || !limit) return this.chathistoryFail(c, 'INVALID_PARAMS', sub, [target]);
+      const after = all.filter((l) => l.time > a);
+      page = after.slice(0, limit);
+      last = after.length <= limit;
+    } else if (sub === 'LATEST') {
+      const a = bound(p[2]);
+      const limit = limitOf(p[3]);
+      if (a === undefined || !limit)
+        return this.chathistoryFail(c, 'INVALID_PARAMS', sub, [target]);
+      const before = a === null ? all : all.filter((l) => l.time > a);
+      page = before.slice(-limit);
+      last = before.length <= limit;
+    } else {
+      return this.chathistoryFail(c, 'INVALID_PARAMS', sub, [target]);
+    }
+    this.historyBatch(c, target, page, last);
   }
 
   // A REDACT from a synthetic peer (#1013): `from` deleted the line `msgid` in
@@ -318,6 +519,10 @@ export class FakeIrcd extends EventEmitter {
   // DM REDACT reaches the client named as its target.
   redact(from: string, target: string, msgid: string, reason?: string): void {
     this.msgidOwner.delete(msgid);
+    for (const lines of this.history.values()) {
+      const i = lines.findIndex((l) => l.msgid === msgid);
+      if (i !== -1) lines.splice(i, 1);
+    }
     this.relayRedact(`${from}!~${from}@peer.fake`, target, msgid, reason, null);
   }
 
@@ -445,9 +650,15 @@ export class FakeIrcd extends EventEmitter {
   // Prefix a relayed line with tags the client negotiated. `clientTags` are the
   // sender's `+`-prefixed tags, exactly as it wrote them (escaping included),
   // relayed only to a client that negotiated message-tags — as a real server does.
-  private tagged(c: FakeClient, line: string, msgid?: string, clientTags: string[] = []): void {
+  private tagged(
+    c: FakeClient,
+    line: string,
+    msgid?: string,
+    clientTags: string[] = [],
+    time = new Date().toISOString(),
+  ): void {
     const tags: string[] = [];
-    if (c.caps.has('server-time')) tags.push(`time=${new Date().toISOString()}`);
+    if (c.caps.has('server-time')) tags.push(`time=${time}`);
     if (c.caps.has('message-tags') && msgid) tags.push(`msgid=${msgid}`);
     if (c.caps.has('message-tags')) tags.push(...clientTags);
     this.raw(c, tags.length ? `@${tags.join(';')} ${line}` : line);
@@ -518,6 +729,12 @@ export class FakeIrcd extends EventEmitter {
           const topic = this.topics.get(lower);
           if (topic) this.num(c, '332', chan, topic);
           this.names(c, chan);
+          // ergo's autoreplay-on-join: the last N lines, after the NAMES, to
+          // a client without the cap (channel.go, HasHistoryCaps).
+          const replay = this.chathistoryOpts()?.autoreplay ?? 0;
+          if (replay > 0 && !c.caps.has('draft/chathistory')) {
+            this.historyBatch(c, chan, (this.history.get(lower) ?? []).slice(-replay), true);
+          }
         }
         return;
       }
@@ -544,15 +761,17 @@ export class FakeIrcd extends EventEmitter {
         // only a message-tags sender's, and tagged() only hands them on to
         // message-tags recipients.
         const clientTags = c.caps.has('message-tags') ? FakeIrcd.clientTagsOf(line) : [];
+        const time = new Date().toISOString();
+        this.record(target, c.nick ?? '', { time, msgid, line: out, clientTags });
         if (isChannelTarget(target)) {
           for (const m of this.members(target)) {
-            if (m !== c || c.caps.has('echo-message')) this.tagged(m, out, msgid, clientTags);
+            if (m !== c || c.caps.has('echo-message')) this.tagged(m, out, msgid, clientTags, time);
           }
         } else {
           const m = this.client(target);
           if (!m) return this.num(c, '401', target, 'No such nick/channel');
-          this.tagged(m, out, msgid, clientTags);
-          if (c.caps.has('echo-message')) this.tagged(c, out, msgid, clientTags);
+          this.tagged(m, out, msgid, clientTags, time);
+          if (c.caps.has('echo-message')) this.tagged(c, out, msgid, clientTags, time);
         }
         return;
       }
@@ -565,8 +784,10 @@ export class FakeIrcd extends EventEmitter {
         this.msgidOwner.set(msgid, c.nick ?? '');
         const clientTags = FakeIrcd.clientTagsOf(line);
         const out = `:${this.hostmask(c)} TAGMSG ${target}`;
+        const time = new Date().toISOString();
+        this.record(target, c.nick ?? '', { time, msgid, line: out, clientTags });
         const deliver = (m: FakeClient) => {
-          if (m.caps.has('message-tags')) this.tagged(m, out, msgid, clientTags);
+          if (m.caps.has('message-tags')) this.tagged(m, out, msgid, clientTags, time);
         };
         if (isChannelTarget(target)) {
           for (const m of this.members(target)) {
@@ -674,6 +895,8 @@ export class FakeIrcd extends EventEmitter {
       case 'BATCH':
         if (!c.caps.has('draft/multiline')) return this.num(c, '421', cmd, 'Unknown command');
         return;
+      case 'CHATHISTORY':
+        return this.onChathistory(c, p);
       default:
         return this.num(c, '421', cmd, 'Unknown command');
     }
@@ -792,6 +1015,9 @@ export class FakeIrcd extends EventEmitter {
       'PREFIX=(ov)@+',
       'MONITOR=100',
       ...(this.opts.whox ? ['WHOX'] : []),
+      ...(this.chathistoryOpts()
+        ? [`CHATHISTORY=${this.chathistoryOpts()!.limit}`, 'MSGREFTYPES=timestamp']
+        : []),
       ...(this.opts.isupport ?? []),
       'are supported by this server',
     );
