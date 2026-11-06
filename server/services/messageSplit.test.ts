@@ -231,6 +231,17 @@ describe('splitMultiline keeps the whitespace a concat cut lands on', () => {
     expect(reassembleMultiline(wires)).toBe(text);
   });
 
+  it('keeps the cut whitespace of an indented line (a code paste)', () => {
+    // lineBreak keeps an indent that fits inside the first piece, so the first
+    // piece itself begins with whitespace.
+    for (const text of ['    if (x) { return y; } else { z(); }', '   aaaa bbbb cccc']) {
+      const wires = splitMultiline(text, 10);
+      expect(wires.length).toBeGreaterThan(1);
+      for (const w of wires) expect(byteLen(w.content)).toBeLessThanOrEqual(10);
+      expect(reassembleMultiline(wires)).toBe(text);
+    }
+  });
+
   it('keeps trailing whitespace the cut left behind', () => {
     const wires = splitMultiline('aaaaaaaaaa bbbbbbbbbb  ', 10);
     expect(reassembleMultiline(wires)).toBe('aaaaaaaaaa bbbbbbbbbb  ');
@@ -324,6 +335,20 @@ describe('partitionMultiline', () => {
         .map((w) => w.content)
         .join(''),
     ).toBe('a'.repeat(900));
+  });
+});
+
+describe('partitionMultiline tearing a line across batches', () => {
+  it('keeps the whitespace at a re-cut when a wire piece outgrows max-bytes', () => {
+    // A line budget wider than the batch's max-bytes: the 450-byte wire piece
+    // is re-cut to 400, and that cut must not lose its space either.
+    const text = 'word '.repeat(100).trim();
+    const batches = partitionMultiline(text, { maxBytes: 400, maxLines: 24 }, 450);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(batch.reduce((n, w) => n + byteLen(w.content), 0)).toBeLessThanOrEqual(400);
+    }
+    expect(batches.map(reassembleMultiline).join('')).toBe(text);
   });
 });
 

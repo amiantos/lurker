@@ -69,7 +69,6 @@ import {
 } from '../db/relayBots.js';
 import type { RelayBotResult } from '../db/relayBots.js';
 import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
-import { hasInteriorNewline } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { e2eDbg } from './e2e/debug.js';
@@ -1030,10 +1029,10 @@ class IrcManager extends EventEmitter {
     // limits, so a big paste is N messages, not N raw lines), and the sender
     // echoes one bubble per batch to match. Networks without the cap fall
     // through to the per-line split that mirrors what irc-framework actually
-    // puts on the wire. The newline test is for an INTERIOR newline (not a bare
-    // one) so "hello\n" stays a single-line send — splitMultiline trims edge
-    // blanks — and the client's multilineMessageCount gates on the same two
-    // conditions, so the two stay in sync. (#381)
+    // puts on the wire. The gate is conn.outboundBatches — shared with the
+    // bouncer, whose echo keys must name what this publishes — and the client's
+    // multilineMessageCount gates on the same two conditions, so the chip and
+    // the send agree. (#381)
     // With upstream echo-message ACKed, the server reflects our sends back and
     // the ircConnection message handler adopts that echo as the persisted self
     // row (real msgid + server time, #450) — so the optimistic publish below is
@@ -1045,10 +1044,10 @@ class IrcManager extends EventEmitter {
     // Our own copy is a reply only when the tags actually went out; with
     // echo-message the echo says so itself.
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
-    const chunks = conn.sayChunks('PRIVMSG', target, text);
-    if (conn.supportsMultiline() && (hasInteriorNewline(text) || chunks.length > 1)) {
+    const batches = conn.outboundBatches(target, text);
+    if (batches) {
       const nick = conn.currentNick;
-      const echoes = conn.sendMultiline(target, text, reply?.tags, opts.lineHooks);
+      const echoes = conn.sendMultiline(target, text, reply?.tags, opts.lineHooks, batches);
       if (!adoptEcho) {
         echoes.forEach((echo, i) => {
           conn.publish({
@@ -1064,6 +1063,7 @@ class IrcManager extends EventEmitter {
       }
       return true;
     }
+    const chunks = conn.sayChunks('PRIVMSG', target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
       conn.say(target, chunk, first ? reply.tags : null, lineHooks(opts.lineHooks, chunk));

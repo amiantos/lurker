@@ -45,23 +45,17 @@ function chunk(text: string, bytes: number): string[] {
 // here: "AAA BBB" cut at the space came back as "AAABBB" on every multiline
 // client, ours included (the self echo is reassembled from these pieces). Only
 // whitespace is ever dropped, and only between pieces, so walking the original
-// alongside the pieces finds each dropped run; it goes back on the trailing
-// edge of the piece before it when that still fits the budget (obby does the
-// same), else on the leading edge of the piece after, else as pieces of its own.
+// alongside the pieces finds each dropped run: whatever lies between where one
+// piece ends and the next begins. It goes back on the trailing edge of the
+// piece before it when that still fits the budget (obby does the same), else
+// on the leading edge of the piece after, else as pieces of its own.
 function chunkConcat(line: string, bytes: number): string[] {
   const pieces = chunk(line, bytes);
   if (pieces.length <= 1) return pieces;
   const out: string[] = [];
-  let cursor = 0;
-  const restore = (gap: string, next: string | null): string | null => {
-    const prev = out.length > 0 ? out[out.length - 1] : null;
-    if (prev != null && byteLen(prev + gap) <= bytes) {
-      out[out.length - 1] = prev + gap;
-      return next;
-    }
-    if (next != null && byteLen(gap + next) <= bytes) return gap + next;
-    // Whitespace alone, in budget-sized pieces (a run longer than a whole line
-    // is nothing anyone types, but the join must stay byte-exact regardless).
+  // Whitespace alone, in budget-sized pieces (a run longer than a whole line is
+  // nothing anyone types, but the join must stay byte-exact regardless).
+  const pushRuns = (gap: string): void => {
     let run = '';
     for (const ch of gap) {
       if (byteLen(run + ch) > bytes) {
@@ -71,19 +65,37 @@ function chunkConcat(line: string, bytes: number): string[] {
       run += ch;
     }
     if (run) out.push(run);
+  };
+  // `next` with the dropped `gap` before it restored: glued to the piece already
+  // out when that fits, else to `next`, else out on its own.
+  const attach = (gap: string, next: string): string => {
+    const prev = out.length > 0 ? out[out.length - 1] : null;
+    if (prev != null && byteLen(prev + gap) <= bytes) {
+      out[out.length - 1] = prev + gap;
+      return next;
+    }
+    if (byteLen(gap + next) <= bytes) return gap + next;
+    pushRuns(gap);
     return next;
   };
+  let cursor = 0;
   for (const piece of pieces) {
-    const gap = /^\s*/.exec(line.slice(cursor))![0];
-    const at = cursor + gap.length;
+    // A piece may itself begin with whitespace (lineBreak keeps an indent that
+    // fits), so find it rather than skipping whitespace to it.
+    const at = line.indexOf(piece, cursor);
+    const gap = at >= 0 ? line.slice(cursor, at) : null;
     // Not this line's pieces in order — lineBreak never does this; keep them as cut.
-    if (!line.startsWith(piece, at)) return pieces;
+    if (gap == null || !/^\s*$/.test(gap)) return pieces;
     cursor = at + piece.length;
-    out.push(gap ? (restore(gap, piece) as string) : piece);
+    out.push(gap ? attach(gap, piece) : piece);
   }
   // Trailing whitespace lineBreak had no room for.
   const tail = line.slice(cursor);
-  if (tail) restore(tail, null);
+  if (tail) {
+    const prev = out[out.length - 1];
+    if (byteLen(prev + tail) <= bytes) out[out.length - 1] = prev + tail;
+    else pushRuns(tail);
+  }
   return out;
 }
 
@@ -214,11 +226,12 @@ export function partitionMultiline(
       // maxBytes only if the server set max-bytes below a full wire line;
       // re-chunk it smaller in that case so a batch never overflows. (The
       // caller gates max-bytes < 350 to the legacy splitter, but a line's
-      // budget can be more than 350.)
+      // budget can be more than 350.) The re-cut is a concat cut too, so it
+      // keeps the whitespace it lands on.
       flush();
       const pieces = line.flatMap((w) =>
         byteLen(w.content) > limits.maxBytes
-          ? chunk(w.content, limits.maxBytes).map((c, i) => ({
+          ? chunkConcat(w.content, limits.maxBytes).map((c, i) => ({
               content: c,
               concat: i > 0 || w.concat,
             }))

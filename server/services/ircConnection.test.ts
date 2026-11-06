@@ -3431,6 +3431,35 @@ describe('IRCv3 draft/multiline (#381)', () => {
     });
   });
 
+  describe('outboundBatches (the send gate)', () => {
+    it('is null for one line that fits, and for a body with only edge newlines', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      expect(conn.outboundBatches('#chan', 'hello')).toBeNull();
+      expect(conn.outboundBatches('#chan', 'hello\n')).toBeNull();
+      expect(conn.outboundBatches('#chan', '\n\n')).toBeNull();
+    });
+
+    it('is the batches for several lines, or one line too long for the wire', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      expect(conn.outboundBatches('#chan', 'a\nb')).toEqual([
+        [
+          { content: 'a', concat: false },
+          { content: 'b', concat: false },
+        ],
+      ]);
+      const batches = conn.outboundBatches('#chan', 'lorem ipsum '.repeat(60).trim())!;
+      expect(batches).toHaveLength(1);
+      expect(batches[0].length).toBeGreaterThan(1);
+      expect(batches[0].slice(1).every((w) => w.concat)).toBe(true);
+    });
+
+    it('is null without the cap', () => {
+      expect(makeConn().outboundBatches('#chan', 'a\nb')).toBeNull();
+    });
+  });
+
   describe('limits + support gate', () => {
     it('multilineLimits is null / supportsMultiline false until both caps are negotiated', () => {
       const conn = makeConn();

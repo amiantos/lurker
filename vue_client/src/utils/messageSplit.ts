@@ -201,7 +201,7 @@ export function multilineMessageCount(
   // server reports null limits for it, but guard here too so the count matches.
   if (limits.maxBytes < MESSAGE_MAX_BYTES) return 0;
   const body = text.replace(/^(?:\r\n|\r|\n)+/, '').replace(/(?:\r\n|\r|\n)+$/, '');
-  if (!/\r\n|\n|\r/.test(body) && chunksForLine(body, bytes) <= 1) return 0;
+  const oneLine = !/\r\n|\n|\r/.test(body);
   let batches = 0;
   let curLines = 0;
   let curBytes = 0;
@@ -214,6 +214,8 @@ export function multilineMessageCount(
   };
   for (const line of body.split(/\r\n|\n|\r/)) {
     const wireLines = Math.max(1, chunksForLine(line, bytes));
+    // One line that fits one PRIVMSG is not a multiline send.
+    if (oneLine && wireLines <= 1) return 0;
     const lineBytes = byteLen(line);
     if (
       curLines > 0 &&

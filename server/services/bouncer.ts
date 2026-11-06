@@ -116,6 +116,7 @@ import {
 } from './bouncerClientFilter.js';
 import type { MonitorHolder } from './monitorList.js';
 import { METADATA_CAP, isValidMetadataKey } from './ircMetadata.js';
+import { reassembleMultiline } from './messageSplit.js';
 import { isServicesNick } from '../utils/servicesNick.js';
 import type { ReplyClient } from './replyRouter.js';
 
@@ -3262,8 +3263,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       const e2e =
         isChannelName(target) &&
         e2eManager.isChannelEnabled(this.userId, this.networkId, contextKey(target, ''));
+      // Keyed by the self events ircManager will publish: one per wire chunk —
+      // or, for a line too long for the wire on a network with draft/multiline,
+      // one per batch, the reassembled text the room sees. ircManager.send takes
+      // the same gate (conn.outboundBatches), so the keys name what comes back.
+      const batches = kind === 'message' ? conn.outboundBatches(target, text) : null;
+      const echoes = batches ? batches.map(reassembleMultiline) : chunks;
       const registered: string[] = [];
-      if (!e2e) for (const chunk of chunks) registered.push(this.registerEcho(kind, target, chunk));
+      if (!e2e) for (const echo of echoes) registered.push(this.registerEcho(kind, target, echo));
       // Each echo's clock starts when its line has gone, which behind a
       // backlog is later than now (#1149); a line dropped with its socket has
       // no echo coming.
