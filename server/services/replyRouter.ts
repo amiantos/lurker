@@ -227,7 +227,12 @@ type Form =
   // `metadata-subs` batch, and GET/LIST/SYNC/CLEAR/SET with a `metadata` batch
   // (a SET's single 761 comes bare on ergo). The batch's own BATCH lines carry
   // the query; a 774 ends a SYNC the server postpones.
-  | 'metadata';
+  | 'metadata'
+  // CHATHISTORY (draft/chathistory, #1283): a `chathistory <target>` batch
+  // answers BETWEEN/AFTER/LATEST/BEFORE, a `draft/chathistory-targets` batch
+  // answers TARGETS; a FAIL CHATHISTORY ends either. Lurker's gap-fill is the
+  // only asker (chathistoryBackfill.ts), one request at a time.
+  | 'chathistory';
 
 // The kinds whose replies name nothing to match them by. One of these waits for
 // the last of its kind to be answered. A 221 names nothing either: without its
@@ -263,6 +268,9 @@ interface Spec {
   batchRef: string;
   // A METADATA query's subcommand: what ends it differs by one.
   sub: string;
+  // Batches opened inside the query's own (a multiline message in a
+  // chathistory batch): their lines are the query's too.
+  inner: Set<string>;
 }
 
 interface Query extends Spec {
@@ -314,6 +322,7 @@ function spec(form: Form, command: string, fields: Partial<Spec> = {}): Spec {
     abort: null,
     batchRef: '',
     sub: '',
+    inner: new Set(),
     ...fields,
   };
 }
@@ -338,6 +347,10 @@ export class ReplyRouter {
   private readonly modes = new Map<string, { mode: string; created: string | null }>();
   // The `batch=` tag of the line being noted (see noteServerLine).
   private lineBatch: string | undefined;
+  // Batches whose query timed out before they closed, by reference, with the
+  // asker: a late line inside one is still that asker's (a history page's
+  // lines must never become someone's live traffic), until its BATCH -.
+  private readonly orphanBatches = new Map<string, Asker | null>();
 
   constructor(opts: ReplyRouterOptions) {
     this.opts = opts;
@@ -392,6 +405,7 @@ export class ReplyRouter {
       this.settle = null;
       if (this.settles(settle, command, params)) owner = settle.query.asker ?? 'nobody';
     }
+    owner ??= this.claimOrphan(command, params);
     owner ??= this.claim(command, params);
     if (typeof owner === 'object') owner.onReply?.(command, params);
     // Only now, so a query sent here can't take the line it was sent after.
@@ -421,6 +435,7 @@ export class ReplyRouter {
     this.waiting = [];
     this.settle = null;
     this.modes.clear();
+    this.orphanBatches.clear();
     for (const query of ended) this.abort(query);
   }
 
@@ -475,6 +490,10 @@ export class ReplyRouter {
     }
     if (!this.opts.canSend()) {
       this.abort(query);
+      // Over before it began, and said so: a sender waiting on the end of
+      // its query (the history gap-fill, which sends the next behind it)
+      // must not wait on one that never went.
+      query.onEnd?.('error');
       return;
     }
     // On the wire from here, so what follows it waits its turn; its timeout
@@ -561,6 +580,10 @@ export class ReplyRouter {
           return;
         }
         this.takeOffWire(query);
+        if (query.batchRef) {
+          if (this.orphanBatches.size >= 100) this.orphanBatches.clear();
+          this.orphanBatches.set(query.batchRef, query.asker);
+        }
         this.abort(query);
         query.onEnd?.('timeout');
         this.releaseWaiting();
@@ -574,6 +597,19 @@ export class ReplyRouter {
     if (index !== -1) this.wire.splice(index, 1);
     if (query.timer) clearTimeout(query.timer);
     query.timer = null;
+  }
+
+  // A line of a batch whose query timed out before the batch closed.
+  private claimOrphan(command: string, params: string[]): ReplyOwner | undefined {
+    if (this.orphanBatches.size === 0) return undefined;
+    const ref =
+      command === 'BATCH' && (params[0] ?? '').startsWith('-')
+        ? (params[0] ?? '').slice(1)
+        : this.lineBatch;
+    if (!ref || !this.orphanBatches.has(ref)) return undefined;
+    const asker = this.orphanBatches.get(ref) ?? null;
+    if (command === 'BATCH') this.orphanBatches.delete(ref);
+    return asker ?? 'nobody';
   }
 
   private claim(command: string, params: string[]): ReplyOwner | undefined {
@@ -740,12 +776,60 @@ export class ReplyRouter {
         if (command === '774') return query.sub === 'SYNC' && names(1) ? 'end' : null;
         return null;
       }
+      case 'chathistory': {
+        // One on the wire at a time, so its batch is the first of its type
+        // naming its target. A network that replays history unasked at a JOIN
+        // (ergo's autoreplay) does so only for a client WITHOUT the cap
+        // (channel.go, HasHistoryCaps), so no stray batch can be taken for it.
+        if (command === 'BATCH') {
+          const ref = params[0] ?? '';
+          const type = params[1] ?? '';
+          if (ref.startsWith('+')) {
+            if (!query.batchRef) {
+              const mine =
+                query.sub === 'TARGETS'
+                  ? type === 'draft/chathistory-targets'
+                  : type === 'chathistory' && names(2);
+              if (!mine) return null;
+              query.batchRef = ref.slice(1);
+              return 'body';
+            }
+            // A batch opened inside ours (a multiline message): its lines are
+            // ours as well, and its start and end lines come tagged with ours.
+            if (this.lineBatch === query.batchRef || query.inner.has(this.lineBatch ?? '')) {
+              query.inner.add(ref.slice(1));
+              return 'body';
+            }
+            return null;
+          }
+          if (ref.startsWith('-')) {
+            if (query.batchRef === ref.slice(1)) return 'end';
+            if (query.inner.delete(ref.slice(1))) return 'body';
+          }
+          return null;
+        }
+        if (!query.batchRef) return null;
+        const inside = this.lineBatch ?? '';
+        return inside === query.batchRef || query.inner.has(inside) ? 'body' : null;
+      }
     }
   }
 
   private isErrorFor(query: Query, command: string, params: string[]): boolean {
     if (COMMAND_ERRORS.has(command)) return (params[1] ?? '').toUpperCase() === query.command;
-    if (command === 'FAIL') return (params[0] ?? '').toUpperCase() === query.command;
+    if (command === 'FAIL') {
+      if ((params[0] ?? '').toUpperCase() !== query.command) return false;
+      // FAIL CHATHISTORY <code> <sub> [<target>]: two CHATHISTORY queries can
+      // be on the wire (Lurker's walk, a user's own), so the subcommand must
+      // be this one's, and a channel it names must be this one's.
+      if (query.form === 'chathistory') {
+        const sub = (params[2] ?? '').toUpperCase();
+        if (sub && sub !== query.sub) return false;
+        const named = params[3] ?? '';
+        if (isChannelTarget(named) && !query.targets.has(this.opts.fold(named))) return false;
+      }
+      return true;
+    }
     if (TARGET_ERRORS.has(command)) return query.targets.has(this.opts.fold(params[1] ?? ''));
     if (command === '431') return query.form === 'whois' || query.form === 'whowas';
     // WHOWAS's own error. A WHOIS for the same nick mustn't take it.
@@ -905,6 +989,14 @@ export class ReplyRouter {
         return params[0] === '*'
           ? spec('accept', command, { abort: { numeric: '282', params: [] } })
           : null;
+      case 'CHATHISTORY': {
+        // CHATHISTORY <sub> <target> …, or CHATHISTORY TARGETS <from> <to>
+        // <limit>, which names no target: its batch type says it is ours.
+        const sub = (params[0] ?? '').toUpperCase();
+        if (!sub) return null;
+        const target = sub === 'TARGETS' ? '' : (params[1] ?? '');
+        return spec('chathistory', command, { targets: fold(target ? [target] : []), sub });
+      }
       case 'METADATA': {
         // METADATA <target> <sub> …: every subcommand answers something, so
         // each is a query. A SET's reply is a bare 761 naming the target

@@ -653,7 +653,9 @@ export const useBuffersStore = defineStore('buffers', {
         // badge so the StatusBar "Return to present" button can hint that
         // fresh activity has happened.
         buf.liveDuringDetach += 1;
-        clearSpeakerTyping(buf, event.nick);
+        // A line fetched after the fact (`replay`, a history backfill) says
+        // nothing about what its sender is doing now.
+        if (!event.replay) clearSpeakerTyping(buf, event.nick);
         return 'detached';
       }
       const prevMaxId = buf.messages[buf.messages.length - 1]?.id ?? 0;
@@ -727,7 +729,7 @@ export const useBuffersStore = defineStore('buffers', {
           }
         }
       }
-      clearSpeakerTyping(buf, event.nick);
+      if (!event.replay) clearSpeakerTyping(buf, event.nick);
       return 'shown';
     },
     replaceBacklog(

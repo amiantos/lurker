@@ -583,6 +583,7 @@ Common fields on every **persisted** event (`db/messages.ts` `rowToEvent` +
   matched, matchedRuleId,             // highlight decoration
   fromIgnored, notifyAlways, notify,
   msgid?,                             // IRCv3 server message id, when supplied
+  replay?,                            // true on a line fetched after the fact (§9.3)
   bookmarked?,                        // true when you've saved this line
   reactions?,                         // IRCv3 reactions standing on this line
   replyTo?,                           // IRCv3 reply: the line this one answers
@@ -595,8 +596,18 @@ plus type-specific extras (`newNick`, `kicked`, `modes`, `members`, …).
 **`time` is IRCv3 server-time** where the network offers it (the `@time=` tag),
 receive time otherwise. Far-future stamps (> ~2 min ahead) fall back to receive
 time. Rows persisted before this existed carry receive time. Because a bouncer
-upstream can replay old messages live, `time` is **not** guaranteed monotonic
-with respect to `id` — order and dedupe by `id`, always (§9.3).
+upstream can replay old messages live, and a line fetched after the fact
+(`replay`) is stored after lines it precedes, `time` is **not** guaranteed
+monotonic with respect to `id`. Page and dedupe by `id`, always (§9.3); show
+rows by `time`, with `id` as the tiebreak, which is where a filled gap's lines
+belong: the web client orders what it holds that way, and the apps follow.
+
+**`replay: true`** marks a line Lurker fetched after the fact rather than heard
+live: a gap filled from the network's history after a reconnect (IRCv3
+`draft/chathistory`), or a bouncer's playback at attach. It is a real row — it
+counts as unread, it carries its original `time` — and `notify` is always
+`false` on it, so nothing toasts or pushes for history. Only the live frame
+carries the flag; a history fetch does not.
 
 **`msgid`** is the server-assigned IRCv3 message id (`message-tags` networks;
 own sends learn theirs via `echo-message`). Absent — not null — on rows from
@@ -1237,7 +1248,10 @@ slice (track them separately or refetch); `latest` reattaches.
 6. On any replace, **keep held live events newer than the slice tail** — a
    message can land mid-hydrate.
 7. Dedupe everything by id against what you hold; drop legacy `away`/`back`
-   rows if you encounter them in old history.
+   rows if you encounter them in old history. Show what you hold by `time`,
+   id as the tiebreak: a `replay` row carries an older time than its id says.
+   A replayed row older than the oldest you hold shows at the top until the
+   page before it loads and it slides into place.
 8. The web client caps its in-memory ring at 500 events/buffer and pages the
    rest — policy, not protocol, but a sane default.
 

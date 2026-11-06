@@ -636,8 +636,12 @@ export function decorateMessage(
   // so /unignore reveals reactively. Only pay for the verdict when the content
   // is otherwise notify-worthy — most backlog rows aren't, so history serves
   // stay cheap.
-  let notify = contentNotify;
-  if (contentNotify) {
+  // A line Lurker fetched after the fact (a history backfill, #1283) is what
+  // was missed, not what just happened: it counts as unread like any row, and
+  // it is never a push or a toast. halloy, goguma and gamja all keep history
+  // out of their notifications the same way.
+  let notify = contentNotify && !event.replay;
+  if (notify) {
     const verdict = ignoreVerdictForEvent(userId, event.networkId, {
       nick: event.nick,
       userhost: event.userhost,

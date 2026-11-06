@@ -116,6 +116,30 @@ only works if timestamps are trustworthy.
   same ID, in the same channel or conversation, is stored once. Reactions and replies
   are anchored on it.
   <br>`server/services/ircConnection.ts:2434`
+- **`draft/chathistory`** — what you missed while Lurker was off the network comes
+  back. On a network that keeps history (ergo, soju, another Lurker), every rejoin
+  asks for the lines between the newest one the channel holds and the join, and
+  one `CHATHISTORY TARGETS` per registration finds the conversations that had a
+  line in the meantime. The lines land at their own times and are shown there,
+  under the lines they followed rather than under the rejoin they were stored
+  after; they count as unread, and never notify: they are what was missed, not
+  what just happened. Asked for in
+  pages, one request on the wire at a time, behind your own typing and not held
+  by the flood clock, since the server's replies pace it already; a buffer with
+  nothing stored asks for nothing, since a first join is not an outage. The same
+  path takes a ZNC's playback at attach, which used to be dropped whole, so a
+  bouncer that replays its buffer on every attach no longer doubles anything.
+  With the cap on, ergo and soju also stop replaying at JOIN on their own.
+  `draft/event-playback` is asked for with it: a page then carries the joins,
+  parts, quits, nick changes, kicks and topic and mode changes of its window as
+  the lines they were, and each is stored as the row it would have been, so the
+  history reads as if you had been there. Only your own are left out, since the
+  rejoin's JOIN is written live and your quit before it is the outage itself.
+  They move nothing: the rejoin's NAMES and topic say where the channel stands.
+  Without the cap ergo renders each as chat from HistServ ("x joined the
+  channel"), and a reaction as "x sent a TAGMSG". One known hole: a multi-line message inside a page (a batch inside the batch) is
+  dropped by irc-framework before Lurker sees it; the rest of the page lands.
+  <br>`server/services/chathistoryBackfill.ts`, `server/services/ircConnection.ts`
 
 ### Multi-line messages stay one message
 
@@ -423,8 +447,8 @@ attaching to Lurker.
 | `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
 | `+reply`, `+draft/reply`                |   ✅   |    —    |
 | `draft/message-redaction`               |   ✅   |   ✅    |
-| `draft/chathistory`                     |   —    |   ✅    |
-| `draft/event-playback`                  |   —    |   ✅    |
+| `draft/chathistory`                     |   ✅   |   ✅    |
+| `draft/event-playback`                  |   ✅   |   ✅    |
 | `draft/read-marker`                     |   —    |   ✅    |
 | `draft/pre-away`                        |   —    |   ✅    |
 | `multi-prefix`                          |   ✅   |   ✅    |
@@ -460,10 +484,9 @@ you, not by spec number.
 
 ### High value — natural fits for features Lurker already has
 
-| Capability                      | What it would give you                                                                                                                                                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `draft/chathistory` (as client) | Backfill missed history from an upstream bouncer or a network that stores it. Note the asymmetry: Lurker _serves_ chathistory downstream but doesn't consume it upstream, so gaps from a Lurker outage can't currently be filled in. |
-| `standard-replies`              | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics.                                                                                                               |
+| Capability         | What it would give you                                                                                                 |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `standard-replies` | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics. |
 
 ### Moderate value
 

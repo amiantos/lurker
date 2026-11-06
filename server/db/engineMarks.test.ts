@@ -101,6 +101,19 @@ describe('engine catch-up mark', () => {
     // Another socket's mark is not this socket's.
     expect(marks.storeUnderMark(id, 'sock-b', 1, () => say('one on b'))).toBeTruthy();
     expect(count()).toBe(2);
+    // A batch: several rows under one seq, from the process that stored the
+    // first. Each is stored beside the mark it raised; only a mark PAST the
+    // seq (a later line, stored by whoever) refuses one.
+    expect(marks.storeUnderMark(id, 'sock-b', 2, () => say('batch 1'))).toBeTruthy();
+    expect(marks.storeUnderMark(id, 'sock-b', 2, () => say('batch 2'), true)).toBeTruthy();
+    expect(marks.storeUnderMark(id, 'sock-b', 2, () => say('batch 3'), true)).toBeTruthy();
+    expect(marks.getEngineMark(id, 'sock-b')).toBe(2);
+    expect(count()).toBe(5);
+    marks.setEngineMark(id, 'sock-b', 3);
+    expect(marks.storeUnderMark(id, 'sock-b', 2, () => say('batch late'), true)).toBeNull();
+    // Without the claim, the same seq is a predecessor's line, as before.
+    expect(marks.storeUnderMark(id, 'sock-b', 2, () => say('batch stranger'))).toBeNull();
+    expect(count()).toBe(5);
   });
 
   it('goes with its network', () => {

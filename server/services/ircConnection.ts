@@ -11,6 +11,8 @@ import {
   hasSameMessageWithMsgid,
   hasRecentMessageLike,
   maxMessageId,
+  newestConversationTime,
+  newestConversationTimes,
   findReplyParent,
   replyRootFor,
   redactMessage,
@@ -102,6 +104,7 @@ import { ProxyTransport } from './proxyTransport.js';
 import { MonitorList } from './monitorList.js';
 import type { MonitorHolder, MonitorSync } from './monitorList.js';
 import { ReplyRouter, listModeNumerics } from './replyRouter.js';
+import { ChathistoryBackfill } from './chathistoryBackfill.js';
 import type { Asker, QueryEnd, ReplyOwner } from './replyRouter.js';
 import { ModeListCollector } from './modeList.js';
 import type { ModeListResult } from './modeList.js';
@@ -723,8 +726,9 @@ function batchTypeOf(event: Record<string, unknown>): string | undefined {
   return (event.batch as { type?: string } | undefined)?.type;
 }
 
-// A server-pushed history replay: a CHATHISTORY batch (Ergo's autoreplay, which
-// we never asked for — we don't send CHATHISTORY) or a ZNC playback.
+// A history replay batch: a CHATHISTORY page, asked for by the gap-fill
+// (#1283) or pushed at JOIN by a network that replays unasked, or ZNC's
+// playback at attach.
 function isHistoryReplayBatch(batchType: string | undefined): boolean {
   return (
     batchType === 'chathistory' ||
@@ -1361,6 +1365,37 @@ export class IrcConnection {
   // This catch-up's line for stdout, written at `live` (engineReattachLog.ts).
   // Null outside a catch-up.
   private reattachLog: Reattach | null = null;
+  // The engine reported a hole in the backlog it handed over: when the last
+  // line went, the newest row stored before this attach (the hole starts
+  // after it), and the time of the first row the kept backlog stored (it
+  // ends before it; `at` is later than that by up to the buffer's span). At
+  // `live`, every channel we are in is asked for the gap (chathistory.gap).
+  // Null when the backlog was whole.
+  private backlogGap: { at: number; maxId: number; firstKeptAt: string | null } | null = null;
+  // The newest message id when this socket registered: a replay the network
+  // pushes unasked (ZNC's playback at attach) repeats lines stored before it,
+  // and its own rows sit above it (hasRecentMessageLike). Null until then.
+  private replayMaxId: number | null = null;
+  // The engine socket and seq this process last stored a row under: a
+  // second row under the same seq (the rest of a batch) is its own, not a
+  // predecessor's (storeUnderCatchUpMark). Null until the first row.
+  private storedUnderSeq: { socket: string; seq: number } | null = null;
+  // The history gap-fill (#1283, chathistoryBackfill.ts): fed by the raw
+  // listener, asked at our own JOINs and once per registration.
+  private chathistory!: ChathistoryBackfill;
+  // Channels our own JOIN just put us in, by folded name, with the JOIN's
+  // time and the newest line the buffer held at that moment (read then, so
+  // nothing the socket delivers after the JOIN can move it): each is asked
+  // for its gap once its NAMES is in ('userlist').
+  private pendingBackfill = new Map<string, { at: number; anchor: string | null }>();
+  // REDACTs inside a batch, by its reference: the line one deletes reaches
+  // its handler only when the batch ends, so the deletion waits for that.
+  private batchedRedacts = new Map<string, Parameters<IrcConnection['onRedactLine']>[0][]>();
+  // The history replay batches irc-framework is delivering, by reference:
+  // a batch's lines reach their handlers between its 'batch start' and
+  // 'batch end', and a TOPIC or INVITE payload names only the tag
+  // (replayBatchRef).
+  private replayBatches = new Set<string>();
   // The engine finished registering this socket with no app attached (the
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
@@ -1511,6 +1546,20 @@ export class IrcConnection {
     // draft/message-redaction (IRCv3, #1013): a REDACT when someone deletes a
     // line, and the right to send one. No-op where the network doesn't offer it.
     this.client.requestCap(REDACTION_CAP);
+    // draft/chathistory (IRCv3, #1283): the lines a buffer missed while we
+    // were off the network, asked for at each rejoin (chathistoryBackfill.ts).
+    // Asking for it also turns off a network's own replay at JOIN (ergo and
+    // soju both skip a client with the cap), which the same code would have
+    // had to dedupe. No-op where the network doesn't offer it.
+    this.client.requestCap('draft/chathistory');
+    // draft/event-playback (IRCv3, #1283): with it, the joins, parts, quits,
+    // nick changes, kicks, topic and mode changes a history page holds come
+    // as the lines they were, and each is stored as the row its live handler
+    // writes (storeReplayedEvent), so history reads as if we had been there.
+    // Without it ergo renders each as a PRIVMSG from "HistServ" ("x joined
+    // the channel"), which would be stored as chat, and a reaction as "x
+    // sent a TAGMSG". No-op where the network doesn't offer it.
+    this.client.requestCap('draft/event-playback');
     this.userMetadata = new Map();
     this.peerSyncs = new Map();
     this.metadataSyncTimers = new Map();
@@ -1585,6 +1634,21 @@ export class IrcConnection {
       ownNick: () => this.currentNick,
       listModes: () => this.listModes(),
       prefixModes: () => this.prefixModes(),
+    });
+    this.chathistory = new ChathistoryBackfill({
+      // Unpaced, as the re-attach's channel walk is (sendPacer): one request
+      // in flight, the next not asked until the server has answered the
+      // last, so its replies pace it already, and the flood clock on top
+      // made every page wait its own turn for nothing. Still behind whatever
+      // waits ahead of it in the lanes, still charged, capped.
+      send: (line, onEnd) => this.replies.send('lurker', line, undefined, { onEnd, unpaced: true }),
+      limit: () => {
+        const token = this.client.network?.supports('CHATHISTORY');
+        const n = typeof token === 'string' ? parseInt(token, 10) : 0;
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      },
+      fold: (name) => foldTargetFor(this.network.id, name),
+      log: (text, level) => this.logNet(text, level),
     });
     this.replyOwner = null;
     this.ctcpAnswerer = null;
@@ -1693,6 +1757,9 @@ export class IrcConnection {
       networkId: this.network.id,
       time,
     };
+    // Which dedupe a replayed line gets is this connection's business, not
+    // the wire's (`replay` itself rides the frame, CLIENT_PROTOCOL.md).
+    delete enriched.replayAsked;
 
     if (this.shouldPersist(event)) {
       // Decide both per-message stamps before persisting, off cached compiled
@@ -1775,6 +1842,10 @@ export class IrcConnection {
       );
       if (!inserted) return;
       const { id, alt, bufferId } = inserted;
+      // The first row the kept backlog stores after a hole bounds the hole.
+      if (this.backlogGap && this.backlogGap.firstKeptAt === null && this.catchingUp) {
+        this.backlogGap.firstKeptAt = time;
+      }
       enriched.id = id;
       enriched.alt = alt;
       // The buffer the row landed in — the wire's stable identity for the
@@ -2060,9 +2131,53 @@ export class IrcConnection {
       } else if (rawCommand === 'REDACT') {
         // Message redaction (#1013). Read raw, like METADATA: irc-framework
         // doesn't model REDACT, and the prefix and @time are wanted whole.
-        this.onRedactLine(msg);
+        // Inside a batch (a history page, #1283) the line it deletes may be
+        // in the same batch, stored only when it ends: the deletion waits.
+        const ref = (msg?.tags as Record<string, string> | undefined)?.batch;
+        if (ref && msg) {
+          if (this.batchedRedacts.size >= 100) this.batchedRedacts.clear();
+          const queue = this.batchedRedacts.get(ref) ?? [];
+          queue.push(msg);
+          this.batchedRedacts.set(ref, queue);
+        } else {
+          this.onRedactLine(msg);
+        }
       } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'REDACT') {
         this.onRedactFail(msg?.params ?? []);
+      } else if (
+        this.replyOwner === 'lurker' &&
+        (rawCommand === 'BATCH' ||
+          rawCommand === 'CHATHISTORY' ||
+          (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'CHATHISTORY'))
+      ) {
+        // History gap-fill (#1283): the batch that answers our request, the
+        // TARGETS lines inside one, a refusal. Read raw, like METADATA: the
+        // batch's lines reach their handlers only when it ends. Only what
+        // the router gave Lurker: a user's own CHATHISTORY is answered too,
+        // and its batch is not the walk's.
+        this.onChathistoryLine(
+          rawCommand,
+          msg?.params ?? [],
+          (msg?.tags as Record<string, string> | undefined) ?? {},
+        );
+      }
+      {
+        // Every line inside the backfill's batch counts toward its page: a
+        // full page means another may follow. The start of a nested batch,
+        // a multiline message, counts as the one message it is; the end line
+        // of that nested batch is tagged with ours too and is not a line.
+        const tags = (msg?.tags as Record<string, string> | undefined) ?? {};
+        const inBatch = tags.batch;
+        if (
+          inBatch &&
+          this.replyOwner === 'lurker' &&
+          !(rawCommand === 'BATCH' && (msg?.params?.[0] ?? '').startsWith('-')) &&
+          this.chathistory.isOurs(inBatch)
+        ) {
+          const message =
+            rawCommand === 'PRIVMSG' || rawCommand === 'NOTICE' || rawCommand === 'BATCH';
+          this.chathistory.onBatchLine(inBatch, tags.time, message);
+        }
       }
       // Capture the registration burst for bouncer attach-time replay. 001
       // starts a fresh burst (each (re)registration replaces the last), and
@@ -2209,6 +2324,10 @@ export class IrcConnection {
       const params = Array.isArray(cmd?.params) ? (cmd.params as string[]) : [];
       // Handled on the raw line (onRedactLine): nothing below applies to it.
       if (command === 'REDACT') return;
+      // CHATHISTORY TARGETS lines and a FAIL CHATHISTORY are read raw too
+      // (onChathistoryLine); neither is news for the server buffer.
+      if (command === 'CHATHISTORY') return;
+      if (command === 'FAIL' && (params[0] ?? '').toUpperCase() === 'CHATHISTORY') return;
       // These numerics arrive as [nick, <target>, reason] — usually a channel,
       // but see the nick case below.
       const channel = typeof params[1] === 'string' ? params[1] : '';
@@ -2337,6 +2456,10 @@ export class IrcConnection {
         this.subscribeMetadata();
         this.startOwnMetadataReconcile();
       }
+      // The cap landing after a restore's `live` (a held socket from before
+      // 2.7.0 took it on the restore's REQ): a hole the engine reported
+      // waited for exactly this.
+      if ('draft/chathistory' in caps && !this.catchingUp) this.fillBacklogGap();
     });
     on('cap del', () => this.publishReactSupportIfChanged());
 
@@ -2371,6 +2494,7 @@ export class IrcConnection {
     on('registered', (event: Record<string, unknown>) => {
       // First, before anything here writes: the queue reads it (sawRegistered).
       this.sawRegistered = true;
+      this.replayMaxId = this.quietly(() => maxMessageId(), null);
       this.userModes.clear();
       this.lagMs = null;
       this.selfUser = null;
@@ -2526,6 +2650,13 @@ export class IrcConnection {
       // Every query went with the socket. A bouncer client still waiting on one
       // is sent its end numeric.
       this.replies.reset();
+      // Our link to the engine, not the socket: the walk waits for the
+      // re-attach. The socket: the walk went with it.
+      if (this.engineSocketAlive) this.chathistory.suspend();
+      else this.chathistory.reset();
+      this.pendingBackfill.clear();
+      this.batchedRedacts.clear();
+      this.replayBatches.clear();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
       // Metadata is the socket's: the next registration subscribes again and
@@ -3045,6 +3176,15 @@ export class IrcConnection {
     on('motd', (event: Record<string, unknown>) => {
       // The MOTD, or its absence, ends the registration burst after every 005.
       this.isupportComplete = true;
+      // History gap-fill (#1283): which conversations had a line while we were
+      // off the network. Once per registration, now that the 005 named the
+      // limit. Not on a restore's replayed MOTD: the engine held the lines.
+      if (!this.restoring && this.capEnabled('draft/chathistory')) {
+        this.chathistory.registered(
+          Date.now(),
+          this.quietly(() => newestConversationTimes(this.network.id), new Map()),
+        );
+      }
       this.publishModeSpecIfChanged();
       this.publishReactSupportIfChanged();
       // irc-framework also fires 'motd' for ERR_NOMOTD (no MOTD configured)
@@ -3056,15 +3196,25 @@ export class IrcConnection {
     });
 
     on('message', (event: Record<string, unknown>) => {
-      // Drop server-pushed history replays. Some networks (e.g. Ergo with
-      // `relaymsg`/replay enabled, mansionNET) blindly resend recent messages
-      // inside a CHATHISTORY (or ZNC playback) BATCH on every reconnect.
-      // We don't request the CHATHISTORY cap or command anywhere, so anything
-      // arriving in one of these batches is unsolicited replay — and without
-      // a dedupe path it inserts duplicates carrying the original (past)
-      // server-time. Ignoring the whole batch is the right call.
+      // A history replay (#1283): the lines of a CHATHISTORY batch we asked
+      // for (chathistoryBackfill.ts), or a network's own playback at attach
+      // (ZNC core wraps its buffer in `znc.in/playback`; ergo and soju replay
+      // only to a client without the history cap). Stored by the same path as
+      // a live line, deduped against what the buffer already holds
+      // (alreadyPersisted), at its original time, and marked `replay` so
+      // nothing treats it as news: no push or toast (wsHub.decorateMessage),
+      // no presence, no DM peer tracking, no caller-ID bookkeeping. Until
+      // 2.7.0 these batches were dropped whole, as the only way to keep a
+      // replay from storing every line twice.
       const batchType = batchTypeOf(event);
-      if (isHistoryReplayBatch(batchType)) return;
+      const replay = isHistoryReplayBatch(batchType);
+      // Asked for by the gap-fill, as against pushed by the network: it
+      // decides which rows the dedupe may match (alreadyPersisted).
+      const replayAsked =
+        replay && this.chathistory.isOurs((event.batch as { id?: string } | undefined)?.id);
+      const replayFlags = replay
+        ? { replay: true, ...(replayAsked ? { replayAsked: true } : {}) }
+        : {};
       // A `draft/multiline` batch is one logical message fragmented across N
       // PRIVMSGs (#381). Buffer the fragments and flush a single reassembled
       // message on 'batch end draft/multiline' instead of rendering N lines.
@@ -3097,7 +3247,7 @@ export class IrcConnection {
       // msgid, #450).
       // A bot we asked for a pack answering at all (#1085): it has the request,
       // so its offer is coming, however long its own queue takes.
-      if (eventNick && !targetIsChannel && this.xdccWaiting.size > 0) {
+      if (eventNick && !targetIsChannel && !replay && this.xdccWaiting.size > 0) {
         this.noteXdccBotSpoke(eventNick, typeof eventMessage === 'string' ? eventMessage : '');
       }
       // Someone messaging us may have lifted what refused our last message to
@@ -3107,6 +3257,7 @@ export class IrcConnection {
       if (
         eventNick &&
         !targetIsChannel &&
+        !replay &&
         type !== 'notice' &&
         eventNick.toLowerCase() !== me?.toLowerCase()
       ) {
@@ -3115,8 +3266,15 @@ export class IrcConnection {
       if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
         // Our prefix exactly as the network relays it, on every echo: the one
         // source that keeps up with a host change nothing announced.
-        this.learnSelf(event.ident as string | undefined, eventHostname);
-        if (!this.echoActive()) return;
+        // Not from history: a prefix from before a cloak or host change is
+        // not who we are now (#1283).
+        if (!replay) this.learnSelf(event.ident as string | undefined, eventHostname);
+        // Without echo-message our own lines were stored as sent, without a
+        // msgid, so a replayed one can only be matched by content: it goes
+        // on without its msgid, where alreadyPersisted's probe finds the row
+        // (a line sent through another client of the upstream has none to
+        // find, and is stored).
+        if (!this.echoActive() && !replay) return;
         if (!eventTarget || typeof eventMessage !== 'string') return;
         // Our own E2E ciphertext coming back: the optimistic PLAINTEXT row
         // (self, e2e) was already published at send time. Recognized by
@@ -3147,8 +3305,9 @@ export class IrcConnection {
           self: true,
           userhost: buildUserhost(event),
           time: event.time,
-          msgid,
+          msgid: replay && !this.echoActive() ? undefined : msgid,
           replyMsgid,
+          ...replayFlags,
         });
         // Parity with the optimistic path it replaces: no closed-buffer notice
         // mirror, no trackDmPeer/markPeerEvent for ourselves.
@@ -3238,6 +3397,10 @@ export class IrcConnection {
         if (outcome.kind === 'plaintext') {
           bodyText = outcome.text;
           e2eFlag = true;
+        } else if (replay) {
+          // History (#1283): a line we could not read when it was said can't
+          // be read now, and it was missed already. No handshake, no hint.
+          return;
         } else {
           // A peer is talking to us encrypted on a channel we've enabled but have
           // no session for yet — auto-initiate the handshake (rate-limited),
@@ -3273,7 +3436,7 @@ export class IrcConnection {
             handshaking = true;
           }
           this.surfaceE2eDecryptIssue(eventTarget as string, eventNick, outcome.kind, handshaking);
-          if (eventNick) this.markPeerEvent(eventNick, 'online');
+          if (eventNick && !replay) this.markPeerEvent(eventNick, 'online');
           return;
         }
       }
@@ -3290,6 +3453,7 @@ export class IrcConnection {
         msgid,
         replyMsgid,
         ...(e2eFlag ? { e2e: true } : {}),
+        ...replayFlags,
       }) as EnrichedEvent | undefined;
       // If a notice's home buffer is one the user has closed, the wsHub fan-out
       // drops its live delivery — so without this the notice would be invisible
@@ -3323,6 +3487,7 @@ export class IrcConnection {
           // Server time yes, msgid no — the msgid names the REAL copy in the
           // home buffer; a react/reply lookup must never resolve to the mirror.
           time: event.time,
+          ...replayFlags,
         });
       }
       // An incoming PRIVMSG (not NOTICE) is the moment this nick becomes a
@@ -3332,10 +3497,33 @@ export class IrcConnection {
       // overwhelmingly services/bots (NickServ, ChanServ, oper notices) that
       // shouldn't consume MONITOR slots or show a presence dot. Channel chatter
       // still flips presence only for peers we already track.
+      // A replayed line says nothing about who is here now.
+      if (replay) return;
       if (eventNick && !isServer && !targetIsChannel && !isNotice) {
         this.trackDmPeer(eventNick);
       }
       if (eventNick) this.markPeerEvent(eventNick, 'online');
+    });
+
+    // Every batch's end, after irc-framework ran the lines it held: the
+    // REDACTs read raw inside it apply now that their lines are stored.
+    // A history replay about to be delivered (#1283): its events are stored
+    // as rows by their handlers (replayBatchRef), which need the type a
+    // TOPIC or INVITE payload does not carry.
+    on('batch start', (info: Record<string, unknown>) => {
+      const ref = info?.id as string | undefined;
+      if (ref && isHistoryReplayBatch(info?.type as string | undefined)) {
+        this.replayBatches.add(ref);
+      }
+    });
+    on('batch end', (info: Record<string, unknown>) => {
+      const ref = info?.id as string | undefined;
+      if (!ref) return;
+      this.replayBatches.delete(ref);
+      const queued = this.batchedRedacts.get(ref);
+      if (!queued) return;
+      this.batchedRedacts.delete(ref);
+      for (const msg of queued) this.onRedactLine(msg);
     });
 
     on('batch end draft/multiline', (info: Record<string, unknown>) => {
@@ -3418,6 +3606,25 @@ export class IrcConnection {
     on('join', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
+      // Replayed from history: the row, not a membership change
+      // (storeReplayedEvent).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        const account = normalizeAccount(event.account);
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'join',
+            target: eventChannel,
+            nick: eventNick,
+            userhost: buildUserhost(event),
+            time: event.time,
+            ...(account ? { account } : {}),
+          },
+          [eventNick],
+        );
+        return;
+      }
       // Case-insensitive, like the part and kick handlers: a server that echoes
       // our nick in a different case is still telling us about our own join.
       const isSelf = this.isSelfNick(eventNick);
@@ -3427,6 +3634,22 @@ export class IrcConnection {
       // the NAMES and TOPIC handlers.
       const ch = isSelf ? this.upsertChannel(eventChannel) : this.channelState(eventChannel);
       if (isSelf) this.learnSelf(event.ident as string, event.hostname as string);
+      // History gap-fill (#1283): our own JOIN on a socket that registered the
+      // ordinary way. Asked once the NAMES is in ('userlist'), not here: a
+      // server answers the JOIN whole before it reads what follows it. A
+      // restore's synthesised JOIN missed nothing (the engine held the lines);
+      // a hole in its backlog is reported as one (onEnginePhase 'gap').
+      if (isSelf && !this.restoring && this.capEnabled('draft/chathistory')) {
+        const at = typeof event.time === 'number' ? event.time : Date.now();
+        // The anchor now, not when the NAMES is in: a line the channel
+        // delivers in between would be the newest and the outage before it
+        // never asked for. A read that fails asks for nothing.
+        const anchor = this.quietly(
+          () => newestConversationTime(this.network.id, eventChannel),
+          null,
+        );
+        this.pendingBackfill.set(foldTargetFor(this.network.id, eventChannel), { at, anchor });
+      }
       // extended-join: irc-framework parses the account param when the cap is
       // enabled, and omits the key when it isn't (#508).
       const joinAccount = normalizeAccount(event.account);
@@ -3586,6 +3809,24 @@ export class IrcConnection {
     on('part', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
+      // Replayed from history: the row, not a membership change
+      // (storeReplayedEvent).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'part',
+            target: eventChannel,
+            nick: eventNick,
+            text: event.message as string | undefined,
+            userhost: buildUserhost(event),
+            time: event.time,
+          },
+          [eventNick],
+        );
+        return;
+      }
       // Resolve the canonical (joined-case) channel name *before* the self-part
       // deletes it from this.channels below — the post-delete channel-parted
       // publish can't normalize once the entry is gone, and would otherwise leak
@@ -3634,6 +3875,25 @@ export class IrcConnection {
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
       const eventKicked = event.kicked as string;
+      // Replayed from history: the row, not a membership change
+      // (storeReplayedEvent).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'kick',
+            target: eventChannel,
+            nick: eventNick,
+            kicked: eventKicked,
+            text: event.message as string | undefined,
+            userhost: buildUserhost(event),
+            time: event.time,
+          },
+          [eventKicked],
+        );
+        return;
+      }
       // Canonical (joined-case) name, resolved before the self-kick deletes the
       // channel from this.channels — so the persisted channels row and the
       // channel-parted publish use our case, not the server's relayed case. A
@@ -3686,6 +3946,9 @@ export class IrcConnection {
     });
 
     on('invite', (event: Record<string, unknown>) => {
+      // Replayed from a DM's history: long since answered, and not a row
+      // (replayBatchRef).
+      if (this.replayBatchRef(event) !== null) return;
       // irc-framework parses an inbound INVITE as { nick: inviter, invited:
       // target nick, channel }. Three cases land here (#261):
       const inviter = event.nick as string | undefined;
@@ -3741,6 +4004,26 @@ export class IrcConnection {
       const eventNick = event.nick as string;
       const lower = eventNick.toLowerCase();
       const userhost = buildUserhost(event);
+      // Replayed from a channel's history: its row there, not a departure
+      // nor offline (storeReplayedEvent).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        const channel = IrcConnection.replayBatchTarget(event);
+        if (!channel) return;
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'quit',
+            target: channel,
+            nick: eventNick,
+            text: event.message as string | undefined,
+            userhost,
+            time: event.time,
+          },
+          [eventNick],
+        );
+        return;
+      }
       const time = event.time;
       for (const ch of this.channels.values()) {
         if (ch.members.delete(lower)) {
@@ -3763,6 +4046,28 @@ export class IrcConnection {
     on('nick', (event: Record<string, unknown>) => {
       const eventNick = event.nick as string;
       const eventNewNick = event.new_nick as string;
+      // Replayed from a channel's history: its row there, not a change
+      // (storeReplayedEvent). irc-framework's own listener still moves its
+      // user.nick for a replayed change away from our current nick; nothing
+      // here trusts that copy (below).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        const channel = IrcConnection.replayBatchTarget(event);
+        if (!channel) return;
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'nick',
+            target: channel,
+            nick: eventNick,
+            newNick: eventNewNick,
+            userhost: buildUserhost(event),
+            time: event.time,
+          },
+          [eventNick, eventNewNick],
+        );
+        return;
+      }
       const oldLower = eventNick.toLowerCase();
       const newLower = eventNewNick.toLowerCase();
       // irc-framework's command-handler runs the 'all' proxy (which routes
@@ -3887,6 +4192,23 @@ export class IrcConnection {
     on('topic', (event: Record<string, unknown>) => {
       const eventChannel = event.channel as string;
       const eventTopic = event.topic as string | undefined;
+      // Replayed from history: the row; the 332 at the rejoin has the topic
+      // as it is now (storeReplayedEvent).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'topic',
+            target: eventChannel,
+            nick: event.nick as string,
+            text: eventTopic,
+            time: event.time,
+          },
+          [],
+        );
+        return;
+      }
       // A topic for a channel we are not in answers a query (/topic #elsewhere,
       // which the 'raw' handler already showed in the server buffer); it is not
       // membership (#908). Fold-aware, so a reply spelled #a{b} lands on the
@@ -3999,6 +4321,24 @@ export class IrcConnection {
       const stampedModes: ModeEntry[] = eventModes
         .filter((m) => m && m.mode)
         .map((m) => ({ ...m, kind: classifyModeChange(m, prefixModes, listModes) }));
+      // Replayed from history: the row; the 324 at the rejoin has the modes
+      // as they are now (storeReplayedEvent).
+      const replayRef = this.replayBatchRef(event);
+      if (replayRef !== null) {
+        this.storeReplayedEvent(
+          replayRef,
+          {
+            type: 'mode',
+            target,
+            nick: eventNick,
+            text: [eventRawModes, ...eventRawParams].filter(Boolean).join(' '),
+            modes: stampedModes,
+            time: event.time,
+          },
+          [],
+        );
+        return;
+      }
       if (ch) {
         for (const m of stampedModes) {
           const sign = m.mode[0];
@@ -4158,6 +4498,11 @@ export class IrcConnection {
       }
       this.namesHeard.add(foldTargetFor(this.network.id, eventChannel));
       this.publishNames(ch);
+      const pending = this.pendingBackfill.get(foldTargetFor(this.network.id, eventChannel));
+      if (pending) {
+        this.pendingBackfill.delete(foldTargetFor(this.network.id, eventChannel));
+        this.chathistory.channelJoined(ch.name, pending.at, pending.anchor);
+      }
       // Issue a WHO so we learn the current away state for everyone in the
       // channel. away-notify keeps it live after this initial sync. The reply is
       // Lurker's own, so the 'wholist' handler takes it in silently instead of
@@ -4610,13 +4955,19 @@ export class IrcConnection {
     });
 
     on('tagmsg', (event: Record<string, unknown>) => {
-      // Same rule as the message handler: a server-pushed replay is not new
-      // history. A replayed typing notice is stale by definition. A replayed
-      // reaction can't be trusted either: the window can end between an unreact
-      // and the re-react after it, and Ergo's history keeps reacts but not
-      // unreacts, so a reaction taken back would come back. The lines in the
-      // window are dropped too, so what we missed stays missed, consistently.
-      if (isHistoryReplayBatch(batchTypeOf(event))) return;
+      // A replayed TAGMSG (#1283). A typing notice is stale by definition. A
+      // reaction is kept only from a batch we asked for: everything in that
+      // window was missed, the react and any unreact alike, so the react is
+      // the best fact we hold (and the insert is idempotent). A replay nobody
+      // asked for has no window, so a reaction long since taken back could
+      // come back — ergo's default history keeps reacts and not unreacts —
+      // and those stay dropped, as every replay was until 2.7.0. A page holds
+      // the TAGMSG itself only under draft/event-playback (asked for at
+      // connect); without it ergo sends "x sent a TAGMSG" from HistServ.
+      const replay = isHistoryReplayBatch(batchTypeOf(event));
+      if (replay && !this.chathistory.isOurs((event.batch as { id?: string } | undefined)?.id)) {
+        return;
+      }
       const me = this.currentNick;
       const eventNick = event.nick as string | undefined;
       // Case-folded, matching the message handler's self check — under
@@ -4631,7 +4982,7 @@ export class IrcConnection {
         this.handleReaction(event, tags, isSelf);
         return;
       }
-      if (isSelf) return;
+      if (isSelf || replay) return;
       const typing = tags && tags['+typing'];
       if (!typing) return;
       const eventTarget = event.target as string | undefined;
@@ -6843,6 +7194,8 @@ export class IrcConnection {
         this.resetRestoreState();
         // A fresh socket: no stored seq is about it.
         this.pruneCatchUpMarks(null);
+        this.storedUnderSeq = null;
+        this.chathistory.reset();
         // A new socket's accept list starts empty, and 'socket close' never
         // saw the old one go.
         this.resetAcceptState();
@@ -6860,6 +7213,7 @@ export class IrcConnection {
         this.catchingUp = true;
         this.catchUpMaxId = maxMessageId();
         this.pruneCatchUpMarks(info.socket ?? null);
+        this.storedUnderSeq = null;
         this.restoreUnattended = !!info.unattended;
         // The engine's channel set is the truth about the socket. Anything we
         // still think we are in but the engine doesn't (kicked or parted while
@@ -6942,6 +7296,7 @@ export class IrcConnection {
       case 'gap': {
         const g = info.gap;
         if (!g) break;
+        this.backlogGap = { at: g.at, maxId: this.catchUpMaxId ?? 0, firstKeptAt: null };
         const dropped = g.lastDroppedSeq - g.firstDroppedSeq + 1;
         if (this.reattachLog) reattachGap(this.reattachLog, dropped);
         this.publish({
@@ -6968,6 +7323,12 @@ export class IrcConnection {
             console.warn('[engine] restored callback failed:', (e as Error)?.message || e);
           }
         }
+        // The one hole the engine's buffer leaves (#1283): the lines it
+        // dropped are what the network's history has. Every channel we are
+        // in may have a gap ending now; the backfill asks for each.
+        this.fillBacklogGap();
+        // A walk the link drop interrupted goes on.
+        this.chathistory.resume();
         break;
     }
   }
@@ -6985,6 +7346,7 @@ export class IrcConnection {
     this.catchUpMaxId = null;
     if (this.reattachLog) reattachAbandoned(this.reattachLog);
     this.reattachLog = null;
+    this.backlogGap = null;
     this.restoreUnattended = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
@@ -7337,6 +7699,30 @@ export class IrcConnection {
     }
     const nick = (event.nick as string | undefined) ?? null;
     const text = (event.text as string | undefined) ?? null;
+    // A replayed line (#1283): what the network kept may be in the buffer
+    // already — it arrived live before the drop, or an earlier replay stored
+    // it. Judged like a catch-up line: by msgid where the network tags, else
+    // the bounded tail probe. A replay nobody asked for (ZNC's playback at
+    // attach) repeats what was stored BEFORE this socket, so its originals
+    // sit below `replayMaxId` and its own rows above. A window Lurker asked
+    // for overlaps rows this socket stored — the line that beat the request,
+    // the page before, the kept tail after a hole — so there the probe reads
+    // the whole tail.
+    if (event.replay) {
+      if (typeof event.msgid === 'string' && event.msgid !== '') {
+        return hasSameMessageWithMsgid(this.network.id, target, event.msgid, type, nick, text);
+      }
+      // An event row (storeReplayedEvent) is stamped with the server's time
+      // on the live line and in the page alike, so only the same time is the
+      // same event: a nick that parted and came back within the seconds the
+      // probe allows a line is two joins, not one twice. A line's time can
+      // differ between the two (ZNC stamps a playback itself).
+      const conversation = type === 'message' || type === 'action' || type === 'notice';
+      return hasRecentMessageLike(this.network.id, target, type, nick, text, time, {
+        maxId: event.replayAsked ? undefined : (this.replayMaxId ?? undefined),
+        ...(conversation ? {} : { toleranceMs: 0 }),
+      });
+    }
     if (typeof event.msgid === 'string' && event.msgid !== '') {
       if (this.catchingUp) return hasMessageWithMsgid(this.network.id, event.msgid);
       return hasSameMessageWithMsgid(this.network.id, target, event.msgid, type, nick, text);
@@ -7378,11 +7764,19 @@ export class IrcConnection {
 
   // Insert a message row — with the catch-up mark when the line came numbered
   // from an engine that names its socket (storeUnderMark), plain otherwise.
-  // Null only in the former case: the line was stored by a predecessor.
+  // Null only in the former case: the line was stored by a predecessor. A
+  // batch's lines all arrive under the seq of the line that closed it; once
+  // this process has stored one row under a seq, the rest of that batch are
+  // its own and go in beside the mark (db/engineMarks.ts).
   private storeUnderCatchUpMark<T>(insert: () => T): T | null {
     const t = this.engineTransport;
-    if (t?.socket && t.deliveringSeq !== null)
-      return storeUnderMark(this.network.id, t.socket, t.deliveringSeq, insert);
+    if (t?.socket && t.deliveringSeq !== null) {
+      const seq = t.deliveringSeq;
+      const ours = this.storedUnderSeq?.socket === t.socket && this.storedUnderSeq.seq === seq;
+      const row = storeUnderMark(this.network.id, t.socket, seq, insert, ours);
+      if (row !== null && !ours) this.storedUnderSeq = { socket: t.socket, seq };
+      return row;
+    }
     return insert();
   }
 
@@ -11371,6 +11765,121 @@ export class IrcConnection {
   // the disconnect/backoff window would skip the optimistic publish AND never
   // get an echo — silently lost while send() returns true. Disconnected falls
   // back to the optimistic publish, matching pre-echo behavior.
+  // The hole the engine reported in its backlog (#1283): every channel we
+  // are in and every DM a TARGETS names, from the newest row stored before
+  // the attach to the first row the kept backlog stored. Left pending while
+  // the cap is not negotiated yet (a held socket from before 2.7.0 asks for
+  // it on the restore; the ACK may land after `live`), and run by the ACK.
+  private fillBacklogGap(): void {
+    const gap = this.backlogGap;
+    if (!gap || !this.capEnabled('draft/chathistory')) return;
+    this.backlogGap = null;
+    const kept = gap.firstKeptAt ? Date.parse(gap.firstKeptAt) : NaN;
+    this.chathistory.gap(
+      [...this.channels.values()].map((ch) => ch.name),
+      Number.isFinite(kept) ? Math.min(gap.at, kept) : gap.at,
+      this.quietly(() => newestConversationTimes(this.network.id, gap.maxId), new Map()),
+    );
+  }
+
+  // Whether the network ACKed a cap this app asked for.
+  private capEnabled(name: string): boolean {
+    const cap = this.client.network?.cap as { enabled?: string[] } | undefined;
+    return !!cap?.enabled?.includes(name);
+  }
+
+  // A read whose failure must cost nothing but the read: the fallback, and a
+  // line in the log.
+  private quietly<T>(read: () => T, fallback: T): T {
+    try {
+      return read();
+    } catch (e) {
+      console.warn(`[network ${this.network.id}] read failed:`, (e as Error)?.message || e);
+      return fallback;
+    }
+  }
+
+  // History gap-fill (#1283): what the server says to the request on the wire.
+  // The reply router owns the request itself — its batch is the reply, and a
+  // FAIL ends it (replyRouter.ts) — so this only feeds the walk what it needs
+  // to decide the next page, and keeps the record of a refusal.
+  // The history replay batch a delivered line came out of (#1283): a page
+  // the backfill asked for, or a playback pushed at attach. Null for a live
+  // line. irc-framework puts the batch on most payloads; a TOPIC or INVITE
+  // carries only the tag, read against the batches being delivered
+  // (replayBatches).
+  private replayBatchRef(event: Record<string, unknown>): string | null {
+    const batch = event.batch as { id?: string; type?: string } | undefined;
+    if (batch?.type) return isHistoryReplayBatch(batch.type) && batch.id ? batch.id : null;
+    const ref = (event.tags as Record<string, string> | undefined)?.batch;
+    return ref && this.replayBatches.has(ref) ? ref : null;
+  }
+
+  // The channel a replayed QUIT or NICK is about: the line names none, the
+  // batch's target does.
+  private static replayBatchTarget(event: Record<string, unknown>): string | undefined {
+    return (event.batch as { params?: string[] } | undefined)?.params?.[0];
+  }
+
+  // An event out of a history replay batch (#1283) — a JOIN, PART, QUIT,
+  // KICK, NICK, TOPIC or MODE of the window, which draft/event-playback has
+  // the page carry as the lines they were — stored as the row its live
+  // handler writes, so history reads as if we had been there. Marked
+  // `replay`: never a notification, placed by its time, and deduped like a
+  // replayed line (an event row carries no msgid, so alreadyPersisted's
+  // probe, the same type, nick and text within seconds — which also drops
+  // the live rows a window's edges repeat). It moves no state: the rejoin's
+  // NAMES, 332 and 324 say where the channel stands now, and a replayed PART
+  // would drop a member who is there, a replayed JOIN add one who left, a
+  // replayed TOPIC put an old one back. Our own are left out, as the bouncer
+  // leaves them out of a page it serves: the rejoin's JOIN row is written
+  // live, and our QUIT before it is the outage itself. `about` names the
+  // nicks the event is of.
+  private storeReplayedEvent(
+    ref: string,
+    row: IrcEvent & { target: string },
+    about: Array<string | undefined>,
+  ): void {
+    if (about.some((n) => !!n && this.isSelfNick(n))) return;
+    const target = canonicalChannelTarget(row.target, this.channels) ?? row.target;
+    this.publish({
+      ...row,
+      target,
+      replay: true,
+      ...(this.chathistory.isOurs(ref) ? { replayAsked: true } : {}),
+    });
+  }
+
+  private onChathistoryLine(command: string, params: string[], tags: Record<string, string>): void {
+    if (command === 'BATCH') {
+      const ref = params[0] ?? '';
+      if (!ref.startsWith('+')) return;
+      this.chathistory.onBatchStart(
+        ref.slice(1),
+        params[1] ?? '',
+        params[2],
+        'draft/chathistory-end' in tags,
+      );
+      return;
+    }
+    if (command === 'CHATHISTORY') {
+      // `CHATHISTORY TARGETS <target> <time>`, inside the TARGETS batch.
+      if ((params[0] ?? '').toUpperCase() === 'TARGETS' && tags.batch) {
+        this.chathistory.onTargetsLine(tags.batch, params[1] ?? '', params[2] ?? '');
+      }
+      return;
+    }
+    // FAIL CHATHISTORY <code> <sub> [<target>] :<text>. INVALID_TARGET and
+    // MESSAGE_ERROR are a network declining one conversation (a DM it keeps
+    // no store for, soju's bouncer connection); anything else names a request
+    // this code made wrong, and is worth a louder line.
+    const code = (params[1] ?? '').toUpperCase();
+    const text = params[params.length - 1] ?? '';
+    const about = params.length > 4 ? ` ${params[3]}` : '';
+    const quiet = code === 'INVALID_TARGET' || code === 'MESSAGE_ERROR';
+    this.logNet(`History backfill refused (${code}${about}): ${text}`, quiet ? 'info' : 'warn');
+  }
+
   echoActive(): boolean {
     if (!this.client.connected) return false;
     const cap = this.client.network?.cap as { enabled?: string[] } | undefined;

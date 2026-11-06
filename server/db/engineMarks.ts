@@ -31,6 +31,14 @@
 //   A late write from the predecessor lands in the old socket's own row and can
 //   never touch the new one. The rows other sockets left are pruned at attach.
 // An engine that names no socket writes no mark.
+//
+// One seq, many rows: irc-framework hands over a BATCH's lines only when the
+// batch ends, all of them while the engine's `BATCH -` line is the one being
+// delivered, so a netsplit's QUITs or a history page's messages (#1283) share
+// that line's seq. The first row raises the mark to it; the rest come from
+// the same process, which says so (`ours`) and stores beside the mark instead
+// of being refused by it. A predecessor that stored the first row has the
+// mark at the seq before this process reads it, and this process stores none.
 
 import db from './index.js';
 
@@ -64,11 +72,14 @@ export function pruneEngineMarks(networkId: number, keep: string | null): void {
 // another connection (a predecessor, Litestream) commits in between, and
 // busy_timeout never gets a say (db/index.ts has the same rule for boot).
 // Null, and nothing stored, when the mark has reached `seq` meanwhile: the
-// predecessor stored this line. A throw from `insert` rolls back and
+// predecessor stored this line. With `ours`, this process already stored a
+// row under `seq` (another row of the same batch), so a mark AT the seq is
+// its own and only one past it refuses. A throw from `insert` rolls back and
 // continues to the caller, with the mark where it was.
 const storeTx = db.transaction(
-  <T>(networkId: number, socket: string, seq: number, insert: () => T): T | null => {
-    if (seq <= (getEngineMark(networkId, socket) ?? 0)) return null;
+  <T>(networkId: number, socket: string, seq: number, ours: boolean, insert: () => T): T | null => {
+    const mark = getEngineMark(networkId, socket) ?? 0;
+    if (ours ? seq < mark : seq <= mark) return null;
     const row = insert();
     setEngineMark(networkId, socket, seq);
     return row;
@@ -79,6 +90,7 @@ export function storeUnderMark<T>(
   socket: string,
   seq: number,
   insert: () => T,
+  ours = false,
 ): T | null {
-  return storeTx.immediate(networkId, socket, seq, insert) as T | null;
+  return storeTx.immediate(networkId, socket, seq, ours, insert) as T | null;
 }
