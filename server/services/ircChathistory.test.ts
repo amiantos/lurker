@@ -326,9 +326,9 @@ describe('the events inside a filled gap', () => {
   const inChannel = (nick: string, channel: string) =>
     ircd.client(nick)?.channels.has(channel) ?? false;
 
-  it('come as the lines they were and are left out: no HistServ chat, and membership stays what the NAMES said', async () => {
+  it('come as the lines they were and land as rows, ours left out, with membership what the NAMES said', async () => {
     const nick = 'evone';
-    const { network, conn, stop } = start(ircd, nick);
+    const { network, conn, events, stop } = start(ircd, nick);
     const peers: Peer[] = [];
     const peer = async (name: string) => {
       const p = await rawClient(ircd.port, name);
@@ -350,6 +350,7 @@ describe('the events inside a filled gap', () => {
       await until(() => texts(network.id, '#ev').length === 1, 5000, 'the live line stored');
 
       await tick();
+      const dropAt = new Date().toISOString();
       ircd.drop(nick, false);
       await until(() => !conn.isChannelJoined('#ev'), 5000, 'parted by the drop');
       // The gap, every step of it in the history: one arrives, steps out and
@@ -401,16 +402,43 @@ describe('the events inside a filled gap', () => {
       const members = conn.channelState('#ev')!.members;
       expect([...members.keys()].toSorted()).toEqual(['arrive', 'evone', 'stay']);
       expect(conn.channelState('#ev')!.topic).toBe('set while nobody was home');
-      // And no rows for them either.
-      const eventRows = db
-        .prepare(
-          `SELECT m.nick, m.type FROM messages m JOIN buffers b ON b.id = m.buffer_id
-           WHERE b.network_id = ? AND b.target_folded = '#ev'
-             AND m.type IN ('join', 'part', 'quit', 'nick', 'topic', 'kick')`,
-        )
-        .all(network.id) as Array<{ nick: string; type: string }>;
-      expect(eventRows.filter((r) => r.nick === 'leaver')).toEqual([]);
-      expect(eventRows.filter((r) => r.nick === 'arrive' && r.type === 'part')).toEqual([]);
+      // And every one of them is a row, at its time, as if we had been there
+      // — all but our own: the rejoin's JOIN is written live, and our QUIT
+      // before it is the outage. (The window opens a second before the last
+      // line held, so stay's first JOIN may be in it too; the gap is what is
+      // asserted.)
+      const eventRows = (
+        db
+          .prepare(
+            `SELECT m.nick, m.type, m.text, m.time FROM messages m JOIN buffers b ON b.id = m.buffer_id
+             WHERE b.network_id = ? AND b.target_folded = '#ev'
+               AND m.type IN ('join', 'part', 'quit', 'nick', 'topic', 'kick')
+             ORDER BY m.time, m.id`,
+          )
+          .all(network.id) as Array<{
+          nick: string;
+          type: string;
+          text: string | null;
+          time: string;
+        }>
+      ).filter((r) => r.time >= dropAt);
+      expect(eventRows.filter((r) => r.nick !== nick).map((r) => `${r.type}:${r.nick}`)).toEqual([
+        'join:arrive',
+        'part:arrive',
+        'join:arrive',
+        'join:leaver',
+        'part:leaver',
+        'quit:stay',
+        'join:stay',
+        'topic:arrive',
+      ]);
+      expect(eventRows.find((r) => r.type === 'part' && r.nick === 'leaver')?.text).toBe('bye');
+      expect(eventRows.filter((r) => r.nick === nick).map((r) => r.type)).toEqual(['join']);
+      // Replayed rows, so nothing toasted for them.
+      const replayedEvents = events.filter(
+        (e) => e.replay === true && e.type === 'join' && String(e.time) >= dropAt,
+      );
+      expect(replayedEvents.map((e) => e.nick)).toEqual(['arrive', 'arrive', 'leaver', 'stay']);
     } finally {
       for (const p of peers) p.socket.destroy();
       stop();

@@ -131,10 +131,12 @@ only works if timestamps are trustworthy.
   With the cap on, ergo and soju also stop replaying at JOIN on their own.
   `draft/event-playback` is asked for with it: a page then carries the joins,
   parts, quits, nick changes, kicks and topic and mode changes of its window as
-  the lines they were, and Lurker leaves them out, since the rejoin's NAMES and
-  topic already say where the channel stands. Without it ergo renders each as
-  chat from HistServ ("x joined the channel"), and a reaction as "x sent a
-  TAGMSG". One known hole: a multi-line message inside a page (a batch inside the batch) is
+  the lines they were, and each is stored as the row it would have been, so the
+  history reads as if you had been there. Only your own are left out, since the
+  rejoin's JOIN is written live and your quit before it is the outage itself.
+  They move nothing: the rejoin's NAMES and topic say where the channel stands.
+  Without the cap ergo renders each as chat from HistServ ("x joined the
+  channel"), and a reaction as "x sent a TAGMSG". One known hole: a multi-line message inside a page (a batch inside the batch) is
   dropped by irc-framework before Lurker sees it; the rest of the page lands.
   <br>`server/services/chathistoryBackfill.ts`, `server/services/ircConnection.ts`
 
