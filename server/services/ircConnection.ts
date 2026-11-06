@@ -726,8 +726,9 @@ function batchTypeOf(event: Record<string, unknown>): string | undefined {
   return (event.batch as { type?: string } | undefined)?.type;
 }
 
-// A server-pushed history replay: a CHATHISTORY batch (Ergo's autoreplay, which
-// we never asked for — we don't send CHATHISTORY) or a ZNC playback.
+// A history replay batch: a CHATHISTORY page, asked for by the gap-fill
+// (#1283) or pushed at JOIN by a network that replays unasked, or ZNC's
+// playback at attach.
 function isHistoryReplayBatch(batchType: string | undefined): boolean {
   return (
     batchType === 'chathistory' ||
@@ -1390,6 +1391,11 @@ export class IrcConnection {
   // REDACTs inside a batch, by its reference: the line one deletes reaches
   // its handler only when the batch ends, so the deletion waits for that.
   private batchedRedacts = new Map<string, Parameters<IrcConnection['onRedactLine']>[0][]>();
+  // The history replay batches irc-framework is delivering, by reference:
+  // a batch's lines reach their handlers between its 'batch start' and
+  // 'batch end', and a TOPIC or INVITE payload names only the tag
+  // (inHistoryReplay).
+  private replayBatches = new Set<string>();
   // The engine finished registering this socket with no app attached (the
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
@@ -1546,6 +1552,15 @@ export class IrcConnection {
     // soju both skip a client with the cap), which the same code would have
     // had to dedupe. No-op where the network doesn't offer it.
     this.client.requestCap('draft/chathistory');
+    // draft/event-playback (IRCv3, #1283): with it, the joins, parts, quits,
+    // nick changes, kicks, topic and mode changes a history page holds come
+    // as the lines they were, and the handlers leave them out
+    // (inHistoryReplay): the rejoin's NAMES and 332 already say where the
+    // channel stands. Without it ergo renders each as a PRIVMSG from
+    // "HistServ" ("x joined the channel"), which would be stored as chat,
+    // and a reaction as "x sent a TAGMSG". halloy and goguma ask for the
+    // same reason. No-op where the network doesn't offer it.
+    this.client.requestCap('draft/event-playback');
     this.userMetadata = new Map();
     this.peerSyncs = new Map();
     this.metadataSyncTimers = new Map();
@@ -2637,6 +2652,7 @@ export class IrcConnection {
       else this.chathistory.reset();
       this.pendingBackfill.clear();
       this.batchedRedacts.clear();
+      this.replayBatches.clear();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
       // Metadata is the socket's: the next registration subscribes again and
@@ -3487,9 +3503,19 @@ export class IrcConnection {
 
     // Every batch's end, after irc-framework ran the lines it held: the
     // REDACTs read raw inside it apply now that their lines are stored.
+    // A history replay about to be delivered (#1283): its events are left
+    // out by inHistoryReplay, which needs the type a TOPIC or INVITE payload
+    // does not carry.
+    on('batch start', (info: Record<string, unknown>) => {
+      const ref = info?.id as string | undefined;
+      if (ref && isHistoryReplayBatch(info?.type as string | undefined)) {
+        this.replayBatches.add(ref);
+      }
+    });
     on('batch end', (info: Record<string, unknown>) => {
       const ref = info?.id as string | undefined;
       if (!ref) return;
+      this.replayBatches.delete(ref);
       const queued = this.batchedRedacts.get(ref);
       if (!queued) return;
       this.batchedRedacts.delete(ref);
@@ -3574,6 +3600,8 @@ export class IrcConnection {
     });
 
     on('join', (event: Record<string, unknown>) => {
+      // Replayed from history: not a membership change (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
       // Case-insensitive, like the part and kick handlers: a server that echoes
@@ -3758,6 +3786,8 @@ export class IrcConnection {
     });
 
     on('part', (event: Record<string, unknown>) => {
+      // Replayed from history: not a membership change (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
       // Resolve the canonical (joined-case) channel name *before* the self-part
@@ -3805,6 +3835,8 @@ export class IrcConnection {
     });
 
     on('kick', (event: Record<string, unknown>) => {
+      // Replayed from history: not a membership change (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       const eventChannel = event.channel as string;
       const eventNick = event.nick as string;
       const eventKicked = event.kicked as string;
@@ -3860,6 +3892,8 @@ export class IrcConnection {
     });
 
     on('invite', (event: Record<string, unknown>) => {
+      // Replayed from a DM's history: long since answered (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       // irc-framework parses an inbound INVITE as { nick: inviter, invited:
       // target nick, channel }. Three cases land here (#261):
       const inviter = event.nick as string | undefined;
@@ -3912,6 +3946,8 @@ export class IrcConnection {
     });
 
     on('quit', (event: Record<string, unknown>) => {
+      // Replayed from history: not a departure, nor offline (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       const eventNick = event.nick as string;
       const lower = eventNick.toLowerCase();
       const userhost = buildUserhost(event);
@@ -3935,6 +3971,10 @@ export class IrcConnection {
     });
 
     on('nick', (event: Record<string, unknown>) => {
+      // Replayed from history: not a change (inHistoryReplay). irc-framework's
+      // own listener still moves its user.nick for a replayed change away
+      // from our current nick; nothing here trusts that copy (below).
+      if (this.inHistoryReplay(event)) return;
       const eventNick = event.nick as string;
       const eventNewNick = event.new_nick as string;
       const oldLower = eventNick.toLowerCase();
@@ -4059,6 +4099,9 @@ export class IrcConnection {
     });
 
     on('topic', (event: Record<string, unknown>) => {
+      // Replayed from history: the 332 at the rejoin has the topic as it is
+      // now (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       const eventChannel = event.channel as string;
       const eventTopic = event.topic as string | undefined;
       // A topic for a channel we are not in answers a query (/topic #elsewhere,
@@ -4110,6 +4153,9 @@ export class IrcConnection {
     });
 
     on('mode', (event: Record<string, unknown>) => {
+      // Replayed from history: the 324 at the rejoin has the modes as they
+      // are now (inHistoryReplay).
+      if (this.inHistoryReplay(event)) return;
       const target = event.target as string | undefined;
 
       const eventModes = (event.modes as ModeEntry[] | undefined) || [];
@@ -4795,7 +4841,9 @@ export class IrcConnection {
       // the best fact we hold (and the insert is idempotent). A replay nobody
       // asked for has no window, so a reaction long since taken back could
       // come back — ergo's default history keeps reacts and not unreacts —
-      // and those stay dropped, as every replay was until 2.7.0.
+      // and those stay dropped, as every replay was until 2.7.0. A page holds
+      // the TAGMSG itself only under draft/event-playback (asked for at
+      // connect); without it ergo sends "x sent a TAGMSG" from HistServ.
       const replay = isHistoryReplayBatch(batchTypeOf(event));
       if (replay && !this.chathistory.isOurs((event.batch as { id?: string } | undefined)?.id)) {
         return;
@@ -11628,6 +11676,24 @@ export class IrcConnection {
   // The reply router owns the request itself — its batch is the reply, and a
   // FAIL ends it (replyRouter.ts) — so this only feeds the walk what it needs
   // to decide the next page, and keeps the record of a refusal.
+  // A line delivered out of a history replay batch (#1283): a page the
+  // backfill asked for, or a playback pushed at attach. Under
+  // draft/event-playback a page holds the joins, parts, quits, nick changes,
+  // kicks, topic and mode changes and invites of its window as the lines
+  // they were, every one of them stale: the rejoin's NAMES, 332 and 324 say
+  // where the channel stands now, and a replayed PART would drop a member
+  // who is there, a replayed JOIN add one who left, a replayed TOPIC put an
+  // old one back. Their handlers return on this; the lines are not stored
+  // either (goguma keeps only the conversation of a page too). irc-framework
+  // puts the batch on most payloads; a TOPIC or INVITE carries only the
+  // tag, read against the batches being delivered (replayBatches).
+  private inHistoryReplay(event: Record<string, unknown>): boolean {
+    const batch = event.batch as { type?: string } | undefined;
+    if (batch?.type) return isHistoryReplayBatch(batch.type);
+    const ref = (event.tags as Record<string, string> | undefined)?.batch;
+    return !!ref && this.replayBatches.has(ref);
+  }
+
   private onChathistoryLine(command: string, params: string[], tags: Record<string, string>): void {
     if (command === 'BATCH') {
       const ref = params[0] ?? '';

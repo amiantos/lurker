@@ -94,10 +94,22 @@ export interface FakeIrcdOptions {
   // `fail` answers every request with that FAIL code; `autoreplay` pushes a
   // channel's last N lines at JOIN unasked, to a client that did not take
   // the cap, as ergo does; `advertise: false` keeps the cap out of CAP LS, so
-  // a client that would take it is left with the unasked replay instead.
+  // a client that would take it is left with the unasked replay instead;
+  // `events` keeps joins, parts, quits, nick changes, kicks and topics in a
+  // channel's history too, as ergo does. `draft/event-playback` is offered
+  // whenever history is kept: a page's events (and its TAGMSGs) go to a
+  // client with it as the lines they were, and to one without as ergo
+  // renders them, a PRIVMSG from HistServ ("x joined the channel").
   chathistory?:
     | boolean
-    | { limit?: number; end?: boolean; fail?: string; autoreplay?: number; advertise?: boolean };
+    | {
+        limit?: number;
+        end?: boolean;
+        fail?: string;
+        autoreplay?: number;
+        advertise?: boolean;
+        events?: boolean;
+      };
 }
 
 // A relayed line as history keeps it: the bare line, its tags apart.
@@ -108,6 +120,9 @@ export interface HistoryLine {
   clientTags: string[];
   // A DM's two parties, so a TARGETS names the other one.
   peers?: [string, string];
+  // An event (a JOIN, PART, QUIT, NICK, KICK or TOPIC): the sentence ergo's
+  // HistServ renders it as for a client without draft/event-playback.
+  histserv?: string;
 }
 
 export interface FakeClient {
@@ -222,11 +237,11 @@ export class FakeIrcd extends EventEmitter {
       this.caps.push(
         `draft/metadata-2=${opts.metadataCapValue ?? 'max-subs=10,max-keys=10,max-value-bytes=512'}`,
       );
-    if (
-      opts.chathistory &&
-      (typeof opts.chathistory !== 'object' || opts.chathistory.advertise !== false)
-    ) {
-      this.caps.push('draft/chathistory');
+    if (opts.chathistory) {
+      if (typeof opts.chathistory !== 'object' || opts.chathistory.advertise !== false) {
+        this.caps.push('draft/chathistory');
+      }
+      this.caps.push('draft/event-playback');
     }
     this.serverName = opts.serverName ?? 'fake.test';
     this.network = opts.network ?? 'FakeNet';
@@ -237,6 +252,7 @@ export class FakeIrcd extends EventEmitter {
     end: boolean;
     fail?: string;
     autoreplay: number;
+    events: boolean;
   } | null {
     const o = this.opts.chathistory;
     if (!o) return null;
@@ -246,6 +262,7 @@ export class FakeIrcd extends EventEmitter {
       end: !!given.end,
       fail: given.fail,
       autoreplay: given.autoreplay ?? 0,
+      events: !!given.events,
     };
   }
 
@@ -410,17 +427,54 @@ export class FakeIrcd extends EventEmitter {
   }
 
   // A `chathistory` batch of `lines` for `target`, written to `c` whether it
-  // asked or not (ergo's autoreplay at JOIN is the unasked form).
-  private historyBatch(c: FakeClient, target: string, lines: HistoryLine[], last: boolean): void {
+  // asked or not (ergo's autoreplay at JOIN is the unasked form). An event,
+  // and a TAGMSG, is the line it was to a client with draft/event-playback;
+  // to one without, ergo answers a CHATHISTORY with a PRIVMSG from HistServ
+  // under a munged msgid, and leaves both out of its replay at JOIN
+  // (channel.go, replayHistoryItems).
+  private historyBatch(
+    c: FakeClient,
+    target: string,
+    lines: HistoryLine[],
+    last: boolean,
+    asked = true,
+  ): void {
     const opts = this.chathistoryOpts()!;
     const ref = `h${++this.msgidCounter}`;
     const endTag = last && opts.end ? '@draft/chathistory-end ' : '';
     this.raw(c, `${endTag}:${this.serverName} BATCH +${ref} chathistory ${target}`);
+    const playback = c.caps.has('draft/event-playback');
     for (const l of lines) {
+      const sender = l.line.startsWith(':') ? l.line.slice(1).split('!')[0] : '*';
+      const histserv = l.histserv ?? (/ TAGMSG /.test(l.line) ? `${sender} sent a TAGMSG` : null);
+      if (histserv !== null && !playback) {
+        if (!asked) continue;
+        this.raw(
+          c,
+          `@batch=${ref};time=${l.time};msgid=_${l.msgid} :HistServ!HistServ@${this.serverName} PRIVMSG ${target} :${histserv}`,
+        );
+        continue;
+      }
       const tags = [`batch=${ref}`, `time=${l.time}`, `msgid=${l.msgid}`, ...l.clientTags];
       this.raw(c, `@${tags.join(';')} ${l.line}`);
     }
     this.raw(c, `:${this.serverName} BATCH -${ref}`);
+  }
+
+  // What ergo keeps in a channel's history besides its lines (under
+  // opts.chathistory.events): the event's line, and the sentence HistServ
+  // renders it as. The live line carries the same msgid and time.
+  private event(
+    channel: string,
+    actor: string,
+    line: string,
+    histserv: string,
+    stamp = { msgid: `m${++this.msgidCounter}`, time: new Date().toISOString() },
+  ): { msgid: string; time: string } {
+    if (this.chathistoryOpts()?.events) {
+      this.record(channel, actor, { ...stamp, line, clientTags: [], histserv });
+    }
+    return stamp;
   }
 
   private chathistoryFail(c: FakeClient, code: string, sub: string, rest: string[]): void {
@@ -551,9 +605,9 @@ export class FakeIrcd extends EventEmitter {
 
   setTopic(from: string, channel: string, topic: string): void {
     this.topics.set(channel.toLowerCase(), topic);
-    for (const c of this.members(channel)) {
-      this.tagged(c, `:${from}!~${from}@peer.fake TOPIC ${channel} :${topic}`);
-    }
+    const line = `:${from}!~${from}@peer.fake TOPIC ${channel} :${topic}`;
+    const stamp = this.event(channel, from, line, `${from} set the channel topic to: ${topic}`);
+    for (const c of this.members(channel)) this.tagged(c, line, stamp.msgid, [], stamp.time);
   }
 
   // Force-change a client's nick from the server side (a SANICK).
@@ -565,9 +619,9 @@ export class FakeIrcd extends EventEmitter {
   kick(channel: string, nick: string, by = 'oper'): void {
     const victim = this.client(nick);
     if (!victim) return;
-    for (const c of this.members(channel)) {
-      this.tagged(c, `:${by}!~${by}@peer.fake KICK ${channel} ${victim.nick} :out`);
-    }
+    const line = `:${by}!~${by}@peer.fake KICK ${channel} ${victim.nick} :out`;
+    const stamp = this.event(channel, by, line, `${by} kicked ${victim.nick} (out)`);
+    for (const c of this.members(channel)) this.tagged(c, line, stamp.msgid, [], stamp.time);
     victim.channels.delete(channel.toLowerCase());
   }
 
@@ -708,11 +762,7 @@ export class FakeIrcd extends EventEmitter {
         return;
       case 'QUIT': {
         const reason = p[0] ? `Quit: ${p[0]}` : 'Quit';
-        for (const ch of c.channels) {
-          for (const m of this.members(ch)) {
-            if (m !== c) this.tagged(m, `:${this.hostmask(c)} QUIT :${reason}`);
-          }
-        }
+        this.quitFrom(c, reason);
         c.channels.clear();
         this.raw(c, 'ERROR :Closing Link (Quit)');
         c.socket.end();
@@ -729,7 +779,13 @@ export class FakeIrcd extends EventEmitter {
           const joinLine = c.caps.has('extended-join')
             ? `:${this.hostmask(c)} JOIN ${chan} * :${c.user ?? ''}`
             : `:${this.hostmask(c)} JOIN ${chan}`;
-          for (const m of this.members(chan)) this.tagged(m, joinLine);
+          const stamp = this.event(
+            chan,
+            c.nick ?? '',
+            `:${this.hostmask(c)} JOIN ${chan}`,
+            `${c.nick} joined the channel`,
+          );
+          for (const m of this.members(chan)) this.tagged(m, joinLine, stamp.msgid, [], stamp.time);
           const topic = this.topics.get(lower);
           if (topic) this.num(c, '332', chan, topic);
           this.names(c, chan);
@@ -737,7 +793,7 @@ export class FakeIrcd extends EventEmitter {
           // a client without the cap (channel.go, HasHistoryCaps).
           const replay = this.chathistoryOpts()?.autoreplay ?? 0;
           if (replay > 0 && !c.caps.has('draft/chathistory')) {
-            this.historyBatch(c, chan, (this.history.get(lower) ?? []).slice(-replay), true);
+            this.historyBatch(c, chan, (this.history.get(lower) ?? []).slice(-replay), true, false);
           }
         }
         return;
@@ -746,8 +802,14 @@ export class FakeIrcd extends EventEmitter {
         const chan = p[0] ?? '';
         if (!c.channels.has(chan.toLowerCase()))
           return this.num(c, '442', chan, "You're not on that channel");
-        for (const m of this.members(chan))
-          this.tagged(m, `:${this.hostmask(c)} PART ${chan}${p[1] ? ' :' + p[1] : ''}`);
+        const partLine = `:${this.hostmask(c)} PART ${chan}${p[1] ? ' :' + p[1] : ''}`;
+        const stamp = this.event(
+          chan,
+          c.nick ?? '',
+          partLine,
+          `${c.nick} left the channel (${p[1] ?? ''})`,
+        );
+        for (const m of this.members(chan)) this.tagged(m, partLine, stamp.msgid, [], stamp.time);
         c.channels.delete(chan.toLowerCase());
         return;
       }
@@ -812,8 +874,14 @@ export class FakeIrcd extends EventEmitter {
           return t ? this.num(c, '332', chan, t) : this.num(c, '331', chan, 'No topic is set');
         }
         this.topics.set(chan.toLowerCase(), p[1]);
-        for (const m of this.members(chan))
-          this.tagged(m, `:${this.hostmask(c)} TOPIC ${chan} :${p[1]}`);
+        const topicLine = `:${this.hostmask(c)} TOPIC ${chan} :${p[1]}`;
+        const stamp = this.event(
+          chan,
+          c.nick ?? '',
+          topicLine,
+          `${c.nick} set the channel topic to: ${p[1]}`,
+        );
+        for (const m of this.members(chan)) this.tagged(m, topicLine, stamp.msgid, [], stamp.time);
         return;
       }
       case 'WHOIS': {
@@ -859,8 +927,14 @@ export class FakeIrcd extends EventEmitter {
         const chan = p[0] ?? '';
         const victim = this.client(p[1] ?? '');
         if (!victim || !victim.channels.has(chan.toLowerCase())) return;
-        for (const m of this.members(chan))
-          this.tagged(m, `:${this.hostmask(c)} KICK ${chan} ${victim.nick} :${p[2] ?? 'kicked'}`);
+        const kickLine = `:${this.hostmask(c)} KICK ${chan} ${victim.nick} :${p[2] ?? 'kicked'}`;
+        const stamp = this.event(
+          chan,
+          c.nick ?? '',
+          kickLine,
+          `${c.nick} kicked ${victim.nick} (${p[2] ?? 'kicked'})`,
+        );
+        for (const m of this.members(chan)) this.tagged(m, kickLine, stamp.msgid, [], stamp.time);
         victim.channels.delete(chan.toLowerCase());
         return;
       }
@@ -1122,9 +1196,13 @@ export class FakeIrcd extends EventEmitter {
   private changeNick(c: FakeClient, newNick: string): void {
     if (this.client(newNick)) return this.num(c, '433', newNick, 'Nickname is already in use');
     const line = `:${this.hostmask(c)} NICK :${newNick}`;
+    const stamp = { msgid: `m${++this.msgidCounter}`, time: new Date().toISOString() };
     const seen = new Set<FakeClient>([c]);
-    for (const ch of c.channels) for (const m of this.members(ch)) seen.add(m);
-    for (const m of seen) this.tagged(m, line);
+    for (const ch of c.channels) {
+      this.event(ch, c.nick ?? '', line, `${c.nick} changed nick to ${newNick}`, stamp);
+      for (const m of this.members(ch)) seen.add(m);
+    }
+    for (const m of seen) this.tagged(m, line, stamp.msgid, [], stamp.time);
     const meta = this.metadata.get(c.nick!.toLowerCase());
     if (meta) {
       this.metadata.delete(c.nick!.toLowerCase());
@@ -1310,8 +1388,22 @@ export class FakeIrcd extends EventEmitter {
   }
 
   private partAll(c: FakeClient, lower: string): void {
-    for (const m of this.members(lower)) {
-      if (m !== c) this.tagged(m, `:${this.hostmask(c)} QUIT :Connection closed`);
+    this.quitFrom(c, 'Connection closed', [lower]);
+  }
+
+  // `c` has gone: its QUIT to everyone sharing a channel with it, once, and
+  // into each of those channels' history.
+  private quitFrom(c: FakeClient, reason: string, channels = [...c.channels]): void {
+    const line = `:${this.hostmask(c)} QUIT :${reason}`;
+    const stamp = { msgid: `m${++this.msgidCounter}`, time: new Date().toISOString() };
+    const told = new Set<FakeClient>([c]);
+    for (const ch of channels) {
+      this.event(ch, c.nick ?? '', line, `${c.nick} quit (${reason})`, stamp);
+      for (const m of this.members(ch)) {
+        if (told.has(m)) continue;
+        told.add(m);
+        this.tagged(m, line, stamp.msgid, [], stamp.time);
+      }
     }
   }
 }

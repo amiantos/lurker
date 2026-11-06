@@ -126,8 +126,13 @@ only works if timestamps are trustworthy.
   nothing stored asks for nothing, since a first join is not an outage. The same
   path takes a ZNC's playback at attach, which used to be dropped whole, so a
   bouncer that replays its buffer on every attach no longer doubles anything.
-  With the cap on, ergo and soju also stop replaying at JOIN on their own. One
-  known hole: a multi-line message inside a page (a batch inside the batch) is
+  With the cap on, ergo and soju also stop replaying at JOIN on their own.
+  `draft/event-playback` is asked for with it: a page then carries the joins,
+  parts, quits, nick changes, kicks and topic and mode changes of its window as
+  the lines they were, and Lurker leaves them out, since the rejoin's NAMES and
+  topic already say where the channel stands. Without it ergo renders each as
+  chat from HistServ ("x joined the channel"), and a reaction as "x sent a
+  TAGMSG". One known hole: a multi-line message inside a page (a batch inside the batch) is
   dropped by irc-framework before Lurker sees it; the rest of the page lands.
   <br>`server/services/chathistoryBackfill.ts`, `server/services/ircConnection.ts`
 
@@ -438,7 +443,7 @@ attaching to Lurker.
 | `+reply`, `+draft/reply`                |   ✅   |    —    |
 | `draft/message-redaction`               |   ✅   |   ✅    |
 | `draft/chathistory`                     |   ✅   |   ✅    |
-| `draft/event-playback`                  |   —    |   ✅    |
+| `draft/event-playback`                  |   ✅   |   ✅    |
 | `draft/read-marker`                     |   —    |   ✅    |
 | `draft/pre-away`                        |   —    |   ✅    |
 | `multi-prefix`                          |   ✅   |   ✅    |
@@ -474,10 +479,9 @@ you, not by spec number.
 
 ### High value — natural fits for features Lurker already has
 
-| Capability                         | What it would give you                                                                                                                                         |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `draft/event-playback` (as client) | Joins, parts and quits inside a filled gap. Membership is reconciled by the rejoin's NAMES, so this would only add the rows; left out of the gap-fill for now. |
-| `standard-replies`                 | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics.                                         |
+| Capability         | What it would give you                                                                                                 |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `standard-replies` | Machine-readable `FAIL`/`WARN`/`NOTE` errors, so command failures render as real explanations instead of raw numerics. |
 
 ### Moderate value
 

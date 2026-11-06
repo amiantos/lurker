@@ -13,7 +13,7 @@ import db from '../db/index.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
-import { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { FakeIrcd, rawClient } from '../test-utils/fakeIrcd.js';
 import type { FakeIrcdOptions } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
 
@@ -306,6 +306,113 @@ describe('a gap filled from the network’s history', () => {
       await new Promise((r) => setTimeout(r, 200));
       expect(texts(network.id, '#znc')).toEqual(['first', 'second', 'third']);
     } finally {
+      stop();
+    }
+  }, 30000);
+});
+
+describe('the events inside a filled gap', () => {
+  let ircd: FakeIrcd;
+  // A network that keeps joins, parts, quits and topics in a channel's
+  // history, as ergo does, and offers draft/event-playback.
+  beforeAll(async () => {
+    ircd = await FakeIrcd.start({ chathistory: { events: true } });
+  });
+  afterAll(async () => {
+    await ircd.close();
+  });
+
+  type Peer = Awaited<ReturnType<typeof rawClient>>;
+  const inChannel = (nick: string, channel: string) =>
+    ircd.client(nick)?.channels.has(channel) ?? false;
+
+  it('come as the lines they were and are left out: no HistServ chat, and membership stays what the NAMES said', async () => {
+    const nick = 'evone';
+    const { network, conn, stop } = start(ircd, nick);
+    const peers: Peer[] = [];
+    const peer = async (name: string) => {
+      const p = await rawClient(ircd.port, name);
+      peers.push(p);
+      return p;
+    };
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      let stay = await peer('stay');
+      stay.send('JOIN #ev');
+      await until(() => inChannel('stay', '#ev'), 5000, 'stay in #ev');
+      ircManager.joinChannel(userId, network.id, '#ev');
+      await until(
+        () => conn.channelState('#ev')?.members.has('stay') ?? false,
+        5000,
+        'joined #ev, stay there',
+      );
+      ircd.say('peer', '#ev', 'before');
+      await until(() => texts(network.id, '#ev').length === 1, 5000, 'the live line stored');
+
+      await tick();
+      ircd.drop(nick, false);
+      await until(() => !conn.isChannelJoined('#ev'), 5000, 'parted by the drop');
+      // The gap, every step of it in the history: one arrives, steps out and
+      // comes back; one looks in and leaves; one drops and returns; the
+      // topic changes; a line is said.
+      const arrive = await peer('arrive');
+      arrive.send('JOIN #ev');
+      await until(() => inChannel('arrive', '#ev'), 5000, 'arrive in');
+      arrive.send('PART #ev :brb');
+      await until(() => !inChannel('arrive', '#ev'), 5000, 'arrive out');
+      arrive.send('JOIN #ev');
+      await until(() => inChannel('arrive', '#ev'), 5000, 'arrive back');
+      const leaver = await peer('leaver');
+      leaver.send('JOIN #ev');
+      await until(() => inChannel('leaver', '#ev'), 5000, 'leaver in');
+      leaver.send('PART #ev :bye');
+      await until(() => !inChannel('leaver', '#ev'), 5000, 'leaver out');
+      stay.socket.destroy();
+      await until(() => !ircd.client('stay'), 5000, 'stay gone');
+      stay = await peer('stay');
+      stay.send('JOIN #ev');
+      await until(() => inChannel('stay', '#ev'), 5000, 'stay back');
+      ircd.setTopic('arrive', '#ev', 'set while nobody was home');
+      ircd.say('arrive', '#ev', 'arrived');
+      await tick();
+      const kept = ircd.history.get('#ev')!;
+      expect(kept.filter((l) => l.histserv !== undefined).length).toBeGreaterThanOrEqual(8);
+
+      const registrations = ircd.registrations.length;
+      await until(
+        () => ircd.registrations.length > registrations && conn.isChannelJoined('#ev'),
+        20000,
+        'rejoined #ev',
+      );
+      await until(
+        () => texts(network.id, '#ev').length === 2,
+        5000,
+        'the gap filled',
+        () => JSON.stringify(texts(network.id, '#ev')),
+      );
+      await new Promise((r) => setTimeout(r, 300));
+      // The conversation, and nothing from HistServ: the page carried the
+      // events as JOIN, PART, QUIT and TOPIC lines, not as chat about them.
+      expect(ircd.client(nick)?.caps.has('draft/event-playback')).toBe(true);
+      expect(texts(network.id, '#ev')).toEqual(['before', 'arrived']);
+      expect(rowsFor(network.id, '#ev').some((r) => r.nick === 'HistServ')).toBe(false);
+      // Membership is the rejoin's NAMES: a replayed PART would have dropped
+      // arrive, a replayed QUIT stay, a replayed JOIN added leaver.
+      const members = conn.channelState('#ev')!.members;
+      expect([...members.keys()].toSorted()).toEqual(['arrive', 'evone', 'stay']);
+      expect(conn.channelState('#ev')!.topic).toBe('set while nobody was home');
+      // And no rows for them either.
+      const eventRows = db
+        .prepare(
+          `SELECT m.nick, m.type FROM messages m JOIN buffers b ON b.id = m.buffer_id
+           WHERE b.network_id = ? AND b.target_folded = '#ev'
+             AND m.type IN ('join', 'part', 'quit', 'nick', 'topic', 'kick')`,
+        )
+        .all(network.id) as Array<{ nick: string; type: string }>;
+      expect(eventRows.filter((r) => r.nick === 'leaver')).toEqual([]);
+      expect(eventRows.filter((r) => r.nick === 'arrive' && r.type === 'part')).toEqual([]);
+    } finally {
+      for (const p of peers) p.socket.destroy();
       stop();
     }
   }, 30000);
