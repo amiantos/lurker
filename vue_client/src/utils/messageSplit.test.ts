@@ -151,9 +151,11 @@ describe('multilineMessageCount', () => {
     expect(multilineMessageCount('a\nb', undefined)).toBe(0);
   });
 
-  it('is 0 for a single-line body (not a multiline send)', () => {
+  it('is 0 for a single line that fits one PRIVMSG (not a multiline send)', () => {
     expect(multilineMessageCount('just one line', limits)).toBe(0);
-    expect(multilineMessageCount('a'.repeat(1000), limits)).toBe(0);
+    expect(multilineMessageCount('a'.repeat(MESSAGE_MAX_BYTES), limits)).toBe(0);
+    // One line over the wire budget is a batch of concat continuations.
+    expect(multilineMessageCount('a'.repeat(1000), limits)).toBe(1);
   });
 
   it('is 1 for a multi-line body within the limits', () => {
@@ -210,6 +212,30 @@ describe('multilineMessageCount', () => {
 
 // The server splits by the network's real line budget (#1043) and tells us the
 // bytes of our user@host; the estimate measures by the same formula.
+describe('multilineMessageCount for one long line', () => {
+  const limits = { maxBytes: 4096, maxLines: 24 };
+  // The line as someone types it, no newline — the server sends it as one batch
+  // of concat continuations, so the chip says MULTILINE and the split gate
+  // (count > 1) stays quiet.
+  const LOREM =
+    'Lorem ipsum dolor sit amet consectetur adipiscing elit. Quisque faucibus ex sapien vitae pellentesque sem placerat. In id cursus mi pretium tellus duis convallis. Tempus leo eu aenean sed diam urna tempor. Pulvinar vivamus fringilla lacus nec metus bibendum egestas. Iaculis massa nisl malesuada lacinia integer nunc posuere. Ut hendrerit semper vel class aptent taciti sociosqu. Ad litora torquent per conubia nostra inceptos himenaeos. Lorem ipsum dolor sit amet consectetur adipiscing elit. Quisque faucibus ex sapien vitae pellentesque sem placerat. In id cursus mi pretium tellus duis convallis. Tempus leo eu aenean sed diam urna tempor. Pulvinar vivamus fringilla lacus nec metus bibendum egestas. Iaculis massa nisl malesuada lacinia integer nunc posuere. Ut hendrerit semper vel class aptent taciti sociosqu. Ad litora torquent per conubia nostra inceptos himenaeos.';
+
+  it('counts a line too long for one PRIVMSG as one batch', () => {
+    expect(chunkCountForSay(LOREM)).toBeGreaterThan(1);
+    expect(multilineMessageCount(LOREM, limits)).toBe(1);
+  });
+
+  it('still reports 0 for a line that fits, and without the cap', () => {
+    expect(multilineMessageCount('fits in one line', limits)).toBe(0);
+    expect(multilineMessageCount(LOREM, null)).toBe(0);
+  });
+
+  it('spans batches when the one line outgrows a whole batch', () => {
+    // 1000 bytes of words → 3 wire lines; max-lines 2 → 2 batches.
+    expect(multilineMessageCount('word '.repeat(200), { maxBytes: 4096, maxLines: 2 })).toBe(2);
+  });
+});
+
 describe('textBudgetFor', () => {
   const net = { nick: 'alice', userhostBytes: 18 };
 

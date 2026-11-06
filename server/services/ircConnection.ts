@@ -128,13 +128,14 @@ import {
 import type { Reattach } from './engineReattachLog.js';
 import {
   MESSAGE_MAX_BYTES,
+  hasInteriorNewline,
   partitionMultiline,
   reassembleMultiline,
   splitAction,
   splitSay,
 } from './messageSplit.js';
 import { DEFAULT_HOSTLEN, MAX_HOSTLEN, textBudget } from '../../shared/wireBudget.js';
-import type { MultilineLimits } from './messageSplit.js';
+import type { MultilineLimits, MultilineWireMessage } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { cleartextE2eLeak } from './e2e/rawGuard.js';
 import type { UserNotice } from './e2e/manager.js';
@@ -11408,6 +11409,28 @@ export class IrcConnection {
     return getBuffer(this.network.user_id, this.network.id, name)?.target ?? name;
   }
 
+  // The draft/multiline batches `text` to `target` goes out as, or null when it
+  // goes as plain PRIVMSGs: the network lacks the cap, or the body is one line
+  // that fits one PRIVMSG. A body that is more than one PRIVMSG — several
+  // lines, or one line the wire splitter cuts — is a batch, so the room sees
+  // one message (concat continuations for the long line) rather than lines it
+  // reads interleaved with its own chatter. The ONE gate for the send path and
+  // for the bouncer's echo keys, which must name the self echo the send will
+  // publish (one per batch: reassembleMultiline of it). An edge newline alone
+  // ("hello\n") is not a batch — splitMultiline trims it — and the client's
+  // multilineMessageCount gates on the same two conditions. (#381)
+  outboundBatches(target: string, text: string): MultilineWireMessage[][] | null {
+    const limits = this.multilineLimits();
+    if (!limits) return null;
+    const budget = this.textBudget('PRIVMSG', target);
+    // The common case, cheap: one line that fits.
+    if (!hasInteriorNewline(text) && Buffer.byteLength(text, 'utf8') <= budget) return null;
+    const batches = partitionMultiline(text, limits, budget);
+    // Blank lines only, or one line that fits once the edges are trimmed.
+    if (batches.length === 0 || (batches.length === 1 && batches[0].length <= 1)) return null;
+    return batches;
+  }
+
   // Send `text` as one-or-more draft/multiline batches: each is BATCH +ref …
   // one tagged PRIVMSG per line … BATCH -ref. The body is partitioned to the
   // server's max-lines / max-bytes, so a big paste lands as N logical messages
@@ -11423,20 +11446,22 @@ export class IrcConnection {
   // Each batch is one unit of the outbound queue (#1149): its lines go back
   // to back, since the message shows for no one until `BATCH -`, and the
   // queue charges for all of them after.
+  // `batches` is outboundBatches(target, text), passed when the caller has
+  // gated on it already; nothing is sent, and [] returned, where that is null.
   sendMultiline(
     target: string,
     text: string,
     tags?: Record<string, string> | null,
     hooks?: LineHooks,
+    batches = this.outboundBatches(target, text),
   ): string[] {
+    if (!batches) return [];
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    const limits = this.multilineLimits();
-    if (!limits) return [];
     const echoes: string[] = [];
     let batchTags = tags ? IRC.MessageTags.encode(tags) : '';
     // eslint-disable-next-line no-control-regex
     const clean = (line: string) => line.replace(/[\u000d\u000a\u0000]/g, '');
-    for (const batch of partitionMultiline(text, limits, this.textBudget('PRIVMSG', target))) {
+    for (const batch of batches) {
       const ref = randomBytes(8).toString('hex');
       const lines = [
         clean(`${batchTags ? `@${batchTags} ` : ''}BATCH +${ref} draft/multiline ${target}`),

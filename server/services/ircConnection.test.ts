@@ -3373,6 +3373,29 @@ describe('IRCv3 draft/multiline (#381)', () => {
       );
     });
 
+    it('sends one long line as a single batch of concat continuations', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      const text = `${'lorem ipsum dolor sit amet '.repeat(40)}end`;
+      const echoes = conn.sendMultiline('#chan', text);
+      const lines = raw.mock.calls.map((c) => c[0]);
+      const ref = lines[0].match(/^BATCH \+(\S+)/)![1];
+      expect(lines[0]).toBe(`BATCH +${ref} draft/multiline #chan`);
+      expect(lines[lines.length - 1]).toBe(`BATCH -${ref}`);
+      const body = lines.slice(1, -1);
+      expect(body.length).toBeGreaterThan(1);
+      expect(body[0].startsWith(`@batch=${ref} PRIVMSG #chan :`)).toBe(true);
+      for (const line of body.slice(1)) {
+        expect(line.startsWith(`@batch=${ref};draft/multiline-concat PRIVMSG #chan :`)).toBe(true);
+      }
+      // What the room glues back together is the line as typed, spaces included.
+      const joined = body.map((line) => line.slice(line.indexOf(' :') + 2)).join('');
+      expect(joined).toBe(text);
+      expect(echoes).toEqual([text]);
+    });
+
     it('splits an over-limit body into multiple batches, each with its own ref', () => {
       const conn = makeConn();
       enableMultiline(conn, 'max-bytes=4096,max-lines=2');
@@ -3405,6 +3428,35 @@ describe('IRCv3 draft/multiline (#381)', () => {
       conn.client.raw = raw;
       expect(conn.sendMultiline('#chan', 'a\nb')).toEqual([]);
       expect(raw).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('outboundBatches (the send gate)', () => {
+    it('is null for one line that fits, and for a body with only edge newlines', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      expect(conn.outboundBatches('#chan', 'hello')).toBeNull();
+      expect(conn.outboundBatches('#chan', 'hello\n')).toBeNull();
+      expect(conn.outboundBatches('#chan', '\n\n')).toBeNull();
+    });
+
+    it('is the batches for several lines, or one line too long for the wire', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      expect(conn.outboundBatches('#chan', 'a\nb')).toEqual([
+        [
+          { content: 'a', concat: false },
+          { content: 'b', concat: false },
+        ],
+      ]);
+      const batches = conn.outboundBatches('#chan', 'lorem ipsum '.repeat(60).trim())!;
+      expect(batches).toHaveLength(1);
+      expect(batches[0].length).toBeGreaterThan(1);
+      expect(batches[0].slice(1).every((w) => w.concat)).toBe(true);
+    });
+
+    it('is null without the cap', () => {
+      expect(makeConn().outboundBatches('#chan', 'a\nb')).toBeNull();
     });
   });
 

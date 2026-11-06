@@ -17,7 +17,7 @@ import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { listMessages } from '../db/messages.js';
 import { ensureOpen } from '../db/buffers.js';
-import { splitAction, splitSay } from './messageSplit.js';
+import { partitionMultiline, splitAction, splitSay } from './messageSplit.js';
 
 let userId: number;
 let networkId: number;
@@ -445,7 +445,7 @@ describe('ircManager optimistic-publish gating', () => {
       // The writable gate (#809) reads this — these cases are about echo
       // adoption, so they all start from a live socket.
       state: 'connected',
-      supportsMultiline: () => false,
+      outboundBatches: () => null,
       echoActive: () => true,
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
@@ -455,6 +455,13 @@ describe('ircManager optimistic-publish gating', () => {
       ...overrides,
     } as unknown as IrcConnection;
     return { conn, say, sayEncrypted, action, notice, publish };
+  }
+
+  // A connection on a network with draft/multiline: the gate's answer for ergo's
+  // default limits (the real one is pinned in ircConnection.test.ts).
+  function batching(_target: string, text: string) {
+    const batches = partitionMultiline(text, { maxBytes: 4096, maxLines: 24 });
+    return batches.length === 1 && batches[0].length <= 1 ? null : batches;
   }
 
   it('send/action/notice write the wire but skip the optimistic publish when echo is active', () => {
@@ -481,15 +488,21 @@ describe('ircManager optimistic-publish gating', () => {
 
   it('multiline sends still hit the wire, publish only without the cap', () => {
     const sendMultiline = vi.fn<(target: string, text: string) => string[]>(() => ['a\nb']);
-    const withEcho = fakeConn({ supportsMultiline: () => true, sendMultiline });
+    const withEcho = fakeConn({ outboundBatches: batching, sendMultiline });
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(withEcho.conn);
     ircManager.send(userId, networkId, '#gate', 'a\nb');
-    expect(sendMultiline).toHaveBeenCalledWith('#gate', 'a\nb', undefined, undefined);
+    // The gate's batches ride along as the fifth argument.
+    expect(sendMultiline.mock.calls[0].slice(0, 4)).toEqual([
+      '#gate',
+      'a\nb',
+      undefined,
+      undefined,
+    ]);
     expect(withEcho.publish).not.toHaveBeenCalled();
     vi.restoreAllMocks();
 
     const noEcho = fakeConn({
-      supportsMultiline: () => true,
+      outboundBatches: batching,
       sendMultiline,
       echoActive: () => false,
     });
@@ -497,6 +510,43 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.send(userId, networkId, '#gate', 'a\nb');
     expect(noEcho.publish).toHaveBeenCalledTimes(1);
     expect(noEcho.publish.mock.calls[0][0]).toMatchObject({ text: 'a\nb', self: true });
+  });
+
+  // A long line with no newline is still more than one PRIVMSG, so on a network
+  // with the cap it rides one batch (concat continuations) and echoes as the
+  // one message the room sees — not N wire chunks.
+  it('a long single line rides sendMultiline where the network has the cap', () => {
+    const text = 'lorem ipsum dolor sit amet '.repeat(40).trim();
+    expect(splitSay(text).length).toBeGreaterThan(1);
+    const sendMultiline = vi.fn<(target: string, text: string) => string[]>(() => [text]);
+    const { conn, say, publish } = fakeConn({
+      outboundBatches: batching,
+      sendMultiline,
+      echoActive: () => false,
+    });
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    ircManager.send(userId, networkId, '#gate', text);
+    expect(sendMultiline.mock.calls[0].slice(0, 4)).toEqual(['#gate', text, undefined, undefined]);
+    expect(say).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({ text, self: true });
+    vi.restoreAllMocks();
+
+    // A line that fits stays a bare PRIVMSG.
+    const shortMultiline = vi.fn<(target: string, text: string) => string[]>(() => []);
+    const short = fakeConn({ outboundBatches: batching, sendMultiline: shortMultiline });
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(short.conn);
+    ircManager.send(userId, networkId, '#gate', 'hi');
+    expect(shortMultiline).not.toHaveBeenCalled();
+    expect(short.say).toHaveBeenCalledTimes(1);
+    vi.restoreAllMocks();
+
+    // Without the cap the long line still splits the legacy way.
+    const legacy = fakeConn({ echoActive: () => false });
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(legacy.conn);
+    ircManager.send(userId, networkId, '#gate', text);
+    expect(legacy.say).toHaveBeenCalledTimes(splitSay(text).length);
+    expect(legacy.publish).toHaveBeenCalledTimes(splitSay(text).length);
   });
 
   // #809: a network in reconnect backoff keeps its IrcConnection, but every line
@@ -586,7 +636,7 @@ describe('ircManager optimistic-publish gating', () => {
       {
         mode: 'multiline',
         overrides: {
-          supportsMultiline: () => true,
+          outboundBatches: batching,
           sendMultiline: () => ['a\nb'],
         },
         run: () => ircManager.send(userId, networkId, '#gate', 'a\nb'),

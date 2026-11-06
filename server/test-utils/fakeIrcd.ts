@@ -668,6 +668,12 @@ export class FakeIrcd extends EventEmitter {
         this.relayRedact(this.hostmask(c), target, msgid, p[2], c);
         return;
       }
+      // A client's draft/multiline batch (`BATCH +ref draft/multiline <target>`
+      // … `BATCH -ref`): taken, nothing sent for it. The tagged PRIVMSGs inside
+      // relay one by one above, as a member without the cap would see them.
+      case 'BATCH':
+        if (!c.caps.has('draft/multiline')) return this.num(c, '421', cmd, 'Unknown command');
+        return;
       default:
         return this.num(c, '421', cmd, 'Unknown command');
     }

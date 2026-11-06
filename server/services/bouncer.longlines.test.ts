@@ -30,6 +30,9 @@ let harness: import('../test-utils/bouncerHarness.js').Harness;
 // row comes from the echo on one and from our own send on the other.
 let echoing: FakeIrcd;
 let silent: FakeIrcd;
+// One with draft/multiline (and no echo-message, whose echo of a batch the fake
+// does not model), for a line too long for the wire.
+let multiline: FakeIrcd;
 
 type Client = Awaited<ReturnType<import('../test-utils/bouncerHarness.js').Harness['connect']>>;
 
@@ -51,6 +54,12 @@ beforeAll(async () => {
   ({ hashPassword } = await import('./password.js'));
   echoing = await FakeIrcd.start();
   silent = await FakeIrcd.start({ caps: DEFAULT_CAPS.filter((c) => c !== 'echo-message') });
+  multiline = await FakeIrcd.start({
+    caps: [
+      ...DEFAULT_CAPS.filter((c) => c !== 'echo-message'),
+      'draft/multiline=max-bytes=4096,max-lines=24',
+    ],
+  });
   harness = await harnessMod.startHarness();
 });
 
@@ -58,6 +67,7 @@ afterAll(async () => {
   harness.stop();
   await echoing.close();
   await silent.close();
+  await multiline.close();
   ctx.cleanup();
 });
 
@@ -164,6 +174,49 @@ async function clientTexts(
 // What a client splitting at 512 bytes sends: the first line is well past 350.
 const FIRST = words(1, 90);
 const SECOND = words(91, 120);
+
+// A client that doesn't split at all, on a network with draft/multiline: the
+// line goes up as one batch of concat continuations, and ircManager publishes
+// the ONE message the room sees — so that is what the echo is keyed by, and the
+// client gets no second copy of its own line (#1041's regression class).
+describe('a line too long for the wire, on a network with draft/multiline', () => {
+  const LONG = words(1, 120);
+
+  it('goes up as one batch and is not echoed back as a second copy', async () => {
+    const live = await seedLive(multiline);
+    const c = await attachIn(live, '#room', BASE_CAPS);
+
+    const mark = c.lines.length;
+    c.send(`PRIVMSG #room :${LONG}`);
+    await until(
+      () => upstreamTexts(multiline, live, 'PRIVMSG', '#room').length >= 2,
+      5000,
+      'the batch upstream',
+    );
+    // The pieces glue back to the line as sent, the space at the cut included.
+    expect(upstreamTexts(multiline, live, 'PRIVMSG', '#room').join('')).toBe(LONG);
+    expect(await clientTexts(multiline, c, mark, 'PRIVMSG', '#room')).toEqual([]);
+  });
+
+  // The bouncer never offers draft/multiline, so the one message comes back cut
+  // to the client's 512-byte line, as the network would cut it.
+  it('comes back once, on wire-sized lines, to a client that asked for echo-message', async () => {
+    const live = await seedLive(multiline);
+    const c = await attachIn(live, '#room', `${BASE_CAPS} echo-message`);
+
+    const mark = c.lines.length;
+    c.send(`PRIVMSG #room :${LONG}`);
+    await until(
+      () => upstreamTexts(multiline, live, 'PRIVMSG', '#room').length >= 2,
+      5000,
+      'the batch upstream',
+    );
+    const back = await clientTexts(multiline, c, mark, 'PRIVMSG', '#room');
+    expect(back).toHaveLength(2);
+    for (const line of back) expect(Buffer.byteLength(line)).toBeLessThanOrEqual(512);
+    expect(back.join(' ')).toBe(LONG);
+  });
+});
 
 describe.each([
   ['an echoing network', () => echoing],

@@ -192,6 +192,66 @@ describe('splitMultiline', () => {
   });
 });
 
+describe('splitMultiline keeps the whitespace a concat cut lands on', () => {
+  // A long line as someone types it: words and spaces, no newline. Over the
+  // default budget, so it goes as concat continuations the receiver glues back
+  // together — and lineBreak dropped the space at each cut.
+  const LOREM =
+    'Lorem ipsum dolor sit amet consectetur adipiscing elit. Quisque faucibus ex sapien vitae pellentesque sem placerat. In id cursus mi pretium tellus duis convallis. Tempus leo eu aenean sed diam urna tempor. Pulvinar vivamus fringilla lacus nec metus bibendum egestas. Iaculis massa nisl malesuada lacinia integer nunc posuere. Ut hendrerit semper vel class aptent taciti sociosqu. Ad litora torquent per conubia nostra inceptos himenaeos. Lorem ipsum dolor sit amet consectetur adipiscing elit. Quisque faucibus ex sapien vitae pellentesque sem placerat. In id cursus mi pretium tellus duis convallis. Tempus leo eu aenean sed diam urna tempor. Pulvinar vivamus fringilla lacus nec metus bibendum egestas. Iaculis massa nisl malesuada lacinia integer nunc posuere. Ut hendrerit semper vel class aptent taciti sociosqu. Ad litora torquent per conubia nostra inceptos himenaeos.';
+
+  it('rejoins to the original text, byte for byte', () => {
+    const wires = splitMultiline(LOREM);
+    expect(wires.length).toBeGreaterThan(1);
+    expect(wires.slice(1).every((w) => w.concat)).toBe(true);
+    for (const w of wires) expect(byteLen(w.content)).toBeLessThanOrEqual(MESSAGE_MAX_BYTES);
+    expect(reassembleMultiline(wires)).toBe(LOREM);
+  });
+
+  it('puts the space on the trailing edge of the piece before the cut', () => {
+    expect(splitMultiline('aaaa bbbb cccc', 10)).toEqual([
+      { content: 'aaaa bbbb ', concat: false },
+      { content: 'cccc', concat: true },
+    ]);
+  });
+
+  it('moves it to the leading edge of the next piece when the first is full', () => {
+    const wires = splitMultiline('aaaaaaaaaa bbbb', 10);
+    expect(wires).toEqual([
+      { content: 'aaaaaaaaaa', concat: false },
+      { content: ' bbbb', concat: true },
+    ]);
+    expect(reassembleMultiline(wires)).toBe('aaaaaaaaaa bbbb');
+  });
+
+  it('a run of whitespace that fits nowhere goes as continuations of its own', () => {
+    const text = `aaaaaaaaaa${' '.repeat(12)}bbbbbbbbbb`;
+    const wires = splitMultiline(text, 10);
+    for (const w of wires) expect(byteLen(w.content)).toBeLessThanOrEqual(10);
+    expect(wires.slice(1).every((w) => w.concat)).toBe(true);
+    expect(reassembleMultiline(wires)).toBe(text);
+  });
+
+  it('keeps the cut whitespace of an indented line (a code paste)', () => {
+    // lineBreak keeps an indent that fits inside the first piece, so the first
+    // piece itself begins with whitespace.
+    for (const text of ['    if (x) { return y; } else { z(); }', '   aaaa bbbb cccc']) {
+      const wires = splitMultiline(text, 10);
+      expect(wires.length).toBeGreaterThan(1);
+      for (const w of wires) expect(byteLen(w.content)).toBeLessThanOrEqual(10);
+      expect(reassembleMultiline(wires)).toBe(text);
+    }
+  });
+
+  it('keeps trailing whitespace the cut left behind', () => {
+    const wires = splitMultiline('aaaaaaaaaa bbbbbbbbbb  ', 10);
+    expect(reassembleMultiline(wires)).toBe('aaaaaaaaaa bbbbbbbbbb  ');
+  });
+
+  it('independent lines (splitSay) still drop the whitespace at the cut', () => {
+    expect(splitSay('aaaa bbbb cccc', 10)).toEqual(['aaaa bbbb', 'cccc']);
+  });
+});
+
 describe('partitionMultiline', () => {
   const big = { maxBytes: 4096, maxLines: 24 };
 
@@ -275,6 +335,20 @@ describe('partitionMultiline', () => {
         .map((w) => w.content)
         .join(''),
     ).toBe('a'.repeat(900));
+  });
+});
+
+describe('partitionMultiline tearing a line across batches', () => {
+  it('keeps the whitespace at a re-cut when a wire piece outgrows max-bytes', () => {
+    // A line budget wider than the batch's max-bytes: the 450-byte wire piece
+    // is re-cut to 400, and that cut must not lose its space either.
+    const text = 'word '.repeat(100).trim();
+    const batches = partitionMultiline(text, { maxBytes: 400, maxLines: 24 }, 450);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(batch.reduce((n, w) => n + byteLen(w.content), 0)).toBeLessThanOrEqual(400);
+    }
+    expect(batches.map(reassembleMultiline).join('')).toBe(text);
   });
 });
 

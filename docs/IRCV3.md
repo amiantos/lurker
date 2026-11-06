@@ -121,7 +121,8 @@ only works if timestamps are trustworthy.
 
 Paste several lines and they travel as a single logical message where the network
 supports it, instead of being torn into separate messages that can interleave with
-other people's chatter. Incoming multi-line messages are reassembled the same way.
+other people's chatter. One line too long for a single IRC message goes the same
+way. Incoming multi-line messages are reassembled the same way.
 
 - **`batch`**, **`draft/multiline`**, **`message-tags`**
   <br>`server/services/ircConnection.ts:518`

@@ -144,7 +144,7 @@ describe('outbound encrypt (ircManager.send)', () => {
       say,
       publish,
       client: { user: { nick: 'alice' } },
-      supportsMultiline: () => false,
+      outboundBatches: () => null,
       echoActive: () => false,
       state: 'connected', // the writable gate (#809) refuses anything else
       noteSentCiphertext: () => {},
