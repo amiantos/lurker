@@ -56,6 +56,66 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe('CHATHISTORY (the history gap-fill, #1283)', () => {
+  it('the batch answering it, nested batches included, is Lurker’s; the next request waits for nothing', () => {
+    const { router, writes, hear } = setup();
+    const ended: string[] = [];
+    router.send('lurker', 'CHATHISTORY BETWEEN #a timestamp=x timestamp=y 100', undefined, {
+      onEnd: (how) => ended.push(how),
+    });
+    expect(writes).toEqual(['CHATHISTORY BETWEEN #a timestamp=x timestamp=y 100']);
+    // Another target's batch is not this one's.
+    expect(hear(':srv BATCH +z chathistory #b')).toBe('unasked');
+    expect(hear(':srv BATCH +r chathistory #A')).toBe('lurker');
+    expect(hear('@batch=r :p!u@h PRIVMSG #a :one')).toBe('lurker');
+    expect(hear('@batch=r :srv BATCH +m draft/multiline #a')).toBe('lurker');
+    expect(hear('@batch=m :p!u@h PRIVMSG #a :part')).toBe('lurker');
+    expect(hear('@batch=r :srv BATCH -m')).toBe('lurker');
+    // A bare line while the batch is open is someone else's.
+    expect(hear(':q!u@h PRIVMSG #a :live')).toBe('unasked');
+    expect(hear(':srv BATCH -r')).toBe('lurker');
+    expect(ended).toEqual(['replied']);
+  });
+
+  it('a FAIL naming another request’s channel does not end this one', () => {
+    const { router, hear } = setup();
+    const ended: string[] = [];
+    router.send('lurker', 'CHATHISTORY BETWEEN #a timestamp=x timestamp=y 100', undefined, {
+      onEnd: (how) => ended.push(`a:${how}`),
+    });
+    router.send('user', 'CHATHISTORY LATEST #b * 50', undefined, {
+      onEnd: (how) => ended.push(`b:${how}`),
+    });
+    expect(hear(':srv FAIL CHATHISTORY INVALID_TARGET LATEST #b :no')).toBe('user');
+    expect(ended).toEqual(['b:error']);
+    expect(hear(':srv FAIL CHATHISTORY MESSAGE_ERROR BETWEEN #a :no')).toBe('lurker');
+    expect(ended).toEqual(['b:error', 'a:error']);
+  });
+
+  it('a request that cannot go out is ended at once, so the next can', () => {
+    const { router, state } = setup();
+    state.connected = false;
+    const ended: string[] = [];
+    router.send('lurker', 'CHATHISTORY BETWEEN #a timestamp=x timestamp=y 100', undefined, {
+      onEnd: (how) => ended.push(how),
+    });
+    expect(ended).toEqual(['error']);
+  });
+
+  it('a batch whose request timed out before it closed stays Lurker’s to the end', () => {
+    fakeTimers();
+    const { router, hear } = setup({ timeoutMs: 1000 });
+    router.send('lurker', 'CHATHISTORY BETWEEN #a timestamp=x timestamp=y 100');
+    expect(hear(':srv BATCH +r chathistory #a')).toBe('lurker');
+    vi.advanceTimersByTime(1500);
+    vi.runOnlyPendingTimers();
+    // The lines that trickle in late are still the page's, never a client's.
+    expect(hear('@batch=r :p!u@h PRIVMSG #a :late')).toBe('lurker');
+    expect(hear(':srv BATCH -r')).toBe('lurker');
+    expect(hear('@batch=r :p!u@h PRIVMSG #a :after')).toBe('unasked');
+  });
+});
+
 function fakeTimers(): void {
   vi.useFakeTimers({
     toFake: ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate', 'Date'],

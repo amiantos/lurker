@@ -403,6 +403,55 @@ describe('a network that refuses', () => {
   }, 30000);
 });
 
+describe('a REDACT inside a history page', () => {
+  let ircd: FakeIrcd;
+  beforeAll(async () => {
+    ircd = await FakeIrcd.start({ chathistory: { limit: 100 } });
+  });
+  afterAll(async () => {
+    await ircd.close();
+  });
+
+  it('applies to the line the same page brought, once that line is stored', async () => {
+    const nick = 'redacted';
+    const { network, conn, stop } = start(ircd, nick);
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      ircManager.joinChannel(userId, network.id, '#rd');
+      await until(() => conn.isChannelJoined('#rd'), 5000, 'joined');
+      const t = ago(0);
+      // A page that holds a line and, after it, its deletion: a server that
+      // keeps the deletion in history (soju) serves both.
+      for (const line of [
+        `:fake.test BATCH +o chathistory #rd`,
+        `@batch=o;time=${t};msgid=rd1 :peer!~p@h PRIVMSG #rd :take this back`,
+        `@batch=o;time=${ago(1)};msgid=rd2 :peer!~p@h PRIVMSG #rd :keep this`,
+        `@batch=o;time=${ago(2)} :peer!~p@h REDACT #rd rd1 :oops`,
+        `:fake.test BATCH -o`,
+      ])
+        ircd.sendRaw(nick, line);
+      await until(() => rowsFor(network.id, '#rd').length === 2, 5000, 'the page stored');
+      await until(
+        () =>
+          (
+            db
+              .prepare('SELECT redacted_at FROM messages WHERE msgid = ? AND network_id = ?')
+              .get('rd1', network.id) as { redacted_at: string | null } | undefined
+          )?.redacted_at != null,
+        5000,
+        'the deletion applied after the line',
+      );
+      const rows = rowsFor(network.id, '#rd');
+      expect(rows.map((r) => [r.msgid, r.text])).toEqual([
+        ['rd1', null],
+        ['rd2', 'keep this'],
+      ]);
+    } finally {
+      stop();
+    }
+  }, 15000);
+});
+
 describe('a multiline message inside a history page', () => {
   let ircd: FakeIrcd;
   beforeAll(async () => {

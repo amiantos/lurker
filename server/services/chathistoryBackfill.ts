@@ -20,13 +20,19 @@
 // not asked about: there is no gap to fill, and a first join is not an outage
 // (halloy asks LATEST there and gets a page of strangers' history).
 //
+// The anchors — the newest line each buffer held — are read by the connection
+// BEFORE the socket can deliver anything new (at the JOIN itself, at
+// registration) and handed in, never read when the reply comes: a live line
+// that lands meanwhile would move the anchor past the whole outage.
+//
 // One request on the wire at a time, in the send queue's low lane, so the
 // walk paces itself behind chat; the reply router owns the request (its batch
 // is the reply, replyRouter.ts), so a bouncer client attached through Lurker
 // never sees the lines twice. A page is followed by the next while pages come
-// back full: the server's `draft/chathistory-end`, a short page, or no
-// progress ends a walk, and so does the buffer's own retention — the lines
-// past it would be swept on the next tick.
+// back full: the server's `draft/chathistory-end`, a short page, or a cursor
+// that cannot move ends a walk. No cap of Lurker's own on how far back: the
+// gap is the gap, and the retention sweeper keeps the newest lines of what
+// is stored, which is the right end to keep.
 //
 // The lines themselves come back inside `chathistory` batches and are stored
 // by the ordinary message path with `replay` set: deduped against what the
@@ -47,17 +53,13 @@ export interface BackfillHost {
   /** The network's per-request cap: the ISUPPORT `CHATHISTORY` token, or 0
    *  when it names no limit. */
   limit(): number;
-  /** The time of the newest conversation line stored in a buffer, or null;
-   *  with `maxId`, among the rows stored up to that id. */
-  anchor(target: string, maxId?: number): string | null;
-  /** The same across every channel and DM of the network. */
-  networkAnchor(): string | null;
-  /** How many lines the buffer keeps (its effective retention); 0 = no cap. */
-  maxLines(target: string): number;
   /** The network's case fold (foldTargetFor), for the target a batch names. */
   fold(name: string): string;
   log(text: string, level?: 'info' | 'warn'): void;
 }
+
+/** The newest conversation line each buffer holds, by folded target. */
+export type Anchors = ReadonlyMap<string, string>;
 
 // What soju serves at most, advertises, and refuses more than (downstream.go:
 // INVALID_PARAMS over the token). Lurker's own bouncer says the same. ergo's
@@ -83,9 +85,20 @@ type Between = {
   fetched: number;
   pages: number;
 };
-// `seen`: conversations already given a window. A page's newest target is
-// named again by the next page (the cursor sits a millisecond under it).
-type Targets = { kind: 'targets'; from: string; to: string; pages: number; seen: Set<string> };
+// `origin`: the window's lower bound as first asked, for a conversation named
+// on a later page (the cursor has moved by then). `anchors`: where each
+// conversation's own window starts, read before the socket could add to it.
+// `seen`: conversations already given a window — a page's newest target is
+// named again by the next page, whose cursor sits a millisecond under it.
+type Targets = {
+  kind: 'targets';
+  from: string;
+  origin: string;
+  to: string;
+  pages: number;
+  anchors: Anchors;
+  seen: Set<string>;
+};
 type Walk = Between | Targets;
 
 interface Active {
@@ -93,8 +106,8 @@ interface Active {
   /** The reply batch's reference once its BATCH + has come. */
   ref: string | null;
   /** Lines in the page so far (what the server counts toward its limit),
-   *  how many of them are conversation (what retention counts), and the
-   *  newest time among them. */
+   *  how many of them are conversation (for the log), and the newest time
+   *  among them. */
   lines: number;
   messages: number;
   newest: string | null;
@@ -109,6 +122,12 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 function shifted(time: string, ms: number): string {
   const t = Date.parse(time);
   return Number.isFinite(t) ? iso(t + ms) : time;
+}
+
+function newestOf(anchors: Anchors): string | null {
+  let newest: string | null = null;
+  for (const time of anchors.values()) if (newest === null || time > newest) newest = time;
+  return newest;
 }
 
 export class ChathistoryBackfill {
@@ -137,6 +156,23 @@ export class ChathistoryBackfill {
     this.unanswered = 0;
   }
 
+  /**
+   * Our link to the engine dropped; the socket lives on there. The request
+   * on the wire died with the router's reset, so its page is asked again
+   * when the link is back (resume); the rest of the queue waits.
+   */
+  suspend(): void {
+    const active = this.active;
+    if (!active) return;
+    this.active = null;
+    this.queue.unshift(active.walk);
+  }
+
+  /** The link is back: whatever waited goes on. */
+  resume(): void {
+    this.next();
+  }
+
   /** Whether `ref` is a batch that answered one of our requests. */
   isOurs(ref: string | undefined): boolean {
     return !!ref && this.asked.has(ref);
@@ -144,9 +180,30 @@ export class ChathistoryBackfill {
 
   // --- triggers --------------------------------------------------------------
 
-  /** We are back in a channel (our JOIN, its NAMES in), as of `joinedAtMs`. */
-  channelJoined(target: string, joinedAtMs: number): void {
-    this.window(target, this.host.anchor(target), joinedAtMs);
+  /** We are back in a channel (our JOIN, its NAMES in) as of `joinedAtMs`;
+   *  `anchor` is the newest line the buffer held when the JOIN arrived. */
+  channelJoined(target: string, joinedAtMs: number, anchor: string | null): void {
+    this.window(target, anchor, joinedAtMs);
+  }
+
+  /** Registered, with the newest line every buffer held at that moment:
+   *  which conversations had a line since the newest of them. */
+  registered(nowMs: number, anchors: Anchors): void {
+    this.targets(anchors, nowMs);
+  }
+
+  /**
+   * The engine dropped the oldest lines of the backlog it handed over. The
+   * hole sits between the last row stored before this attach (`anchors`,
+   * read among the rows up to the attach's maxMessageId) and the first line
+   * the backlog kept, which `endMs` is: the window overlaps nothing the
+   * backlog stored. Every channel we are in, and the DMs a TARGETS names.
+   */
+  gap(channels: string[], endMs: number, anchors: Anchors): void {
+    for (const target of channels) {
+      this.window(target, anchors.get(this.host.fold(target)) ?? null, endMs);
+    }
+    this.targets(anchors, endMs);
   }
 
   private window(target: string, anchor: string | null, toMs: number): void {
@@ -161,31 +218,19 @@ export class ChathistoryBackfill {
     });
   }
 
-  /** Registered: which conversations had a line since we last heard one. */
-  registered(nowMs: number): void {
-    const anchor = this.host.networkAnchor();
-    if (!anchor) return;
+  private targets(anchors: Anchors, toMs: number): void {
+    const newest = newestOf(anchors);
+    if (!newest) return;
+    const from = shifted(newest, -BOUND_FUZZ_MS);
     this.enqueue({
       kind: 'targets',
-      from: shifted(anchor, -BOUND_FUZZ_MS),
-      to: iso(nowMs + BOUND_FUZZ_MS),
+      from,
+      origin: from,
+      to: iso(toMs + BOUND_FUZZ_MS),
       pages: 0,
+      anchors,
       seen: new Set(),
     });
-  }
-
-  /**
-   * The engine dropped the oldest lines of the backlog it handed over. The
-   * hole sits between the last row stored before this attach (`maxId`, the
-   * attach's maxMessageId) and the first line the backlog kept; the backlog's
-   * own rows are newer than both. `droppedAtMs` is when the last line went,
-   * which is after the first kept line arrived, so the window overlaps the
-   * kept tail by at most the buffer's span, and the dedupe takes that.
-   */
-  gap(channels: string[], droppedAtMs: number, maxId: number): void {
-    for (const target of channels) {
-      this.window(target, this.host.anchor(target, maxId), droppedAtMs);
-    }
   }
 
   // --- what the server says, fed by the connection's raw listener ------------
@@ -272,9 +317,29 @@ export class ChathistoryBackfill {
     return token > 0 ? Math.min(token, BACKFILL_LIMIT_CAP) : BACKFILL_LIMIT_CAP;
   }
 
+  // Where the next page starts: a millisecond under the newest line of this
+  // one, so a second line in that millisecond is not skipped. When that is
+  // where this page already started (every line of a full page in the one
+  // millisecond), the newest line itself: the rest of that millisecond is
+  // given up rather than asked for forever. Null when nothing moves.
+  private nextFrom(from: string, newest: string): string | null {
+    let next = shifted(newest, -1);
+    if (next <= from) next = newest;
+    return next > from ? next : null;
+  }
+
   private ended(active: Active, how: QueryEnd, limit: number): void {
     const { walk } = active;
-    if (how === 'timeout' && !active.ref) {
+    if (how === 'timeout') {
+      if (active.ref) {
+        // The batch opened and never closed. Its lines are held by
+        // irc-framework until the close that never came, so none of them is
+        // stored: the page is not had, and the walk stops here rather than
+        // step past it.
+        const what = walk.kind === 'targets' ? 'TARGETS' : walk.target;
+        this.host.log(`History backfill: ${what}: the page never closed; giving up`, 'warn');
+        return;
+      }
       // Nothing came, not even a FAIL. Once is a lagging server, and this
       // walk is lost; twice running, the cap is a promise this network
       // doesn't keep, and asking stops (kiwi's chathistory_available).
@@ -291,22 +356,18 @@ export class ChathistoryBackfill {
       // The FAIL itself was logged where it was read (the raw listener).
       return;
     }
-    // Replied, or went quiet after its batch opened: this page is what there is.
     if (walk.kind === 'targets') {
       this.endedTargets(active, walk, limit);
       return;
     }
     walk.fetched += active.messages;
     walk.pages++;
-    const cap = this.host.maxLines(walk.target);
     const full = active.lines >= limit;
-    const more =
-      full &&
-      !active.last &&
-      active.newest !== null &&
-      active.newest > walk.from &&
-      (cap <= 0 || walk.fetched < cap);
-    if (!more) {
+    const next =
+      full && !active.last && active.newest !== null
+        ? this.nextFrom(walk.from, active.newest)
+        : null;
+    if (next === null) {
       if (walk.fetched > 0) {
         this.host.log(
           `History backfill: ${walk.target} caught up ${walk.fetched} line${walk.fetched === 1 ? '' : 's'}` +
@@ -315,39 +376,40 @@ export class ChathistoryBackfill {
       }
       return;
     }
-    // The next page starts where this one stopped. The bound is exclusive, so
-    // a line at exactly that millisecond would be skipped; the dedupe makes
-    // the alternative (a second-back overlap) free, so take it.
-    walk.from = shifted(active.newest!, -1);
+    walk.from = next;
     this.queue.unshift(walk);
   }
 
   private endedTargets(active: Active, walk: Targets, limit: number): void {
     walk.pages++;
-    // Every DM named gets its own window: from the newest line we hold with
-    // them (or the network anchor for a conversation that began in the gap)
-    // to the end of the gap. Channels are the JOIN's business.
+    // Every DM named gets its own window: from the newest line we held with
+    // them when the walk began, or from the walk's own start for a
+    // conversation that began in the gap, to the end of the gap. Channels are
+    // the JOIN's business.
     const windows: Between[] = [];
     for (const target of active.found.keys()) {
       if (isChannelTarget(target)) continue;
       const key = this.host.fold(target);
       if (walk.seen.has(key)) continue;
       walk.seen.add(key);
-      const anchor = this.host.anchor(target);
+      const anchor = walk.anchors.get(key);
       windows.push({
         kind: 'between',
         target,
-        from: anchor ? shifted(anchor, -BOUND_FUZZ_MS) : walk.from,
+        from: anchor ? shifted(anchor, -BOUND_FUZZ_MS) : walk.origin,
         to: walk.to,
         fetched: 0,
         pages: 0,
       });
     }
-    // Newest-first in the queue is no concern; they go one at a time anyway.
     this.queue.push(...windows);
     const full = active.lines >= limit;
-    if (full && !active.last && active.newest !== null && active.newest > walk.from) {
-      walk.from = shifted(active.newest, -1);
+    const next =
+      full && !active.last && active.newest !== null
+        ? this.nextFrom(walk.from, active.newest)
+        : null;
+    if (next !== null) {
+      walk.from = next;
       this.queue.unshift(walk);
     }
   }

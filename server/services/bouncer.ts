@@ -3695,6 +3695,9 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // Self-originated conversation (sent from the web UI, MCP, or another
   // attached IRC client) — the upstream never echoes it, so synthesize it.
   if (!event.self) return;
+  // Not one of our own lines a history backfill brought back (#1283): the
+  // batch it came in was kept from the clients, and so is this.
+  if (event.replay) return;
   if (type !== 'message' && type !== 'action' && type !== 'notice') return;
   const target = typeof event.target === 'string' ? event.target : '';
   // ⚠⚠ `=nick` is a DCC chat buffer, not an IRC target. Without this, a line the

@@ -1961,23 +1961,29 @@ export function newestConversationTime(
   return row?.time ?? null;
 }
 
-// The same across every channel and DM buffer of a network: the newest line
-// the network gave us at all, the lower bound of a CHATHISTORY TARGETS. One
-// seek per buffer, never a scan of the network's rows (idx_messages_net is by
-// id, and MAX(time) over it would read them all).
-const networkBufferIdsStmt = db.prepare(
-  `SELECT id FROM buffers WHERE network_id = ? AND kind IN ('channel', 'dm')`,
+// The same for every channel and DM buffer of a network, by folded target:
+// the anchors of a history backfill, read in one go before the socket can
+// add to any of them (a live line landing meanwhile would move an anchor
+// past the whole outage). One seek per buffer, never a scan of the network's
+// rows (idx_messages_net is by id, and MAX(time) over it would read them all).
+const networkBuffersStmt = db.prepare(
+  `SELECT id, target_folded AS target FROM buffers
+   WHERE network_id = ? AND kind IN ('channel', 'dm')`,
 );
-export function newestConversationTimeForNetwork(networkId: number): string | null {
-  if (!networkId) return null;
-  let newest: string | null = null;
-  for (const { id } of networkBufferIdsStmt.all(networkId) as Array<{ id: number }>) {
-    const row = newestConversationStmt.get(id, Number.MAX_SAFE_INTEGER) as
-      | { time: string }
-      | undefined;
-    if (row && (newest === null || row.time > newest)) newest = row.time;
+export function newestConversationTimes(
+  networkId: number,
+  maxId = Number.MAX_SAFE_INTEGER,
+): Map<string, string> {
+  const anchors = new Map<string, string>();
+  if (!networkId) return anchors;
+  for (const { id, target } of networkBuffersStmt.all(networkId) as Array<{
+    id: number;
+    target: string;
+  }>) {
+    const row = newestConversationStmt.get(id, maxId) as { time: string } | undefined;
+    if (row) anchors.set(target, row.time);
   }
-  return newest;
+  return anchors;
 }
 
 // Whether a target has a real (non-notice) conversation — at least one PRIVMSG or

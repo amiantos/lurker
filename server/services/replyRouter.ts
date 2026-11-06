@@ -347,6 +347,10 @@ export class ReplyRouter {
   private readonly modes = new Map<string, { mode: string; created: string | null }>();
   // The `batch=` tag of the line being noted (see noteServerLine).
   private lineBatch: string | undefined;
+  // Batches whose query timed out before they closed, by reference, with the
+  // asker: a late line inside one is still that asker's (a history page's
+  // lines must never become someone's live traffic), until its BATCH -.
+  private readonly orphanBatches = new Map<string, Asker | null>();
 
   constructor(opts: ReplyRouterOptions) {
     this.opts = opts;
@@ -401,6 +405,7 @@ export class ReplyRouter {
       this.settle = null;
       if (this.settles(settle, command, params)) owner = settle.query.asker ?? 'nobody';
     }
+    owner ??= this.claimOrphan(command, params);
     owner ??= this.claim(command, params);
     if (typeof owner === 'object') owner.onReply?.(command, params);
     // Only now, so a query sent here can't take the line it was sent after.
@@ -430,6 +435,7 @@ export class ReplyRouter {
     this.waiting = [];
     this.settle = null;
     this.modes.clear();
+    this.orphanBatches.clear();
     for (const query of ended) this.abort(query);
   }
 
@@ -574,6 +580,10 @@ export class ReplyRouter {
           return;
         }
         this.takeOffWire(query);
+        if (query.batchRef) {
+          if (this.orphanBatches.size >= 100) this.orphanBatches.clear();
+          this.orphanBatches.set(query.batchRef, query.asker);
+        }
         this.abort(query);
         query.onEnd?.('timeout');
         this.releaseWaiting();
@@ -587,6 +597,19 @@ export class ReplyRouter {
     if (index !== -1) this.wire.splice(index, 1);
     if (query.timer) clearTimeout(query.timer);
     query.timer = null;
+  }
+
+  // A line of a batch whose query timed out before the batch closed.
+  private claimOrphan(command: string, params: string[]): ReplyOwner | undefined {
+    if (this.orphanBatches.size === 0) return undefined;
+    const ref =
+      command === 'BATCH' && (params[0] ?? '').startsWith('-')
+        ? (params[0] ?? '').slice(1)
+        : this.lineBatch;
+    if (!ref || !this.orphanBatches.has(ref)) return undefined;
+    const asker = this.orphanBatches.get(ref) ?? null;
+    if (command === 'BATCH') this.orphanBatches.delete(ref);
+    return asker ?? 'nobody';
   }
 
   private claim(command: string, params: string[]): ReplyOwner | undefined {
@@ -794,7 +817,19 @@ export class ReplyRouter {
 
   private isErrorFor(query: Query, command: string, params: string[]): boolean {
     if (COMMAND_ERRORS.has(command)) return (params[1] ?? '').toUpperCase() === query.command;
-    if (command === 'FAIL') return (params[0] ?? '').toUpperCase() === query.command;
+    if (command === 'FAIL') {
+      if ((params[0] ?? '').toUpperCase() !== query.command) return false;
+      // FAIL CHATHISTORY <code> <sub> [<target>]: two CHATHISTORY queries can
+      // be on the wire (Lurker's walk, a user's own), so the subcommand must
+      // be this one's, and a channel it names must be this one's.
+      if (query.form === 'chathistory') {
+        const sub = (params[2] ?? '').toUpperCase();
+        if (sub && sub !== query.sub) return false;
+        const named = params[3] ?? '';
+        if (isChannelTarget(named) && !query.targets.has(this.opts.fold(named))) return false;
+      }
+      return true;
+    }
     if (TARGET_ERRORS.has(command)) return query.targets.has(this.opts.fold(params[1] ?? ''));
     if (command === '431') return query.form === 'whois' || query.form === 'whowas';
     // WHOWAS's own error. A WHOIS for the same nick mustn't take it.
