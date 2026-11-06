@@ -484,6 +484,7 @@ import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { setUnreadDividerShown } from '../lib/unreadDivider.js';
+import { orderByTime } from '../lib/messageOrder.js';
 import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
@@ -735,7 +736,14 @@ function setUnreadDividerEl(el: Element | ComponentPublicInstance | null): void 
 }
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
-const messages = computed(() => buffer.value?.messages || []);
+// The store holds a buffer's rows in id order, the order they were stored
+// in and the one its paging cursors and unread boundary are kept in. Shown
+// by time (lib/messageOrder): a line fetched after the fact (`replay`, a gap
+// filled from the network's history) was stored after the rejoin it
+// precedes, and by id it would sit under that join. Every read below that
+// is about what is on screen (the scroll anchors, the dividers, the tail)
+// takes this order; the pagers read the store's ends (buf.oldestId).
+const messages = computed(() => orderByTime(buffer.value?.messages || []));
 
 // "Loading messages…" vs "No messages yet.": an empty list whose buffer is
 // unhydrated (fresh-connect shell / wiped detach slice) or mid-fetch is

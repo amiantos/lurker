@@ -120,8 +120,10 @@ only works if timestamps are trustworthy.
   back. On a network that keeps history (ergo, soju, another Lurker), every rejoin
   asks for the lines between the newest one the channel holds and the join, and
   one `CHATHISTORY TARGETS` per registration finds the conversations that had a
-  line in the meantime. The lines land at their own times, count as unread, and
-  never notify: they are what was missed, not what just happened. Asked for in
+  line in the meantime. The lines land at their own times and are shown there,
+  under the lines they followed rather than under the rejoin they were stored
+  after; they count as unread, and never notify: they are what was missed, not
+  what just happened. Asked for in
   pages, one request on the wire at a time, behind your own typing; a buffer with
   nothing stored asks for nothing, since a first join is not an outage. The same
   path takes a ZNC's playback at attach, which used to be dropped whole, so a
