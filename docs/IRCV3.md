@@ -124,7 +124,8 @@ only works if timestamps are trustworthy.
   under the lines they followed rather than under the rejoin they were stored
   after; they count as unread, and never notify: they are what was missed, not
   what just happened. Asked for in
-  pages, one request on the wire at a time, behind your own typing; a buffer with
+  pages, one request on the wire at a time, behind your own typing and not held
+  by the flood clock, since the server's replies pace it already; a buffer with
   nothing stored asks for nothing, since a first join is not an outage. The same
   path takes a ZNC's playback at attach, which used to be dropped whole, so a
   bouncer that replays its buffer on every attach no longer doubles anything.

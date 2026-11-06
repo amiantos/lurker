@@ -1636,7 +1636,12 @@ export class IrcConnection {
       prefixModes: () => this.prefixModes(),
     });
     this.chathistory = new ChathistoryBackfill({
-      send: (line, onEnd) => this.replies.send('lurker', line, undefined, { onEnd }),
+      // Unpaced, as the re-attach's channel walk is (sendPacer): one request
+      // in flight, the next not asked until the server has answered the
+      // last, so its replies pace it already, and the flood clock on top
+      // made every page wait its own turn for nothing. Still behind whatever
+      // waits ahead of it in the lanes, still charged, capped.
+      send: (line, onEnd) => this.replies.send('lurker', line, undefined, { onEnd, unpaced: true }),
       limit: () => {
         const token = this.client.network?.supports('CHATHISTORY');
         const n = typeof token === 'string' ? parseInt(token, 10) : 0;

@@ -8,7 +8,7 @@
 // is no longer dropped whole.
 
 import '../test-utils/isolateDb.js';
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import db from '../db/index.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
@@ -16,6 +16,7 @@ import type { Network } from '../db/networks.js';
 import { FakeIrcd, rawClient } from '../test-utils/fakeIrcd.js';
 import type { FakeIrcdOptions } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
+import { ReplyRouter } from './replyRouter.js';
 
 type Ev = Record<string, unknown>;
 let ircManager: typeof import('./ircManager.js').default;
@@ -129,6 +130,10 @@ describe('a gap filled from the network’s history', () => {
       await until(() => conn.isChannelJoined('#gap'), 5000, 'joined #gap');
       ircd.say('peer', '#gap', 'before the drop');
       await until(() => texts(network.id, '#gap').length === 1, 5000, 'the live line stored');
+      // What the requests are sent with: the server's replies pace the walk,
+      // so the flood clock must not (sendPacer, `unpaced`). On the
+      // prototype: the reconnect builds the socket's router anew.
+      const sent = vi.spyOn(ReplyRouter.prototype, 'send');
 
       await tick();
       ircd.drop(nick, false);
@@ -178,6 +183,14 @@ describe('a gap filled from the network’s history', () => {
       const bounds = asked.map((l) => /timestamp=(\S+) timestamp=(\S+)/.exec(l)!);
       expect(new Set(bounds.map((b) => b[2])).size).toBe(1);
       for (let i = 1; i < bounds.length; i++) expect(bounds[i][1] > bounds[i - 1][1]).toBe(true);
+      const requests = sent.mock.calls.filter(
+        ([, line]) => typeof line === 'string' && line.startsWith('CHATHISTORY '),
+      );
+      expect(requests.length).toBeGreaterThanOrEqual(4);
+      for (const [, , , opts] of requests) {
+        expect((opts as { unpaced?: boolean } | undefined)?.unpaced).toBe(true);
+      }
+      sent.mockRestore();
       // The frames said what they were: replayed, so no toast or push.
       const replayed = events.filter((e) => e.type === 'message' && e.replay === true);
       expect(replayed.map((e) => e.text)).toEqual(['gap one', 'gap two', 'gap three']);
