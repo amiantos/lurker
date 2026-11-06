@@ -698,8 +698,8 @@ function currentMultilineLimits(): MultilineLimits | null {
 }
 
 // How many draft/multiline messages `raw` will become on this network: 0 when
-// it won't be a multiline send (a slash command, /me, no newline, or the
-// network lacks the cap), 1 for a single batch, ≥2 for that many logical
+// it won't be a multiline send (a slash command, /me, one line that fits, or
+// the network lacks the cap), 1 for a single batch, ≥2 for that many logical
 // messages. Mirrors the server partition in ircManager.send so the indicator
 // and the upload-as-.txt gate count messages-the-channel-sees, not raw wire
 // lines. (#381)

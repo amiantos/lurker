@@ -38,6 +38,55 @@ function chunk(text: string, bytes: number): string[] {
   return pieces;
 }
 
+// The wire pieces of one logical line inside a draft/multiline batch, where the
+// 2nd+ piece is a concat continuation the receiver glues straight onto the one
+// before it. lineBreak drops the whitespace it cuts a line at — right for
+// independent PRIVMSGs, where the cut reads as a line break anyway, and wrong
+// here: "AAA BBB" cut at the space came back as "AAABBB" on every multiline
+// client, ours included (the self echo is reassembled from these pieces). Only
+// whitespace is ever dropped, and only between pieces, so walking the original
+// alongside the pieces finds each dropped run; it goes back on the trailing
+// edge of the piece before it when that still fits the budget (obby does the
+// same), else on the leading edge of the piece after, else as pieces of its own.
+function chunkConcat(line: string, bytes: number): string[] {
+  const pieces = chunk(line, bytes);
+  if (pieces.length <= 1) return pieces;
+  const out: string[] = [];
+  let cursor = 0;
+  const restore = (gap: string, next: string | null): string | null => {
+    const prev = out.length > 0 ? out[out.length - 1] : null;
+    if (prev != null && byteLen(prev + gap) <= bytes) {
+      out[out.length - 1] = prev + gap;
+      return next;
+    }
+    if (next != null && byteLen(gap + next) <= bytes) return gap + next;
+    // Whitespace alone, in budget-sized pieces (a run longer than a whole line
+    // is nothing anyone types, but the join must stay byte-exact regardless).
+    let run = '';
+    for (const ch of gap) {
+      if (byteLen(run + ch) > bytes) {
+        out.push(run);
+        run = '';
+      }
+      run += ch;
+    }
+    if (run) out.push(run);
+    return next;
+  };
+  for (const piece of pieces) {
+    const gap = /^\s*/.exec(line.slice(cursor))![0];
+    const at = cursor + gap.length;
+    // Not this line's pieces in order — lineBreak never does this; keep them as cut.
+    if (!line.startsWith(piece, at)) return pieces;
+    cursor = at + piece.length;
+    out.push(gap ? (restore(gap, piece) as string) : piece);
+  }
+  // Trailing whitespace lineBreak had no room for.
+  const tail = line.slice(cursor);
+  if (tail) restore(tail, null);
+  return out;
+}
+
 // Split a PRIVMSG body the way irc-framework would: first on line breaks
 // (each becomes its own series of wire messages — \n inside a PRIVMSG is
 // illegal anyway), then byte-chunk each line.
@@ -75,7 +124,8 @@ export interface MultilineWireMessage {
 // splitSay path drops, making the two send paths disagree at newline edges
 // (#381 review). Each source line is byte-chunked the same way the wire splitter
 // does; the 2nd+ chunk of an over-long line carries concat so the receiver glues
-// it back without inserting a newline mid-line. The whole-batch max-bytes /
+// it back without inserting a newline mid-line, and keeps the whitespace at the
+// cut so the glue is seamless (chunkConcat). The whole-batch max-bytes /
 // max-lines budget is enforced by partitionMultiline, not here.
 export function splitMultiline(
   text: string | null | undefined,
@@ -88,7 +138,7 @@ export function splitMultiline(
       out.push({ content: '', concat: false });
       continue;
     }
-    chunk(line, bytes).forEach((part, i) => {
+    chunkConcat(line, bytes).forEach((part, i) => {
       out.push({ content: part, concat: i > 0 });
     });
   }
@@ -193,9 +243,11 @@ export function partitionMultiline(
 
 // True when `text` carries a newline that isn't just a leading/trailing edge —
 // i.e. it would actually become a multi-line draft/multiline send once
-// splitMultiline trims edge blanks. The send path gates multiline on this (not a
-// bare newline test) so "hello\n" stays a single-line legacy send and the server
-// agrees with the client's multilineMessageCount, which trims the same way. (#381)
+// splitMultiline trims edge blanks. The send path batches on this (not a bare
+// newline test) so "hello\n" stays a single-line legacy send, and the server
+// agrees with the client's multilineMessageCount, which trims the same way. A
+// body with no newline still batches when it is too long for one PRIVMSG — that
+// test is the chunk count, made by the caller. (#381)
 export function hasInteriorNewline(text: string): boolean {
   return /\r\n|\n|\r/.test(text.replace(/^(?:\r\n|\r|\n)+/, '').replace(/(?:\r\n|\r|\n)+$/, ''));
 }

@@ -1022,15 +1022,18 @@ class IrcManager extends EventEmitter {
     // go out with the next send to any channel, as they did before #1149; an
     // E2E send drains them itself, ahead of its own chunks.
     conn.flushE2eRekeys();
-    // A multi-line compose rides draft/multiline batches where the server
-    // supports the cap: it lands as one logical message per batch (the body is
-    // partitioned to the server's limits, so a big paste is N messages, not N
-    // raw lines), and the sender echoes one bubble per batch to match. Networks
-    // without the cap fall through to the per-line split that mirrors what
-    // irc-framework actually puts on the wire. We gate on an INTERIOR newline
-    // (not a bare newline) so "hello\n" stays a single-line send — splitMultiline
-    // trims edge blanks, and the client's multilineMessageCount gates the same
-    // way, so the two stay in sync. (#381)
+    // A compose that is more than one PRIVMSG rides draft/multiline batches
+    // where the server supports the cap: several lines, or one line too long
+    // for the wire, which goes as concat continuations instead of N independent
+    // lines the room reads interleaved with its own chatter. It lands as one
+    // logical message per batch (the body is partitioned to the server's
+    // limits, so a big paste is N messages, not N raw lines), and the sender
+    // echoes one bubble per batch to match. Networks without the cap fall
+    // through to the per-line split that mirrors what irc-framework actually
+    // puts on the wire. The newline test is for an INTERIOR newline (not a bare
+    // one) so "hello\n" stays a single-line send — splitMultiline trims edge
+    // blanks — and the client's multilineMessageCount gates on the same two
+    // conditions, so the two stay in sync. (#381)
     // With upstream echo-message ACKed, the server reflects our sends back and
     // the ircConnection message handler adopts that echo as the persisted self
     // row (real msgid + server time, #450) — so the optimistic publish below is
@@ -1042,7 +1045,8 @@ class IrcManager extends EventEmitter {
     // Our own copy is a reply only when the tags actually went out; with
     // echo-message the echo says so itself.
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
-    if (hasInteriorNewline(text) && conn.supportsMultiline()) {
+    const chunks = conn.sayChunks('PRIVMSG', target, text);
+    if (conn.supportsMultiline() && (hasInteriorNewline(text) || chunks.length > 1)) {
       const nick = conn.currentNick;
       const echoes = conn.sendMultiline(target, text, reply?.tags, opts.lineHooks);
       if (!adoptEcho) {
@@ -1060,7 +1064,6 @@ class IrcManager extends EventEmitter {
       }
       return true;
     }
-    const chunks = conn.sayChunks('PRIVMSG', target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
       conn.say(target, chunk, first ? reply.tags : null, lineHooks(opts.lineHooks, chunk));

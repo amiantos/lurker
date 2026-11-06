@@ -177,12 +177,13 @@ export interface MultilineLimits {
   maxLines: number;
 }
 
-// How many draft/multiline batches a plain multi-line body will produce on a
-// network that negotiated the cap — i.e. how many logical messages the channel
-// will see. Returns 0 when the send won't be multiline at all (no interior
-// newline, or the network lacks the cap), so callers treat 0 as "fall back to
+// How many draft/multiline batches a plain body will produce on a network that
+// negotiated the cap — i.e. how many logical messages the channel will see.
+// Returns 0 when the send won't be multiline at all (one line that fits a
+// PRIVMSG, or the network lacks the cap), so callers treat 0 as "fall back to
 // the wire-chunk estimate". 1 = a single batch (no flood); ≥2 = that many
-// messages, NOT N raw lines.
+// messages, NOT N raw lines. A single line too long for the wire is a batch
+// too (its pieces are concat continuations), the same as the server's gate.
 //
 // Mirrors the server's partitionMultiline (server/services/messageSplit): pack
 // lines into batches under max-lines (count of wire PRIVMSGs) and max-bytes
@@ -200,7 +201,7 @@ export function multilineMessageCount(
   // server reports null limits for it, but guard here too so the count matches.
   if (limits.maxBytes < MESSAGE_MAX_BYTES) return 0;
   const body = text.replace(/^(?:\r\n|\r|\n)+/, '').replace(/(?:\r\n|\r|\n)+$/, '');
-  if (!/\r\n|\n|\r/.test(body)) return 0;
+  if (!/\r\n|\n|\r/.test(body) && chunksForLine(body, bytes) <= 1) return 0;
   let batches = 0;
   let curLines = 0;
   let curBytes = 0;

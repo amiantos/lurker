@@ -3373,6 +3373,29 @@ describe('IRCv3 draft/multiline (#381)', () => {
       );
     });
 
+    it('sends one long line as a single batch of concat continuations', () => {
+      const conn = makeConn();
+      enableMultiline(conn);
+      const raw = vi.fn<(line: string) => void>();
+      conn.client.raw = raw;
+      const text = `${'lorem ipsum dolor sit amet '.repeat(40)}end`;
+      const echoes = conn.sendMultiline('#chan', text);
+      const lines = raw.mock.calls.map((c) => c[0]);
+      const ref = lines[0].match(/^BATCH \+(\S+)/)![1];
+      expect(lines[0]).toBe(`BATCH +${ref} draft/multiline #chan`);
+      expect(lines[lines.length - 1]).toBe(`BATCH -${ref}`);
+      const body = lines.slice(1, -1);
+      expect(body.length).toBeGreaterThan(1);
+      expect(body[0].startsWith(`@batch=${ref} PRIVMSG #chan :`)).toBe(true);
+      for (const line of body.slice(1)) {
+        expect(line.startsWith(`@batch=${ref};draft/multiline-concat PRIVMSG #chan :`)).toBe(true);
+      }
+      // What the room glues back together is the line as typed, spaces included.
+      const joined = body.map((line) => line.slice(line.indexOf(' :') + 2)).join('');
+      expect(joined).toBe(text);
+      expect(echoes).toEqual([text]);
+    });
+
     it('splits an over-limit body into multiple batches, each with its own ref', () => {
       const conn = makeConn();
       enableMultiline(conn, 'max-bytes=4096,max-lines=2');
