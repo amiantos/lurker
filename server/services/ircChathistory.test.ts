@@ -106,6 +106,8 @@ async function dropAndRejoin(
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 5));
+// `s` seconds past an hour ago, as an IRC timestamp.
+const ago = (s: number) => new Date(Date.now() - 3_600_000 + s * 1000).toISOString();
 
 describe('a gap filled from the network’s history', () => {
   let ircd: FakeIrcd;
@@ -284,7 +286,6 @@ describe('a gap filled from the network’s history', () => {
       await until(() => conn.isChannelJoined('#znc'), 5000, 'joined');
       // An hour ago: ZNC's buffer is the past (a stamp in the future would be
       // clamped to receive time, MAX_FUTURE_TIME_SKEW_MS).
-      const ago = (s: number) => new Date(Date.now() - 3_600_000 + s * 1000).toISOString();
       const buffer = [
         { time: ago(0), line: ':alice!~a@znc PRIVMSG #znc :first' },
         { time: ago(1), line: ':bob!~b@znc PRIVMSG #znc :second' },

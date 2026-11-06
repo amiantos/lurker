@@ -153,6 +153,14 @@ export const DEFAULT_CAPS = [
 // are always empty.
 const LIST_ENDS: Record<string, string | undefined> = { b: '368', e: '349', I: '347' };
 
+// A CHATHISTORY bound: `*` (null, LATEST only), `timestamp=<iso>` (the
+// time), anything else undefined.
+function chathistoryBound(s: string | undefined): string | null | undefined {
+  if (s === '*') return null;
+  if (!s || !s.startsWith('timestamp=')) return undefined;
+  return s.slice('timestamp='.length);
+}
+
 // `sasl=PLAIN,EXTERNAL` → `sasl`.
 function capName(cap: string): string {
   return cap.split('=')[0];
@@ -368,7 +376,7 @@ export class FakeIrcd extends EventEmitter {
   // --- history (opts.chathistory) --------------------------------------------
 
   private static dmKey(a: string, b: string): string {
-    return 'dm:' + [a.toLowerCase(), b.toLowerCase()].sort().join('|');
+    return 'dm:' + [a.toLowerCase(), b.toLowerCase()].toSorted().join('|');
   }
 
   // Keep a relayed line, whether or not anyone was there to receive it: a
@@ -431,11 +439,7 @@ export class FakeIrcd extends EventEmitter {
     const sub = (p[0] ?? '').toUpperCase();
     if (opts.fail)
       return this.chathistoryFail(c, opts.fail, sub, sub === 'TARGETS' ? [] : [p[1] ?? '*']);
-    const bound = (s: string | undefined): string | null | undefined => {
-      if (s === '*') return null;
-      if (!s || !s.startsWith('timestamp=')) return undefined;
-      return s.slice('timestamp='.length);
-    };
+    const bound = chathistoryBound;
     const limitOf = (s: string | undefined): number | undefined => {
       const n = Number(s);
       return Number.isInteger(n) && n > 0 && n <= opts.limit ? n : undefined;

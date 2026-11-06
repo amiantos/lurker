@@ -32,7 +32,7 @@ function host(over: Partial<BackfillHost> & { anchors?: Record<string, string | 
       networkAnchor: () =>
         Object.values(anchors)
           .filter((t): t is string => !!t)
-          .sort()
+          .toSorted()
           .at(-1) ?? null,
       maxLines: () => 0,
       fold: (name) => name.toLowerCase(),
