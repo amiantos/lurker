@@ -198,7 +198,9 @@ describe('a line too long for the wire, on a network with draft/multiline', () =
     expect(await clientTexts(multiline, c, mark, 'PRIVMSG', '#room')).toEqual([]);
   });
 
-  it('comes back once, whole, to a client that asked for echo-message', async () => {
+  // The bouncer never offers draft/multiline, so the one message comes back cut
+  // to the client's 512-byte line, as the network would cut it.
+  it('comes back once, on wire-sized lines, to a client that asked for echo-message', async () => {
     const live = await seedLive(multiline);
     const c = await attachIn(live, '#room', `${BASE_CAPS} echo-message`);
 
@@ -209,7 +211,10 @@ describe('a line too long for the wire, on a network with draft/multiline', () =
       5000,
       'the batch upstream',
     );
-    expect(await clientTexts(multiline, c, mark, 'PRIVMSG', '#room')).toEqual([LONG]);
+    const back = await clientTexts(multiline, c, mark, 'PRIVMSG', '#room');
+    expect(back).toHaveLength(2);
+    for (const line of back) expect(Buffer.byteLength(line)).toBeLessThanOrEqual(512);
+    expect(back.join(' ')).toBe(LONG);
   });
 });
 

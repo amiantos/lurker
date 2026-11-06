@@ -116,7 +116,8 @@ import {
 } from './bouncerClientFilter.js';
 import type { MonitorHolder } from './monitorList.js';
 import { METADATA_CAP, isValidMetadataKey } from './ircMetadata.js';
-import { reassembleMultiline } from './messageSplit.js';
+import { reassembleMultiline, splitSay } from './messageSplit.js';
+import { IRC_LINE_BYTES, MIN_TEXT_BUDGET } from '../../shared/wireBudget.js';
 import { isServicesNick } from '../utils/servicesNick.js';
 import type { ReplyClient } from './replyRouter.js';
 
@@ -2525,12 +2526,20 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // is the message's, as a multiline reply's tag rides its BATCH line.
   private messageLines(head: string, bodies: string[], tags: ReplayTags): string[] {
     const out: string[] = [];
+    // A body wider than the wire is cut to it, word-greedy as the network cuts
+    // one: a stored line that was one draft/multiline message (a long line that
+    // came in as concat continuations, or went up as one batch) is longer than
+    // a client's 512-byte line, and the bouncer never offers the cap, so the
+    // client takes the pieces as the lines they are. Tags are not in the 512.
+    const budget = Math.max(MIN_TEXT_BUDGET, IRC_LINE_BYTES - Buffer.byteLength(`${head} :`) - 2);
     for (const body of bodies) {
       if (body === '') continue;
-      const block = this.formatTags(
-        out.length === 0 ? tags : { ...tags, msgid: undefined, clientTags: undefined },
-      );
-      out.push(`${block}${head} :${body}`);
+      for (const piece of splitSay(body, budget)) {
+        const block = this.formatTags(
+          out.length === 0 ? tags : { ...tags, msgid: undefined, clientTags: undefined },
+        );
+        out.push(`${block}${head} :${piece}`);
+      }
     }
     return out;
   }

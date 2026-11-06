@@ -698,16 +698,17 @@ function currentMultilineLimits(): MultilineLimits | null {
 }
 
 // How many draft/multiline messages `raw` will become on this network: 0 when
-// it won't be a multiline send (a slash command, /me, one line that fits, or
-// the network lacks the cap), 1 for a single batch, ≥2 for that many logical
-// messages. Mirrors the server partition in ircManager.send so the indicator
-// and the upload-as-.txt gate count messages-the-channel-sees, not raw wire
-// lines. (#381)
+// it won't be a multiline send (a command that isn't a PRIVMSG body, /me, one
+// line that fits, or the network lacks the cap), 1 for a single batch, ≥2 for
+// that many logical messages. The body and its destination are bodyForSplit's,
+// the same as the SPLIT count's: a long /msg or /shrug is a `send` the server
+// batches like a plain line. Mirrors the server partition in ircManager.send so
+// the indicator and the upload-as-.txt gate count messages-the-channel-sees,
+// not raw wire lines. (#381)
 function multilineCountFor(raw: string): number {
-  const isPlainSend = !raw.startsWith('/') || raw.startsWith('//');
-  if (!isPlainSend) return 0;
-  const wireBody = applySpoilerMarkup(raw.startsWith('//') ? raw.slice(1) : raw);
-  return multilineMessageCount(wireBody, currentMultilineLimits(), lineBudget(undefined, false));
+  const { body, isAction, target } = bodyForSplit(raw);
+  if (isAction || !body) return 0;
+  return multilineMessageCount(body, currentMultilineLimits(), lineBudget(target, false));
 }
 
 // Recompute and broadcast the composing state (drives StatusBar). Single source
