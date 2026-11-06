@@ -239,7 +239,10 @@ describe('a gap filled from the network’s history', () => {
       const reacted = rowsFor(network.id, '#dmgap').find((r) => r.text === 'react to this')!;
       expect(reactionsOn(reacted.id)).toEqual([{ nick: 'other', value: '👍' }]);
       const asked = chathistoryCommands(ircd, nick);
-      expect(asked.filter((l) => l.startsWith('CHATHISTORY TARGETS '))).toHaveLength(1);
+      // Three conversations had a line, at a page of two: TARGETS pages too.
+      expect(
+        asked.filter((l) => l.startsWith('CHATHISTORY TARGETS ')).length,
+      ).toBeGreaterThanOrEqual(1);
       // Each conversation got its own window (pages of two, so a window that
       // holds its anchor line and one missed takes two); the channel was the
       // JOIN's, not the TARGETS'.
@@ -397,4 +400,50 @@ describe('a network that refuses', () => {
       stop();
     }
   }, 30000);
+});
+
+describe('a multiline message inside a history page', () => {
+  let ircd: FakeIrcd;
+  beforeAll(async () => {
+    ircd = await FakeIrcd.start({ chathistory: { limit: 100 } });
+  });
+  afterAll(async () => {
+    await ircd.close();
+  });
+
+  // irc-framework hands a batch's lines to their handlers only when the batch
+  // ends, and drops a line tagged with a batch it has not yet opened
+  // (commands/handler.js, dispatch). A multiline message inside a history
+  // page is a batch nested in a batch: its opening line waits for the page
+  // to end, so its lines are dropped as they arrive. The message is lost —
+  // before this it was lost with the whole page — and the page carries on.
+  it('is lost by irc-framework, and the rest of the page still lands', async () => {
+    const nick = 'nested';
+    const { network, conn, events, stop } = start(ircd, nick);
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      ircManager.joinChannel(userId, network.id, '#ml');
+      await until(() => conn.isChannelJoined('#ml'), 5000, 'joined');
+      const t = new Date(Date.now() - 60_000).toISOString();
+      for (const line of [
+        `:fake.test BATCH +o chathistory #ml`,
+        `@batch=o;time=${t};msgid=mm1 :fake.test BATCH +i draft/multiline #ml`,
+        `@batch=i :peer!~p@h PRIVMSG #ml :line one`,
+        `@batch=i :peer!~p@h PRIVMSG #ml :line two`,
+        `@batch=o :fake.test BATCH -i`,
+        `@batch=o;time=${t};msgid=mm2 :peer!~p@h PRIVMSG #ml :plain after`,
+        `:fake.test BATCH -o`,
+      ])
+        ircd.sendRaw(nick, line);
+      await until(() => texts(network.id, '#ml').length >= 1, 5000, 'the plain line stored');
+      await new Promise((r) => setTimeout(r, 300));
+      expect(rowsFor(network.id, '#ml').map((r) => [r.text, r.msgid])).toEqual([
+        ['plain after', 'mm2'],
+      ]);
+      const msgs = events.filter((e) => e.type === 'message');
+      expect(msgs.map((e) => [e.text, e.replay])).toEqual([['plain after', true]]);
+    } finally {
+      stop();
+    }
+  }, 15000);
 });

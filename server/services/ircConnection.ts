@@ -1366,10 +1366,12 @@ export class IrcConnection {
   // Null outside a catch-up.
   private reattachLog: Reattach | null = null;
   // The engine reported a hole in the backlog it handed over: when the last
-  // line went, and the newest row stored before this attach (the hole starts
-  // after it). At `live`, every channel we are in is asked for the gap
-  // (chathistory.gap). Null when the backlog was whole.
-  private backlogGap: { at: number; maxId: number } | null = null;
+  // line went, the newest row stored before this attach (the hole starts
+  // after it), and the time of the first row the kept backlog stored (it
+  // ends before it; `at` is later than that by up to the buffer's span). At
+  // `live`, every channel we are in is asked for the gap (chathistory.gap).
+  // Null when the backlog was whole.
+  private backlogGap: { at: number; maxId: number; firstKeptAt: string | null } | null = null;
   // The newest message id when this socket registered: a replay the network
   // pushes unasked (ZNC's playback at attach) repeats lines stored before it,
   // and its own rows sit above it (hasRecentMessageLike). Null until then.
@@ -1636,9 +1638,9 @@ export class IrcConnection {
             ),
           0,
         ),
+      fold: (name) => foldTargetFor(this.network.id, name),
       log: (text, level) => this.logNet(text, level),
     });
-    this.pendingBackfill = new Map();
     this.replyOwner = null;
     this.ctcpAnswerer = null;
     this.lineCommand = null;
@@ -1746,6 +1748,9 @@ export class IrcConnection {
       networkId: this.network.id,
       time,
     };
+    // Which dedupe a replayed line gets is this connection's business, not
+    // the wire's (`replay` itself rides the frame, CLIENT_PROTOCOL.md).
+    delete enriched.replayAsked;
 
     if (this.shouldPersist(event)) {
       // Decide both per-message stamps before persisting, off cached compiled
@@ -1828,6 +1833,10 @@ export class IrcConnection {
       );
       if (!inserted) return;
       const { id, alt, bufferId } = inserted;
+      // The first row the kept backlog stores after a hole bounds the hole.
+      if (this.backlogGap && this.backlogGap.firstKeptAt === null && this.catchingUp) {
+        this.backlogGap.firstKeptAt = time;
+      }
       enriched.id = id;
       enriched.alt = alt;
       // The buffer the row landed in — the wire's stable identity for the
@@ -2142,7 +2151,9 @@ export class IrcConnection {
           !(rawCommand === 'BATCH' && (msg?.params?.[0] ?? '').startsWith('-')) &&
           this.chathistory.isOurs(inBatch)
         ) {
-          this.chathistory.onBatchLine(inBatch, tags.time);
+          const message =
+            rawCommand === 'PRIVMSG' || rawCommand === 'NOTICE' || rawCommand === 'BATCH';
+          this.chathistory.onBatchLine(inBatch, tags.time, message);
         }
       }
       // Capture the registration burst for bouncer attach-time replay. 001
@@ -3162,6 +3173,13 @@ export class IrcConnection {
       // replay from storing every line twice.
       const batchType = batchTypeOf(event);
       const replay = isHistoryReplayBatch(batchType);
+      // Asked for by the gap-fill, as against pushed by the network: it
+      // decides which rows the dedupe may match (alreadyPersisted).
+      const replayAsked =
+        replay && this.chathistory.isOurs((event.batch as { id?: string } | undefined)?.id);
+      const replayFlags = replay
+        ? { replay: true, ...(replayAsked ? { replayAsked: true } : {}) }
+        : {};
       // A `draft/multiline` batch is one logical message fragmented across N
       // PRIVMSGs (#381). Buffer the fragments and flush a single reassembled
       // message on 'batch end draft/multiline' instead of rendering N lines.
@@ -3247,7 +3265,7 @@ export class IrcConnection {
           time: event.time,
           msgid,
           replyMsgid,
-          ...(replay ? { replay: true } : {}),
+          ...replayFlags,
         });
         // Parity with the optimistic path it replaces: no closed-buffer notice
         // mirror, no trackDmPeer/markPeerEvent for ourselves.
@@ -3337,6 +3355,10 @@ export class IrcConnection {
         if (outcome.kind === 'plaintext') {
           bodyText = outcome.text;
           e2eFlag = true;
+        } else if (replay) {
+          // History (#1283): a line we could not read when it was said can't
+          // be read now, and it was missed already. No handshake, no hint.
+          return;
         } else {
           // A peer is talking to us encrypted on a channel we've enabled but have
           // no session for yet — auto-initiate the handshake (rate-limited),
@@ -3389,7 +3411,7 @@ export class IrcConnection {
         msgid,
         replyMsgid,
         ...(e2eFlag ? { e2e: true } : {}),
-        ...(replay ? { replay: true } : {}),
+        ...replayFlags,
       }) as EnrichedEvent | undefined;
       // If a notice's home buffer is one the user has closed, the wsHub fan-out
       // drops its live delivery — so without this the notice would be invisible
@@ -3423,7 +3445,7 @@ export class IrcConnection {
           // Server time yes, msgid no — the msgid names the REAL copy in the
           // home buffer; a react/reply lookup must never resolve to the mirror.
           time: event.time,
-          ...(replay ? { replay: true } : {}),
+          ...replayFlags,
         });
       }
       // An incoming PRIVMSG (not NOTICE) is the moment this nick becomes a
@@ -7065,7 +7087,7 @@ export class IrcConnection {
       case 'gap': {
         const g = info.gap;
         if (!g) break;
-        this.backlogGap = { at: g.at, maxId: this.catchUpMaxId ?? 0 };
+        this.backlogGap = { at: g.at, maxId: this.catchUpMaxId ?? 0, firstKeptAt: null };
         const dropped = g.lastDroppedSeq - g.firstDroppedSeq + 1;
         if (this.reattachLog) reattachGap(this.reattachLog, dropped);
         this.publish({
@@ -7096,12 +7118,13 @@ export class IrcConnection {
         // dropped are what the network's history has. Every channel we are
         // in may have a gap ending now; the backfill asks for each.
         if (this.backlogGap) {
-          const { at, maxId } = this.backlogGap;
+          const { at, maxId, firstKeptAt } = this.backlogGap;
           this.backlogGap = null;
           if (this.capEnabled('draft/chathistory')) {
+            const kept = firstKeptAt ? Date.parse(firstKeptAt) : NaN;
             this.chathistory.gap(
               [...this.channels.values()].map((ch) => ch.name),
-              at,
+              Number.isFinite(kept) ? Math.min(at, kept) : at,
               maxId,
             );
           }
@@ -7479,13 +7502,18 @@ export class IrcConnection {
     // A replayed line (#1283): what the network kept may be in the buffer
     // already — it arrived live before the drop, or an earlier replay stored
     // it. Judged like a catch-up line: by msgid where the network tags, else
-    // the bounded tail probe, below the newest row this socket started with.
+    // the bounded tail probe. A replay nobody asked for (ZNC's playback at
+    // attach) repeats what was stored BEFORE this socket, so its originals
+    // sit below `replayMaxId` and its own rows above. A window Lurker asked
+    // for overlaps rows this socket stored — the line that beat the request,
+    // the page before, the kept tail after a hole — so there the probe reads
+    // the whole tail.
     if (event.replay) {
       if (typeof event.msgid === 'string' && event.msgid !== '') {
         return hasSameMessageWithMsgid(this.network.id, target, event.msgid, type, nick, text);
       }
       return hasRecentMessageLike(this.network.id, target, type, nick, text, time, {
-        maxId: this.replayMaxId ?? undefined,
+        maxId: event.replayAsked ? undefined : (this.replayMaxId ?? undefined),
       });
     }
     if (typeof event.msgid === 'string' && event.msgid !== '') {

@@ -126,7 +126,9 @@ only works if timestamps are trustworthy.
   nothing stored asks for nothing, since a first join is not an outage. The same
   path takes a ZNC's playback at attach, which used to be dropped whole, so a
   bouncer that replays its buffer on every attach no longer doubles anything.
-  With the cap on, ergo and soju also stop replaying at JOIN on their own.
+  With the cap on, ergo and soju also stop replaying at JOIN on their own. One
+  known hole: a multi-line message inside a page (a batch inside the batch) is
+  dropped by irc-framework before Lurker sees it; the rest of the page lands.
   <br>`server/services/chathistoryBackfill.ts`, `server/services/ircConnection.ts`
 
 ### Multi-line messages stay one message

@@ -54,6 +54,8 @@ export interface BackfillHost {
   networkAnchor(): string | null;
   /** How many lines the buffer keeps (its effective retention); 0 = no cap. */
   maxLines(target: string): number;
+  /** The network's case fold (foldTargetFor), for the target a batch names. */
+  fold(name: string): string;
   log(text: string, level?: 'info' | 'warn'): void;
 }
 
@@ -68,6 +70,10 @@ export const BACKFILL_LIMIT_CAP = 1000;
 export const BOUND_FUZZ_MS = 1000;
 // How many answered batches are remembered as ours (isOurs).
 const ASKED_REMEMBERED = 1000;
+// Requests in a row that drew nothing, not even a FAIL, before the network is
+// taken not to honour the cap it offered. One is a lagging server; the walk
+// it was for is dropped, the next goes.
+const UNANSWERED_STRIKES = 2;
 
 type Between = {
   kind: 'between';
@@ -77,15 +83,20 @@ type Between = {
   fetched: number;
   pages: number;
 };
-type Targets = { kind: 'targets'; from: string; to: string; pages: number };
+// `seen`: conversations already given a window. A page's newest target is
+// named again by the next page (the cursor sits a millisecond under it).
+type Targets = { kind: 'targets'; from: string; to: string; pages: number; seen: Set<string> };
 type Walk = Between | Targets;
 
 interface Active {
   walk: Walk;
   /** The reply batch's reference once its BATCH + has come. */
   ref: string | null;
-  /** Lines in the page so far, and the newest time among them. */
+  /** Lines in the page so far (what the server counts toward its limit),
+   *  how many of them are conversation (what retention counts), and the
+   *  newest time among them. */
   lines: number;
+  messages: number;
   newest: string | null;
   /** The server said this page is the last (`draft/chathistory-end`). */
   last: boolean;
@@ -109,10 +120,11 @@ export class ChathistoryBackfill {
   // by what is on the wire. Bounded: a socket that lives for weeks asks for
   // thousands of pages, and the question is only ever asked about the last.
   private asked = new Set<string>();
-  // False once a request went unanswered: the network offered the cap and
+  // False once requests went unanswered: the network offered the cap and
   // honours none of it (a bouncer whose store is off answers nothing at all).
   // Back to true with the next socket.
   private available = true;
+  private unanswered = 0;
 
   constructor(private readonly host: BackfillHost) {}
 
@@ -122,6 +134,7 @@ export class ChathistoryBackfill {
     this.active = null;
     this.asked.clear();
     this.available = true;
+    this.unanswered = 0;
   }
 
   /** Whether `ref` is a batch that answered one of our requests. */
@@ -157,6 +170,7 @@ export class ChathistoryBackfill {
       from: shifted(anchor, -BOUND_FUZZ_MS),
       to: iso(nowMs + BOUND_FUZZ_MS),
       pages: 0,
+      seen: new Set(),
     });
   }
 
@@ -183,27 +197,39 @@ export class ChathistoryBackfill {
     const mine =
       walk.kind === 'targets'
         ? type === 'draft/chathistory-targets'
-        : type === 'chathistory' && !!target && target.toLowerCase() === walk.target.toLowerCase();
+        : type === 'chathistory' &&
+          !!target &&
+          this.host.fold(target) === this.host.fold(walk.target);
     if (!mine) return;
     active.ref = ref;
     active.last = last;
+    this.unanswered = 0;
     if (this.asked.size >= ASKED_REMEMBERED) this.asked.clear();
     this.asked.add(ref);
   }
 
-  /** A line inside our batch, with its `@time` if it has one. */
-  onBatchLine(ref: string, time: string | undefined): void {
+  /** A line inside our batch, with its `@time` if it has one; `message`
+   *  when it is conversation (a PRIVMSG or NOTICE, or a multiline message's
+   *  start) rather than a reaction or a TARGETS entry. */
+  onBatchLine(ref: string, time: string | undefined, message: boolean): void {
     const active = this.active;
     if (!active || active.ref !== ref) return;
     active.lines++;
-    if (time && (active.newest === null || time > active.newest)) active.newest = time;
+    if (message) active.messages++;
+    this.noteTime(active, time);
   }
 
-  /** `CHATHISTORY TARGETS <target> <time>` inside our TARGETS batch. */
+  /** `CHATHISTORY TARGETS <target> <time>` inside our TARGETS batch. The time
+   *  is a parameter, not a tag: it is the page's cursor as much as a line's. */
   onTargetsLine(ref: string, target: string, time: string): void {
     const active = this.active;
     if (!active || active.ref !== ref || !target) return;
     active.found.set(target, time);
+    this.noteTime(active, time);
+  }
+
+  private noteTime(active: Active, time: string | undefined): void {
+    if (time && (active.newest === null || time > active.newest)) active.newest = time;
   }
 
   // --- the walk ----------------------------------------------------------------
@@ -227,6 +253,7 @@ export class ChathistoryBackfill {
       walk,
       ref: null,
       lines: 0,
+      messages: 0,
       newest: null,
       last: false,
       found: new Map(),
@@ -248,8 +275,10 @@ export class ChathistoryBackfill {
   private ended(active: Active, how: QueryEnd, limit: number): void {
     const { walk } = active;
     if (how === 'timeout' && !active.ref) {
-      // Nothing came, not even a FAIL: the cap is a promise this network
-      // doesn't keep. Stop asking it (kiwi's chathistory_available).
+      // Nothing came, not even a FAIL. Once is a lagging server, and this
+      // walk is lost; twice running, the cap is a promise this network
+      // doesn't keep, and asking stops (kiwi's chathistory_available).
+      if (++this.unanswered < UNANSWERED_STRIKES) return;
       this.available = false;
       this.queue = [];
       this.host.log(
@@ -267,7 +296,7 @@ export class ChathistoryBackfill {
       this.endedTargets(active, walk, limit);
       return;
     }
-    walk.fetched += active.lines;
+    walk.fetched += active.messages;
     walk.pages++;
     const cap = this.host.maxLines(walk.target);
     const full = active.lines >= limit;
@@ -301,6 +330,9 @@ export class ChathistoryBackfill {
     const windows: Between[] = [];
     for (const target of active.found.keys()) {
       if (isChannelTarget(target)) continue;
+      const key = this.host.fold(target);
+      if (walk.seen.has(key)) continue;
+      walk.seen.add(key);
       const anchor = this.host.anchor(target);
       windows.push({
         kind: 'between',

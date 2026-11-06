@@ -484,6 +484,10 @@ export class ReplyRouter {
     }
     if (!this.opts.canSend()) {
       this.abort(query);
+      // Over before it began, and said so: a sender waiting on the end of
+      // its query (the history gap-fill, which sends the next behind it)
+      // must not wait on one that never went.
+      query.onEnd?.('error');
       return;
     }
     // On the wire from here, so what follows it waits its turn; its timeout
