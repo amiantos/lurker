@@ -14,6 +14,9 @@ import * as systemLog from './systemLog.js';
 import connectScheduler from './connectScheduler.js';
 import restoreGate from './restoreGate.js';
 import { listNetworksForUser, getNetwork } from '../db/networks.js';
+import { listUserMetadataCache } from '../db/userMetadataCache.js';
+import { userMetadataView, METADATA_ABSENT_SNAPSHOT_DAYS } from './ircMetadata.js';
+import { avatarClientUrl } from './avatarProxy.js';
 import type { Network } from '../db/networks.js';
 import {
   ensureOpen as ensureOpenBuffer,
@@ -231,6 +234,22 @@ export function planChannelRejoins(
 
 function engineHolds(userId: number, networkId: number): boolean {
   return engineConfigured() && EngineLink.shared().holds(engineConnectionId(userId, networkId));
+}
+
+// The cached records of a network with no live connection, as its snapshot
+// shows them (#1246): IrcConnection.metadataInSnapshot's window, from the rows.
+function offlineUserMetadata(networkId: number): Record<string, unknown> {
+  const cutoff = Date.now() - METADATA_ABSENT_SNAPSHOT_DAYS * 86_400_000;
+  const out: Record<string, unknown> = {};
+  try {
+    for (const row of listUserMetadataCache(networkId)) {
+      if (row.absentSince !== null && Date.parse(row.absentSince) < cutoff) continue;
+      out[row.nickLower] = userMetadataView(row.record, avatarClientUrl);
+    }
+  } catch (e) {
+    console.warn('[metadata] cache read failed:', (e as Error)?.message || e);
+  }
+  return out;
 }
 
 class IrcManager extends EventEmitter {
@@ -1690,10 +1709,30 @@ class IrcManager extends EventEmitter {
           away: null,
           channels: [],
           peerPresence: {},
+          // The last records heard of other nicks (#1246), so the history
+          // of a network that is off keeps its avatars too — those departed
+          // longer than the live snapshot's window ago left out, as there.
+          userMetadata: offlineUserMetadata(net.id),
+          metadataLimits: null,
         }),
       );
     }
     return out;
+  }
+
+  /**
+   * After a retention pass took a user's lines (#1246): the departed nicks'
+   * records with nothing left to dress go. Networks with no live connection
+   * are pruned when their connection next loads the cache.
+   */
+  pruneUserMetadataCaches(userId: number): void {
+    for (const conn of this.listConnections(userId)) {
+      try {
+        conn.pruneAbsentMetadata();
+      } catch (e) {
+        console.warn('[metadata] cache prune failed:', (e as Error)?.message || e);
+      }
+    }
   }
 
   // networkId null = a global rule (applies on every network); a number scopes

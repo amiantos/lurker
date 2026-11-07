@@ -215,6 +215,27 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_network_metadata_user ON network_metadata(user_id);
 
+    -- Other people's IRCv3 metadata on a network (#1246, #1269): the last
+    -- record heard for each nick, kept after they leave so the lines they
+    -- wrote keep their avatar and display name. absent_since is NULL while
+    -- the nick is present (a member, a watched DM peer, ourselves) and the
+    -- time it stopped being so otherwise; the snapshot ships absent records
+    -- for a while, the disk keeps them until the nick has no lines left.
+    -- nick is the spelling last seen; nick_lower is the connection's key.
+    CREATE TABLE IF NOT EXISTS user_metadata_cache (
+      network_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      nick TEXT NOT NULL,
+      nick_lower TEXT NOT NULL,
+      record TEXT NOT NULL,
+      absent_since TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (network_id, nick_lower),
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_metadata_cache_user ON user_metadata_cache(user_id);
+
     CREATE TABLE IF NOT EXISTS user_settings (
       user_id INTEGER NOT NULL,
       key TEXT NOT NULL,

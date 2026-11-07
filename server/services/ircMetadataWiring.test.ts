@@ -9,6 +9,7 @@
 // MUST be first: redirects DATABASE_PATH before anything opens the db.
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import db from '../db/index.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
@@ -25,6 +26,8 @@ let seq = 0;
 beforeAll(async () => {
   // The peer-join sync's wait (#1246), shortened: the tests wait on replies.
   process.env.LURKER_METADATA_JOIN_SYNC_MS = '50';
+  // The cache's write-behind (#1246), shortened likewise.
+  process.env.LURKER_METADATA_FLUSH_MS = '20';
   ({ IrcConnection } = await import('./ircConnection.js'));
   ircd = await FakeIrcd.start({ metadata: true });
   userId = createUser('metadata-wiring').id;
@@ -32,6 +35,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   delete process.env.LURKER_METADATA_JOIN_SYNC_MS;
+  delete process.env.LURKER_METADATA_FLUSH_MS;
   await ircd.close();
 });
 
@@ -67,6 +71,39 @@ type Snapshot = {
   metadataLimits: { maxSubs: number | null } | null;
 };
 const snap = (conn: InstanceType<typeof IrcConnection>) => conn.snapshot() as unknown as Snapshot;
+
+// The nick's row in the record cache (#1246), decoded, or undefined.
+function cacheRow(networkId: number, nick: string) {
+  const row = db
+    .prepare(
+      `SELECT record, absent_since FROM user_metadata_cache WHERE network_id = ? AND nick_lower = ?`,
+    )
+    .get(networkId, nick.toLowerCase()) as
+    | { record: string; absent_since: string | null }
+    | undefined;
+  return row ? { record: JSON.parse(row.record), absentSince: row.absent_since } : undefined;
+}
+
+// A peer says something in a channel we're in, and we wait until it's a row.
+async function speaks(
+  peer: Awaited<ReturnType<typeof rawClient>>,
+  nick: string,
+  events: Ev[],
+  channel: string,
+) {
+  const before = events.filter((e) => e.type === 'message' && e.nick === nick).length;
+  peer.send(`PRIVMSG ${channel} :hello there`);
+  await until(
+    () => events.filter((e) => e.type === 'message' && e.nick === nick).length > before,
+    5000,
+    `${nick} spoke`,
+  );
+}
+
+const deleteLines = (networkId: number, nick: string) =>
+  db
+    .prepare(`DELETE FROM messages WHERE network_id = ? AND nick = ? COLLATE NOCASE`)
+    .run(networkId, nick);
 
 describe('subscribing', () => {
   it('SUBs the keys it shows on registration and SYNCs when the server asks', async () => {
@@ -364,6 +401,259 @@ describe("a peer's metadata", () => {
         displayName: 'The Named',
       });
     } finally {
+      conn.disconnect();
+    }
+  });
+});
+
+describe("a departed peer's record (#1246)", () => {
+  it('stays for the lines they wrote, off the bouncer, and is refreshed when they return', async () => {
+    const { conn, events, network } = connectDirect('host1246');
+    let peer = await rawClient(ircd.port, 'fay');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#stay');
+      await until(() => conn.channelState('#stay')?.members.has('host1246') ?? false, 5000, 'in');
+      ircd.setMetadata('fay', 'display-name', 'Fay');
+      ircd.setMetadata('fay', 'pronouns', 'she/her');
+      peer.send('JOIN #stay');
+      await until(() => snap(conn).userMetadata.fay?.pronouns !== undefined, 5000, 'learned');
+      await speaks(peer, 'fay', events, '#stay');
+
+      // Signed off: the record stays as last known, and no client is told to
+      // forget it — her lines keep their name.
+      peer.send('QUIT :bye');
+      await until(() => !conn.channelState('#stay')?.members.has('fay'), 5000, 'gone');
+      await new Promise((r) => setTimeout(r, 100));
+      expect(snap(conn).userMetadata.fay).toEqual({ displayName: 'Fay', pronouns: 'she/her' });
+      expect(userMeta(events, 'fay').some((e) => e.values === null)).toBe(false);
+      // The bouncer replays what the network holds, and it holds nothing of her.
+      expect(conn.userMetadataRecord('fay')).toBeNull();
+      // On disk, dated.
+      conn.flushMetadataCache();
+      expect(cacheRow(network.id, 'fay')).toMatchObject({
+        record: { 'display-name': 'Fay', pronouns: 'she/her' },
+      });
+      expect(cacheRow(network.id, 'fay')!.absentSince).not.toBeNull();
+
+      // Back with less: the join's sync makes the record exactly what she
+      // sets now, and the row is present again.
+      peer.socket.destroy();
+      ircd.metadata.delete('fay');
+      peer = await rawClient(ircd.port, 'fay');
+      ircd.setMetadata('fay', 'display-name', 'Fay II');
+      peer.send('JOIN #stay');
+      await until(() => snap(conn).userMetadata.fay?.pronouns === undefined, 5000, 'reconciled');
+      expect(snap(conn).userMetadata.fay).toEqual({ displayName: 'Fay II' });
+      expect(conn.userMetadataRecord('fay')).toEqual({ 'display-name': 'Fay II' });
+      conn.flushMetadataCache();
+      expect(cacheRow(network.id, 'fay')).toEqual({
+        record: { 'display-name': 'Fay II' },
+        absentSince: null,
+      });
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('survives the socket and the process; a nick with no line left goes at load', async () => {
+    const { conn, events, network } = connectDirect('host1246b');
+    const gus = await rawClient(ircd.port, 'gus');
+    const hal = await rawClient(ircd.port, 'hal');
+    let conn2: InstanceType<typeof IrcConnection> | null = null;
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#keep');
+      await until(() => conn.channelState('#keep')?.members.has('host1246b') ?? false, 5000, 'in');
+      ircd.setMetadata('gus', 'display-name', 'Gus');
+      ircd.setMetadata('hal', 'display-name', 'Hal');
+      gus.send('JOIN #keep');
+      hal.send('JOIN #keep');
+      await until(
+        () =>
+          snap(conn).userMetadata.gus !== undefined && snap(conn).userMetadata.hal !== undefined,
+        5000,
+        'learned',
+      );
+      await speaks(gus, 'gus', events, '#keep');
+      await speaks(hal, 'hal', events, '#keep');
+
+      // The socket goes: nobody is present, every record is kept and dated.
+      conn.disconnect();
+      await until(() => conn.state === 'disconnected', 5000, 'disconnected');
+      expect(snap(conn).userMetadata.gus).toEqual({ displayName: 'Gus' });
+      conn.flushMetadataCache();
+      expect(cacheRow(network.id, 'gus')!.absentSince).not.toBeNull();
+      expect(cacheRow(network.id, 'hal')!.absentSince).not.toBeNull();
+
+      // A new process: what the last one held, before a socket exists — less
+      // the nick whose lines are gone (retention took them between runs).
+      deleteLines(network.id, 'hal');
+      conn2 = new IrcConnection({ network, onEvent: () => {} });
+      expect(snap(conn2).userMetadata).toEqual({ gus: { displayName: 'Gus' } });
+      expect(cacheRow(network.id, 'hal')).toBeUndefined();
+
+      // Connected again, with gus still in the room: present, no date.
+      conn2.connect();
+      await until(() => conn2!.state === 'connected', 5000, 'reconnected');
+      conn2.join('#keep');
+      await until(
+        () => conn2!.channelState('#keep')?.members.has('gus') ?? false,
+        5000,
+        'gus seen',
+      );
+      await until(() => conn2!.userMetadataRecord('gus') !== null, 5000, 'gus present');
+      conn2.flushMetadataCache();
+      expect(cacheRow(network.id, 'gus')).toEqual({
+        record: { 'display-name': 'Gus' },
+        absentSince: null,
+      });
+    } finally {
+      gus.socket.destroy();
+      hal.socket.destroy();
+      conn2?.disconnect();
+      conn.disconnect();
+    }
+  });
+
+  it('gives a renamed nick a copy and leaves the old nick its own', async () => {
+    const { conn, events } = connectDirect('host1246c');
+    const peer = await rawClient(ircd.port, 'ida');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#ren');
+      await until(() => conn.channelState('#ren')?.members.has('host1246c') ?? false, 5000, 'in');
+      ircd.setMetadata('ida', 'display-name', 'Ida');
+      peer.send('JOIN #ren');
+      await until(() => snap(conn).userMetadata.ida !== undefined, 5000, 'learned');
+      await speaks(peer, 'ida', events, '#ren');
+      peer.send('NICK ina');
+      await until(() => snap(conn).userMetadata.ina !== undefined, 5000, 'renamed');
+      expect(snap(conn).userMetadata.ina).toEqual({ displayName: 'Ida' });
+      // The lines under the old nick keep their name; no client forgets it.
+      expect(snap(conn).userMetadata.ida).toEqual({ displayName: 'Ida' });
+      expect(userMeta(events, 'ida').some((e) => e.values === null)).toBe(false);
+      expect(userMeta(events, 'ina').at(-1)!.values).toEqual({ displayName: 'Ida' });
+      // But the network holds nothing under it any more.
+      expect(conn.userMetadataRecord('ida')).toBeNull();
+      expect(conn.userMetadataRecord('ina')).toEqual({ 'display-name': 'Ida' });
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('is pruned once retention has taken their last line', async () => {
+    const { conn, events, network } = connectDirect('host1246d');
+    const peer = await rawClient(ircd.port, 'jay');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#prune');
+      await until(() => conn.channelState('#prune')?.members.has('host1246d') ?? false, 5000, 'in');
+      ircd.setMetadata('jay', 'display-name', 'Jay');
+      peer.send('JOIN #prune');
+      await until(() => snap(conn).userMetadata.jay !== undefined, 5000, 'learned');
+      await speaks(peer, 'jay', events, '#prune');
+      peer.send('QUIT :bye');
+      await until(() => !conn.channelState('#prune')?.members.has('jay'), 5000, 'gone');
+      conn.flushMetadataCache();
+      expect(cacheRow(network.id, 'jay')).toBeDefined();
+
+      // Nothing left to dress: the record, the row and the clients' copies go.
+      deleteLines(network.id, 'jay');
+      conn.pruneAbsentMetadata();
+      expect(snap(conn).userMetadata.jay).toBeUndefined();
+      expect(userMeta(events, 'jay').at(-1)!.values).toBeNull();
+      conn.flushMetadataCache();
+      expect(cacheRow(network.id, 'jay')).toBeUndefined();
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('leaves the snapshot after a month away, and is back on it when they are', async () => {
+    const { conn, events, network } = connectDirect('host1246e');
+    let peer = await rawClient(ircd.port, 'kay');
+    let conn2: InstanceType<typeof IrcConnection> | null = null;
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#age');
+      await until(() => conn.channelState('#age')?.members.has('host1246e') ?? false, 5000, 'in');
+      ircd.setMetadata('kay', 'display-name', 'Kay');
+      peer.send('JOIN #age');
+      await until(() => snap(conn).userMetadata.kay !== undefined, 5000, 'learned');
+      await speaks(peer, 'kay', events, '#age');
+      peer.send('QUIT :bye');
+      await until(() => !conn.channelState('#age')?.members.has('kay'), 5000, 'gone');
+      conn.disconnect();
+      await until(() => conn.state === 'disconnected', 5000, 'disconnected');
+      conn.flushMetadataCache();
+      const monthAgo = new Date(Date.now() - 31 * 86_400_000).toISOString();
+      db.prepare(`UPDATE user_metadata_cache SET absent_since = ? WHERE nick_lower = 'kay'`).run(
+        monthAgo,
+      );
+
+      // Still on disk, off the wire.
+      conn2 = new IrcConnection({ network, onEvent: () => {} });
+      expect(snap(conn2).userMetadata.kay).toBeUndefined();
+      expect(cacheRow(network.id, 'kay')).toBeDefined();
+
+      // Back: present, and on the wire again.
+      conn2.connect();
+      await until(() => conn2!.state === 'connected', 5000, 'reconnected');
+      conn2.join('#age');
+      await until(() => conn2!.channelState('#age')?.members.has('host1246e') ?? false, 5000, 'in');
+      peer.socket.destroy();
+      peer = await rawClient(ircd.port, 'kay');
+      ircd.setMetadata('kay', 'display-name', 'Kay');
+      peer.send('JOIN #age');
+      await until(() => snap(conn2!).userMetadata.kay !== undefined, 5000, 'back');
+      expect(snap(conn2).userMetadata.kay).toEqual({ displayName: 'Kay' });
+    } finally {
+      peer.socket.destroy();
+      conn2?.disconnect();
+      conn.disconnect();
+    }
+  });
+});
+
+describe("a DM peer's record (#1269)", () => {
+  it('is asked for when the DM is first watched, and again when they come back online', async () => {
+    const { conn } = connectDirect('host1269');
+    const peer = await rawClient(ircd.port, 'dan');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      // No channel in common: the server would tell us nothing of dan.
+      ircd.setMetadata('dan', 'display-name', 'Dan');
+      const syncs = () => ircd.client('host1269')!.sent.filter((l) => l === 'METADATA dan SYNC');
+      conn.trackDmPeer('dan');
+      await until(() => snap(conn).userMetadata.dan !== undefined, 5000, 'learned');
+      expect(snap(conn).userMetadata.dan).toEqual({ displayName: 'Dan' });
+      expect(syncs()).toHaveLength(1);
+
+      // A change while we share nothing reaches us only by asking.
+      ircd.setMetadata('dan', 'pronouns', 'he/him');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(snap(conn).userMetadata.dan).toEqual({ displayName: 'Dan' });
+      conn.markPeerEvent('dan', 'offline');
+      conn.markPeerEvent('dan', 'online');
+      await until(() => snap(conn).userMetadata.dan?.pronouns !== undefined, 5000, 'asked again');
+      expect(snap(conn).userMetadata.dan).toEqual({ displayName: 'Dan', pronouns: 'he/him' });
+      expect(syncs()).toHaveLength(2);
+
+      // A peer who isn't online: the server refuses, quietly.
+      conn.trackDmPeer('nobody');
+      await until(
+        () => ircd.client('host1269')!.sent.includes('METADATA nobody SYNC'),
+        5000,
+        'asked about nobody',
+      );
+      await new Promise((r) => setTimeout(r, 150));
+      expect(snap(conn).userMetadata.nobody).toBeUndefined();
+    } finally {
+      peer.socket.destroy();
       conn.disconnect();
     }
   });

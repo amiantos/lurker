@@ -31,7 +31,7 @@ import { purgeOAuth } from './db/oauth.js';
 import { sweepExpiredPreviews } from './db/linkPreviews.js';
 import { prunePushLog } from './db/pushLog.js';
 import { sweepPreviewCache } from './services/previewCache/index.js';
-import { startRetentionSweeper } from './services/retentionSweeper.js';
+import { startRetentionSweeper, onRetentionUserPass } from './services/retentionSweeper.js';
 import { listGrandfatheredUsernames } from './db/users.js';
 import { backfillEncryptColumns } from './db/secretBackfill.js';
 import { assertPushCredentials } from './services/push/credentials.js';
@@ -198,6 +198,8 @@ setInterval(() => void sweepPreviewCache(), 60 * 60 * 1000).unref();
 // pass is one budgeted, yielding walk of owner/cap lookups that drains to
 // nothing, and every tick after it is a no-op over an empty dirty set.
 startRetentionSweeper();
+// What a pass took may have been a departed nick's last line (#1246).
+onRetentionUserPass((userId) => ircManager.pruneUserMetadataCaches(userId));
 
 systemLog.log({ scope: 'server', text: `Lurker server starting up (edition: ${EDITION})` });
 

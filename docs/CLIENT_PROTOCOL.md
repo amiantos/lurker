@@ -429,7 +429,11 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
 Offline networks appear with `state:'disconnected'`, `channels:[]`,
 `peerPresence:{}`. `userMetadata` (#607) is every nick's IRCv3 metadata the
 connection holds, keyed like `peerPresence` and kept current by `user-metadata`
-events; `avatarUrl` is server-minted and opaque (the avatar route, usually a
+events. It includes the last record heard of nicks no longer present
+(#1246) — signed off, parted, renamed away — for 30 days after they left, so
+their lines keep their avatar; such a record is the nick's last known profile,
+not a sign they are here. Offline networks carry the same cached records.
+`avatarUrl` is server-minted and opaque (the avatar route, usually a
 square of at most 256 px but the origin's image behind a previews decoder too
 old to resize it, or a CDN — never the origin URL the user set), and `null` when the server can't serve it,
 in which case show your generated tile. Absent on a server that predates it.
@@ -951,7 +955,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `join-error`                  | E   | join failed — `text`, `reason`; do **not** create a buffer                                                                                                                                                                                                                                        |
 | `names`                       | E   | `members[…]` — full nicklist replace                                                                                                                                                                                                                                                              |
 | `member-update`               | E   | `member{…}` — single-nick patch (away/account/host changes)                                                                                                                                                                                                                                       |
-| `user-metadata`               | E   | `nick, values{displayName?, avatarUrl?, pronouns?, homepage?, status?} \| null` — a nick's whole IRCv3 metadata record, replace it; `null` forgets the nick (a rename sends the old nick's `null` then the new nick's record). `target` is the server pseudo-buffer; never create a buffer (#607) |
+| `user-metadata`               | E   | `nick, values{displayName?, avatarUrl?, pronouns?, homepage?, status?} \| null` — a nick's whole IRCv3 metadata record, replace it; `null` forgets the nick. Records outlive nicks (#1246): a quit keeps one, a rename copies. `target` is the server pseudo-buffer; never create a buffer (#607) |
 | `channel-metadata`            | E   | `values{displayName?, avatarUrl?}` — the channel's own record, whole (#607)                                                                                                                                                                                                                       |
 | `invite`                      | E/P | you were invited (`channel`, `from`) / op-visibility variant                                                                                                                                                                                                                                      |
 | `callerid-blocked`            | E   | your caller ID (+g) discarded someone's message — `from`, `userhost?`; offer `ACCEPT <from>`, for their next one                                                                                                                                                                                  |

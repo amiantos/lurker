@@ -674,6 +674,13 @@ export const EXPORT_TABLES = Object.freeze({
     reason: 'cookie-based session tokens; new instance issues its own',
   },
 
+  user_metadata_cache: {
+    mode: 'skip',
+    reason:
+      'the last IRCv3 metadata heard for other nicks on a network (#1246) — other people’s ' +
+      'avatars and display names, refilled by the network on the next connect, not user data',
+  },
+
   link_previews: {
     mode: 'skip',
     reason:

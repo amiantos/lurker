@@ -69,10 +69,15 @@ network menu's Edit Profile. Lurker remembers yours per network and sets it
 again after every connect, since most servers forget it when you disconnect.
 
 - **`draft/metadata-2`** — Lurker subscribes to `display-name`, `avatar`,
-  `pronouns`, `homepage` and `status`, keeps a record per nick for the life of
-  the connection, and re-syncs on every re-attach. A server syncs the room's
-  metadata to whoever joins it, not the joiner's to the room, so Lurker asks
-  for a joining peer's record itself (`METADATA <nick> SYNC`). Three line shapes are read
+  `pronouns`, `homepage` and `status`, keeps a record per nick, and re-syncs
+  on every re-attach. A record outlives the nick: someone who signs off keeps
+  their last known profile, so the lines they wrote keep their avatar, and it
+  is remembered across restarts for as long as they have a line (`user_metadata_cache`).
+  A server syncs the room's metadata to whoever joins it, not the joiner's to
+  the room, so Lurker asks for a joining peer's record itself
+  (`METADATA <nick> SYNC`), and for a DM peer's when the DM is first watched
+  and whenever they come back online — the server tells watchers about a peer
+  who comes online, not about one already there. Three line shapes are read
   as one: the spec's `METADATA`, and the `761`/`766` numerics Ergo sends them
   as. An avatar URL set by another user is an involuntary fetch, so it goes
   through the link-preview decoder — the client never sees the origin — which

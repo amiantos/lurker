@@ -240,6 +240,7 @@ export const NICK_KEYED_TABLES: readonly string[] = [
   'user_relay_bots',
   'peer_presence_state',
   'dcc_transfers',
+  'user_metadata_cache', // a rename COPIES the record (#1246): the old nick's lines keep theirs
 ];
 
 /** The declared entry for a table, or undefined when it isn't buffer-scoped. */
