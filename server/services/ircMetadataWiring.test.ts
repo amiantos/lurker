@@ -617,6 +617,99 @@ describe("a departed peer's record (#1246)", () => {
       conn.disconnect();
     }
   });
+
+  it('drops, after a reconnect, the keys a peer unset while the socket was down', async () => {
+    const { conn, events, network } = connectDirect('host1246f');
+    const peer = await rawClient(ircd.port, 'lee');
+    let conn2: InstanceType<typeof IrcConnection> | null = null;
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#sweep');
+      await until(() => conn.channelState('#sweep')?.members.has('host1246f') ?? false, 5000, 'in');
+      ircd.setMetadata('lee', 'display-name', 'Lee');
+      ircd.setMetadata('lee', 'pronouns', 'they/them');
+      peer.send('JOIN #sweep');
+      await until(() => snap(conn).userMetadata.lee?.pronouns !== undefined, 5000, 'learned');
+      await speaks(peer, 'lee', events, '#sweep');
+      conn.disconnect();
+      await until(() => conn.state === 'disconnected', 5000, 'disconnected');
+      conn.flushMetadataCache();
+
+      // Unset while nobody was listening; a sync adds, it never removes.
+      ircd.setMetadata('lee', 'pronouns', null);
+      conn2 = new IrcConnection({ network, onEvent: () => {} });
+      expect(snap(conn2).userMetadata.lee).toEqual({ displayName: 'Lee', pronouns: 'they/them' });
+      conn2.connect();
+      await until(() => conn2!.state === 'connected', 5000, 'reconnected');
+      conn2.join('#sweep');
+      // The room's NAMES lists a nick we held without hearing about: one SYNC
+      // of the room, whose end drops what it didn't name.
+      await until(() => snap(conn2!).userMetadata.lee?.pronouns === undefined, 5000, 'swept');
+      expect(snap(conn2).userMetadata.lee).toEqual({ displayName: 'Lee' });
+      expect(
+        ircd.client('host1246f')!.sent.filter((l) => l === 'METADATA #sweep SYNC'),
+      ).toHaveLength(1);
+    } finally {
+      peer.socket.destroy();
+      conn2?.disconnect();
+      conn.disconnect();
+    }
+  });
+
+  it('dates a nick a NAMES no longer lists', async () => {
+    const { conn, events, network } = connectDirect('host1246g');
+    const peer = await rawClient(ircd.port, 'mo');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#names');
+      await until(() => conn.channelState('#names')?.members.has('host1246g') ?? false, 5000, 'in');
+      ircd.setMetadata('mo', 'display-name', 'Mo');
+      peer.send('JOIN #names');
+      await until(() => snap(conn).userMetadata.mo !== undefined, 5000, 'learned');
+      await speaks(peer, 'mo', events, '#names');
+
+      // A list without them — an engine link that was down while they quit.
+      ircd.inject('host1246g', ':fake.test 353 host1246g = #names :host1246g');
+      ircd.inject('host1246g', ':fake.test 366 host1246g #names :End of /NAMES list');
+      await until(
+        () => !conn.channelState('#names')?.members.has('mo'),
+        5000,
+        'gone from the list',
+      );
+      expect(snap(conn).userMetadata.mo).toEqual({ displayName: 'Mo' });
+      expect(conn.userMetadataRecord('mo')).toBeNull();
+      conn.flushMetadataCache();
+      expect(cacheRow(network.id, 'mo')!.absentSince).not.toBeNull();
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('writes nothing once disposed', async () => {
+    const { conn, network } = connectDirect('host1246h');
+    const peer = await rawClient(ircd.port, 'ned');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#gone');
+      await until(() => conn.channelState('#gone')?.members.has('host1246h') ?? false, 5000, 'in');
+      ircd.setMetadata('ned', 'display-name', 'Ned');
+      peer.send('JOIN #gone');
+      await until(() => snap(conn).userMetadata.ned !== undefined, 5000, 'learned');
+      // Disposed with ned present: the row says so, and the close that
+      // follows — nobody present now — must not write it absent over the
+      // connection that replaces this one.
+      conn.dispose('rebuilt');
+      expect(cacheRow(network.id, 'ned')).toEqual({
+        record: { 'display-name': 'Ned' },
+        absentSince: null,
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(cacheRow(network.id, 'ned')!.absentSince).toBeNull();
+    } finally {
+      peer.socket.destroy();
+    }
+  });
 });
 
 describe("a DM peer's record (#1269)", () => {

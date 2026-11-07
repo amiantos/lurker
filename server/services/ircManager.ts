@@ -239,11 +239,10 @@ function engineHolds(userId: number, networkId: number): boolean {
 // The cached records of a network with no live connection, as its snapshot
 // shows them (#1246): IrcConnection.metadataInSnapshot's window, from the rows.
 function offlineUserMetadata(networkId: number): Record<string, unknown> {
-  const cutoff = Date.now() - METADATA_ABSENT_SNAPSHOT_DAYS * 86_400_000;
+  const cutoff = new Date(Date.now() - METADATA_ABSENT_SNAPSHOT_DAYS * 86_400_000).toISOString();
   const out: Record<string, unknown> = {};
   try {
-    for (const row of listUserMetadataCache(networkId)) {
-      if (row.absentSince !== null && Date.parse(row.absentSince) < cutoff) continue;
+    for (const row of listUserMetadataCache(networkId, { absentSinceAfter: cutoff })) {
       out[row.nickLower] = userMetadataView(row.record, avatarClientUrl);
     }
   } catch (e) {

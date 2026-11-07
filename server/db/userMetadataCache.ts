@@ -36,6 +36,14 @@ const listStmt = db.prepare(`
     FROM user_metadata_cache WHERE network_id = ?
 `);
 
+// The rows a snapshot of a network with no connection shows: present, or
+// absent since `cutoff` at the earliest.
+const listRecentStmt = db.prepare(`
+  SELECT nick, nick_lower, record, absent_since
+    FROM user_metadata_cache
+   WHERE network_id = ? AND (absent_since IS NULL OR absent_since >= ?)
+`);
+
 const upsertStmt = db.prepare(`
   INSERT INTO user_metadata_cache
     (network_id, user_id, nick, nick_lower, record, absent_since, updated_at)
@@ -61,6 +69,21 @@ const hasLinesStmt = db.prepare(`
    LIMIT 1
 `);
 
+// Every row whose nick has no such line left, in one statement — a probe per
+// row inside SQLite, none across the boundary — less the nicks the caller
+// still holds present (a JSON array of lowercase nicks).
+const pruneStmt = db.prepare(`
+  DELETE FROM user_metadata_cache AS c
+   WHERE c.network_id = ?
+     AND c.nick_lower NOT IN (SELECT value FROM json_each(?))
+     AND NOT EXISTS (
+       SELECT 1 FROM messages m
+        WHERE m.network_id = c.network_id AND m.nick = c.nick COLLATE NOCASE
+          AND m.type IN ('message', 'action', 'notice')
+     )
+  RETURNING nick, nick_lower
+`);
+
 function decode(row: Row): CachedUserMetadata | null {
   let record: unknown;
   try {
@@ -82,14 +105,41 @@ function decode(row: Row): CachedUserMetadata | null {
   };
 }
 
-/** Every cached record on a network. A row that won't decode is skipped. */
-export function listUserMetadataCache(networkId: number): CachedUserMetadata[] {
+/**
+ * Every cached record on a network — or, with `absentSinceAfter`, those
+ * present or absent since no earlier than it. A row that won't decode is
+ * skipped.
+ */
+export function listUserMetadataCache(
+  networkId: number,
+  opts: { absentSinceAfter?: string } = {},
+): CachedUserMetadata[] {
+  const rows =
+    opts.absentSinceAfter === undefined
+      ? (listStmt.all(networkId) as Row[])
+      : (listRecentStmt.all(networkId, opts.absentSinceAfter) as Row[]);
   const out: CachedUserMetadata[] = [];
-  for (const row of listStmt.all(networkId) as Row[]) {
+  for (const row of rows) {
     const decoded = decode(row);
     if (decoded) out.push(decoded);
   }
   return out;
+}
+
+/**
+ * Drop the rows whose nick has no line left to dress, keeping those in
+ * `presentLowers` (held live by a connection, whatever their lines). Returns
+ * what went.
+ */
+export function pruneUserMetadataCache(
+  networkId: number,
+  presentLowers: string[],
+): Array<{ nick: string; nickLower: string }> {
+  const rows = pruneStmt.all(networkId, JSON.stringify(presentLowers)) as Array<{
+    nick: string;
+    nick_lower: string;
+  }>;
+  return rows.map((row) => ({ nick: row.nick, nickLower: row.nick_lower }));
 }
 
 /**
@@ -112,13 +162,6 @@ export const writeUserMetadataCache = db.transaction(
         absentSince: entry.absentSince,
       });
     }
-  },
-);
-
-/** Drop the rows for these nicks (lowercase keys). */
-export const deleteUserMetadataCache = db.transaction(
-  (networkId: number, nickLowers: string[]): void => {
-    for (const lower of nickLowers) deleteStmt.run(networkId, lower);
   },
 );
 
