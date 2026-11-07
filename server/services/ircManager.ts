@@ -1630,6 +1630,8 @@ class IrcManager extends EventEmitter {
     for (const userMap of this.byUser.values()) {
       for (const conn of userMap.values()) {
         try {
+          // What the write-behind still holds (#1246): the process is ending.
+          conn.flushMetadataCache();
           // Engine mode: leave the sockets in the engine for the next process —
           // that is the whole point. Otherwise QUIT as before.
           if (engineConfigured()) conn.detach();

@@ -5352,7 +5352,14 @@ export class IrcConnection {
    */
   userMetadataRecord(nick: string): MetadataRecord | null {
     const record = this.userMetadata.get(nick.toLowerCase());
-    return record && this.keepsUserMetadata(nick) ? record : null;
+    return record && this.holdsUserMetadata(nick) ? record : null;
+  }
+
+  // Whether the network still speaks to us about a nick: present
+  // (keepsUserMetadata), or on the MONITOR list for a bouncer client, which
+  // ergo tells about their changes too.
+  private holdsUserMetadata(nick: string): boolean {
+    return this.keepsUserMetadata(nick) || this.monitor.status(nick) !== undefined;
   }
 
   // ── Our own metadata, saved per network (#1189) ──────────────────────────
@@ -5809,6 +5816,12 @@ export class IrcConnection {
     if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
     else this.userMetadata.set(lower, record);
     if (this.keepsUserMetadata(nick)) this.noteNickPresent(lower);
+    else if (Object.keys(record).length > 0 && !this.metadataAbsent.has(lower)) {
+      // Someone we hold nothing of — a WHOIS on a stranger, a bouncer
+      // client's LIST: their last known from the start, dated like a
+      // departure, so the snapshot's window and the prune both see it.
+      this.metadataAbsent.set(lower, { nick, since: new Date().toISOString() });
+    }
     this.noteMetadataDirty(lower);
     this.publishUserMetadata(nick, record);
     this.noteOwnedMetadataChange(nick, change.key, value);
@@ -5878,8 +5891,15 @@ export class IrcConnection {
 
   // The nick is here (a JOIN, a NAMES, a watch): their departure, if one was
   // dated, is over. Presence itself is read from the maps; this is the date.
+  // A record the snapshot had aged off the wire is sent now: the sync that
+  // follows says nothing when nothing changed.
   private noteNickPresent(lower: string): void {
-    if (this.metadataAbsent.delete(lower)) this.noteMetadataDirty(lower);
+    if (!this.metadataAbsent.has(lower)) return;
+    const shown = this.metadataInSnapshot(lower);
+    this.metadataAbsent.delete(lower);
+    this.noteMetadataDirty(lower);
+    const record = this.userMetadata.get(lower);
+    if (!shown && record) this.publishUserMetadata(this.nickSpelling(lower), record);
   }
 
   // The socket went: nobody is present now. The records stay as last known
@@ -5985,11 +6005,19 @@ export class IrcConnection {
         absentSince: absent?.since ?? null,
       });
     }
-    this.metadataDirty.clear();
     try {
       writeUserMetadataCache(this.network.user_id, this.network.id, entries);
+      this.metadataDirty.clear();
     } catch (e) {
+      // Still dirty: the next change's timer, or the next flush, writes them.
       console.warn('[metadata] cache write failed:', (e as Error)?.message || e);
+      if (!this.disposed) {
+        this.metadataFlushTimer = setTimeout(
+          () => this.flushMetadataCache(),
+          metadataFlushDelayMs() * 5,
+        );
+        this.metadataFlushTimer.unref?.();
+      }
     }
   }
 
@@ -6435,13 +6463,15 @@ export class IrcConnection {
   // any existing entry. Does NOT touch the wire — hydration uses this and the
   // MONITOR seed sends the batched `MONITOR +` afterward.
   private addPeerReason(lower: string, reason: TrackReason): void {
+    // Before the set: whether their record was on the wire is judged as
+    // things were.
+    this.noteNickPresent(lower);
     const w = this.trackedPeers.get(lower);
     if (w) {
       w.reasons.add(reason);
     } else {
       this.trackedPeers.set(lower, { reasons: new Set([reason]) });
     }
-    this.noteNickPresent(lower);
   }
 
   // Add a live watch reason for `nick`. Issues `MONITOR +` (subject to the
@@ -6834,7 +6864,11 @@ export class IrcConnection {
       }
     }
     const deleted = this.channels.delete(actual);
-    if (deleted) this.joinedFoldedCache = null;
+    if (deleted) {
+      this.joinedFoldedCache = null;
+      // Everyone we knew only from that room (#1246).
+      this.sweepUserMetadata();
+    }
     return deleted;
   }
 
@@ -6861,6 +6895,8 @@ export class IrcConnection {
     this.channels.clear();
     this.joinedFoldedCache = null;
     for (const name of names) this.publish({ type: 'channel-parted', target: name });
+    // Everyone we knew from those rooms left with them (#1246).
+    this.markAllMetadataAbsent();
   }
 
   upsertChannel(name: string): ChannelState {

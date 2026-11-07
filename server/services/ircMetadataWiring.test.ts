@@ -596,11 +596,13 @@ describe("a departed peer's record (#1246)", () => {
       );
 
       // Still on disk, off the wire.
-      conn2 = new IrcConnection({ network, onEvent: () => {} });
+      const events2: Ev[] = [];
+      conn2 = new IrcConnection({ network, onEvent: (e) => events2.push(e as Ev) });
       expect(snap(conn2).userMetadata.kay).toBeUndefined();
       expect(cacheRow(network.id, 'kay')).toBeDefined();
 
-      // Back: present, and on the wire again.
+      // Back: present, and on the wire again — sent, since no client's
+      // snapshot had it and the sync that follows changes nothing.
       conn2.connect();
       await until(() => conn2!.state === 'connected', 5000, 'reconnected');
       conn2.join('#age');
@@ -611,6 +613,8 @@ describe("a departed peer's record (#1246)", () => {
       peer.send('JOIN #age');
       await until(() => snap(conn2!).userMetadata.kay !== undefined, 5000, 'back');
       expect(snap(conn2).userMetadata.kay).toEqual({ displayName: 'Kay' });
+      await until(() => userMeta(events2, 'kay').length > 0, 5000, 'told');
+      expect(userMeta(events2, 'kay')[0]!.values).toEqual({ displayName: 'Kay' });
     } finally {
       peer.socket.destroy();
       conn2?.disconnect();
