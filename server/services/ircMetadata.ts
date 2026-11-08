@@ -32,6 +32,10 @@ export { METADATA_SUB_KEYS };
 // (lurker#1190), so an origin that honours it is never enlarged.
 export const AVATAR_SIZE = 256;
 
+// Days a departed nick's record still rides the snapshot (#1246): on disk it
+// stays as long as they have a line to dress; on the wire, this long.
+export const METADATA_ABSENT_SNAPSHOT_DAYS = 30;
+
 // A key Lurker doesn't show but a bouncer client asked for is kept so a SUB
 // can be answered from state, bounded by METADATA_EXTRA_VALUE_MAX_CHARS.
 // Zero-width and joiner characters: a name made only of these is no name.

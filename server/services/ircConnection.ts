@@ -36,6 +36,7 @@ import {
   type MetadataChange,
   type MetadataLimits,
   type MetadataRecord,
+  METADATA_ABSENT_SNAPSHOT_DAYS,
 } from './ircMetadata.js';
 import { ownMetadataRefusal } from '../../shared/metadataKeys.js';
 import { avatarClientUrl } from './avatarProxy.js';
@@ -76,6 +77,13 @@ import {
   writePeerState,
   deletePeerPresence,
 } from '../db/peerPresence.js';
+import {
+  listUserMetadataCache,
+  writeUserMetadataCache,
+  pruneUserMetadataCache,
+  nickHasChatLines,
+} from '../db/userMetadataCache.js';
+import type { CachedUserMetadata } from '../db/userMetadataCache.js';
 import highlightRulesService from './highlightRulesService.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import connectScheduler from './connectScheduler.js';
@@ -824,6 +832,13 @@ function peerJoinSyncDelaySec(): number {
   return reconnectEnvInt('LURKER_METADATA_JOIN_SYNC_MS', 1000) / 1000;
 }
 
+// How long changed metadata records wait before their rows are written
+// (#1246): a channel's SYNC at connect is hundreds of lines over many ticks,
+// and one transaction. Tests shorten it.
+function metadataFlushDelayMs(): number {
+  return reconnectEnvInt('LURKER_METADATA_FLUSH_MS', 1000);
+}
+
 interface PendingMetadataSync {
   timer: ReturnType<typeof setTimeout>;
   peerJoin: boolean;
@@ -834,6 +849,16 @@ interface PendingMetadataSync {
 interface PeerSync {
   nick: string;
   seen: Set<string>;
+}
+
+// A `*ALL` or channel SYNC from the ask to its end (#1246): the nicks it
+// speaks for — the members as the line went out — and the keys set on each
+// since. A whole reply confirms every record in scope: keys it didn't name
+// are gone. Without it a kept record never hears what a peer unset while we
+// were away.
+interface MetadataSweep {
+  scope: Set<string>;
+  seen: Map<string, Set<string>>;
 }
 
 // Bytes of keys on one SUB line: room for `METADATA * SUB `, CRLF and one more
@@ -982,6 +1007,26 @@ export class IrcConnection {
   // channel. Grown by every line that names a nick; shrunk when a nick we no
   // longer share a channel with and don't watch leaves (forgetUserMetadata).
   private userMetadata: Map<string, MetadataRecord>;
+  // The records of nicks no longer present (#1246) — when each stopped being,
+  // and the spelling last seen. Presence itself is keepsUserMetadata; this
+  // only dates the departure, for the snapshot's window. A departed nick's
+  // record is their last known profile, kept so the lines they wrote keep
+  // their avatar, and mirrored with the rest to user_metadata_cache so a
+  // socket drop or a restart doesn't strip them (flushMetadataCache).
+  private metadataAbsent: Map<string, { nick: string; since: string }>;
+  // Each nick's spelling as the server last wrote it, for the row and the
+  // frames about a nick we hold no other state for.
+  private metadataNicks: Map<string, string>;
+  // Records the network hasn't vouched for since we held them without
+  // hearing about the nick — loaded from the cache, or dated absent. A
+  // present nick's unconfirmed record is asked about (a channel sweep, a
+  // peer sync) and confirmed by the reply's end.
+  private metadataUnconfirmed: Set<string>;
+  // `*ALL` and channel syncs on the wire (endMetadataSweep).
+  private metadataSweeps: Set<MetadataSweep>;
+  // Lowercase nicks whose cache row is behind the map, and the write-behind.
+  private metadataDirty: Set<string>;
+  private metadataFlushTimer: ReturnType<typeof setTimeout> | null;
   // Pending `METADATA <target> SYNC`s, by lowercase target: a 774 asked for
   // one, or a peer joined (peerJoin, #1246).
   private metadataSyncTimers: Map<string, PendingMetadataSync>;
@@ -1561,6 +1606,13 @@ export class IrcConnection {
     // sent a TAGMSG". No-op where the network doesn't offer it.
     this.client.requestCap('draft/event-playback');
     this.userMetadata = new Map();
+    this.metadataAbsent = new Map();
+    this.metadataNicks = new Map();
+    this.metadataUnconfirmed = new Set();
+    this.metadataSweeps = new Set();
+    this.metadataDirty = new Set();
+    this.metadataFlushTimer = null;
+    this.loadMetadataCache();
     this.peerSyncs = new Map();
     this.metadataSyncTimers = new Map();
     this.metadataExtraKeys = new Map();
@@ -2659,10 +2711,11 @@ export class IrcConnection {
       this.replayBatches.clear();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
-      // Metadata is the socket's: the next registration subscribes again and
-      // the server replays it (#607).
-      this.userMetadata.clear();
+      // Nobody is present now; the records stay as last known (#1246) and
+      // the next registration's SYNCs refresh those still there (#607).
+      this.markAllMetadataAbsent();
       this.peerSyncs.clear();
+      this.metadataSweeps.clear();
       for (const { timer } of this.metadataSyncTimers.values()) clearTimeout(timer);
       this.metadataSyncTimers.clear();
       this.ownServerMetadata.clear();
@@ -3657,6 +3710,7 @@ export class IrcConnection {
       // the server has been telling us their changes, and the record is good.
       // A watched DM peer's isn't: it outlived their QUIT.
       const wasFriend = !isSelf && this.inSharedChannel(eventNick);
+      if (ch) this.noteNickPresent(eventNick.toLowerCase());
       ch?.members.set(eventNick.toLowerCase(), {
         nick: eventNick,
         modes: [],
@@ -4166,13 +4220,18 @@ export class IrcConnection {
         }
       }
       // Metadata rides the nick (#607): a rename changes none of it, and the
-      // server sends nothing to say so. The client re-keys on the pair.
+      // server sends nothing to say so. The new nick gets the record. The old
+      // keeps a copy as its last known (#1246), so the lines under it stay
+      // dressed, and goes the way of any nick that left.
       const metaRecord = this.userMetadata.get(oldLower);
       if (metaRecord && oldLower !== newLower) {
-        this.userMetadata.delete(oldLower);
-        this.userMetadata.set(newLower, metaRecord);
-        this.publishUserMetadata(eventNick, null);
+        this.userMetadata.set(newLower, { ...metaRecord });
+        this.metadataNicks.set(newLower, eventNewNick);
+        this.noteNickPresent(newLower);
+        if (this.metadataUnconfirmed.has(oldLower)) this.metadataUnconfirmed.add(newLower);
+        this.noteMetadataDirty(newLower);
         this.publishUserMetadata(eventNewNick, metaRecord);
+        this.forgetUserMetadata(eventNick);
       }
       this.rekeyPeerSync(eventNick, eventNewNick);
       // From a DM-buffer perspective: the old name is no longer reachable
@@ -4485,6 +4544,7 @@ export class IrcConnection {
         const nick = u.nick as string;
         const lc = nick.toLowerCase();
         const carry = prev.get(lc) || { away: false, user: null, host: null };
+        this.noteNickPresent(lc);
         ch.members.set(lc, {
           nick,
           modes: (u.modes as string[]) || [],
@@ -4496,6 +4556,18 @@ export class IrcConnection {
           account: carry.account,
         });
       }
+      // Who the list no longer has left while we weren't told — a link to
+      // the engine that was down, a NAMES we typed (#1246). The record of
+      // anyone the list has, that we held without hearing about them, is the
+      // network's to confirm: one SYNC of the room.
+      let unconfirmed = false;
+      for (const lc of prev.keys()) {
+        if (!ch.members.has(lc)) this.forgetUserMetadata(this.nickSpelling(lc));
+      }
+      for (const lc of ch.members.keys()) {
+        if (this.metadataUnconfirmed.has(lc) && !this.peerSyncs.has(lc)) unconfirmed = true;
+      }
+      if (unconfirmed && this.metadataLimits()) this.scheduleMetadataSync(ch.name, 0);
       this.namesHeard.add(foldTargetFor(this.network.id, eventChannel));
       this.publishNames(ch);
       const pending = this.pendingBackfill.get(foldTargetFor(this.network.id, eventChannel));
@@ -5193,9 +5265,9 @@ export class IrcConnection {
   private syncMetadataAfterRestore(): void {
     if (!this.metadataLimits()) return;
     this.replies.send('lurker', 'METADATA * SYNC');
-    for (const ch of this.channels.values()) {
-      this.replies.send('lurker', `METADATA ${ch.name} SYNC`);
-    }
+    // Each a sweep (#1246): the replies confirm the records this process
+    // loaded from the cache, and drop the keys the members unset meanwhile.
+    for (const ch of this.channels.values()) this.scheduleMetadataSync(ch.name, 0);
   }
 
   // Ours first, then the bouncer clients', within max-subs.
@@ -5273,9 +5345,21 @@ export class IrcConnection {
     if (held.length > 0) this.removeMetadataKeys(held, holder);
   }
 
-  /** A nick's metadata as the network set it (origin URLs and all), for the bouncer's replay. */
+  /**
+   * A present nick's metadata as the network set it (origin URLs and all),
+   * for the bouncer's replay. A departed nick's last known record (#1246) is
+   * ours to show, not the network's to say: null.
+   */
   userMetadataRecord(nick: string): MetadataRecord | null {
-    return this.userMetadata.get(nick.toLowerCase()) ?? null;
+    const record = this.userMetadata.get(nick.toLowerCase());
+    return record && this.holdsUserMetadata(nick) ? record : null;
+  }
+
+  // Whether the network still speaks to us about a nick: present
+  // (keepsUserMetadata), or on the MONITOR list for a bouncer client, which
+  // ergo tells about their changes too.
+  private holdsUserMetadata(nick: string): boolean {
+    return this.keepsUserMetadata(nick) || this.monitor.status(nick) !== undefined;
   }
 
   // ── Our own metadata, saved per network (#1189) ──────────────────────────
@@ -5565,11 +5649,24 @@ export class IrcConnection {
       }
       // A peer sync's line is made as it goes out: queued behind pacing, it
       // names the nick a rename meanwhile gave them.
+      if (sync) {
+        this.replies.send('lurker', `METADATA ${target} SYNC`, () => `METADATA ${sync.nick} SYNC`, {
+          onEnd: (how) => this.endPeerSync(sync, how),
+        });
+        return;
+      }
+      // A `*ALL` or channel sync speaks for the members as the line goes out
+      // (#1246): the server answers for who is there when it reads it.
+      const sweep: MetadataSweep = { scope: new Set(), seen: new Map() };
+      this.metadataSweeps.add(sweep);
       this.replies.send(
         'lurker',
         `METADATA ${target} SYNC`,
-        sync ? () => `METADATA ${sync.nick} SYNC` : undefined,
-        { onEnd: sync ? (how) => this.endPeerSync(sync, how) : undefined },
+        () => {
+          sweep.scope = this.sweepScope(target);
+          return `METADATA ${target} SYNC`;
+        },
+        { onEnd: (how) => this.endMetadataSweep(sweep, how) },
       );
     }, delay);
     timer.unref?.();
@@ -5608,6 +5705,7 @@ export class IrcConnection {
     }
     if (how !== 'replied') return;
     const lower = nick.toLowerCase();
+    this.metadataUnconfirmed.delete(lower);
     const record = this.userMetadata.get(lower);
     if (!record) return;
     const stale = Object.keys(record).filter((key) => !sync.seen.has(key));
@@ -5618,6 +5716,7 @@ export class IrcConnection {
       this.client.emit('lurker metadata', { target: nick, key, value: null, owner: 'lurker' });
     }
     if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
+    this.noteMetadataDirty(lower);
     this.publishUserMetadata(nick, Object.keys(record).length ? record : null);
   }
 
@@ -5636,6 +5735,45 @@ export class IrcConnection {
       clearTimeout(pending.timer);
       this.metadataSyncTimers.delete(oldKey);
       this.scheduleMetadataSync(newNick, peerJoinSyncDelaySec(), true);
+    }
+  }
+
+  // The nicks a `*ALL` or channel SYNC answers for: every channel's members,
+  // or the one's. Ourselves aside — our own record has its own reconcile
+  // (reconcileOwnMetadata).
+  private sweepScope(target: string): Set<string> {
+    const scope = new Set<string>();
+    const channels =
+      target === '*ALL' ? [...this.channels.values()] : [this.channelState(target)].filter(Boolean);
+    for (const ch of channels) {
+      for (const lower of ch!.members.keys()) if (!this.isSelfNick(lower)) scope.add(lower);
+    }
+    return scope;
+  }
+
+  // A sweep's query is over. Whole reply: every record in scope is what it
+  // named (and what else was set since the ask) — a key it didn't is gone,
+  // a nick it didn't has none. A nick who left meanwhile, or whose own peer
+  // sync is out, is theirs to settle. Anything else said nothing.
+  private endMetadataSweep(sweep: MetadataSweep, how: QueryEnd): void {
+    this.metadataSweeps.delete(sweep);
+    if (how !== 'replied') return;
+    for (const lower of sweep.scope) {
+      if (this.peerSyncs.has(lower) || !this.keepsUserMetadata(lower)) continue;
+      this.metadataUnconfirmed.delete(lower);
+      const record = this.userMetadata.get(lower);
+      if (!record) continue;
+      const seen = sweep.seen.get(lower);
+      const stale = Object.keys(record).filter((key) => !seen?.has(key));
+      if (stale.length === 0) continue;
+      const nick = this.nickSpelling(lower);
+      for (const key of stale) {
+        delete record[key];
+        this.client.emit('lurker metadata', { target: nick, key, value: null, owner: 'lurker' });
+      }
+      if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
+      this.noteMetadataDirty(lower);
+      this.publishUserMetadata(nick, Object.keys(record).length ? record : null);
     }
   }
 
@@ -5663,12 +5801,28 @@ export class IrcConnection {
     if (!nick) return;
     const lower = nick.toLowerCase();
     const record = this.userMetadata.get(lower) ?? {};
-    if (value !== null) this.peerSyncs.get(lower)?.seen.add(change.key);
+    this.metadataNicks.set(lower, nick);
+    if (value !== null) {
+      this.peerSyncs.get(lower)?.seen.add(change.key);
+      for (const sweep of this.metadataSweeps) {
+        let keys = sweep.seen.get(lower);
+        if (!keys) sweep.seen.set(lower, (keys = new Set()));
+        keys.add(change.key);
+      }
+    }
     if ((record[change.key] ?? null) === value) return;
     if (value === null) delete record[change.key];
     else record[change.key] = value;
     if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
     else this.userMetadata.set(lower, record);
+    if (this.keepsUserMetadata(nick)) this.noteNickPresent(lower);
+    else if (Object.keys(record).length > 0 && !this.metadataAbsent.has(lower)) {
+      // Someone we hold nothing of — a WHOIS on a stranger, a bouncer
+      // client's LIST: their last known from the start, dated like a
+      // departure, so the snapshot's window and the prune both see it.
+      this.metadataAbsent.set(lower, { nick, since: new Date().toISOString() });
+    }
+    this.noteMetadataDirty(lower);
     this.publishUserMetadata(nick, record);
     this.noteOwnedMetadataChange(nick, change.key, value);
   }
@@ -5695,14 +5849,176 @@ export class IrcConnection {
     });
   }
 
-  // A nick we share no channel with and don't watch gets no more updates;
-  // its record would only go stale. Ourselves and tracked DM peers stay.
+  // A nick we share no channel with and don't watch gets no more updates.
+  // Ourselves and tracked DM peers stay. Anyone else's record becomes their
+  // last known profile (#1246): kept, so the lines they wrote keep their
+  // avatar, and dated, so the snapshot can age it off the wire. One with no
+  // line left to dress goes, and clients are told to forget it.
   private forgetUserMetadata(nick: string): void {
     const lower = nick.toLowerCase();
     if (!this.userMetadata.has(lower)) return;
     if (this.keepsUserMetadata(nick)) return;
+    if (this.metadataAbsent.has(lower)) return;
+    if (!this.hasChatLines(nick)) {
+      this.dropUserMetadata(lower, nick);
+      return;
+    }
+    this.metadataAbsent.set(lower, { nick, since: new Date().toISOString() });
+    this.metadataUnconfirmed.add(lower);
+    this.noteMetadataDirty(lower);
+  }
+
+  // Forget a nick for good: the map, the row, and every client.
+  private dropUserMetadata(lower: string, nick: string): void {
     this.userMetadata.delete(lower);
+    this.metadataAbsent.delete(lower);
+    this.metadataUnconfirmed.delete(lower);
+    this.metadataNicks.delete(lower);
+    this.noteMetadataDirty(lower);
     this.publishUserMetadata(nick, null);
+  }
+
+  // Whether the nick wrote a line on this network a record would dress. A
+  // failed read keeps the record: a dropped avatar is the worse mistake.
+  private hasChatLines(nick: string): boolean {
+    try {
+      return nickHasChatLines(this.network.id, nick);
+    } catch (e) {
+      console.warn('[metadata] line probe failed:', (e as Error)?.message || e);
+      return true;
+    }
+  }
+
+  // The nick is here (a JOIN, a NAMES, a watch): their departure, if one was
+  // dated, is over. Presence itself is read from the maps; this is the date.
+  // A record the snapshot had aged off the wire is sent now: the sync that
+  // follows says nothing when nothing changed.
+  private noteNickPresent(lower: string): void {
+    if (!this.metadataAbsent.has(lower)) return;
+    const shown = this.metadataInSnapshot(lower);
+    this.metadataAbsent.delete(lower);
+    this.noteMetadataDirty(lower);
+    const record = this.userMetadata.get(lower);
+    if (!shown && record) this.publishUserMetadata(this.nickSpelling(lower), record);
+  }
+
+  // The socket went: nobody is present now. The records stay as last known
+  // (#1246); the next registration's SYNCs make those still there live again.
+  private markAllMetadataAbsent(): void {
+    const now = new Date().toISOString();
+    for (const lower of this.userMetadata.keys()) {
+      if (this.isSelfNick(lower)) continue;
+      this.metadataUnconfirmed.add(lower);
+      if (this.metadataAbsent.has(lower) || this.keepsUserMetadata(lower)) continue;
+      this.metadataAbsent.set(lower, { nick: this.nickSpelling(lower), since: now });
+      this.noteMetadataDirty(lower);
+    }
+  }
+
+  // How the server last spelled a nick, for the row and the frames; the key
+  // when it never did (a cache row written before the spelling was kept).
+  private nickSpelling(lower: string): string {
+    return this.metadataNicks.get(lower) ?? lower;
+  }
+
+  // Whether a nick's record rides the snapshot (#1246): a present nick's
+  // always; a departed one's for METADATA_ABSENT_SNAPSHOT_DAYS after they
+  // left. On disk it stays as long as they have a line (pruneAbsentMetadata).
+  private metadataInSnapshot(lower: string): boolean {
+    const absent = this.metadataAbsent.get(lower);
+    if (!absent || this.keepsUserMetadata(lower)) return true;
+    return Date.now() - Date.parse(absent.since) < METADATA_ABSENT_SNAPSHOT_DAYS * 86_400_000;
+  }
+
+  /**
+   * Drop the departed nicks' records that have no line left to dress (#1246):
+   * retention took the lines. Run after each retention pass (ircManager).
+   */
+  pruneAbsentMetadata(): void {
+    if (this.disposed) return;
+    this.flushMetadataCache();
+    const present = [...this.userMetadata.keys()].filter((lower) => this.keepsUserMetadata(lower));
+    let gone: Array<{ nick: string; nickLower: string }>;
+    try {
+      gone = pruneUserMetadataCache(this.network.id, present);
+    } catch (e) {
+      console.warn('[metadata] cache prune failed:', (e as Error)?.message || e);
+      return;
+    }
+    for (const { nick, nickLower } of gone) {
+      if (!this.userMetadata.has(nickLower)) continue;
+      this.dropUserMetadata(nickLower, this.metadataNicks.get(nickLower) ?? nick);
+    }
+  }
+
+  // ── The record cache (#1246): user_metadata_cache mirrors userMetadata ──
+
+  // What the last process held of other nicks, every one absent until this
+  // socket sees them. A row whose nick has no line left to dress goes now.
+  private loadMetadataCache(): void {
+    let rows: CachedUserMetadata[];
+    try {
+      pruneUserMetadataCache(this.network.id, []);
+      rows = listUserMetadataCache(this.network.id);
+    } catch (e) {
+      console.warn('[metadata] cache load failed:', (e as Error)?.message || e);
+      return;
+    }
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.userMetadata.set(row.nickLower, row.record);
+      this.metadataNicks.set(row.nickLower, row.nick);
+      this.metadataAbsent.set(row.nickLower, { nick: row.nick, since: row.absentSince ?? now });
+      this.metadataUnconfirmed.add(row.nickLower);
+    }
+  }
+
+  private noteMetadataDirty(lower: string): void {
+    // A disposed connection's rows are the next one's (or nobody's): dispose
+    // flushed what it had, and the 'close' that follows must not write again.
+    if (this.disposed) return;
+    this.metadataDirty.add(lower);
+    if (this.metadataFlushTimer) return;
+    this.metadataFlushTimer = setTimeout(() => this.flushMetadataCache(), metadataFlushDelayMs());
+    this.metadataFlushTimer.unref?.();
+  }
+
+  // Every changed record as one write: the row is the map's entry (an empty
+  // one deletes it) and the date it went absent, if it is. A present nick
+  // with a stale date — NAMES brought them back and nothing said so — is
+  // written present.
+  flushMetadataCache(): void {
+    if (this.metadataFlushTimer) {
+      clearTimeout(this.metadataFlushTimer);
+      this.metadataFlushTimer = null;
+    }
+    if (this.metadataDirty.size === 0) return;
+    const entries: CachedUserMetadata[] = [];
+    for (const lower of this.metadataDirty) {
+      const record = this.userMetadata.get(lower);
+      if (record && this.keepsUserMetadata(lower)) this.metadataAbsent.delete(lower);
+      const absent = this.metadataAbsent.get(lower);
+      entries.push({
+        nick: absent?.nick ?? this.nickSpelling(lower),
+        nickLower: lower,
+        record: record ?? {},
+        absentSince: absent?.since ?? null,
+      });
+    }
+    try {
+      writeUserMetadataCache(this.network.user_id, this.network.id, entries);
+      this.metadataDirty.clear();
+    } catch (e) {
+      // Still dirty: the next change's timer, or the next flush, writes them.
+      console.warn('[metadata] cache write failed:', (e as Error)?.message || e);
+      if (!this.disposed) {
+        this.metadataFlushTimer = setTimeout(
+          () => this.flushMetadataCache(),
+          metadataFlushDelayMs() * 5,
+        );
+        this.metadataFlushTimer.unref?.();
+      }
+    }
   }
 
   // Whether a nick's record has a reason to be held: ourselves, a tracked DM
@@ -5809,6 +6125,9 @@ export class IrcConnection {
     // should drive a "came online" notification. Kept computed so the
     // favorites-based friend-online push can consume it without re-plumbing.
     const cameOnline = state === 'online' && prevState === 'offline';
+    // A watched DM peer back online (#1269): the record we hold is their last
+    // session's. Ask, and let the reply's end drop what they no longer set.
+    if (cameOnline && !this.inSharedChannel(canonical)) this.syncPeerMetadata(canonical);
     this.publishPeerPresence(canonical, next, cameOnline);
   }
 
@@ -6144,6 +6463,9 @@ export class IrcConnection {
   // any existing entry. Does NOT touch the wire — hydration uses this and the
   // MONITOR seed sends the batched `MONITOR +` afterward.
   private addPeerReason(lower: string, reason: TrackReason): void {
+    // Before the set: whether their record was on the wire is judged as
+    // things were.
+    this.noteNickPresent(lower);
     const w = this.trackedPeers.get(lower);
     if (w) {
       w.reasons.add(reason);
@@ -6173,6 +6495,10 @@ export class IrcConnection {
       return true;
     }
     this.addPeerReason(lower, reason);
+    // A DM peer we share no channel with (#1269): the server tells us their
+    // record when they come online while watched, never when we start
+    // watching someone already there. Ask.
+    if (this.state === 'connected' && !this.inSharedChannel(nick)) this.syncPeerMetadata(nick);
     if (!this.useMonitor || this.state !== 'connected') return true;
     const listed = this.monitor.status(nick);
     if (listed === true || listed === false) {
@@ -6538,7 +6864,11 @@ export class IrcConnection {
       }
     }
     const deleted = this.channels.delete(actual);
-    if (deleted) this.joinedFoldedCache = null;
+    if (deleted) {
+      this.joinedFoldedCache = null;
+      // Everyone we knew only from that room (#1246).
+      this.sweepUserMetadata();
+    }
     return deleted;
   }
 
@@ -6565,6 +6895,8 @@ export class IrcConnection {
     this.channels.clear();
     this.joinedFoldedCache = null;
     for (const name of names) this.publish({ type: 'channel-parted', target: name });
+    // Everyone we knew from those rooms left with them (#1246).
+    this.markAllMetadataAbsent();
   }
 
   upsertChannel(name: string): ChannelState {
@@ -7791,6 +8123,9 @@ export class IrcConnection {
     // never comes (#1149). Not flushed: the engine would write it all at
     // once, which is the flood the queue exists to prevent.
     this.sendPacer.drop();
+    // The rows are this process's to write; the 'close' this brings marks
+    // nobody present, and its write-behind may not get to run.
+    this.flushMetadataCache();
     const t = this.engineTransport;
     if (t && t.isConnected()) t.detach();
     else this.setState('disconnected', {}, { log: DETACHED_LOG });
@@ -12759,6 +13094,7 @@ export class IrcConnection {
     // Before the disposed flag: a queued user line is reported as not sent,
     // which publish() refuses once the connection counts as gone.
     this.sendPacer.dispose();
+    this.flushMetadataCache();
     this.disposed = true;
     this.clearReconnectTimer();
     this.stopLagPinger();
@@ -12918,10 +13254,9 @@ export class IrcConnection {
       // like peerPresence. Kept current by `user-metadata` frames. The limits
       // say whether the network speaks it at all (null = no).
       userMetadata: Object.fromEntries(
-        [...this.userMetadata].map(([lower, record]) => [
-          lower,
-          userMetadataView(record, avatarClientUrl),
-        ]),
+        [...this.userMetadata]
+          .filter(([lower]) => this.metadataInSnapshot(lower))
+          .map(([lower, record]) => [lower, userMetadataView(record, avatarClientUrl)]),
       ),
       metadataLimits: this.metadataLimits(),
       // Object keyed by lowercase nick → { nick, state, stateAt }. Lands

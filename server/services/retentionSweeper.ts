@@ -492,6 +492,13 @@ export async function runRetentionTick(
       if (outOfBudget()) break;
       if (!(await gcStep(userId))) break;
       noisePendingUsers.shift();
+      for (const cb of userPassListeners) {
+        try {
+          cb(userId);
+        } catch (err) {
+          console.warn('[lurker] retention pass listener failed:', (err as Error).message);
+        }
+      }
     }
     if (noisePendingUsers.length === 0) {
       noisePendingUsers = null;
@@ -503,6 +510,19 @@ export async function runRetentionTick(
   }
 
   return result;
+}
+
+// Told when a user's hourly pass (noise clock, then closed-buffer GC) is
+// over: what it took may have left derived state with nothing to point at
+// (a departed nick's cached metadata, IrcConnection.pruneAbsentMetadata).
+const userPassListeners = new Set<(userId: number) => void>();
+
+/** Run `cb` after each user's hourly retention pass. Returns the unsubscribe. */
+export function onRetentionUserPass(cb: (userId: number) => void): () => void {
+  userPassListeners.add(cb);
+  return () => {
+    userPassListeners.delete(cb);
+  };
 }
 
 let settingsListenerWired = false;

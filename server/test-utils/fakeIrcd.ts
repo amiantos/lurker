@@ -1278,6 +1278,18 @@ export class FakeIrcd extends EventEmitter {
     const target = rawTarget === '*' ? c.nick! : rawTarget;
     const fail = (code: string, ...rest: string[]) =>
       this.raw(c, `:${this.serverName} FAIL METADATA ${code} ${rest.join(' ')}`);
+    // ergo: a nick nobody holds is no target (handlers.go metadataHandler),
+    // so a SYNC on a peer who signed off fails rather than answering empty.
+    if (
+      rawTarget !== '*ALL' &&
+      !isChannelTarget(target) &&
+      !this.client(target) &&
+      sub !== 'SUB' &&
+      sub !== 'UNSUB' &&
+      sub !== 'SUBS'
+    ) {
+      return fail('INVALID_TARGET', target, ':Invalid metadata target');
+    }
     switch (sub) {
       case 'SUB': {
         const keys = p.slice(2);
