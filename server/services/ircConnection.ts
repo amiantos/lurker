@@ -7722,12 +7722,26 @@ export class IrcConnection {
   // handler records the NAMES before it publishes, so that one is never
   // flagged.
   private publishNames(ch: ChannelState): void {
-    this.publish({
+    this.publish(this.namesEvent(ch));
+  }
+
+  private namesEvent(ch: ChannelState): IrcEvent {
+    return {
       type: 'names',
       target: ch.name,
       members: Array.from(ch.members.values()).map(memberSnapshot),
       ...(this.membersPending(ch.name) ? { membersPending: true } : {}),
-    });
+    };
+  }
+
+  // The `names` event for one channel, for the hub to hand a single socket when
+  // it first hydrates that buffer (lurker#1292): the connect snapshot no longer
+  // carries any channel's members. Undefined for a channel we are not in — a
+  // parted or unknown target has no list, and the client keeps whatever it
+  // holds. Same shape and the same real `membersPending` as the fan-out.
+  namesEventFor(target: string): IrcEvent | undefined {
+    const ch = this.channelState(target);
+    return ch ? this.namesEvent(ch) : undefined;
   }
 
   // One channel in flight. The next channel's three requests go out when this
@@ -13244,11 +13258,19 @@ export class IrcConnection {
         modes: [...(ch.modes || [])].join(''),
         modeParams: Object.fromEntries(ch.modeParams ?? []),
         createdAt: ch.createdAt ?? null,
-        members: Array.from(ch.members.values()).map(memberSnapshot),
+        // Never the list (lurker#1292). Every channel's members in one frame
+        // made the snapshot a single multi-MB message on a large account, past
+        // the 1 MiB a URLSessionWebSocketTask reads by default; the first
+        // receive failed and the app sat on "Connecting…" asking for the same
+        // snapshot (lurker-ios#257). A client shows one nicklist at a time, so
+        // the list arrives as a `names` frame with the buffer's first
+        // hydration instead (wsHub sendNamesOnce). `members: []` keeps the
+        // field's type, and `membersPending` is the flag every client already
+        // reads as "hold what you have; this frame is not the list" (§9.1).
+        members: [],
+        membersPending: true,
         // IRCv3 metadata on the channel itself (#607).
         metadata: channelMetadataView(ch.metadata ?? {}, avatarClientUrl),
-        // See membersPending (#863).
-        ...(this.membersPending(ch.name) ? { membersPending: true } : {}),
       })),
       // IRCv3 metadata (#607): every nick's record, keyed by lowercase nick
       // like peerPresence. Kept current by `user-metadata` frames. The limits

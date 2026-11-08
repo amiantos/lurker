@@ -242,6 +242,13 @@ export interface Buffer {
   target: string;
   messages: BufferMessage[];
   members: BufferMember[];
+  // Whether `members` is the channel's list or only what has been pieced
+  // together (lurker#1292). The connect snapshot ships every channel with
+  // `members: []` + `membersPending`, and the list arrives as a `names` frame
+  // with the buffer's first hydration; until then a JOIN landing here makes a
+  // one-member list that is not the room. Flipped by the first non-provisional
+  // `setMembers`; never by the join/part/nick folds. Meaningless for a DM.
+  membersHeld: boolean;
   topic: string | null;
   joined: boolean;
   unread: number;
@@ -336,6 +343,7 @@ function makeBuffer(networkId: number | string | null, target: string): Buffer {
     target,
     messages: [],
     members: [],
+    membersHeld: false,
     topic: null,
     // Channels flip to false on PART/KICK and back to true on JOIN. DMs and
     // server pseudo-buffers have no join concept; default true so they
@@ -1204,9 +1212,12 @@ export const useBuffersStore = defineStore('buffers', {
       const buf = ensureBuffer(this, networkId, target);
       buf.loadingHistory = loading;
     },
-    // `provisional`: the server says this list is incomplete (`membersPending`,
-    // CLIENT_PROTOCOL §9.1). A list already held is the better one; keep it. A
-    // buffer with none takes the provisional list — something beats nothing.
+    // `provisional`: the server says this frame is not the list (`membersPending`,
+    // CLIENT_PROTOCOL §9.1): every snapshot channel, and a `names` while NAMES
+    // is unheard after a re-attach. A list already held is the better one; keep
+    // it. A buffer with none takes the provisional list — something beats
+    // nothing — but it is not `membersHeld`: that waits for the real list, which
+    // arrives with the buffer's first hydration (§8, "Member lists").
     setMembers(
       networkId: number | string,
       target: string,
@@ -1214,8 +1225,13 @@ export const useBuffersStore = defineStore('buffers', {
       opts: { provisional?: boolean } = {},
     ) {
       const buf = ensureBuffer(this, networkId, target);
-      if (opts.provisional && buf.members.length > 0) return;
+      if (opts.provisional) {
+        if (buf.members.length > 0 || buf.membersHeld) return;
+        buf.members = members;
+        return;
+      }
       buf.members = members;
+      buf.membersHeld = true;
     },
 
     // `meta` omitted leaves the held setter/time alone; passed, it replaces both.

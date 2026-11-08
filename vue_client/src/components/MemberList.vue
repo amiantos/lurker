@@ -5,7 +5,8 @@
 
 <template>
   <div class="members">
-    <ul ref="listEl">
+    <p v-if="!held" class="loading">Loading members…</p>
+    <ul v-else ref="listEl">
       <li
         v-for="m in sorted"
         :key="nickOf(m)"
@@ -65,6 +66,10 @@ const listEl = ref<HTMLElement | null>(null);
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
+// The list is the room only once a non-provisional `names` has landed
+// (lurker#1292); before that, what is held is whatever joins happened to
+// arrive, and drawing it would show a one-member channel.
+const held = computed(() => !!buffer.value?.membersHeld);
 const selfNick = computed(() => {
   const b = buffer.value;
   if (!b || b.networkId == null) return null;
@@ -210,6 +215,12 @@ ul {
   overflow: auto;
   flex: 1;
   min-height: 0;
+}
+.loading {
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--fg-muted);
+  font-style: italic;
 }
 li {
   display: flex;

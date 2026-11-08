@@ -133,6 +133,9 @@ import { callVerb } from './verbRegistry.js';
 interface LurkerWebSocket extends WebSocket {
   userId?: number;
   sinceId?: number;
+  // Channels (`networkId:folded target`) this socket has been handed a `names`
+  // for on hydration (lurker#1292) — see sendNamesOnce.
+  namesSent?: Set<string>;
   presence?: { visible: boolean };
   // What connected and when, for the "current clients" lists (#1272): a user
   // seeing "Safari on macOS, visible" is the answer to why a push was held.
@@ -1061,6 +1064,9 @@ const INPUT_HISTORY_SLICE = 50;
 // A snapshot slower than this logs a per-phase breakdown. Env-tunable so a fast
 // local/dev instance (which normally never crosses 250ms) can log every snapshot
 // for comparison — e.g. LURKER_SNAPSHOT_SLOW_MS=0 in .env.
+// One `snapshot` frame at or past this is warned about on its own, whatever it
+// took to build (lurker#1292). Half of what iOS reads by default.
+const SNAPSHOT_LARGE_BYTES = 512 * 1024;
 const SNAPSHOT_SLOW_MS = (() => {
   const raw = Number(process.env.LURKER_SNAPSHOT_SLOW_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : 250;
@@ -1071,8 +1077,9 @@ const SNAPSHOT_SLOW_MS = (() => {
 // of just a total. See the sendSnapshot wrapper's log.
 interface SnapshotBreakdown {
   bufferCount: number;
+  snapshotBytes: number; // the one `snapshot` frame, serialized
   fresh: boolean; // true = fresh connect → online loop shipped shells, not resume frames
-  networksMs: number; // ircManager.snapshotForUser (serializes channel member lists)
+  networksMs: number; // ircManager.snapshotForUser (per-network state; member lists left it in #1292)
   seedsMs: number; // drafts/system + the bulk read/cleared/closed maps
   onlineMs: number; // the live per-buffer loop (shells: unread counts; resume: +reads/speakers)
   offlineMs: number; // buildOfflineBacklogFrames
@@ -1507,6 +1514,7 @@ export function handleOpenBuffer(
   const inChannel = kindForTarget(requested) === 'channel' && !!conn?.isChannelJoined(requested);
   if (row && (hasMessageForTarget(networkId, row.target) || inChannel)) {
     reopenBufferRow(userId, networkId, row.target);
+    sendNamesOnce(ws, userId, networkId, row.target);
     send(ws, buildBufferBacklog(userId, networkId, row.target, countBy));
     send(ws, { kind: 'buffer-opened', networkId, target: row.target, bufferId: row.id });
     announceOpen(ws, userId, networkId, row.target, conn, row.id);
@@ -1611,7 +1619,40 @@ const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const BACKPRESSURE_GRACE_MS = 30_000;
 
 function send(ws: LurkerWebSocket, payload: WsPayload): void {
-  if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+  sendJson(ws, JSON.stringify(payload));
+}
+
+function sendJson(ws: LurkerWebSocket, json: string): void {
+  if (ws.readyState === ws.OPEN) ws.send(json);
+}
+
+// The connect snapshot no longer carries any channel's member list
+// (lurker#1292): a client shows one nicklist at a time, and every list in one
+// frame was a multi-MB message on a large account — past what iOS reads by
+// default, so the app never got its first frame (lurker-ios#257). The list
+// arrives here instead, as the same `names` frame the 366 fan-out sends, the
+// first time THIS socket hydrates the buffer: `history` of any mode (a jump from
+// search opens a buffer too) and `open-buffer`. Once per socket per channel —
+// a 2000-member list is ~300 KB and must not ride every scrollback page; a
+// reconnect's new socket is clean, and the 366 path still reaches everyone on
+// every join, so a rejoin never needs the memo cleared. Nothing for a channel
+// the connection is not in: the client keeps what it holds. A miss is not
+// memoized, so a channel joined later is still handed its list on open.
+// Sent BEFORE the reply it accompanies, so a client that marks the buffer
+// hydrated on the reply already holds the list.
+function sendNamesOnce(
+  ws: LurkerWebSocket,
+  userId: number,
+  networkId: number,
+  target: string,
+): void {
+  if (kindForTarget(target) !== 'channel') return;
+  const key = `${networkId}:${foldTargetFor(networkId, target)}`;
+  if (ws.namesSent?.has(key)) return;
+  const event = ircManager.getConnection(userId, networkId)?.namesEventFor(target);
+  if (!event) return;
+  (ws.namesSent ??= new Set()).add(key);
+  send(ws, { ...event, kind: 'irc', networkId, time: new Date().toISOString() });
 }
 
 // Drop a socket that has been unable to drain for a full grace period. Called
@@ -2970,6 +3011,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const startedAt = Date.now();
     let b: SnapshotBreakdown = {
       bufferCount: 0,
+      snapshotBytes: 0,
       fresh: false,
       networksMs: 0,
       seedsMs: 0,
@@ -2997,12 +3039,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     if (ok && ms >= SNAPSHOT_SLOW_MS) {
       console.warn(
         `[wsHub] snapshot for user ${userId} took ${ms}ms across ${b.bufferCount} buffers ` +
-          `(${b.fresh ? 'fresh/shells' : 'resume'}) — networks=${b.networksMs}ms seeds=${b.seedsMs}ms ` +
+          `(${b.fresh ? 'fresh/shells' : 'resume'}, snapshot frame ${b.snapshotBytes} bytes) — ` +
+          `networks=${b.networksMs}ms seeds=${b.seedsMs}ms ` +
           `online=${b.onlineMs}ms offline=${b.offlineMs}ms [online split: unread=${b.unreadMs}ms ` +
           `slice=${b.sliceMs}ms rest=${Math.max(0, b.onlineMs - b.unreadMs - b.sliceMs)}ms] ` +
           `[offline split: server=${b.offlineServerMs}ms shells=${b.offlineShellMs}ms]. ` +
           `Runs synchronously on the event loop; on slow storage or a large account this can starve ` +
-          `IRC socket I/O and trip ping timeouts (see [event-loop] logs). networks=member-list blob; ` +
+          `IRC socket I/O and trip ping timeouts (see [event-loop] logs). networks=per-network state blob; ` +
           `unread≈computeUnreadFor(+frame assembly), slice=buildResumeSlice reads, ` +
           `rest=sends/input-history/overhead.`,
       );
@@ -3045,7 +3088,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     } = advertisedUploadLimits(userId, findUserById(userId)?.role === 'admin');
     // Global ignore rules (network_id NULL) aren't tied to any one network blob,
     // so they ride alongside the per-network snapshot as their own field (#350).
-    send(ws, {
+    const snapshotJson = JSON.stringify({
       kind: 'snapshot',
       // #569: the server's protocol version rides the snapshot so a client that
       // connected without pre-checking GET /api/config still learns what the
@@ -3062,6 +3105,18 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),
     });
+    // Measured, because this is ONE WebSocket message and a client may cap
+    // what it reads (lurker-ios#257 was invisible in the server log: the
+    // client just dropped). The member lists left this frame in lurker#1292;
+    // `userMetadata` is the other per-nick map still in it.
+    const snapshotBytes = Buffer.byteLength(snapshotJson);
+    if (snapshotBytes >= SNAPSHOT_LARGE_BYTES) {
+      console.warn(
+        `[wsHub] snapshot frame for user ${userId} is ${snapshotBytes} bytes ` +
+          `(${networks.length} networks). A native client may refuse a single message this large.`,
+      );
+    }
+    sendJson(ws, snapshotJson);
     // The account's current state, with every snapshot. The same frame is
     // otherwise sent only on a change, so a tab that was away when the change
     // landed (or a fresh login, whose response carries neither field) would
@@ -3261,6 +3316,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     send(ws, { kind: 'backlog-complete' });
     return {
       bufferCount,
+      snapshotBytes,
       fresh: isFreshConnect,
       networksMs,
       seedsMs,
@@ -4365,6 +4421,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // what was asked. See feedback_irc_target_case_insensitive.
         const histRow = getBuffer(userId, histNetworkId, histTarget);
         histTarget = histRow?.target ?? histTarget;
+        // The channel's members, once per socket, ahead of whichever page this
+        // is (lurker#1292).
+        sendNamesOnce(ws, userId, histNetworkId, histTarget);
         const limit = Math.min(Math.max(Number(msg.limit) || 100, 1), 500);
         const mode = typeof msg.mode === 'string' ? msg.mode : 'before';
         // What `limit` counts (#10). 'renderable' sizes the page in the unit the
@@ -4488,7 +4547,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               countBy,
             },
           ) as { messages: WsPayload[]; hasOlder: boolean };
-        } catch (_) {
+        } catch (err) {
+          // Named in the log: the client gets a generic refusal and cannot say why.
+          console.warn(`[wsHub] history fetch failed for ${histNetworkId}/${histTarget}:`, err);
           send(ws, { kind: 'error', text: 'history fetch failed' });
           break;
         }

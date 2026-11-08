@@ -73,6 +73,46 @@ describe('setMembers provisional (#863)', () => {
   });
 });
 
+// The connect snapshot ships every channel with `members: []` + `membersPending`;
+// the list arrives with the buffer's first hydration (lurker#1292). Until then
+// the list is not held, whatever joins have landed in it.
+describe('membersHeld (lurker#1292)', () => {
+  const alice = { nick: 'alice', modes: [], away: false };
+  const me = { nick: 'me', modes: [], away: false };
+
+  it('a snapshot channel is not held, and a join does not make it so', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [], { provisional: true });
+    const buf = store.byKey('1::#chan')!;
+    expect(buf.membersHeld).toBe(false);
+    store.addMember(1, '#chan', 'alice');
+    expect(buf.members.map((m) => m.nick)).toEqual(['alice']);
+    expect(buf.membersHeld).toBe(false);
+  });
+
+  it('a provisional list over a held one changes nothing', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [alice, me]);
+    store.setMembers(1, '#chan', [], { provisional: true });
+    const buf = store.byKey('1::#chan')!;
+    expect(buf.membersHeld).toBe(true);
+    expect(buf.members.map((m) => m.nick)).toEqual(['alice', 'me']);
+  });
+
+  it('the hydration names frame makes the list held, even an empty one', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [], { provisional: true });
+    store.addMember(1, '#chan', 'alice');
+    store.setMembers(1, '#chan', [me]);
+    const buf = store.byKey('1::#chan')!;
+    expect(buf.membersHeld).toBe(true);
+    expect(buf.members.map((m) => m.nick)).toEqual(['me']);
+    // A later provisional frame (a re-attach) keeps it.
+    store.setMembers(1, '#chan', [me], { provisional: true });
+    expect(buf.membersHeld).toBe(true);
+  });
+});
+
 describe('applyReadState', () => {
   // Regression for #319: mark-all-read fans out a read-state for every target
   // with history, including closed buffers (absent from the store). Applying
