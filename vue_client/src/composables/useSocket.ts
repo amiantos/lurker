@@ -5,7 +5,7 @@ import { getActivePinia } from 'pinia';
 import type { Ref } from 'vue';
 import { ref, onMounted, watch, effectScope } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
-import { useBuffersStore } from '../stores/buffers.js';
+import { useBuffersStore, resetNamesAsked } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -558,7 +558,7 @@ function applyEvent(event: any): boolean {
       // empty buffer for a channel we were never in.
       if (buffers.findByTarget(event.networkId, event.target)) {
         buffers.setJoined(event.networkId, event.target, false);
-        buffers.setMembers(event.networkId, event.target, []);
+        buffers.clearMembers(event.networkId, event.target);
       }
       // Whether or not a buffer exists, this part is definitive: no join is
       // landing under this name (the forward case) — stop the pending-join
@@ -1355,6 +1355,9 @@ function open() {
     'open',
     () => {
       connected.value = true;
+      // A new socket has been handed no member list yet; what this tab asked
+      // for on the last one does not count (buffers.ensureMembers).
+      resetNamesAsked();
       // Stamped, not reset — the backoff clears on a connection that PROVED
       // itself, which is decided in the close handler. See RECONNECT_STABLE_MS.
       socketOpenedAt = Date.now();

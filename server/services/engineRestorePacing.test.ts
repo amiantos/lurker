@@ -187,8 +187,10 @@ describe('engine restore pacing', () => {
       const conn = ircManager.startNetwork(userId, network.id)!;
       harness.tap(conn, 'pace');
       await until(() => conn.state === 'connected', 5000, 'reattached');
+      // The connection's own answer: the snapshot's channels say `membersPending`
+      // for every channel now that none carries its list (lurker#1292).
       const pending = (chan: string): boolean | undefined =>
-        conn.snapshot().channels.find((c) => c.name.toLowerCase() === chan)?.membersPending;
+        conn.channelState(chan) ? conn.membersPending(chan) || undefined : undefined;
       const lastNamesFor = (chan: string) =>
         [...names].reverse().find((e) => String(e.target).toLowerCase() === chan);
       const asked = (chan: string) => wire.some((w) => w.dir === '>' && w.line === `NAMES ${chan}`);

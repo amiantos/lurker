@@ -626,7 +626,11 @@ function sendDmFile() {
 // property of the channel, so the channel header is the natural home.
 const memberCount = computed(() => {
   if (!isChannel.value) return null;
-  return (activeBuf.value as Buffer | null)?.members?.length ?? null;
+  const buf = activeBuf.value as Buffer | null;
+  // Unknown until the list has arrived (lurker#1292): a count of what has been
+  // pieced together from joins is not the room's size.
+  if (buf?.membersKnown !== 'full') return null;
+  return buf.members?.length ?? null;
 });
 
 // ─── Reply threads (#1225) ──────────────────────────────────────────────────

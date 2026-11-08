@@ -241,7 +241,10 @@ On every successful connect the server immediately sends a **burst of separate
 frames**, synchronously, in this order (`wsHub.ts` `sendSnapshotInner`, 2293):
 
 1. `{kind:'snapshot', protocolVersion, maxUploadBytes, maxStaticImageDimension, maxChunkedUploadBytes, uploadChunkBytes, uploadCeilingBytes, networks, globalIgnores, cursor?}`
-   — full live state for every network (see §5.1). `cursor` (present only on a
+   — full live state for every network (see §5.1), **minus every channel's
+   member list**: each channel arrives with `members: []` and
+   `membersPending: true`, and the list itself comes as a `names` frame with
+   the buffer's first hydration (§8, "Member lists"). `cursor` (present only on a
    fresh connect) is the current global max message id: **seed your resume
    cursor from it**, because the shell backlogs that follow carry no rows and
    would otherwise leave your cursor at 0. `maxUploadBytes` is the largest
@@ -416,9 +419,9 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   away: { active, since, message, autoSet, backAt } | null,
   channels: [ { name, topic, topicSetBy, topicSetAt,
                 modes, modeParams: { "<letter>": "<value>" }, createdAt,
-                members: [ { nick, modes: [], away, user, host, account } ],
-                metadata: { displayName?, avatarUrl? },   // IRCv3 metadata on the channel (#607)
-                membersPending?: true } ],   // NAMES not heard yet — see §9.1
+                members: [],                 // ALWAYS empty here — see §8 "Member lists"
+                membersPending: true,        // always, for the same reason — see §9.1
+                metadata: { displayName?, avatarUrl? } } ],   // IRCv3 metadata on the channel (#607)
   peerPresence: { "<lowercased nick>": { nick, state, stateAt, awayMessage } },
   userMetadata: { "<lowercased nick>": { displayName?, avatarUrl?, pronouns?, homepage?, status? } },
   metadataLimits: { maxSubs, maxKeys, maxValueBytes, beforeConnect } | null,   // null: no draft/metadata-2
@@ -820,6 +823,7 @@ is emitted immediately from the server's optimistic local copy.
 | `join`              | `networkId, channel, key?`                                           | Request only — the buffer appears on `channel-joined` (§9.1). Without `key`, the channel's stored key is sent if the server has one                                                                                                                                                               |
 | `part`              | `networkId, channel, reason?`                                        | Buffer survives, parted                                                                                                                                                                                                                                                                           |
 | `open-buffer`       | `networkId, target, countBy?`                                        | **Write.** Reopen/create: replies `backlog` + `buffer-opened`, announces a shell + `buffer-opened` to the user's other devices; JOINs if an unjoined channel; mints an empty DM row for a bare nick                                                                                               |
+| `names`             | `networkId, target` (or `bufferId`)                                  | Read. The channel's member list from server state as a `names` frame (§8 "Member lists"); no IRC traffic; no answer for a channel the connection is not in                                                                                                                                        |
 | `close-buffer`      | `networkId, target, reason?`                                         | Closes (PARTs a joined channel, untracks a DM peer, ends a `=nick` DCC chat). `:server:` refuses                                                                                                                                                                                                  |
 | `get-mode-list`     | `networkId, channel, letter, clientId`                               | Fetches a list mode (`b`, `e`, `I`, or `q` where it's a list) from the server. The `send-result` comes once the list is in, with the MCP verb's result as `data`: `{ entries: [{ mask, setBy, setAt }] }`, or `error: 'refused'` plus `numeric`/`text`. The replies never reach the server buffer |
 | `set-topic`         | `networkId, channel, topic, clientId?`                               | The `set_topic` verb: `TOPIC #chan :topic` (an empty string clears). Unlike a `raw` TOPIC, the ACK says `not-connected` when the network is down                                                                                                                                                  |
@@ -1121,6 +1125,41 @@ bouncer surface an empty CHATHISTORY batch can mean pruned as well as
 never-existed. None of these are distinguishable from history that never
 existed — cache accordingly.
 
+### Member lists arrive with the first hydration
+
+The connect snapshot carries no channel's member list (§4.3, §5.1): every
+channel comes with `members: []` and `membersPending: true`. A client shows one
+nicklist at a time, and every list in one frame made the snapshot a single
+multi-MB message on a large account — more than a native WebSocket reads by
+default, so the app never saw its first frame (lurker-ios#257, lurker#1292).
+
+Instead, **the first real slice a socket is handed for a channel the
+connection is in is preceded by a `names` frame** (`kind:'irc', type:'names'`,
+the same frame the 366 fan-out sends, with the real `membersPending` if NAMES
+is still unheard) **on that socket**: the first `history` reply of any mode,
+an `open-buffer` backlog, or — on a resume connect — the channel's frame in
+the burst, gap slice or shell alike (you hold that buffer and will not ask for
+its history again, so the list rides what you do get). A fresh connect's
+shells get none: you hold nothing yet, and hydrating the buffer asks. Once
+per socket per channel: later pages of the same buffer carry no list, a
+reconnect's new socket is handed it again, and the ordinary `names` fan-out —
+on every join's 366, an own-mode change, an away flip, a WHO backfill — still
+reaches every socket as before. A DM, a `:server:` log, a channel the
+connection is not in, or a channel on an offline network gets none: keep what
+you hold.
+
+For a list you need without a slice — Channel Settings on a channel you never
+opened, a nicklist some path left behind — send **`{type:'names', networkId,
+target}`** (or `bufferId`). It is answered from the server's own state with the
+same `names` frame, every time, with no IRC traffic; a channel the connection
+is not in gets no answer. This is not `/names`, which goes to IRC.
+
+So: render a joined channel on a connected network whose list you have not
+received as **loading, not empty** — the count unknown — until a non-pending
+`names` lands; a parted channel or a down network has no list to wait for.
+A pending `names` with anyone in it may be shown as what it is, a partial
+list. A JOIN folded into an unknown list does not make it known.
+
 ### `countBy` — what `limit` counts
 
 `limit` counts **stored rows**. If you consolidate presence noise — the web
@@ -1291,12 +1330,18 @@ these signals:
 - **`names` and `channel-topic` only ever name a channel you are in.** A `/names`
   or `/topic` for any other comes back as `motd` text in the server buffer.
 - **`membersPending` (on a snapshot channel, or on a `names` event) → keep the
-  members you already hold.** The server has not heard the channel's NAMES
-  since it last connected or attached — after an engine re-attach that is every
-  channel until the restore asks, one at a time — so the list it sends is only
-  the members learned so far, at least yourselves; rendering it looks like
-  everyone left. Take that list only if you hold none. Normally a definitive
-  `names` follows within seconds; a restore step whose NAMES the server never
+  members you already hold.** The frame is not the list. On a **snapshot**
+  channel that is always so: the connect snapshot carries no channel's members
+  (`members: []`), and the list comes as a `names` frame the first time you
+  hydrate the buffer (§8, "Member lists"). On a **`names` event** it means the
+  server has not heard the channel's NAMES since it last connected or attached
+  — after an engine re-attach that is every channel until the restore asks, one
+  at a time — so the list it sends is only the members learned so far, at least
+  yourselves; rendering it looks like everyone left. Take that list only if you
+  hold none, and treat "none held" as unknown, not as an empty channel: a
+  JOIN landing on a channel you have not hydrated must not leave you showing a
+  one-member list as the whole room. Normally a definitive `names` follows
+  within seconds of a pending one; a restore step whose NAMES the server never
   answers sends nothing further, and the flag stays until a later `/names` or
   rejoin.
 - **Never materialize from ambient signals:** `typing`, `member-update`,

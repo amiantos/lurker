@@ -160,7 +160,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, reactive, ref, watch, onMounted } from 'vue';
 import AppModal from './AppModal.vue';
 import TabStrip from './TabStrip.vue';
 import LinkedText from './LinkedText.vue';
@@ -196,6 +196,9 @@ const networks = useNetworksStore();
 const LIST_ACK_TIMEOUT_MS = 35_000;
 
 const buffer = computed(() => buffers.findByTarget(props.networkId, props.target));
+// Opened from the sidebar on a channel never activated, the buffer may not hold
+// its list yet (lurker#1292) — and an empty one would read as "not an op".
+onMounted(() => buffers.ensureMembers(props.networkId, props.target));
 const spec = computed(() => networks.states[props.networkId]?.modeSpec ?? null);
 
 // This channel's live `mode` and `error` rows since the modal opened. Taken

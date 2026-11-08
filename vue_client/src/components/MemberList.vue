@@ -5,7 +5,8 @@
 
 <template>
   <div class="members">
-    <ul ref="listEl">
+    <p v-if="loading" class="loading">Loading members…</p>
+    <ul v-else ref="listEl">
       <li
         v-for="m in sorted"
         :key="nickOf(m)"
@@ -41,7 +42,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
-import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
+import { useBuffersStore, type BufferMember, bufferNeedsHydration } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
@@ -65,6 +66,37 @@ const listEl = ref<HTMLElement | null>(null);
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
+// "Loading members…" only while there is a list to wait for (lurker#1292): the
+// buffer knows nothing yet, we are in the channel, and its network is up. A
+// parted channel, a channel on a down network, or a provisional list shows
+// what it has — the list, or nothing — as before.
+const loading = computed(() => {
+  const b = buffer.value;
+  if (!b || b.networkId == null || b.membersKnown !== 'none' || !b.joined) return false;
+  return networks.states[b.networkId]?.state === 'connected';
+});
+// The list normally rides the buffer's hydration. A buffer that is hydrated,
+// idle, and still not knowing its list is some path that did not — ask
+// outright (once per socket). Idle matters: `bufferNeedsHydration` is false
+// while a fetch is in flight too, and asking then would hand the socket the
+// list twice, once here and once with the reply (~300 KB each on a big room).
+watch(
+  () => [
+    buffer.value?.networkId,
+    buffer.value?.target,
+    buffer.value?.membersKnown,
+    buffer.value?.joined,
+    buffer.value?.loadingHistory,
+    buffer.value?.detached,
+  ],
+  () => {
+    const b = buffer.value;
+    if (!b || b.networkId == null || b.membersKnown === 'full') return;
+    if (b.loadingHistory || b.detached || bufferNeedsHydration(b)) return;
+    buffers.ensureMembers(b.networkId, b.target);
+  },
+  { immediate: true },
+);
 const selfNick = computed(() => {
   const b = buffer.value;
   if (!b || b.networkId == null) return null;
@@ -210,6 +242,12 @@ ul {
   overflow: auto;
   flex: 1;
   min-height: 0;
+}
+.loading {
+  margin: 0;
+  padding: var(--space-2) var(--space-5);
+  color: var(--fg-muted);
+  font-style: italic;
 }
 li {
   display: flex;

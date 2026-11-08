@@ -31,6 +31,7 @@ function mountWith(members: { nick: string; modes: string[] }[], prefix: PrefixM
   } as never;
   const b = useBuffersStore().ensure(1, '#chan', 9);
   b.members = members.map((m) => ({ ...m, away: false }));
+  b.membersKnown = 'full'; // the list is the room; 'none' renders "Loading members…" (lurker#1292)
   networks.activeKey = '1::#chan';
   wrapper = mount(MemberList);
   return wrapper.findAll('li').map((li) => ({

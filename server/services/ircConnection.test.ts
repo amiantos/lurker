@@ -4503,6 +4503,36 @@ describe('channel control state (#727)', () => {
     expect(Date.parse(snapChannel(conn, '#chan').topicSetAt!)).toBeGreaterThan(Date.now() - 60_000);
   });
 
+  // lurker#1292: the connect snapshot carries no channel's members. A hundred
+  // channels of two hundred — a large account — used to be several megabytes
+  // in one frame, past what a native client reads by default (lurker-ios#257).
+  it("serializes a large account's channels without their member lists", () => {
+    const { conn } = makeConn('cc-size');
+    const users = Array.from({ length: 200 }, (_, i) => ({
+      nick: `member${i}`,
+      modes: [],
+      ident: `~m${i}`,
+      hostname: `host-${i}.example.test`,
+    }));
+    for (let c = 0; c < 100; c += 1) {
+      conn.upsertChannel(`#room${c}`);
+      conn.client.emit('userlist', { channel: `#room${c}`, users });
+    }
+    const snapshot = conn.snapshot();
+    expect(snapshot.channels).toHaveLength(100);
+    for (const ch of snapshot.channels) {
+      expect(ch.members).toEqual([]);
+      expect(ch.membersPending).toBe(true);
+    }
+    // Under 64 KiB with the lists out; with them in, the same account was ~2 MiB.
+    expect(JSON.stringify(snapshot).length).toBeLessThan(64 * 1024);
+    // The lists themselves are intact, for the per-channel `names` on hydration.
+    const names = conn.namesEventFor('#room7')!;
+    expect(names.type).toBe('names');
+    expect((names.members as unknown[]).length).toBe(200);
+    expect(conn.namesEventFor('#nowhere')).toBeUndefined();
+  });
+
   it("keeps a member's modes in rank order, not grant order", () => {
     const { conn } = makeConn('cc-rank');
     conn.upsertChannel('#chan');
@@ -4515,7 +4545,8 @@ describe('channel control state (#727)', () => {
         raw_params: ['alice'],
       });
     }
-    const alice = snapChannel(conn, '#chan').members.find((m) => m.nick === 'alice')!;
+    // The snapshot carries no members (lurker#1292); the connection's own state does.
+    const alice = conn.channelState('#chan')!.members.get('alice')!;
     expect(alice.modes).toEqual(['o', 'v']);
   });
 

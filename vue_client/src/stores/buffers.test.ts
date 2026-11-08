@@ -30,7 +30,12 @@ vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<(payload: unknown) => boolean>(),
 }));
 
-import { useBuffersStore, bufferNeedsHydration, windowAroundAnchor } from './buffers.js';
+import {
+  useBuffersStore,
+  bufferNeedsHydration,
+  windowAroundAnchor,
+  resetNamesAsked,
+} from './buffers.js';
 import { useSettingsStore } from './settings.js';
 import { socketSend } from '../composables/useSocket.js';
 import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
@@ -70,6 +75,72 @@ describe('setMembers provisional (#863)', () => {
     store.setMembers(1, '#chan', [alice, bob, me]);
     store.setMembers(1, '#chan', [me]);
     expect(store.byKey('1::#chan')!.members.map((m) => m.nick)).toEqual(['me']);
+  });
+});
+
+// The connect snapshot ships every channel with `members: []` + `membersPending`;
+// the list arrives with the buffer's first hydration (lurker#1292). Until then
+// the list is not held, whatever joins have landed in it.
+describe('membersKnown (lurker#1292)', () => {
+  const alice = { nick: 'alice', modes: [], away: false };
+  const me = { nick: 'me', modes: [], away: false };
+
+  it('a snapshot channel knows nothing, and a join does not change that', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [], { provisional: true });
+    const buf = store.byKey('1::#chan')!;
+    expect(buf.membersKnown).toBe('none');
+    store.addMember(1, '#chan', 'alice');
+    expect(buf.members.map((m) => m.nick)).toEqual(['alice']);
+    expect(buf.membersKnown).toBe('none');
+  });
+
+  it('a provisional list with anyone in it is partial; over a full one it changes nothing', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [me], { provisional: true });
+    expect(store.byKey('1::#chan')!.membersKnown).toBe('partial');
+    store.setMembers(1, '#full', [alice, me]);
+    store.setMembers(1, '#full', [], { provisional: true });
+    const full = store.byKey('1::#full')!;
+    expect(full.membersKnown).toBe('full');
+    expect(full.members.map((m) => m.nick)).toEqual(['alice', 'me']);
+  });
+
+  it('the hydration names frame is full, even when empty; a part clears to none', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [], { provisional: true });
+    store.addMember(1, '#chan', 'alice');
+    store.setMembers(1, '#chan', [me]);
+    const buf = store.byKey('1::#chan')!;
+    expect(buf.membersKnown).toBe('full');
+    expect(buf.members.map((m) => m.nick)).toEqual(['me']);
+    store.setMembers(1, '#chan', [me], { provisional: true });
+    expect(buf.membersKnown).toBe('full');
+    store.clearMembers(1, '#chan');
+    expect(buf.membersKnown).toBe('none');
+    expect(buf.members).toEqual([]);
+    store.setMembers(1, '#chan', []);
+    expect(buf.membersKnown).toBe('full');
+  });
+
+  it('ensureMembers asks once per socket for a joined channel that is not full', () => {
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [], { provisional: true });
+    store.setJoined(1, '#chan', true);
+    vi.mocked(socketSend).mockReturnValue(true);
+    expect(store.ensureMembers(1, '#chan')).toBe(true);
+    expect(socketSend).toHaveBeenCalledWith({ type: 'names', networkId: 1, target: '#chan' });
+    expect(store.ensureMembers(1, '#chan')).toBe(false);
+    resetNamesAsked();
+    expect(store.ensureMembers(1, '#chan')).toBe(true);
+    // Not for a parted channel, a full list, or a DM.
+    store.setJoined(1, '#chan', false);
+    expect(store.ensureMembers(1, '#chan')).toBe(false);
+    store.setJoined(1, '#chan', true);
+    store.setMembers(1, '#chan', [me]);
+    expect(store.ensureMembers(1, '#chan')).toBe(false);
+    store.setMembers(1, 'alice', [], { provisional: true });
+    expect(store.ensureMembers(1, 'alice')).toBe(false);
   });
 });
 

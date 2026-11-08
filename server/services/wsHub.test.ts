@@ -647,6 +647,7 @@ describe('handleOpenBuffer', () => {
     buffers.ensureExists(userId, networkId, '#emptyjoined');
     const spy = vi.spyOn(ircManager, 'getConnection').mockReturnValue({
       isChannelJoined: (n: string) => n.toLowerCase() === '#emptyjoined',
+      namesEventFor: () => undefined, // the per-socket `names` (lurker#1292) is not this test's
     } as never);
     try {
       const { ws, frames } = mockWs();
@@ -671,7 +672,7 @@ describe('handleOpenBuffer', () => {
     buffers.ensureExists(userId, networkId, '&unjoined');
     const spy = vi
       .spyOn(ircManager, 'getConnection')
-      .mockReturnValue({ isChannelJoined: () => false } as never);
+      .mockReturnValue({ isChannelJoined: () => false, namesEventFor: () => undefined } as never);
     try {
       const { ws, frames } = mockWs();
       handleOpenBuffer(ws, userId, networkId, '&unjoined');
@@ -683,9 +684,10 @@ describe('handleOpenBuffer', () => {
 
   it("answers a JOINED '&' channel, which is a channel prefix too", () => {
     buffers.ensureExists(userId, networkId, '&joined');
-    const spy = vi
-      .spyOn(ircManager, 'getConnection')
-      .mockReturnValue({ isChannelJoined: (n: string) => n.toLowerCase() === '&joined' } as never);
+    const spy = vi.spyOn(ircManager, 'getConnection').mockReturnValue({
+      isChannelJoined: (n: string) => n.toLowerCase() === '&joined',
+      namesEventFor: () => undefined,
+    } as never);
     try {
       const { ws, frames } = mockWs();
       handleOpenBuffer(ws, userId, networkId, '&joined');
