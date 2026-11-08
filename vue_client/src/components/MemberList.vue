@@ -75,18 +75,24 @@ const loading = computed(() => {
   if (!b || b.networkId == null || b.membersKnown !== 'none' || !b.joined) return false;
   return networks.states[b.networkId]?.state === 'connected';
 });
-// The list normally rides the buffer's hydration. A hydrated buffer still not
-// knowing its list is some path that did not — ask outright (once per socket).
+// The list normally rides the buffer's hydration. A buffer that is hydrated,
+// idle, and still not knowing its list is some path that did not — ask
+// outright (once per socket). Idle matters: `bufferNeedsHydration` is false
+// while a fetch is in flight too, and asking then would hand the socket the
+// list twice, once here and once with the reply (~300 KB each on a big room).
 watch(
   () => [
     buffer.value?.networkId,
     buffer.value?.target,
     buffer.value?.membersKnown,
     buffer.value?.joined,
+    buffer.value?.loadingHistory,
+    buffer.value?.detached,
   ],
   () => {
     const b = buffer.value;
-    if (!b || b.networkId == null || b.membersKnown === 'full' || bufferNeedsHydration(b)) return;
+    if (!b || b.networkId == null || b.membersKnown === 'full') return;
+    if (b.loadingHistory || b.detached || bufferNeedsHydration(b)) return;
     buffers.ensureMembers(b.networkId, b.target);
   },
   { immediate: true },

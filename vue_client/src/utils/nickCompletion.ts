@@ -18,7 +18,7 @@ import { isChannelTarget } from '../../../shared/channels.js';
 // load a channel can have an empty members list before NAMES arrives, and
 // using "is the set empty" as the proxy would leak parted speakers through
 // in that window. The same holds for the window between a buffer's first open
-// and the `names` that hydration brings (lurker#1292; `membersHeld` in the
+// and the `names` that hydration brings (lurker#1292; `membersKnown` in the
 // store): nobody to offer for one round trip beats offering someone who left.
 // Optional `isIgnored` predicate (passed `(nick, userhost)`) lets callers
 // strip ignored nicks from completion without this util reaching into Pinia

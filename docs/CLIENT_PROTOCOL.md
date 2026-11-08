@@ -1137,9 +1137,10 @@ Instead, **the first real slice a socket is handed for a channel the
 connection is in is preceded by a `names` frame** (`kind:'irc', type:'names'`,
 the same frame the 366 fan-out sends, with the real `membersPending` if NAMES
 is still unheard) **on that socket**: the first `history` reply of any mode,
-an `open-buffer` backlog, or — on a resume connect — the channel's gap frame
-in the burst (you hold that buffer and will not ask for its history again, so
-the list rides what you do get; a shell is not a slice and gets none). Once
+an `open-buffer` backlog, or — on a resume connect — the channel's frame in
+the burst, gap slice or shell alike (you hold that buffer and will not ask for
+its history again, so the list rides what you do get). A fresh connect's
+shells get none: you hold nothing yet, and hydrating the buffer asks. Once
 per socket per channel: later pages of the same buffer carry no list, a
 reconnect's new socket is handed it again, and the ordinary `names` fan-out —
 on every join's 366, an own-mode change, an away flip, a WHO backfill — still

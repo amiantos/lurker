@@ -345,6 +345,17 @@ describe('the list arrives with the first hydration', () => {
         3000,
         'second answer',
       );
+      // A malformed ask is refused, not dropped: a client that memoizes its ask
+      // must learn it went nowhere.
+      // (A foreign or malformed networkId is refused at the hub's boundary, as
+      // every verb's is: `unknown network`.)
+      client.send({ type: 'names', networkId: 'three', target: '#big' });
+      await client.waitFor((f) => f.kind === 'error' && f.text === 'unknown network', 'bad id');
+      client.send({ type: 'names', networkId, target: 7 });
+      await client.waitFor(
+        (f) => f.kind === 'error' && String(f.text).includes('target'),
+        'bad target',
+      );
       // Nothing for a channel we are not in, or a DM; the socket stays quiet.
       client.send({ type: 'names', networkId, target: '#elsewhere' });
       client.send({ type: 'names', networkId, target: 'alice' });

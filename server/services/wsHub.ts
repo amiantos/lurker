@@ -3227,6 +3227,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           precomputed,
         );
         unreadMs += Date.now() - tShell;
+        // A shell on a RESUME socket is a network that came back while the
+        // client held its buffers (isFreshNetwork): the client will not
+        // hydrate what it already shows, so the list rides the shell
+        // (lurker#1292). A fresh connect holds nothing, and its hydration asks.
+        if (!isFreshConnect) sendNames(ws, userId, conn.network.id, target);
         send(ws, shell);
         bufferCount += 1;
         continue;
@@ -3671,9 +3676,16 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // the client already renders as parted.
         const addr = verbBuffer(userId, msg);
         if (addr === null) break;
-        const namesNetworkId = addr ? (addr.networkId as number) : (msg.networkId as number);
+        const namesNetworkId = addr ? Number(addr.networkId) : Number(msg.networkId);
         const namesTarget = addr ? addr.target : msg.target;
-        if (typeof namesTarget !== 'string' || !ownsNetwork(userId, namesNetworkId)) break;
+        if (!Number.isInteger(namesNetworkId) || !ownsNetwork(userId, namesNetworkId)) {
+          rejectField(ws, msg, 'networkId');
+          break;
+        }
+        if (typeof namesTarget !== 'string' || !namesTarget) {
+          rejectField(ws, msg, 'target');
+          break;
+        }
         sendNames(ws, userId, namesNetworkId, namesTarget, { force: true });
         break;
       }
