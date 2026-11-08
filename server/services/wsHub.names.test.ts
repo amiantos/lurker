@@ -89,9 +89,11 @@ interface Client {
 const isNames = (target: string) => (f: Frame) =>
   f.kind === 'irc' && f.type === 'names' && String(f.target).toLowerCase() === target;
 
-async function connect(): Promise<Client> {
+async function connect(since?: number): Promise<Client> {
   const { token } = createSession(userId);
-  const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+  const ws = new WebSocket(since ? `${url}?since=${since}` : url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   const frames: Frame[] = [];
   const waiters: Array<{ pred: (f: Frame) => boolean; resolve: (f: Frame) => void }> = [];
   ws.on('message', (raw) => {
@@ -292,6 +294,65 @@ describe('the list arrives with the first hydration', () => {
         'offline history',
       );
       expect(afterBurst(client).some((f) => f.kind === 'irc' && f.type === 'names')).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  it("a resume connect sends the list ahead of each live channel's gap frame", async () => {
+    // A cursor from before any row: the gap is the whole buffer, so each live
+    // channel gets a real slice, not a shell. The client holding these buffers
+    // never asks for history, so the list has to ride the slice.
+    const client = await connect(1);
+    try {
+      const burst = client.frames;
+      const end = burst.findIndex((f) => f.kind === 'backlog-complete');
+      for (const chan of ['#big', '#small']) {
+        const backlog = burst.findIndex(
+          (f) => f.kind === 'backlog' && String(f.target).toLowerCase() === chan,
+        );
+        const names = burst.findIndex(isNames(chan));
+        expect(backlog, `${chan} backlog`).toBeGreaterThan(-1);
+        expect(backlog).toBeLessThan(end);
+        expect((burst[backlog] as { mode?: string }).mode).not.toBe('shell');
+        expect(names, `${chan} names`).toBeGreaterThan(-1);
+        expect(names).toBeLessThan(backlog);
+      }
+      expect(burst.filter((f) => f.kind === 'irc' && f.type === 'names').length).toBe(2);
+      // And the memo counts it: opening the buffer now sends no second list.
+      client.send({ type: 'history', mode: 'latest', networkId, target: '#big', limit: 50 });
+      await client.waitFor(
+        (f) => f.kind === 'history' && String(f.target).toLowerCase() === '#big',
+        'history reply',
+      );
+      expect(afterBurst(client).some(isNames('#big'))).toBe(false);
+    } finally {
+      client.close();
+    }
+  });
+
+  it('the names verb answers from server state, every time, for a channel we are in', async () => {
+    const client = await connect();
+    try {
+      client.send({ type: 'names', networkId, target: '#BIG' });
+      const first = await client.waitFor(isNames('#big'), 'names on request');
+      expect((first.members as unknown[]).length).toBe(3);
+      expect(first.target).toBe('#Big');
+      // Asked outright, it is answered again — the verb is not the memo.
+      client.send({ type: 'names', networkId, target: '#big' });
+      await until(
+        () => afterBurst(client).filter(isNames('#big')).length === 2,
+        3000,
+        'second answer',
+      );
+      // Nothing for a channel we are not in, or a DM; the socket stays quiet.
+      client.send({ type: 'names', networkId, target: '#elsewhere' });
+      client.send({ type: 'names', networkId, target: 'alice' });
+      client.send({ type: 'history', mode: 'latest', networkId, target: 'alice', limit: 1 });
+      await client.waitFor((f) => f.kind === 'history' && f.target === 'alice', 'dm history');
+      expect(afterBurst(client).filter((f) => f.kind === 'irc' && f.type === 'names').length).toBe(
+        2,
+      );
     } finally {
       client.close();
     }

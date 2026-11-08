@@ -134,7 +134,7 @@ interface LurkerWebSocket extends WebSocket {
   userId?: number;
   sinceId?: number;
   // Channels (`networkId:folded target`) this socket has been handed a `names`
-  // for on hydration (lurker#1292) — see sendNamesOnce.
+  // for on hydration (lurker#1292) — see sendNames.
   namesSent?: Set<string>;
   presence?: { visible: boolean };
   // What connected and when, for the "current clients" lists (#1272): a user
@@ -1514,7 +1514,7 @@ export function handleOpenBuffer(
   const inChannel = kindForTarget(requested) === 'channel' && !!conn?.isChannelJoined(requested);
   if (row && (hasMessageForTarget(networkId, row.target) || inChannel)) {
     reopenBufferRow(userId, networkId, row.target);
-    sendNamesOnce(ws, userId, networkId, row.target);
+    sendNames(ws, userId, networkId, row.target);
     send(ws, buildBufferBacklog(userId, networkId, row.target, countBy));
     send(ws, { kind: 'buffer-opened', networkId, target: row.target, bufferId: row.id });
     announceOpen(ws, userId, networkId, row.target, conn, row.id);
@@ -1619,6 +1619,9 @@ const MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 const BACKPRESSURE_GRACE_MS = 30_000;
 
 function send(ws: LurkerWebSocket, payload: WsPayload): void {
+  // Checked before serializing: a burst to a socket that closed mid-way must
+  // not pay for frames nobody will read.
+  if (ws.readyState !== ws.OPEN) return;
   sendJson(ws, JSON.stringify(payload));
 }
 
@@ -1631,24 +1634,29 @@ function sendJson(ws: LurkerWebSocket, json: string): void {
 // frame was a multi-MB message on a large account — past what iOS reads by
 // default, so the app never got its first frame (lurker-ios#257). The list
 // arrives here instead, as the same `names` frame the 366 fan-out sends, the
-// first time THIS socket hydrates the buffer: `history` of any mode (a jump from
-// search opens a buffer too) and `open-buffer`. Once per socket per channel —
-// a 2000-member list is ~300 KB and must not ride every scrollback page; a
-// reconnect's new socket is clean, and the 366 path still reaches everyone on
-// every join, so a rejoin never needs the memo cleared. Nothing for a channel
-// the connection is not in: the client keeps what it holds. A miss is not
-// memoized, so a channel joined later is still handed its list on open.
-// Sent BEFORE the reply it accompanies, so a client that marks the buffer
-// hydrated on the reply already holds the list.
-function sendNamesOnce(
+// first time THIS socket is handed a real slice of the buffer: `history` of
+// any mode (a jump from search opens a buffer too), `open-buffer`, and a
+// resume connect's gap frame for a live channel (the client holds that buffer
+// and will not ask for history, so the list rides what it does get; a shell
+// gets none — its hydration asks). Once per socket per channel — a 2000-member
+// list is ~300 KB and must not ride every scrollback page; a reconnect's new
+// socket is clean, and the 366 path still reaches everyone on every join, so a
+// rejoin never needs the memo cleared. Nothing for a channel the connection is
+// not in: the client keeps what it holds. A miss is not memoized, so a channel
+// joined later is still handed its list on open. Sent BEFORE the frame it
+// accompanies, so a client that marks the buffer hydrated on the reply already
+// holds the list. `force` is the `names` verb: a client asking outright is
+// answered whether or not this socket has had the list.
+function sendNames(
   ws: LurkerWebSocket,
   userId: number,
   networkId: number,
   target: string,
+  opts: { force?: boolean } = {},
 ): void {
   if (kindForTarget(target) !== 'channel') return;
   const key = `${networkId}:${foldTargetFor(networkId, target)}`;
-  if (ws.namesSent?.has(key)) return;
+  if (!opts.force && ws.namesSent?.has(key)) return;
   const event = ircManager.getConnection(userId, networkId)?.namesEventFor(target);
   if (!event) return;
   (ws.namesSent ??= new Set()).add(key);
@@ -3248,6 +3256,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       const tUnread = Date.now();
       const stateFields = bufferStateFields(userId, conn.network.id, target, precomputed);
       unreadMs += Date.now() - tUnread;
+      // A real slice for a live channel carries its list ahead of it
+      // (lurker#1292): the client holds this buffer across the resume and
+      // will not hydrate it again, and the gap's join/part rows are history,
+      // not membership.
+      sendNames(ws, userId, conn.network.id, target);
       send(ws, {
         kind: 'backlog',
         networkId: conn.network.id,
@@ -3647,6 +3660,21 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           bufferId: addr?.bufferId,
           originWs: ws,
         });
+        break;
+      }
+      case 'names': {
+        // The channel's list from the server's own state — no IRC traffic — for a
+        // client that needs it without hydrating the buffer: Channel Settings on a
+        // channel never opened, a nicklist left behind by some path the memo did
+        // not cover (lurker#1292). Always answered (`force`), with the same
+        // `names` frame; nothing for a channel the connection is not in, which
+        // the client already renders as parted.
+        const addr = verbBuffer(userId, msg);
+        if (addr === null) break;
+        const namesNetworkId = addr ? (addr.networkId as number) : (msg.networkId as number);
+        const namesTarget = addr ? addr.target : msg.target;
+        if (typeof namesTarget !== 'string' || !ownsNetwork(userId, namesNetworkId)) break;
+        sendNames(ws, userId, namesNetworkId, namesTarget, { force: true });
         break;
       }
       case 'snapshot':
@@ -4423,7 +4451,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         histTarget = histRow?.target ?? histTarget;
         // The channel's members, once per socket, ahead of whichever page this
         // is (lurker#1292).
-        sendNamesOnce(ws, userId, histNetworkId, histTarget);
+        sendNames(ws, userId, histNetworkId, histTarget);
         const limit = Math.min(Math.max(Number(msg.limit) || 100, 1), 500);
         const mode = typeof msg.mode === 'string' ? msg.mode : 'before';
         // What `limit` counts (#10). 'renderable' sizes the page in the unit the

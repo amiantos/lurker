@@ -5,7 +5,7 @@
 
 <template>
   <div class="members">
-    <p v-if="!held" class="loading">Loading members…</p>
+    <p v-if="loading" class="loading">Loading members…</p>
     <ul v-else ref="listEl">
       <li
         v-for="m in sorted"
@@ -42,7 +42,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
-import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
+import { useBuffersStore, type BufferMember, bufferNeedsHydration } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
@@ -66,10 +66,31 @@ const listEl = ref<HTMLElement | null>(null);
 
 const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activeKey) : null));
 const members = computed((): BufferMember[] => buffer.value?.members || []);
-// The list is the room only once a non-provisional `names` has landed
-// (lurker#1292); before that, what is held is whatever joins happened to
-// arrive, and drawing it would show a one-member channel.
-const held = computed(() => !!buffer.value?.membersHeld);
+// "Loading members…" only while there is a list to wait for (lurker#1292): the
+// buffer knows nothing yet, we are in the channel, and its network is up. A
+// parted channel, a channel on a down network, or a provisional list shows
+// what it has — the list, or nothing — as before.
+const loading = computed(() => {
+  const b = buffer.value;
+  if (!b || b.networkId == null || b.membersKnown !== 'none' || !b.joined) return false;
+  return networks.states[b.networkId]?.state === 'connected';
+});
+// The list normally rides the buffer's hydration. A hydrated buffer still not
+// knowing its list is some path that did not — ask outright (once per socket).
+watch(
+  () => [
+    buffer.value?.networkId,
+    buffer.value?.target,
+    buffer.value?.membersKnown,
+    buffer.value?.joined,
+  ],
+  () => {
+    const b = buffer.value;
+    if (!b || b.networkId == null || b.membersKnown === 'full' || bufferNeedsHydration(b)) return;
+    buffers.ensureMembers(b.networkId, b.target);
+  },
+  { immediate: true },
+);
 const selfNick = computed(() => {
   const b = buffer.value;
   if (!b || b.networkId == null) return null;

@@ -629,7 +629,7 @@ const memberCount = computed(() => {
   const buf = activeBuf.value as Buffer | null;
   // Unknown until the list has arrived (lurker#1292): a count of what has been
   // pieced together from joins is not the room's size.
-  if (!buf?.membersHeld) return null;
+  if (buf?.membersKnown !== 'full') return null;
   return buf.members?.length ?? null;
 });
 

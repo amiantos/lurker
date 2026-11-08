@@ -5,6 +5,14 @@ import { defineStore } from 'pinia';
 import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
+
+// Buffers whose list this socket has been asked for outright (ensureMembers).
+// Cleared by resetNamesAsked on every socket open: the server's memo of what a
+// socket has been handed is per socket too.
+const namesAsked = new Set<string>();
+export function resetNamesAsked(): void {
+  namesAsked.clear();
+}
 import { seenEventCursor } from '../lib/seenEventCursor.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
@@ -242,13 +250,15 @@ export interface Buffer {
   target: string;
   messages: BufferMessage[];
   members: BufferMember[];
-  // Whether `members` is the channel's list or only what has been pieced
-  // together (lurker#1292). The connect snapshot ships every channel with
-  // `members: []` + `membersPending`, and the list arrives as a `names` frame
-  // with the buffer's first hydration; until then a JOIN landing here makes a
-  // one-member list that is not the room. Flipped by the first non-provisional
-  // `setMembers`; never by the join/part/nick folds. Meaningless for a DM.
-  membersHeld: boolean;
+  // What `members` is (lurker#1292). The connect snapshot ships every channel
+  // with `members: []` + `membersPending`, and the real list arrives as a
+  // `names` frame with the buffer's first hydration (or on request, see
+  // ensureMembers); until then a JOIN landing here makes a one-member list that
+  // is not the room. 'none': nothing worth showing — render as loading.
+  // 'partial': a provisional list (a re-attach's `names` while NAMES is
+  // unheard) — shown, but no count. 'full': the list. Set only by setMembers
+  // and clearMembers; never by the join/part/nick folds. Meaningless for a DM.
+  membersKnown: 'none' | 'partial' | 'full';
   topic: string | null;
   joined: boolean;
   unread: number;
@@ -343,7 +353,7 @@ function makeBuffer(networkId: number | string | null, target: string): Buffer {
     target,
     messages: [],
     members: [],
-    membersHeld: false,
+    membersKnown: 'none',
     topic: null,
     // Channels flip to false on PART/KICK and back to true on JOIN. DMs and
     // server pseudo-buffers have no join concept; default true so they
@@ -1214,10 +1224,11 @@ export const useBuffersStore = defineStore('buffers', {
     },
     // `provisional`: the server says this frame is not the list (`membersPending`,
     // CLIENT_PROTOCOL §9.1): every snapshot channel, and a `names` while NAMES
-    // is unheard after a re-attach. A list already held is the better one; keep
-    // it. A buffer with none takes the provisional list — something beats
-    // nothing — but it is not `membersHeld`: that waits for the real list, which
-    // arrives with the buffer's first hydration (§8, "Member lists").
+    // is unheard after a re-attach. A list already known is the better one;
+    // keep it. A buffer with none takes a provisional list that has anyone in
+    // it — something beats nothing — as 'partial'; an empty one leaves it
+    // 'none'. The real list arrives with the buffer's first hydration (§8,
+    // "Member lists") and is 'full', however short.
     setMembers(
       networkId: number | string,
       target: string,
@@ -1226,12 +1237,41 @@ export const useBuffersStore = defineStore('buffers', {
     ) {
       const buf = ensureBuffer(this, networkId, target);
       if (opts.provisional) {
-        if (buf.members.length > 0 || buf.membersHeld) return;
+        if (buf.membersKnown === 'full') return;
+        if (buf.membersKnown === 'partial' && members.length === 0) return;
+        if (members.length === 0) return;
         buf.members = members;
+        buf.membersKnown = 'partial';
         return;
       }
       buf.members = members;
-      buf.membersHeld = true;
+      buf.membersKnown = 'full';
+    },
+    // A part, a kick, a dropped connection: whatever list was held is no longer
+    // the room, and the rejoin's own JOIN must not read as a one-member one.
+    // The 366 after the rejoin brings the list back as 'full'.
+    clearMembers(networkId: number | string, target: string) {
+      const buf = resolveExistingKey(this.buffers, networkId, target);
+      if (!buf) return;
+      this.buffers[buf].members = [];
+      this.buffers[buf].membersKnown = 'none';
+    },
+    // Ask for a joined channel's list outright (`names` verb, answered from the
+    // server's own state) when a reader needs it and hydration has not brought
+    // it: Channel Settings opened on a channel never activated, a nicklist whose
+    // buffer is already hydrated but whose list some path left behind. Once per
+    // (socket, buffer): the asked set is cleared when a socket opens.
+    ensureMembers(networkId: number | string | null, target: string): boolean {
+      if (networkId == null) return false;
+      const key = resolveExistingKey(this.buffers, networkId, target);
+      if (!key) return false;
+      const buf = this.buffers[key];
+      if (buf.kind !== 'channel' || !buf.joined || buf.membersKnown === 'full') return false;
+      if (namesAsked.has(key)) return false;
+      if (!socketSend({ type: 'names', networkId: Number(networkId), target: buf.target }))
+        return false;
+      namesAsked.add(key);
+      return true;
     },
 
     // `meta` omitted leaves the held setter/time alone; passed, it replaces both.

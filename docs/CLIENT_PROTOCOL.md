@@ -823,6 +823,7 @@ is emitted immediately from the server's optimistic local copy.
 | `join`              | `networkId, channel, key?`                                           | Request only — the buffer appears on `channel-joined` (§9.1). Without `key`, the channel's stored key is sent if the server has one                                                                                                                                                               |
 | `part`              | `networkId, channel, reason?`                                        | Buffer survives, parted                                                                                                                                                                                                                                                                           |
 | `open-buffer`       | `networkId, target, countBy?`                                        | **Write.** Reopen/create: replies `backlog` + `buffer-opened`, announces a shell + `buffer-opened` to the user's other devices; JOINs if an unjoined channel; mints an empty DM row for a bare nick                                                                                               |
+| `names`             | `networkId, target` (or `bufferId`)                                  | Read. The channel's member list from server state as a `names` frame (§8 "Member lists"); no IRC traffic; no answer for a channel the connection is not in                                                                                                                                        |
 | `close-buffer`      | `networkId, target, reason?`                                         | Closes (PARTs a joined channel, untracks a DM peer, ends a `=nick` DCC chat). `:server:` refuses                                                                                                                                                                                                  |
 | `get-mode-list`     | `networkId, channel, letter, clientId`                               | Fetches a list mode (`b`, `e`, `I`, or `q` where it's a list) from the server. The `send-result` comes once the list is in, with the MCP verb's result as `data`: `{ entries: [{ mask, setBy, setAt }] }`, or `error: 'refused'` plus `numeric`/`text`. The replies never reach the server buffer |
 | `set-topic`         | `networkId, channel, topic, clientId?`                               | The `set_topic` verb: `TOPIC #chan :topic` (an empty string clears). Unlike a `raw` TOPIC, the ACK says `not-connected` when the network is down                                                                                                                                                  |
@@ -1132,20 +1133,31 @@ nicklist at a time, and every list in one frame made the snapshot a single
 multi-MB message on a large account — more than a native WebSocket reads by
 default, so the app never saw its first frame (lurker-ios#257, lurker#1292).
 
-Instead, the **first `history` request of any mode, or `open-buffer`, for a
-channel the connection is in is preceded by a `names` frame** (`kind:'irc',
-type:'names'`, the same frame the 366 fan-out sends, with the real
-`membersPending` if NAMES is still unheard) **on that socket**. Once per socket
-per channel: later pages of the same buffer carry no list, a reconnect's new
-socket is handed it again on its first request, and the ordinary `names`
-fan-out — on every join's 366, an own-mode change, an away flip, a WHO backfill
-— still reaches every socket as before. A DM, a `:server:` log, a channel the
+Instead, **the first real slice a socket is handed for a channel the
+connection is in is preceded by a `names` frame** (`kind:'irc', type:'names'`,
+the same frame the 366 fan-out sends, with the real `membersPending` if NAMES
+is still unheard) **on that socket**: the first `history` reply of any mode,
+an `open-buffer` backlog, or — on a resume connect — the channel's gap frame
+in the burst (you hold that buffer and will not ask for its history again, so
+the list rides what you do get; a shell is not a slice and gets none). Once
+per socket per channel: later pages of the same buffer carry no list, a
+reconnect's new socket is handed it again, and the ordinary `names` fan-out —
+on every join's 366, an own-mode change, an away flip, a WHO backfill — still
+reaches every socket as before. A DM, a `:server:` log, a channel the
 connection is not in, or a channel on an offline network gets none: keep what
 you hold.
 
-So: render a channel whose list you have not received as **loading, not
-empty** — the count unknown, completion unfiltered — until a non-pending
-`names` lands. Nothing to request: hydrating the buffer is the request.
+For a list you need without a slice — Channel Settings on a channel you never
+opened, a nicklist some path left behind — send **`{type:'names', networkId,
+target}`** (or `bufferId`). It is answered from the server's own state with the
+same `names` frame, every time, with no IRC traffic; a channel the connection
+is not in gets no answer. This is not `/names`, which goes to IRC.
+
+So: render a joined channel on a connected network whose list you have not
+received as **loading, not empty** — the count unknown — until a non-pending
+`names` lands; a parted channel or a down network has no list to wait for.
+A pending `names` with anyone in it may be shown as what it is, a partial
+list. A JOIN folded into an unknown list does not make it known.
 
 ### `countBy` — what `limit` counts
 
