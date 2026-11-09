@@ -944,8 +944,8 @@ describe('DELETE /api/uploads/:id', () => {
 });
 
 // #1289 / #629: a row whose bytes are out of reach can still be taken off the
-// list. The record route is the mirror image of DELETE: it drops exactly the
-// rows DELETE refuses, and refuses exactly the rows DELETE would destroy.
+// list. The record route never touches a driver and never refuses an owned row:
+// deletability is a judgment, and a row it gets wrong must not be stuck.
 describe('DELETE /api/uploads/:id/record', () => {
   const rowOf = async (id: number) => {
     const list = await agent.get('/api/uploads');
@@ -965,7 +965,10 @@ describe('DELETE /api/uploads/:id/record', () => {
     expect(await rowOf(up.body.id)).toBeUndefined();
   });
 
-  it('refuses a row whose bytes can still be destroyed — delete is the only way off the list', async () => {
+  it('drops a deletable row too, without asking the driver — the file stays up', async () => {
+    // The case a delete gate gets wrong: everything LOOKS deletable, but the
+    // delete fails every time (userhash swapped since the upload, say). The
+    // record must still come off; the driver is never called.
     stub.capabilities.supportsDelete = true;
     stub.nextResult = { url: 'https://stub.example/live.png', ref: 'live.png' };
     try {
@@ -973,9 +976,11 @@ describe('DELETE /api/uploads/:id/record', () => {
         .post('/api/uploads')
         .attach('image', smallPng, { filename: 'live.png', contentType: 'image/png' });
       expect(up.body.can_delete).toBe(true);
+      stub.capturedDeleteRef = null;
       const res = await agent.delete(`/api/uploads/${up.body.id}/record`);
-      expect(res.status).toBe(409);
-      expect(await rowOf(up.body.id)).toBeTruthy();
+      expect(res.status).toBe(200);
+      expect(stub.capturedDeleteRef).toBeNull();
+      expect(await rowOf(up.body.id)).toBeUndefined();
     } finally {
       stub.capabilities.supportsDelete = false;
       stub.nextResult = null;

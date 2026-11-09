@@ -237,16 +237,15 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
     expect(deleteCalls).toEqual([]);
   });
 
-  // #1289: the record route mirrors the delete gate. A hosted row the control
-  // plane can delete may not be dropped from the list with its bytes left up;
-  // the admin's row, which nothing can delete, may.
-  it('refuses to drop the record of a hosted row the control plane could delete', async () => {
+  // #1289: dropping the record never involves the control plane — the bytes
+  // stay in the bucket (its moderation index still knows them) and only this
+  // user's row goes. Another user's row is not reachable.
+  it('drops a hosted record without asking the control plane, and only its owner can', async () => {
     const id = hostedUpload();
-    expect((await agent.delete(`/api/uploads/${id}/record`)).status).toBe(409);
+    expect((await adminAgent.delete(`/api/uploads/${id}/record`)).status).toBe(404);
     expect(exists(id)).toBe(true);
-    const adminRow = hostedUpload(adminId);
-    expect((await adminAgent.delete(`/api/uploads/${adminRow}/record`)).status).toBe(200);
-    expect(history.getUploadForReap(adminId, adminRow)).toBeUndefined();
+    expect((await agent.delete(`/api/uploads/${id}/record`)).status).toBe(200);
+    expect(exists(id)).toBe(false);
     expect(deleteCalls).toEqual([]);
   });
 

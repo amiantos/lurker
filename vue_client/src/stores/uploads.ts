@@ -135,9 +135,8 @@ export interface UploadItem {
   removed?: boolean;
   // True when deleting this row destroys the stored bytes. Rows without it (and
   // tombstones) get a remove-from-list action instead, which drops the record
-  // and leaves the file wherever it is (#1289). Every row has exactly one of
-  // the two: the one way off the list while the file is still deletable is to
-  // delete the file (design decision 8).
+  // and leaves the file wherever it is (#1289). A tile shows one or the other;
+  // remove-from-list is also the fallback once a delete has failed.
   can_delete?: boolean;
   // Starred by the owner. Server-side state, so the same quick-access set is
   // there on every device.
@@ -461,19 +460,22 @@ export const useUploadsStore = defineStore('uploads', {
 
     async remove(id: number) {
       await api(`/api/uploads/${id}`, { method: 'DELETE' });
-      this.recent = this.recent.filter((u) => u.id !== id);
-      // The file is gone, so it cannot stay in the attach menu — in EITHER mode, or
-      // the menu keeps offering to insert a URL that now 404s until a reload.
-      this.menuItems = this.menuItems.filter((u) => u.id !== id);
+      this.dropLocally(id);
     },
 
     // Take a row off the list without touching its file (#1289): for uploads
-    // whose bytes Lurker can't destroy any more. The server refuses it for a row
-    // that can still be deleted.
+    // whose bytes Lurker can't destroy, or whose delete keeps failing.
     async forget(id: number) {
       await api(`/api/uploads/${id}/record`, { method: 'DELETE' });
+      this.dropLocally(id);
+    },
+
+    // A row the server no longer has leaves every local list at once — the
+    // browser AND the attach menu, in either mode. After a delete the URL 404s;
+    // after a forget the user asked for it gone. Either way the menu must not
+    // keep offering it until a reload.
+    dropLocally(id: number) {
       this.recent = this.recent.filter((u) => u.id !== id);
-      // Out of the attach menu too: the user asked for it gone from their list.
       this.menuItems = this.menuItems.filter((u) => u.id !== id);
     },
 

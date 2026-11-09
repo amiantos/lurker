@@ -76,7 +76,14 @@
     </div>
 
     <p v-if="!onDcc && uploads.listError" class="error">{{ uploads.listError }}</p>
-    <p v-if="!onDcc && actionError" class="error">{{ actionError }}</p>
+    <!-- After a failed delete the row still looks deletable, so its tile keeps
+         offering only the trash. The way off the list for it is here. -->
+    <p v-if="!onDcc && actionError" class="error">
+      {{ actionError }}
+      <button v-if="failedDelete" class="link" @click="onForget(failedDelete)">
+        Remove it from the list instead
+      </button>
+    </p>
 
     <div v-if="!onDcc" ref="listEl" class="grid-wrap" @scroll="onScroll">
       <ul v-if="recentRows.length" class="grid">
@@ -146,8 +153,9 @@
                  (can_delete). Every other row — no delete handle, a destination
                  the user removed, a moderation tombstone — gets "remove from
                  list" instead (#1289): the record goes, the file stays wherever
-                 it is. One or the other, never both: while the file can still be
-                 deleted, deleting it is the only way off the list. -->
+                 it is. One or the other on a tile; the second also appears in
+                 the error line once a delete has failed, so a row that only
+                 LOOKS deletable is never stuck. -->
             <button
               v-if="!u.removed && u.can_delete"
               class="act delete"
@@ -159,9 +167,11 @@
               <LoaderCircleIcon v-if="deletingId === u.id" class="icon-spin" />
               <TrashIcon v-else />
             </button>
+            <!-- Not `.delete`: this one doesn't destroy anything, so it must not
+                 hover the destructive red. -->
             <button
               v-else
-              class="act delete"
+              class="act forget"
               :disabled="deletingId !== null"
               @click="onForget(u)"
               title="remove from list"
@@ -299,6 +309,9 @@ const searchEl = ref<HTMLInputElement | null>(null);
 const clipboard = useCopyFeedback();
 const deletingId = ref<number | null>(null);
 const actionError = ref('');
+// The row whose delete just failed, while its error is showing: the error line
+// offers remove-from-list for it (#1289). Cleared by the next action.
+const failedDelete = ref<UploadRow | null>(null);
 // A SET, not a single id, unlike deletingId's single-flight: starring is cheap and
 // non-destructive, so stars on different tiles run concurrently — and a lone ref
 // would be overwritten by the second tile, re-enabling the first while its request
@@ -496,28 +509,33 @@ async function onDelete(u: UploadRow) {
   if (!confirm(`Delete "${u.filename || u.url}"? The file is removed from storage.`)) return;
   deletingId.value = u.id;
   actionError.value = '';
+  failedDelete.value = null;
   try {
     await uploads.remove(u.id);
   } catch (e: any) {
-    // The bytes weren't destroyed, so the row stays and the reason surfaces.
+    // The bytes weren't destroyed, so the row stays and the reason surfaces —
+    // with the record-only exit beside it, since the tile itself only offers
+    // the trash that just failed.
     actionError.value = e.message || 'delete failed';
+    failedDelete.value = u;
   } finally {
     deletingId.value = null;
   }
 }
 
-// Remove-from-list for a row whose file Lurker can't delete (#1289). Shares
-// deletingId with onDelete: both are "this tile is being taken off the list",
-// and only one of the two buttons exists on any tile.
+// Remove-from-list (#1289): the record goes, the file stays wherever it is.
+// Shares deletingId with onDelete: both are "this tile is being taken off the
+// list", and a tile offers one of the two.
 async function onForget(u: UploadRow) {
   if (deletingId.value !== null) return;
   const what = u.filename || u.url;
   const note = u.removed
     ? ''
-    : ' Lurker cannot delete the file, so it stays where it is; this only removes it from your list.';
+    : ' The file stays where it is; this only takes it off your uploads list.';
   if (!confirm(`Remove "${what}" from your uploads?${note}`)) return;
   deletingId.value = u.id;
   actionError.value = '';
+  failedDelete.value = null;
   try {
     await uploads.forget(u.id);
   } catch (e: any) {
@@ -645,6 +663,19 @@ function metaLine(u: UploadRow): string {
 .error {
   margin: var(--space-4) 0 0;
   color: var(--bad);
+}
+/* The record-only exit beside a failed delete's reason. Same text-button shape
+   as HighlightsModal's .link; muted so the red reason stays the loud part. */
+.error .link {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 var(--space-2);
+}
+.error .link:hover {
+  color: var(--accent);
 }
 
 .grid-wrap {

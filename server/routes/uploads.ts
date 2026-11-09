@@ -384,32 +384,23 @@ router.delete('/:id', async (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// Drop the record of an upload whose bytes are out of Lurker's reach (#1289,
-// #629): no delete handle, a destination the user has since removed, a driver
-// that can't delete, or a moderation tombstone the owner has read. The file, if
-// it still exists, stays where it is — this only takes it off the list. It is
-// the mirror of DELETE /:id: a row whose bytes CAN be destroyed is refused here,
-// so the one way to drop a record while the file is still deletable is to
-// delete the file. Each row has exactly one of the two.
+// Drop the record and leave the file wherever it is (#1289, #629). For uploads
+// whose bytes are out of Lurker's reach — no delete handle, a destination the
+// user has since removed, a driver that can't delete, a moderation tombstone
+// the owner has read — this is the only way off the list, and the client offers
+// it wherever it offers no delete. It is NOT gated on deletability the way
+// DELETE /:id is: `can_delete` is a judgment (driver, config and ref all look
+// right), and when the judgment is wrong — a userhash swapped since the upload,
+// a host that has quietly lost the file but says it's live — the delete fails
+// forever and the row would otherwise be stuck. The client is the user; losing
+// the handle to a file they could still have deleted is their call to make, and
+// the confirm says so.
 router.delete('/:id/record', (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const row = getUploadForReap(req.user!.id, id);
-  if (!row) {
+  if (!deleteUpload(req.user!.id, id)) {
     res.status(404).json({ error: 'not found' });
     return;
   }
-  if (!row.removed) {
-    const loaded =
-      row.ref && row.uploader_config_id != null ? loadDriverForRef(row.uploader_config_id) : null;
-    const destroyable =
-      hostedDeletable(row, req.user!.role === 'admin') ||
-      (loaded != null && deletableWith(loaded.driver, loaded.driverConfig));
-    if (destroyable) {
-      res.status(409).json({ error: 'this upload can be deleted; delete it instead' });
-      return;
-    }
-  }
-  deleteUpload(req.user!.id, id);
   res.json({ ok: true });
 });
 
