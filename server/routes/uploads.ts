@@ -22,9 +22,11 @@ import {
   isUploadKind,
   getThumbnail,
   getUploadForReap,
+  getUnsyncedUploadForReport,
   deleteUpload,
   setUploadFavorite,
 } from '../db/uploadHistory.js';
+import { controlPlaneConfigured, reportRow } from '../services/moderationReport.js';
 import { configuredBaseUrl, publicBaseUrl } from '../utils/publicOrigin.js';
 import { capText } from '../utils/capText.js';
 import { hasFreeSpaceFor } from '../utils/diskSpace.js';
@@ -395,9 +397,22 @@ router.delete('/:id', async (req: Request, res: Response) => {
 // forever and the row would otherwise be stuck. The client is the user; losing
 // the handle to a file they could still have deleted is their call to make, and
 // the confirm says so.
-router.delete('/:id/record', (req: Request, res: Response) => {
+router.delete('/:id/record', async (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  if (!deleteUpload(req.user!.id, id)) {
+  const userId = req.user!.id;
+  // Hosted: a row the control plane was never told about (it was down at upload
+  // time, and the flush hasn't caught up) holds the only copy of its moderation
+  // report. The file outlives the row here, so the report has to land first, or
+  // the bytes would sit in the operator's bucket with nothing to moderate them
+  // by. Same wording as a hosted delete in the same state.
+  if (controlPlaneConfigured()) {
+    const pending = getUnsyncedUploadForReport(userId, id);
+    if (pending && !(await reportRow(pending))) {
+      res.status(503).json({ error: 'this upload is still being recorded — try again shortly' });
+      return;
+    }
+  }
+  if (!deleteUpload(userId, id)) {
     res.status(404).json({ error: 'not found' });
     return;
   }

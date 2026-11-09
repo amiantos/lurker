@@ -488,8 +488,11 @@ async function onToggleStar(u: UploadRow) {
   starring.value = new Set(starring.value).add(u.id);
   // Reuses actionError: it's the tile grid's one error line, and a failed star and a
   // failed delete are never both pending — the star request is the only thing that
-  // could have written it while a delete is in flight, and vice versa.
+  // could have written it while a delete is in flight, and vice versa. The failed
+  // delete's fallback goes with its error: left set, it would reappear beside a
+  // star error and remove the wrong row.
   actionError.value = '';
+  failedDelete.value = null;
   try {
     await uploads.setFavorite(u.id, !u.favorite);
   } catch (e: any) {
