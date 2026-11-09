@@ -12,6 +12,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useRedactionsStore } from '../stores/redactions.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { socketSend } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
 
@@ -104,6 +105,45 @@ describe('/delete', () => {
   it('sends no reason when none was given, and skips a line already deleted', async () => {
     seed([line(1, 'me', 'older', { msgid: 'm1' }), line(2, 'me', 'gone', { msgid: 'm2' })]);
     useRedactionsStore().byMessage.set(2, { by: 'me', time: T });
+    const el = await composer();
+    await run(el, '/delete');
+    expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);
+  });
+
+  // A line fetched after the fact (#1283) is stored with a newer id than the
+  // lines shown under it; the one to delete is the last one on screen.
+  it('takes the last line shown, not the newest id', async () => {
+    seed([
+      line(1, 'me', 'said after the gap', { msgid: 'm1', time: '2026-11-05T00:10:00.000Z' }),
+      line(2, 'me', 'filled in later', {
+        msgid: 'm2',
+        time: '2026-11-05T00:05:00.000Z',
+        replay: true,
+      }),
+    ]);
+    const el = await composer();
+    await run(el, '/delete');
+    expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);
+  });
+
+  // Rows the list hides are in the store all the same; a command typed at the
+  // screen never lands on one.
+  it('leaves a line above the /clear marker alone', async () => {
+    seed([line(1, 'me', 'before the clear', { msgid: 'm1' }), line(2, 'bob', 'after')]);
+    Object.assign(useBuffersStore().buffers[KEY]!, { clearedBeforeId: 1, clearedAt: T });
+    const el = await composer();
+    await run(el, '/delete');
+    expect(sentRedacts()).toEqual([]);
+    expect(lastLocal()).toContain('nothing of yours');
+  });
+
+  it('skips your reply that lives in a thread panel', async () => {
+    seed([
+      line(1, 'me', 'in the channel', { msgid: 'm1' }),
+      line(2, 'me', 'in a thread', { msgid: 'm2', replyTo: { root: 'r0' } }),
+    ]);
+    Object.assign(useBuffersStore().buffers[KEY]!, { kind: 'channel' });
+    useSettingsStore().values['chat.threads'] = true;
     const el = await composer();
     await run(el, '/delete');
     expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);
