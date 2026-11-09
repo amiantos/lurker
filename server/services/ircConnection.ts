@@ -2300,9 +2300,10 @@ export class IrcConnection {
           raw: { command: rawCommand, params: msg?.params ?? [] },
         });
       }
-      // The topic the user asked for (bare /topic), for a channel we're in:
-      // said in that channel, where they asked, as a status line that is not
-      // history (#1270). Only theirs: the 332/333 a JOIN volunteers is
+      // The topic the user asked for (/topic), for a channel we're in: said
+      // in that channel (for the bare form, where they asked; irssi prints
+      // `/topic #other` in #other too) as a status line that is not history
+      // (#1270). Only theirs: the 332/333 a JOIN volunteers is
       // `unasked` and only moves the topic bar. Additive like the errors
       // above; the server's own line still goes to the server buffer.
       if (this.replyOwner === 'user') {

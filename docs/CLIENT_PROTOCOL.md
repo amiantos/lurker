@@ -964,7 +964,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `invite`                      | E/P | you were invited (`channel`, `from`) / op-visibility variant                                                                                                                                                                                                                                      |
 | `callerid-blocked`            | E   | your caller ID (+g) discarded someone's message — `from`, `userhost?`; offer `ACCEPT <from>`, for their next one                                                                                                                                                                                  |
 | `state`                       | E   | network `state` + `nick` on connect — drive the connection indicator                                                                                                                                                                                                                              |
-| `motd`                        | P   | MOTD **and all otherwise-unclassified server text** (§7.3)                                                                                                                                                                                                                                        |
+| `motd`                        | P   | MOTD **and all otherwise-unclassified server text** (§7.3); E, in a channel, for a `/topic` answer                                                                                                                                                                                                |
 | `error`                       | P   | server error text; `unknownCommand?` for 421s                                                                                                                                                                                                                                                     |
 | `system`                      | P\* | system-buffer line; severity in `level: info\|warn\|error`, not in `type`                                                                                                                                                                                                                         |
 | `away-state`                  | E   | your own away state per network                                                                                                                                                                                                                                                                   |
@@ -1437,7 +1437,9 @@ Per buffer, apply a persisted event only if its id is greater than the newest
 you hold; **run side effects (nicklist mutations, topic set, notification,
 unread sounds) only when the event was fresh**. Replays happen by design
 (resume overlap, backlog/live races) — the topic-revert and double-join-line
-bugs both came from mutating state below a missing dedupe check. Membership
+bugs both came from mutating state below a missing dedupe check. A row with
+`replay: true` (§9.3) is never fresh in this sense, whatever its id: render it,
+and leave the nicklist and the topic alone. Membership
 side effects ride the same events you render: `join`→add member, `part`/`quit`→
 remove, `kick`→remove `kicked`, `nick`→rename (`chghost` renders only; its
 nicklist patch arrives separately as `member-update`).
