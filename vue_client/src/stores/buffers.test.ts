@@ -235,6 +235,44 @@ const chanLine = (id: number, nick = 'alice') => ({
   nick,
   text: 'x',
 });
+// A status line (a usage message, a /topic answer) has no id, and one at the
+// tail is not "this buffer holds nothing" (#1270).
+describe('a status line at the tail', () => {
+  const status = () => ({
+    networkId: 1,
+    target: '#chan',
+    type: 'motd',
+    text: 'Topic for #chan: x',
+  });
+  function heldWithStatusTail() {
+    const store = useBuffersStore();
+    store.replaceBacklog(1, '#chan', [chanLine(10), chanLine(11)], undefined, undefined, undefined);
+    store.pushMessage(status() as never);
+    return store;
+  }
+  const ids = (store: ReturnType<typeof useBuffersStore>) =>
+    store.byKey('1::#chan')!.messages.map((m) => m.id ?? 'status');
+
+  it('keeps what the buffer holds when a resume has nothing to add', () => {
+    const store = heldWithStatusTail();
+    store.replaceBacklog(1, '#chan', [], undefined, undefined, undefined);
+    expect(ids(store)).toEqual([10, 11, 'status']);
+  });
+
+  it('appends only the rows a resume really missed', () => {
+    const store = heldWithStatusTail();
+    store.replaceBacklog(1, '#chan', [chanLine(11), chanLine(12)], undefined, undefined, undefined);
+    expect(ids(store)).toEqual([10, 11, 'status', 12]);
+  });
+
+  it('still knows a live row it already has', () => {
+    const store = heldWithStatusTail();
+    expect(store.pushLive(chanLine(11) as never)).toBe('replay');
+    expect(store.pushLive(chanLine(12) as never)).toBe('shown');
+    expect(ids(store)).toEqual([10, 11, 'status', 12]);
+  });
+});
+
 describe('the unread divider on a live line', () => {
   function readingWithTail() {
     const store = useBuffersStore();

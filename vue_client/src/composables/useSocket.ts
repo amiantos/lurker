@@ -5,7 +5,7 @@ import { getActivePinia } from 'pinia';
 import type { Ref } from 'vue';
 import { ref, onMounted, watch, effectScope } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
-import { useBuffersStore, resetNamesAsked } from '../stores/buffers.js';
+import { useBuffersStore, resetNamesAsked, newestHeldId } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -957,7 +957,7 @@ function handleMessage(raw: string): void {
       payload.mode === 'append' && payload.networkId != null
         ? useBuffersStore().findByTarget(payload.networkId, payload.target)
         : null;
-    const heldMax = Number(held?.messages.at(-1)?.id ?? 0);
+    const heldMax = held ? newestHeldId(held.messages) : 0;
     applyBacklog(payload);
     if (held && Array.isArray(payload.events)) {
       useThreadsStore().noteGapFill(payload.events, heldMax);
