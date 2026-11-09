@@ -16,7 +16,7 @@
 import ircManager from './ircManager.js';
 import { effectiveSetting } from './settingsService.js';
 import { findUserById } from '../db/users.js';
-import { isValidTimeZone, wallClockParts, tzOffsetMinutes } from '../utils/timeZone.js';
+import { wallClockStamp } from '../utils/timeZone.js';
 
 type Source = 'web' | 'irc';
 
@@ -94,23 +94,11 @@ function scheduleAutoAway(userId: number): void {
   timers.set(userId, t);
 }
 
-const pad = (n: number) => String(n).padStart(2, '0');
-
-// "afk since 2026-05-09 15:30:00-0500" — mirrors screen_away.py's default
-// time_format. Renders in `timeZone` when provided, otherwise server local.
-function fmtAwayTimestamp(date: Date, timeZone: unknown): string {
-  const tz = isValidTimeZone(timeZone) ? timeZone : null;
-  const p = wallClockParts(date, tz);
-  const off = tzOffsetMinutes(date, tz);
-  const sign = off >= 0 ? '+' : '-';
-  const aoff = Math.abs(off);
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}${sign}${pad(Math.floor(aoff / 60))}${pad(aoff % 60)}`;
-}
-
 function buildAutoAwayMessage(userId: number, since: Date): string {
   const base =
     ((effectiveSetting(userId, 'away.auto.message') as string | undefined) || 'afk').trim() ||
     'afk';
   const tz = effectiveSetting(userId, 'system.timezone');
-  return `${base} since ${fmtAwayTimestamp(since, tz)}`;
+  // "afk since 2026-05-09 15:30:00-0500" — screen_away.py's default time_format.
+  return `${base} since ${wallClockStamp(since, tz)}`;
 }

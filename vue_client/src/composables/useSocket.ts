@@ -333,7 +333,9 @@ function applyEvent(event: any): boolean {
       networks.applyOwnNick(event);
       break;
     case 'topic':
-      if (!take().news) break;
+      // A topic row fetched after the fact (a history fill) is news as a row
+      // and old as state: the server moves nothing for it either.
+      if (!take().news || event.replay) break;
       buffers.setTopic(event.networkId, event.target, event.text, {
         setBy: event.nick,
         setAt: event.time,

@@ -263,6 +263,19 @@ describe('live events on a detached buffer', () => {
     expect(JSON.stringify(primePreviews.mock.calls)).toContain('https://e.test/cat.png');
   });
 
+  it('shows a topic row fetched after the fact without putting its topic back', async () => {
+    // A history fill's TOPIC rows have new ids, so they are news as rows, and
+    // an older topic than the one we hold (#1270).
+    const ws = await openSocket();
+    const buffers = channel(false);
+    ws.deliver(irc(30, { type: 'topic', nick: 'carol', text: 'live topic' }));
+    ws.deliver(irc(31, { type: 'topic', nick: 'alice', text: 'old topic', replay: true }));
+    const buf = buffers.buffers['1::#chan'];
+    expect(buf.topic).toBe('live topic');
+    expect(buf.topicSetBy).toBe('carol');
+    expect(buf.messages.map((m) => m.id)).toEqual([30, 31]);
+  });
+
   it('still leaves a live-tail buffer to its own dedupe', async () => {
     const ws = await openSocket();
     const buffers = channel(false);

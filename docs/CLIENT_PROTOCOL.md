@@ -989,6 +989,12 @@ catch-all for all "server voice" text that has no better home — don't build a
 taxonomy on top of it. `system` events (with `networkId:null`) belong to
 `:system:`.
 
+A `motd` can also arrive **ephemeral, in a channel**: no `id`, `target` a channel
+you are in. That is the answer to a bare `/topic` (`TOPIC #chan`), as up to two
+status lines (`Topic for #chan: …`, then `Set by alice · 2026-05-09 15:30:00-0500`
+in the user's `system.timezone`). Show it like any status line in that buffer and
+keep nothing; the server buffer still gets the server's own line, stored.
+
 ⚠ `whois_result` also arrives with no `target` and is **not** one of these — it
 is not server text and does not belong in a buffer. See §7.5.
 

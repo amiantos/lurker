@@ -244,7 +244,6 @@ import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useChannelModal } from '../composables/useChannelModal.js';
-import { topicSetLine } from '../utils/topicMeta.js';
 import { socketSend, socketSendWithAck, type AckResult } from '../composables/useSocket.js';
 import { requestScrollToBottom } from '../composables/useScrollState.js';
 import { setComposingState } from '../composables/useComposing.js';
@@ -2816,19 +2815,6 @@ function isChannelArg(t: string | undefined): boolean {
   return isChannelTarget(t);
 }
 
-// What bare /topic prints for a channel we're in: the topic, then who set it
-// and when if the server said.
-function topicLines(buf: {
-  target: string;
-  topic?: string | null;
-  topicSetBy?: string | null;
-  topicSetAt?: string | null;
-}): string[] {
-  if (!buf.topic) return [`No topic is set for ${buf.target}.`];
-  const set = topicSetLine(buf.topicSetBy, buf.topicSetAt);
-  return [`Topic for ${buf.target}: ${buf.topic}`, ...(set ? [set] : [])];
-}
-
 /**
  * The same question for commands whose first argument may instead be FREE TEXT — `/part [reason]`,
  * `/topic [text]`.
@@ -4530,7 +4516,8 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return sendOrToast({ type: 'raw', networkId, line: `INVITE ${nick} ${channel}` }, line);
     }
     case 'topic': {
-      // /topic                        — show the current channel's topic
+      // /topic                        — ask for the current channel's topic; the
+      //                                 server says it in the channel (#1270)
       // /topic <text>                 — set on current channel
       // /topic <#chan> [text]         — set/show on another channel
       let channel;
@@ -4549,18 +4536,6 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       if (!channel) {
         localInfo(networkId, target, 'usage: /topic [#chan] [text] — no channel context');
         return true;
-      }
-      if (!body) {
-        // A channel we're in: the topic we hold is the server's (every TOPIC
-        // and the join's 332/333 keep it), so say it here, as irssi does
-        // (fe-irc-commands.c cmd_topic). Asking would answer nowhere: the
-        // reply only syncs the topic bar (#1270). Any other channel is the
-        // server's to answer, in the server buffer.
-        const held = buffers.findByTarget(networkId, channel);
-        if (held?.joined) {
-          for (const text of topicLines(held)) localInfo(networkId, target, text);
-          return true;
-        }
       }
       const trailer = body ? ` :${body}` : '';
       return sendOrToast({ type: 'raw', networkId, line: `TOPIC ${channel}${trailer}` }, line);
