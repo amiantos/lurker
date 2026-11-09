@@ -191,8 +191,9 @@ import { api } from '../api.js';
 import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/settingsRegistry.js';
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
 import { useConfigStore } from '../stores/config.js';
-import { bufferKey, useBuffersStore } from '../stores/buffers.js';
+import { bufferKey, useBuffersStore, type BufferMessage } from '../stores/buffers.js';
 import { orderByTime } from '../lib/messageOrder.js';
+import { hiddenAsThreadReply } from '../lib/threadHide.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useRedactionsStore } from '../stores/redactions.js';
 import { useRepliesStore } from '../stores/replies.js';
@@ -2897,30 +2898,69 @@ function randomRoomId(): string {
 // /react <emoji|:shortcode:|text> — react to the most recent line someone else
 // said in this buffer (the picker on a line's React action reaches any other).
 // Only lines the server gave a msgid can be reacted to; an encrypted one can't.
-// "Most recent" follows the order the list shows, for both commands: a line
-// fetched after the fact holds a newer id than the lines under it (#1290).
-// Order only: a row the list hides (/clear, an ignore, a thread reply) is
-// still walked here.
+// "Most recent" is the last one the list SHOWS, for both commands
+// (lastShownLine).
 // /delete [reason] — ask the network to delete the most recent line you said
 // here (#1013). Nothing happens locally: the network's REDACT blanks the line
 // when it comes back, and a refusal lands here as an error line. No confirm —
 // typing the command is the ask; the menu's Delete confirms because a tap is
 // not.
+// The last stored line of speech in a buffer that the message list shows and
+// `want` accepts. "Last" and "shows" are the list's (MessageList renderRows),
+// not the store's:
+//   - order is by time (orderByTime): a line fetched after the fact holds a
+//     newer id than the lines shown under it (#1290);
+//   - a line above the /clear marker, one an ignore rule hides, and a reply
+//     that lives in its thread panel (#1225) are in the store and not on
+//     screen, and a command typed at the screen must not land on one.
+// ⚠ A hard hide added to renderRows belongs here too.
+function lastShownLine(
+  networkId: number,
+  target: string,
+  want: (m: BufferMessage) => boolean,
+): BufferMessage | undefined {
+  const buf = buffers.findByTarget(networkId, target);
+  if (!buf) return undefined;
+  const clearedBeforeId = buf.detached ? 0 : buf.clearedBeforeId || 0;
+  const threadsHere = settings.effective('chat.threads') === true && buf.kind === 'channel';
+  const isDm = !isChannelTarget(target) && !target.startsWith(':server:');
+  const messages = orderByTime(buf.messages);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.id == null) continue;
+    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
+    if (!want(m)) continue;
+    if (clearedBeforeId > 0 && Number(m.id) <= clearedBeforeId) continue;
+    // BufferMessage carries these as extra fields; the list reads them the
+    // same way (its ChatMessage cast).
+    const row = m as BufferMessage & {
+      replyTo?: { root?: string } | null;
+      userhost?: string | null;
+      text?: string;
+    };
+    if (hiddenAsThreadReply(row, threadsHere)) continue;
+    if (!m.self && m.nick) {
+      const verdict = ignores.evaluate(networkId, {
+        nick: m.nick,
+        userhost: row.userhost ?? null,
+        target,
+        text: row.text ?? '',
+        type: m.type,
+        isDm,
+      });
+      if (verdict.hide) continue;
+    }
+    return m;
+  }
+  return undefined;
+}
+
 function runDelete(argLine: string, networkId: number, target: string, line: string): boolean {
   if (!tagSupport(networks.states[networkId]).redact) {
     localInfo(networkId, target, "this network can't delete messages");
     return true;
   }
-  const messages = orderByTime(buffers.findByTarget(networkId, target)?.messages ?? []);
-  let own: (typeof messages)[number] | undefined;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.id == null || !m.self) continue;
-    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
-    if (redactions.get(m)) continue;
-    own = m;
-    break;
-  }
+  const own = lastShownLine(networkId, target, (m) => !!m.self && !redactions.get(m));
   if (!own) {
     localInfo(networkId, target, 'nothing of yours here to delete');
     return true;
@@ -2954,15 +2994,7 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
   // The last line someone else said — and if THAT one can't take a reaction,
   // say why rather than quietly reaching back to an older line the user never
   // meant (an e2e run, a trailing notice, a line with no msgid).
-  const messages = orderByTime(buffers.findByTarget(networkId, target)?.messages ?? []);
-  let parent: (typeof messages)[number] | undefined;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m.id == null || m.self) continue;
-    if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') continue;
-    parent = m;
-    break;
-  }
+  const parent = lastShownLine(networkId, target, (m) => !m.self);
   if (!parent) {
     localInfo(networkId, target, 'nothing here to react to');
     return true;
@@ -2970,11 +3002,13 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
   const refusal =
     parent.type === 'notice'
       ? "can't react to a notice"
-      : parent.e2e
-        ? "can't react to an encrypted line"
-        : !parent.msgid
-          ? "can't react to that line (no message id)"
-          : null;
+      : redactions.get(parent)
+        ? "can't react to a deleted message"
+        : parent.e2e
+          ? "can't react to an encrypted line"
+          : !parent.msgid
+            ? "can't react to that line (no message id)"
+            : null;
   if (refusal) {
     localInfo(networkId, target, refusal);
     return true;

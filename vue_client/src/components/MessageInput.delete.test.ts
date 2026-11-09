@@ -12,6 +12,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useRedactionsStore } from '../stores/redactions.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { socketSend } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
 
@@ -120,6 +121,29 @@ describe('/delete', () => {
         replay: true,
       }),
     ]);
+    const el = await composer();
+    await run(el, '/delete');
+    expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);
+  });
+
+  // Rows the list hides are in the store all the same; a command typed at the
+  // screen never lands on one.
+  it('leaves a line above the /clear marker alone', async () => {
+    seed([line(1, 'me', 'before the clear', { msgid: 'm1' }), line(2, 'bob', 'after')]);
+    Object.assign(useBuffersStore().buffers[KEY]!, { clearedBeforeId: 1, clearedAt: T });
+    const el = await composer();
+    await run(el, '/delete');
+    expect(sentRedacts()).toEqual([]);
+    expect(lastLocal()).toContain('nothing of yours');
+  });
+
+  it('skips your reply that lives in a thread panel', async () => {
+    seed([
+      line(1, 'me', 'in the channel', { msgid: 'm1' }),
+      line(2, 'me', 'in a thread', { msgid: 'm2', replyTo: { root: 'r0' } }),
+    ]);
+    Object.assign(useBuffersStore().buffers[KEY]!, { kind: 'channel' });
+    useSettingsStore().values['chat.threads'] = true;
     const el = await composer();
     await run(el, '/delete');
     expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);

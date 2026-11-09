@@ -11,6 +11,9 @@ import { createPinia, setActivePinia } from 'pinia';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
+import { useRedactionsStore } from '../stores/redactions.js';
+import { useIgnoresStore } from '../stores/ignores.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { socketSend } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
 
@@ -67,6 +70,10 @@ async function run(el: HTMLTextAreaElement, command: string) {
   await flush();
 }
 
+const lastLocal = () => {
+  const msgs = useBuffersStore().buffers[KEY]?.messages ?? [];
+  return String((msgs[msgs.length - 1] as { text?: string })?.text ?? '');
+};
 const sentReacts = () =>
   vi
     .mocked(socketSend)
@@ -108,5 +115,59 @@ describe('/react', () => {
     const el = await composer();
     await run(el, '/react 👍');
     expect(sentReacts()).toEqual([{ type: 'react', messageId: 1, value: '👍', remove: false }]);
+  });
+
+  // Rows the list hides are in the store all the same; a command typed at the
+  // screen never lands on one.
+  it('leaves a line above the /clear marker alone', async () => {
+    seed([line(1, 'bob', 'before the clear', { msgid: 'm1' })]);
+    Object.assign(useBuffersStore().buffers[KEY]!, { clearedBeforeId: 1, clearedAt: T });
+    const el = await composer();
+    await run(el, '/react 👍');
+    expect(sentReacts()).toEqual([]);
+    expect(lastLocal()).toContain('nothing here to react to');
+  });
+
+  it('skips a line from someone ignored', async () => {
+    seed([line(1, 'bob', 'shown', { msgid: 'm1' }), line(2, 'mallory', 'hidden', { msgid: 'm2' })]);
+    useIgnoresStore().global = [
+      {
+        id: 1,
+        createdAt: '',
+        mask: 'mallory!*@*',
+        channels: null,
+        pattern: null,
+        patternKind: 'substr',
+        levels: ['ALL'],
+        isExcept: false,
+        expiresAt: null,
+      },
+    ] as never;
+    const el = await composer();
+    await run(el, '/react 👍');
+    expect(sentReacts()).toEqual([{ type: 'react', messageId: 1, value: '👍', remove: false }]);
+  });
+
+  it('skips a reply that lives in a thread panel', async () => {
+    seed([
+      line(1, 'bob', 'in the channel', { msgid: 'm1' }),
+      line(2, 'carol', 'in a thread', { msgid: 'm2', replyTo: { root: 'r0' } }),
+    ]);
+    Object.assign(useBuffersStore().buffers[KEY]!, { kind: 'channel' });
+    useSettingsStore().values['chat.threads'] = true;
+    const el = await composer();
+    await run(el, '/react 👍');
+    expect(sentReacts()).toEqual([{ type: 'react', messageId: 1, value: '👍', remove: false }]);
+  });
+
+  // Not skipped: the last line is the deleted one, and reaching past it would
+  // react to a line the user never meant.
+  it('says so when the last line was deleted', async () => {
+    seed([line(1, 'bob', 'older', { msgid: 'm1' }), line(2, 'bob', 'gone', { msgid: 'm2' })]);
+    useRedactionsStore().byMessage.set(2, { by: 'bob', time: T });
+    const el = await composer();
+    await run(el, '/react 👍');
+    expect(sentReacts()).toEqual([]);
+    expect(lastLocal()).toContain("can't react to a deleted message");
   });
 });
