@@ -943,6 +943,90 @@ describe('DELETE /api/uploads/:id', () => {
   });
 });
 
+// #1289 / #629: a row whose bytes are out of reach can still be taken off the
+// list. The record route never touches a driver and never refuses an owned row:
+// deletability is a judgment, and a row it gets wrong must not be stuck.
+describe('DELETE /api/uploads/:id/record', () => {
+  const rowOf = async (id: number) => {
+    const list = await agent.get('/api/uploads');
+    return list.body.items.find((r: { id: number }) => r.id === id);
+  };
+
+  it('drops a row that has no delete handle, and leaves the driver alone', async () => {
+    const up = await agent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'no-handle.png', contentType: 'image/png' });
+    expect(up.body.can_delete).toBe(false);
+    stub.capturedDeleteRef = null;
+    const res = await agent.delete(`/api/uploads/${up.body.id}/record`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(stub.capturedDeleteRef).toBeNull();
+    expect(await rowOf(up.body.id)).toBeUndefined();
+  });
+
+  it('drops a deletable row too, without asking the driver — the file stays up', async () => {
+    // The case a delete gate gets wrong: everything LOOKS deletable, but the
+    // delete fails every time (userhash swapped since the upload, say). The
+    // record must still come off; the driver is never called.
+    stub.capabilities.supportsDelete = true;
+    stub.nextResult = { url: 'https://stub.example/live.png', ref: 'live.png' };
+    try {
+      const up = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'live.png', contentType: 'image/png' });
+      expect(up.body.can_delete).toBe(true);
+      stub.capturedDeleteRef = null;
+      const res = await agent.delete(`/api/uploads/${up.body.id}/record`);
+      expect(res.status).toBe(200);
+      expect(stub.capturedDeleteRef).toBeNull();
+      expect(await rowOf(up.body.id)).toBeUndefined();
+    } finally {
+      stub.capabilities.supportsDelete = false;
+      stub.nextResult = null;
+    }
+  });
+
+  it("drops a row whose destination is gone (the reporter's case)", async () => {
+    // Uploaded while deletable; then the user removed the uploader config. The
+    // ref is still on the row, but nothing can use it any more.
+    stub.capabilities.supportsDelete = true;
+    stub.nextResult = { url: 'https://stub.example/orphan.png', ref: 'orphan.png' };
+    let id: number;
+    try {
+      const up = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'orphan.png', contentType: 'image/png' });
+      id = up.body.id;
+      expect(up.body.can_delete).toBe(true);
+    } finally {
+      stub.capabilities.supportsDelete = false;
+      stub.nextResult = null;
+    }
+    const { default: db } = await import('../db/index.js');
+    db.prepare('UPDATE upload_history SET uploader_config_id = 999999 WHERE id = ?').run(id);
+    expect((await rowOf(id)).can_delete).toBe(false);
+    expect((await agent.delete(`/api/uploads/${id}`)).status).toBe(409);
+    expect((await agent.delete(`/api/uploads/${id}/record`)).status).toBe(200);
+    expect(await rowOf(id)).toBeUndefined();
+  });
+
+  it('drops a moderation tombstone once the owner has read it', async () => {
+    const { markUploadRemovedById } = await import('../db/uploadHistory.js');
+    const up = await agent
+      .post('/api/uploads')
+      .attach('image', smallPng, { filename: 'tombstone.png', contentType: 'image/png' });
+    markUploadRemovedById(up.body.id);
+    expect((await rowOf(up.body.id)).removed).toBe(true);
+    expect((await agent.delete(`/api/uploads/${up.body.id}/record`)).status).toBe(200);
+    expect(await rowOf(up.body.id)).toBeUndefined();
+  });
+
+  it("404 for a row that doesn't exist", async () => {
+    expect((await agent.delete('/api/uploads/999999/record')).status).toBe(404);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // #543: uploads stream through a temp file instead of living in the heap. What
 // matters here is the shape handed to the driver and that the temp file never

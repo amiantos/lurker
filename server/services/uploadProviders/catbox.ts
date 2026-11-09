@@ -162,12 +162,20 @@ async function deleteFile(ref: string, config: { userhash?: string } = {}): Prom
   // failing. If the public URL 404s the delete already happened (out of band or
   // on a lost prior attempt) and the caller may safely drop the record; any
   // other outcome keeps the record.
+  //
+  // ⚠ A GET, not a HEAD. files.catbox.moe answers a HEAD for a missing file
+  // with `200` and `content-length: 0`, and only a GET gets the 404 — so a HEAD
+  // probe could never prove a file gone, and a row catbox had already lost
+  // stayed undeletable forever (#1289). The range asks for one byte and the body
+  // is cancelled unread: when the file IS still there, its status is all this
+  // needs.
   try {
     const probe = await fetch(`${FILE_BASE}/${encodeURIComponent(ref)}`, {
-      method: 'HEAD',
-      headers: { 'User-Agent': USER_AGENT },
+      method: 'GET',
+      headers: { 'User-Agent': USER_AGENT, Range: 'bytes=0-0' },
       signal: AbortSignal.timeout(15_000),
     });
+    await probe.body?.cancel().catch(() => {});
     if (probe.status === 404 || probe.status === 410) return;
   } catch {
     // Probe failed → we can't prove the file is gone; fall through to the error.

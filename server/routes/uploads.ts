@@ -22,9 +22,11 @@ import {
   isUploadKind,
   getThumbnail,
   getUploadForReap,
+  getUnsyncedUploadForReport,
   deleteUpload,
   setUploadFavorite,
 } from '../db/uploadHistory.js';
+import { controlPlaneConfigured, reportRow } from '../services/moderationReport.js';
 import { configuredBaseUrl, publicBaseUrl } from '../utils/publicOrigin.js';
 import { capText } from '../utils/capText.js';
 import { hasFreeSpaceFor } from '../utils/diskSpace.js';
@@ -334,12 +336,14 @@ router.delete('/:id/favorite', (req: Request, res: Response) => {
   res.json({ ok: true, favorite: false });
 });
 
-// Delete = destroy the bytes, then drop the row (decision 8, revised). There is
-// deliberately NO "remove the record but leave the file up" path: rows whose
-// bytes can't be destroyed (no ref, driver can't delete, config gone, moderation
-// tombstone) are refused — the client never offered a button for them, so a
-// request for one is forged or stale. Bytes go first so a driver failure keeps
-// the row and the user can retry; drivers treat "already gone" as success.
+// Delete = destroy the bytes, then drop the row (decision 8, revised). A row
+// whose bytes CAN be destroyed has no "drop the record, leave the file up"
+// path: that is `DELETE /:id/record` below, and it refuses such rows. Here, rows
+// whose bytes can't be destroyed (no ref, driver can't delete, config gone,
+// moderation tombstone) are refused — the client never offered this button for
+// them, so a request for one is forged or stale. Bytes go first so a driver
+// failure keeps the row and the user can retry; drivers treat "already gone" as
+// success.
 router.delete('/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   // Ownership is enforced by the user-scoped lookup — a caller can only
@@ -379,6 +383,39 @@ router.delete('/:id', async (req: Request, res: Response) => {
     return;
   }
   deleteUpload(req.user!.id, id);
+  res.json({ ok: true });
+});
+
+// Drop the record and leave the file wherever it is (#1289, #629). For uploads
+// whose bytes are out of Lurker's reach — no delete handle, a destination the
+// user has since removed, a driver that can't delete, a moderation tombstone
+// the owner has read — this is the only way off the list, and the client offers
+// it wherever it offers no delete. It is NOT gated on deletability the way
+// DELETE /:id is: `can_delete` is a judgment (driver, config and ref all look
+// right), and when the judgment is wrong — a userhash swapped since the upload,
+// a host that has quietly lost the file but says it's live — the delete fails
+// forever and the row would otherwise be stuck. The client is the user; losing
+// the handle to a file they could still have deleted is their call to make, and
+// the confirm says so.
+router.delete('/:id/record', async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const userId = req.user!.id;
+  // Hosted: a row the control plane was never told about (it was down at upload
+  // time, and the flush hasn't caught up) holds the only copy of its moderation
+  // report. The file outlives the row here, so the report has to land first, or
+  // the bytes would sit in the operator's bucket with nothing to moderate them
+  // by. Same wording as a hosted delete in the same state.
+  if (controlPlaneConfigured()) {
+    const pending = getUnsyncedUploadForReport(userId, id);
+    if (pending && !(await reportRow(pending))) {
+      res.status(503).json({ error: 'this upload is still being recorded — try again shortly' });
+      return;
+    }
+  }
+  if (!deleteUpload(userId, id)) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
   res.json({ ok: true });
 });
 

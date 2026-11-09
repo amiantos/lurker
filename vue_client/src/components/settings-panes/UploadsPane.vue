@@ -274,7 +274,7 @@ async function onDelete(u: Uploader) {
   if (
     !confirm(
       `Remove ${u.label}? Files you already uploaded through it stay where they are, but Lurker ` +
-        `will no longer be able to delete them from the host.`,
+        `will no longer be able to delete them from the host, only take them off your uploads list.`,
     )
   ) {
     return;

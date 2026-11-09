@@ -316,6 +316,20 @@ export function getUploadForReport(userId: number, id: number): UnsyncedUploadRo
     .get(userId, Number(id)) as UnsyncedUploadRow | undefined;
 }
 
+// The same row only while the control plane still hasn't acknowledged it:
+// dropping such a row (#1289) would take the only copy of its moderation report
+// with it, so the caller reports it first.
+export function getUnsyncedUploadForReport(
+  userId: number,
+  id: number,
+): UnsyncedUploadRow | undefined {
+  return db
+    .prepare(
+      `SELECT ${REPORT_COLS} FROM upload_history WHERE user_id = ? AND id = ? AND synced_to_cp = 0`,
+    )
+    .get(userId, Number(id)) as UnsyncedUploadRow | undefined;
+}
+
 export function markUploadSynced(id: number): void {
   db.prepare('UPDATE upload_history SET synced_to_cp = 1 WHERE id = ?').run(Number(id));
 }

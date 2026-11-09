@@ -410,6 +410,32 @@ describe('uploads — favourites', () => {
     expect(uploads.recent).toEqual([]);
   });
 
+  it('forgetting an upload drops the row without asking the host for anything', async () => {
+    const uploads = useUploadsStore();
+    uploads.recent = [row(1, 'a.webp', true)];
+    uploads.menuItems = [row(1, 'a.webp', true)];
+
+    api.mockResolvedValueOnce({ ok: true });
+    await uploads.forget(1);
+
+    // The record route, not the delete: the file stays where it is (#1289). The
+    // picker drops it too — the user asked for it gone, not just hidden here.
+    expect(api).toHaveBeenCalledWith('/api/uploads/1/record', { method: 'DELETE' });
+    expect(uploads.recent).toEqual([]);
+    expect(uploads.menuItems).toEqual([]);
+  });
+
+  it('keeps the row when the server will not drop it yet', async () => {
+    const uploads = useUploadsStore();
+    uploads.recent = [row(1, 'a.webp')];
+
+    // Hosted: the row's moderation report hasn't landed and can't be sent now.
+    api.mockRejectedValueOnce(new Error('this upload is still being recorded — try again shortly'));
+    await expect(uploads.forget(1)).rejects.toThrow(/still being recorded/);
+
+    expect(uploads.recent).toHaveLength(1);
+  });
+
   it('asks for the starred set as one page, with no cursor to follow', async () => {
     const uploads = useUploadsStore();
     api.mockResolvedValueOnce({ items: [row(1, 'a.webp', true)] });

@@ -31,6 +31,9 @@ type Answer = {
 let deleteAnswers: Answer[] = [];
 const deleteCalls: { auth?: string; body: Record<string, unknown> }[] = [];
 const reports: Record<string, unknown>[] = [];
+// When set, the report endpoint is down: what a cell sees while the control
+// plane is out, so rows stay unsynced.
+let reportsDown = false;
 let cp: http.Server;
 
 function startFakeCp(): Promise<string> {
@@ -49,6 +52,10 @@ function startFakeCp(): Promise<string> {
     }, a.delayMs ?? 0);
   });
   app.post('/_cp/moderation/uploads', (req, res) => {
+    if (reportsDown) {
+      res.status(503).json({ error: 'down' });
+      return;
+    }
     reports.push(req.body);
     res.json({ ok: true });
   });
@@ -90,6 +97,7 @@ beforeEach(() => {
   deleteAnswers = [];
   deleteCalls.length = 0;
   reports.length = 0;
+  reportsDown = false;
 });
 
 let n = 0;
@@ -234,6 +242,38 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
     const list = await adminAgent.get('/api/uploads');
     expect(list.body.items.find((i: { id: number }) => i.id === id).can_delete).toBe(false);
     expect((await adminAgent.delete(`/api/uploads/${id}`)).status).toBe(409);
+    expect(deleteCalls).toEqual([]);
+  });
+
+  // #1289: dropping the record never asks the control plane to delete — the
+  // bytes stay in the bucket and only this user's row goes. Another user's row
+  // is not reachable.
+  it('drops a hosted record without a delete request, and only its owner can', async () => {
+    const id = hostedUpload();
+    history.markUploadSynced(id);
+    expect((await adminAgent.delete(`/api/uploads/${id}/record`)).status).toBe(404);
+    expect(exists(id)).toBe(true);
+    expect((await agent.delete(`/api/uploads/${id}/record`)).status).toBe(200);
+    expect(exists(id)).toBe(false);
+    expect(deleteCalls).toEqual([]);
+    expect(reports).toEqual([]);
+  });
+
+  // The row is the only copy of the report the control plane never got (it was
+  // down at upload time). The file outlives the row, so the report lands first
+  // — or the row stays until it can.
+  it('reports a still-unsynced row before dropping it, and keeps it while it cannot', async () => {
+    const id = hostedUpload();
+    reportsDown = true;
+    const res = await agent.delete(`/api/uploads/${id}/record`);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/still being recorded/);
+    expect(exists(id)).toBe(true);
+
+    reportsDown = false;
+    expect((await agent.delete(`/api/uploads/${id}/record`)).status).toBe(200);
+    expect(exists(id)).toBe(false);
+    expect(reports.map((r) => r.cell_upload_id)).toEqual([id]);
     expect(deleteCalls).toEqual([]);
   });
 

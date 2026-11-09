@@ -257,19 +257,33 @@ describe('catbox provider', () => {
       headers: {},
       text: "File doesn't exist?",
     });
+    // ⚠ A one-byte GET, never a HEAD: files.catbox.moe answers a HEAD for a
+    // missing file with 200 and an empty body (#1289), so a HEAD could never
+    // prove the file gone.
     globalThis.fetch = vi.fn<typeof fetch>(async (url, init) => {
       expect(String(url)).toBe('https://files.catbox.moe/gone.png');
-      expect(init?.method).toBe('HEAD');
-      return new Response(null, { status: 404 });
+      expect(init?.method).toBe('GET');
+      expect((init!.headers as Record<string, string>).Range).toBe('bytes=0-0');
+      return new Response('not found', { status: 404 });
     });
     await expect(catbox.delete('gone.png', { userhash: 'h' })).resolves.toBeUndefined();
 
     // …but a file that's still being served must NOT count as deleted — that's
     // the userhash-mismatch case, and dropping the record would strand the file.
-    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+    // The served byte is cancelled, not read.
+    let cancelled = false;
+    globalThis.fetch = vi.fn<typeof fetch>(async () => {
+      const body = new ReadableStream({
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, { status: 206 });
+    });
     await expect(catbox.delete('gone.png', { userhash: 'h' })).rejects.toMatchObject({
       code: 'PROVIDER_ERROR',
     });
+    expect(cancelled).toBe(true);
 
     // An unrecognized error reply with a live file also fails.
     vi.spyOn(multipart, 'postBuffer').mockResolvedValue({
