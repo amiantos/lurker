@@ -192,6 +192,7 @@ import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/setting
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
 import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore } from '../stores/buffers.js';
+import { orderByTime } from '../lib/messageOrder.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useRedactionsStore } from '../stores/redactions.js';
 import { useRepliesStore } from '../stores/replies.js';
@@ -2896,6 +2897,8 @@ function randomRoomId(): string {
 // /react <emoji|:shortcode:|text> — react to the most recent line someone else
 // said in this buffer (the picker on a line's React action reaches any other).
 // Only lines the server gave a msgid can be reacted to; an encrypted one can't.
+// "Most recent" is the last one SHOWN, for both commands: a line fetched after
+// the fact holds a newer id than the lines under it (#1290).
 // /delete [reason] — ask the network to delete the most recent line you said
 // here (#1013). Nothing happens locally: the network's REDACT blanks the line
 // when it comes back, and a refusal lands here as an error line. No confirm —
@@ -2906,7 +2909,7 @@ function runDelete(argLine: string, networkId: number, target: string, line: str
     localInfo(networkId, target, "this network can't delete messages");
     return true;
   }
-  const messages = buffers.findByTarget(networkId, target)?.messages ?? [];
+  const messages = orderByTime(buffers.findByTarget(networkId, target)?.messages ?? []);
   let own: (typeof messages)[number] | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
@@ -2949,7 +2952,7 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
   // The last line someone else said — and if THAT one can't take a reaction,
   // say why rather than quietly reaching back to an older line the user never
   // meant (an e2e run, a trailing notice, a line with no msgid).
-  const messages = buffers.findByTarget(networkId, target)?.messages ?? [];
+  const messages = orderByTime(buffers.findByTarget(networkId, target)?.messages ?? []);
   let parent: (typeof messages)[number] | undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];

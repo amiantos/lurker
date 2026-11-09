@@ -109,6 +109,22 @@ describe('/delete', () => {
     expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);
   });
 
+  // A line fetched after the fact (#1283) is stored with a newer id than the
+  // lines shown under it; the one to delete is the last one on screen.
+  it('takes the last line shown, not the newest id', async () => {
+    seed([
+      line(1, 'me', 'said after the gap', { msgid: 'm1', time: '2026-11-05T00:10:00.000Z' }),
+      line(2, 'me', 'filled in later', {
+        msgid: 'm2',
+        time: '2026-11-05T00:05:00.000Z',
+        replay: true,
+      }),
+    ]);
+    const el = await composer();
+    await run(el, '/delete');
+    expect(sentRedacts()).toEqual([{ type: 'redact', messageId: 1 }]);
+  });
+
   it('says so when the network cannot delete', async () => {
     seed([line(1, 'me', 'mine', { msgid: 'm1' })], false);
     const el = await composer();
