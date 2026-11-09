@@ -170,6 +170,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { onIrcEvent, onSocketOpen, socketSendWithAck } from '../composables/useSocket.js';
 import { blockImeEnter } from '../composables/useImeSafeInput.js';
 import { formatDate, formatDateTime } from '../utils/timestamp.js';
+import { topicSetLine } from '../utils/topicMeta.js';
 import {
   LIST_NAMES,
   liveRow,
@@ -270,10 +271,8 @@ const topicCounter = computed(() =>
   canSetTopic.value && topicLen.value != null ? `${topicSize.value} / ${topicLen.value}` : '',
 );
 const topicMeta = computed(() => {
-  const by = buffer.value?.topicSetBy;
-  const at = buffer.value?.topicSetAt;
-  if (!topic.value || (!by && !at)) return '';
-  return [by ? `Set by ${by}` : 'Set', at ? formatDateTime(at) : ''].filter(Boolean).join(' · ');
+  if (!topic.value) return '';
+  return topicSetLine(buffer.value?.topicSetBy, buffer.value?.topicSetAt);
 });
 const createdLabel = computed(() =>
   buffer.value?.createdAt ? `Created ${formatDate(buffer.value.createdAt)}` : '',

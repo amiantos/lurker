@@ -243,6 +243,8 @@ import { insertWithPadding } from '../utils/insertAtCaret.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
+import { useChannelModal } from '../composables/useChannelModal.js';
+import { topicSetLine } from '../utils/topicMeta.js';
 import { socketSend, socketSendWithAck, type AckResult } from '../composables/useSocket.js';
 import { requestScrollToBottom } from '../composables/useScrollState.js';
 import { setComposingState } from '../composables/useComposing.js';
@@ -318,6 +320,7 @@ const relayBots = useRelayBotsStore();
 const highlightRules = useHighlightRulesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
+const channelModal = useChannelModal();
 const nickColors = useNickColors();
 const displayNames = useDisplayNames();
 
@@ -2739,7 +2742,8 @@ const COMMANDS_LINES = [
   '  /ban <nick|mask>       — ban (also /unban /quiet /unquiet)',
   '  /cycle [reason]        — part and rejoin this channel (alias: /hop)',
   '  /mode <target> <flags> — set modes (target defaults to current channel)',
-  '  /topic [text]          — set/clear topic on current channel',
+  '  /topic [#chan] [text]  — show the topic, or set it',
+  '  /channel [#chan]       — open Channel Settings (alias: /chan)',
   '  /nick <newnick>        — change your nick',
   '  /quit [reason]         — disconnect from current network (alias: /disconnect)',
   '  /reconnect             — reconnect to current network',
@@ -2810,6 +2814,19 @@ const COMMANDS_LINES = [
  */
 function isChannelArg(t: string | undefined): boolean {
   return isChannelTarget(t);
+}
+
+// What bare /topic prints for a channel we're in: the topic, then who set it
+// and when if the server said.
+function topicLines(buf: {
+  target: string;
+  topic?: string | null;
+  topicSetBy?: string | null;
+  topicSetAt?: string | null;
+}): string[] {
+  if (!buf.topic) return [`No topic is set for ${buf.target}.`];
+  const set = topicSetLine(buf.topicSetBy, buf.topicSetAt);
+  return [`Topic for ${buf.target}: ${buf.topic}`, ...(set ? [set] : [])];
 }
 
 /**
@@ -4513,9 +4530,9 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return sendOrToast({ type: 'raw', networkId, line: `INVITE ${nick} ${channel}` }, line);
     }
     case 'topic': {
-      // /topic                        — request current topic (server buffer)
+      // /topic                        — show the current channel's topic
       // /topic <text>                 — set on current channel
-      // /topic <#chan> [text]         — set/get on another channel
+      // /topic <#chan> [text]         — set/show on another channel
       let channel;
       let body;
       if (isChannelArgAmbiguous(rest[0], networkId)) {
@@ -4533,8 +4550,46 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         localInfo(networkId, target, 'usage: /topic [#chan] [text] — no channel context');
         return true;
       }
+      if (!body) {
+        // A channel we're in: the topic we hold is the server's (every TOPIC
+        // and the join's 332/333 keep it), so say it here, as irssi does
+        // (fe-irc-commands.c cmd_topic). Asking would answer nowhere: the
+        // reply only syncs the topic bar (#1270). Any other channel is the
+        // server's to answer, in the server buffer.
+        const held = buffers.findByTarget(networkId, channel);
+        if (held?.joined) {
+          for (const text of topicLines(held)) localInfo(networkId, target, text);
+          return true;
+        }
+      }
       const trailer = body ? ` :${body}` : '';
       return sendOrToast({ type: 'raw', networkId, line: `TOPIC ${channel}${trailer}` }, line);
+    }
+    case 'channel':
+    case 'chan': {
+      // /channel          — Channel Settings for the current channel
+      // /channel <#chan>  — for another channel with a buffer here
+      // mIRC's /channel opens its Channel Central the same way (#1270).
+      const usage = `usage: /${verb} [#chan]`;
+      // Completing a channel name leaves a space behind it, and with it an
+      // empty last word.
+      const named = rest.filter(Boolean);
+      if (named.length > 1 || (named[0] && !isChannelArg(named[0]))) {
+        localInfo(networkId, target, usage);
+        return true;
+      }
+      const channel = named[0] || (isChannelTarget(target) ? target : null);
+      if (!channel) {
+        localInfo(networkId, target, `${usage} — no channel context`);
+        return true;
+      }
+      const held = buffers.findByTarget(networkId, channel);
+      if (!held) {
+        localInfo(networkId, target, `/${verb}: ${channel} isn't open here.`);
+        return true;
+      }
+      channelModal.open(networkId, held.target);
+      return true;
     }
     case 'nick': {
       const newNick = rest[0];
