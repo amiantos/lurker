@@ -133,9 +133,11 @@ export interface UploadItem {
   // True when the hosted operator has moderated the upload away. The row stays
   // as a tombstone; its bytes are gone from storage.
   removed?: boolean;
-  // True when deleting this row destroys the stored bytes. Rows without it get
-  // no delete affordance at all — there is no "remove the record but leave the
-  // file up" path (design decision 8).
+  // True when deleting this row destroys the stored bytes. Rows without it (and
+  // tombstones) get a remove-from-list action instead, which drops the record
+  // and leaves the file wherever it is (#1289). Every row has exactly one of
+  // the two: the one way off the list while the file is still deletable is to
+  // delete the file (design decision 8).
   can_delete?: boolean;
   // Starred by the owner. Server-side state, so the same quick-access set is
   // there on every device.
@@ -462,6 +464,16 @@ export const useUploadsStore = defineStore('uploads', {
       this.recent = this.recent.filter((u) => u.id !== id);
       // The file is gone, so it cannot stay in the attach menu — in EITHER mode, or
       // the menu keeps offering to insert a URL that now 404s until a reload.
+      this.menuItems = this.menuItems.filter((u) => u.id !== id);
+    },
+
+    // Take a row off the list without touching its file (#1289): for uploads
+    // whose bytes Lurker can't destroy any more. The server refuses it for a row
+    // that can still be deleted.
+    async forget(id: number) {
+      await api(`/api/uploads/${id}/record`, { method: 'DELETE' });
+      this.recent = this.recent.filter((u) => u.id !== id);
+      // Out of the attach menu too: the user asked for it gone from their list.
       this.menuItems = this.menuItems.filter((u) => u.id !== id);
     },
 

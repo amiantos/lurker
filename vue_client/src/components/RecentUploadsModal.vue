@@ -143,7 +143,11 @@
                sized, on touch — see the @media rules. -->
           <div class="actions">
             <!-- Delete destroys the stored file. Offered only where that's true
-                 (can_delete) — there is no remove-the-record-only action. -->
+                 (can_delete). Every other row — no delete handle, a destination
+                 the user removed, a moderation tombstone — gets "remove from
+                 list" instead (#1289): the record goes, the file stays wherever
+                 it is. One or the other, never both: while the file can still be
+                 deleted, deleting it is the only way off the list. -->
             <button
               v-if="!u.removed && u.can_delete"
               class="act delete"
@@ -154,6 +158,17 @@
             >
               <LoaderCircleIcon v-if="deletingId === u.id" class="icon-spin" />
               <TrashIcon v-else />
+            </button>
+            <button
+              v-else
+              class="act delete"
+              :disabled="deletingId !== null"
+              @click="onForget(u)"
+              title="remove from list"
+              aria-label="remove from list"
+            >
+              <LoaderCircleIcon v-if="deletingId === u.id" class="icon-spin" />
+              <ListXIcon v-else />
             </button>
             <!-- Put it in the message being composed. The modal closes on the way
                  out — you asked for this file, so the browse is over; leaving it up
@@ -230,6 +245,7 @@ import {
   CopyIcon,
   CornerRightDownIcon,
   GavelIcon,
+  ListXIcon,
   LoaderCircleIcon,
   SearchIcon,
   StarIcon,
@@ -485,6 +501,27 @@ async function onDelete(u: UploadRow) {
   } catch (e: any) {
     // The bytes weren't destroyed, so the row stays and the reason surfaces.
     actionError.value = e.message || 'delete failed';
+  } finally {
+    deletingId.value = null;
+  }
+}
+
+// Remove-from-list for a row whose file Lurker can't delete (#1289). Shares
+// deletingId with onDelete: both are "this tile is being taken off the list",
+// and only one of the two buttons exists on any tile.
+async function onForget(u: UploadRow) {
+  if (deletingId.value !== null) return;
+  const what = u.filename || u.url;
+  const note = u.removed
+    ? ''
+    : ' Lurker cannot delete the file, so it stays where it is; this only removes it from your list.';
+  if (!confirm(`Remove "${what}" from your uploads?${note}`)) return;
+  deletingId.value = u.id;
+  actionError.value = '';
+  try {
+    await uploads.forget(u.id);
+  } catch (e: any) {
+    actionError.value = e.message || 'could not remove';
   } finally {
     deletingId.value = null;
   }

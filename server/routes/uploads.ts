@@ -334,12 +334,14 @@ router.delete('/:id/favorite', (req: Request, res: Response) => {
   res.json({ ok: true, favorite: false });
 });
 
-// Delete = destroy the bytes, then drop the row (decision 8, revised). There is
-// deliberately NO "remove the record but leave the file up" path: rows whose
-// bytes can't be destroyed (no ref, driver can't delete, config gone, moderation
-// tombstone) are refused — the client never offered a button for them, so a
-// request for one is forged or stale. Bytes go first so a driver failure keeps
-// the row and the user can retry; drivers treat "already gone" as success.
+// Delete = destroy the bytes, then drop the row (decision 8, revised). A row
+// whose bytes CAN be destroyed has no "drop the record, leave the file up"
+// path: that is `DELETE /:id/record` below, and it refuses such rows. Here, rows
+// whose bytes can't be destroyed (no ref, driver can't delete, config gone,
+// moderation tombstone) are refused — the client never offered this button for
+// them, so a request for one is forged or stale. Bytes go first so a driver
+// failure keeps the row and the user can retry; drivers treat "already gone" as
+// success.
 router.delete('/:id', async (req: Request, res: Response) => {
   const id = Number(req.params.id);
   // Ownership is enforced by the user-scoped lookup — a caller can only
@@ -377,6 +379,35 @@ router.delete('/:id', async (req: Request, res: Response) => {
       .status(providerErrorStatus(e))
       .json({ error: e.message || 'delete failed', provider: row.provider });
     return;
+  }
+  deleteUpload(req.user!.id, id);
+  res.json({ ok: true });
+});
+
+// Drop the record of an upload whose bytes are out of Lurker's reach (#1289,
+// #629): no delete handle, a destination the user has since removed, a driver
+// that can't delete, or a moderation tombstone the owner has read. The file, if
+// it still exists, stays where it is — this only takes it off the list. It is
+// the mirror of DELETE /:id: a row whose bytes CAN be destroyed is refused here,
+// so the one way to drop a record while the file is still deletable is to
+// delete the file. Each row has exactly one of the two.
+router.delete('/:id/record', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const row = getUploadForReap(req.user!.id, id);
+  if (!row) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  if (!row.removed) {
+    const loaded =
+      row.ref && row.uploader_config_id != null ? loadDriverForRef(row.uploader_config_id) : null;
+    const destroyable =
+      hostedDeletable(row, req.user!.role === 'admin') ||
+      (loaded != null && deletableWith(loaded.driver, loaded.driverConfig));
+    if (destroyable) {
+      res.status(409).json({ error: 'this upload can be deleted; delete it instead' });
+      return;
+    }
   }
   deleteUpload(req.user!.id, id);
   res.json({ ok: true });
