@@ -263,6 +263,32 @@ describe('live events on a detached buffer', () => {
     expect(JSON.stringify(primePreviews.mock.calls)).toContain('https://e.test/cat.png');
   });
 
+  it('shows a topic row fetched after the fact without putting its topic back', async () => {
+    // A history fill's TOPIC rows have new ids, so they are news as rows, and
+    // an older topic than the one we hold (#1270).
+    const ws = await openSocket();
+    const buffers = channel(false);
+    ws.deliver(irc(30, { type: 'topic', nick: 'carol', text: 'live topic' }));
+    ws.deliver(irc(31, { type: 'topic', nick: 'alice', text: 'old topic', replay: true }));
+    const buf = buffers.buffers['1::#chan'];
+    expect(buf.topic).toBe('live topic');
+    expect(buf.topicSetBy).toBe('carol');
+    expect(buf.messages.map((m) => m.id)).toEqual([30, 31]);
+  });
+
+  it('leaves the nicklist alone for rows fetched after the fact', async () => {
+    const ws = await openSocket();
+    const buffers = channel(false);
+    const before = nicks(buffers).toSorted();
+    ws.deliver(irc(40, { type: 'join', nick: 'ghost', replay: true }));
+    ws.deliver(irc(41, { type: 'part', nick: 'alice', replay: true }));
+    ws.deliver(irc(42, { type: 'quit', nick: 'bob', replay: true }));
+    ws.deliver(irc(43, { type: 'nick', nick: 'alice', newNick: 'alicia', replay: true }));
+    ws.deliver(irc(44, { type: 'kick', nick: 'op', kicked: 'bob', replay: true }));
+    expect(nicks(buffers).toSorted()).toEqual(before);
+    expect(buffers.buffers['1::#chan'].messages.map((m) => m.id)).toEqual([40, 41, 42, 43, 44]);
+  });
+
   it('still leaves a live-tail buffer to its own dedupe', async () => {
     const ws = await openSocket();
     const buffers = channel(false);

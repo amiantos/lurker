@@ -502,6 +502,18 @@ function recordBufferId(buf: Buffer, key: string, bufferId?: number | null): voi
   keyById.set(bufferId, key);
 }
 
+// The newest stored row a buffer holds, by id; 0 when it holds none. Rows are
+// kept in id order, but the tail can be a status line with no id (a usage
+// message, a /topic answer), so read past those: taking the last row alone
+// made a buffer with one at its tail look empty to a resume (#1270).
+export function newestHeldId(messages: readonly { id?: number | null }[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const id = messages[i].id;
+    if (id != null) return id;
+  }
+  return 0;
+}
+
 export const useBuffersStore = defineStore('buffers', {
   state: () => ({
     // The system buffer (issue #355) is app-scoped (no network) and always
@@ -676,7 +688,7 @@ export const useBuffersStore = defineStore('buffers', {
         if (!event.replay) clearSpeakerTyping(buf, event.nick);
         return 'detached';
       }
-      const prevMaxId = buf.messages[buf.messages.length - 1]?.id ?? 0;
+      const prevMaxId = newestHeldId(buf.messages);
       // Server inserts persisted events in id order per buffer, so any event
       // with id <= prevMaxId is a replay (e.g. a WS resume that overlapped
       // with an event we already saw live). Drop it — and signal the caller
@@ -783,7 +795,7 @@ export const useBuffersStore = defineStore('buffers', {
       // written before that change linger in the DB and would still render
       // here. They age out naturally as new content arrives.
       const filtered = events.filter((e) => e.type !== 'away' && e.type !== 'back');
-      const existingMaxId = buf.messages[buf.messages.length - 1]?.id ?? 0;
+      const existingMaxId = newestHeldId(buf.messages);
       if (existingMaxId === 0) {
         // Initial seed (first connect, or a brand-new buffer we hadn't seen
         // pre-flap). Take the backlog wholesale. Prefer the server's explicit

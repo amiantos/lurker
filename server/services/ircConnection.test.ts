@@ -24,6 +24,7 @@ import {
   resolveChannelContext,
   outgoingNickIntents,
   commandResultError,
+  topicReplyLine,
   isCommandResultErrorTag,
   sendRejectionTargetKind,
   sendRejectionText,
@@ -1395,6 +1396,101 @@ describe('refused-message handler routing (#283)', () => {
         text: "#anime You're not channel operator",
       }),
     );
+  });
+
+  // #1270 — bare /topic. The reply to the user's own TOPIC query is said in
+  // the channel it names; the topic a JOIN volunteers is not.
+  function topicLinesFor(lines: string[], ask: string | null) {
+    const conn = makeConn();
+    conn.upsertChannel('#anime');
+    const said: Array<{ target?: string; text?: string }> = [];
+    const publishEphemeral = conn.publishEphemeral.bind(conn);
+    conn.publishEphemeral = (event) => {
+      if (event.type === 'motd') said.push({ target: event.target, text: event.text as string });
+      publishEphemeral(event);
+    };
+    const publish = vi.fn<(event: unknown) => void>();
+    conn.publish = publish;
+    conn.client.raw = vi.fn<(line: string) => void>(); // don't touch a real socket
+    conn.state = 'connected'; // a query is only on the wire, and owed a reply, once it can be sent
+    if (ask) conn.raw(ask);
+    for (const line of lines) emitRaw(conn, line);
+    return { said, publish };
+  }
+
+  it('says the topic the user asked for in its channel, and who set it', () => {
+    const { said, publish } = topicLinesFor(
+      [
+        ':irc.example.test 332 nick #ANIME :Welcome | be kind',
+        ':irc.example.test 333 nick #ANIME alice!a@host 1700000000',
+      ],
+      'TOPIC #anime',
+    );
+    expect(said).toHaveLength(2);
+    expect(said[0]).toEqual({ target: '#anime', text: 'Topic for #ANIME: Welcome | be kind' });
+    expect(said[1].target).toBe('#anime');
+    expect(said[1].text).toMatch(/^Set by alice · 2023-11-1[45] \d\d:\d\d:\d\d[+-]\d{4}$/);
+    // Additive: the server's own line is still the server buffer's.
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'motd', target: ':server:1' }),
+    );
+  });
+
+  it('says so when the channel has no topic', () => {
+    const { said } = topicLinesFor(
+      [':irc.example.test 331 nick #anime :No topic is set'],
+      'TOPIC #anime',
+    );
+    expect(said).toEqual([{ target: '#anime', text: 'No topic is set for #anime.' }]);
+  });
+
+  it('says nothing in the channel for a topic nobody asked for', () => {
+    const { said } = topicLinesFor(
+      [
+        ':irc.example.test 332 nick #anime :Welcome',
+        ':irc.example.test 333 nick #anime alice 1700000000',
+      ],
+      null,
+    );
+    expect(said).toEqual([]);
+  });
+
+  it('leaves a topic for a channel we are not in to the server buffer', () => {
+    const { said, publish } = topicLinesFor(
+      [':irc.example.test 332 nick #elsewhere :Their topic'],
+      'TOPIC #elsewhere',
+    );
+    expect(said).toEqual([]);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'motd',
+        target: ':server:1',
+        text: '#elsewhere Their topic',
+      }),
+    );
+  });
+
+  it('reads both shapes of 333, and neither from a line that has none', () => {
+    const stamp = () => 'WHEN';
+    expect(topicReplyLine('333', ['me', '#c', 'alice!a@h', '1700000000'], stamp)).toEqual({
+      channel: '#c',
+      text: 'Set by alice · WHEN',
+    });
+    expect(topicReplyLine('333', ['me', '#c', '1700000000'], stamp)).toEqual({
+      channel: '#c',
+      text: 'Set · WHEN',
+    });
+    expect(topicReplyLine('333', ['me', '#c', 'alice', 'junk'], stamp)).toEqual({
+      channel: '#c',
+      text: 'Set by alice',
+    });
+    expect(topicReplyLine('333', ['me', '#c'], stamp)).toBeNull();
+    expect(topicReplyLine('332', ['me', '&local', ''], stamp)).toEqual({
+      channel: '&local',
+      text: 'No topic is set for &local.',
+    });
+    expect(topicReplyLine('332', ['me', 'bob', 'x'], stamp)).toBeNull();
+    expect(topicReplyLine('324', ['me', '#c', '+nt'], stamp)).toBeNull();
   });
 
   it('routes 441 to the channel, never to the nick the framework calls a channel', () => {

@@ -66,11 +66,12 @@ describe("the restore's quiet window", () => {
 
       // Inside the quiet window, the user asks for the topic.
       conn.raw('TOPIC #q');
-      const rows = () =>
+      const lines = (inChannel: boolean) =>
         events
-          .filter((e) => e.type === 'motd')
+          .filter((e) => e.type === 'motd' && (e.target === '#q') === inChannel)
           .map((e) => String(e.text))
           .filter((text) => text.includes('#q'));
+      const rows = () => lines(false);
       await until(
         () => rows().some((text) => text.includes('No topic')),
         5000,
@@ -78,6 +79,9 @@ describe("the restore's quiet window", () => {
       );
       // That row, and none for the restore's own reply before it.
       expect(rows()).toHaveLength(1);
+      // And said once in the channel it was asked about (#1270): the user's
+      // reply, never the restore's.
+      expect(lines(true)).toEqual(['No topic is set for #q.']);
     } finally {
       ircManager.off('event', listener);
     }

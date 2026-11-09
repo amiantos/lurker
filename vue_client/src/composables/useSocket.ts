@@ -5,7 +5,7 @@ import { getActivePinia } from 'pinia';
 import type { Ref } from 'vue';
 import { ref, onMounted, watch, effectScope } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
-import { useBuffersStore, resetNamesAsked } from '../stores/buffers.js';
+import { useBuffersStore, resetNamesAsked, newestHeldId } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -307,18 +307,21 @@ function applyEvent(event: any): boolean {
     // For events that carry an id AND mutate buffer state (member list,
     // topic): on a replay the mutation would re-apply stale state (e.g. revert
     // the topic) — skip it. A detached buffer still takes it (takeLive).
+    // The same goes for a row fetched after the fact (`event.replay`, a
+    // history fill): news as a row, old as state. The server moves nothing for
+    // one either; the rejoin's NAMES and 332 already said where things stand.
     case 'join':
-      if (!take().news) break;
+      if (!take().news || event.replay) break;
       buffers.addMember(event.networkId, event.target, event.nick);
       break;
     case 'part':
     case 'quit':
-      if (!take().news) break;
+      if (!take().news || event.replay) break;
       buffers.removeMember(event.networkId, event.target, event.nick);
       break;
     case 'kick':
       if (!take().news) break;
-      buffers.removeMember(event.networkId, event.target, event.kicked);
+      if (!event.replay) buffers.removeMember(event.networkId, event.target, event.kicked);
       // Only a kick of US notifies, and the server already decided that — this
       // call is gated on `event.notify` like every other one, so a kick of
       // someone else falls straight back out (#968). Behind the dedupe, so a
@@ -326,14 +329,14 @@ function applyEvent(event: any): boolean {
       notifyForEvent(event);
       break;
     case 'nick':
-      if (!take().news) break;
+      if (!take().news || event.replay) break;
       buffers.renameMember(event.networkId, event.target, event.nick, event.newNick);
       break;
     case 'own-nick':
       networks.applyOwnNick(event);
       break;
     case 'topic':
-      if (!take().news) break;
+      if (!take().news || event.replay) break;
       buffers.setTopic(event.networkId, event.target, event.text, {
         setBy: event.nick,
         setAt: event.time,
@@ -954,7 +957,7 @@ function handleMessage(raw: string): void {
       payload.mode === 'append' && payload.networkId != null
         ? useBuffersStore().findByTarget(payload.networkId, payload.target)
         : null;
-    const heldMax = Number(held?.messages.at(-1)?.id ?? 0);
+    const heldMax = held ? newestHeldId(held.messages) : 0;
     applyBacklog(payload);
     if (held && Array.isArray(payload.events)) {
       useThreadsStore().noteGapFill(payload.events, heldMax);

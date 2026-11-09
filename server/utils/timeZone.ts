@@ -43,3 +43,18 @@ export function tzOffsetMinutes(date: Date, timeZone: string | null): number {
   const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
   return Math.round((asUTC - date.getTime()) / 60000);
 }
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+// "2026-05-09 15:30:00-0500" — a moment as text for a line the server writes
+// (an auto-away message, who set a topic), where no client is there to put it
+// in the reader's own format. In `timeZone` (the user's system.timezone) when
+// that is a zone, otherwise the server's.
+export function wallClockStamp(date: Date, timeZone: unknown): string {
+  const tz = isValidTimeZone(timeZone) ? timeZone : null;
+  const p = wallClockParts(date, tz);
+  const off = tzOffsetMinutes(date, tz);
+  const sign = off >= 0 ? '+' : '-';
+  const aoff = Math.abs(off);
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}${sign}${pad2(Math.floor(aoff / 60))}${pad2(aoff % 60)}`;
+}

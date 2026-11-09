@@ -119,6 +119,7 @@ import type { ModeListResult } from './modeList.js';
 import { classifyModeChange, modeLetter } from '../../shared/modes.js';
 import { parseModeSpec, sortByRank } from '../../shared/channelModes.js';
 import { unixSecondsToIso } from '../utils/unixTime.js';
+import { wallClockStamp } from '../utils/timeZone.js';
 import type { ModeSpec } from '../../shared/channelModes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
@@ -2298,6 +2299,21 @@ export class IrcConnection {
           text: cmdError.text,
           raw: { command: rawCommand, params: msg?.params ?? [] },
         });
+      }
+      // The topic the user asked for (/topic), for a channel we're in: said
+      // in that channel (for the bare form, where they asked; irssi prints
+      // `/topic #other` in #other too) as a status line that is not history
+      // (#1270). Only theirs: the 332/333 a JOIN volunteers is
+      // `unasked` and only moves the topic bar. Additive like the errors
+      // above; the server's own line still goes to the server buffer.
+      if (this.replyOwner === 'user') {
+        const topicReply = topicReplyLine(rawCommand, msg?.params ?? [], (at) =>
+          wallClockStamp(at, effectiveSetting(this.network.user_id, 'system.timezone')),
+        );
+        const topicChannel = topicReply ? this.channelState(topicReply.channel) : undefined;
+        if (topicReply && topicChannel) {
+          this.publishEphemeral({ type: 'motd', target: topicChannel.name, text: topicReply.text });
+        }
       }
       // A reply to the restore step in flight is what releases the next
       // channel's requests. Before the denylist: 366 is exactly the kind of
@@ -13670,6 +13686,38 @@ export function commandResultError(
   if (typeof channel !== 'string' || !isChannelTarget(channel)) return null;
   const text = spec.message(params);
   return text ? { channel, text } : null;
+}
+
+// The reply to a TOPIC query as the line to show in its channel, or null for
+// any other numeric. Callers check we're in the channel, as above.
+//   331 <client> <channel> :No topic is set
+//   332 <client> <channel> :<topic>
+//   333 <client> <channel> <setter> <ts>, or <channel> <ts> alone on some
+//       servers (weechat irc-protocol.c:5275 reads both)
+// The setter is a nick or a whole nick!user@host; the nick is what we say.
+export function topicReplyLine(
+  numeric: string,
+  params: WireParams,
+  stamp: (at: Date) => string,
+): { channel: string; text: string } | null {
+  if (numeric !== '331' && numeric !== '332' && numeric !== '333') return null;
+  const channel = params[1];
+  if (typeof channel !== 'string' || !isChannelTarget(channel)) return null;
+  if (numeric === '331') return { channel, text: `No topic is set for ${channel}.` };
+  if (numeric === '332') {
+    const topic = params[2];
+    if (typeof topic !== 'string') return null;
+    return topic
+      ? { channel, text: `Topic for ${channel}: ${topic}` }
+      : { channel, text: `No topic is set for ${channel}.` };
+  }
+  const rest = params.slice(2).filter((p): p is string => typeof p === 'string' && p !== '');
+  const ts = rest.length && /^\d+$/.test(rest[rest.length - 1]) ? rest[rest.length - 1] : null;
+  const setter = (ts === null ? rest[0] : rest.length > 1 ? rest[0] : undefined)?.split('!')[0];
+  const iso = unixSecondsToIso(ts ?? undefined);
+  if (!setter && !iso) return null;
+  const parts = [setter ? `Set by ${setter}` : 'Set', iso ? stamp(new Date(iso)) : ''];
+  return { channel, text: parts.filter(Boolean).join(' · ') };
 }
 
 // ERR_NOSUCHNICK (401) is the failure you actually hit first — you kick or
