@@ -2897,8 +2897,10 @@ function randomRoomId(): string {
 // /react <emoji|:shortcode:|text> — react to the most recent line someone else
 // said in this buffer (the picker on a line's React action reaches any other).
 // Only lines the server gave a msgid can be reacted to; an encrypted one can't.
-// "Most recent" is the last one SHOWN, for both commands: a line fetched after
-// the fact holds a newer id than the lines under it (#1290).
+// "Most recent" follows the order the list shows, for both commands: a line
+// fetched after the fact holds a newer id than the lines under it (#1290).
+// Order only: a row the list hides (/clear, an ignore, a thread reply) is
+// still walked here.
 // /delete [reason] — ask the network to delete the most recent line you said
 // here (#1013). Nothing happens locally: the network's REDACT blanks the line
 // when it comes back, and a refusal lands here as an error line. No confirm —
