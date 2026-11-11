@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { callVerb } from '../services/verbRegistry.js';
+import { goneSignal, sendFeedError } from './feedParams.js';
 // Registers the verb surface (idempotent — server.ts does the same import).
 // Without it, a test that mounts only this router would find no verbs.
 import '../services/verbs/index.js';
@@ -13,12 +14,12 @@ import '../services/verbs/index.js';
 //
 // This is the same search_messages verb the WS `search` command and the MCP
 // server call; the route adds nothing but transport. It exists because a WS
-// verb is welded to the socket hub: moving the query off the main event loop
-// later (a worker, a read-only second connection) would be a protocol change
-// hitting every client, while a URL makes it a routing decision. Secondary
-// wins over the socket: a superseded search-as-you-type request can actually
-// be cancelled (there is no WS cancel frame — a stale search runs to
-// completion server-side and the reply is discarded), result pages stop
+// verb is welded to the socket hub, while a URL is a request that can be
+// abandoned: the statement runs off the event loop, in the search process
+// (services/searchRunner.ts), and a superseded search-as-you-type request is
+// dropped from its queue, or stopped mid-walk, the moment the client aborts it
+// (there is no WS cancel frame — a stale WS search runs until the time limit
+// and the reply is discarded). Also over the socket: result pages stop
 // competing with the live IRC event stream for the socket's backpressure
 // budget, and the response contract matches the highlights/bookmarks feeds
 // (`{items, nextBefore}`) instead of making clients synthesize a cursor from
@@ -43,11 +44,13 @@ function strArray(v: unknown): string[] | undefined {
   return out.length ? out : undefined;
 }
 
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   // A search-as-you-type client aborts superseded requests; if this one is
   // already gone, don't spend the query on it. This check is the cancellation
   // half of the REST argument — it has no WS equivalent.
   if (req.destroyed) return;
+  // And if it goes while the search waits or runs, the search stops with it.
+  const gone = goneSignal(res);
 
   const rawLimit = Number(req.query.limit);
   const rawBefore = Number(req.query.before);
@@ -55,9 +58,9 @@ router.get('/', (req: Request, res: Response) => {
 
   let result: { messages: Array<{ id: number }>; hasMore: boolean };
   try {
-    result = callVerb(
+    result = (await callVerb(
       'search_messages',
-      { userId: req.user!.id, scope: 'read', transport: 'rest' },
+      { userId: req.user!.id, scope: 'read', transport: 'rest', signal: gone },
       {
         query: str(req.query.q),
         networkId: Number.isFinite(rawNetworkId) && rawNetworkId > 0 ? rawNetworkId : undefined,
@@ -67,9 +70,10 @@ router.get('/', (req: Request, res: Response) => {
         // The verb clamps to its own 1–100 range; only shield it from NaN.
         limit: Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : undefined,
       },
-    ) as { messages: Array<{ id: number }>; hasMore: boolean };
+    )) as { messages: Array<{ id: number }>; hasMore: boolean };
   } catch (err) {
     const code = (err as { code?: string }).code;
+    if (sendFeedError(res, gone, err)) return;
     if (code === 'unknown_network') {
       res.status(404).json({ error: 'unknown network' });
       return;

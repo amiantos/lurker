@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import { searchErrorResponse } from '../services/searchRunner.js';
 
 // The filter + page-size params the highlights and activity feeds share: the
 // from:/in:/on: + free-text filter (`nick` / `target` / `networkId` / `q`) the
@@ -40,4 +41,30 @@ export function feedFilters(req: Request) {
 export function feedLimit(req: Request): number {
   const n = positiveInt(req.query.limit);
   return n ? Math.min(n, MAX_LIMIT) : DEFAULT_LIMIT;
+}
+
+// Aborted when the client stopped waiting for `res` (it closed before the
+// response was finished): what a search still waiting or running for that
+// request stops on (services/searchRunner.ts).
+export function goneSignal(res: Response): AbortSignal {
+  const gone = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) gone.abort();
+  });
+  return gone.signal;
+}
+
+// Answer a feed request whose search did not return rows. True if `err` was
+// the search runner's and has been dealt with; false for anything else, which
+// is the caller's to throw.
+export function sendFeedError(res: Response, gone: AbortSignal, err: unknown): boolean {
+  if ((err as { code?: string } | null)?.code === 'search_aborted') {
+    // Its client went, or a newer request of theirs displaced it.
+    if (!res.writableEnded && !gone.aborted) res.status(503).json({ error: 'search superseded' });
+    return true;
+  }
+  const refused = searchErrorResponse(err);
+  if (!refused) return false;
+  res.status(refused.status).json({ error: refused.error });
+  return true;
 }
