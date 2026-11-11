@@ -524,7 +524,7 @@ describe('feed plan grid', () => {
       let expected: { driver: RegExp; seeks: number; halves: number | null; second: RegExp };
       if (opts.query) {
         // FTS streams, the cursor as a native rowid range (`<`). `M3` is a
-        // MATCH on the three-column index (text, buffer_id, network_id).
+        // MATCH on the three-column index (text, buffer, network).
         expected = {
           driver: new RegExp(
             `SCAN messages_fts VIRTUAL TABLE INDEX \\d+:M3${opts.before ? '<' : ''}(?: |$)`,
@@ -570,8 +570,8 @@ describe('feed plan grid', () => {
       // buffers, else the caller's networks. No plan line shows a missing
       // scope term, and no result does either — only the cost.
       const scope = opts.target
-        ? `buffer_id:\\("\\d+"${buffers > 1 ? ' OR "\\d+"' : ''}\\)`
-        : `network_id:\\("\\d+"${opts.networkId ? '' : ' OR "\\d+"'}\\)`;
+        ? `buffer:\\("buf\\d+"${buffers > 1 ? ' OR "buf\\d+"' : ''}\\)`
+        : `network:\\("net\\d+"${opts.networkId ? '' : ' OR "net\\d+"'}\\)`;
       const wanted = opts.query ? new RegExp(`^text:\\("hello"\\) AND ${scope}$`) : /^none$/;
       const matchParam =
         built.params.find((p) => typeof p === 'string' && p.startsWith('text:')) ?? 'none';

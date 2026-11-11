@@ -162,12 +162,13 @@ describe('updates that DO change indexed columns', () => {
   });
 });
 
-// The scope columns (#1302): buffer_id and network_id are indexed as terms, so
+// The scope columns (#1302): each row's buffer and network are indexed as
+// terms (`buf<id>`, `net<id>`), so
 // a search asks for the word and where to look in one MATCH. Anything that
 // moves a row between buffers has to move its index entry with it.
 describe('the scope columns', () => {
   const inBuffer = (word: string, bufferId: number) =>
-    ftsMatches(`text:("${word}") AND buffer_id:("${bufferId}")`);
+    ftsMatches(`text:("${word}") AND buffer:("buf${bufferId}")`);
   const bufferOf = (id: number) =>
     (db.prepare(`SELECT buffer_id FROM messages WHERE id = ?`).get(id) as { buffer_id: number })
       .buffer_id;
@@ -177,8 +178,8 @@ describe('the scope columns', () => {
     const b = add('#scope-b', 'gurnard two');
     expect(inBuffer('gurnard', bufferOf(a))).toEqual([a]);
     expect(inBuffer('gurnard', bufferOf(b))).toEqual([b]);
-    expect(ftsMatches(`text:("gurnard") AND network_id:("${networkId}")`)).toEqual([a, b]);
-    expect(ftsMatches(`text:("gurnard") AND network_id:("${networkId + 1000}")`)).toEqual([]);
+    expect(ftsMatches(`text:("gurnard") AND network:("net${networkId}")`)).toEqual([a, b]);
+    expect(ftsMatches(`text:("gurnard") AND network:("net${networkId + 1000}")`)).toEqual([]);
   });
 
   it('follows a row moved to another buffer (a buffer merge)', () => {
@@ -199,22 +200,29 @@ describe('the scope columns', () => {
     integrityCheck();
   });
 
-  it('never matches a search term against an id', async () => {
+  it('never matches a search term against a scope term', async () => {
     const { searchMessages } = await import('./messages.js');
     const user = (
-      db.prepare(`SELECT user_id FROM networks WHERE id = ?`).get(networkId) as {
-        user_id: number;
-      }
+      db.prepare(`SELECT user_id FROM networks WHERE id = ?`).get(networkId) as { user_id: number }
     ).user_id;
     const id = add('#ids', 'plain sprat');
-    // The row's own buffer and network ids, as search words: they are terms
-    // in the index, and must not be reachable as text.
-    for (const word of [String(bufferOf(id)), String(networkId)]) {
+    // The row's own scope terms, as search words: they are in the index, and
+    // must not be reachable as text.
+    for (const word of [`buf${bufferOf(id)}`, `net${networkId}`]) {
       expect(searchMessages(user, { query: word }).map((m) => m.id)).not.toContain(id);
     }
-    const numbered = add('#ids', `room ${bufferOf(id)} is free`);
-    expect(searchMessages(user, { query: String(bufferOf(id)) }).map((m) => m.id)).toContain(
-      numbered,
-    );
+    // Typed in chat, the same word is text like any other.
+    const typed = add('#ids', `see buf${bufferOf(id)} for details`);
+    expect(searchMessages(user, { query: `buf${bufferOf(id)}` }).map((m) => m.id)).toEqual([typed]);
+  });
+
+  it('drops a NUL from the query instead of failing on it', async () => {
+    const { searchMessages } = await import('./messages.js');
+    const user = (
+      db.prepare(`SELECT user_id FROM networks WHERE id = ?`).get(networkId) as { user_id: number }
+    ).user_id;
+    const id = add('#nul', 'halibut steak');
+    expect(searchMessages(user, { query: 'hali\0but' }).map((m) => m.id)).toEqual([id]);
+    expect(searchMessages(user, { query: '\0' })).toEqual([]);
   });
 });

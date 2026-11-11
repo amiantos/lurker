@@ -2173,9 +2173,11 @@ export function countHighlightsNewer(networkId: number, target: string, afterId:
 // Turn a free-text query into an FTS5 MATCH string. Each whitespace-separated
 // term is wrapped in double quotes (embedded quotes doubled to escape them),
 // which neutralizes FTS5 operator characters in user input and ANDs the terms
-// together implicitly.
+// together implicitly. NULs are dropped: FTS5 reads one as the end of the
+// string and rejects the query as unterminated.
 function toFtsMatch(text: string): string {
   return text
+    .replace(/\0/g, '')
     .split(/\s+/)
     .filter(Boolean)
     .map((t) => `"${t.replace(/"/g, '""')}"`)
@@ -2297,9 +2299,9 @@ export function searchMessagesSql(
 
   if (hasText) {
     // The word AND where to look, in one MATCH (#1302). The index carries
-    // buffer_id and network_id as terms beside the text (ensureMessagesFts,
-    // db/index.ts), so FTS5 intersects the posting lists and only ever hands
-    // back rows inside the scope: in:'s buffers when given, else the caller's
+    // each row's buffer and network as terms beside the text, `buf<id>` and
+    // `net<id>` (MESSAGES_FTS_OBJECTS, db/index.ts), so FTS5 intersects the
+    // posting lists and only ever hands back rows inside the scope: in:'s buffers when given, else the caller's
     // networks (one, with on:). Asked for the word alone, it handed back
     // every hit on the INSTANCE, and the checks below threw the rest away
     // after a table fetch each — minutes of cold reads for a word common
@@ -2315,13 +2317,14 @@ export function searchMessagesSql(
     // find, and is answered here. Left to run on the word alone it would walk
     // every hit on the instance to return none of them.
     //
-    // `text:` always, or a search for "33" would match buffer 33's every row.
+    // `text:` always, or a search for "buf33" would match buffer 33's every row.
     //
     // FTS5's MATCH operator must reference the virtual table by its real name,
     // not an alias — `alias MATCH ?` parses `alias` as a column.
     const scopeIds = bufferIds ?? nets;
     if (scopeIds.length === 0) return null;
-    const scope = `${bufferIds ? 'buffer_id' : 'network_id'}:(${scopeIds.map((id) => `"${id}"`).join(' OR ')})`;
+    const [column, prefix] = bufferIds ? ['buffer', 'buf'] : ['network', 'net'];
+    const scope = `${column}:(${scopeIds.map((id) => `"${prefix}${id}"`).join(' OR ')})`;
     from += ' JOIN messages_fts ON messages_fts.rowid = m.id';
     where.push('messages_fts MATCH ?');
     params.push(`text:(${match}) AND ${scope}`);
