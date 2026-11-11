@@ -523,6 +523,36 @@ const CTCP_OUTSTANDING_MAX_KEYS = 200;
 // and swallowed. Generous — IRC error numerics come back in well under a second.
 const SEND_REJECTION_ATTRIBUTION_MS = 15000;
 
+// The least time between two typing notifications to one target (#1301). The
+// typing spec's rule ("any typing notification is not sent within 3 seconds of
+// another one for a given target"), and WeeChat's (irc-typing.c).
+export const TYPING_MIN_GAP_MS = 3000;
+// How long a target's record is kept with nothing owed and nothing said. Past
+// it nobody still shows us typing (the spec drops an `active` after 6 s and a
+// `paused` after 30 s), so a `done` would have no news and the gap is long over.
+export const TYPING_FORGET_MS = 30_000;
+export const TYPING_STATES: ReadonlySet<string> = new Set(['active', 'paused', 'done']);
+
+/** What we have told one target about our typing, and what we still owe it. */
+interface TypingOut {
+  target: string;
+  /** The newest state a client reported and no line has carried yet. */
+  wanted: string | null;
+  /** The target was last told `active` or `paused`: a `done` has news for it. */
+  told: boolean;
+  /** When the last notification went, on the send queue's (monotonic) clock. */
+  sentAt: number;
+  /** Waiting out the gap. */
+  gapTimer: ReturnType<typeof setTimeout> | null;
+  /** Nothing owed: the record goes when this fires. */
+  forgetTimer: ReturnType<typeof setTimeout> | null;
+  /** A notification is in the send queue; it carries `wanted` as it goes. */
+  queued: boolean;
+  /** The state that queued notification was made with, once it has been
+   *  made; null again when a message of ours overtook it. */
+  sending: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Auto-reconnect policy (see IrcConnection.scheduleReconnectIfWarranted)
 // ---------------------------------------------------------------------------
@@ -1212,6 +1242,9 @@ export class IrcConnection {
   // permission may have changed: on RPL_LOGGEDIN, on (re)registration, and when
   // we (re)join the channel — so a /part + /join or a reconnect resumes typing.
   unsendableTargets: Set<string>;
+  // Our typing notifications, per target (folded by the network's
+  // casemapping): see sendTyping.
+  private typingOut = new Map<string, TypingOut>();
   // RPL_LOGGEDIN (900) seen on this connection — the server considers us
   // identified to services. Only used to decide whether a join rejection is
   // durable (see stopAutojoining); the send-permission logic re-probes instead
@@ -1538,7 +1571,7 @@ export class IrcConnection {
       // handler runs before the framework sets its flag, and what the handler
       // writes (the connect commands, the autojoin, MODE, AWAY) must queue
       // and be charged, not bypass as the registration burst does.
-      ready: () => connection.connected && (!!connection.registered || this.sawRegistered),
+      ready: () => this.wireReady(),
       // Through an engine restore the replayed 001 registers the Client while
       // the transport still swallows registration commands; a held NICK keeps
       // waiting until the 'restored' phase. Only that kind: the replay's own
@@ -2756,7 +2789,10 @@ export class IrcConnection {
       // only our link to it is gone (engineSocketAlive): then the lines wait
       // for the re-attach, and a redial drops them (onEnginePhase 'dialing').
       this.sawRegistered = false;
-      if (!this.engineSocketAlive) this.sendPacer.drop();
+      if (!this.engineSocketAlive) {
+        this.sendPacer.drop();
+        this.clearTyping();
+      }
       this.stopLagPinger();
       this.cancelPendingConnectCommands();
       this.resetRestoreState();
@@ -7549,6 +7585,7 @@ export class IrcConnection {
         this.resetAcceptState();
         // A new socket: what waited was meant for the one that died.
         this.sendPacer.drop();
+        this.clearTyping();
         // A new socket. Anything we still think we are in belonged to one that
         // died while our link to the engine was down, so 'socket close' never
         // saw it go.
@@ -8153,6 +8190,7 @@ export class IrcConnection {
     // never comes (#1149). Not flushed: the engine would write it all at
     // once, which is the flood the queue exists to prevent.
     this.sendPacer.drop();
+    this.clearTyping();
     // The rows are this process's to write; the 'close' this brings marks
     // nobody present, and its write-behind may not get to run.
     this.flushMetadataCache();
@@ -8268,6 +8306,7 @@ export class IrcConnection {
     hooks?: SendHooks,
     armDcc = false,
   ): WriteOptions {
+    this.typingOver(target, false);
     return {
       onSent: () => {
         this.noteUserSend(target);
@@ -8302,6 +8341,7 @@ export class IrcConnection {
     const uid = this.network.user_id;
     const nid = this.network.id;
     const ctx = contextKey(target, '');
+    this.typingOver(target, false);
     // Said once: by the encrypt step, or by the drop.
     let reported = false;
     const notSent = (why: string) => {
@@ -12331,6 +12371,7 @@ export class IrcConnection {
   ): string[] {
     if (!batches) return [];
     if (isDmTargetName(target)) this.trackDmPeer(target);
+    this.typingOver(target, false);
     const echoes: string[] = [];
     let batchTags = tags ? IRC.MessageTags.encode(tags) : '';
     // eslint-disable-next-line no-control-regex
@@ -12434,6 +12475,7 @@ export class IrcConnection {
       if (now - seen.at > SEND_REJECTION_ATTRIBUTION_MS) this.lastUserSendAt.delete(key);
     }
     this.lastUserSendAt.set(target.toLowerCase(), { at: now, conversational });
+    if (conversational) this.typingOver(target, true);
     // A direct message supersedes a channel command's claim on the next 401
     // (#434): messaging someone you just tried to kick means that 401 answers
     // the message, not the kick. say/action/notice all funnel through here, and
@@ -12833,30 +12875,214 @@ export class IrcConnection {
     return true;
   }
 
+  // Whether a line written now is queued for the wire (the send queue's
+  // `ready`): registered by the framework's flag, or by our own.
+  private wireReady(): boolean {
+    const connection = this.client.connection;
+    return !!connection.connected && (!!connection.registered || this.sawRegistered);
+  }
+
+  // Tell `target` our typing state — at most once per TYPING_MIN_GAP_MS (#1301).
+  //
+  // A client reports every change as it happens: `active` on the first key,
+  // `done` when the field empties, `paused` three seconds after the last key.
+  // Sent as reported, typing a letter and erasing it was two lines, and a
+  // thoughtful sentence (a few words, a pause, a few more) an `active` and a
+  // `paused` every three seconds: 4 s of the server's flood clock per 3 s of
+  // real time, so the budget ran out on typing alone and the message itself
+  // waited ("N waiting" with nothing going on). A stalled event loop was the
+  // same pileup at once: every report it held arrived in one tick.
+  //
+  // So the newest state is kept per target and one line carries it when the
+  // gap allows; states overtaken meanwhile are never sent. A `done` to a
+  // target that was never told we were typing is not sent at all. The line is
+  // made when its turn in the queue comes and can be withdrawn until it is on
+  // the wire, so it never says something stale: a message of ours to the
+  // target takes back whatever typing was still owed, at no cost to the
+  // message. WeeChat keeps the same gap (one status per target per 3 s,
+  // irc-typing.c); it is on the server so the web app, both mobile apps and a
+  // bouncer client all get it.
   sendTyping(target: string, state: string): void {
+    if (!TYPING_STATES.has(state)) return;
+    // The line is written as text, to one target: a target that would not be
+    // one word is not a target, and a list of them would be several under one
+    // key.
+    // eslint-disable-next-line no-control-regex
+    if (!target || /[\s\u0000,]/.test(target) || target.startsWith(':')) return;
+    const key = foldTargetFor(this.network.id, target);
+    let out = this.typingOut.get(key);
+    if (!this.mayType(target)) {
+      // Nor may what an earlier report left owed: it would go, stale, when
+      // the gate opens again.
+      if (out) out.wanted = null;
+      return;
+    }
+    if (!out) {
+      out = {
+        target,
+        wanted: null,
+        told: false,
+        sentAt: -Infinity,
+        gapTimer: null,
+        forgetTimer: null,
+        queued: false,
+        sending: null,
+      };
+      this.typingOut.set(key, out);
+    }
+    out.target = target;
+    out.wanted = state;
+    this.flushTyping(key, out);
+  }
+
+  // Whether a typing notification to `target` may go at all.
+  private mayType(target: string): boolean {
+    // Only onto a registered connection. Before registration (a reconnect's
+    // backoff, an engine link that is down) the send queue passes a line
+    // straight to a socket that is not there, and reports it sent: the record
+    // would say a target was told that never was.
+    if (!this.wireReady()) return false;
     // +typing is a client-only tag carried over TAGMSG, which only exists when
     // the server negotiated the message-tags capability. Networks that don't
     // speak it (DALnet and other non-IRCv3 servers) answer every TAGMSG with
     // ERR_UNKNOWNCOMMAND, which our 'irc error' handler surfaces as a toast —
     // so an ungated send spams an error on each keystroke. Typing indicators
     // are a best-effort nicety; no cap, no send.
-    if (!this.supportsMessageTags()) return;
+    if (!this.supportsMessageTags()) return false;
     // Suppress typing TAGMSGs to a target the server has refused our messages to
     // (a +R/+M channel needing a registered nick to speak, a +R user, ...).
     // Every typing TAGMSG to it bounces as another send rejection; we learned it
     // can't be spoken to from the first bounce, so stop pinging it until that
     // clears on (re)login (#283). Same spirit as the offline-peer guard below.
-    if (this.unsendableTargets.has(target.toLowerCase())) return;
-    // Suppress typing TAGMSGs to peers we know are offline — otherwise each
-    // keystroke generates an ERR_NOSUCHNICK reply that lands as a persisted
-    // error in the DM buffer (and pings push subscribers). The user finds
-    // out the peer is unreachable the moment they hit send; their typing
-    // doesn't need to keep re-confirming it.
+    if (this.unsendableTargets.has(target.toLowerCase())) return false;
     if (isDmTargetName(target)) {
+      // Suppress typing TAGMSGs to peers we know are offline — otherwise each
+      // keystroke generates an ERR_NOSUCHNICK reply that lands as a persisted
+      // error in the DM buffer (and pings push subscribers). The user finds
+      // out the peer is unreachable the moment they hit send; their typing
+      // doesn't need to keep re-confirming it.
       const peer = getPeerPresence(this.network.id, target);
-      if (peer?.state === 'offline') return;
+      if (peer?.state === 'offline') return false;
+    } else if (isChannelTarget(target) && !this.isChannelJoined(target)) {
+      // Nor to a channel we are not in: a `done` still waiting out its gap
+      // when the user parts would follow the PART out and bounce.
+      return false;
     }
-    this.client.tagmsg(target, { '+typing': state });
+    return true;
+  }
+
+  // Whether `out` owes its target a line.
+  private typingOwed(out: TypingOut): boolean {
+    return out.wanted !== null && (out.wanted !== 'done' || out.told);
+  }
+
+  // Queue the one line that carries `out.wanted`, once the gap since the last
+  // has passed. Nothing while one is queued already: that one carries the
+  // newest state when it goes, and asks again after.
+  private flushTyping(key: string, out: TypingOut): void {
+    if (out.queued || out.gapTimer) return;
+    if (out.forgetTimer) clearTimeout(out.forgetTimer);
+    out.forgetTimer = null;
+    if (!this.typingOwed(out) || !this.mayType(out.target)) {
+      out.wanted = null;
+      // Kept a while, not dropped here: its `sentAt` is the gap the next
+      // report must keep, and `told` what a later `done` needs to know.
+      out.forgetTimer = setTimeout(() => {
+        out.forgetTimer = null;
+        if (
+          this.typingOut.get(key) === out &&
+          !out.queued &&
+          !out.gapTimer &&
+          !this.typingOwed(out)
+        )
+          this.typingOut.delete(key);
+      }, TYPING_FORGET_MS);
+      out.forgetTimer.unref?.();
+      return;
+    }
+    const wait = out.sentAt + TYPING_MIN_GAP_MS - performance.now();
+    if (wait > 0) {
+      out.gapTimer = setTimeout(() => {
+        out.gapTimer = null;
+        this.flushTyping(key, out);
+      }, wait);
+      return;
+    }
+    out.queued = true;
+    out.sending = null;
+    let built = false;
+    // The queued item is over without a line: see what is owed now.
+    const over = () => {
+      out.queued = false;
+      out.sending = null;
+      this.flushTyping(key, out);
+    };
+    this.sendPacer.write(
+      () => {
+        // Its turn: whatever is wanted now, if that is still worth a line.
+        built = true;
+        const state = out.wanted;
+        out.wanted = null;
+        if (state === null || (state === 'done' && !out.told) || !this.mayType(out.target)) {
+          over();
+          return null;
+        }
+        out.sending = state;
+        return `@+typing=${state} TAGMSG ${out.target}`;
+      },
+      {
+        // Asked again as the made line goes: a long target's line can wait
+        // for the clock after it was made, and a message of ours sent
+        // meanwhile takes it back (typingOver).
+        live: () => {
+          if (!built || (out.sending !== null && this.mayType(out.target))) return true;
+          over();
+          return false;
+        },
+        onSent: (at) => {
+          out.sentAt = at;
+          out.told = out.sending !== 'done';
+          // A state reported while this one waited its turn.
+          over();
+        },
+        onDropped: () => {
+          out.queued = false;
+          out.sending = null;
+          out.wanted = null;
+        },
+      },
+    );
+  }
+
+  // A message of ours to `target` ends our typing for whoever reads it (the
+  // spec's first way a notification ends), and the clients send no `done`
+  // with one. When the message is written, a state still owed is about the
+  // text that just became that message, and is taken back, a line already
+  // made for it included: behind a backlog it would follow the message out
+  // and say we were typing it. When the message has `sent`, the target has
+  // been told: a later `done` has no news for it.
+  private typingOver(target: string, sent: boolean): void {
+    const out = this.typingOut.get(foldTargetFor(this.network.id, target));
+    if (!out) return;
+    if (sent) {
+      out.told = false;
+    } else {
+      out.wanted = null;
+      out.sending = null;
+    }
+  }
+
+  // The socket is gone: nobody on the next one has been told anything.
+  private clearTyping(): void {
+    for (const out of this.typingOut.values()) {
+      if (out.gapTimer) clearTimeout(out.gapTimer);
+      if (out.forgetTimer) clearTimeout(out.forgetTimer);
+      out.gapTimer = null;
+      out.forgetTimer = null;
+      out.wanted = null;
+      out.sending = null;
+    }
+    this.typingOut.clear();
   }
 
   // Mirror this network's self-presence row onto the connection. Called by
@@ -13124,6 +13350,7 @@ export class IrcConnection {
     // Before the disposed flag: a queued user line is reported as not sent,
     // which publish() refuses once the connection counts as gone.
     this.sendPacer.dispose();
+    this.clearTyping();
     this.flushMetadataCache();
     this.disposed = true;
     this.clearReconnectTimer();

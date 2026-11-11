@@ -10,12 +10,14 @@
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { IrcConnection } from './ircConnection.js';
+import { IrcConnection, TYPING_FORGET_MS, TYPING_MIN_GAP_MS } from './ircConnection.js';
 import { BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 import type { ReplyClient } from './replyRouter.js';
 import { e2eManager } from './e2e/manager.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import db from '../db/index.js';
+import { invalidateCasemappingCache } from '../db/buffers.js';
 
 beforeAll(() => {
   createUser('queue-alice'); // id 1
@@ -790,6 +792,271 @@ describe('flood protection off (#1193)', () => {
     expect(lines).toHaveLength(5);
     vi.advanceTimersByTime(2000);
     expect(lines).toHaveLength(6);
+    conn.dispose();
+  });
+});
+
+describe('typing notifications (#1301)', () => {
+  // A registered connection that speaks message-tags, in #c and #d, its
+  // budget unspent.
+  function typist(join = ['#c', '#d']): Wire & { typing(): string[] } {
+    const wire = backlog({ join });
+    (wire.conn.client as unknown as { network: { cap: { enabled: string[] } } }).network = {
+      cap: { enabled: ['message-tags'] },
+    };
+    vi.advanceTimersByTime(BURST_BUDGET_MS);
+    wire.lines.length = 0;
+    return { ...wire, typing: () => wire.lines.filter((l) => l.includes('TAGMSG')) };
+  }
+
+  it('typing a letter and erasing it, over and over, sends one line and holds nothing up', () => {
+    const { conn, lines, typing, published } = typist();
+    for (let i = 0; i < 20; i++) {
+      conn.sendTyping('#c', 'active');
+      conn.sendTyping('#c', 'done');
+    }
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c']);
+    // The message goes at once: nothing waits ahead of it.
+    conn.say('#c', 'hello');
+    expect(lines.at(-1)).toBe('PRIVMSG #c :hello');
+    // The message ended the typing for its readers; no `done` follows it.
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 3);
+    expect(typing()).toHaveLength(1);
+    expect(published.filter((e) => e.type === 'send-queue' && e.waiting)).toEqual([]);
+    conn.dispose();
+  });
+
+  it('carries the newest state once the gap has passed, and only that one', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'done');
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'done');
+    expect(typing()).toHaveLength(1);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS - 1);
+    expect(typing()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c', '@+typing=done TAGMSG #c']);
+    // Nothing further is owed.
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 3);
+    expect(typing()).toHaveLength(2);
+    conn.dispose();
+  });
+
+  it('keeps the gap after a done: typing and erasing at leisure is one line per gap', () => {
+    const { conn, lines, typing } = typist();
+    // A word, erased a second later, the next begun a tenth of a second
+    // after the `done` went: for a minute.
+    conn.sendTyping('#c', 'active');
+    for (let t = 0; t < 60_000; t += 3100) {
+      vi.advanceTimersByTime(1000);
+      conn.sendTyping('#c', 'done');
+      vi.advanceTimersByTime(2100);
+      conn.sendTyping('#c', 'active');
+    }
+    const sent = typing();
+    expect(sent.length).toBeLessThanOrEqual(22);
+    // No two closer than the gap would allow in a minute, and the message
+    // typed at the end of it goes at once.
+    const before = lines.length;
+    conn.say('#c', 'one');
+    conn.say('#c', 'two');
+    conn.say('#c', 'three');
+    expect(lines.slice(before)).toEqual([
+      'PRIVMSG #c :one',
+      'PRIVMSG #c :two',
+      'PRIVMSG #c :three',
+    ]);
+    conn.dispose();
+  });
+
+  it('an active right after a done was sent still waits out the gap', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'done');
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
+    expect(typing()).toHaveLength(2);
+    conn.sendTyping('#c', 'active');
+    expect(typing()).toHaveLength(2);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS - 1);
+    expect(typing()).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(typing()).toHaveLength(3);
+    conn.dispose();
+  });
+
+  it('never sends a done to a target that was not told we were typing', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'done');
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+    expect(typing()).toEqual([]);
+    conn.dispose();
+  });
+
+  it('keeps each target to its own gap', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#d', 'active');
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c', '@+typing=active TAGMSG #d']);
+    conn.dispose();
+  });
+
+  it('keeps one target to one gap under every spelling the network folds together', () => {
+    // An rfc1459 network: [ ] fold to { }.
+    db.prepare('UPDATE networks SET casemapping = ? WHERE id = 1').run('rfc1459');
+    invalidateCasemappingCache(1);
+    try {
+      const { conn, lines, typing } = typist(['#c', '#[x]']);
+      conn.sendTyping('#[x]', 'active');
+      conn.sendTyping('#{X}', 'paused');
+      expect(typing()).toEqual(['@+typing=active TAGMSG #[x]']);
+      // And a message under one spelling takes back the typing owed under
+      // the other.
+      conn.say('#[x]', 'hello');
+      vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+      expect(typing()).toHaveLength(1);
+      expect(lines.at(-1)).toBe('PRIVMSG #[x] :hello');
+      conn.dispose();
+    } finally {
+      db.prepare('UPDATE networks SET casemapping = NULL WHERE id = 1').run();
+      invalidateCasemappingCache(1);
+    }
+  });
+
+  it('a minute of typing in fits and starts leaves the budget for the message', () => {
+    const { conn, lines, typing } = typist();
+    // A few keys, a three-second pause, a few more: the web client reports
+    // `active` at the first key and `paused` three seconds after the last.
+    for (let i = 0; i < 20; i++) {
+      conn.sendTyping('#c', 'active');
+      vi.advanceTimersByTime(3000);
+      conn.sendTyping('#c', 'paused');
+      vi.advanceTimersByTime(100);
+    }
+    // One line per gap at most (as reported: 40 lines in 62 s).
+    expect(typing().length).toBeLessThanOrEqual(21);
+    const before = lines.length;
+    conn.say('#c', 'one');
+    conn.say('#c', 'two');
+    conn.say('#c', 'three');
+    expect(lines.slice(before)).toEqual([
+      'PRIVMSG #c :one',
+      'PRIVMSG #c :two',
+      'PRIVMSG #c :three',
+    ]);
+    conn.dispose();
+  });
+
+  it('behind a backlog, the message takes back the typing queued ahead of it, at no cost', () => {
+    const { conn, lines, typing } = typist();
+    for (let i = 0; i < 5; i++) conn.say('#fill', `line ${i}`);
+    conn.sendTyping('#c', 'active');
+    expect(typing()).toEqual([]);
+    conn.say('#c', 'hello');
+    // The message goes when the first line would have: the typing ahead of
+    // it had nothing left to say, and cost nothing.
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :hello');
+    vi.advanceTimersByTime(BURST_BUDGET_MS);
+    expect(typing()).toEqual([]);
+    conn.dispose();
+  });
+
+  it('takes back a line already made, when the message is written while it waits for the clock', () => {
+    // A long channel name: its line costs 3 s, so it is made when 2 s would
+    // fit and then waits a second more.
+    const long = `#${'x'.repeat(90)}`;
+    const { conn, lines, typing } = typist(['#c', long]);
+    for (let i = 0; i < 5; i++) conn.say('#fill', `line ${i}`);
+    conn.sendTyping(long, 'active');
+    vi.advanceTimersByTime(2000);
+    expect(typing()).toEqual([]);
+    conn.say(long, 'hello');
+    vi.advanceTimersByTime(BURST_BUDGET_MS);
+    expect(typing()).toEqual([]);
+    expect(lines.at(-1)).toBe(`PRIVMSG ${long} :hello`);
+    conn.dispose();
+  });
+
+  it('a burst of reports arriving at once (a stalled event loop) is one line', () => {
+    const { conn, typing } = typist();
+    for (const state of ['active', 'paused', 'active', 'paused', 'active', 'paused', 'active'])
+      conn.sendTyping('nick', state);
+    expect(typing()).toEqual(['@+typing=active TAGMSG nick']);
+    // The newest report was another `active`: sent when the gap allows, which
+    // keeps the reader's six-second indicator alive.
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
+    expect(typing()).toHaveLength(2);
+    conn.dispose();
+  });
+
+  it('a done still waiting out its gap is not sent to a channel we have left', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'done');
+    conn.client.emit('part', { channel: '#c', nick: 'alice' });
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c']);
+    conn.dispose();
+  });
+
+  it('sends nothing, and records nothing as told, while the connection is not registered', () => {
+    const { conn, typing, registered } = typist();
+    registered(false);
+    conn.sendTyping('#c', 'active');
+    registered(true);
+    // Nobody was told: a `done` now has no news.
+    conn.sendTyping('#c', 'done');
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+    expect(typing()).toEqual([]);
+    conn.dispose();
+  });
+
+  it('a state waiting out its gap is dropped if the link goes meanwhile, not sent into it', () => {
+    const { conn, typing, registered } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'paused');
+    registered(false);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
+    registered(true);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c']);
+    conn.dispose();
+  });
+
+  it('a report the gate refuses takes back the state an earlier report left owed', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'paused');
+    // The server refuses our lines to #c; the composer is then emptied.
+    conn.unsendableTargets.add('#c');
+    conn.sendTyping('#c', 'done');
+    conn.unsendableTargets.delete('#c');
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c']);
+    conn.dispose();
+  });
+
+  it('forgets a target once nothing has been owed it for a while', () => {
+    const { conn } = typist();
+    const records = () => (conn as unknown as { typingOut: Map<string, unknown> }).typingOut.size;
+    conn.sendTyping('#c', 'active');
+    conn.say('#c', 'hello');
+    conn.sendTyping('#d', 'active');
+    conn.sendTyping('#d', 'done');
+    expect(records()).toBe(2);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS + TYPING_FORGET_MS);
+    expect(records()).toBe(0);
+    conn.dispose();
+  });
+
+  it('refuses a target that is not one target', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c\r\nQUIT', 'active');
+    conn.sendTyping('#c #d', 'active');
+    conn.sendTyping('#c,#d', 'active');
+    conn.sendTyping('#c', 'bogus');
+    expect(typing()).toEqual([]);
     conn.dispose();
   });
 });
