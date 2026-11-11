@@ -2173,9 +2173,11 @@ export function countHighlightsNewer(networkId: number, target: string, afterId:
 // Turn a free-text query into an FTS5 MATCH string. Each whitespace-separated
 // term is wrapped in double quotes (embedded quotes doubled to escape them),
 // which neutralizes FTS5 operator characters in user input and ANDs the terms
-// together implicitly.
+// together implicitly. NULs are dropped: FTS5 reads one as the end of the
+// string and rejects the query as unterminated.
 function toFtsMatch(text: string): string {
   return text
+    .replace(/\0/g, '')
     .split(/\s+/)
     .filter(Boolean)
     .map((t) => `"${t.replace(/"/g, '""')}"`)
@@ -2268,15 +2270,8 @@ export function searchMessagesSql(
   const params: (string | number)[] = [userId];
 
   const hasText = !!text;
-  if (text) {
-    const match = toFtsMatch(text);
-    if (!match) return null;
-    // FTS5's MATCH operator must reference the virtual table by its real name,
-    // not an alias — `alias MATCH ?` parses `alias` as a column.
-    from += ' JOIN messages_fts ON messages_fts.rowid = m.id';
-    where.push('messages_fts MATCH ?');
-    params.push(match);
-  }
+  const match = hasText ? toFtsMatch(text) : '';
+  if (hasText && !match) return null;
 
   // `in:` resolves through the registry once per candidate network — folds
   // are per-network (#707), so ONE folded string can't probe several
@@ -2301,6 +2296,39 @@ export function searchMessagesSql(
     bufferIds = [...bufferByNet.values()];
   }
   const nickFiltered = nickList.length > 0 || !!nick;
+
+  if (hasText) {
+    // The word AND where to look, in one MATCH (#1302). The index carries
+    // each row's buffer and network as terms beside the text, `buf<id>` and
+    // `net<id>` (MESSAGES_FTS_OBJECTS, db/index.ts), so FTS5 intersects the
+    // posting lists and only ever hands back rows inside the scope: in:'s buffers when given, else the caller's
+    // networks (one, with on:). Asked for the word alone, it handed back
+    // every hit on the INSTANCE, and the checks below threw the rest away
+    // after a table fetch each — minutes of cold reads for a word common
+    // elsewhere and rare here.
+    //
+    // This narrows the work; it is not the access boundary. `n.user_id = ?`
+    // and the row checks below still decide what the caller may see, so an
+    // index that had somehow fallen out of step could cost rows, never leak
+    // them.
+    //
+    // A scope that holds nothing — an on: that isn't the caller's network, an
+    // in: no network of theirs holds, no networks at all — has no rows to
+    // find, and is answered here. Left to run on the word alone it would walk
+    // every hit on the instance to return none of them.
+    //
+    // `text:` always, or a search for "buf33" would match buffer 33's every row.
+    //
+    // FTS5's MATCH operator must reference the virtual table by its real name,
+    // not an alias — `alias MATCH ?` parses `alias` as a column.
+    const scopeIds = bufferIds ?? nets;
+    if (scopeIds.length === 0) return null;
+    const [column, prefix] = bufferIds ? ['buffer', 'buf'] : ['network', 'net'];
+    const scope = `${column}:(${scopeIds.map((id) => `"${prefix}${id}"`).join(' OR ')})`;
+    from += ' JOIN messages_fts ON messages_fts.rowid = m.id';
+    where.push('messages_fts MATCH ?');
+    params.push(`text:(${match}) AND ${scope}`);
+  }
 
   // Which predicate DRIVES a filter-only search is decided here, not left to
   // the planner: this schema never runs ANALYZE (plans stay deterministic
