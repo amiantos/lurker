@@ -10,6 +10,7 @@
 // abandoned mid-walk.
 
 import Database from 'better-sqlite3';
+import { Worker } from 'node:worker_threads';
 
 interface Query {
   id: number;
@@ -29,6 +30,20 @@ const send = (reply: unknown) =>
   process.send!(reply, (err: Error | null) => {
     if (err) process.exit(0);
   });
+
+// If the server dies without a word (SIGKILL, a crash) while a statement
+// runs, this thread cannot notice: it is inside the statement, and 'disconnect'
+// waits for it. A second thread can. It watches for the parent to change (an
+// orphan is re-parented) and ends the process, statement and all. Plain
+// JavaScript, evaluated: a worker file would need the TypeScript loader.
+const watchdog = new Worker(
+  `const parent = process.ppid;
+   setInterval(() => {
+     if (process.ppid !== parent) process.kill(process.pid, 'SIGKILL');
+   }, 1000);`,
+  { eval: true },
+);
+watchdog.unref();
 
 const db = new Database(file, { readonly: true, fileMustExist: true });
 // A checkpoint or a migration can hold the file for a moment.

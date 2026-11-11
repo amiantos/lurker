@@ -133,6 +133,9 @@ import { timeSyncWork } from './syncWork.js';
 // WebSocket extended with per-socket bookkeeping fields.
 interface LurkerWebSocket extends WebSocket {
   userId?: number;
+  // Aborted when the socket closes: what a search asked over it stops on.
+  // Made by the first search (the deprecated `search` command).
+  gone?: AbortController;
   sinceId?: number;
   // Channels (`networkId:folded target`) this socket has been handed a `names`
   // for on hydration (lurker#1292) — see sendNames.
@@ -3006,8 +3009,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
 
     ws.on('pong', () => noteHeartbeatPong(ws, user.id));
 
-    ws.on('close', () => removeSocket(user.id, ws));
-    ws.on('error', () => removeSocket(user.id, ws));
+    ws.on('close', () => {
+      ws.gone?.abort();
+      removeSocket(user.id, ws);
+    });
+    ws.on('error', () => {
+      ws.gone?.abort();
+      removeSocket(user.id, ws);
+    });
   }
 
   // Wrapper around the (synchronous) snapshot builder. Two jobs: (1) time it,
@@ -4624,7 +4633,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const search = (): Promise<{ messages: WsPayload[]; hasMore: boolean }> =>
           callVerb(
             'search_messages',
-            { userId, scope: 'read-write', transport: 'ws' },
+            {
+              userId,
+              scope: 'read-write',
+              transport: 'ws',
+              signal: (ws.gone ??= new AbortController()).signal,
+            },
             {
               query: msg.query,
               networkId: msg.networkId || undefined,
@@ -4645,8 +4659,17 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           let result: { messages: WsPayload[]; hasMore: boolean };
           try {
             result = await search();
-          } catch (_) {
-            send(ws, { kind: 'error', text: 'search failed' });
+          } catch (err) {
+            // The socket closed under it: nobody to tell.
+            if (ws.gone?.signal.aborted) return;
+            // `token` and `code` are additive: which search, and why.
+            const code = (err as { code?: string } | null)?.code;
+            send(ws, {
+              kind: 'error',
+              text: code === 'search_timeout' ? 'search took too long' : 'search failed',
+              code: typeof code === 'string' && code.startsWith('search_') ? code : 'search_failed',
+              token: msg.token ?? null,
+            });
             return;
           }
           send(ws, {

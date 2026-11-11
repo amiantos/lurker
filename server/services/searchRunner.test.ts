@@ -12,7 +12,12 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { insertMessage, searchMessages } from '../db/messages.js';
+import { fork } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { DATABASE_FILE } from '../db/index.js';
 import {
+  MAX_WAITING,
+  MAX_WAITING_PER_OWNER,
   runSearchQuery,
   searchMessagesOffLoop,
   stopSearchRunner,
@@ -149,4 +154,115 @@ describe('runSearchQuery', () => {
     expect(await codeOf(runSearchQuery(`DELETE FROM messages`, []))).toBe('search_failed');
     expect(searchMessages(userId, { query: 'attachments' }).length).toBe(3);
   });
+});
+
+describe('sharing the one slot', () => {
+  // Hold the slot with a statement that never ends, and hand back what ends it.
+  function holdSlot(owner: number) {
+    const asker = new AbortController();
+    const held = codeOf(runSearchQuery(ENDLESS, [], { signal: asker.signal, owner }));
+    return async () => {
+      asker.abort();
+      await held;
+    };
+  }
+
+  it('serves the owner who has waited longest, not whoever asked most', async () => {
+    const release = holdSlot(1);
+    const order: string[] = [];
+    const ask = (owner: number, name: string) =>
+      runSearchQuery('SELECT 1', [], { owner }).then(() => order.push(name));
+    // Owner 1 asks three times before owner 2 asks once.
+    const asked = [ask(1, 'a1'), ask(1, 'a2'), ask(1, 'a3'), ask(2, 'b1')];
+    await release();
+    await Promise.all(asked);
+    // Owner 1 was served last (the held search): owner 2 goes first.
+    expect(order).toEqual(['b1', 'a1', 'a2', 'a3']);
+  });
+
+  it("a newer search displaces its owner's oldest waiting one past the per-owner bound", async () => {
+    const release = holdSlot(7);
+    const waiting = Array.from({ length: MAX_WAITING_PER_OWNER }, (_, i) =>
+      codeOf(runSearchQuery(`SELECT ${i} AS n`, [], { owner: 7 })),
+    );
+    const newest = runSearchQuery('SELECT 99 AS n', [], { owner: 7 });
+    // The oldest gave way at once; the rest still wait.
+    expect(await waiting[0]).toBe('search_aborted');
+    await release();
+    expect(await Promise.all(waiting.slice(1))).toEqual(waiting.slice(1).map(() => 'resolved'));
+    expect(await newest).toEqual([{ n: 99 }]);
+  });
+
+  it('refuses a search once too many wait in all', async () => {
+    const release = holdSlot(1);
+    // Each from its own owner, so none displaces another.
+    const waiting = Array.from({ length: MAX_WAITING }, (_, i) =>
+      codeOf(runSearchQuery('SELECT 1', [], { owner: 100 + i })),
+    );
+    expect(await codeOf(runSearchQuery('SELECT 1', [], { owner: 999 }))).toBe('search_busy');
+    await release();
+    expect(new Set(await Promise.all(waiting))).toEqual(new Set(['resolved']));
+  });
+
+  it('counts the wait toward the time limit: nobody waits longer than it for a turn', async () => {
+    process.env.LURKER_SEARCH_TIME_LIMIT_MS = '200';
+    // The holder is stopped at its own limit (200 ms). The one waiting behind
+    // it has a shorter one, and is told when that is up, without ever running.
+    const holder = codeOf(runSearchQuery(ENDLESS, [], { owner: 1 }));
+    process.env.LURKER_SEARCH_TIME_LIMIT_MS = '50';
+    const waiter = codeOf(runSearchQuery('SELECT 1', [], { owner: 2 }));
+    expect(await waiter).toBe('search_timeout');
+    expect(await holder).toBe('search_timeout');
+  });
+
+  it('a limit too large for a timer is clamped, not turned into no time at all', async () => {
+    process.env.LURKER_SEARCH_TIME_LIMIT_MS = '9999999999';
+    expect(await runSearchQuery('SELECT 5 AS five', [])).toEqual([{ five: 5 }]);
+  });
+
+  it('stopSearchRunner tells the running search and the waiting ones, and the next search still works', async () => {
+    const running = codeOf(runSearchQuery(ENDLESS, [], { owner: 1 }));
+    const waiting = codeOf(runSearchQuery('SELECT 1', [], { owner: 2 }));
+    stopSearchRunner();
+    expect(await waiting).toBe('search_aborted');
+    expect(await running).toBe('search_aborted');
+    expect(await runSearchQuery('SELECT 6 AS six', [])).toEqual([{ six: 6 }]);
+  });
+});
+
+describe('the search process', () => {
+  it('ends itself, mid-statement, when its parent dies without a word', async () => {
+    // A stand-in parent that forks the search process the way the runner
+    // does, starts a statement that never ends, and reports the child's pid.
+    const entry = fileURLToPath(new URL('../searchProcess.ts', import.meta.url));
+    const parent = fork(
+      '-e',
+      [
+        `const { fork } = require('node:child_process');
+         const child = fork(${JSON.stringify(entry)}, [${JSON.stringify(DATABASE_FILE)}]);
+         child.send({ id: 1, sql: ${JSON.stringify(ENDLESS)}, params: [] });
+         process.send(child.pid);
+         setInterval(() => {}, 1000);`,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    );
+    const pid = await new Promise<number>((resolve) => parent.once('message', resolve));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // Let the statement start, then kill the parent the way nothing can catch.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(alive()).toBe(true);
+    parent.kill('SIGKILL');
+    const deadline = Date.now() + 8000;
+    while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+    const survived = alive();
+    if (survived) process.kill(pid, 'SIGKILL');
+    expect(survived).toBe(false);
+  }, 15_000);
 });

@@ -115,12 +115,18 @@ router.post('/', (req: Request, res: Response) => {
         // A verb may answer later (get_mode_list waits for the server), so the
         // reply goes out when its result settles.
         const userId = req.user!.id;
+        // A caller that hangs up stops waiting, and a verb whose work can be
+        // abandoned (a search) stops with it.
+        const gone = new AbortController();
+        res.on('close', () => {
+          if (!res.writableEnded) gone.abort();
+        });
         void (async () => {
           let toolCallResult: ToolCallResult;
           try {
             const payload = await callVerb(
               name,
-              { userId, scope: apiToken.scope, transport: 'mcp' },
+              { userId, scope: apiToken.scope, transport: 'mcp', signal: gone.signal },
               args,
             );
             toolCallResult = toolResult(payload, false);

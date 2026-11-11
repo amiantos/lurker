@@ -5,6 +5,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { callVerb } from '../services/verbRegistry.js';
+import { goneSignal, sendFeedError } from './feedParams.js';
 // Registers the verb surface (idempotent — server.ts does the same import).
 // Without it, a test that mounts only this router would find no verbs.
 import '../services/verbs/index.js';
@@ -49,10 +50,7 @@ router.get('/', async (req: Request, res: Response) => {
   // half of the REST argument — it has no WS equivalent.
   if (req.destroyed) return;
   // And if it goes while the search waits or runs, the search stops with it.
-  const gone = new AbortController();
-  res.on('close', () => {
-    if (!res.writableEnded) gone.abort();
-  });
+  const gone = goneSignal(res);
 
   const rawLimit = Number(req.query.limit);
   const rawBefore = Number(req.query.before);
@@ -62,7 +60,7 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     result = (await callVerb(
       'search_messages',
-      { userId: req.user!.id, scope: 'read', transport: 'rest', signal: gone.signal },
+      { userId: req.user!.id, scope: 'read', transport: 'rest', signal: gone },
       {
         query: str(req.query.q),
         networkId: Number.isFinite(rawNetworkId) && rawNetworkId > 0 ? rawNetworkId : undefined,
@@ -75,12 +73,7 @@ router.get('/', async (req: Request, res: Response) => {
     )) as { messages: Array<{ id: number }>; hasMore: boolean };
   } catch (err) {
     const code = (err as { code?: string }).code;
-    // Nobody is listening.
-    if (code === 'search_aborted') return;
-    if (code === 'search_timeout') {
-      res.status(503).json({ error: 'search took too long' });
-      return;
-    }
+    if (sendFeedError(res, gone, err)) return;
     if (code === 'unknown_network') {
       res.status(404).json({ error: 'unknown network' });
       return;

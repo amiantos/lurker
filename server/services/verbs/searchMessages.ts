@@ -1,16 +1,9 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { registerVerb } from '../verbRegistry.js';
+import { registerVerb, type VerbContext } from '../verbRegistry.js';
 import { searchMessagesOffLoop } from '../searchRunner.js';
 import { decorateMessage } from '../wsHub.js';
-
-/** Authenticated caller context passed to every verb handler. */
-interface VerbContext {
-  userId: number;
-  scope: string;
-  signal?: AbortSignal;
-}
 
 registerVerb({
   name: 'search_messages',
