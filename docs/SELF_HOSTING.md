@@ -681,17 +681,6 @@ Without the overlay nothing changes: the app dials IRC itself exactly as before.
 
 **What still drops IRC:** an upgrade of the engine itself. Its image tag is `engine-1`, which only moves when a release changes the engine — rare, and called out in that release's notes. `pull` fetches nothing new for it otherwise, and `up -d` leaves it running. A release that needs `engine-2` is called out too, and for that one **stop the engine first** (`docker compose … stop lurker-engine`), then upgrade both: an old engine that refuses the new app would otherwise keep every session alive while the app dials its own and collides with its own ghosts. (The engine ends any session no app has claimed for an hour — `LURKER_ENGINE_ORPHAN_MS` — but that is a backstop, not a procedure.)
 
-**Forwarding ident queries through a local proxy.**
-The built-in identd accepts one optional [PROXY v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) TCP4 or TCP6 header from a loopback peer (`127.0.0.0/8`, including IPv4-mapped loopback, or `::1`).
-This trusts every process able to connect from loopback; private addresses and container bridge networks are not trusted.
-For example, a local proxy can listen publicly on TCP port 113 and forward to `LURKER_IDENTD_BIND=127.0.0.1`, `LURKER_IDENTD_PORT=10114`, with `LURKER_IDENTD_ENABLED=true`.
-The proxy must send the original source and destination IP addresses, followed by the ordinary ident query.
-The query's two IRC ports, not the header's callback ports, complete the four-tuple lookup; mismatched addresses still receive `NO-USER`.
-Plain ident queries continue to work.
-Malformed, repeated, oversized and unsupported headers (including `UNKNOWN` and PROXY v2) are rejected.
-The header requires CRLF and is limited to 107 bytes including CRLF; the ident line is limited to 100 bytes before its newline.
-When using the engine, forward to the engine's identd listener and put these settings on the engine process.
-
 **identd moves with the socket.** If you run the built-in identd (`LURKER_IDENTD_ENABLED`, and `LURKER_IDENTD_PORT`/`LURKER_IDENTD_BIND` if set) or the oidentd file (`LURKER_OIDENTD_FILE`), they now belong on the engine — it is the process holding the connection the network asks about; the app ignores them while an engine is configured, and the engine logs which mode it resolved at boot. Where they live decides what to do:
 
 - In `.env`: nothing to edit — the overlay forwards them to `lurker-engine`.
@@ -709,6 +698,8 @@ services:
 ```
 
 …and remove the same from `lurker` (if you used the DigitalOcean deploy's identd overlay, that is where its `113:113` lives). `LURKER_OUTGOING_ADDR` is the exception: it **stays on `lurker`** — the app reads it and tells the engine which address to bind — but the address must of course exist on the engine's host.
+
+**identd behind a local proxy.** If something else owns the public `:113` and forwards to Lurker (for example [ident-proxy](https://git.sr.ht/~emersion/ident-proxy)), the query arrives from loopback and the network's address is lost. Set `LURKER_IDENTD_PROXY_PROTOCOL=true` and have the proxy send a [PROXY v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) header. A loopback peer must then open with that header, and Lurker matches on the addresses it states; queries from anywhere else are answered as before. Leave it off unless everything that reaches the listener from loopback writes the header itself: a forwarder that passes bytes through would let anyone state those addresses. With an engine the setting belongs on the engine, and the overlay forwards it.
 
 **Turning it off again.** Stop the engine first, or the network briefly sees two of you; then bring the stack up _without_ the overlay — and if you added the `COMPOSE_FILE` line to `.env`, take the overlay out of it first, otherwise the plain command still loads it and simply restarts the engine you just stopped:
 

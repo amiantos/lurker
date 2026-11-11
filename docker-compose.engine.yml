@@ -94,6 +94,7 @@ services:
       - LURKER_IDENTD_ENABLED=${LURKER_IDENTD_ENABLED:-}
       - LURKER_IDENTD_PORT=${LURKER_IDENTD_PORT:-}
       - LURKER_IDENTD_BIND=${LURKER_IDENTD_BIND:-}
+      - LURKER_IDENTD_PROXY_PROTOCOL=${LURKER_IDENTD_PROXY_PROTOCOL:-}
       - LURKER_OIDENTD_FILE=${LURKER_OIDENTD_FILE:-}
       # How much of what arrives while the app is down the engine keeps, per
       # connection and in total (bytes, digits only, at least 65536). Past the

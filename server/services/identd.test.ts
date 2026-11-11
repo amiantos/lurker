@@ -11,6 +11,7 @@ import {
   getIdentdMetrics,
   resetIdentdMetrics,
   identdBindHost,
+  identdProxyProtocol,
 } from './identd.js';
 
 let server: net.Server;
@@ -390,7 +391,12 @@ describe('identdBindHost', () => {
   });
 });
 
-async function exchange(parts: string[], target = port, host = LOOPBACK): Promise<string> {
+// The PROXY describe's own listener: the header is opt-in, so the shared server
+// above (flag off) can't take one.
+let proxyServer: net.Server;
+let proxyPort: number;
+
+async function exchange(parts: string[], target = proxyPort, host = LOOPBACK): Promise<string> {
   const client = net.connect(target, host);
   let out = '';
   const result = new Promise<string>((resolve, reject) => {
@@ -413,6 +419,16 @@ describe('identd PROXY v1', () => {
   const header = `PROXY TCP4 ${source} ${destination} 12345 113\r\n`;
   const request = '43100, 6697\r\n';
   const handles: number[] = [];
+
+  beforeAll(async () => {
+    proxyServer = createIdentdServer({ graceMs: 150, graceStepMs: 30, proxyProtocol: true });
+    await new Promise<void>((resolve) => proxyServer.listen(0, LOOPBACK, resolve));
+    proxyPort = (proxyServer.address() as net.AddressInfo).port;
+  });
+
+  afterAll(() => {
+    proxyServer.close();
+  });
 
   function register(localAddress = destination, remoteAddress = source): void {
     handles.push(
@@ -458,7 +474,7 @@ describe('identd PROXY v1', () => {
 
   it.each(['::1', '::ffff:127.0.0.1'])('trusts the loopback peer %s', async (host) => {
     register();
-    const dual = createIdentdServer();
+    const dual = createIdentdServer({ proxyProtocol: true });
     await new Promise<void>((resolve) => dual.listen(0, '::', resolve));
     try {
       expect(
@@ -505,7 +521,6 @@ describe('identd PROXY v1', () => {
     ['scoped IPv6', 'PROXY TCP6 fe80::1%eth0 fe80::2 113 113\r\n'],
     ['oversized complete header', 'PROXY ' + 'x'.repeat(102) + '\r\n'],
     ['oversized incomplete header', 'PROXY ' + 'x'.repeat(102)],
-    ['second header', header + header],
   ])('rejects %s', async (_name, line) => {
     register();
     const before = getIdentdMetrics();
@@ -516,11 +531,65 @@ describe('identd PROXY v1', () => {
     expect(after.noData).toBe(before.noData);
   });
 
-  it.each(['', header])('bounds the ident line after %j', async (prefix) => {
-    for (const ending of ['', '\r\n']) {
-      const before = getIdentdMetrics().invalid;
-      expect(await exchange([prefix + '43100, 6697' + ' '.repeat(100) + ending])).toBe('');
-      expect(getIdentdMetrics().invalid).toBe(before + 1);
+  it('reads a second header as a malformed query', async () => {
+    register();
+    const before = getIdentdMetrics();
+    expect(await exchange([header + header + request])).toContain('ERROR : INVALID-PORT');
+    expect(getIdentdMetrics().invalid).toBe(before.invalid + 1);
+    expect(getIdentdMetrics().queries).toBe(before.queries);
+  });
+
+  it('bounds an unterminated ident line after the header', async () => {
+    const before = getIdentdMetrics().invalid;
+    expect(await exchange([header + '43100, 6697' + ' '.repeat(100)])).toBe('');
+    expect(getIdentdMetrics().invalid).toBe(before + 1);
+  });
+
+  // The enumeration defense: a listener that was not told to expect the header
+  // must not take one, or any forwarder passing bytes through from loopback
+  // would let a remote scanner state the addresses half of the 4-tuple.
+  it('does not take a header when the flag is off', async () => {
+    register();
+    const before = getIdentdMetrics();
+    const reply = await exchange([header + request], port);
+    expect(reply).toContain('ERROR : INVALID-PORT');
+    expect(reply).not.toContain('USERID');
+    expect(getIdentdMetrics().invalid).toBe(before.invalid + 1);
+    expect(getIdentdMetrics().served).toBe(before.served);
+  });
+
+  it('requires the header from a loopback peer when the flag is on', async () => {
+    handles.push(
+      registerIdent({
+        localAddress: LOOPBACK,
+        remoteAddress: LOOPBACK,
+        localPort: 43100,
+        remotePort: 6697,
+        ident: 'direct',
+      }),
+    );
+    // The same plain query the flag-off listener answers...
+    expect(await exchange([request], port)).toContain('USERID : UNIX : direct');
+    // ...is dropped unanswered here.
+    const before = getIdentdMetrics();
+    expect(await exchange([request])).toBe('');
+    expect(getIdentdMetrics().invalid).toBe(before.invalid + 1);
+    expect(getIdentdMetrics().queries).toBe(before.queries);
+  });
+
+  it('still answers a plain query from a non-loopback peer when the flag is on', async () => {
+    register(LOOPBACK, source);
+    const direct = createIdentdServer({ proxyProtocol: true });
+    direct.prependListener('connection', (socket) =>
+      Object.defineProperty(socket, 'remoteAddress', { value: source }),
+    );
+    await new Promise<void>((resolve) => direct.listen(0, LOOPBACK, resolve));
+    try {
+      expect(await exchange([request], (direct.address() as net.AddressInfo).port)).toContain(
+        'USERID : UNIX : forwarded',
+      );
+    } finally {
+      await new Promise<void>((resolve) => direct.close(() => resolve()));
     }
   });
 
@@ -528,7 +597,7 @@ describe('identd PROXY v1', () => {
     'refuses headers from untrusted peer %s',
     async (remoteAddress) => {
       register();
-      const untrusted = createIdentdServer();
+      const untrusted = createIdentdServer({ proxyProtocol: true });
       // Override only the peer address; exercise the real socket parser and cleanup.
       untrusted.prependListener('connection', (socket) =>
         Object.defineProperty(socket, 'remoteAddress', { value: remoteAddress }),
@@ -536,9 +605,13 @@ describe('identd PROXY v1', () => {
       await new Promise<void>((resolve) => untrusted.listen(0, LOOPBACK, resolve));
       try {
         const before = getIdentdMetrics().invalid;
-        expect(
-          await exchange([header + request], (untrusted.address() as net.AddressInfo).port),
-        ).toBe('');
+        // Not a proxy, so its header is just a malformed query line.
+        const reply = await exchange(
+          [header + request],
+          (untrusted.address() as net.AddressInfo).port,
+        );
+        expect(reply).toContain('ERROR : INVALID-PORT');
+        expect(reply).not.toContain('USERID');
         expect(getIdentdMetrics().invalid).toBe(before + 1);
       } finally {
         await new Promise<void>((resolve) => untrusted.close(() => resolve()));
@@ -558,7 +631,7 @@ describe('identd PROXY v1', () => {
   );
 
   it('times out a header without a query as noData', async () => {
-    const idle = createIdentdServer();
+    const idle = createIdentdServer({ proxyProtocol: true });
     idle.on('connection', (socket) => socket.setTimeout(50));
     await new Promise<void>((resolve) => idle.listen(0, LOOPBACK, resolve));
     try {
@@ -575,7 +648,12 @@ describe('identd PROXY v1', () => {
   });
 
   it('rescues forwarded half-closed queries and releases the grace slot', async () => {
-    const grace = createIdentdServer({ graceMs: 600, graceStepMs: 20, graceMaxPending: 1 });
+    const grace = createIdentdServer({
+      graceMs: 600,
+      graceStepMs: 20,
+      graceMaxPending: 1,
+      proxyProtocol: true,
+    });
     await new Promise<void>((resolve) => grace.listen(0, LOOPBACK, resolve));
     const target = (grace.address() as net.AddressInfo).port;
     try {
@@ -605,5 +683,22 @@ describe('identd PROXY v1', () => {
     } finally {
       await new Promise<void>((resolve) => grace.close(() => resolve()));
     }
+  });
+});
+
+describe('identdProxyProtocol', () => {
+  const prev = process.env.LURKER_IDENTD_PROXY_PROTOCOL;
+  afterEach(() => {
+    if (prev === undefined) delete process.env.LURKER_IDENTD_PROXY_PROTOCOL;
+    else process.env.LURKER_IDENTD_PROXY_PROTOCOL = prev;
+  });
+
+  it('is off unless set to a truthy word', () => {
+    delete process.env.LURKER_IDENTD_PROXY_PROTOCOL;
+    expect(identdProxyProtocol()).toBe(false);
+    process.env.LURKER_IDENTD_PROXY_PROTOCOL = 'false';
+    expect(identdProxyProtocol()).toBe(false);
+    process.env.LURKER_IDENTD_PROXY_PROTOCOL = ' true ';
+    expect(identdProxyProtocol()).toBe(true);
   });
 });
