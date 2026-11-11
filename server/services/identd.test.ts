@@ -389,3 +389,221 @@ describe('identdBindHost', () => {
     expect(identdBindHost()).toBeUndefined();
   });
 });
+
+async function exchange(parts: string[], target = port, host = LOOPBACK): Promise<string> {
+  const client = net.connect(target, host);
+  let out = '';
+  const result = new Promise<string>((resolve, reject) => {
+    client.on('data', (chunk) => (out += chunk.toString()));
+    client.on('close', () => resolve(out));
+    client.on('error', reject);
+  });
+  await new Promise<void>((resolve) => client.once('connect', resolve));
+  for (const part of parts) {
+    if (client.destroyed) break;
+    client.write(part);
+    if (parts.length > 1) await delay(10);
+  }
+  return result;
+}
+
+describe('identd PROXY v1', () => {
+  const source = '198.51.100.8';
+  const destination = '192.0.2.9';
+  const header = `PROXY TCP4 ${source} ${destination} 12345 113\r\n`;
+  const request = '43100, 6697\r\n';
+  const handles: number[] = [];
+
+  function register(localAddress = destination, remoteAddress = source): void {
+    handles.push(
+      registerIdent({
+        localAddress,
+        remoteAddress,
+        localPort: 43100,
+        remotePort: 6697,
+        ident: 'forwarded',
+      }),
+    );
+  }
+
+  afterEach(() => {
+    for (const handle of handles.splice(0)) unregisterIdent(handle);
+  });
+
+  it.each([
+    ['one read', [header + request]],
+    ['separate reads', [header, request]],
+    [
+      'fragmented reads',
+      ['P', 'ROXY TCP4 ', `${source} `, `${destination} 12345 113\r`, '\n431', '00, 6697\r', '\n'],
+    ],
+  ])('uses forwarded addresses and query ports with %s', async (_name, parts) => {
+    register();
+    const before = getIdentdMetrics();
+    expect(await exchange(parts)).toContain('USERID : UNIX : forwarded');
+    expect(getIdentdMetrics().served).toBe(before.served + 1);
+    expect(getIdentdMetrics().queries).toBe(before.queries + 1);
+  });
+
+  it('accepts a long IPv6 header fragmented before CRLF', async () => {
+    const remote = '2001:0db8:1111:2222:3333:4444:5555:6666';
+    const local = '2001:0db8:aaaa:bbbb:cccc:dddd:eeee:ffff';
+    register(local, remote);
+    const line = `PROXY TCP6 ${remote} ${local} 65535 65535\r\n`;
+    expect(line.length).toBeGreaterThan(100);
+    expect(await exchange([line.slice(0, -2), '\r', '\n' + request])).toContain(
+      'USERID : UNIX : forwarded',
+    );
+  });
+
+  it.each(['::1', '::ffff:127.0.0.1'])('trusts the loopback peer %s', async (host) => {
+    register();
+    const dual = createIdentdServer();
+    await new Promise<void>((resolve) => dual.listen(0, '::', resolve));
+    try {
+      expect(
+        await exchange([header + request], (dual.address() as net.AddressInfo).port, host),
+      ).toContain('USERID : UNIX : forwarded');
+    } finally {
+      await new Promise<void>((resolve) => dual.close(() => resolve()));
+    }
+  });
+
+  it('matches equivalent IPv6 spellings and mapped IPv4 addresses', async () => {
+    register('2001:db8::2', '2001:db8::1');
+    expect(
+      await exchange(['PROXY TCP6 2001:0DB8:0:0:0:0:0:1 2001:0DB8::2 113 113\r\n' + request]),
+    ).toContain('USERID : UNIX : forwarded');
+    unregisterIdent(handles.pop()!);
+    register();
+    expect(
+      await exchange([`PROXY TCP6 ::ffff:${source} ::ffff:${destination} 113 113\r\n` + request]),
+    ).toContain('USERID : UNIX : forwarded');
+  });
+
+  it('accepts the specified zero proxy ports without using them for lookup', async () => {
+    register();
+    expect(await exchange([header.replace('12345 113', '0 0') + request])).toContain(
+      'USERID : UNIX : forwarded',
+    );
+  });
+
+  it.each([
+    ['bad source', header.replace(source, '999.1.1.1')],
+    ['bad destination', header.replace(destination, 'invalid')],
+    ['TCP4 family mismatch', header.replace(source, '2001:db8::1')],
+    ['TCP6 family mismatch', header.replace('TCP4', 'TCP6')],
+    ['source port overflow', header.replace('12345', '65536')],
+    ['destination port overflow', header.replace('113', '65536')],
+    ['negative port', header.replace('12345', '-1')],
+    ['leading zero port', header.replace('12345', '01234')],
+    ['extra field', header.replace('\r\n', ' extra\r\n')],
+    ['bare newline', header.replace('\r\n', '\n')],
+    ['extra space', header.replace('TCP4 ', 'TCP4  ')],
+    ['UNKNOWN', 'PROXY UNKNOWN\r\n'],
+    ['unsupported transport', header.replace('TCP4', 'UDP4')],
+    ['scoped IPv6', 'PROXY TCP6 fe80::1%eth0 fe80::2 113 113\r\n'],
+    ['oversized complete header', 'PROXY ' + 'x'.repeat(102) + '\r\n'],
+    ['oversized incomplete header', 'PROXY ' + 'x'.repeat(102)],
+    ['second header', header + header],
+  ])('rejects %s', async (_name, line) => {
+    register();
+    const before = getIdentdMetrics();
+    expect(await exchange([line + request])).not.toContain('USERID');
+    const after = getIdentdMetrics();
+    expect(after.invalid).toBe(before.invalid + 1);
+    expect(after.queries).toBe(before.queries);
+    expect(after.noData).toBe(before.noData);
+  });
+
+  it.each(['', header])('bounds the ident line after %j', async (prefix) => {
+    for (const ending of ['', '\r\n']) {
+      const before = getIdentdMetrics().invalid;
+      expect(await exchange([prefix + '43100, 6697' + ' '.repeat(100) + ending])).toBe('');
+      expect(getIdentdMetrics().invalid).toBe(before + 1);
+    }
+  });
+
+  it.each(['198.51.100.1', '10.0.0.1', '172.17.0.1', '::ffff:192.168.1.2', 'fd00::1'])(
+    'refuses headers from untrusted peer %s',
+    async (remoteAddress) => {
+      register();
+      const untrusted = createIdentdServer();
+      // Override only the peer address; exercise the real socket parser and cleanup.
+      untrusted.prependListener('connection', (socket) =>
+        Object.defineProperty(socket, 'remoteAddress', { value: remoteAddress }),
+      );
+      await new Promise<void>((resolve) => untrusted.listen(0, LOOPBACK, resolve));
+      try {
+        const before = getIdentdMetrics().invalid;
+        expect(
+          await exchange([header + request], (untrusted.address() as net.AddressInfo).port),
+        ).toBe('');
+        expect(getIdentdMetrics().invalid).toBe(before + 1);
+      } finally {
+        await new Promise<void>((resolve) => untrusted.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(['source', 'destination'])(
+    'refuses matching ports with the wrong forwarded %s',
+    async (field) => {
+      register();
+      const wrong = header.replace(field === 'source' ? source : destination, '203.0.113.1');
+      const before = getIdentdMetrics().addrMiss;
+      expect(await exchange([wrong + request])).toContain('ERROR : NO-USER');
+      expect(getIdentdMetrics().addrMiss).toBe(before + 1);
+    },
+  );
+
+  it('times out a header without a query as noData', async () => {
+    const idle = createIdentdServer();
+    idle.on('connection', (socket) => socket.setTimeout(50));
+    await new Promise<void>((resolve) => idle.listen(0, LOOPBACK, resolve));
+    try {
+      const before = getIdentdMetrics();
+      expect(await exchange([header], (idle.address() as net.AddressInfo).port)).toBe('');
+      for (let i = 0; i < 50 && getIdentdMetrics().noData === before.noData; i++) {
+        await delay(10);
+      }
+      expect(getIdentdMetrics().noData).toBe(before.noData + 1);
+      expect(getIdentdMetrics().invalid).toBe(before.invalid);
+    } finally {
+      await new Promise<void>((resolve) => idle.close(() => resolve()));
+    }
+  });
+
+  it('rescues forwarded half-closed queries and releases the grace slot', async () => {
+    const grace = createIdentdServer({ graceMs: 600, graceStepMs: 20, graceMaxPending: 1 });
+    await new Promise<void>((resolve) => grace.listen(0, LOOPBACK, resolve));
+    const target = (grace.address() as net.AddressInfo).port;
+    try {
+      const beforeAbandon = getIdentdMetrics();
+      const abandoned = net.connect(target, LOOPBACK, () => abandoned.write(header + request));
+      abandoned.on('error', () => {});
+      for (let i = 0; i < 50 && getIdentdMetrics().queries === beforeAbandon.queries; i++) {
+        await delay(10);
+      }
+      expect(getIdentdMetrics().queries).toBe(beforeAbandon.queries + 1);
+      abandoned.resetAndDestroy();
+      for (let i = 0; i < 50 && getIdentdMetrics().abandoned === beforeAbandon.abandoned; i++) {
+        await delay(10);
+      }
+      expect(getIdentdMetrics().abandoned).toBe(beforeAbandon.abandoned + 1);
+      expect(getIdentdMetrics().noData).toBe(beforeAbandon.noData);
+      for (let i = 0; i < 2; i++) {
+        const before = getIdentdMetrics();
+        const pending = queryOn(target, header + request, true);
+        await delay(80);
+        register();
+        expect(await pending).toContain('USERID : UNIX : forwarded');
+        expect(getIdentdMetrics().rescued).toBe(before.rescued + 1);
+        expect(getIdentdMetrics().graceSkipped).toBe(before.graceSkipped);
+        unregisterIdent(handles.pop()!);
+      }
+    } finally {
+      await new Promise<void>((resolve) => grace.close(() => resolve()));
+    }
+  });
+});

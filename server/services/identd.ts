@@ -103,6 +103,16 @@ let lastSilentMissWarnAt = 0;
 // disagree on representation alone and never match.
 function normalizeAddress(address: string | undefined | null): string {
   if (!address) return '';
+  // Header and kernel IPv6 spellings must compare equally, including mapped IPv4.
+  if (net.isIPv6(address) && !address.includes('%')) {
+    address = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+    const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(address);
+    if (mapped) {
+      const high = parseInt(mapped[1], 16);
+      const low = parseInt(mapped[2], 16);
+      return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+    }
+  }
   const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address);
   return m && net.isIPv4(m[1]) ? m[1] : address;
 }
@@ -255,8 +265,12 @@ function handleConnection(socket: net.Socket, cfg: GraceConfig): void {
   // Keep the idle timeout safely above the grace window so a raised graceMs can't
   // let the socket time out mid-rescue.
   socket.setTimeout(Math.max(10_000, cfg.graceMs + 1_000));
-  const queryLocalAddress = normalizeAddress(socket.localAddress);
-  const queryRemoteAddress = normalizeAddress(socket.remoteAddress);
+  let queryLocalAddress = normalizeAddress(socket.localAddress);
+  let queryRemoteAddress = normalizeAddress(socket.remoteAddress);
+  const trustedProxy =
+    queryRemoteAddress === '::1' ||
+    (net.isIPv4(queryRemoteAddress) && queryRemoteAddress.startsWith('127.'));
+  let proxyRead = false;
   let buf = '';
   let answered = false;
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -284,20 +298,55 @@ function handleConnection(socket: net.Socket, cfg: GraceConfig): void {
 
   socket.on('data', (chunk: Buffer) => {
     if (answered) return;
-    buf += chunk.toString('latin1');
-    const nl = buf.indexOf('\n');
-    if (nl === -1) {
+    // At most one 107-byte PROXY header and one 101-byte query can be useful.
+    buf += chunk.toString('latin1', 0, 208);
+    let nl = buf.indexOf('\n');
+    const proxyLine = !proxyRead && buf.startsWith('PROXY');
+    const limit = proxyLine ? 106 : 100;
+    if ((nl === -1 && buf.length > limit) || nl > limit) {
       // Junk flood with no newline — bail. Mark answered + count as invalid (not
       // a silent probe) so it doesn't pollute noData, which is the starvation
       // signal we read for the DALnet-class follow-up.
-      if (buf.length > 100) {
+      answered = true;
+      metrics.invalid++;
+      socket.destroy();
+      return;
+    }
+    if (nl === -1) return;
+    if (proxyLine) {
+      const header = /^PROXY (TCP[46]) ([^ ]+) ([^ ]+) (0|[1-9]\d{0,4}) (0|[1-9]\d{0,4})\r$/.exec(
+        buf.slice(0, nl),
+      );
+      const family = header?.[1] === 'TCP4' ? 4 : 6;
+      if (
+        !trustedProxy ||
+        !header ||
+        net.isIP(header[2]) !== family ||
+        net.isIP(header[3]) !== family ||
+        header[2].includes('%') ||
+        header[3].includes('%') ||
+        Number(header[4]) > 65535 ||
+        Number(header[5]) > 65535
+      ) {
         answered = true;
         metrics.invalid++;
         socket.destroy();
+        return;
       }
-      return;
+      queryRemoteAddress = normalizeAddress(header[2]);
+      queryLocalAddress = normalizeAddress(header[3]);
+      proxyRead = true;
+      buf = buf.slice(nl + 1);
+      nl = buf.indexOf('\n');
+      if ((nl === -1 && buf.length > 100) || nl > 100) {
+        answered = true;
+        metrics.invalid++;
+        socket.destroy();
+        return;
+      }
+      if (nl === -1) return;
     }
-    const m = /^\s*(\d{1,5})\s*,\s*(\d{1,5})/.exec(buf.slice(0, nl));
+    const m = /^\s*(\d{1,5})\s*,\s*(\d{1,5})\s*$/.exec(buf.slice(0, nl));
     if (!m) {
       answered = true;
       metrics.invalid++;
