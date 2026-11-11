@@ -65,6 +65,14 @@ beforeAll(() => {
   createUser('ircconn-test');
 });
 
+// Typing notifications go only onto a registered connection: mark this
+// socketless one as the framework marks a real one at 001.
+function markRegistered(conn: IrcConnection): void {
+  const c = conn.client.connection as unknown as { connected: boolean; registered: number | false };
+  c.connected = true;
+  c.registered = Date.now();
+}
+
 describe('computeFallbackNick', () => {
   it('appends 1..9 in order', () => {
     expect(computeFallbackNick('bob', 0)).toBe('bob1');
@@ -1901,29 +1909,34 @@ describe('refused-message handler routing (#283)', () => {
     const raw = vi.fn<(...args: string[]) => void>();
     conn.client.raw = raw;
     const typed = () => raw.mock.calls.filter(([line]) => line.includes('TAGMSG')).length;
-    vi.useFakeTimers();
+    markRegistered(conn);
+    // The gap between two typing notifications is kept on the monotonic clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
+    try {
+      // First typing notification goes out — we haven't learned the channel is blocked.
+      conn.sendTyping('#anime', 'active');
+      expect(typed()).toBe(1);
 
-    // First typing notification goes out — we haven't learned the channel is blocked.
-    conn.sendTyping('#anime', 'active');
-    expect(typed()).toBe(1);
+      // The server bounces it. No real message was sent, so nothing surfaces inline.
+      conn.client.emit('unknown command', {
+        command: '477',
+        params: ['nick', '#anime', 'You need to be identified to speak'],
+      });
+      expect(publish).not.toHaveBeenCalled();
 
-    // The server bounces it. No real message was sent, so nothing surfaces inline.
-    conn.client.emit('unknown command', {
-      command: '477',
-      params: ['nick', '#anime', 'You need to be identified to speak'],
-    });
-    expect(publish).not.toHaveBeenCalled();
+      // Further typing to that channel is now suppressed (no more bounces).
+      vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
+      conn.sendTyping('#anime', 'active');
+      expect(typed()).toBe(1);
 
-    // Further typing to that channel is now suppressed (no more bounces).
-    vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
-    conn.sendTyping('#anime', 'active');
-    expect(typed()).toBe(1);
-
-    // Identifying to services (RPL_LOGGEDIN → 'loggedin') lifts the suppression.
-    conn.client.emit('loggedin', {});
-    conn.sendTyping('#anime', 'active');
-    expect(typed()).toBe(2);
-    vi.useRealTimers();
+      // Identifying to services (RPL_LOGGEDIN → 'loggedin') lifts the suppression.
+      conn.client.emit('loggedin', {});
+      conn.sendTyping('#anime', 'active');
+      expect(typed()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      conn.dispose();
+    }
   });
 
   it('resumes typing after a /part + /join of a blocked channel', () => {
@@ -1938,6 +1951,7 @@ describe('refused-message handler routing (#283)', () => {
     (conn.client as unknown as { network: { cap: { enabled: string[] } } }).network = {
       cap: { enabled: ['message-tags'] },
     };
+    markRegistered(conn);
 
     // Channel gets marked unsendable; typing is suppressed.
     conn.client.emit('unknown command', {
@@ -1951,6 +1965,7 @@ describe('refused-message handler routing (#283)', () => {
     conn.client.emit('join', { channel: '#anime', nick: 'me' });
     conn.sendTyping('#anime', 'active');
     expect(typed()).toBe(1);
+    conn.dispose();
   });
 
   it('resetSendState (run on reconnect) drops speak-permission marks and stale attribution', () => {

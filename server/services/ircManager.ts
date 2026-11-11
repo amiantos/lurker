@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { EventEmitter } from 'events';
-import { IrcConnection } from './ircConnection.js';
+import { IrcConnection, TYPING_STATES } from './ircConnection.js';
 import type { SendHooks } from './ircConnection.js';
 import {
   EngineLink,
@@ -1244,7 +1244,7 @@ class IrcManager extends EventEmitter {
     // CHAT has no TAGMSG — and `=nick` is not a nick, so a TAGMSG carrying it
     // would be a wire leak fired on every keystroke.
     if (!target || target.startsWith(':server:') || isDccChatTarget(target)) return false;
-    if (!['active', 'paused', 'done'].includes(state)) return false;
+    if (!TYPING_STATES.has(state)) return false;
     conn.sendTyping(target, state);
     return true;
   }
