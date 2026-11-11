@@ -12,6 +12,7 @@ import { ircLineParser } from 'irc-framework';
 import type { ConnectOptions } from 'irc-framework';
 import {
   IrcConnection,
+  TYPING_MIN_GAP_MS,
   canonicalChannelTarget,
   computeFallbackNick,
   formatSocketCloseErrorMessage,
@@ -1897,12 +1898,14 @@ describe('refused-message handler routing (#283)', () => {
     (conn.client as unknown as { network: { cap: { enabled: string[] } } }).network = {
       cap: { enabled: ['message-tags'] },
     };
-    const tagmsg = vi.fn<(target: string, tags?: Record<string, string>) => void>();
-    conn.client.tagmsg = tagmsg;
+    const raw = vi.fn<(...args: string[]) => void>();
+    conn.client.raw = raw;
+    const typed = () => raw.mock.calls.filter(([line]) => line.includes('TAGMSG')).length;
+    vi.useFakeTimers();
 
     // First typing notification goes out — we haven't learned the channel is blocked.
     conn.sendTyping('#anime', 'active');
-    expect(tagmsg).toHaveBeenCalledTimes(1);
+    expect(typed()).toBe(1);
 
     // The server bounces it. No real message was sent, so nothing surfaces inline.
     conn.client.emit('unknown command', {
@@ -1912,27 +1915,29 @@ describe('refused-message handler routing (#283)', () => {
     expect(publish).not.toHaveBeenCalled();
 
     // Further typing to that channel is now suppressed (no more bounces).
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
     conn.sendTyping('#anime', 'active');
-    expect(tagmsg).toHaveBeenCalledTimes(1);
+    expect(typed()).toBe(1);
 
     // Identifying to services (RPL_LOGGEDIN → 'loggedin') lifts the suppression.
     conn.client.emit('loggedin', {});
     conn.sendTyping('#anime', 'active');
-    expect(tagmsg).toHaveBeenCalledTimes(2);
+    expect(typed()).toBe(2);
+    vi.useRealTimers();
   });
 
   it('resumes typing after a /part + /join of a blocked channel', () => {
     const conn = makeConn();
     conn.upsertChannel('#anime');
     conn.publish = vi.fn<(event: unknown) => void>();
-    conn.client.raw = vi.fn<(...args: string[]) => void>(); // swallow the on-join MODE request
+    const raw = vi.fn<(...args: string[]) => void>(); // also swallows the on-join MODE request
+    conn.client.raw = raw;
+    const typed = () => raw.mock.calls.filter(([line]) => line.includes('TAGMSG')).length;
     conn.client.user.nick = 'me';
     conn.currentNick = 'me'; // as registration leaves it
     (conn.client as unknown as { network: { cap: { enabled: string[] } } }).network = {
       cap: { enabled: ['message-tags'] },
     };
-    const tagmsg = vi.fn<(target: string, tags?: Record<string, string>) => void>();
-    conn.client.tagmsg = tagmsg;
 
     // Channel gets marked unsendable; typing is suppressed.
     conn.client.emit('unknown command', {
@@ -1940,12 +1945,12 @@ describe('refused-message handler routing (#283)', () => {
       params: ['nick', '#anime', 'You need to be identified to speak'],
     });
     conn.sendTyping('#anime', 'active');
-    expect(tagmsg).not.toHaveBeenCalled();
+    expect(typed()).toBe(0);
 
     // Re-joining is a clean "try again" — the mark clears and typing flows.
     conn.client.emit('join', { channel: '#anime', nick: 'me' });
     conn.sendTyping('#anime', 'active');
-    expect(tagmsg).toHaveBeenCalledTimes(1);
+    expect(typed()).toBe(1);
   });
 
   it('resetSendState (run on reconnect) drops speak-permission marks and stale attribution', () => {

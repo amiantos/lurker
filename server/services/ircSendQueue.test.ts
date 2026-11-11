@@ -10,7 +10,7 @@
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { IrcConnection } from './ircConnection.js';
+import { IrcConnection, TYPING_MIN_GAP_MS } from './ircConnection.js';
 import { BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 import type { ReplyClient } from './replyRouter.js';
 import { e2eManager } from './e2e/manager.js';
@@ -790,6 +790,129 @@ describe('flood protection off (#1193)', () => {
     expect(lines).toHaveLength(5);
     vi.advanceTimersByTime(2000);
     expect(lines).toHaveLength(6);
+    conn.dispose();
+  });
+});
+
+describe('typing notifications (#1301)', () => {
+  // A registered connection that speaks message-tags, its budget unspent.
+  function typist(): Wire & { typing(): string[] } {
+    const wire = backlog();
+    (wire.conn.client as unknown as { network: { cap: { enabled: string[] } } }).network = {
+      cap: { enabled: ['message-tags'] },
+    };
+    vi.advanceTimersByTime(BURST_BUDGET_MS);
+    wire.lines.length = 0;
+    return { ...wire, typing: () => wire.lines.filter((l) => l.includes('TAGMSG')) };
+  }
+
+  it('typing a letter and erasing it, over and over, sends one line and holds nothing up', () => {
+    const { conn, lines, typing, published } = typist();
+    for (let i = 0; i < 20; i++) {
+      conn.sendTyping('#c', 'active');
+      conn.sendTyping('#c', 'done');
+    }
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c']);
+    // The message goes at once: nothing waits ahead of it.
+    conn.say('#c', 'hello');
+    expect(lines.at(-1)).toBe('PRIVMSG #c :hello');
+    // The message ended the typing for its readers; no `done` follows it.
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 3);
+    expect(typing()).toHaveLength(1);
+    expect(published.filter((e) => e.type === 'send-queue' && e.waiting)).toEqual([]);
+    conn.dispose();
+  });
+
+  it('carries the newest state once the gap has passed, and only that one', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'done');
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#c', 'done');
+    expect(typing()).toHaveLength(1);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS - 1);
+    expect(typing()).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c', '@+typing=done TAGMSG #c']);
+    // Nothing further is owed.
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 3);
+    expect(typing()).toHaveLength(2);
+    conn.dispose();
+  });
+
+  it('never sends a done to a target that was not told we were typing', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'done');
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS * 2);
+    expect(typing()).toEqual([]);
+    conn.dispose();
+  });
+
+  it('keeps each target to its own gap', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c', 'active');
+    conn.sendTyping('#d', 'active');
+    expect(typing()).toEqual(['@+typing=active TAGMSG #c', '@+typing=active TAGMSG #d']);
+    conn.dispose();
+  });
+
+  it('a minute of typing in fits and starts leaves the budget for the message', () => {
+    const { conn, lines, typing } = typist();
+    // A few keys, a three-second pause, a few more: the web client reports
+    // `active` at the first key and `paused` three seconds after the last.
+    for (let i = 0; i < 20; i++) {
+      conn.sendTyping('#c', 'active');
+      vi.advanceTimersByTime(3000);
+      conn.sendTyping('#c', 'paused');
+      vi.advanceTimersByTime(100);
+    }
+    // One line per gap at most (as reported: 40 lines in 62 s).
+    expect(typing().length).toBeLessThanOrEqual(21);
+    const before = lines.length;
+    conn.say('#c', 'one');
+    conn.say('#c', 'two');
+    conn.say('#c', 'three');
+    expect(lines.slice(before)).toEqual([
+      'PRIVMSG #c :one',
+      'PRIVMSG #c :two',
+      'PRIVMSG #c :three',
+    ]);
+    conn.dispose();
+  });
+
+  it('waits behind chat, and says nothing stale once the message has gone', () => {
+    const { conn, lines, typing } = typist();
+    for (let i = 0; i < 5; i++) conn.say('#fill', `line ${i}`);
+    conn.sendTyping('#c', 'active');
+    expect(typing()).toEqual([]);
+    // The message typed overtakes its own typing notification, which then
+    // has nothing left to say.
+    conn.say('#c', 'hello');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :hello');
+    vi.advanceTimersByTime(BURST_BUDGET_MS);
+    expect(typing()).toEqual([]);
+    conn.dispose();
+  });
+
+  it('a burst of reports arriving at once (a stalled event loop) is one line', () => {
+    const { conn, typing } = typist();
+    for (const state of ['active', 'paused', 'active', 'paused', 'active', 'paused', 'active'])
+      conn.sendTyping('nick', state);
+    expect(typing()).toEqual(['@+typing=active TAGMSG nick']);
+    vi.advanceTimersByTime(TYPING_MIN_GAP_MS);
+    // The newest state was the one already sent... and it is sent again: an
+    // `active` repeated keeps the reader's six-second indicator alive.
+    expect(typing()).toHaveLength(2);
+    conn.dispose();
+  });
+
+  it('refuses a target that is not one word', () => {
+    const { conn, typing } = typist();
+    conn.sendTyping('#c\r\nQUIT', 'active');
+    conn.sendTyping('#c #d', 'active');
+    conn.sendTyping('#c', 'bogus');
+    expect(typing()).toEqual([]);
     conn.dispose();
   });
 });
