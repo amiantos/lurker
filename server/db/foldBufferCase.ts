@@ -211,8 +211,9 @@ export function foldBufferCase(
     }
 
     if (!dryRun) {
-      // id-keyed (target not unique) — straight rewrite. messages_fts only indexes
-      // text, so the AFTER UPDATE trigger reindexes identical text (harmless).
+      // id-keyed (target not unique) — straight rewrite. `target` is not an
+      // indexed input of messages_fts, so the guarded AFTER UPDATE trigger
+      // doesn't fire and nothing is reindexed.
       for (const t of ['messages', 'input_history'].filter((t) =>
         foldable.includes(t as (typeof TARGET_TABLES)[number]),
       )) {

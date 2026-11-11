@@ -485,6 +485,20 @@ describe('feed plan grid', () => {
   const halfLimits = (sql: string, alias: string) =>
     count(sql, new RegExp(`ORDER BY ${alias}\\.id DESC LIMIT \\?\\)`, 'g'));
 
+  it('a text search over a scope that holds nothing is not run at all', () => {
+    // Not the caller's network, or a channel none of their networks holds:
+    // there are no rows to find, and on the word alone the statement would
+    // walk every hit on the instance to return none (#1302).
+    const foreign = netId + 1000;
+    expect(searchMessagesSql(userId, { query: 'hello', networkId: foreign })).toBeNull();
+    expect(searchMessagesSql(userId, { query: 'hello', target: '#nowhere' })).toBeNull();
+    expect(
+      searchMessagesSql(userId, { query: 'hello', target: '#grid', networkId: foreign }),
+    ).toBeNull();
+    // Without text those shapes keep their statement (and match nothing).
+    expect(searchMessagesSql(userId, { networkId: foreign })).not.toBeNull();
+  });
+
   it('search: 64 filter combinations, each driven by its own seek', () => {
     let checked = 0;
     for (const opts of grid({
@@ -509,10 +523,11 @@ describe('feed plan grid', () => {
       const rowidPage = /SEARCH m USING INTEGER PRIMARY KEY \(rowid=\?\)/g;
       let expected: { driver: RegExp; seeks: number; halves: number | null; second: RegExp };
       if (opts.query) {
-        // FTS streams, the cursor as a native rowid range (`<`).
+        // FTS streams, the cursor as a native rowid range (`<`). `M3` is a
+        // MATCH on the three-column index (text, buffer_id, network_id).
         expected = {
           driver: new RegExp(
-            `SCAN messages_fts VIRTUAL TABLE INDEX \\d+:M1${opts.before ? '<' : ''}(?: |$)`,
+            `SCAN messages_fts VIRTUAL TABLE INDEX \\d+:M3${opts.before ? '<' : ''}(?: |$)`,
             'g',
           ),
           seeks: 1,
@@ -551,6 +566,16 @@ describe('feed plan grid', () => {
           second: /SEARCH n USING INTEGER PRIMARY KEY/g,
         };
       }
+      // The MATCH names where to look as well as the word (#1302): in:'s
+      // buffers, else the caller's networks. No plan line shows a missing
+      // scope term, and no result does either — only the cost.
+      const scope = opts.target
+        ? `buffer_id:\\("\\d+"${buffers > 1 ? ' OR "\\d+"' : ''}\\)`
+        : `network_id:\\("\\d+"${opts.networkId ? '' : ' OR "\\d+"'}\\)`;
+      const wanted = opts.query ? new RegExp(`^text:\\("hello"\\) AND ${scope}$`) : /^none$/;
+      const matchParam =
+        built.params.find((p) => typeof p === 'string' && p.startsWith('text:')) ?? 'none';
+      expect({ opts, match: matchParam }).toEqual({ opts, match: expect.stringMatching(wanted) });
       expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
       expect({ opts, seeks: count(plan, expected.driver) }).toEqual({
         opts,

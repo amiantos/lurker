@@ -1917,90 +1917,10 @@ if (schemaVersion < 2) {
   backfill();
 }
 
-if (schemaVersion < 3) {
-  // Full-text search index over message bodies. External-content FTS5 table —
-  // it stores only the inverted index and points back at messages by rowid, so
-  // the text isn't duplicated. Triggers keep it in sync; messages are
-  // insert-only in normal use, but a network deletion cascades DELETEs, so the
-  // delete/update triggers matter too. Backfill indexes every existing row.
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-      text,
-      content='messages',
-      content_rowid='id'
-    );
-
-    CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-      INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
-    END;
-    CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-      INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
-    END;
-  `);
-  // messages_au is created unconditionally below rather than here — see there.
-  // Nothing updates `messages` between this block and that one, so the window
-  // in which the update trigger doesn't exist carries no rows.
-
-  // Index every existing row, NULL text included. The insert trigger does the
-  // same for new rows; keeping the backfill consistent with it means the
-  // delete/update triggers (which replay old.text) always have a matching
-  // index entry to remove — skipping NULL rows here would desync an
-  // external-content FTS5 table and risk index corruption on later deletes.
-  db.exec(`INSERT INTO messages_fts(rowid, text) SELECT id, text FROM messages`);
-}
-
-// The FTS update trigger. Defined here rather than in the v3 block because its
-// definition changed after v3 shipped, and an already-migrated DB would keep the
-// old one forever under CREATE IF NOT EXISTS.
-//
-// Recreated only when what's stored doesn't match what we want, so a steady-state
-// boot writes nothing. That matters more than the microseconds saved: an
-// unconditional DROP + CREATE dirties sqlite_master on every single boot, and
-// Litestream faithfully replicates each one.
-//
-// The WHEN clause is the point. messages_fts indexes ONLY `text`, keyed by
-// rowid = messages.id, but the unguarded trigger fired on any column update and
-// paid a full FTS delete+reinsert for each row regardless. That made a
-// buffer rename — `UPDATE messages SET target = ?`, which touches neither
-// indexed column — reindex the entire channel's text for nothing. Measured on a
-// synthetic 1M-row channel: 3.55s -> 1.18s (3.0x) and 40MB less database
-// growth, because each delete+reinsert pair leaves tombstone and duplicate
-// entries behind in the FTS b-tree until a merge reclaims them.
-//
-// Both indexed inputs are in the guard, so it cannot skip work the FTS index
-// actually needs: `text` is the indexed content, and `id` is the rowid the
-// entry is keyed by. `IS NOT` rather than `<>` so a NULL on either side
-// compares correctly — text is nullable, and `NULL <> NULL` is NULL (falsy),
-// which would silently skip a row transitioning to or from NULL.
-const MESSAGES_AU_SQL = `CREATE TRIGGER messages_au AFTER UPDATE ON messages
-  WHEN old.text IS NOT new.text OR old.id IS NOT new.id BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
-    INSERT INTO messages_fts(rowid, text) VALUES (new.id, new.text);
-  END`;
-// Existence-gated on messages_fts, which the v3 block creates. Every real
-// database at v3 or above has it, but a trigger whose body names a missing table
-// is not inert: SQLite reparses the entire schema during any ALTER TABLE ...
-// RENAME, and an unresolvable trigger body fails that statement. So a database
-// without FTS would get a live trigger that breaks the next table rebuild
-// migration somewhere else entirely. Matching the v3 block's own condition keeps
-// the trigger and the table it writes to inseparable.
-if (tableExists('messages_fts')) {
-  const messagesAuSql = (
-    db
-      .prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'messages_au'`)
-      .get() as { sql: string } | undefined
-  )?.sql;
-  if (messagesAuSql !== MESSAGES_AU_SQL) {
-    // One transaction: between a bare DROP and its CREATE the database has FTS
-    // insert/delete triggers but no update trigger. The next boot repairs that,
-    // but any `UPDATE messages SET text = ...` in the interim desyncs
-    // messages_fts — an external-content table, so nothing detects or heals it.
-    db.transaction(() => {
-      db.exec(`DROP TRIGGER IF EXISTS messages_au`);
-      db.exec(MESSAGES_AU_SQL);
-    })();
-  }
-}
+// (v3 created the full-text index here, over `text` alone. The index and its
+// three triggers are now owned by ensureMessagesFts below, which runs after
+// the buffer_id backfill it depends on. An older database carries the v3
+// table and triggers, consistent with each other, down to that point.)
 
 if (schemaVersion < 4) {
   // Rename the existing in-client toast setting key to a unified-intent name.
@@ -2653,6 +2573,113 @@ if (schemaVersion < 16 && tableExists('channels')) {
 // The highlight partial indexes are healed to their current shape here — see
 // ensureHighlightIndexesCurrent beside indexExists.
 ensureHighlightIndexesCurrent();
+
+// The full-text search index (messages_fts) and the three triggers that keep
+// it in step with `messages`.
+//
+// External-content FTS5: it stores only the inverted index and points back at
+// messages by rowid, so the text isn't duplicated.
+//
+// THREE columns, and the two ids are the point (#1302). Over `text` alone the
+// index answered "which rows on this INSTANCE hold the word", and whose rows
+// they were was checked afterwards, one table fetch per hit. A word common on
+// the instance and rare where the user was looking — one DM, or everything a
+// newcomer on a busy host owns — fetched every hit there was: 106 s of cold
+// reads on a hosted cell for a one-word search inside a DM. With buffer_id and
+// network_id indexed as terms, searchMessagesSql asks for the word AND the
+// scope in one MATCH, and FTS5 intersects the two posting lists itself. Bench,
+// 3M rows: 26 ms -> 0.5 ms for a word in a DM, 192 ms -> 4.5 ms for a common
+// word across a newcomer's one network; a rare word across a busy user's
+// networks goes 0.2 ms -> 1-3 ms. Index 92 MB -> 124 MB.
+//
+// Not detail=column, though it would save 10%: toFtsMatch quotes each term, a
+// term with punctuation tokenizes to a PHRASE, and phrase queries need the
+// full detail.
+//
+// One shape check owns all four objects. If the table or any trigger differs
+// from the text below — an older shape, or one missing — everything is
+// dropped, recreated and the index rebuilt from the table, in one immediate
+// transaction (.immediate(): lurker#603), so a kill leaves the previous shape
+// whole and the next boot tries again. A steady-state boot only reads
+// sqlite_master and writes nothing, which matters under Litestream. The cost
+// of a single owner: editing any of these four statements rebuilds the index
+// on every deployed database.
+//
+// Placed after the buffer_id backfill above: that backfill rewrites buffer_id
+// on every row of an old database, and must not do so through an update
+// trigger that reindexes each one.
+//
+// Why the triggers look as they do:
+// - An external-content delete must replay EXACTLY the values that were
+//   indexed, all three columns. A row removed or changed any other way leaves
+//   entries nothing detects or heals.
+// - messages_au fires only when an indexed input changed, `id` (the rowid the
+//   entry is keyed by) included. A buffer rename is `UPDATE messages SET
+//   target`, which touches none of them, and unguarded it reindexed a whole
+//   channel for nothing (1M rows: 3.55 s -> 1.18 s, 40 MB less growth). A
+//   buffer MERGE does move buffer_id (renameBuffer.ts) and reindexes the rows
+//   it moves, as it must.
+// - `IS NOT`, not `<>`: text and buffer_id are nullable, and `NULL <> x` is
+//   NULL, which would skip a row going to or from NULL.
+const MESSAGES_FTS_COLUMNS = ['text', 'buffer_id', 'network_id'];
+const MESSAGES_FTS_OBJECTS: Record<string, string> = (() => {
+  const cols = MESSAGES_FTS_COLUMNS.join(', ');
+  const vals = (row: string) => MESSAGES_FTS_COLUMNS.map((c) => `${row}.${c}`).join(', ');
+  const add = `INSERT INTO messages_fts(rowid, ${cols}) VALUES (new.id, ${vals('new')});`;
+  const remove = `INSERT INTO messages_fts(messages_fts, rowid, ${cols}) VALUES ('delete', old.id, ${vals('old')});`;
+  const changed = ['id', ...MESSAGES_FTS_COLUMNS].map((c) => `old.${c} IS NOT new.${c}`);
+  return {
+    messages_fts: `CREATE VIRTUAL TABLE messages_fts USING fts5(${cols}, content='messages', content_rowid='id')`,
+    messages_ai: `CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN ${add} END`,
+    messages_ad: `CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN ${remove} END`,
+    messages_au: `CREATE TRIGGER messages_au AFTER UPDATE ON messages WHEN ${changed.join(' OR ')} BEGIN ${remove} ${add} END`,
+  };
+})();
+
+/**
+ * Bring the full-text index and its triggers to the shape above, rebuilding
+ * the index when anything differs. Returns whether it rebuilt. Exported so
+ * the rebuild is testable against a deliberately old shape
+ * (messagesFtsShape.test.ts).
+ */
+export function ensureMessagesFts(): boolean {
+  const live = new Map(
+    (
+      db
+        .prepare(
+          `SELECT name, sql FROM sqlite_master
+            WHERE name IN (${Object.keys(MESSAGES_FTS_OBJECTS)
+              .map(() => '?')
+              .join(', ')})`,
+        )
+        .all(...Object.keys(MESSAGES_FTS_OBJECTS)) as { name: string; sql: string }[]
+    ).map((r) => [r.name, r.sql]),
+  );
+  if (Object.entries(MESSAGES_FTS_OBJECTS).every(([name, sql]) => live.get(name) === sql)) {
+    return false;
+  }
+  if (db.prepare(`SELECT 1 FROM messages LIMIT 1 OFFSET ?`).get(INDEX_BUILD_WARN_ROWS)) {
+    console.warn(
+      `[db] rebuilding the search index (messages_fts: scope columns, #1302) — one-time, ` +
+        `blocks startup, reads every message. Do not kill the process; if it is killed, the ` +
+        `next boot starts over.`,
+    );
+  }
+  const started = Date.now();
+  db.transaction(() => {
+    for (const name of ['messages_ai', 'messages_ad', 'messages_au']) {
+      db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+    }
+    db.exec(`DROP TABLE IF EXISTS messages_fts`);
+    for (const sql of Object.values(MESSAGES_FTS_OBJECTS)) db.exec(sql);
+    db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`);
+  }).immediate();
+  if (live.size > 0) {
+    console.log(`[db] search index rebuilt in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  }
+  return true;
+}
+ensureMessagesFts();
 
 // The search-filter indexes: filter-only searches (from:/in:/on: with no free
 // text — searchMessages in db/messages.ts) must satisfy `ORDER BY id DESC

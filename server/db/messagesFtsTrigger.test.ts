@@ -3,8 +3,9 @@
 
 // The messages_fts AFTER UPDATE trigger (messages_au).
 //
-// The trigger is guarded on `text`/`id` so that a buffer rename — which rewrites
-// `messages.target` in bulk and touches neither indexed column — doesn't pay a
+// The trigger is guarded on the indexed inputs (`id`, `text`, `buffer_id`,
+// `network_id`) so that a buffer rename — which rewrites `messages.target` in
+// bulk and touches no indexed column — doesn't pay a
 // full FTS delete+reinsert per row. These tests pin both halves of that: the
 // guard is actually installed (an already-migrated DB has to be upgraded off the
 // unguarded v3 definition), and skipping the reindex cannot desync the index.
@@ -79,14 +80,16 @@ beforeAll(async () => {
 afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 describe('messages_au trigger definition', () => {
-  it('is installed with the text/id guard', () => {
+  it('is installed with the guard on every indexed input', () => {
     const row = db
       .prepare(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'messages_au'`)
       .get() as { sql: string } | undefined;
     expect(row?.sql).toBeTruthy();
     // The whole point of the guard — without a WHEN clause the trigger fires on
     // every column update, including a target-only rename.
-    expect(row?.sql).toMatch(/WHEN old\.text IS NOT new\.text OR old\.id IS NOT new\.id/);
+    expect(row?.sql).toMatch(
+      /WHEN old\.id IS NOT new\.id OR old\.text IS NOT new\.text OR old\.buffer_id IS NOT new\.buffer_id OR old\.network_id IS NOT new\.network_id BEGIN/,
+    );
   });
 });
 
@@ -156,5 +159,62 @@ describe('updates that DO change indexed columns', () => {
 
     expect(ftsMatches('tilapia')).not.toContain(id);
     integrityCheck();
+  });
+});
+
+// The scope columns (#1302): buffer_id and network_id are indexed as terms, so
+// a search asks for the word and where to look in one MATCH. Anything that
+// moves a row between buffers has to move its index entry with it.
+describe('the scope columns', () => {
+  const inBuffer = (word: string, bufferId: number) =>
+    ftsMatches(`text:("${word}") AND buffer_id:("${bufferId}")`);
+  const bufferOf = (id: number) =>
+    (db.prepare(`SELECT buffer_id FROM messages WHERE id = ?`).get(id) as { buffer_id: number })
+      .buffer_id;
+
+  it('indexes each row under its buffer and its network', () => {
+    const a = add('#scope-a', 'gurnard one');
+    const b = add('#scope-b', 'gurnard two');
+    expect(inBuffer('gurnard', bufferOf(a))).toEqual([a]);
+    expect(inBuffer('gurnard', bufferOf(b))).toEqual([b]);
+    expect(ftsMatches(`text:("gurnard") AND network_id:("${networkId}")`)).toEqual([a, b]);
+    expect(ftsMatches(`text:("gurnard") AND network_id:("${networkId + 1000}")`)).toEqual([]);
+  });
+
+  it('follows a row moved to another buffer (a buffer merge)', () => {
+    const a = add('#merge-from', 'mackerel moved');
+    const kept = add('#merge-into', 'mackerel stayed');
+    const from = bufferOf(a);
+    const into = bufferOf(kept);
+
+    db.prepare(`UPDATE messages SET buffer_id = ? WHERE buffer_id = ?`).run(into, from);
+
+    expect(inBuffer('mackerel', from)).toEqual([]);
+    expect(inBuffer('mackerel', into)).toEqual([a, kept]);
+    integrityCheck();
+    // And the moved row's entry can still be taken out: the delete replays
+    // the buffer it is indexed under NOW.
+    db.prepare(`DELETE FROM messages WHERE id = ?`).run(a);
+    expect(inBuffer('mackerel', into)).toEqual([kept]);
+    integrityCheck();
+  });
+
+  it('never matches a search term against an id', async () => {
+    const { searchMessages } = await import('./messages.js');
+    const user = (
+      db.prepare(`SELECT user_id FROM networks WHERE id = ?`).get(networkId) as {
+        user_id: number;
+      }
+    ).user_id;
+    const id = add('#ids', 'plain sprat');
+    // The row's own buffer and network ids, as search words: they are terms
+    // in the index, and must not be reachable as text.
+    for (const word of [String(bufferOf(id)), String(networkId)]) {
+      expect(searchMessages(user, { query: word }).map((m) => m.id)).not.toContain(id);
+    }
+    const numbered = add('#ids', `room ${bufferOf(id)} is free`);
+    expect(searchMessages(user, { query: String(bufferOf(id)) }).map((m) => m.id)).toContain(
+      numbered,
+    );
   });
 });
