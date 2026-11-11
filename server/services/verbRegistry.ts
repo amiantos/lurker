@@ -18,6 +18,9 @@ export interface VerbContext {
   userId: number;
   scope: string;
   transport: string;
+  /** Aborted when the caller stopped waiting (an HTTP request that closed). A
+   *  verb whose work can be abandoned stops it; the rest ignore it. */
+  signal?: AbortSignal;
 }
 
 /** JSON Schema fragment used to describe verb inputs. */

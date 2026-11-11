@@ -68,6 +68,8 @@ import { sweepTempUploads } from './routes/uploads.js';
 import { startUploadSessionSweeper } from './services/uploadSessions.js';
 import { failInterruptedDccSends, settleInterruptedDccReceives } from './db/dccTransfers.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
+import { describeRecentSyncWork } from './services/syncWork.js';
+import { stopSearchRunner } from './services/searchRunner.js';
 import restoreGate from './services/restoreGate.js';
 import * as systemMessages from './db/systemMessages.js';
 
@@ -208,7 +210,12 @@ systemLog.log({ scope: 'server', text: `Lurker server starting up (edition: ${ED
 // network at once). Console-only; read via `docker logs`. See eventLoopMonitor.
 // The stall line names the engine-restore refreshes in flight, if any — the
 // known heavy hitter after a re-attach (#842).
-startEventLoopMonitor({ context: () => restoreGate.describeInFlight() });
+// And the WebSocket frame or HTTP request whose handler just held the loop,
+// if one did (syncWork.ts).
+startEventLoopMonitor({
+  context: () =>
+    [describeRecentSyncWork(), restoreGate.describeInFlight()].filter(Boolean).join('; ') || null,
+});
 
 // Built-in identd (opt-in via LURKER_IDENTD_ENABLED). A multi-user gateway
 // needs it so IRC networks can attribute each user behind the shared IP; bind
@@ -340,6 +347,7 @@ function shutdown(signal: string): void {
   shutdownExportJobs();
   stopIgnoreSweeper();
   stopEventLoopMonitor();
+  stopSearchRunner();
   ircManager.shutdown();
   // The detaches just written must leave before this process's descriptors
   // are closed out from under them: server.close with no client connected

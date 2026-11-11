@@ -179,6 +179,15 @@ These are the non-obvious constraints that have bitten changes before:
   throws `database connection is busy` and crashes the process. Read large sets
   with keyset pagination — `WHERE id > ? ORDER BY id LIMIT N`, a discrete
   `.all()` per page, yielding with `setImmediate` between pages.
+- **Message search runs in its own process.** `services/searchRunner.ts` forks
+  `server/searchProcess.ts`, which runs one search statement at a time on a
+  read-only connection; a search whose request was abandoned, or that runs past
+  the time limit, is ended by killing that process. A process and not a worker
+  thread because nothing can interrupt a running better-sqlite3 call
+  (`worker.terminate()` waits for it). The server builds the statement (that is
+  the access boundary) and maps the rows; keep `searchProcess.ts` free of app
+  imports so it starts in milliseconds. New read paths that can walk a large
+  part of `messages` belong there too, not on the shared connection.
 - **A better-sqlite3 transaction commits on `return`.** Only a `throw` rolls
   back. An early `return` on a validation failure inside `db.transaction(fn)`
   commits everything written before it.

@@ -2510,7 +2510,14 @@ export function searchMessages(
 ): MessageEventWithNetwork[] {
   const built = searchMessagesSql(userId, opts);
   if (!built) return [];
-  return (db.prepare(built.sql).all(...built.params) as MessageRowWithNetwork[]).map((row) => ({
+  return searchRowsToEvents(db.prepare(built.sql).all(...built.params));
+}
+
+// The rows of a searchMessagesSql statement, as the events searchMessages
+// returns. Apart so the statement can run elsewhere (services/searchRunner.ts
+// runs it in the search process) and its rows be mapped here.
+export function searchRowsToEvents(rows: unknown[]): MessageEventWithNetwork[] {
+  return (rows as MessageRowWithNetwork[]).map((row) => ({
     ...rowToEvent(row),
     networkName: row.network_name,
   }));

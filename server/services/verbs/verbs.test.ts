@@ -278,8 +278,8 @@ describe('recent_messages', () => {
 });
 
 describe('search_messages', () => {
-  it('matches against FTS index, decorates results, scopes to the caller', () => {
-    const result = callVerb('search_messages', rCtx(owner.id), { query: 'deployment' }) as {
+  it('matches against FTS index, decorates results, scopes to the caller', async () => {
+    const result = (await callVerb('search_messages', rCtx(owner.id), { query: 'deployment' })) as {
       messages: Array<{ text: string; networkId: number }>;
     };
     expect(result.messages).toHaveLength(1);
@@ -288,8 +288,10 @@ describe('search_messages', () => {
     expect(result.messages[0].networkId).toBe(net.id);
   });
 
-  it('returns empty when nothing matches', () => {
-    const result = callVerb('search_messages', rCtx(owner.id), { query: 'xyzzy-no-such-term' }) as {
+  it('returns empty when nothing matches', async () => {
+    const result = (await callVerb('search_messages', rCtx(owner.id), {
+      query: 'xyzzy-no-such-term',
+    })) as {
       messages: unknown[];
     };
     expect(result.messages).toEqual([]);
@@ -300,8 +302,8 @@ describe('search_messages', () => {
   // `query` required, which rejected these as invalid_input and silently hung
   // the modal — the handler and DB layer have always tolerated a missing query
   // as long as at least one structured filter is present.
-  it('accepts filter-only searches with no free-text query', () => {
-    const result = callVerb('search_messages', rCtx(owner.id), { nick: 'alice' }) as {
+  it('accepts filter-only searches with no free-text query', async () => {
+    const result = (await callVerb('search_messages', rCtx(owner.id), { nick: 'alice' })) as {
       messages: Array<{ text: string }>;
     };
     // Pin to message text, not nick — `m.nick = ? COLLATE NOCASE` would still
@@ -313,7 +315,7 @@ describe('search_messages', () => {
     ]);
   });
 
-  it('reports hasMore=false when total matches equal the requested limit exactly', () => {
+  it('reports hasMore=false when total matches equal the requested limit exactly', async () => {
     // Seed a fresh user + network so the message count is deterministic.
     const u = createUser('search-limit-edge');
     const n = createNetwork(u.id, {
@@ -335,7 +337,7 @@ describe('search_messages', () => {
         self: false,
       });
     }
-    const res = callVerb('search_messages', rCtx(u.id), { query: 'needle', limit: 3 }) as {
+    const res = (await callVerb('search_messages', rCtx(u.id), { query: 'needle', limit: 3 })) as {
       messages: unknown[];
       hasMore: boolean;
     };
@@ -344,7 +346,7 @@ describe('search_messages', () => {
     expect(res.hasMore).toBe(false);
   });
 
-  it('reports hasMore=true when there is at least one extra match beyond the limit', () => {
+  it('reports hasMore=true when there is at least one extra match beyond the limit', async () => {
     const u = createUser('search-limit-overflow');
     const n = createNetwork(u.id, {
       name: 'l',
@@ -365,7 +367,7 @@ describe('search_messages', () => {
         self: false,
       });
     }
-    const res = callVerb('search_messages', rCtx(u.id), { query: 'morsel', limit: 3 }) as {
+    const res = (await callVerb('search_messages', rCtx(u.id), { query: 'morsel', limit: 3 })) as {
       messages: unknown[];
       hasMore: boolean;
     };

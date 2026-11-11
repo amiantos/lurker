@@ -128,6 +128,7 @@ import { SESSION_COOKIE, loadBearerCredential } from '../middleware/auth.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
 import { isAllowedBrowserOrigin } from '../utils/corsOrigins.js';
 import { callVerb } from './verbRegistry.js';
+import { timeSyncWork } from './syncWork.js';
 
 // WebSocket extended with per-socket bookkeeping fields.
 interface LurkerWebSocket extends WebSocket {
@@ -2978,7 +2979,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       }
       const msg = parsed as WsPayload;
       try {
-        handleClientMessage(ws, user, msg);
+        // Timed: a frame whose handler holds the loop is named on the stall
+        // line (syncWork.ts).
+        timeSyncWork(
+          () => `ws ${frameType(msg)}`,
+          () => handleClientMessage(ws, user, msg),
+        );
       } catch (err) {
         console.error(`[wsHub] user ${user.id} '${frameType(msg)}' frame threw:`, err);
         try {
@@ -4613,10 +4619,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // Delegates to the search_messages verb. The boundary check above
         // already validated networkId ownership when a network filter was
         // present; searchMessages itself self-scopes the global case to the
-        // caller's networks via its SQL join.
-        let result: { messages: WsPayload[]; hasMore: boolean };
-        try {
-          result = callVerb(
+        // caller's networks via its SQL join. The verb is async: the statement
+        // runs in the search process (searchRunner.ts), and the reply follows.
+        const search = (): Promise<{ messages: WsPayload[]; hasMore: boolean }> =>
+          callVerb(
             'search_messages',
             { userId, scope: 'read-write', transport: 'ws' },
             {
@@ -4634,18 +4640,23 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               before: msg.before ? Number(msg.before) : undefined,
               limit: msg.limit,
             },
-          ) as { messages: WsPayload[]; hasMore: boolean };
-        } catch (_) {
-          send(ws, { kind: 'error', text: 'search failed' });
-          break;
-        }
-        send(ws, {
-          kind: 'search-result',
-          token: msg.token ?? null,
-          results: result.messages,
-          hasMore: result.hasMore,
-          before: msg.before || null,
-        });
+          ) as Promise<{ messages: WsPayload[]; hasMore: boolean }>;
+        void (async () => {
+          let result: { messages: WsPayload[]; hasMore: boolean };
+          try {
+            result = await search();
+          } catch (_) {
+            send(ws, { kind: 'error', text: 'search failed' });
+            return;
+          }
+          send(ws, {
+            kind: 'search-result',
+            token: msg.token ?? null,
+            results: result.messages,
+            hasMore: result.hasMore,
+            before: msg.before || null,
+          });
+        })();
         break;
       }
       default:

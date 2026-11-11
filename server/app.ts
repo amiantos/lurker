@@ -49,6 +49,7 @@ import { isNodeMode } from './utils/edition.js';
 import { previewsEnabled } from './utils/previews.js';
 import { allowedBrowserOrigins } from './utils/corsOrigins.js';
 import { isBodyParseError, refuseCompressedBodies } from './middleware/requestBody.js';
+import { timeSyncWork } from './services/syncWork.js';
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   // A body that didn't parse is answered with the parser's 4xx and never logged
@@ -92,6 +93,18 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
       `[lurker] CORS_ORIGIN is set ("${process.env.CORS_ORIGIN}") but no valid origin parsed from it — cross-origin requests will be rejected. Each entry needs a scheme, e.g. https://irc.example.com`,
     );
   }
+  // First, so it times everything: a request whose handlers hold the event
+  // loop is named on the stall line (services/syncWork.ts). `next()` returns
+  // when the synchronous part of the chain has run, which is the part that
+  // blocks. Labelled by route pattern (`/api/networks/:id`), never the URL: a
+  // path can carry a token.
+  app.use((req, _res, next) => {
+    timeSyncWork(
+      () =>
+        `${req.method} ${req.route ? `${req.baseUrl}${req.route.path}` : req.baseUrl || 'unrouted'}`,
+      next,
+    );
+  });
   // Ahead of everything that reads a body, filehost included: a compressed
   // request body is refused here, never decompressed (middleware/requestBody.ts).
   app.use(refuseCompressedBodies);

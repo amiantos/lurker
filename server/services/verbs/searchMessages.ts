@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { registerVerb } from '../verbRegistry.js';
-import { searchMessages } from '../../db/messages.js';
+import { searchMessagesOffLoop } from '../searchRunner.js';
 import { decorateMessage } from '../wsHub.js';
 
 /** Authenticated caller context passed to every verb handler. */
 interface VerbContext {
   userId: number;
   scope: string;
+  signal?: AbortSignal;
 }
 
 registerVerb({
@@ -56,24 +57,31 @@ registerVerb({
     },
     additionalProperties: false,
   },
-  handler(ctx: VerbContext, input: Record<string, unknown>) {
+  // Async: the statement runs in the search process, never on the event loop
+  // (searchRunner.ts). Rejects with a `search_timeout` / `search_aborted` /
+  // `search_failed` code.
+  async handler(ctx: VerbContext, input: Record<string, unknown>) {
     const limit = Math.min(Math.max(Number(input.limit) || 50, 1), 100);
     // Fetch one extra row to know whether more matches exist without a second
     // FTS scan. The bare `results.length === limit` heuristic the WS code
     // used for years produces a false-positive when the total match count is
     // exactly `limit`; recent_messages was fixed the same way during the
     // Phase 2 extraction.
-    const rows = searchMessages(ctx.userId, {
-      query: typeof input.query === 'string' ? input.query : '',
-      networkId: input.networkId ? Number(input.networkId) : undefined,
-      target: typeof input.target === 'string' && input.target ? input.target : undefined,
-      nick: typeof input.nick === 'string' && input.nick ? input.nick : undefined,
-      nicks: Array.isArray(input.nicks)
-        ? (input.nicks as unknown[]).filter((n): n is string => typeof n === 'string' && !!n)
-        : undefined,
-      before: input.before ? Number(input.before) : undefined,
-      limit: limit + 1,
-    });
+    const rows = await searchMessagesOffLoop(
+      ctx.userId,
+      {
+        query: typeof input.query === 'string' ? input.query : '',
+        networkId: input.networkId ? Number(input.networkId) : undefined,
+        target: typeof input.target === 'string' && input.target ? input.target : undefined,
+        nick: typeof input.nick === 'string' && input.nick ? input.nick : undefined,
+        nicks: Array.isArray(input.nicks)
+          ? (input.nicks as unknown[]).filter((n): n is string => typeof n === 'string' && !!n)
+          : undefined,
+        before: input.before ? Number(input.before) : undefined,
+        limit: limit + 1,
+      },
+      ctx.signal,
+    );
     const hasMore = rows.length > limit;
     // NOT hoisted (#679): search spans buffers, so unlike every other N-row
     // decorate site the notify-always answer genuinely varies per row.
