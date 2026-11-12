@@ -49,6 +49,7 @@ import { isNodeMode } from './utils/edition.js';
 import { previewsEnabled } from './utils/previews.js';
 import { allowedBrowserOrigins } from './utils/corsOrigins.js';
 import { isBodyParseError, refuseCompressedBodies } from './middleware/requestBody.js';
+import { timeHandlers } from './middleware/timeHandlers.js';
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   // A body that didn't parse is answered with the parser's 4xx and never logged
@@ -92,6 +93,8 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
       `[lurker] CORS_ORIGIN is set ("${process.env.CORS_ORIGIN}") but no valid origin parsed from it — cross-origin requests will be rejected. Each entry needs a scheme, e.g. https://irc.example.com`,
     );
   }
+  // First of all, and again below the body parsers: see timeHandlers.
+  app.use(timeHandlers);
   // Ahead of everything that reads a body, filehost included: a compressed
   // request body is refused here, never decompressed (middleware/requestBody.ts).
   app.use(refuseCompressedBodies);
@@ -106,6 +109,9 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
   app.use(cors({ origin: corsOrigins, credentials: true }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser(sessionSecret));
+  // Again: a request with a body reaches its handler from express.json's own,
+  // later, `next()`.
+  app.use(timeHandlers);
 
   app.use('/api/auth', authRouter);
   app.use('/api/networks', networksRouter);

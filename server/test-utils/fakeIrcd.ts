@@ -146,6 +146,9 @@ export interface FakeClient {
   metadataSubs: Set<string>;
   // Every line this client sent, in order.
   sent: string[];
+  // Set by silence(): the server says nothing more to this client, a link
+  // that died without a FIN. Its lines are still recorded in `sent`.
+  silenced?: boolean;
 }
 
 const METADATA_KEY_RE = /^[a-z0-9_./-]+$/;
@@ -631,6 +634,13 @@ export class FakeIrcd extends EventEmitter {
     if (c) this.raw(c, line);
   }
 
+  // Stop saying anything to a client, PONGs included, and leave the socket
+  // open: what a dead route looks like from the client's end.
+  silence(nick: string): void {
+    const c = this.client(nick);
+    if (c) c.silenced = true;
+  }
+
   // Close a client's socket from the server side, optionally after ERROR.
   drop(nick: string, withError = true): void {
     const c = this.client(nick);
@@ -690,7 +700,7 @@ export class FakeIrcd extends EventEmitter {
   // order. Only on a real write — a line dropped to a destroyed socket never
   // went on the wire and must not show up in a wire log.
   private raw(c: FakeClient, line: string): void {
-    if (c.socket.destroyed) return;
+    if (c.socket.destroyed || c.silenced) return;
     c.socket.write(line + '\r\n');
     this.emit('sent', line, c);
   }

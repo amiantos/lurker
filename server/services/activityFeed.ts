@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { searchMessages } from '../db/messages.js';
+import { searchMessagesOffLoop } from './searchRunner.js';
 import type { MessageEventWithNetwork } from '../db/messages.js';
 import { listReactionsToUser } from '../db/reactions.js';
 import type { ReactionFeedItem } from '../db/reactions.js';
@@ -44,18 +44,20 @@ export interface ActivityFilters {
   networkId?: number;
 }
 
-export function listActivity(
+// Async: the highlights side takes free text, so it runs where search runs,
+// off the event loop (searchRunner.ts), and rejects with its error codes.
+export async function listActivity(
   userId: number,
   filters: ActivityFilters,
   cursor: ActivityCursor,
   limit: number,
-): { items: ActivityItem[]; next: ActivityCursor | null } {
-  const highlights = searchMessages(userId, {
-    matched: true,
-    ...filters,
-    before: cursor.beforeMessage,
-    limit,
-  });
+  signal?: AbortSignal,
+): Promise<{ items: ActivityItem[]; next: ActivityCursor | null }> {
+  const highlights = await searchMessagesOffLoop(
+    userId,
+    { matched: true, ...filters, before: cursor.beforeMessage, limit },
+    signal,
+  );
   const reactions = listReactionsToUser(userId, {
     ...filters,
     before: cursor.beforeReaction,

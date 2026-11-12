@@ -70,10 +70,16 @@ number of lines.
 
 Not speed — the same query runs either way. As a WS verb, search was welded
 to the socket hub: result pages competed with the live IRC event stream for
-the socket's backpressure budget, a superseded search always ran to
-completion server-side because there is no WS cancel frame, and moving the
-query off the main event loop would have been a protocol change hitting every
-client. As a URL it's a stateless read: cancellable, cacheable by
-infrastructure, and movable to a worker or read-only connection by a routing
-decision. Full reasoning in
+the socket's backpressure budget, and a superseded search could not be
+cancelled because there is no WS cancel frame. As a URL it's a stateless
+read: cancellable and cacheable by infrastructure. Full reasoning in
 [#676](https://github.com/amiantos/lurker/issues/676).
+
+Since 2.7.0 the query runs off the server's event loop, in a separate search
+process, for both transports
+([#1302](https://github.com/amiantos/lurker/issues/1302)). That is where the
+difference between them now shows: aborting the REST request stops the search
+at once, while a WS search you have superseded keeps its place until it
+finishes, its socket closes, or the time limit ends it. Either can now fail
+with "took too long" — see `GET /api/search` in
+[CLIENT_PROTOCOL](/CLIENT_PROTOCOL).

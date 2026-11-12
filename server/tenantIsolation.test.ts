@@ -408,8 +408,10 @@ describe('Verb layer (WebSocket + MCP core) — tenant B is denied', () => {
     );
   });
 
-  it('global search/list verbs never surface A’s data to B', () => {
-    const search = callVerb('search_messages', verbCtx(userBId), { query: SECRET_TOKEN }) as {
+  it('global search/list verbs never surface A’s data to B', async () => {
+    const search = (await callVerb('search_messages', verbCtx(userBId), {
+      query: SECRET_TOKEN,
+    })) as {
       messages: unknown[];
     };
     expect(search.messages).toHaveLength(0);
@@ -432,14 +434,16 @@ describe('Verb layer (WebSocket + MCP core) — tenant B is denied', () => {
 });
 
 describe('Verb layer — owner A can (positive controls)', () => {
-  it('A reads A’s buffer, finds A’s message in search, sees A’s network', () => {
+  it('A reads A’s buffer, finds A’s message in search, sees A’s network', async () => {
     const recent = callVerb('recent_messages', verbCtx(userAId), {
       networkId: netAId,
       target: SECRET_TARGET,
     }) as { messages: Array<{ id: number }> };
     expect(recent.messages.map((m) => m.id)).toContain(msgIdA);
 
-    const search = callVerb('search_messages', verbCtx(userAId), { query: SECRET_TOKEN }) as {
+    const search = (await callVerb('search_messages', verbCtx(userAId), {
+      query: SECRET_TOKEN,
+    })) as {
       messages: Array<{ id: number }>;
     };
     expect(search.messages.map((m) => m.id)).toContain(msgIdA);

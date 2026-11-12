@@ -239,6 +239,9 @@ them yet.
   refused your messages to (a `+R`/`+M` channel you can't speak in), and to peers it
   knows are offline — otherwise every keystroke earns another error reply in your DM
   buffer.
+  At most one notification goes to a target every three seconds, carrying your
+  newest state (the spec's rule), so typing never uses up the flood allowance your
+  message needs; a message you send takes back any typing notification still waiting.
   <br>`server/services/ircConnection.ts:4873` (send), `:2746` (receive)
 
 ### You can see when your DM peers are around
