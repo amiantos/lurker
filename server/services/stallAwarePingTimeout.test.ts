@@ -140,13 +140,19 @@ describe('a stall past the ping timeout (#1074)', { timeout: 15_000 }, () => {
   it('stops re-probing a silent server after MAX_PROBES, however often the loop stalls', async () => {
     const me = await connected('stalls-dead');
     ircd.silence('stalls-dead');
+    // A line written just before the silence (a keepalive's PONG) may still
+    // be on its way, and reading it rightly starts the count over. Let it
+    // land, and count only the probes after it.
+    await new Promise((r) => setTimeout(r, 200));
+    const from = me.sent.length;
     await stall(STALL_MS);
     // Each stall outlasts the probe window before it, so every window fires late.
     for (let i = 0; i < 6; i++) await stall(TIMING.probeMs * 2);
 
     await until(() => quits(me).length > 0, 5000, 'the QUIT');
-    expect(probes(me).length).toBeGreaterThan(1);
-    expect(probes(me).length).toBeLessThanOrEqual(MAX_PROBES);
+    const counted = me.sent.slice(from).filter((l) => l.includes('lurker-stall-probe'));
+    expect(counted.length).toBeGreaterThan(1);
+    expect(counted.length).toBeLessThanOrEqual(MAX_PROBES);
   });
 
   it('closes a silent server after one unanswered probe when nothing stalled', async () => {
