@@ -341,8 +341,8 @@ const MAX_CONSECUTIVE_SASL_FAILURES = 3;
  *    before the connection QUITs (#1074, stallAwarePingTimeout.ts). */
 export const ircPingTiming = { timeoutS: 300, intervalS: 30, probeMs: 30_000 };
 
-/** How long a ping-timeout QUIT may take to go out before the socket is
- *  closed anyway: a dead route with a full send buffer never finishes it. */
+/** How long a QUIT may take to go out before the socket is closed anyway: a
+ *  dead route with a full send buffer never finishes it. */
 const QUIT_GRACE_MS = 10_000;
 
 // The IRC socket under a Client's net.js transport (a proxied one included,
@@ -1618,10 +1618,17 @@ export class IrcConnection {
       // to what is already waiting (networkEdited).
       paced: () => this.network.flood_protection !== 0,
     });
-    connection.write = (data: string, callback?: () => void) =>
-      callback || this.sendingNow
+    connection.write = (data: string, callback?: () => void) => {
+      // A QUIT closes the socket from its write callback (Connection.end),
+      // which never comes on a dead route with a full send buffer. The
+      // socket's idle timeout used to end that and is off once connected
+      // ('socket connected'), so it comes back on, short, for the QUIT: a
+      // Disconnect, a dispose, a ping timeout alike (#1074).
+      if (callback) netSocketOf(this.client)?.setTimeout(QUIT_GRACE_MS);
+      return callback || this.sendingNow
         ? write(data, callback)
         : this.sendPacer.write(data, { priority: this.writePriority });
+    };
     // Lines held while the link was down go once the connection is registered
     // again (an engine re-attach). Hooked here, not in our 'registered'
     // handler: the command handler emits 'all' (which that handler is) before
@@ -3147,10 +3154,6 @@ export class IrcConnection {
     on('ping timeout', () => {
       const text = `Ping timeout — ${this.network.host} went silent and didn't answer a PING; reconnecting.`;
       this.logNet(text, 'warn');
-      // The QUIT closes the socket once it's written. On a dead route with a
-      // full send buffer it never is, and the socket's idle timeout, which
-      // used to end that, is off ('socket connected' below).
-      netSocketOf(this.client)?.setTimeout(QUIT_GRACE_MS);
       console.warn(`[irc] ping timeout on network ${this.network.id} (${this.network.host})`);
     });
 

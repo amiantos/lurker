@@ -94,12 +94,16 @@ describe('a stall past the ping timeout (#1074)', { timeout: 15_000 }, () => {
   // on how Node orders its timer lists, so the stall tests below catch it left
   // on only some of the time; this pins it off, and pins the library's
   // internals ircConnection reaches through to turn it off.
-  it("turns the socket's own idle timeout off once connected", async () => {
+  it("turns the socket's own idle timeout off once connected, and back on for a QUIT", async () => {
     await connected('idle-off');
     const internals = conn!.client as unknown as {
       connection: { transport: { socket: { timeout?: number } } };
     };
-    expect(internals.connection.transport.socket.timeout).toBe(0);
+    const socket = internals.connection.transport.socket;
+    expect(socket.timeout).toBe(0);
+    // A QUIT that a dead route never lets out must still end the socket.
+    conn!.disconnect();
+    expect(socket.timeout).toBe(10_000);
   });
 
   it('closes nothing when the server kept talking through it', async () => {
@@ -147,20 +151,10 @@ describe('a stall past the ping timeout (#1074)', { timeout: 15_000 }, () => {
 
   it('closes a silent server after one unanswered probe when nothing stalled', async () => {
     const me = await connected('quiet-dead');
-    // The QUIT goes out with the socket's idle timeout back on, short, so a
-    // QUIT that can't be written still ends the socket.
-    let idleWhileQuitting: number | undefined;
-    conn!.client.on('ping timeout', () => {
-      const internals = conn!.client as unknown as {
-        connection: { transport: { socket: { timeout?: number } } };
-      };
-      idleWhileQuitting = internals.connection.transport.socket.timeout;
-    });
     ircd.silence('quiet-dead');
 
     await until(() => quits(me).length > 0, 5000, 'the QUIT');
     expect(probes(me).length).toBeGreaterThan(0);
     expect(quits(me)[0]).toMatch(/Ping timeout/);
-    expect(idleWhileQuitting).toBe(10_000);
   });
 });
