@@ -103,6 +103,18 @@ let lastSilentMissWarnAt = 0;
 // disagree on representation alone and never match.
 function normalizeAddress(address: string | undefined | null): string {
   if (!address) return '';
+  // A PROXY header spells IPv6 however its sender likes; the kernel reports the
+  // canonical form. The URL parser is the canonicalizer Node ships (lower case,
+  // zero runs collapsed, a dotted tail turned to hex), so both compare equal.
+  if (net.isIPv6(address) && !address.includes('%')) {
+    address = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+    const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(address);
+    if (mapped) {
+      const high = parseInt(mapped[1], 16);
+      const low = parseInt(mapped[2], 16);
+      return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+    }
+  }
   const m = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address);
   return m && net.isIPv4(m[1]) ? m[1] : address;
 }
@@ -235,6 +247,25 @@ interface GraceConfig {
   graceMs: number;
   graceStepMs: number;
   graceMaxPending: number;
+  // LURKER_IDENTD_PROXY_PROTOCOL — see identdProxyProtocol().
+  proxyProtocol: boolean;
+}
+
+// A PROXY v1 line is at most 107 bytes with its CRLF, so the '\n' sits at 106.
+const PROXY_HEADER_MAX_NL = 106;
+const PROXY_HEADER_RE = /^PROXY (TCP[46]) ([^ ]+) ([^ ]+) (0|[1-9]\d{0,4}) (0|[1-9]\d{0,4})\r$/;
+
+// The addresses a PROXY v1 header states, or null when the line is not a valid
+// TCP4/TCP6 header. The header's ports are the proxy's own :113 hop — range
+// checked and otherwise unused; the ident query carries the IRC ports.
+function parseProxyHeader(line: string): { remote: string; local: string } | null {
+  const m = PROXY_HEADER_RE.exec(line);
+  if (!m) return null;
+  const family = m[1] === 'TCP4' ? 4 : 6;
+  if (net.isIP(m[2]) !== family || net.isIP(m[3]) !== family) return null;
+  if (m[2].includes('%') || m[3].includes('%')) return null;
+  if (Number(m[4]) > 65535 || Number(m[5]) > 65535) return null;
+  return { remote: normalizeAddress(m[2]), local: normalizeAddress(m[3]) };
 }
 
 // RFC 1413 reply lines. The query echoes its own port pair back ahead of the
@@ -250,13 +281,23 @@ const noUserReply = (lport: number, rport: number): string =>
 // miss (no entry with these ports) is treated as a possible registration race
 // and given the grace window; an ADDRESS mismatch is the enumeration-refusal
 // case and answered NO-USER at once (see lookupIdent / noteAddrMiss).
+//
+// With cfg.proxyProtocol, a LOOPBACK peer is the operator's local proxy and must
+// open with one PROXY v1 header, whose addresses replace the connection's own.
+// Required, never sniffed: the PROXY spec forbids guessing, and a header taken
+// from whoever offers one would let any forwarder that passes bytes through
+// from loopback hand a remote scanner the addresses half of the 4-tuple.
 function handleConnection(socket: net.Socket, cfg: GraceConfig): void {
   metrics.accepted++;
   // Keep the idle timeout safely above the grace window so a raised graceMs can't
   // let the socket time out mid-rescue.
   socket.setTimeout(Math.max(10_000, cfg.graceMs + 1_000));
-  const queryLocalAddress = normalizeAddress(socket.localAddress);
-  const queryRemoteAddress = normalizeAddress(socket.remoteAddress);
+  let queryLocalAddress = normalizeAddress(socket.localAddress);
+  let queryRemoteAddress = normalizeAddress(socket.remoteAddress);
+  let awaitingProxyHeader =
+    cfg.proxyProtocol &&
+    (queryRemoteAddress === '::1' ||
+      (net.isIPv4(queryRemoteAddress) && queryRemoteAddress.startsWith('127.')));
   let buf = '';
   let answered = false;
   let graceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -282,19 +323,39 @@ function handleConnection(socket: net.Socket, cfg: GraceConfig): void {
     socket.end(line);
   };
 
+  // Drop without a reply. Counted invalid (not a silent probe) so it doesn't
+  // pollute noData, which is the starvation signal we read for the DALnet-class
+  // follow-up.
+  const reject = (): void => {
+    answered = true;
+    metrics.invalid++;
+    socket.destroy();
+  };
+
   socket.on('data', (chunk: Buffer) => {
     if (answered) return;
     buf += chunk.toString('latin1');
+    if (awaitingProxyHeader) {
+      const end = buf.indexOf('\n');
+      if (end === -1 ? buf.length > PROXY_HEADER_MAX_NL : end > PROXY_HEADER_MAX_NL) {
+        reject();
+        return;
+      }
+      if (end === -1) return;
+      const forwarded = parseProxyHeader(buf.slice(0, end));
+      if (!forwarded) {
+        reject();
+        return;
+      }
+      queryRemoteAddress = forwarded.remote;
+      queryLocalAddress = forwarded.local;
+      awaitingProxyHeader = false;
+      buf = buf.slice(end + 1);
+    }
     const nl = buf.indexOf('\n');
     if (nl === -1) {
-      // Junk flood with no newline — bail. Mark answered + count as invalid (not
-      // a silent probe) so it doesn't pollute noData, which is the starvation
-      // signal we read for the DALnet-class follow-up.
-      if (buf.length > 100) {
-        answered = true;
-        metrics.invalid++;
-        socket.destroy();
-      }
+      // Junk flood with no newline — bail.
+      if (buf.length > 100) reject();
       return;
     }
     const m = /^\s*(\d{1,5})\s*,\s*(\d{1,5})/.exec(buf.slice(0, nl));
@@ -410,6 +471,7 @@ export function createIdentdServer(opts: Partial<GraceConfig> = {}): net.Server 
     graceMs: opts.graceMs ?? GRACE_MS,
     graceStepMs: opts.graceStepMs ?? GRACE_STEP_MS,
     graceMaxPending: opts.graceMaxPending ?? GRACE_MAX_PENDING,
+    proxyProtocol: opts.proxyProtocol ?? false,
   };
   // allowHalfOpen: true is REQUIRED for the grace window. RFC 1413 queriers
   // commonly half-close (shutdown(SHUT_WR)) right after writing the query; with
@@ -456,7 +518,8 @@ function startSummary(): void {
 
 export function startIdentd(port: number, bindHost?: string): void {
   if (server) return;
-  const srv = createIdentdServer();
+  const proxyProtocol = identdProxyProtocol();
+  const srv = createIdentdServer({ proxyProtocol });
   srv.on('error', (err: Error) => {
     // A failed bind (EACCES without the privilege to bind :113, or EADDRINUSE)
     // must not take down the whole server — log and carry on without identd. If
@@ -472,6 +535,11 @@ export function startIdentd(port: number, bindHost?: string): void {
     console.log(
       `[identd] listening on ${where}${port} — verifying idents against the full RFC 1413 4-tuple, with a ${GRACE_MS}ms grace window to absorb the connect/registration race; relies on the container seeing IRC servers' real inbound source IPs (Docker bridge preserves them; if idents fail wholesale, run with network_mode: host)`,
     );
+    if (proxyProtocol) {
+      console.log(
+        '[identd] LURKER_IDENTD_PROXY_PROTOCOL is on — a loopback peer must open with a PROXY v1 header and its addresses are believed; keep everything that can reach this listener from loopback PROXY-aware',
+      );
+    }
     // Only once we're actually listening — a failed bind shouldn't leave a stray
     // interval ticking for a service that never came up.
     startSummary();
@@ -509,6 +577,15 @@ export function identdPort(): number {
 export function identdBindHost(): string | undefined {
   const host = (process.env.LURKER_IDENTD_BIND || '').trim();
   return host || undefined;
+}
+
+// Opt-in PROXY protocol v1 on the identd listener (LURKER_IDENTD_PROXY_PROTOCOL),
+// for a local proxy that owns the public :113 and forwards here (ident-proxy,
+// HAProxy send-proxy). Off by default: turning it on means believing whatever
+// addresses a loopback peer states, which is only safe when every path into this
+// listener from loopback is a proxy that writes the header itself.
+export function identdProxyProtocol(): boolean {
+  return /^(1|true|yes|on)$/i.test((process.env.LURKER_IDENTD_PROXY_PROTOCOL || '').trim());
 }
 
 // ---------------------------------------------------------------------------

@@ -93,7 +93,7 @@ Skip this entirely if you do not run identd — most people do not, and networks
 
 If you do, the settings and the port move from `lurker` to `lurker-engine`. Where they live decides the work:
 
-- **In `.env`:** nothing to edit. The overlay forwards `LURKER_IDENTD_ENABLED`, `LURKER_IDENTD_PORT`, `LURKER_IDENTD_BIND` and `LURKER_OIDENTD_FILE` to the engine for you.
+- **In `.env`:** nothing to edit. The overlay forwards `LURKER_IDENTD_ENABLED`, `LURKER_IDENTD_PORT`, `LURKER_IDENTD_BIND`, `LURKER_IDENTD_PROXY_PROTOCOL` and `LURKER_OIDENTD_FILE` to the engine for you.
 - **In an `environment:` block on `lurker` in your override:** move that block to `lurker-engine`. The overlay cannot see values set there.
 
 The host `:113` mapping is yours to move as well, along with the oidentd bind mount if you use file mode. In `docker-compose.override.yml`:

@@ -699,6 +699,8 @@ services:
 
 …and remove the same from `lurker` (if you used the DigitalOcean deploy's identd overlay, that is where its `113:113` lives). `LURKER_OUTGOING_ADDR` is the exception: it **stays on `lurker`** — the app reads it and tells the engine which address to bind — but the address must of course exist on the engine's host.
 
+**identd behind a local proxy.** If something else owns the public `:113` and forwards to Lurker (for example [ident-proxy](https://git.sr.ht/~emersion/ident-proxy)), the query arrives from loopback and the network's address is lost. Set `LURKER_IDENTD_PROXY_PROTOCOL=true` and have the proxy send a [PROXY v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) header. A loopback peer must then open with that header, and Lurker matches on the addresses it states; queries from anywhere else are answered as before. Leave it off unless everything that reaches the listener from loopback writes the header itself: a forwarder that passes bytes through would let anyone state those addresses. With an engine the setting belongs on the engine, and the overlay forwards it.
+
 **Turning it off again.** Stop the engine first, or the network briefly sees two of you; then bring the stack up _without_ the overlay — and if you added the `COMPOSE_FILE` line to `.env`, take the overlay out of it first, otherwise the plain command still loads it and simply restarts the engine you just stopped:
 
 ```bash
