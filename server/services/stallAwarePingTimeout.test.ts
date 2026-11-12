@@ -17,6 +17,7 @@ import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import type { FakeClient } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
 import type { IrcConnection as IrcConnectionT } from './ircConnection.js';
+import { MAX_PROBES } from './stallAwarePingTimeout.js';
 
 let IrcConnection: typeof import('./ircConnection.js').IrcConnection;
 let ircPingTiming: typeof import('./ircConnection.js').ircPingTiming;
@@ -28,6 +29,7 @@ let conn: IrcConnectionT | null = null;
 // always hears from the server well inside the 1 s timeout. The socket's idle
 // timeout is their sum, 1.5 s: a 2.5 s stall overruns both.
 const TIMING = { timeoutS: 1, intervalS: 0.5, probeMs: 500 };
+let savedTiming: typeof TIMING;
 const STALL_MS = 2500;
 
 // Blocks the loop from a setImmediate callback. The phase matters: after a
@@ -51,6 +53,7 @@ function stall(ms: number, before?: () => void): Promise<void> {
 
 beforeAll(async () => {
   ({ IrcConnection, ircPingTiming } = await import('./ircConnection.js'));
+  savedTiming = { ...ircPingTiming };
   Object.assign(ircPingTiming, TIMING);
   ircd = await FakeIrcd.start({});
   userId = createUser('ping-stall').id;
@@ -62,6 +65,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
+  Object.assign(ircPingTiming, savedTiming);
   await ircd.close();
 });
 
@@ -113,7 +117,7 @@ describe('a stall past the ping timeout (#1074)', { timeout: 15_000 }, () => {
     expect(conn!.state).toBe('connected');
     expect(registrationsOf('stall-alive')).toBe(1);
     // And it got there by probing.
-    expect(probes(me)).toHaveLength(1);
+    expect(probes(me).length).toBeGreaterThan(0);
   });
 
   it('still closes a server that went silent, after the probe goes unanswered', async () => {
@@ -121,22 +125,42 @@ describe('a stall past the ping timeout (#1074)', { timeout: 15_000 }, () => {
     ircd.silence('stall-dead');
     await stall(STALL_MS);
 
-    await until(() => quits(me).length > 0, 3000, 'the QUIT');
-    expect(probes(me)).toHaveLength(1);
+    await until(() => quits(me).length > 0, 5000, 'the QUIT');
+    expect(probes(me).length).toBeGreaterThan(0);
     expect(quits(me)[0]).toMatch(/Ping timeout/);
     expect(registrationsOf('stall-dead')).toBe(1);
   });
 
-  it('closes a silent server at the timeout when nothing stalled', async () => {
+  // A probe window stalled through proves nothing, so it probes again, but
+  // only so often: a dead server on a loop that keeps stalling still closes.
+  it('stops re-probing a silent server after MAX_PROBES, however often the loop stalls', async () => {
+    const me = await connected('stalls-dead');
+    ircd.silence('stalls-dead');
+    await stall(STALL_MS);
+    // Each stall outlasts the probe window before it, so every window fires late.
+    for (let i = 0; i < 6; i++) await stall(TIMING.probeMs * 2);
+
+    await until(() => quits(me).length > 0, 5000, 'the QUIT');
+    expect(probes(me).length).toBeGreaterThan(1);
+    expect(probes(me).length).toBeLessThanOrEqual(MAX_PROBES);
+  });
+
+  it('closes a silent server after one unanswered probe when nothing stalled', async () => {
     const me = await connected('quiet-dead');
-    const silencedAt = performance.now();
+    // The QUIT goes out with the socket's idle timeout back on, short, so a
+    // QUIT that can't be written still ends the socket.
+    let idleWhileQuitting: number | undefined;
+    conn!.client.on('ping timeout', () => {
+      const internals = conn!.client as unknown as {
+        connection: { transport: { socket: { timeout?: number } } };
+      };
+      idleWhileQuitting = internals.connection.transport.socket.timeout;
+    });
     ircd.silence('quiet-dead');
 
-    await until(() => quits(me).length > 0, 3000, 'the QUIT');
-    // The timeout plus at most one keepalive interval, not a probe window more.
-    expect(performance.now() - silencedAt).toBeLessThan(
-      (TIMING.timeoutS + TIMING.intervalS) * 1000 + 400,
-    );
+    await until(() => quits(me).length > 0, 5000, 'the QUIT');
+    expect(probes(me).length).toBeGreaterThan(0);
     expect(quits(me)[0]).toMatch(/Ping timeout/);
+    expect(idleWhileQuitting).toBe(10_000);
   });
 });

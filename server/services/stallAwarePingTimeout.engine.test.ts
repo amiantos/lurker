@@ -40,6 +40,8 @@ function stall(ms: number, before?: () => void): Promise<void> {
   );
 }
 
+const savedTiming = { ...ircPingTiming };
+
 beforeAll(async () => {
   Object.assign(ircPingTiming, TIMING);
   harness = await startEngineHarness({ secret: 'ping-stall-secret' });
@@ -47,6 +49,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  Object.assign(ircPingTiming, savedTiming);
   await harness.stop();
 });
 
@@ -82,7 +85,7 @@ describe('a stall past the ping timeout, in engine mode (#1074)', { timeout: 20_
     expect(conn.state).toBe('connected');
     expect(registrationsOf('es-alive')).toBe(1);
     // And it got there by probing, through the engine.
-    expect(me.sent.filter((l) => l.includes('lurker-stall-probe'))).toHaveLength(1);
+    expect(me.sent.filter((l) => l.includes('lurker-stall-probe')).length).toBeGreaterThan(0);
     ircManager.stopNetwork(userId, networkId);
   });
 

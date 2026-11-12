@@ -156,7 +156,7 @@ import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
 import { e2eDbg } from './e2e/debug.js';
 import { RateLimiter } from './e2e/rateLimiter.js';
 import { SendPacer } from './sendPacer.js';
-import { installStallAwarePingTimeout } from './stallAwarePingTimeout.js';
+import { installStallAwarePingTimeout, STALL_LATE_MS } from './stallAwarePingTimeout.js';
 import type { Line, SendPriority, WriteOptions } from './sendPacer.js';
 import type { LineHooks } from './ircManager.js';
 import {
@@ -337,9 +337,22 @@ const MAX_CONSECUTIVE_SASL_FAILURES = 3;
  *    irssi's and WeeChat's 5 minutes.
  *  - intervalS: irc-framework's own keepalive PING, its default. With timeoutS
  *    it also sizes the socket's idle timeout, which bounds the dial.
- *  - probeMs: after a stall, how long a probe PING has to get a line back
- *    before the silence counts (#1074, stallAwarePingTimeout.ts). */
-export const ircPingTiming = { timeoutS: 300, intervalS: 30, probeMs: 60_000 };
+ *  - probeMs: how long the PING sent at the timeout has to get a line back
+ *    before the connection QUITs (#1074, stallAwarePingTimeout.ts). */
+export const ircPingTiming = { timeoutS: 300, intervalS: 30, probeMs: 30_000 };
+
+/** How long a ping-timeout QUIT may take to go out before the socket is
+ *  closed anyway: a dead route with a full send buffer never finishes it. */
+const QUIT_GRACE_MS = 10_000;
+
+// The IRC socket under a Client's net.js transport (a proxied one included,
+// proxyTransport.ts). Null in engine mode: that transport's `socket` is the
+// engine's id for the socket, a string.
+function netSocketOf(client: IrcClient): net.Socket | null {
+  const socket = (client as unknown as { connection?: { transport?: { socket?: unknown } } })
+    .connection?.transport?.socket;
+  return socket instanceof net.Socket ? socket : null;
+}
 
 // Replies to the state requests a restore makes for each channel (MODE → 324
 // (+329), TOPIC → 331 or 332 (+333)). A real join is volunteered these; a
@@ -1538,21 +1551,20 @@ export class IrcConnection {
     // pitfall the enable_chghost note on the connect() call documents. Mirrors
     // The Lounge, which uses the same library the same way. See services/ctcp.ts.
     this.client = new IRC.Client();
-    // A ping timeout that a stalled event loop caused probes before it QUITs
-    // (#1074). Console only: a stall trips this on every network at once, the
-    // write burst the 'ping timeout' handler below explains.
+    // The ping timeout PINGs and waits for an answer before it QUITs, so an
+    // event-loop stall can't close a healthy connection (#1074). Console only:
+    // a stall trips this on every network at once, the write burst the
+    // 'ping timeout' handler below explains.
     installStallAwarePingTimeout(this.client, {
-      get probeMs() {
-        return ircPingTiming.probeMs;
-      },
-      onSuspect: (lateMs) =>
+      probeMs: () => ircPingTiming.probeMs,
+      onProbe: (lateMs) =>
         console.warn(
-          `[irc] suspect ping timeout on network ${this.network.id} (${this.network.host}): ` +
-            `the timer fired ${lateMs}ms late, so the event loop stalled — probing`,
+          `[irc] ping timeout on network ${this.network.id} (${this.network.host}): probing` +
+            (lateMs >= STALL_LATE_MS ? ` (timer ${lateMs}ms late: the event loop stalled)` : ''),
         ),
       onAlive: () =>
         console.warn(
-          `[irc] suspect ping timeout on network ${this.network.id} (${this.network.host}) — probed, alive`,
+          `[irc] ping timeout on network ${this.network.id} (${this.network.host}): probed, alive`,
         ),
     });
     // The one outbound path (#1149): client.raw, irc-framework's CAP and PING
@@ -3123,9 +3135,9 @@ export class IrcConnection {
     // for `ping_timeout` seconds (ircPingTiming) — then the connection QUITs
     // (ending the socket with NO socket error, so the disconnect otherwise
     // surfaces as a bare "Disconnected" with no cause) and our controller
-    // schedules the reconnect from 'close'. A timer that a stalled event loop
-    // held past its deadline doesn't land here: it probes first, and only a
-    // probe that gets nothing back does (#1074, stallAwarePingTimeout.ts).
+    // schedules the reconnect from 'close'. It lands here only after a probe
+    // PING went unanswered, so a stalled event loop doesn't (#1074,
+    // stallAwarePingTimeout.ts).
     // Deliberately does NOT publish() a notice (which inserts a message row +
     // fanOuts to every socket): a server-side outage trips this on every network
     // on it at once, and a stall that outlasts its probe on every network the
@@ -3133,8 +3145,12 @@ export class IrcConnection {
     // app's system buffer), and console.warn lands in `docker logs` next to any
     // [event-loop] stall line for correlation.
     on('ping timeout', () => {
-      const text = `Ping timeout — no data from ${this.network.host} for ${ircPingTiming.timeoutS / 60} minutes; reconnecting.`;
+      const text = `Ping timeout — ${this.network.host} went silent and didn't answer a PING; reconnecting.`;
       this.logNet(text, 'warn');
+      // The QUIT closes the socket once it's written. On a dead route with a
+      // full send buffer it never is, and the socket's idle timeout, which
+      // used to end that, is off ('socket connected' below).
+      netSocketOf(this.client)?.setTimeout(QUIT_GRACE_MS);
       console.warn(`[irc] ping timeout on network ${this.network.id} (${this.network.host})`);
     });
 
@@ -3144,14 +3160,9 @@ export class IrcConnection {
     // the dial and the handshake, and after them it only ever fires when the
     // event loop stalled: the lag pinger writes every 30 s, and a write resets
     // it. Like the ping timer, it fires after a stall before the lines waiting
-    // in the socket are read, and it closes without a probe (#1074). A
-    // proxied socket is the same net.js one (proxyTransport.ts); the engine's
-    // transport has none (its `socket` is the engine's id for it).
+    // in the socket are read, and it closes without a probe (#1074).
     on('socket connected', () => {
-      const socket = (
-        this.client as unknown as { connection?: { transport?: { socket?: unknown } } }
-      ).connection?.transport?.socket;
-      if (socket instanceof net.Socket) socket.setTimeout(0);
+      netSocketOf(this.client)?.setTimeout(0);
     });
 
     // Built-in identd: the moment the raw socket connects, register this
@@ -7406,9 +7417,10 @@ export class IrcConnection {
       // idle timeout, ping_interval + ping_timeout, 5.5 minutes, which comes off
       // once the socket is up ('socket connected' above). The socket has no TCP
       // keepalive, so this is also what notices a link that died without a
-      // word. A timer that an event-loop stall held up probes before it gives
-      // up (#1074, stallAwarePingTimeout.ts). Same connect()-dict rule as
-      // enable_chghost below.
+      // word. At the timeout it PINGs and waits 30 s more before it gives up,
+      // so an event-loop stall can't close a healthy link (#1074,
+      // stallAwarePingTimeout.ts). Same connect()-dict rule as enable_chghost
+      // below.
       ping_timeout: ircPingTiming.timeoutS,
       ping_interval: ircPingTiming.intervalS,
       // Disable irc-framework's built-in CTCP VERSION auto-reply so our own
