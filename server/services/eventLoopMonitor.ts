@@ -5,10 +5,12 @@
 // lateness is the time the loop spent blocked in synchronous work (a heavy
 // snapshot on slow storage, a big JSON.stringify, etc.). While the loop is
 // blocked it services NO socket I/O, so a long enough stall stops us answering
-// IRC server PINGs and trips irc-framework's ping/socket timeout on every live
-// connection at once — the "loading the web UI reconnects all networks" failure
-// mode. This surfaces those stalls so one can be correlated with a disconnect
-// burst.
+// IRC server PINGs and holds up every live connection's ping timeout at once —
+// the "loading the web UI reconnects all networks" failure mode. A held-up
+// timeout now probes before it closes (#1074, stallAwarePingTimeout.ts), so a
+// reconnect burst after this line means the servers themselves gave up on us
+// (most drop a client silent for a few minutes). This surfaces those stalls so
+// one can be correlated with a disconnect burst.
 //
 // Measurement uses Node's native `monitorEventLoopDelay` (a libuv/C++ delay
 // histogram) rather than a JS `setInterval` drift: a JS timer is itself delayed
@@ -69,7 +71,7 @@ export function startEventLoopMonitor(
       }
       console.warn(
         `[event-loop] stalled ~${maxMs}ms — synchronous work blocked socket I/O ` +
-          `(a stall past ~300s trips IRC ping timeouts; watch for a reconnect burst near this line)` +
+          `(IRC servers drop a client silent for a few minutes; watch for a reconnect burst near this line)` +
           context,
       );
     }
