@@ -982,22 +982,60 @@ describe('a held message shows as pending (#1326)', () => {
     conn.dispose();
   });
 
-  it('keeps the row for after a re-attach, which stores nothing while it replays', () => {
+  it('keeps the row, and the wait, until a re-attach that stores nothing is over', () => {
     const { conn, published } = backlog();
     const row = vi.fn<() => void>();
     conn.say('#c', 'held', null, { row });
     const c = conn as unknown as { restoring: boolean; onEnginePhase(p: string, d: object): void };
     c.restoring = true;
     vi.advanceTimersByTime(2000);
+    // Gone, but its row cannot be stored yet: still pending, so no device
+    // loses the dimmed row before the stored one exists.
     expect(row).not.toHaveBeenCalled();
+    expect(pendingFrames(published)).toHaveLength(1);
+    expect(conn.snapshot().sendPending).toHaveLength(1);
+    c.restoring = false;
+    c.onEnginePhase('live', {});
+    expect(row).toHaveBeenCalledTimes(1);
     expect(pendingFrames(published).at(-1)).toMatchObject({
       type: 'send-pending-done',
       sent: true,
     });
-    c.restoring = false;
-    c.onEnginePhase('live', {});
-    expect(row).toHaveBeenCalledTimes(1);
     conn.dispose();
+  });
+
+  it('stores the row when the re-attach is abandoned instead', () => {
+    const { conn, published } = backlog();
+    const row = vi.fn<() => void>();
+    conn.say('#c', 'held', null, { row });
+    const c = conn as unknown as { restoring: boolean; resetRestoreState(): void };
+    c.restoring = true;
+    vi.advanceTimersByTime(2000);
+    expect(row).not.toHaveBeenCalled();
+    c.resetRestoreState();
+    expect(row).toHaveBeenCalledTimes(1);
+    expect(pendingFrames(published).at(-1)).toMatchObject({
+      type: 'send-pending-done',
+      sent: true,
+    });
+    conn.dispose();
+  });
+
+  it('ends what was waiting for its echo when the connection is disposed', () => {
+    const { conn, published } = backlog();
+    conn.say('#c', 'gone');
+    conn.say('#c', 'queued');
+    vi.advanceTimersByTime(2000);
+    const [gone, queued] = heldOf(published);
+    conn.dispose();
+    const done = pendingFrames(published).filter((e) => e.type === 'send-pending-done');
+    expect(done).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pendingId: gone.id, sent: true }),
+        expect.objectContaining({ pendingId: queued.id, sent: false }),
+      ]),
+    );
+    expect(done).toHaveLength(2);
   });
 });
 

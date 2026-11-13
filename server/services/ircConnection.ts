@@ -1408,6 +1408,8 @@ export class IrcConnection {
   private pendingSendSeq = 0;
   // Those that have gone and wait for their echo's row (holdSend), oldest first.
   private readonly pendingEchoTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Rows of sent messages held back while a re-attach replays (storeSentRows).
+  private rowsToStore: Array<() => void> = [];
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
   /** The lane for lines irc-framework itself writes meanwhile (sendPacer.ts):
@@ -7841,6 +7843,7 @@ export class IrcConnection {
             console.warn('[engine] restored callback failed:', (e as Error)?.message || e);
           }
         }
+        this.storeSentRows();
         // The one hole the engine's buffer leaves (#1283): the lines it
         // dropped are what the network's history has. Every channel we are
         // in may have a gap ending now; the backfill asks for each.
@@ -7871,6 +7874,7 @@ export class IrcConnection {
     this.endRestoreStep();
     this.restoreQuiet.clear();
     this.namesHeard.clear();
+    this.storeSentRows();
   }
 
   // The step is over — answered, timed out, or abandoned (resetRestoreState
@@ -8499,14 +8503,20 @@ export class IrcConnection {
       if (state === 'over') return;
       const waited = state === 'waiting';
       state = 'over';
-      try {
-        // Once a re-attach is over: publish() stores nothing while one replays.
-        if (sent && row) this.onceRestored(row);
-      } finally {
-        if (waited) {
-          if (sent && !row && !this.disposed) this.awaitPendingEcho(id);
-          else this.endPending(id, sent);
-        }
+      if (sent && row) {
+        // The row, then the end of the wait, in that order, once the row can
+        // be stored (rowsToStore).
+        this.rowsToStore.push(() => {
+          try {
+            row();
+          } finally {
+            if (waited) this.endPending(id, true);
+          }
+        });
+        this.storeSentRows();
+      } else if (waited) {
+        if (sent && !this.disposed) this.awaitPendingEcho(id);
+        else this.endPending(id, sent);
       }
     };
     return {
@@ -8521,6 +8531,23 @@ export class IrcConnection {
       sent: () => end(true),
       dropped: () => end(false),
     };
+  }
+
+  // The rows of messages that have gone, in order. Stored at once, except
+  // during a re-attach: publish() stores nothing while one replays, so they
+  // wait for it to end, or to be abandoned (resetRestoreState). ⚠ Not
+  // onceRestored: an abandoned re-attach discards those callbacks, and the
+  // message has reached the channel either way.
+  private storeSentRows(): void {
+    if (this.restoring || this.catchingUp) return;
+    while (this.rowsToStore.length) {
+      const store = this.rowsToStore.shift()!;
+      try {
+        store();
+      } catch (err) {
+        console.warn("[irc] a sent message's row could not be stored:", err);
+      }
+    }
   }
 
   private endPending(id: string, sent: boolean): void {
@@ -13687,6 +13714,13 @@ export class IrcConnection {
     // Before the disposed flag: a queued user line is reported as not sent,
     // which publish() refuses once the connection counts as gone.
     this.sendPacer.dispose();
+    // What has gone and was waiting for its echo ends here too, while the
+    // frame can still be published: no device is left with a dimmed row.
+    this.storeSentRows();
+    // (A Map may be deleted from while it is walked.)
+    for (const id of this.pendingSends.keys()) {
+      this.endPending(id, this.pendingEchoTimers.has(id));
+    }
     this.clearTyping();
     this.flushMetadataCache();
     this.disposed = true;
