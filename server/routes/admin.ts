@@ -154,6 +154,7 @@ router.get('/users', (_req: Request, res: Response) => {
   // ident tally above. Per-user lookups here meant an instance with 200 accounts
   // prepared and ran 200 statements on every load of this screen.
   const recoveryExpiries = listRecoveryExpiries();
+  const ident = identReport();
   res.json({
     users: all.map((u) => ({
       id: u.id,
@@ -183,7 +184,12 @@ router.get('/users', (_req: Request, res: Response) => {
     // idents above are inert, and the UI says so and where to turn it on. (The
     // other half, "may these be edited at all", is node edition, which the
     // client already knows from /api/config.)
-    ident: identReport(),
+    ident,
+    // Deprecated: what `ident` replaced. A client loaded before the upgrade
+    // still reads it, and takes a missing field as off, hiding the editor from
+    // an operator whose ident works. null there is "can't tell", which keeps
+    // the editor, so a failure reads as that.
+    identdEnabled: ident.status === 'on' ? true : ident.status === 'off' ? false : null,
   });
 });
 

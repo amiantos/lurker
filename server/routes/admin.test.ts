@@ -853,6 +853,24 @@ describe('ident report in engine mode (#1138, #1139)', () => {
     expect(await ident()).toEqual({ status, host: 'engine' });
   });
 
+  // A client loaded before the upgrade reads the field `ident` replaced, and
+  // takes anything but true or null as off, which hides the editor.
+  it.each([
+    ['on', true],
+    ['off', false],
+    ['failed', null],
+  ] as const)('still answers the old field: %s is %s', async (status, old) => {
+    await attachedTo(status);
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.body.identdEnabled).toBe(old);
+  });
+
+  it('answers the old field with null when it cannot tell', async () => {
+    await engineMode();
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.body.identdEnabled).toBeNull();
+  });
+
   // The engine's word wins over this process's environment, which starts
   // nothing while an engine is configured.
   it('says off when the engine says off, whatever is set here', async () => {

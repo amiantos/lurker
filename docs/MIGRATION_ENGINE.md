@@ -313,7 +313,7 @@ journalctl -u lurker -n 50 --no-pager          # "[lurker] engine mode: attached
 journalctl -u lurker-engine -n 50 --no-pager   # "[identd] listening on :113", if you answer ident
 ```
 
-`[engine] ident: built-in identd on :113` says only which mode the engine resolved; `[identd] listening on :113` is the bind succeeding. `[identd] failed to listen on :113: … EACCES` means the capability is still on the wrong unit, and `EADDRINUSE` that the app was still holding the port when the engine started — the Step 4 order. Either way the engine carries on without ident rather than dying, and putting it right means restarting the engine, which drops IRC. Admin → Users says the same without the logs: it reports ident as set up but not answering. Then the test that matters: `sudo systemctl restart lurker` while watching your IRC client — nick unchanged, channels intact, no `Quit`/`Join`.
+`[engine] ident: built-in identd on :113` says only which mode the engine resolved; `[identd] listening on :113` is the bind succeeding. `[identd] failed to listen on :113: … EACCES` means the capability is still on the wrong unit, and `EADDRINUSE` that the app was still holding the port when the engine started — the Step 4 order. Either way the engine carries on without ident rather than dying, and putting it right means restarting the engine, which drops IRC. Admin → Users says the same without the logs: it reports ident as set up but not working. Then the test that matters: `sudo systemctl restart lurker` while watching your IRC client — nick unchanged, channels intact, no `Quit`/`Join`.
 
 ### Living with it
 

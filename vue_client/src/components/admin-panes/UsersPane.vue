@@ -33,13 +33,14 @@
            on this server start nothing while an engine is configured (#1139). -->
       <template v-if="identOnEngine">Setting them on this server does nothing.</template>
     </p>
-    <!-- Asked for, but not answering: :113 would not bind, or the oidentd file
-         can't be written. The idents are inert until that's fixed (#1139).
+    <!-- Asked for, but not working: :113 would not bind, or the oidentd file
+         can't be written. With both modes on, one of them may still answer,
+         so this doesn't claim nothing does (#1139).
          Operator guidance, so not for a hosted cell's admin, who has no logs. -->
     <p v-if="adminStore.ident.status === 'failed' && !config.isNode" class="error inline">
-      Ident is set up on {{ identOnEngine ? 'the engine' : 'this server' }} but isn't answering, so
-      networks can't verify these idents. Its <code>[identd]</code> or <code>[oidentd]</code> log
-      line says why.
+      Ident is set up on {{ identOnEngine ? 'the engine' : 'this server' }} but isn't working, so
+      networks may not be able to verify these idents. Its <code>[identd]</code> or
+      <code>[oidentd]</code> log line says why.
     </p>
     <!-- The engine link is down, or the engine is too old to say (#1138). Keep
          the editor, but don't present it as confirmed. -->

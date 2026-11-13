@@ -40,7 +40,7 @@ const editor = (w: VueWrapper) => w.findAll('button').filter((b) => b.text() ===
 const banner = (w: VueWrapper) => w.text().includes("Networks can't ask this server");
 const unconfirmed = (w: VueWrapper) => w.text().includes("which this server can't check");
 const onEngine = (w: VueWrapper) => w.text().includes('on the engine');
-const notAnswering = (w: VueWrapper) => w.text().includes("isn't answering");
+const notAnswering = (w: VueWrapper) => w.text().includes("isn't working");
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -79,7 +79,7 @@ describe('UsersPane ident surface (#1138, #1139)', () => {
   it.each([
     ['server', 'Ident is set up on this server'],
     ['engine', 'Ident is set up on the engine'],
-  ] as const)('keeps the editor and says ident is not answering on the %s', (host, says) => {
+  ] as const)('keeps the editor and says ident is not working on the %s', (host, says) => {
     const w = mountPane('failed', host);
     expect(editor(w)).toHaveLength(1);
     expect(w.find('.ident-tag').exists()).toBe(true);
