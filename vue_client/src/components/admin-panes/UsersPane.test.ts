@@ -14,6 +14,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
 import { useAdminStore, type AdminIdent } from '../../stores/admin.js';
+import { useConfigStore } from '../../stores/config.js';
 import UsersPane from './UsersPane.vue';
 
 function mountPane(status: AdminIdent['status'], host: AdminIdent['host'] = 'server'): VueWrapper {
@@ -86,6 +87,23 @@ describe('UsersPane ident surface (#1138, #1139)', () => {
     expect(unconfirmed(w)).toBe(false);
     expect(w.text()).toContain(says);
     expect(notAnswering(w)).toBe(true);
+  });
+
+  // Log-reading advice is for the operator. A hosted cell's admin has no logs.
+  it('says nothing of a failure on a hosted cell', () => {
+    useConfigStore().edition = 'node';
+    const w = mountPane('failed', 'engine');
+    expect(notAnswering(w)).toBe(false);
+    expect(w.find('.ident-tag').exists()).toBe(true);
+  });
+
+  // An answer this client could not read is unknown, and says nothing about
+  // an engine the install may not have.
+  it("keeps the editor and doesn't mention an engine when there may be none", () => {
+    const w = mountPane('unknown', 'server');
+    expect(editor(w)).toHaveLength(1);
+    expect(unconfirmed(w)).toBe(false);
+    expect(banner(w)).toBe(false);
   });
 
   it("keeps the editor, and says it can't confirm ident, when the server can't tell", () => {

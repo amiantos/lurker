@@ -129,6 +129,18 @@ describe('EngineLink', () => {
       expect(link.identStatus()).toBeNull();
     });
 
+    // A listener that dies under a link that stays up: the engine says so.
+    it('follows what the engine says after the hello', async () => {
+      const fake = await fakeEngine({ version: 'fake', ident: 'on' });
+      const link = await readyLink(fake);
+      fake.say({ op: 'ident', status: 'failed' });
+      await roundTrip(fake);
+      expect(link.identStatus()).toBe('failed');
+      fake.say({ op: 'ident', status: 'sideways' } as unknown as EngineToApp);
+      await roundTrip(fake);
+      expect(link.identStatus()).toBe('failed');
+    });
+
     it('is unknown for an engine too old to say', async () => {
       const link = await readyLink(await fakeEngine());
       expect(link.identStatus()).toBeNull();

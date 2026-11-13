@@ -16,8 +16,6 @@
 // exactly what it did before the engine existed). Adding an optional field or a
 // new op is a minor change; renaming or re-meaning one is a major.
 
-import type { IdentStatus } from '../services/identd.js';
-
 export const PROTOCOL_MAJOR = 1;
 // minor 2 (#459): `connect` carries an optional client certificate. An app that
 // needs one refuses to dial through an engine below this rather than connecting
@@ -59,8 +57,21 @@ export const PROTOCOL_MAJOR = 1;
 // (`engine.ident`). The variables that turn ident on belong on the engine in
 // this topology, where the app cannot read them, so until this minor the admin
 // pane could not tell an operator that nothing answers ident. An engine below
-// this omits the field and the app says it cannot tell.
+// this omits the field and the app says it cannot tell. The state can change
+// under a link that stays up for weeks (a listener that dies late), so the
+// engine says so again when it does: the `ident` op.
 export const PROTOCOL_MINOR = 8;
+
+// What a process's ident services are doing (services/identd.ts identStatus):
+//   on      the :113 listener is bound, or the oidentd file is being written
+//   failed  one was started and is not working
+//   off     nothing was started
+export const IDENT_STATUSES = ['on', 'off', 'failed'] as const;
+export type IdentStatus = (typeof IDENT_STATUSES)[number];
+
+export function isIdentStatus(value: unknown): value is IdentStatus {
+  return (IDENT_STATUSES as readonly unknown[]).includes(value);
+}
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -194,8 +205,7 @@ export type EngineToApp =
       protocol: number;
       minor: number;
       // `ident` is the state of the engine's ident services as it answers, not
-      // its configuration: a :113 that would not bind is 'failed'. It is not
-      // sent again if that changes; the next hello carries the new state.
+      // its configuration: a :113 that would not bind is 'failed'.
       engine: { version: string; ident?: IdentStatus };
       held: string[];
     }
@@ -245,6 +255,10 @@ export type EngineToApp =
   // the id; the app drops an offer for an id it has closed on this link
   // (engineLink.ts), which frames-in-order makes exact.
   | { op: 'held'; id: string }
+  // The engine's ident state is no longer what this link was last told (in
+  // the hello, or by one of these). Checked when the app pings, so it trails a
+  // change by at most one heartbeat. An app that predates it ignores the op.
+  | { op: 'ident'; status: IdentStatus }
   | { op: 'listing'; connections: ConnectionInfo[] }
   | { op: 'error'; id?: string; message: string };
 

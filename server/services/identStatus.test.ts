@@ -15,11 +15,14 @@ import {
   identStatus,
   initOidentdFile,
   isIdentConfigured,
+  registerIdent,
   resetOidentdStateForTest,
   startIdentd,
   stopIdentd,
   stopOidentdFile,
+  unregisterIdent,
   whenIdentdSettled,
+  whenOidentdSettled,
 } from './identd.js';
 
 let dir: string;
@@ -84,12 +87,16 @@ describe('identStatus (#1139)', () => {
 
   it('is on again when a later start binds', async () => {
     const { port, free } = await takenPort();
-    startIdentd(port, '127.0.0.1');
-    await whenIdentdSettled();
-    await free();
-    startIdentd(port, '127.0.0.1');
-    await whenIdentdSettled();
-    expect(identStatus()).toBe('on');
+    try {
+      startIdentd(port, '127.0.0.1');
+      await whenIdentdSettled();
+      expect(identStatus()).toBe('failed');
+      startIdentd(0, '127.0.0.1');
+      await whenIdentdSettled();
+      expect(identStatus()).toBe('on');
+    } finally {
+      await free();
+    }
   });
 
   it('is on when the oidentd file was written, and off after the stop', () => {
@@ -109,14 +116,44 @@ describe('identStatus (#1139)', () => {
     expect(identStatus()).toBe('failed');
   });
 
-  it('is on when one of two modes works', async () => {
+  // Boot writes the file in place; every write after goes through a sibling
+  // temp file and a rename. Either can work where the other cannot, so the
+  // status follows the last write, in both directions.
+  it('follows the writes after the first', async () => {
+    const file = path.join(dir, 'later', 'oidentd.conf');
+    process.env.LURKER_OIDENTD_FILE = file;
+    initOidentdFile();
+    expect(identStatus()).toBe('on');
+
+    const entry = {
+      localAddress: '127.0.0.1',
+      localPort: 40001,
+      remoteAddress: '127.0.0.1',
+      remotePort: 6667,
+      ident: 'later',
+    };
+    // Something in the temp file's place: the write cannot land.
+    fs.mkdirSync(`${file}.tmp`);
+    const first = registerIdent(entry);
+    await whenOidentdSettled();
+    expect(identStatus()).toBe('failed');
+
+    fs.rmdirSync(`${file}.tmp`);
+    unregisterIdent(first);
+    await whenOidentdSettled();
+    expect(identStatus()).toBe('on');
+    expect(fs.readFileSync(file, 'utf8')).not.toContain('later');
+  });
+
+  // The file being written says nothing about a :113 that is not answering.
+  it('is failed when either of two modes is', async () => {
     const { port, free } = await takenPort();
     try {
       startIdentd(port, '127.0.0.1');
       await whenIdentdSettled();
       process.env.LURKER_OIDENTD_FILE = path.join(dir, 'both', 'oidentd.conf');
       initOidentdFile();
-      expect(identStatus()).toBe('on');
+      expect(identStatus()).toBe('failed');
     } finally {
       await free();
     }

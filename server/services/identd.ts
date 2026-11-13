@@ -17,6 +17,7 @@ import net from 'net';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import type { IdentStatus } from '../engine/protocol.js';
 
 // One registered outbound IRC connection's identity. Keyed by a unique id, NOT
 // the local port: two simultaneous connections may legally share a local source
@@ -593,16 +594,16 @@ export function isIdentConfigured(): boolean {
 
 // What this process's ident services are actually doing, from their own state
 // and not the environment (#1139):
-//   on      the listener is bound (or binding), or the oidentd file was written
-//   failed  one was started and did not come up: :113 would not bind, or the
-//           file's path is not writable. The log line beside it says why.
+//   on      the listener is bound (or binding), or the oidentd file is written
+//   failed  one was started and is not working: :113 would not bind, or the
+//           file could not be written. The log line beside it says why.
 //   off     nothing was started here
-// With both modes started, one working is enough for 'on'.
-export type IdentStatus = 'on' | 'off' | 'failed';
-
+// With both modes started, either one failing is 'failed': the file being
+// written says nothing about a :113 that is not answering, and which of the
+// two the operator relies on is not ours to guess.
 export function identStatus(): IdentStatus {
-  if (server || oidentdReady === true) return 'on';
-  return identdFailed || oidentdReady === false ? 'failed' : 'off';
+  if (identdFailed || oidentdReady === false) return 'failed';
+  return server || oidentdReady === true ? 'on' : 'off';
 }
 
 export function identdPort(): number {
@@ -706,8 +707,10 @@ let oidentdWriting = false;
 // exits, and any in-flight write skips its rename. Cleared by initOidentdFile —
 // a fresh boot re-enables the writer.
 let oidentdStopped = false;
-// Did initOidentdFile get the file onto disk? null until it has run, and again
-// after a stop.
+// Did the last write of the file land? null until initOidentdFile has run, and
+// again after a stop. Every write counts, not only the first: boot writes the
+// file in place and the rest go through a sibling temp file and a rename, so
+// either can work where the other cannot.
 let oidentdReady: boolean | null = null;
 let lastOidentdWriteErrorAt = 0;
 // Tracks the in-flight drain so tests can await a fully-settled flush. Production
@@ -768,7 +771,9 @@ async function writeOidentdFile(): Promise<void> {
       return;
     }
     await fs.promises.rename(tmp, file);
+    oidentdReady = true;
   } catch (err) {
+    if (!oidentdStopped) oidentdReady = false;
     // A write failure must never take down the server; throttle the warning so a
     // persistently unwritable path (bad mount, perms) can't flood the log.
     const now = Date.now();

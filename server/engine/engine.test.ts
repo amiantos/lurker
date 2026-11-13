@@ -163,6 +163,21 @@ describe('hello', () => {
       const second = await TestLink.connect(port, SECRET);
       links.push(second);
       expect(second.hello!.engine.ident).toBe('on');
+
+      // A link that was up through the change hears of it at its next ping,
+      // once, and a link already told the same hears nothing.
+      const idents = (l: TestLink) => l.frames.filter((f) => f.op === 'ident');
+      const pongs = (l: TestLink) => l.frames.filter((f) => f.op === 'pong').length;
+      for (const l of [first, second, first]) {
+        const before = pongs(l);
+        l.send({ op: 'ping' });
+        await until(() => pongs(l) > before, 3000, 'pong');
+      }
+      // The frame trails its pong; one more round trip bounds it.
+      first.send({ op: 'ping' });
+      await until(() => pongs(first) >= 3, 3000, 'pong');
+      expect(idents(first)).toEqual([{ op: 'ident', status: 'on' }]);
+      expect(idents(second)).toEqual([]);
     } finally {
       await other.shutdown('test done', 500);
     }

@@ -20,11 +20,16 @@
 
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
-import { FrameReader, PROTOCOL_MAJOR, encodeFrame, parseHostPort } from '../engine/protocol.js';
+import {
+  FrameReader,
+  PROTOCOL_MAJOR,
+  encodeFrame,
+  isIdentStatus,
+  parseHostPort,
+} from '../engine/protocol.js';
 import { instanceId } from '../db/instanceId.js';
-import type { AppToEngine, EngineToApp } from '../engine/protocol.js';
+import type { AppToEngine, EngineToApp, IdentStatus } from '../engine/protocol.js';
 import { APP_VERSION } from '../utils/userAgent.js';
-import type { IdentStatus } from './identd.js';
 
 // This process's generation, for the engine's newest-wins rule (protocol.ts):
 // the start time in milliseconds — the unit every app version has sent, so a
@@ -136,8 +141,8 @@ export class EngineLink extends EventEmitter {
   // Minors are additive by contract, so this only ever answers "does the engine
   // already know about X" — never "is it too new".
   engineMinor: number | null = null;
-  // What the engine's last hello said of its ident services (minor 8). null:
-  // an engine too old to say.
+  // What the engine last said of its ident services, in its hello or an
+  // `ident` since (minor 8). null: an engine too old to say.
   private engineIdent: IdentStatus | null = null;
   refusedReason: string | null = null;
 
@@ -456,8 +461,7 @@ export class EngineLink extends EventEmitter {
             // Older engines predate the field; absent means minor 1.
             this.engineMinor = typeof frame.minor === 'number' ? frame.minor : 1;
             const ident = frame.engine.ident;
-            this.engineIdent =
-              ident === 'on' || ident === 'off' || ident === 'failed' ? ident : null;
+            this.engineIdent = isIdentStatus(ident) ? ident : null;
             if (this.everReady) {
               this.log(`link restored to ${this.address} after ${this.attempt} attempt(s)`);
             }
@@ -525,6 +529,9 @@ export class EngineLink extends EventEmitter {
         this.send({ op: 'pong' });
         return;
       case 'pong':
+        return;
+      case 'ident':
+        if (isIdentStatus(frame.status)) this.engineIdent = frame.status;
         return;
       case 'attached':
       case 'open':

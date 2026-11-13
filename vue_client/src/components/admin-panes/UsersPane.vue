@@ -34,15 +34,19 @@
       <template v-if="identOnEngine">Setting them on this server does nothing.</template>
     </p>
     <!-- Asked for, but not answering: :113 would not bind, or the oidentd file
-         can't be written. The idents are inert until that's fixed (#1139). -->
-    <p v-if="adminStore.ident.status === 'failed'" class="error inline">
+         can't be written. The idents are inert until that's fixed (#1139).
+         Operator guidance, so not for a hosted cell's admin, who has no logs. -->
+    <p v-if="adminStore.ident.status === 'failed' && !config.isNode" class="error inline">
       Ident is set up on {{ identOnEngine ? 'the engine' : 'this server' }} but isn't answering, so
       networks can't verify these idents. Its <code>[identd]</code> or <code>[oidentd]</code> log
       line says why.
     </p>
     <!-- The engine link is down, or the engine is too old to say (#1138). Keep
          the editor, but don't present it as confirmed. -->
-    <p v-if="canAssignIdents && adminStore.ident.status === 'unknown'" class="muted small">
+    <p
+      v-if="canAssignIdents && identOnEngine && adminStore.ident.status === 'unknown'"
+      class="muted small"
+    >
       Ident runs on the engine, which this server can't check right now — the engine's
       <code>[engine] ident:</code> startup line says whether it's on.
     </p>

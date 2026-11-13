@@ -37,7 +37,7 @@ import {
 import ircManager from '../services/ircManager.js';
 import { presenceDiagnostics } from '../services/wsHub.js';
 import { identStatus, isIdentConfigured } from '../services/identd.js';
-import type { IdentStatus } from '../services/identd.js';
+import type { IdentStatus } from '../engine/protocol.js';
 import { EngineLink, engineConfigured } from '../services/engineLink.js';
 import { isNodeMode } from '../utils/edition.js';
 import {
