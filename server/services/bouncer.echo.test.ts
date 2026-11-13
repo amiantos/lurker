@@ -194,6 +194,32 @@ describe('a client that did not ask for echo-message', () => {
     }
   });
 
+  // #1330: a line Lurker took back from the queue (a kick, a /flushq) is
+  // answered as the server would have answered it; one that went with its
+  // socket is not, as with ZNC and soju. Only the client that sent it is told.
+  it('is told when its waiting message is taken back, and not when the socket goes', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const other = await attachIn(live, '#room');
+    const send = vi.spyOn(ircManager, 'send').mockReturnValue(true);
+    const mark = c.lines.length;
+    const otherMark = other.lines.length;
+    c.send('PRIVMSG #room :taken back');
+    c.send('PRIVMSG #room :lost with the socket');
+    await until(() => send.mock.calls.length === 2, 5000, 'relayed to the manager');
+    const taken = send.mock.calls[0][4]?.lineHooks;
+    const lost = send.mock.calls[1][4]?.lineHooks;
+    send.mockRestore();
+    taken!.dropped!('taken back', 'no longer in the channel');
+    lost!.dropped!('lost with the socket');
+    expect((await linesAfter(c, mark, '#room')).filter((l) => l.includes(' 404 '))).toEqual([
+      expect.stringMatching(/ 404 \S+ #room :Cannot send to channel \(no longer in the channel\)$/),
+    ]);
+    expect(
+      (await linesAfter(other, otherMark, '#room')).filter((l) => l.includes(' 404 ')),
+    ).toEqual([]);
+  });
+
   it('never gets its own plain message back', async () => {
     const live = await seedLive();
     const c = await attachIn(live, '#room');

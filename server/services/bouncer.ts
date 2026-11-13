@@ -3287,9 +3287,18 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // Each echo's clock starts when its line has gone, which behind a
       // backlog is later than now (#1149); a line dropped with its socket has
       // no echo coming.
+      // One Lurker itself decided not to send (`why`: taken back from the
+      // queue on a kick or a /flushq, E2E off by its turn) is answered as the
+      // server would have answered it (#1330): this client's own line, so
+      // this client alone. Before the purge (#1322) a line after a kick drew
+      // the server's 404. A line lost with its socket stays unanswered, as
+      // ZNC and soju leave it.
       const lineHooks = {
         sent: (line: string) => this.stampEcho(kind, target, line),
-        dropped: (line: string) => this.forgetEcho(kind, target, line),
+        dropped: (line: string, why?: string) => {
+          this.forgetEcho(kind, target, line);
+          if (why) this.numeric('404', `${target} :Cannot send to channel (${why})`);
+        },
       };
       let accepted: boolean;
       if (isAction) {

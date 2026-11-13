@@ -1021,6 +1021,17 @@ describe('a held message shows as pending (#1326)', () => {
     conn.dispose();
   });
 
+  it('tells the sender why a message was taken back, and nothing for a lost socket', () => {
+    const { conn } = backlog();
+    const onDropped = vi.fn<(why?: string) => void>();
+    conn.say('#c', 'taken back', null, { onDropped });
+    conn.flushSendQueue();
+    expect(onDropped.mock.calls).toEqual([['send queue cleared']]);
+    conn.say('#c', 'lost', null, { onDropped });
+    conn.dispose();
+    expect(onDropped.mock.calls).toEqual([['send queue cleared'], [undefined]]);
+  });
+
   it('ends what was waiting for its echo when the connection is disposed', () => {
     const { conn, published } = backlog();
     conn.say('#c', 'gone');

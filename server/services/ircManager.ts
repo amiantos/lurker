@@ -165,7 +165,8 @@ function awayWhere(networks: Network[]): string {
  */
 export interface LineHooks {
   sent?: (text: string) => void;
-  dropped?: (text: string) => void;
+  /** `why`: set when Lurker itself decided not to send it (SendHooks.onDropped). */
+  dropped?: (text: string, why?: string) => void;
 }
 
 // `row`: publishes the sender's own row when the line goes (SendHooks.row);
@@ -176,7 +177,11 @@ function lineHooks(
   row?: () => void,
 ): SendHooks | undefined {
   if (!hooks && !row) return undefined;
-  return { onSent: () => hooks?.sent?.(text), onDropped: () => hooks?.dropped?.(text), row };
+  return {
+    onSent: () => hooks?.sent?.(text),
+    onDropped: (why) => hooks?.dropped?.(text, why),
+    row,
+  };
 }
 
 // Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single

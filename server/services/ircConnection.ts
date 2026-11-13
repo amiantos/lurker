@@ -702,7 +702,11 @@ interface AwayState {
  *  went, or that it was dropped with its socket. */
 export interface SendHooks {
   onSent?: () => void;
-  onDropped?: () => void;
+  /**
+   * `why`: the reason when Lurker itself decided not to send it (taken back
+   * from the queue, #1322); none when it went with its socket.
+   */
+  onDropped?: (why?: string) => void;
   /**
    * Publishes the sender's own row, where no echo will (#1326). Run when the
    * line goes, so a message held in the send queue is not stored as sent
@@ -8472,7 +8476,7 @@ export class IrcConnection {
       onDropped: (why) => {
         held.dropped();
         this.reportNotSent(target, said, why);
-        hooks?.onDropped?.();
+        hooks?.onDropped?.(why);
       },
     });
     held.wrote();
@@ -8603,12 +8607,13 @@ export class IrcConnection {
     const held = this.holdSend(target, 'privmsg', text, row);
     // Said once: by the encrypt step, or by the drop.
     let reported = false;
-    const notSent = (why: string) => {
+    // `toSender`: the reason for the sender's hook; none for a socket lost.
+    const notSent = (why: string, toSender: string | undefined = why) => {
       if (reported) return;
       reported = true;
       held.dropped();
       this.publish({ type: 'error', target, text: `not sent (${why}): ${text}` });
-      hooks?.dropped?.(text);
+      hooks?.dropped?.(text, toSender);
     };
     this.sendPacer.write(
       () => {
@@ -8663,7 +8668,7 @@ export class IrcConnection {
         }));
         return [...rekeys, encrypt];
       },
-      { target, onDropped: (why) => notSent(why ?? 'connection dropped') },
+      { target, onDropped: (why) => notSent(why ?? 'connection dropped', why) },
     );
     held.wrote();
   }
@@ -12759,7 +12764,7 @@ export class IrcConnection {
         onDropped: (why) => {
           held.dropped();
           this.reportNotSent(target, echo, why);
-          hooks?.dropped?.(echo);
+          hooks?.dropped?.(echo, why);
         },
       });
       held.wrote();
