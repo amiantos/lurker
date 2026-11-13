@@ -462,9 +462,8 @@ describe('units', () => {
     ]);
     expect(batch[4]).toMatch(/^BATCH -\w+$/);
     expect(batch).toHaveLength(5);
-    // A batch this small is the opening BATCH and a bill of one, 4 s, not its
-    // five lines' 10 (#1318): the line after waits for that.
-    vi.advanceTimersByTime(3999);
+    // Five lines, 10 s: the line after waits for all of it.
+    vi.advanceTimersByTime(9999);
     expect(lines).toHaveLength(10);
     vi.advanceTimersByTime(1);
     expect(lines.at(-1)).toBe('PRIVMSG #c :after');

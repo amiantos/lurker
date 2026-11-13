@@ -47,18 +47,20 @@
 // is still wanted when its turn comes (`live`: a withdrawn DCC offer sends
 // nothing).
 //
-// A batch is charged as the servers that take one bill it, not line by line
-// (#1318): the per-line price is ircu's, and ircu has no draft/multiline. Ergo
-// suspends its fakelag for the batch and bills max(bytes/512 + 1, lines*60/512)
-// messages when it ends (client.go, EndMultilineBatch); UnrealIRCd bills each
-// line by length and stops at 15 s for the whole batch (multiline.c). Both
-// read a client more slowly past their limit rather than drop it. So a batch
-// costs one short line for its opening BATCH and one for each message of
-// Ergo's bill, counted over every byte and line of the unit, which is the
-// pessimistic side of Ergo's count. Priced by the line, a paste of four
-// 460-byte lines was 28 s and held everything typed after it for 20; it is
-// 10 s now. WeeChat sends a batch past its anti-flood queue altogether; Halloy
-// rate-limits each line of one.
+// A batch is charged as the servers that take one bill it (#1318), since the
+// per-line price is ircu's and ircu has no draft/multiline. UnrealIRCd bills
+// each line by length as it would outside a batch, but stops at 15 s for the
+// batch (multiline.c, calculate_multiline_fakelag), its two BATCH lines a
+// second each on top; it reads a client under the same ten seconds and kills
+// one whose unread input outgrows its class's recvq, so its bill is the one
+// not to fall short of. Ergo suspends its fakelag for the batch and bills
+// max(bytes/512 + 1, lines*60/512) messages when it ends (client.go,
+// EndMultilineBatch), and only sleeps. So a batch costs its lines' own price,
+// no more than UnrealIRCd's 17 s, and no less than Ergo's bill at a short line
+// a message (which passes 17 s only for a great many short lines). Priced by
+// the line alone, a paste of four 460-byte lines was 28 s and held everything
+// typed after it for 20; it holds it 9 now. WeeChat sends a batch past its
+// anti-flood queue altogether; Halloy rate-limits each line of one.
 //
 // Three lanes, and order is absolute within each: `high` goes before `normal`
 // before `low` whenever a line waits at all. What the user wrote goes in the
@@ -77,6 +79,8 @@
 // after the rest; WeeChat and irssi send their polls (ISON, channel sync)
 // last; Halloy sends what the user typed first. With nothing waiting, which
 // is the usual state, the lanes never show.
+
+import { IRC_LINE_BYTES } from '../../shared/wireBudget.js';
 
 const BASE_COST_MS = 2000;
 const COST_PER_100_BYTES_MS = 1000;
@@ -109,23 +113,30 @@ function costOf(line: string): number {
   return lineCostMs(Buffer.byteLength(line) + 2);
 }
 
-/** What Ergo counts one message of a batch's bill by: bytes of batch, and
- *  the bytes it reckons a line at. */
-const BATCH_BILL_BYTES = 512;
+/** The most UnrealIRCd bills a batch: its 15 s cap, and a second for each of
+ *  the two BATCH lines. */
+const BATCH_COST_CAP_MS = 17_000;
+/** What Ergo reckons a line of a batch at, of the line length it bills a
+ *  message per. */
 const BATCH_BILL_LINE_BYTES = 60;
 
-/** What a unit of `lines` (a draft/multiline batch, its BATCH lines included)
- *  advances the server's clock by: see the header. Free where a line is
+/** What a draft/multiline batch (`lines`, its BATCH lines included) advances
+ *  the server's clock by: see the header. Free where a line is
  *  (`LURKER_SEND_PACING=0`). */
-export function unitCostMs(lines: readonly string[]): number {
-  if (lines.length === 0) return 0;
+export function batchCostMs(lines: readonly string[]): number {
   let bytes = 0;
-  for (const line of lines) bytes += Buffer.byteLength(line) + 2;
+  let byLine = 0;
+  for (const line of lines) {
+    bytes += Buffer.byteLength(line) + 2;
+    byLine += costOf(line);
+  }
   const bill = Math.max(
-    Math.floor(bytes / BATCH_BILL_BYTES) + 1,
-    Math.floor((lines.length * BATCH_BILL_LINE_BYTES) / BATCH_BILL_BYTES),
+    Math.floor(bytes / IRC_LINE_BYTES) + 1,
+    Math.floor((lines.length * BATCH_BILL_LINE_BYTES) / IRC_LINE_BYTES),
   );
-  return (1 + bill) * lineCostMs(0);
+  // The opening BATCH, which Ergo bills as the line it is, and its bill.
+  const ergo = (1 + bill) * lineCostMs(0);
+  return Math.max(Math.min(byLine, BATCH_COST_CAP_MS), ergo);
 }
 
 /** One line to send, with what to do once it has gone, or if it never does.
@@ -304,8 +315,9 @@ export class SendPacer {
     return this.handle(entry);
   }
 
-  /** Send `lines` back to back, as one unit, and charge for it after, as the
-   *  batch it is (unitCostMs). */
+  /** Send `lines` back to back, as one unit, and charge for it after. A unit
+   *  is a draft/multiline batch and is charged as one (batchCostMs): lines
+   *  that are not a batch are written one by one. */
   unit(
     lines: string[],
     opts: Pick<WriteOptions, 'priority' | 'onSent' | 'onDropped'> = {},
@@ -601,16 +613,18 @@ export class SendPacer {
   }
 
   private sendUnit(entry: Entry): boolean {
-    const lines = entry.unit!;
-    for (let i = 0; i < lines.length; i++) {
-      // What went before the refusal is charged: the server read it.
-      if (!this.push(lines[i])) {
-        if (i) this.charge(this.unitCost(lines.slice(0, i)), this.now());
+    let cost = 0;
+    for (const line of entry.unit!) {
+      // What went before the refusal is charged, by the line: the server
+      // read it, and bills as a batch only one that was closed.
+      if (!this.push(line)) {
+        if (cost) this.charge(cost, this.now());
         return this.refuse(entry);
       }
+      cost += this.costOf(line);
     }
     const at = this.now();
-    this.charge(this.unitCost(lines), at);
+    this.charge(this.paced() ? batchCostMs(entry.unit!) : 0, at);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
     return true;
   }
@@ -644,10 +658,6 @@ export class SendPacer {
   // and an estimate that drifts drifts safe.
   private costOf(line: string): number {
     return this.paced() ? costOf(line) : 0;
-  }
-
-  private unitCost(lines: readonly string[]): number {
-    return this.paced() ? unitCostMs(lines) : 0;
   }
 
   // `capped`: an unpaced line's charge counts only up to the budget (the
