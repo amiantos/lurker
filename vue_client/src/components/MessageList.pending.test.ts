@@ -51,16 +51,31 @@ function enter() {
 
 const held = (id: string, target: string, text: string) => ({
   networkId: 1,
-  id,
-  target,
-  kind: 'privmsg',
-  text,
-  at: at(2),
+  target: ':server:',
+  pending: { id, target, kind: 'privmsg', text, at: at(2) },
 });
 
 const pendingTexts = (w: VueWrapper) => w.findAll('.line.pending').map((el) => el.text());
 
 describe('MessageList — a held message of ours', () => {
+  it('is not drawn under a detached slice of older history', async () => {
+    const { networks, buffers, w } = enter();
+    buffers.byKey('1::#chan')!.detached = true;
+    networks.applySendPending(held('a', '#chan', 'held one'));
+    await w.vm.$nextTick();
+    expect(pendingTexts(w)).toHaveLength(0);
+  });
+
+  it('does not stand in for rows still loading', async () => {
+    const { networks, buffers, w } = enter();
+    const b = buffers.byKey('1::#chan')!;
+    b.messages = [] as never;
+    b.loadingHistory = true;
+    networks.applySendPending(held('a', '#chan', 'held one'));
+    await w.vm.$nextTick();
+    expect(w.text()).toContain('Loading messages');
+  });
+
   beforeEach(() => {
     setActivePinia(createPinia());
   });
@@ -103,7 +118,7 @@ describe('MessageList — a held message of ours', () => {
       self: true,
       time: at(3),
     } as never);
-    networks.applySendPendingDone({ networkId: 1, id: 'a', sent: true, rowFollows: false });
+    networks.applySendPendingDone({ networkId: 1, pendingId: 'a', sent: true });
     await w.vm.$nextTick();
     expect(pendingTexts(w)).toHaveLength(0);
     expect(w.find('[data-msg-id="11"]').text()).toContain('held one');

@@ -78,12 +78,7 @@ export interface PendingSend {
   text: string;
   /** When it was sent (ISO 8601). */
   at?: string;
-  /** Gone to the server; shown until its echo's row lands. */
-  sent?: boolean;
 }
-
-// How long a sent message stays dimmed waiting for its echo's row.
-export const SEND_PENDING_LINGER_MS = 3000;
 
 export interface NetworkState {
   networkId: number;
@@ -533,57 +528,33 @@ export const useNetworksStore = defineStore('networks', {
       };
     },
     applySendPending(event: any) {
-      if (typeof event.id !== 'string' || typeof event.target !== 'string') return;
+      const pending = event.pending;
+      if (typeof pending?.id !== 'string' || typeof pending.target !== 'string') return;
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
       const held = existing.sendPending ?? [];
-      if (held.some((p) => p.id === event.id)) return;
+      if (held.some((p) => p.id === pending.id)) return;
       this.states[event.networkId] = {
         ...existing,
         sendPending: [
           ...held,
           {
-            id: event.id,
-            target: event.target,
-            kind: event.kind,
-            text: String(event.text ?? ''),
-            at: event.at,
+            id: pending.id,
+            target: pending.target,
+            kind: pending.kind,
+            text: String(pending.text ?? ''),
+            at: pending.at,
           },
         ],
       };
     },
-    // The message went, or was dropped. Its row goes now, unless the real one
-    // is still to come as the server's echo (`rowFollows`): then it stays
-    // until that row lands (settleSendPending), so the line doesn't blink out
-    // and back in, or SEND_PENDING_LINGER_MS at most.
+    // It went, or was dropped: either way the server sends this once the row
+    // that says so (ours, the echo's, or a "not sent" line) is out.
     applySendPendingDone(event: any) {
-      const networkId = event.networkId;
-      const held = this.states[networkId]?.sendPending;
-      if (!held?.some((p) => p.id === event.id)) return;
-      if (!event.rowFollows) {
-        this.dropSendPending(networkId, event.id);
-        return;
-      }
-      this.states[networkId] = {
-        ...this.states[networkId],
-        sendPending: held.map((p) => (p.id === event.id ? { ...p, sent: true } : p)),
-      };
-      setTimeout(() => this.dropSendPending(networkId, event.id), SEND_PENDING_LINGER_MS);
-    },
-    // One of our own rows landed in `target`: it is the oldest sent message
-    // still shown as pending there.
-    settleSendPending(networkId: number | string, target: string) {
-      const folded = String(target).toLowerCase();
-      const done = this.states[networkId]?.sendPending?.find(
-        (p) => p.sent && p.target.toLowerCase() === folded,
-      );
-      if (done) this.dropSendPending(networkId, done.id);
-    },
-    dropSendPending(networkId: number | string, id: string) {
-      const existing = this.states[networkId];
-      if (!existing?.sendPending?.some((p) => p.id === id)) return;
-      this.states[networkId] = {
+      const existing = this.states[event.networkId];
+      if (!existing?.sendPending?.some((p) => p.id === event.pendingId)) return;
+      this.states[event.networkId] = {
         ...existing,
-        sendPending: existing.sendPending.filter((p) => p.id !== id),
+        sendPending: existing.sendPending.filter((p) => p.id !== event.pendingId),
       };
     },
   },

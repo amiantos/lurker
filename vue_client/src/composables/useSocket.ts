@@ -269,8 +269,6 @@ function applyEvent(event: any): boolean {
       break;
     case 'message':
     case 'action': {
-      // Our own row: the one a sent message shown as pending was waiting for.
-      if (event.self) networks.settleSendPending(event.networkId, event.target);
       // Not news on a replay (takeLive): replaying would re-seed speakers with
       // stale times. Unread/highlight counts come from the server's read-state
       // broadcast (fired after every countable event), so we don't increment
@@ -302,7 +300,6 @@ function applyEvent(event: any): boolean {
       break;
     }
     case 'notice':
-      if (event.self) networks.settleSendPending(event.networkId, event.target);
       if (!take().news) break;
       if (event.replyTo?.root) useThreadsStore().applyLive(event);
       notifyForEvent(event);

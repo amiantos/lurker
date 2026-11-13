@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-import { canDisconnect, useNetworksStore, SEND_PENDING_LINGER_MS } from './networks.js';
+import { canDisconnect, useNetworksStore } from './networks.js';
 
 // The predicate behind every "Disconnect ⟷ Reconnect" control (the network context
 // menu and both chat views' server-buffer headers). It is one function precisely so
@@ -168,19 +168,12 @@ describe('user metadata', () => {
 describe('messages held in the send queue (#1326)', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   const held = (id: string, target = '#c') => ({
     networkId: 1,
-    id,
-    target,
-    kind: 'privmsg',
-    text: `text ${id}`,
-    at: '2026-11-13T12:00:00.000Z',
+    target: ':server:',
+    pending: { id, target, kind: 'privmsg', text: `text ${id}`, at: '2026-11-13T12:00:00.000Z' },
   });
   const ids = (store: ReturnType<typeof useNetworksStore>) =>
     (store.states[1]?.sendPending ?? []).map((p) => p.id);
@@ -191,41 +184,18 @@ describe('messages held in the send queue (#1326)', () => {
     store.applySendPending(held('b'));
     store.applySendPending(held('a'));
     expect(ids(store)).toEqual(['a', 'b']);
+    expect(store.states[1].sendPending?.[0]).toMatchObject({ target: '#c', text: 'text a' });
   });
 
-  it('removes one at once when it was dropped, or its row has already come', () => {
+  it('removes one when the server says its wait is over, sent or not', () => {
     const store = useNetworksStore();
     store.applySendPending(held('a'));
     store.applySendPending(held('b'));
-    store.applySendPendingDone({ networkId: 1, id: 'a', sent: false, rowFollows: false });
+    store.applySendPendingDone({ networkId: 1, pendingId: 'a', sent: false });
     expect(ids(store)).toEqual(['b']);
-    store.applySendPendingDone({ networkId: 1, id: 'b', sent: true, rowFollows: false });
-    expect(ids(store)).toEqual([]);
-  });
-
-  it("keeps a sent one until its echo's row lands in that buffer", () => {
-    const store = useNetworksStore();
-    store.applySendPending(held('a'));
-    store.applySendPending(held('b'));
-    store.applySendPendingDone({ networkId: 1, id: 'a', sent: true, rowFollows: true });
-    expect(ids(store)).toEqual(['a', 'b']);
-    // Our row in another buffer is not it.
-    store.settleSendPending(1, '#other');
-    expect(ids(store)).toEqual(['a', 'b']);
-    // In this one, whatever the case: the sent one goes, the held one stays.
-    store.settleSendPending(1, '#C');
+    store.applySendPendingDone({ networkId: 1, pendingId: 'unknown', sent: true });
     expect(ids(store)).toEqual(['b']);
-    store.settleSendPending(1, '#c');
-    expect(ids(store)).toEqual(['b']);
-  });
-
-  it('lets a sent one go after a while when no row comes', () => {
-    const store = useNetworksStore();
-    store.applySendPending(held('a'));
-    store.applySendPendingDone({ networkId: 1, id: 'a', sent: true, rowFollows: true });
-    vi.advanceTimersByTime(SEND_PENDING_LINGER_MS - 1);
-    expect(ids(store)).toEqual(['a']);
-    vi.advanceTimersByTime(1);
+    store.applySendPendingDone({ networkId: 1, pendingId: 'b', sent: true });
     expect(ids(store)).toEqual([]);
   });
 });

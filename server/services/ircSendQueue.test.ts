@@ -10,7 +10,12 @@
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { IrcConnection, TYPING_FORGET_MS, TYPING_MIN_GAP_MS } from './ircConnection.js';
+import {
+  IrcConnection,
+  PENDING_ECHO_WAIT_MS,
+  TYPING_FORGET_MS,
+  TYPING_MIN_GAP_MS,
+} from './ircConnection.js';
 import { BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 import type { ReplyClient } from './replyRouter.js';
 import { e2eManager } from './e2e/manager.js';
@@ -800,6 +805,16 @@ describe('flood protection off (#1193)', () => {
 describe('a held message shows as pending (#1326)', () => {
   const pendingFrames = (published: Array<Record<string, unknown>>) =>
     published.filter((e) => String(e.type).startsWith('send-pending'));
+  const heldOf = (published: Array<Record<string, unknown>>) =>
+    pendingFrames(published)
+      .filter((e) => e.type === 'send-pending')
+      .map((e) => e.pending as { id: string; target: string; kind: string; text: string });
+  const ownRow = (target: string, text: string, type = 'message') => ({
+    type,
+    target,
+    text,
+    self: true,
+  });
 
   it('announces nothing for a message that goes at once', () => {
     const { conn, published } = backlog();
@@ -808,47 +823,101 @@ describe('a held message shows as pending (#1326)', () => {
     conn.dispose();
   });
 
-  it('announces a message the queue holds, and its end once it goes', () => {
-    const { conn, lines, published } = backlog();
+  it('announces a message the queue holds, on the server buffer, naming its own', () => {
+    const { conn, published } = backlog();
     conn.say('#c', 'held');
+    // Never addressed to the buffer itself, which may be closed: the hub
+    // drops what is, and the end of the wait must always arrive.
     expect(pendingFrames(published)).toEqual([
       {
         type: 'send-pending',
-        id: expect.any(String),
-        target: '#c',
-        kind: 'privmsg',
-        text: 'held',
-        at: expect.any(String),
+        target: expect.stringMatching(/^:server:/),
+        pending: {
+          id: expect.any(String),
+          target: '#c',
+          kind: 'privmsg',
+          text: 'held',
+          at: expect.any(String),
+        },
       },
     ]);
-    const { id } = pendingFrames(published)[0];
-    expect(conn.snapshot().sendPending).toEqual([
-      { id, target: '#c', kind: 'privmsg', text: 'held', at: expect.any(String) },
-    ]);
+    expect(conn.snapshot().sendPending).toEqual([heldOf(published)[0]]);
+    conn.dispose();
+  });
+
+  // backlog() records publish() in place of the real one, so an echo's row is
+  // handed to what the real one calls once it is out.
+  const echoed = (conn: IrcConnection, event: ReturnType<typeof ownRow>) => {
+    conn.publish(event);
+    (conn as unknown as { settlePendingEcho(e: object): void }).settlePendingEcho(event);
+  };
+
+  it('has every row of our own looked at, once it is out', async () => {
+    const { conn } = backlog();
+    conn.say('#c', 'held');
+    vi.advanceTimersByTime(2000);
+    const settle = vi.fn<(e: object) => void>();
+    (conn as unknown as { settlePendingEcho: typeof settle }).settlePendingEcho = settle;
+    const event = { type: 'typing', target: '#c', nick: 'alice', state: 'done', self: true };
+    IrcConnection.prototype.publish.call(conn, event);
+    expect(settle).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(settle).toHaveBeenCalledWith(event);
+    conn.dispose();
+  });
+
+  it("ends the wait as the echo's row is published, where the echo is the row", () => {
+    const { conn, lines, published } = backlog();
+    conn.say('#c', 'held');
+    const { id } = heldOf(published)[0];
     vi.advanceTimersByTime(2000);
     expect(lines.at(-1)).toBe('PRIVMSG #c :held');
-    // No row of its own to publish: the server's echo is still to come.
+    // Gone, and still pending: the row is a round trip away.
+    expect(pendingFrames(published)).toHaveLength(1);
+    expect(conn.snapshot().sendPending).toHaveLength(1);
+    // Another line's echo is not it; nor the same words to another buffer.
+    echoed(conn, ownRow('#c', 'something else'));
+    echoed(conn, ownRow('#d', 'held'));
+    echoed(conn, ownRow('#c', 'held', 'notice'));
+    expect(pendingFrames(published)).toHaveLength(1);
+    echoed(conn, ownRow('#C', 'held'));
     expect(pendingFrames(published).at(-1)).toEqual({
       type: 'send-pending-done',
-      target: '#c',
-      id,
+      target: expect.stringMatching(/^:server:/),
+      pendingId: id,
       sent: true,
-      rowFollows: true,
     });
+    // After the row, not before.
+    const types = published.map((e) => e.type);
+    expect(types.lastIndexOf('send-pending-done')).toBeGreaterThan(types.lastIndexOf('message'));
     expect(conn.snapshot().sendPending).toEqual([]);
+    conn.dispose();
+  });
+
+  it('ends the wait after a while when no echo comes', () => {
+    const { conn, published } = backlog();
+    conn.say('#c', 'held');
+    vi.advanceTimersByTime(2000);
+    vi.advanceTimersByTime(PENDING_ECHO_WAIT_MS - 1);
+    expect(pendingFrames(published)).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(pendingFrames(published).at(-1)).toMatchObject({
+      type: 'send-pending-done',
+      sent: true,
+    });
     conn.dispose();
   });
 
   it("publishes the sender's row when the line goes, ahead of the end of the wait", () => {
     const { conn, published } = backlog();
-    const row = () => conn.publish({ type: 'message', target: '#c', text: 'held', self: true });
+    const row = () => conn.publish(ownRow('#c', 'held'));
     conn.say('#c', 'held', null, { row });
     expect(published.some((e) => e.type === 'message')).toBe(false);
     vi.advanceTimersByTime(2000);
     const types = published.map((e) => e.type);
     expect(types.indexOf('message')).toBeGreaterThan(types.indexOf('send-pending'));
     expect(types.indexOf('send-pending-done')).toBeGreaterThan(types.indexOf('message'));
-    expect(pendingFrames(published).at(-1)).toMatchObject({ sent: true, rowFollows: false });
+    expect(pendingFrames(published).at(-1)).toMatchObject({ sent: true });
     conn.dispose();
   });
 
@@ -859,10 +928,29 @@ describe('a held message shows as pending (#1326)', () => {
       published.push(event);
       return undefined;
     };
-    conn.say('#c', 'now', null, {
-      row: () => conn.publish({ type: 'message', target: '#c', text: 'now', self: true }),
-    });
+    conn.say('#c', 'now', null, { row: () => conn.publish(ownRow('#c', 'now')) });
     expect(published.map((e) => e.type)).toEqual(['message']);
+    conn.dispose();
+  });
+
+  it('ends the wait even when the hook of whoever sent it throws', () => {
+    const { conn, published } = backlog();
+    const row = vi.fn<() => void>();
+    conn.say('#c', 'held', null, {
+      row,
+      onSent: () => {
+        throw new Error('hook');
+      },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.advanceTimersByTime(2000);
+    warn.mockRestore();
+    expect(row).toHaveBeenCalledTimes(1);
+    expect(pendingFrames(published).at(-1)).toMatchObject({
+      type: 'send-pending-done',
+      sent: true,
+    });
+    expect(conn.snapshot().sendPending).toEqual([]);
     conn.dispose();
   });
 
@@ -870,7 +958,7 @@ describe('a held message shows as pending (#1326)', () => {
     const { conn, published } = backlog();
     conn.action('#c', 'waves');
     conn.notice('#c', 'psst');
-    expect(pendingFrames(published)).toMatchObject([
+    expect(heldOf(published)).toMatchObject([
       { target: '#c', kind: 'action', text: 'waves' },
       { target: '#c', kind: 'notice', text: 'psst' },
     ]);
@@ -881,17 +969,34 @@ describe('a held message shows as pending (#1326)', () => {
     const { conn, published } = backlog();
     const row = vi.fn<() => void>();
     conn.say('#c', 'never', null, { row });
-    const { id } = pendingFrames(published)[0];
+    const { id } = heldOf(published)[0];
     expect(conn.flushSendQueue()).toBe(1);
     expect(pendingFrames(published).at(-1)).toEqual({
       type: 'send-pending-done',
-      target: '#c',
-      id,
+      target: expect.stringMatching(/^:server:/),
+      pendingId: id,
       sent: false,
-      rowFollows: false,
     });
     expect(row).not.toHaveBeenCalled();
     expect(conn.snapshot().sendPending).toEqual([]);
+    conn.dispose();
+  });
+
+  it('keeps the row for after a re-attach, which stores nothing while it replays', () => {
+    const { conn, published } = backlog();
+    const row = vi.fn<() => void>();
+    conn.say('#c', 'held', null, { row });
+    const c = conn as unknown as { restoring: boolean; onEnginePhase(p: string, d: object): void };
+    c.restoring = true;
+    vi.advanceTimersByTime(2000);
+    expect(row).not.toHaveBeenCalled();
+    expect(pendingFrames(published).at(-1)).toMatchObject({
+      type: 'send-pending-done',
+      sent: true,
+    });
+    c.restoring = false;
+    c.onEnginePhase('live', {});
+    expect(row).toHaveBeenCalledTimes(1);
     conn.dispose();
   });
 });
