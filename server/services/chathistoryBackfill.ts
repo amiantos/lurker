@@ -159,7 +159,9 @@ export class ChathistoryBackfill {
   /**
    * Our link to the engine dropped; the socket lives on there. The request
    * on the wire died with the router's reset, so its page is asked again
-   * when the link is back (resume); the rest of the queue waits.
+   * when the link is back (resume); the rest of the queue waits. A page that
+   * was arriving comes back too, from the engine (#1286), and what the two
+   * share is stored once (ircConnection.alreadyPersisted).
    */
   suspend(): void {
     const active = this.active;

@@ -89,16 +89,22 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 // dialing / attached / closed / error before the attempt is called off.
 const CONNECT_REPLY_TIMEOUT_MS = Number(process.env.LURKER_ENGINE_REPLY_TIMEOUT_MS) || 30_000;
 
-// A BATCH line, start or end, behind whatever tags and source it carries.
-const BATCH_LINE = /^(?:@\S* +)?(?::\S* +)?BATCH +:?([+-])(\S+)/i;
-// The batch a line belongs to: its `batch` tag.
-const BATCH_TAG = /^@(?:[^ ]*;)?batch=([^; ]+)/;
+// Whether a line can have anything to do with a batch: the BATCH command or
+// a `batch` tag. Cheap, and wrong only towards yes; irc-framework's parser,
+// the one its Client reads the line with, says what the line is.
+const BATCH_HINT = /batch/i;
+// The open batches an ack names lines for, and the ranges it names. Past
+// either the oldest batch is let go of — most likely one the server never
+// ended, as with the per-batch maps in ircConnection.ts — so a server cannot
+// grow an ack past the frame limit (protocol.ts MAX_FRAME_BYTES).
+const MAX_OPEN_BATCHES = 100;
+const MAX_KEEP_RANGES = 1024;
 
-// Add a seq to ranges that were built in delivery order.
+// Add a seq to ranges built in delivery order.
 function addSeq(ranges: SeqRange[], seq: number): void {
   const last = ranges.at(-1);
   if (last && last[1] === seq - 1) last[1] = seq;
-  else if (!last || last[1] !== seq) ranges.push([seq, seq]);
+  else ranges.push([seq, seq]);
 }
 
 // The replay is the OLD registration, verbatim — including its SASL exchange.
@@ -136,6 +142,7 @@ export interface EngineConnectOptions extends ConnectOptions {
   // Test seams.
   engineLink?: EngineLink;
   engineConnectTimeoutMs?: number;
+  engineKeepLimits?: { batches: number; ranges: number };
 }
 
 export class EngineTransport extends EventEmitter implements FrameHandler {
@@ -167,6 +174,8 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   // keep, and a process that attaches before the batch ends is given it from
   // the start (#1286). Rebuilt from those same lines on that attach.
   private openBatches = new Map<string, SeqRange[]>();
+  private batchesLetGo = false;
+  private readonly keepLimits: { batches: number; ranges: number };
   // The engine's id for the IRC socket, from `open` or `attached`; null from
   // an engine that predates it (protocol minor 6). With deliveringSeq, what
   // the catch-up mark (db/engineMarks.ts) is keyed by.
@@ -176,12 +185,20 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   // anything that runs later — a timer, a deferred publish — sees no seq
   // rather than the last one's.
   deliveringSeq: number | null = null;
+  // Whether that line is one the engine kept and is delivering again (#1286):
+  // a line of a batch that was open when the last attach ended. Its raw
+  // listeners ran then; its handlers did not.
+  deliveringKept = false;
 
   constructor(readonly options: EngineConnectOptions) {
     super();
     this.id = options.engineConnId;
     this.link = options.engineLink ?? EngineLink.shared();
     this.hooks = options.engineHooks;
+    this.keepLimits = options.engineKeepLimits ?? {
+      batches: MAX_OPEN_BATCHES,
+      ranges: MAX_KEEP_RANGES,
+    };
     this.hooks?.onTransport?.(this);
   }
 
@@ -434,31 +451,17 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
 
   private deliver(frame: Extract<EngineToApp, { op: 'line' }>): void {
     if (this.backlog !== null) this.backlog++;
-    const batch = BATCH_LINE.exec(frame.line);
-    // The open batch this line is part of, as irc-framework will see it: its
-    // `batch` tag names one. A nested batch's start and end are lines of the
-    // batch around it.
-    let parent: SeqRange[] | undefined;
-    if (this.openBatches.size > 0) {
-      const ref = BATCH_TAG.exec(frame.line)?.[1];
-      parent = ref === undefined ? undefined : this.openBatches.get(ref);
-      if (parent) addSeq(parent, frame.seq);
-    }
-    // A reference started again starts over, as irc-framework's cache does.
-    if (batch?.[1] === '+') this.openBatches.set(batch[2], [[frame.seq, frame.seq]]);
+    const ended = this.trackBatch(frame.seq, frame.line);
     this.deliveringSeq = frame.seq;
+    this.deliveringKept = frame.kept === true;
     try {
       this.emit('line', frame.line);
     } finally {
       this.deliveringSeq = null;
+      this.deliveringKept = false;
     }
-    if (batch?.[1] === '-') {
-      // The end of a batch ran the lines it held — unless the end is itself a
-      // line of a batch still open, which now holds them all.
-      const lines = this.openBatches.get(batch[2]);
-      this.openBatches.delete(batch[2]);
-      if (lines && parent && parent !== lines) parent.push(...lines);
-    }
+    // The end of a batch ran the lines it held.
+    if (ended !== null) this.openBatches.delete(ended);
     // By the time emit() returns, irc-framework and every ircConnection handler
     // have run — persistence included, better-sqlite3 being synchronous — so
     // the ack can never get ahead of the row. The exception is a line of an
@@ -480,18 +483,69 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     }
   }
 
-  // Every open batch's lines as ascending ranges, for an engine that keeps
-  // them. One that does not is acked as it always was.
-  private keptSeqs(): SeqRange[] {
-    if (this.openBatches.size === 0 || !this.link.supportsAckKeep()) return [];
-    const all = [...this.openBatches.values()].flat().toSorted((a, b) => a[0] - b[0]);
-    const out: SeqRange[] = [];
-    for (const [from, to] of all) {
-      const last = out.at(-1);
-      if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to);
-      else out.push([from, to]);
+  // Follow the batches as irc-framework's dispatch does (commands/handler.js),
+  // which is what decides the lines it holds: a line tagged with an open
+  // batch is held under it, whatever the line is — the start or end of a
+  // batch inside it included, so a nested batch never opens. An untagged
+  // `BATCH +ref` opens one and an untagged `BATCH -ref` ends it; the reference
+  // it ends is returned, to be forgotten once the line has run.
+  private trackBatch(seq: number, line: string): string | null {
+    // Nothing to keep on an engine that keeps nothing.
+    if (!BATCH_HINT.test(line) || !this.link.supportsAckKeep()) return null;
+    let msg;
+    try {
+      msg = ircLineParser(line);
+    } catch {
+      return null;
     }
-    return out;
+    if (!msg) return null;
+    const tagged = msg.tags?.batch;
+    if (tagged) {
+      const open = this.openBatches.get(tagged);
+      if (open) addSeq(open, seq);
+      return null;
+    }
+    if (String(msg.command).toUpperCase() !== 'BATCH') return null;
+    const param = msg.params[0] ?? '';
+    const ref = param.slice(1);
+    if (!ref) return null;
+    if (param[0] === '-') return this.openBatches.has(ref) ? ref : null;
+    if (param[0] !== '+') return null;
+    // A reference started again starts over, as irc-framework's cache does.
+    this.openBatches.delete(ref);
+    this.openBatches.set(ref, [[seq, seq]]);
+    if (this.openBatches.size > this.keepLimits.batches) this.letGoOfOldestBatch();
+    return null;
+  }
+
+  private letGoOfOldestBatch(): void {
+    const oldest = this.openBatches.keys().next().value;
+    if (oldest === undefined) return;
+    this.openBatches.delete(oldest);
+    // Once per attach: a server that does this does it all day.
+    if (this.batchesLetGo) return;
+    this.batchesLetGo = true;
+    console.warn(
+      `[engine] ${this.id}: the server has too many batches open, or one too broken up, to keep them all for a restart; the oldest (${oldest}) is no longer kept`,
+    );
+  }
+
+  // Every open batch's lines as ascending ranges, for the ack.
+  private keptSeqs(): SeqRange[] {
+    // Nothing for an engine that keeps nothing (trackBatch follows none).
+    if (!this.link.supportsAckKeep()) this.openBatches.clear();
+    for (;;) {
+      if (this.openBatches.size === 0) return [];
+      const all = [...this.openBatches.values()].flat().toSorted((a, b) => a[0] - b[0]);
+      const out: SeqRange[] = [];
+      for (const [from, to] of all) {
+        const last = out.at(-1);
+        if (last && from <= last[1] + 1) last[1] = Math.max(last[1], to);
+        else out.push([from, to]);
+      }
+      if (out.length <= this.keepLimits.ranges) return out;
+      this.letGoOfOldestBatch();
+    }
   }
 
   // --- irc-framework transport contract ---------------------------------------

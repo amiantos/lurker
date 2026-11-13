@@ -81,6 +81,9 @@ export class LineBuffer {
   private lines: BufferedLine[] = [];
   private nextSeq = 1;
   private gap: Gap | null = null;
+  // The highest seq an ack has named. A line still here at or below it is one
+  // an ack asked to keep.
+  private acked = 0;
   bytes = 0;
 
   constructor(
@@ -118,6 +121,10 @@ export class LineBuffer {
     const size = lineBytes(dropped.line);
     this.bytes -= size;
     this.budget.used -= size;
+    // A kept line is not a hole: the app was given it, and what goes with it
+    // is only the copy for the app after that one. (The lines an ack kept are
+    // the oldest here, so they are also the first to go.)
+    if (dropped.seq <= this.acked) return;
     // Extend a gap that is already open rather than recording a second one:
     // the app only needs the outer bounds of the hole.
     if (this.gap) {
@@ -136,13 +143,11 @@ export class LineBuffer {
     // An ack into the hole says the app had those lines after all (it was
     // attached and simply slow to ack, or the burst replay just delivered
     // them): shrink the reported hole to what is actually unaccounted for.
-    // Only up to the first line the app asked to keep: one of those in the
-    // hole is a line the next app will not get.
     if (this.gap) {
-      const had = keep.length > 0 ? Math.min(seq, keep[0][0] - 1) : seq;
-      if (had >= this.gap.lastDroppedSeq) this.gap = null;
-      else if (had >= this.gap.firstDroppedSeq) this.gap.firstDroppedSeq = had + 1;
+      if (seq >= this.gap.lastDroppedSeq) this.gap = null;
+      else if (seq >= this.gap.firstDroppedSeq) this.gap.firstDroppedSeq = seq + 1;
     }
+    if (seq > this.acked) this.acked = seq;
     let freed = 0;
     let i = 0;
     let kept = 0;
@@ -158,6 +163,11 @@ export class LineBuffer {
     this.lines.splice(kept, i - kept);
     this.bytes -= freed;
     this.budget.used -= freed;
+  }
+
+  // Whether a pending line is one an ack kept, and so has been delivered.
+  wasKept(line: BufferedLine): boolean {
+    return line.seq <= this.acked;
   }
 
   pending(): readonly BufferedLine[] {

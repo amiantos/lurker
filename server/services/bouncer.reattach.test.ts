@@ -168,5 +168,26 @@ describe('an engine re-attach', () => {
       lines.some((l) => commandOf(l) === '353' && l.includes('#one') && l.includes('bob')),
     ).toBe(true);
     expect(whileAway(lines)).toHaveLength(1);
-  }, 40000);
+
+    // A link lost while a batch is open (#1286): the engine keeps the batch's
+    // lines for the app, whose irc-framework had not run them, and delivers
+    // them again. The clients were relayed them the first time.
+    await until(() => buffered() === 0, 5000, 'everything acked');
+    const before = stayed.lines.length;
+    const bobFull = ':bob!~bob@bob.fake';
+    ircd.sendRaw(NICK, `${bobFull} BATCH +ml draft/multiline #one`);
+    ircd.sendRaw(NICK, `@batch=ml ${bobFull} PRIVMSG #one :batched one`);
+    await stayed.waitFor((l) => l.endsWith(':batched one'), 5000);
+    await until(() => buffered() === 2, 5000, 'the engine kept the open batch');
+    EngineLink.shared().simulateLoss();
+    await until(() => conn.state !== 'connected', 5000, 'the second link loss');
+    ircd.sendRaw(NICK, `@batch=ml ${bobFull} PRIVMSG #one :batched two`);
+    ircd.sendRaw(NICK, `${bobFull} BATCH -ml`);
+    await until(() => conn.state === 'connected' && !conn.catchingUp, 10000, 'live once more');
+    await stayed.waitFor((l) => l.endsWith(':batched two'), 5000);
+    await sentinel([stayed]);
+    const since = stayed.lines.slice(before);
+    expect(since.filter((l) => l.endsWith(':batched one'))).toHaveLength(1);
+    expect(since.filter((l) => l.endsWith(':batched two'))).toHaveLength(1);
+  }, 60000);
 });

@@ -50,7 +50,9 @@ export const PROTOCOL_MAJOR = 1;
 // stored when it is delivered: the app's IRC library holds it until the batch
 // ends, and a process that attaches in between needs the batch from its start.
 // An engine below this ignores the field and forgets them, as every engine
-// did; the app does not send it there.
+// did; the app does not send it there. Such a line, given again to the next
+// attach, says so (`kept` on `line`): it has been delivered before, and
+// whatever read it then must not act on it twice.
 export const PROTOCOL_MINOR = 7;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
@@ -59,9 +61,10 @@ export const PROTOCOL_MINOR = 7;
 // and is size-checked by the engine before it is sent. Enforced by the framer on
 // both sides so a misbehaving link can't make either process buffer without
 // bound.
-export type SeqRange = [from: number, to: number];
-
 export const MAX_FRAME_BYTES = 256 * 1024;
+
+// Line seqs, inclusive.
+export type SeqRange = [from: number, to: number];
 
 export interface Endpoint {
   address: string;
@@ -208,7 +211,8 @@ export type EngineToApp =
     }
   // The unacked backlog follows `attached` as ordinary `line` frames, then `live`
   // marks the point after which frames are real-time.
-  | { op: 'line'; id: string; seq: number; line: string }
+  // `kept` (minor 7): a line an ack asked the engine to keep, delivered again.
+  | { op: 'line'; id: string; seq: number; line: string; kept?: true }
   | { op: 'live'; id: string }
   | { op: 'gap'; id: string; gap: Gap }
   // The engine stopped serving this id to THIS link because a newer app process

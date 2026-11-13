@@ -106,22 +106,21 @@ describe('LineBuffer', () => {
     expect(budget.used).toBe(0);
   });
 
-  it('still reports a hole a kept line fell into (#1286)', () => {
+  it('a kept line shed under pressure is not a hole; an unacked one still is (#1286)', () => {
     // Each line is 12 bytes; the cap fits four.
     const b = new LineBuffer(48, new ByteBudget(1024 * 1024));
     for (let i = 1; i <= 3; i++) b.push('x'.repeat(10));
     b.ack(3, [[2, 2]]);
     expect(seqs(b)).toEqual([2]);
-    // Pressure sheds the oldest line, kept or not.
+    expect(b.wasKept(b.pending()[0])).toBe(true);
+    // Pressure sheds the oldest line, kept or not: the app had that one.
     for (let i = 4; i <= 7; i++) b.push('x'.repeat(10));
     expect(seqs(b)).toEqual([4, 5, 6, 7]);
-    expect(b.peekGap()).toMatchObject({ firstDroppedSeq: 2, lastDroppedSeq: 2 });
-    // The app still wants 2: the hole stands, where a plain ack past it
-    // would have meant "had it after all".
-    b.ack(5, [[2, 2]]);
-    expect(b.peekGap()).toMatchObject({ firstDroppedSeq: 2, lastDroppedSeq: 2 });
-    b.ack(5);
+    expect(b.pending().some((l) => b.wasKept(l))).toBe(false);
     expect(b.peekGap()).toBeNull();
+    // The next one to go was never acked, and the hole is exactly it.
+    b.push('x'.repeat(10));
+    expect(b.peekGap()).toMatchObject({ firstDroppedSeq: 4, lastDroppedSeq: 4 });
   });
 
   it('reads a `keep` off the wire: ranges in order, and nothing else', () => {

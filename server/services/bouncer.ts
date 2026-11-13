@@ -1614,6 +1614,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // what the client missed, and comes through.
       const replaying = !!conn.restoring;
       if (!replaying) this.welcomed = true;
+      // A line of a batch that was open when the link to the engine dropped
+      // comes again with the backlog (#1286), for irc-framework, which lost
+      // it. This client was sent it the first time.
+      if (conn.lineKept) return;
       // A reply goes only to whoever asked for it: this client, another one,
       // the user or Lurker (replyRouter.ts). The connection decided in its own
       // raw listener, which runs before this one.

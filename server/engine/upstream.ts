@@ -719,7 +719,13 @@ export class EngineUpstream extends EventEmitter {
     for (let i = first; i < pending.length; i++) {
       const b = pending[i];
       this.sentSeq = b.seq;
-      const ok = sink.send({ op: 'line', id: this.id, seq: b.seq, line: b.line });
+      const ok = sink.send({
+        op: 'line',
+        id: this.id,
+        seq: b.seq,
+        line: b.line,
+        ...(this.buffer.wasKept(b) ? { kept: true as const } : {}),
+      });
       if (this.liveAfterSeq !== null && b.seq >= this.liveAfterSeq) this.sendLive();
       if (!ok) {
         this.stalled = true;
