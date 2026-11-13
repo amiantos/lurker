@@ -401,6 +401,57 @@ describe('IrcConnection through the engine', () => {
     await until(() => count('after the mark') === 1, 5000, 'a live line after re-attach');
   }, 20000);
 
+  it('a process that dies mid-batch leaves the whole batch to the next one (#1286)', async () => {
+    const conn = ircManager.getConnection(userId, network.id)!;
+    expect(conn.state).toBe('connected');
+    const probe = vi.mocked(messagesDb.hasRecentMessageLike);
+    probe.mockClear();
+    const count = (text: string) => rows().filter((r) => r.text === text).length;
+    const buffered = () => engine.info(engineId)?.bufferedLines ?? 0;
+    await until(() => buffered() === 0, 5000, 'nothing unacked before the batch');
+    const peer = ':peer!~peer@peer.fake';
+
+    // A multiline message starts, and a plain line arrives before it ends:
+    // stored at once, while irc-framework still holds the batch's first line.
+    // The process dies there — a while later, so every ack it was going to
+    // send has gone — and the batch ends with nobody attached.
+    const onEvent = (e: Ev) => {
+      if (e.type !== 'message' || e.text !== 'plain mid-batch') return;
+      ircManager.off('event', onEvent);
+      setTimeout(() => {
+        EngineLink.shared().simulateLoss();
+        ircd.sendRaw('lurk', `@batch=ml ${peer} PRIVMSG #stay :batched two`);
+        ircd.sendRaw('lurk', ':fake.server BATCH -ml');
+      }, 50);
+    };
+    ircManager.on('event', onEvent);
+    managerEvents.length = 0;
+    ircd.sendRaw('lurk', `${peer} BATCH +ml draft/multiline #stay`);
+    ircd.sendRaw('lurk', `@batch=ml ${peer} PRIVMSG #stay :batched one`);
+    ircd.sendRaw('lurk', `${peer} PRIVMSG #stay :plain mid-batch`);
+
+    await until(
+      () => {
+        const trail = stateEvents(managerEvents);
+        return (
+          trail.includes('reconnecting') &&
+          trail.lastIndexOf('connected') > trail.indexOf('reconnecting')
+        );
+      },
+      5000,
+      'reconnecting → connected',
+    );
+    await until(() => !conn.catchingUp, 5000, 'live');
+    await until(() => buffered() === 0, 5000, 'the backlog was acked');
+
+    // The message is whole, once. The plain line came again with the batch
+    // (an ack is a watermark) and was settled by the mark its row moved while
+    // the batch was open, not by the probe.
+    expect(count('batched one\nbatched two')).toBe(1);
+    expect(count('plain mid-batch')).toBe(1);
+    expect(probe.mock.calls.some((c) => c[4] === 'plain mid-batch')).toBe(false);
+  }, 20000);
+
   it('restartNetwork dials afresh: no restore of the quitting session, no reconnect row', async () => {
     const before = ircManager.getConnection(userId, network.id)!;
     expect(before.state).toBe('connected');

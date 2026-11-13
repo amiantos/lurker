@@ -72,6 +72,9 @@ export interface EnginePhaseInfo {
 export interface EngineHooks {
   onTransport?(transport: EngineTransport): void;
   onPhase?(phase: EnginePhase, info: EnginePhaseInfo): void;
+  // The ack stopped waiting for batches the server left open (#1286): their
+  // references, and how many lines had been held unacked for them.
+  onBatchHoldExpired?(info: { refs: string[]; lines: number }): void;
 }
 
 const RESTORE_MARK = '__lurker_restore__';
@@ -88,6 +91,15 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 // After CONNECT goes out on a ready link, how long the engine has to say
 // dialing / attached / closed / error before the attempt is called off.
 const CONNECT_REPLY_TIMEOUT_MS = Number(process.env.LURKER_ENGINE_REPLY_TIMEOUT_MS) || 30_000;
+
+// A BATCH line, start or end, behind whatever tags and source it carries.
+const BATCH_LINE = /^(?:@\S* +)?(?::\S* +)?BATCH +:?([+-])(\S+)/i;
+// How long an open batch holds the ack back. A batch is a burst — a history
+// page, a netsplit's QUITs, one long message — and ends within seconds of
+// starting. One the server never ends would otherwise pin the ack for the life
+// of the socket: the engine's buffer would fill with lines the app has stored,
+// shed them, and report a hole that is not one.
+const BATCH_HOLD_MS = 60_000;
 
 // The replay is the OLD registration, verbatim — including its SASL exchange.
 // The fresh Client would answer a replayed `AUTHENTICATE +` from the network
@@ -124,6 +136,7 @@ export interface EngineConnectOptions extends ConnectOptions {
   // Test seams.
   engineLink?: EngineLink;
   engineConnectTimeoutMs?: number;
+  engineBatchHoldMs?: number;
 }
 
 export class EngineTransport extends EventEmitter implements FrameHandler {
@@ -147,7 +160,15 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   // Acks are coalesced per synchronous batch (one microtask), so a chunk of a
   // hundred lines is one frame, not a hundred.
   private ackSeq = 0;
+  private ackSent = 0;
   private ackQueued = false;
+  // The batches the server has started and not ended, oldest first, by
+  // reference: the seq of each one's `BATCH +` line and when it arrived.
+  // irc-framework keeps a batch's lines to itself until the batch ends, so
+  // none of them is stored before that, and the ack waits below the oldest
+  // start (#1286).
+  private openBatches = new Map<string, { seq: number; at: number }>();
+  private readonly batchHoldMs: number;
   // The engine's id for the IRC socket, from `open` or `attached`; null from
   // an engine that predates it (protocol minor 6). With deliveringSeq, what
   // the catch-up mark (db/engineMarks.ts) is keyed by.
@@ -163,6 +184,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     this.id = options.engineConnId;
     this.link = options.engineLink ?? EngineLink.shared();
     this.hooks = options.engineHooks;
+    this.batchHoldMs = options.engineBatchHoldMs ?? BATCH_HOLD_MS;
     this.hooks?.onTransport?.(this);
   }
 
@@ -415,24 +437,61 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
 
   private deliver(frame: Extract<EngineToApp, { op: 'line' }>): void {
     if (this.backlog !== null) this.backlog++;
+    const batch = BATCH_LINE.exec(frame.line);
+    // A reference started twice keeps its first start: the lower floor.
+    if (batch?.[1] === '+' && !this.openBatches.has(batch[2]))
+      this.openBatches.set(batch[2], { seq: frame.seq, at: performance.now() });
     this.deliveringSeq = frame.seq;
     try {
       this.emit('line', frame.line);
     } finally {
       this.deliveringSeq = null;
     }
+    // The end of a batch has run every line the batch held.
+    if (batch?.[1] === '-') this.openBatches.delete(batch[2]);
     // By the time emit() returns, irc-framework and every ircConnection handler
     // have run — persistence included, better-sqlite3 being synchronous — so
-    // the ack can never get ahead of the row. Coalesced: one frame per batch.
-    this.ackSeq = frame.seq;
-    if (!this.ackQueued) {
+    // the ack can never get ahead of the row. The exception is a line inside a
+    // batch, which irc-framework parks until the batch ends: while one is
+    // open the ack stays below its start, and the engine re-delivers the
+    // batch whole to a process that attaches before it ends (#1286). An ack is
+    // a watermark, so the lines outside the batch wait with it; the ones that
+    // stored a row are told apart at re-delivery by the catch-up mark, which
+    // does not wait (a batch's rows are stored under the seq of its end).
+    // Coalesced: one frame per chunk.
+    const acked = this.ackFloor(frame.seq);
+    if (acked > this.ackSeq) this.ackSeq = acked;
+    if (this.ackSeq > this.ackSent && !this.ackQueued) {
       this.ackQueued = true;
       queueMicrotask(() => {
         this.ackQueued = false;
-        if (!this.ended && this.connected)
-          this.link.send({ op: 'ack', id: this.id, seq: this.ackSeq });
+        if (this.ended || !this.connected || this.ackSeq <= this.ackSent) return;
+        this.ackSent = this.ackSeq;
+        this.link.send({ op: 'ack', id: this.id, seq: this.ackSeq });
       });
     }
+  }
+
+  // What may be acked now that `seq` has been delivered: everything, or
+  // everything below the oldest batch still open. A batch open past the
+  // deadline no longer counts. Checked as lines arrive and not on a timer: a
+  // hold nothing arrives under holds nothing more.
+  private ackFloor(seq: number): number {
+    const now = performance.now();
+    const expired: string[] = [];
+    let held = 0;
+    let floor = seq;
+    for (const [ref, open] of this.openBatches) {
+      if (now - open.at < this.batchHoldMs) {
+        floor = open.seq - 1;
+        break;
+      }
+      if (expired.length === 0) held = seq - open.seq + 1;
+      expired.push(ref);
+      this.openBatches.delete(ref);
+    }
+    if (expired.length > 0) this.hooks?.onBatchHoldExpired?.({ refs: expired, lines: held });
+    return floor;
   }
 
   // --- irc-framework transport contract ---------------------------------------

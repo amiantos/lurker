@@ -7623,6 +7623,13 @@ export class IrcConnection {
           this.engineTransport = t as EngineTransport;
         },
         onPhase: (phase, info) => this.onEnginePhase(phase as EnginePhase, info as EnginePhaseInfo),
+        // Not a loss, and not a line in anyone's buffer: the lines were
+        // delivered and are acked now. What is given up is the engine keeping
+        // them for the next process, had this one died before the batch ended.
+        onBatchHoldExpired: ({ refs, lines }) =>
+          console.warn(
+            `[engine] network ${this.network.id}: the server left ${refs.length === 1 ? 'a batch' : `${refs.length} batches`} open (${refs.join(', ')}); no longer holding the ack for ${lines} line${lines === 1 ? '' : 's'}`,
+          ),
       },
     };
   }
