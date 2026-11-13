@@ -159,13 +159,15 @@ function awayWhere(networks: Network[]): string {
 
 /**
  * What a sender wants to know about each wire line of a message (#1149): that
- * it went (`sent`), or that it was dropped with its socket (`dropped`). The
+ * it went (`sent`), or that it never will (`dropped`): lost with its socket,
+ * or not sent by Lurker's own decision, which alone comes with a reason. The
  * text is the line's body as the sender's chunking cut it — what the bouncer
  * keys its echoes by — or, for an E2E message, the whole plaintext.
  */
 export interface LineHooks {
   sent?: (text: string) => void;
-  dropped?: (text: string) => void;
+  /** `why`: set when Lurker itself decided not to send it (SendHooks.onDropped). */
+  dropped?: (text: string, why?: string) => void;
 }
 
 // `row`: publishes the sender's own row when the line goes (SendHooks.row);
@@ -176,7 +178,11 @@ function lineHooks(
   row?: () => void,
 ): SendHooks | undefined {
   if (!hooks && !row) return undefined;
-  return { onSent: () => hooks?.sent?.(text), onDropped: () => hooks?.dropped?.(text), row };
+  return {
+    onSent: () => hooks?.sent?.(text),
+    onDropped: (why) => hooks?.dropped?.(text, why),
+    row,
+  };
 }
 
 // Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single

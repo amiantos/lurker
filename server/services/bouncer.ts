@@ -99,7 +99,7 @@ import {
   certFingerprint,
   keyMatchesCert,
 } from '../utils/bouncerCert.js';
-import { isChannelTarget, isDccChatTarget } from '../../shared/channels.js';
+import { channelReadings, isChannelTarget, isDccChatTarget } from '../../shared/channels.js';
 import { stripFormatting } from './textMatch.js';
 import {
   bouncerBindHost,
@@ -3287,9 +3287,30 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // Each echo's clock starts when its line has gone, which behind a
       // backlog is later than now (#1149); a line dropped with its socket has
       // no echo coming.
+      // One Lurker itself decided not to send (`why`: taken back from the
+      // queue on a kick or a /flushq, E2E off by its turn) is answered as a
+      // server would answer it (#1330): this client's own line, so this
+      // client alone, and once however many wire lines it was cut into.
+      // Before the purge (#1322) a line after a kick drew the server's 404.
+      // To a nick it is a 531 (ERR_CANTSENDTOUSER, as UnrealIRCd and InspIRCd
+      // number it): a 404 names a channel. A line lost with its socket stays
+      // unanswered, as ZNC and soju leave it.
+      let refused = false;
       const lineHooks = {
         sent: (line: string) => this.stampEcho(kind, target, line),
-        dropped: (line: string) => this.forgetEcho(kind, target, line),
+        dropped: (line: string, why?: string) => {
+          this.forgetEcho(kind, target, line);
+          if (!why || refused) return;
+          refused = true;
+          // A middle parameter: a target that could not be one (`:bob`, from
+          // `PRIVMSG ,:bob`) would begin the trailing text early.
+          const named = /^[^:\s][^\s]*$/.test(target) ? target : '*';
+          if (channelReadings(target).length) {
+            this.numeric('404', `${named} :Cannot send to channel (${why})`);
+          } else {
+            this.numeric('531', `${named} :Cannot send to user (${why})`);
+          }
+        },
       };
       let accepted: boolean;
       if (isAction) {

@@ -194,6 +194,43 @@ describe('a client that did not ask for echo-message', () => {
     }
   });
 
+  // #1330: a line Lurker took back from the queue (a kick, a /flushq) is
+  // answered as the server would have answered it; one that went with its
+  // socket is not, as with ZNC and soju. Only the client that sent it is told.
+  it('is told when its waiting message is taken back, and not when the socket goes', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const other = await attachIn(live, '#room');
+    const send = vi.spyOn(ircManager, 'send').mockReturnValue(true);
+    const mark = c.lines.length;
+    const otherMark = other.lines.length;
+    c.send('PRIVMSG #room :taken back');
+    c.send('PRIVMSG #room :lost with the socket');
+    c.send('PRIVMSG bob :to a nick');
+    c.send('PRIVMSG ,:odd :to no name at all');
+    await until(() => send.mock.calls.length === 4, 5000, 'relayed to the manager');
+    const [taken, lost, toNick, odd] = send.mock.calls.map((call) => call[4]?.lineHooks);
+    expect(send.mock.calls[3][2]).toBe(':odd');
+    send.mockRestore();
+    // Cut into two wire lines, both taken back: the client sent one line.
+    taken!.dropped!('taken', 'no longer in the channel');
+    taken!.dropped!('back', 'no longer in the channel');
+    lost!.dropped!('lost with the socket');
+    // A 404 names a channel; a nick gets the numeric for a user.
+    toNick!.dropped!('to a nick', 'send queue cleared');
+    // A target that cannot stand as a parameter is not repeated.
+    odd!.dropped!('to no name at all', 'send queue cleared');
+    const refusals = (await linesAfter(c, mark, '#room')).filter((l) => / (404|531) /.test(l));
+    expect(refusals).toEqual([
+      expect.stringMatching(/ 404 \S+ #room :Cannot send to channel \(no longer in the channel\)$/),
+      expect.stringMatching(/ 531 \S+ bob :Cannot send to user \(send queue cleared\)$/),
+      expect.stringMatching(/ 531 \S+ \* :Cannot send to user \(send queue cleared\)$/),
+    ]);
+    expect(
+      (await linesAfter(other, otherMark, '#room')).filter((l) => / (404|531) /.test(l)),
+    ).toEqual([]);
+  });
+
   it('never gets its own plain message back', async () => {
     const live = await seedLive();
     const c = await attachIn(live, '#room');
