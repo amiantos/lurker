@@ -661,6 +661,19 @@ describe('SendPacer', () => {
       expect(sent.slice(5)).toEqual(['PRIVMSG #a :2/3', 'PRIVMSG #a :3/3']);
     });
 
+    it('takes a message made into its lines that still waits whole', () => {
+      const onDropped = vi.fn<(why?: string) => void>();
+      for (let i = 0; i < 4; i++) pacer.write(`PRIVMSG #fill :${i}`);
+      // Made when a short line would fit; its own long lines do not yet.
+      pacer.write(() => [LONG, LONG], { target: '#a', onDropped });
+      expect(sent).toHaveLength(4);
+      expect(pacer.pending).toBe(2);
+      expect(pacer.withdraw(() => true, 'cleared')).toBe(1);
+      expect(onDropped).toHaveBeenCalledExactlyOnceWith('cleared');
+      vi.advanceTimersByTime(10_000);
+      expect(sent).toHaveLength(4);
+    });
+
     it('reports an emptied queue empty at once, not after the hold', () => {
       const depths: number[] = [];
       pacer.dispose();

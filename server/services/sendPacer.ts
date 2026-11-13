@@ -219,6 +219,8 @@ interface Entry {
   onSent?: (at: number) => void;
   onDropped?: (why?: string) => void;
   target?: string;
+  /** A line of this item, or of what it expanded to, has gone (withdraw). */
+  began?: boolean;
   /** The item this one expanded from, for cancel(). */
   origin?: Entry;
   unpaced?: boolean;
@@ -420,17 +422,26 @@ export class SendPacer {
    * Take back the user's messages still waiting for a conversation `match`
    * accepts (#1322): the queue cleared by hand, or a channel we are no longer
    * in. Each is told dropped, with `why`. Only items written with a `target`,
-   * and only whole: a message that has begun (a thunk already made into its
-   * lines, some of them gone) is left to finish, since half of it is on the
-   * wire and "not sent" would not be true of it. Returns how many were taken.
+   * and only whole: a message that has begun (a line of it has gone) is left
+   * to finish, since part of it is on the wire and "not sent" would not be
+   * true of it. One that was made into its lines and still waits whole is
+   * taken, lines and all. Nor one a refusal has told already: the close's
+   * drop() has the rest of it. Returns how many messages were taken.
    */
   withdraw(match: (target: string) => boolean, why: string): number {
+    const roots = new Set<Entry>();
     const taken: Entry[] = [];
     for (const lane of LANES) {
       const queue = this.lanes[lane];
       for (let i = 0; i < queue.length;) {
-        const q = queue[i];
-        if (!q.origin && q.target !== undefined && match(q.target)) {
+        const root = this.rootOf(queue[i]);
+        if (
+          !root.began &&
+          !this.toldAtRefusal.has(root) &&
+          root.target !== undefined &&
+          match(root.target)
+        ) {
+          roots.add(root);
           taken.push(...queue.splice(i, 1));
         } else i++;
       }
@@ -443,7 +454,7 @@ export class SendPacer {
     for (const q of taken) this.tellDropped(q, told, why);
     // The head may be another item now, with another wait.
     this.redrain();
-    return taken.length;
+    return roots.size;
   }
 
   private handle(entry: Entry): SendHandle {
@@ -645,6 +656,7 @@ export class SendPacer {
     const text = entry.text!;
     if (!this.push(text)) return this.refuse(entry);
     const at = this.now();
+    this.rootOf(entry).began = true;
     if (charge) this.charge(this.costOf(text), at, entry.unpaced === true);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
     return true;

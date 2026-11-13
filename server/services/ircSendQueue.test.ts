@@ -875,6 +875,46 @@ describe('taking back what waits (#1322)', () => {
     conn.dispose();
   });
 
+  it('a kick that beats our own PART to the server is still a kick', () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.say('#c', 'bye');
+    conn.part('#c');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): bye' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG #c :bye');
+    conn.dispose();
+  });
+
+  it('drops a line to a list of recipients that names the channel', () => {
+    const { conn, lines } = backlog({ join: ['#c', '#d'] });
+    conn.say('#d,#c', 'both');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG #d,#c :both');
+    conn.dispose();
+  });
+
+  it('says so once a re-attach is over, when the channel went with one', () => {
+    const { conn, published } = backlog({ join: ['#c'] });
+    conn.say('#c', 'held');
+    conn.restoring = true;
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([]);
+    // The replay is done and the backlog read: the engine's 'live' phase.
+    conn.restoring = false;
+    (conn as unknown as { onEnginePhase: (phase: string, info: object) => void }).onEnginePhase(
+      'live',
+      {},
+    );
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): held' }),
+    ]);
+    conn.dispose();
+  });
+
   it('leaves the queue alone when someone else is kicked', () => {
     const { conn, lines } = backlog({ join: ['#c'], peers: ['bob'] });
     conn.say('#c', 'still going');
