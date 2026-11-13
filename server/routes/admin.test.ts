@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import net from 'node:net';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import type { Express } from 'express';
@@ -113,7 +114,7 @@ describe('GET /api/admin/users', () => {
     expect(row.effectiveIdent).toBe('admin-regular');
     // Whether an ident daemon is actually running, so the pane can say the
     // idents are inert rather than implying networks see them.
-    expect(res.body.identdEnabled).toBe(false);
+    expect(res.body.ident).toEqual({ status: 'off', host: 'server' });
   });
 });
 
@@ -737,16 +738,21 @@ describe('invites', () => {
 
 // In engine mode the engine holds the sockets and answers ident, and the
 // variables that turn it on belong on the engine — this process can't see
-// them. "Not set here" is then "can't tell", never "off" (#1138).
-describe('identdEnabled in engine mode (#1138)', () => {
+// them. The engine says in its hello (#1139); until it has, or when it is too
+// old to, the answer is "can't tell", never "off" (#1138).
+describe('ident report in engine mode (#1138, #1139)', () => {
   const SECRET = 'admin-engine-secret';
   const undo: Array<() => unknown> = [];
   let EngineLink: typeof import('../services/engineLink.js').EngineLink;
   let EngineServer: typeof import('../engine/server.js').EngineServer;
+  let identd: typeof import('../services/identd.js');
+  let protocol: typeof import('../engine/protocol.js');
 
   beforeAll(async () => {
     ({ EngineLink } = await import('../services/engineLink.js'));
     ({ EngineServer } = await import('../engine/server.js'));
+    identd = await import('../services/identd.js');
+    protocol = await import('../engine/protocol.js');
   });
 
   // Every case starts with neither ident mode set here, whatever the shell
@@ -760,7 +766,7 @@ describe('identdEnabled in engine mode (#1138)', () => {
   });
 
   // As server.ts does at boot, against `port` (default: nothing listening —
-  // the link is never started, which is all most cases need).
+  // the link is never started).
   async function engineMode(port = 1, secret = SECRET) {
     undo.push(
       setEnvAll({
@@ -775,45 +781,137 @@ describe('identdEnabled in engine mode (#1138)', () => {
     return EngineLink.shared();
   }
 
-  async function identdEnabled() {
-    const res = await adminAgent.get('/api/admin/users');
-    expect(res.status).toBe(200);
-    return res.body.identdEnabled as boolean | null;
-  }
-
-  it('says off without an engine when nothing here runs ident', async () => {
-    undo.push(setEnv('LURKER_ENGINE_URL', ''));
-    expect(await identdEnabled()).toBe(false);
-  });
-
-  it("can't tell in engine mode when the variables aren't set here", async () => {
-    await engineMode();
-    expect(await identdEnabled()).toBeNull();
-  });
-
-  // A shared .env (the stock compose) feeds both processes.
-  it('says on in engine mode when this process can see the setting', async () => {
-    undo.push(setEnv('LURKER_OIDENTD_FILE', '/tmp/lurker-admin-test-oidentd.conf'));
-    await engineMode();
-    expect(await identdEnabled()).toBe(true);
-  });
-
-  // A refusal turns engine mode off and this process runs ident itself, so
-  // its own environment is the whole answer again.
-  it("reads this process's setting once the engine has refused it", async () => {
+  // A real engine whose ident services are in `status`, and this process
+  // attached to it.
+  async function attachedTo(status: 'on' | 'off' | 'failed', secret = SECRET) {
     const engine = new EngineServer({
       secret: SECRET,
       bufferBytes: 64 * 1024,
       bufferTotalBytes: 1024 * 1024,
       version: 'test',
       log: () => {},
+      identStatus: () => status,
     });
     const { port } = await engine.listen(0, '127.0.0.1');
     undo.push(() => engine.shutdown('test done', 500));
-    const link = await engineMode(port, 'the-wrong-secret');
+    const link = await engineMode(port, secret);
     link.start();
-    await until(() => link.state === 'refused', 3000, 'link refused');
-    expect(await identdEnabled()).toBe(false);
+    await until(() => link.state === 'ready' || link.state === 'refused', 3000, 'link settled');
+    return { engine, link };
+  }
+
+  // An engine from before the report: its hello has no `ident`.
+  async function attachedToOldEngine() {
+    const server = net.createServer((s) => {
+      s.setEncoding('utf8');
+      s.once('data', () => {
+        s.write(
+          protocol.encodeFrame({
+            op: 'hello',
+            protocol: protocol.PROTOCOL_MAJOR,
+            minor: 7,
+            engine: { version: 'old' },
+            held: [],
+          }),
+        );
+      });
+      s.on('error', () => {});
+    });
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+    undo.push(() => new Promise<void>((r) => server.close(() => r())));
+    const link = await engineMode((server.address() as net.AddressInfo).port);
+    link.start();
+    await until(() => link.state === 'ready', 3000, 'link ready');
+    return link;
+  }
+
+  async function ident() {
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.status).toBe(200);
+    return res.body.ident as { status: string; host: string };
+  }
+
+  it('says off, here, without an engine when nothing here runs ident', async () => {
+    undo.push(setEnv('LURKER_ENGINE_URL', ''));
+    expect(await ident()).toEqual({ status: 'off', host: 'server' });
+  });
+
+  // Without an engine the answer is what this process's services are doing,
+  // not what its environment asks for.
+  it('says failed, here, when the oidentd file could not be written', async () => {
+    undo.push(setEnv('LURKER_ENGINE_URL', ''));
+    undo.push(setEnv('LURKER_OIDENTD_FILE', `${import.meta.filename}/under-a-file.conf`));
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    undo.push(() => quiet.mockRestore());
+    identd.initOidentdFile();
+    undo.push(() => identd.resetOidentdStateForTest());
+    expect(await ident()).toEqual({ status: 'failed', host: 'server' });
+  });
+
+  it.each(['on', 'off', 'failed'] as const)("passes on the engine's word: %s", async (status) => {
+    await attachedTo(status);
+    expect(await ident()).toEqual({ status, host: 'engine' });
+  });
+
+  // A client loaded before the upgrade reads the field `ident` replaced, and
+  // takes anything but true or null as off, which hides the editor.
+  it.each([
+    ['on', true],
+    ['off', false],
+    ['failed', null],
+  ] as const)('still answers the old field: %s is %s', async (status, old) => {
+    await attachedTo(status);
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.body.identdEnabled).toBe(old);
+  });
+
+  it('answers the old field with null when it cannot tell', async () => {
+    await engineMode();
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.body.identdEnabled).toBeNull();
+  });
+
+  // The engine's word wins over this process's environment, which starts
+  // nothing while an engine is configured.
+  it('says off when the engine says off, whatever is set here', async () => {
+    undo.push(setEnv('LURKER_IDENTD_ENABLED', '1'));
+    await attachedTo('off');
+    expect(await ident()).toEqual({ status: 'off', host: 'engine' });
+  });
+
+  it("can't tell before the link is up", async () => {
+    undo.push(setEnv('LURKER_IDENTD_ENABLED', '1'));
+    await engineMode();
+    expect(await ident()).toEqual({ status: 'unknown', host: 'engine' });
+  });
+
+  // What an engine said before the link dropped does not describe the one
+  // that answers next.
+  it("can't tell once the link has dropped", async () => {
+    const { engine, link } = await attachedTo('on');
+    await engine.shutdown('gone', 500);
+    await until(() => link.state !== 'ready', 3000, 'link down');
+    expect(await ident()).toEqual({ status: 'unknown', host: 'engine' });
+  });
+
+  it("can't tell from an older engine when the variables aren't set here", async () => {
+    await attachedToOldEngine();
+    expect(await ident()).toEqual({ status: 'unknown', host: 'engine' });
+  });
+
+  // A shared .env (the stock compose) feeds both processes.
+  it('takes a setting this process can see as on, for an older engine', async () => {
+    undo.push(setEnv('LURKER_OIDENTD_FILE', '/tmp/lurker-admin-test-oidentd.conf'));
+    await attachedToOldEngine();
+    expect(await ident()).toEqual({ status: 'on', host: 'engine' });
+  });
+
+  // A refusal turns engine mode off and this process runs ident itself, so
+  // its own services are the whole answer again.
+  it("reads this process's services once the engine has refused it", async () => {
+    const { link } = await attachedTo('on', 'the-wrong-secret');
+    expect(link.state).toBe('refused');
+    expect(await ident()).toEqual({ status: 'off', host: 'server' });
   });
 });
 

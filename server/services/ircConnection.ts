@@ -122,7 +122,7 @@ import { unixSecondsToIso } from '../utils/unixTime.js';
 import { wallClockStamp } from '../utils/timeZone.js';
 import type { ModeSpec } from '../../shared/channelModes.js';
 import type { ModeChange } from '../../shared/modes.js';
-import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
+import { registerIdent, unregisterIdent, isIdentConfigured } from './identd.js';
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
 import {
   ENGINE_CLOSE,
@@ -3206,7 +3206,7 @@ export class IrcConnection {
         // Register whenever EITHER ident mode is active: the in-process identd
         // answers :113 from this map, and the oidentd shared-daemon mode renders
         // the same map to a config file. Skip only when neither is on.
-        if (!isIdentdEnabled() && !isOidentdFileEnabled()) return;
+        if (!isIdentConfigured()) return;
         // In engine mode the engine holds the socket and registered the ident
         // when it dialed; this process serves no identd.
         if (engineConfigured()) return;

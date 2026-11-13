@@ -3,19 +3,21 @@
 
 // @vitest-environment happy-dom
 
-// The ident surface follows the server's identdEnabled, which is tri-state
-// since #1138: in engine mode ident runs on the engine, out of the server's
-// sight, so it answers null, and the pane must not take that as "off" — hiding
-// the editor from an operator whose engine does answer ident was the bug.
+// The ident surface follows the server's ident report. In engine mode ident
+// runs on the engine: 'unknown' is the server unable to see it (#1138), and
+// the pane must not take that as "off" — hiding the editor from an operator
+// whose engine does answer ident was the bug. When the engine does say (#1139),
+// "off" has to point at the engine, where the variables go.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
-import { useAdminStore } from '../../stores/admin.js';
+import { useAdminStore, type AdminIdent } from '../../stores/admin.js';
+import { useConfigStore } from '../../stores/config.js';
 import UsersPane from './UsersPane.vue';
 
-function mountPane(identdEnabled: boolean | null): VueWrapper {
+function mountPane(status: AdminIdent['status'], host: AdminIdent['host'] = 'server'): VueWrapper {
   const store = useAdminStore();
   store.users = [
     {
@@ -29,7 +31,7 @@ function mountPane(identdEnabled: boolean | null): VueWrapper {
     },
   ];
   store.usersLoaded = true;
-  store.identdEnabled = identdEnabled;
+  store.ident = { status, host };
   store.fetchUsers = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   return mount(UsersPane);
 }
@@ -37,37 +39,81 @@ function mountPane(identdEnabled: boolean | null): VueWrapper {
 const editor = (w: VueWrapper) => w.findAll('button').filter((b) => b.text() === 'ident');
 const banner = (w: VueWrapper) => w.text().includes("Networks can't ask this server");
 const unconfirmed = (w: VueWrapper) => w.text().includes("which this server can't check");
+const onEngine = (w: VueWrapper) => w.text().includes('on the engine');
+const notAnswering = (w: VueWrapper) => w.text().includes("isn't working");
 
 beforeEach(() => {
   setActivePinia(createPinia());
 });
 
-describe('UsersPane ident surface (#1138)', () => {
+describe('UsersPane ident surface (#1138, #1139)', () => {
   it('offers the editor and the tag when ident is running', () => {
-    const w = mountPane(true);
+    const w = mountPane('on');
     expect(editor(w)).toHaveLength(1);
     expect(w.find('.ident-tag').exists()).toBe(true);
     expect(w.find('.conflict-tag').exists()).toBe(true);
     expect(banner(w)).toBe(false);
     expect(unconfirmed(w)).toBe(false);
+    expect(notAnswering(w)).toBe(false);
   });
 
   it('hides them and says how to turn ident on when nothing answers', () => {
-    const w = mountPane(false);
+    const w = mountPane('off');
     expect(editor(w)).toHaveLength(0);
     expect(w.find('.ident-tag').exists()).toBe(false);
     expect(w.find('.conflict-tag').exists()).toBe(false);
     expect(banner(w)).toBe(true);
+    expect(onEngine(w)).toBe(false);
     expect(unconfirmed(w)).toBe(false);
   });
 
+  // The variables on this server start nothing while an engine is configured.
+  it('points at the engine when the engine says ident is off', () => {
+    const w = mountPane('off', 'engine');
+    expect(editor(w)).toHaveLength(0);
+    expect(banner(w)).toBe(true);
+    expect(onEngine(w)).toBe(true);
+    expect(w.text()).toContain('Setting them on this server does nothing');
+  });
+
+  it.each([
+    ['server', 'Ident is set up on this server'],
+    ['engine', 'Ident is set up on the engine'],
+  ] as const)('keeps the editor and says ident is not working on the %s', (host, says) => {
+    const w = mountPane('failed', host);
+    expect(editor(w)).toHaveLength(1);
+    expect(w.find('.ident-tag').exists()).toBe(true);
+    expect(banner(w)).toBe(false);
+    expect(unconfirmed(w)).toBe(false);
+    expect(w.text()).toContain(says);
+    expect(notAnswering(w)).toBe(true);
+  });
+
+  // Log-reading advice is for the operator. A hosted cell's admin has no logs.
+  it('says nothing of a failure on a hosted cell', () => {
+    useConfigStore().edition = 'node';
+    const w = mountPane('failed', 'engine');
+    expect(notAnswering(w)).toBe(false);
+    expect(w.find('.ident-tag').exists()).toBe(true);
+  });
+
+  // An answer this client could not read is unknown, and says nothing about
+  // an engine the install may not have.
+  it("keeps the editor and doesn't mention an engine when there may be none", () => {
+    const w = mountPane('unknown', 'server');
+    expect(editor(w)).toHaveLength(1);
+    expect(unconfirmed(w)).toBe(false);
+    expect(banner(w)).toBe(false);
+  });
+
   it("keeps the editor, and says it can't confirm ident, when the server can't tell", () => {
-    const w = mountPane(null);
+    const w = mountPane('unknown', 'engine');
     expect(editor(w)).toHaveLength(1);
     expect(w.find('.ident-tag').exists()).toBe(true);
     // A duplicate is still worth flagging: if ident does run, it's ambiguous.
     expect(w.find('.conflict-tag').exists()).toBe(true);
     expect(banner(w)).toBe(false);
     expect(unconfirmed(w)).toBe(true);
+    expect(notAnswering(w)).toBe(false);
   });
 });

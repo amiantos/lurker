@@ -18,6 +18,7 @@ import { ENGINE_VERSION } from './engine/version.js';
 import { APP_VERSION } from './utils/userAgent.js';
 import {
   startIdentd,
+  whenIdentdSettled,
   stopIdentd,
   identdPort,
   identdBindHost,
@@ -69,6 +70,9 @@ const identMode = isIdentdEnabled()
 console.log(`[engine] ident: ${identMode}`);
 
 void (async () => {
+  // The hello reports whether ident answers, so let the :113 bind finish (or
+  // fail) before any app can attach and be told.
+  await whenIdentdSettled();
   try {
     const { host, port } = await engine.listen(config.listenPort, config.listenHost);
     console.log(

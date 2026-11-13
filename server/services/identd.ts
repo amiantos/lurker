@@ -17,6 +17,7 @@ import net from 'net';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import type { IdentStatus } from '../engine/protocol.js';
 
 // One registered outbound IRC connection's identity. Keyed by a unique id, NOT
 // the local port: two simultaneous connections may legally share a local source
@@ -516,8 +517,18 @@ function startSummary(): void {
   summaryTimer.unref();
 }
 
+// Whether the last listener we started died on an error (a failed bind, most
+// often). The env says what was asked for; this says what happened.
+let identdFailed = false;
+// Settles once the listener is up or has failed, so a caller that is about to
+// report ident's state (the engine, in its hello) can wait out the bind.
+let identdSettled: Promise<void> = Promise.resolve();
+
 export function startIdentd(port: number, bindHost?: string): void {
   if (server) return;
+  identdFailed = false;
+  let settle = (): void => {};
+  identdSettled = new Promise<void>((r) => (settle = r));
   const proxyProtocol = identdProxyProtocol();
   const srv = createIdentdServer({ proxyProtocol });
   srv.on('error', (err: Error) => {
@@ -527,7 +538,11 @@ export function startIdentd(port: number, bindHost?: string): void {
     // it can't keep accepting connections once we drop our reference to it.
     console.error(`[identd] failed to listen on :${port}: ${err.message}`);
     if (srv.listening) srv.close();
-    if (server === srv) server = null;
+    if (server === srv) {
+      server = null;
+      identdFailed = true;
+    }
+    settle();
   });
   const onListen = () => {
     // Bracket notation is IPv6-only; an IPv4 bind host must print bare.
@@ -543,10 +558,15 @@ export function startIdentd(port: number, bindHost?: string): void {
     // Only once we're actually listening — a failed bind shouldn't leave a stray
     // interval ticking for a service that never came up.
     startSummary();
+    settle();
   };
   if (bindHost) srv.listen(port, bindHost, onListen);
   else srv.listen(port, onListen);
   server = srv;
+}
+
+export function whenIdentdSettled(): Promise<void> {
+  return identdSettled;
 }
 
 export function stopIdentd(): void {
@@ -554,6 +574,7 @@ export function stopIdentd(): void {
     server.close();
     server = null;
   }
+  identdFailed = false;
   if (summaryTimer) {
     clearInterval(summaryTimer);
     summaryTimer = null;
@@ -562,6 +583,27 @@ export function stopIdentd(): void {
 
 export function isIdentdEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test((process.env.LURKER_IDENTD_ENABLED || '').trim());
+}
+
+// Was either ident mode ASKED for in this process's environment? This decides
+// what to start and whether a connection registers its ident. It does not say
+// anything answers: see identStatus.
+export function isIdentConfigured(): boolean {
+  return isIdentdEnabled() || isOidentdFileEnabled();
+}
+
+// What this process's ident services are actually doing, from their own state
+// and not the environment (#1139):
+//   on      the listener is bound (or binding), or the oidentd file is written
+//   failed  one was started and is not working: :113 would not bind, or the
+//           file could not be written. The log line beside it says why.
+//   off     nothing was started here
+// With both modes started, either one failing is 'failed': the file being
+// written says nothing about a :113 that is not answering, and which of the
+// two the operator relies on is not ours to guess.
+export function identStatus(): IdentStatus {
+  if (identdFailed || oidentdReady === false) return 'failed';
+  return server || oidentdReady === true ? 'on' : 'off';
 }
 
 export function identdPort(): number {
@@ -665,6 +707,11 @@ let oidentdWriting = false;
 // exits, and any in-flight write skips its rename. Cleared by initOidentdFile —
 // a fresh boot re-enables the writer.
 let oidentdStopped = false;
+// Did the last write of the file land? null until initOidentdFile has run, and
+// again after a stop. Every write counts, not only the first: boot writes the
+// file in place and the rest go through a sibling temp file and a rename, so
+// either can work where the other cannot.
+let oidentdReady: boolean | null = null;
 let lastOidentdWriteErrorAt = 0;
 // Tracks the in-flight drain so tests can await a fully-settled flush. Production
 // otherwise treats the refresh as fire-and-forget.
@@ -703,6 +750,7 @@ export function resetOidentdStateForTest(): void {
   oidentdDirty = false;
   oidentdWriting = false;
   oidentdStopped = false;
+  oidentdReady = null;
   lastOidentdWriteErrorAt = 0;
   oidentdWriteInFlight = Promise.resolve();
 }
@@ -723,7 +771,9 @@ async function writeOidentdFile(): Promise<void> {
       return;
     }
     await fs.promises.rename(tmp, file);
+    oidentdReady = true;
   } catch (err) {
+    if (!oidentdStopped) oidentdReady = false;
     // A write failure must never take down the server; throttle the warning so a
     // persistently unwritable path (bad mount, perms) can't flood the log.
     const now = Date.now();
@@ -751,10 +801,12 @@ export function initOidentdFile(): void {
     // would otherwise throw ENOENT and only log, throttled).
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, formatOidentdConfig(idents.values()), 'utf8');
+    oidentdReady = true;
     console.log(
       `[oidentd] maintaining ${file} for a host oidentd (Lurker will NOT bind :113 for this) — ensure the host daemon reads this path and its :113 reaches your IRC servers`,
     );
   } catch (err) {
+    oidentdReady = false;
     console.error(
       `[oidentd] failed to initialize ${file}: ${(err as Error).message} — oidentd file mode will not work until this path is writable`,
     );
@@ -769,6 +821,7 @@ export function stopOidentdFile(): void {
   // schedule new writes — otherwise one of them would rename stale mappings
   // straight back over the header we're about to write.
   oidentdStopped = true;
+  oidentdReady = null;
   const file = oidentdFilePath();
   if (!file) return;
   try {

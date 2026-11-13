@@ -26,8 +26,9 @@ import {
   PROTOCOL_MINOR,
   encodeFrame,
 } from './protocol.js';
-import type { AppToEngine, ConnectionInfo, EngineToApp } from './protocol.js';
+import type { AppToEngine, ConnectionInfo, EngineToApp, IdentStatus } from './protocol.js';
 import { isDialableCertPair } from '../utils/clientCert.js';
+import { identStatus } from '../services/identd.js';
 import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
 
 export interface EngineServerOptions {
@@ -40,6 +41,8 @@ export interface EngineServerOptions {
   dialTimeoutMs?: number;
   // End a session no link has claimed for this long. 0 disables.
   orphanMs?: number;
+  // Test seam; production reads this process's ident services.
+  identStatus?: () => IdentStatus;
 }
 
 // Past this much unsent data queued on a link the upstreams stop pushing and let
@@ -65,6 +68,8 @@ class AppLink implements FrameSink {
   // The Lurker database this app speaks for (hello.instance). Every session the
   // link touches must belong to it.
   instance = '';
+  // The ident state this link was last told, in its hello or since.
+  toldIdent: IdentStatus | null = null;
   lastSeen = Date.now();
 
   constructor(
@@ -341,6 +346,19 @@ export class EngineServer {
     }
   }
 
+  private identStatus(): IdentStatus {
+    return (this.opts.identStatus ?? identStatus)();
+  }
+
+  // A link can stay up for weeks, and a listener can die under it. The app's
+  // ping is the clock: nothing to subscribe to, and no timer of our own.
+  private tellIdent(link: AppLink): void {
+    const status = this.identStatus();
+    if (status === link.toldIdent) return;
+    link.toldIdent = status;
+    link.send({ op: 'ident', status });
+  }
+
   private dispatch(link: AppLink, frame: AppToEngine): void {
     if (!link.authed) {
       if (frame.op !== 'hello') {
@@ -374,11 +392,12 @@ export class EngineServer {
       link.authed = true;
       link.instance = frame.instance;
       link.generation = Number(frame.app?.startedAt) || 0;
+      link.toldIdent = this.identStatus();
       link.send({
         op: 'hello',
         protocol: PROTOCOL_MAJOR,
         minor: PROTOCOL_MINOR,
-        engine: { version: this.opts.version },
+        engine: { version: this.opts.version, ident: link.toldIdent },
         held: this.heldFor(link),
       });
       this.log(
@@ -390,7 +409,8 @@ export class EngineServer {
       case 'hello':
         return; // already authed; ignore a repeat
       case 'ping':
-        return void link.send({ op: 'pong' });
+        link.send({ op: 'pong' });
+        return this.tellIdent(link);
       case 'pong':
         return;
       case 'connect':

@@ -26,13 +26,29 @@
          surface stays out of the way (most self-hosts never enable it). -->
     <p v-else-if="adminStore.usersLoaded && !config.isNode" class="muted small">
       Networks can't ask this server who its users are — set
-      <code>LURKER_IDENTD_ENABLED</code> (or <code>LURKER_OIDENTD_FILE</code>) to run an ident
-      daemon, and each account gets an ident you can assign here.
+      <code>LURKER_IDENTD_ENABLED</code> (or <code>LURKER_OIDENTD_FILE</code>)
+      <template v-if="identOnEngine">on the engine</template> to run an ident daemon, and each
+      account gets an ident you can assign here.
+      <!-- The engine holds the sockets, so it answers ident; the same variables
+           on this server start nothing while an engine is configured (#1139). -->
+      <template v-if="identOnEngine">Setting them on this server does nothing.</template>
     </p>
-    <!-- In engine mode ident runs on the engine, where this server can't look
-         (#1138). Keep the editor, but don't present it as confirmed. -->
-    <p v-if="canAssignIdents && adminStore.identdEnabled === null" class="muted small">
-      Ident runs on the engine, which this server can't check — the engine's
+    <!-- Asked for, but not working: :113 would not bind, or the oidentd file
+         can't be written. With both modes on, one of them may still answer,
+         so this doesn't claim nothing does (#1139).
+         Operator guidance, so not for a hosted cell's admin, who has no logs. -->
+    <p v-if="adminStore.ident.status === 'failed' && !config.isNode" class="error inline">
+      Ident is set up on {{ identOnEngine ? 'the engine' : 'this server' }} but isn't working, so
+      networks may not be able to verify these idents. Its <code>[identd]</code> or
+      <code>[oidentd]</code> log line says why.
+    </p>
+    <!-- The engine link is down, or the engine is too old to say (#1138). Keep
+         the editor, but don't present it as confirmed. -->
+    <p
+      v-if="canAssignIdents && identOnEngine && adminStore.ident.status === 'unknown'"
+      class="muted small"
+    >
+      Ident runs on the engine, which this server can't check right now — the engine's
       <code>[engine] ident:</code> startup line says whether it's on.
     </p>
     <p v-if="adminError" class="error inline">{{ adminError }}</p>
@@ -45,7 +61,7 @@
           <span v-if="u.isPaused" class="paused-tag">paused</span>
           <span v-if="isLimited(u)" class="limited-tag" :title="limitsSummary(u)"> limited </span>
           <span
-            v-if="adminStore.identdEnabled !== false && u.effectiveIdent"
+            v-if="identShown && u.effectiveIdent"
             class="ident-tag"
             :title="
               u.ident
@@ -56,7 +72,7 @@
             ident {{ u.effectiveIdent }}
           </span>
           <span
-            v-if="adminStore.identdEnabled !== false && u.identConflict"
+            v-if="identShown && u.identConflict"
             class="conflict-tag"
             title="another account answers this same ident — until one of them is given its own, a network can't tell these two apart"
           >
@@ -259,10 +275,13 @@ const users = computed(() => adminStore.users);
 //   • may they be ASSIGNED here? — standalone only; a hosted cell answers with
 //     `lu<accountId>` from the control plane, so the tag is worth showing there
 //     but the editor isn't (its route 409s).
-// null ("can't tell" — in engine mode ident runs on the engine, out of the
-// server's sight) counts as on: hiding the editor from an operator whose engine
-// does answer is the bug in #1138.
-const canAssignIdents = computed(() => adminStore.identdEnabled !== false && !config.isNode);
+// Only 'off' hides it. 'unknown' (the server can't see its engine's ident)
+// counts as on: hiding the editor from an operator whose engine does answer is
+// the bug in #1138. 'failed' keeps it too: the operator set ident up, and the
+// idents take effect the moment it answers.
+const identShown = computed(() => adminStore.ident.status !== 'off');
+const identOnEngine = computed(() => adminStore.ident.host === 'engine');
+const canAssignIdents = computed(() => identShown.value && !config.isNode);
 
 const adminError = ref('');
 const adminBusy = ref(false);

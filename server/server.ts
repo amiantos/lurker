@@ -45,6 +45,7 @@ import {
   startIdentd,
   stopIdentd,
   isIdentdEnabled,
+  isIdentConfigured,
   identdPort,
   identdBindHost,
   isOidentdFileEnabled,
@@ -138,7 +139,7 @@ if (engineConfigured()) {
   });
 }
 
-if (isNodeMode() && !engineConfigured() && !isIdentdEnabled() && !isOidentdFileEnabled()) {
+if (isNodeMode() && !engineConfigured() && !isIdentConfigured()) {
   console.warn(
     '[lurker] node edition is active but neither LURKER_IDENTD_ENABLED nor LURKER_OIDENTD_FILE is set — IRC networks cannot attribute individual users; they will appear with an unverified ~ident behind the cell IP',
   );

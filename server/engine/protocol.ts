@@ -53,7 +53,25 @@ export const PROTOCOL_MAJOR = 1;
 // did; the app does not send it there. Such a line, given again to the next
 // attach, says so (`kept` on `line`): it has been delivered before, and
 // whatever read it then must not act on it twice.
-export const PROTOCOL_MINOR = 7;
+// minor 8 (#1139): the engine's hello says what its ident services are doing
+// (`engine.ident`). The variables that turn ident on belong on the engine in
+// this topology, where the app cannot read them, so until this minor the admin
+// pane could not tell an operator that nothing answers ident. An engine below
+// this omits the field and the app says it cannot tell. The state can change
+// under a link that stays up for weeks (a listener that dies late), so the
+// engine says so again when it does: the `ident` op.
+export const PROTOCOL_MINOR = 8;
+
+// What a process's ident services are doing (services/identd.ts identStatus):
+//   on      the :113 listener is bound, or the oidentd file is being written
+//   failed  one was started and is not working
+//   off     nothing was started
+export const IDENT_STATUSES = ['on', 'off', 'failed'] as const;
+export type IdentStatus = (typeof IDENT_STATUSES)[number];
+
+export function isIdentStatus(value: unknown): value is IdentStatus {
+  return (IDENT_STATUSES as readonly unknown[]).includes(value);
+}
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -182,7 +200,15 @@ export type AppToEngine =
   | { op: 'list' };
 
 export type EngineToApp =
-  | { op: 'hello'; protocol: number; minor: number; engine: { version: string }; held: string[] }
+  | {
+      op: 'hello';
+      protocol: number;
+      minor: number;
+      // `ident` is the state of the engine's ident services as it answers, not
+      // its configuration: a :113 that would not bind is 'failed'.
+      engine: { version: string; ident?: IdentStatus };
+      held: string[];
+    }
   | { op: 'ping' }
   | { op: 'pong' }
   | { op: 'dialing'; id: string }
@@ -229,6 +255,10 @@ export type EngineToApp =
   // the id; the app drops an offer for an id it has closed on this link
   // (engineLink.ts), which frames-in-order makes exact.
   | { op: 'held'; id: string }
+  // The engine's ident state is no longer what this link was last told (in
+  // the hello, or by one of these). Checked when the app pings, so it trails a
+  // change by at most one heartbeat. An app that predates it ignores the op.
+  | { op: 'ident'; status: IdentStatus }
   | { op: 'listing'; connections: ConnectionInfo[] }
   | { op: 'error'; id?: string; message: string };
 
