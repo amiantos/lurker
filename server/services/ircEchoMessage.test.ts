@@ -430,10 +430,21 @@ describe('server-time + msgid persistence (real publish)', () => {
 
 describe('ircManager optimistic-publish gating', () => {
   function fakeConn(overrides: Record<string, unknown> = {}) {
-    const say = vi.fn<(target: string, text: string) => void>();
-    const sayEncrypted = vi.fn<(target: string, text: string) => void>();
-    const action = vi.fn<(target: string, text: string) => void>();
-    const notice = vi.fn<(target: string, text: string) => void>();
+    // Each sends at once, as an idle queue does: the sender's row is published
+    // as the line goes (SendHooks.row, #1326).
+    type Hooks = { row?: () => void };
+    const say = vi.fn<(target: string, text: string, tags?: unknown, hooks?: Hooks) => void>(
+      (_target, _text, _tags, hooks) => hooks?.row?.(),
+    );
+    const sayEncrypted = vi.fn<
+      (target: string, text: string, hooks?: unknown, row?: () => void) => void
+    >((_target, _text, _hooks, row) => row?.());
+    const action = vi.fn<(target: string, text: string, tags?: unknown, hooks?: Hooks) => void>(
+      (_target, _text, _tags, hooks) => hooks?.row?.(),
+    );
+    const notice = vi.fn<(target: string, text: string, hooks?: Hooks) => void>(
+      (_target, _text, hooks) => hooks?.row?.(),
+    );
     const publish = vi.fn<(event: unknown) => void>();
     const conn = {
       say,
@@ -455,6 +466,23 @@ describe('ircManager optimistic-publish gating', () => {
       ...overrides,
     } as unknown as IrcConnection;
     return { conn, say, sayEncrypted, action, notice, publish };
+  }
+
+  // sendMultiline as an idle queue runs it: each batch's row as it goes.
+  function multiline(echoes: string[]) {
+    return vi.fn<
+      (
+        target: string,
+        text: string,
+        tags?: unknown,
+        hooks?: unknown,
+        batches?: unknown,
+        row?: (echo: string, index: number) => void,
+      ) => string[]
+    >((_target, _text, _tags, _hooks, _batches, row) => {
+      echoes.forEach((echo, i) => row?.(echo, i));
+      return echoes;
+    });
   }
 
   // A connection on a network with draft/multiline: the gate's answer for ergo's
@@ -487,7 +515,7 @@ describe('ircManager optimistic-publish gating', () => {
   });
 
   it('multiline sends still hit the wire, publish only without the cap', () => {
-    const sendMultiline = vi.fn<(target: string, text: string) => string[]>(() => ['a\nb']);
+    const sendMultiline = multiline(['a\nb']);
     const withEcho = fakeConn({ outboundBatches: batching, sendMultiline });
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(withEcho.conn);
     ircManager.send(userId, networkId, '#gate', 'a\nb');
@@ -518,7 +546,7 @@ describe('ircManager optimistic-publish gating', () => {
   it('a long single line rides sendMultiline where the network has the cap', () => {
     const text = 'lorem ipsum dolor sit amet '.repeat(40).trim();
     expect(splitSay(text).length).toBeGreaterThan(1);
-    const sendMultiline = vi.fn<(target: string, text: string) => string[]>(() => [text]);
+    const sendMultiline = multiline([text]);
     const { conn, say, publish } = fakeConn({
       outboundBatches: batching,
       sendMultiline,
@@ -595,7 +623,12 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.send(userId, networkId, '#e2egate', 'secret hello');
     // The encrypted path (its wire is pinned in ircE2eWiring.test.ts), and
     // exactly one readable self bubble locally.
-    expect(sayEncrypted).toHaveBeenCalledWith('#e2egate', 'secret hello', undefined);
+    expect(sayEncrypted).toHaveBeenCalledWith(
+      '#e2egate',
+      'secret hello',
+      undefined,
+      expect.any(Function),
+    );
     expect(say).not.toHaveBeenCalled();
     expect(publish).toHaveBeenCalledTimes(1);
     expect(publish.mock.calls[0][0]).toMatchObject({
@@ -637,7 +670,7 @@ describe('ircManager optimistic-publish gating', () => {
         mode: 'multiline',
         overrides: {
           outboundBatches: batching,
-          sendMultiline: () => ['a\nb'],
+          sendMultiline: multiline(['a\nb']),
         },
         run: () => ircManager.send(userId, networkId, '#gate', 'a\nb'),
         type: 'message',

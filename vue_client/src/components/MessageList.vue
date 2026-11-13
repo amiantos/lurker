@@ -498,6 +498,8 @@ interface ChatMessage {
   text?: string;
   time?: string;
   self?: boolean;
+  // Our own message, held in the send queue and not yet sent (#1326).
+  pending?: boolean;
   alt?: boolean;
   matched?: unknown;
   newNick?: string;
@@ -743,7 +745,33 @@ const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activ
 // precedes, and by id it would sit under that join. Every read below that
 // is about what is on screen (the scroll anchors, the dividers, the tail)
 // takes this order; the pagers read the store's ends (buf.oldestId).
-const messages = computed(() => orderByTime(buffer.value?.messages || []));
+const messages = computed(() => {
+  const shown = orderByTime(buffer.value?.messages || []);
+  return pendingRows.value.length ? [...shown, ...pendingRows.value] : shown;
+});
+
+// What we sent to this buffer that the network's send queue is still holding
+// (#1326), as rows of our own at the foot of the list, dimmed until each goes.
+// Id-less, like an ephemeral status line: no actions, no anchor, no count.
+const pendingRows = computed((): ChatMessage[] => {
+  const b = buffer.value;
+  if (!b || b.networkId == null) return [];
+  const state = networks.states[b.networkId];
+  const held = state?.sendPending;
+  if (!held?.length) return [];
+  return held
+    .filter((p) => buffers.findByTarget(b.networkId as number, p.target) === b)
+    .map((p) => ({
+      networkId: b.networkId as number,
+      target: b.target,
+      type: p.kind === 'privmsg' ? 'message' : p.kind,
+      nick: state?.nick ?? '',
+      text: p.text,
+      time: p.at ?? new Date().toISOString(),
+      self: true,
+      pending: true,
+    }));
+});
 
 // "Loading messages…" vs "No messages yet.": an empty list whose buffer is
 // unhydrated (fresh-connect shell / wiped detach slice) or mid-fetch is
@@ -811,6 +839,7 @@ function rowClass(row: RenderRow) {
   return {
     [`type-${m?.type}`]: true,
     self: m?.self,
+    pending: !!m?.pending,
     alt: row.alt,
     highlight: !!row.highlight && !row.nohilight,
     'cont-author': !!row.continuationAuthor,
@@ -2783,6 +2812,10 @@ watch(
 }
 .line:hover {
   background: var(--bg-soft);
+}
+/* Ours, and not sent yet: held in the network's send queue (#1326). */
+.line.pending {
+  opacity: 0.5;
 }
 /* The row whose tap-opened action menu is open (touch). Same background as
    hover, but authored without `:hover` so it survives the build's hover gating

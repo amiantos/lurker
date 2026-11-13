@@ -544,7 +544,8 @@ describe('what the user sees', () => {
   });
 
   it('publishes the queue depth as it changes, and carries it on the snapshot', () => {
-    const { conn, published } = backlog();
+    const { conn, published: all } = backlog();
+    const published = { at: (i: number) => all.filter((e) => e.type === 'send-queue').at(i) };
     conn.say('#c', 'one');
     conn.say('#c', 'two');
     vi.advanceTimersByTime(1);
@@ -792,6 +793,105 @@ describe('flood protection off (#1193)', () => {
     expect(lines).toHaveLength(5);
     vi.advanceTimersByTime(2000);
     expect(lines).toHaveLength(6);
+    conn.dispose();
+  });
+});
+
+describe('a held message shows as pending (#1326)', () => {
+  const pendingFrames = (published: Array<Record<string, unknown>>) =>
+    published.filter((e) => String(e.type).startsWith('send-pending'));
+
+  it('announces nothing for a message that goes at once', () => {
+    const { conn, published } = backlog();
+    expect(pendingFrames(published)).toEqual([]);
+    expect(conn.snapshot().sendPending).toEqual([]);
+    conn.dispose();
+  });
+
+  it('announces a message the queue holds, and its end once it goes', () => {
+    const { conn, lines, published } = backlog();
+    conn.say('#c', 'held');
+    expect(pendingFrames(published)).toEqual([
+      {
+        type: 'send-pending',
+        id: expect.any(String),
+        target: '#c',
+        kind: 'privmsg',
+        text: 'held',
+        at: expect.any(String),
+      },
+    ]);
+    const { id } = pendingFrames(published)[0];
+    expect(conn.snapshot().sendPending).toEqual([
+      { id, target: '#c', kind: 'privmsg', text: 'held', at: expect.any(String) },
+    ]);
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :held');
+    // No row of its own to publish: the server's echo is still to come.
+    expect(pendingFrames(published).at(-1)).toEqual({
+      type: 'send-pending-done',
+      target: '#c',
+      id,
+      sent: true,
+      rowFollows: true,
+    });
+    expect(conn.snapshot().sendPending).toEqual([]);
+    conn.dispose();
+  });
+
+  it("publishes the sender's row when the line goes, ahead of the end of the wait", () => {
+    const { conn, published } = backlog();
+    const row = () => conn.publish({ type: 'message', target: '#c', text: 'held', self: true });
+    conn.say('#c', 'held', null, { row });
+    expect(published.some((e) => e.type === 'message')).toBe(false);
+    vi.advanceTimersByTime(2000);
+    const types = published.map((e) => e.type);
+    expect(types.indexOf('message')).toBeGreaterThan(types.indexOf('send-pending'));
+    expect(types.indexOf('send-pending-done')).toBeGreaterThan(types.indexOf('message'));
+    expect(pendingFrames(published).at(-1)).toMatchObject({ sent: true, rowFollows: false });
+    conn.dispose();
+  });
+
+  it('publishes the row at once for a message that does not wait', () => {
+    const conn = backlog({ flood_protection: 0 }).conn;
+    const published: Array<Record<string, unknown>> = [];
+    conn.publish = (event: Record<string, unknown>) => {
+      published.push(event);
+      return undefined;
+    };
+    conn.say('#c', 'now', null, {
+      row: () => conn.publish({ type: 'message', target: '#c', text: 'now', self: true }),
+    });
+    expect(published.map((e) => e.type)).toEqual(['message']);
+    conn.dispose();
+  });
+
+  it('shows a /me as the action it is, without its CTCP wrapping', () => {
+    const { conn, published } = backlog();
+    conn.action('#c', 'waves');
+    conn.notice('#c', 'psst');
+    expect(pendingFrames(published)).toMatchObject([
+      { target: '#c', kind: 'action', text: 'waves' },
+      { target: '#c', kind: 'notice', text: 'psst' },
+    ]);
+    conn.dispose();
+  });
+
+  it('ends the wait unsent, with no row, for a message taken back', () => {
+    const { conn, published } = backlog();
+    const row = vi.fn<() => void>();
+    conn.say('#c', 'never', null, { row });
+    const { id } = pendingFrames(published)[0];
+    expect(conn.flushSendQueue()).toBe(1);
+    expect(pendingFrames(published).at(-1)).toEqual({
+      type: 'send-pending-done',
+      target: '#c',
+      id,
+      sent: false,
+      rowFollows: false,
+    });
+    expect(row).not.toHaveBeenCalled();
+    expect(conn.snapshot().sendPending).toEqual([]);
     conn.dispose();
   });
 });

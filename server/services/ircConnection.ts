@@ -506,6 +506,9 @@ const NON_PERSISTED_TYPES = new Set([
   'channel-modes',
   'lag',
   'send-queue',
+  // A message of the user's held in the send queue, and its end (#1326).
+  'send-pending',
+  'send-pending-done',
   'peer-presence',
   // RPE2E status lines are transient echoes (like /help output), surfaced via
   // publishEphemeral — never write them to history (#382).
@@ -700,6 +703,22 @@ interface AwayState {
 export interface SendHooks {
   onSent?: () => void;
   onDropped?: () => void;
+  /**
+   * Publishes the sender's own row, where no echo will (#1326). Run when the
+   * line goes, so a message held in the send queue is not stored as sent
+   * while it waits.
+   */
+  row?: () => void;
+}
+
+/** A message of the user's waiting in the send queue (#1326). */
+export interface PendingSend {
+  id: string;
+  target: string;
+  kind: 'privmsg' | 'action' | 'notice';
+  text: string;
+  /** When the user sent it (ISO 8601). */
+  at: string;
 }
 
 interface IrcEvent {
@@ -1381,6 +1400,9 @@ export class IrcConnection {
   // A 005 of this socket's reached us as the server sent it, not in a replay.
   private safeRateHeardLive = false;
   private sendQueueWaiting = 0;
+  // The user's messages the queue is holding (#1326), by id, oldest first.
+  private readonly pendingSends = new Map<string, PendingSend>();
+  private pendingSendSeq = 0;
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
   /** The lane for lines irc-framework itself writes meanwhile (sendPacer.ts):
@@ -8375,7 +8397,7 @@ export class IrcConnection {
   // with its socket instead (#1149), after the user was told it was sent.
   say(target: string, text: string, tags?: Record<string, string> | null, hooks?: SendHooks): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    this.writeLine('PRIVMSG', target, text, tags, this.userLineHooks(target, text, hooks, true));
+    this.writeUserLine('PRIVMSG', target, text, tags, 'privmsg', text, hooks, true);
   }
   action(
     target: string,
@@ -8384,32 +8406,34 @@ export class IrcConnection {
     hooks?: SendHooks,
   ): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    this.writeLine(
-      'PRIVMSG',
-      target,
-      `\x01ACTION ${text}\x01`,
-      tags,
-      this.userLineHooks(target, `/me ${text}`, hooks),
-    );
+    this.writeUserLine('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags, 'action', text, hooks);
   }
   notice(target: string, text: string, hooks?: SendHooks): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
-    this.writeLine('NOTICE', target, text, null, this.userLineHooks(target, text, hooks));
+    this.writeUserLine('NOTICE', target, text, null, 'notice', text, hooks);
   }
 
-  // What every line the user sends does when it goes (the send is noted then,
-  // so a rejection numeric is attributed by the wire's clock) and when it is
-  // dropped with its socket (the row said it was sent; say it was not).
-  private userLineHooks(
+  // One line of the user's. When it goes the send is noted (so a rejection
+  // numeric is attributed by the wire's clock) and its row published; when it
+  // is dropped instead, that is said where it was going. While it waits it
+  // shows as pending (holdSend).
+  // `shown`: the text as the user's row carries it (a /me without its CTCP).
+  private writeUserLine(
+    command: string,
     target: string,
-    text: string,
+    wire: string,
+    tags: Record<string, string> | null | undefined,
+    kind: PendingSend['kind'],
+    shown: string,
     hooks?: SendHooks,
     armDcc = false,
-  ): WriteOptions {
+  ): void {
     this.typingOver(target, false);
-    return {
+    const held = this.holdSend(target, kind, shown, hooks?.row);
+    const said = kind === 'action' ? `/me ${shown}` : shown;
+    this.writeLine(command, target, wire, tags, {
       // What the user sent, to where: it can be taken back while it waits.
       target,
       onSent: () => {
@@ -8419,17 +8443,63 @@ export class IrcConnection {
         // Never let a DB hiccup in arming break the user's actual message.
         if (armDcc) {
           try {
-            this.maybeArmDcc(target, text);
+            this.maybeArmDcc(target, shown);
           } catch {
             /* arming is best-effort */
           }
         }
         hooks?.onSent?.();
+        held.sent();
       },
       onDropped: (why) => {
-        this.reportNotSent(target, text, why);
+        held.dropped();
+        this.reportNotSent(target, said, why);
         hooks?.onDropped?.();
       },
+    });
+    held.wrote();
+  }
+
+  // A message of the user's on its way into the send queue (#1326). `wrote()`
+  // is called once it has been handed over: still unsent then, it is waiting,
+  // and every device is told so (`send-pending`) and shows it dimmed. `sent()`
+  // publishes its row (`row`, where no echo will) and ends the wait;
+  // `dropped()` only ends it. A message that goes at once is never announced.
+  private holdSend(
+    target: string,
+    kind: PendingSend['kind'],
+    text: string,
+    row?: () => void,
+  ): { wrote(): void; sent(): void; dropped(): void } {
+    let state: 'writing' | 'waiting' | 'over' = 'writing';
+    let id = '';
+    const end = (sent: boolean) => {
+      const waited = state === 'waiting';
+      if (state === 'over') return;
+      state = 'over';
+      if (sent) row?.();
+      if (!waited) return;
+      this.pendingSends.delete(id);
+      // `rowFollows`: the row is still to come, as the server's echo.
+      this.publish({
+        type: 'send-pending-done',
+        target,
+        id,
+        sent,
+        rowFollows: sent && !row,
+      });
+    };
+    return {
+      wrote: () => {
+        if (state !== 'writing' || this.disposed) return;
+        state = 'waiting';
+        id = `${Date.now().toString(36)}-${++this.pendingSendSeq}`;
+        const pending: PendingSend = { id, target, kind, text, at: new Date().toISOString() };
+        this.pendingSends.set(id, pending);
+        this.publish({ type: 'send-pending', ...pending });
+      },
+      sent: () => end(true),
+      dropped: () => end(false),
     };
   }
 
@@ -8441,16 +8511,19 @@ export class IrcConnection {
   // ciphertext is noted as each chunk goes, so the message handler can
   // recognise its echo; the send is noted with the last. E2E turned off while
   // it waited is a "not sent", never a plaintext fallback.
-  sayEncrypted(target: string, text: string, hooks?: LineHooks): void {
+  // `row` publishes the sender's plaintext row, when the last chunk goes.
+  sayEncrypted(target: string, text: string, hooks?: LineHooks, row?: () => void): void {
     const uid = this.network.user_id;
     const nid = this.network.id;
     const ctx = contextKey(target, '');
     this.typingOver(target, false);
+    const held = this.holdSend(target, 'privmsg', text, row);
     // Said once: by the encrypt step, or by the drop.
     let reported = false;
     const notSent = (why: string) => {
       if (reported) return;
       reported = true;
+      held.dropped();
       this.publish({ type: 'error', target, text: `not sent (${why}): ${text}` });
       hooks?.dropped?.(text);
     };
@@ -8491,6 +8564,7 @@ export class IrcConnection {
               if (i === last) {
                 this.noteUserSend(target);
                 hooks?.sent?.(text);
+                held.sent();
               }
             },
           }));
@@ -8503,6 +8577,7 @@ export class IrcConnection {
       },
       { target, onDropped: (why) => notSent(why ?? 'connection dropped') },
     );
+    held.wrote();
   }
 
   // Whether the server says it never disconnects a client for flooding
@@ -12544,6 +12619,7 @@ export class IrcConnection {
     tags?: Record<string, string> | null,
     hooks?: LineHooks,
     batches = this.outboundBatches(target, text),
+    row?: (echo: string, index: number) => void,
   ): string[] {
     if (!batches) return [];
     if (isDmTargetName(target)) this.trackDmPeer(target);
@@ -12564,18 +12640,22 @@ export class IrcConnection {
       }
       lines.push(`BATCH -${ref}`);
       const echo = reassembleMultiline(batch);
-      echoes.push(echo);
+      const index = echoes.push(echo) - 1;
+      const held = this.holdSend(target, 'privmsg', echo, row && (() => row(echo, index)));
       this.sendPacer.unit(lines, {
         target,
         onSent: () => {
           this.noteUserSend(target);
           hooks?.sent?.(echo);
+          held.sent();
         },
         onDropped: (why) => {
+          held.dropped();
           this.reportNotSent(target, echo, why);
           hooks?.dropped?.(echo);
         },
       });
+      held.wrote();
     }
     return echoes;
   }
@@ -13646,6 +13726,9 @@ export class IrcConnection {
       // Lines waiting in the outbound queue (#1149), kept current by
       // `send-queue` frames.
       sendQueueWaiting: this.sendQueueWaiting,
+      // The user's messages held in it (#1326), kept current by `send-pending`
+      // and `send-pending-done` frames.
+      sendPending: [...this.pendingSends.values()],
       // Negotiated draft/multiline limits (or null) so the composer can gate its
       // split/flood hint and upload-as-.txt prompt on what will actually go on
       // the wire. Computed post-registration, which is when this snapshot is

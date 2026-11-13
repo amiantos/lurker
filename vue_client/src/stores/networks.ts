@@ -70,6 +70,21 @@ export interface AwayState {
   backAt: string | null;
 }
 
+// A message of the user's held in a network's send queue (#1326).
+export interface PendingSend {
+  id: string;
+  target: string;
+  kind: 'privmsg' | 'action' | 'notice';
+  text: string;
+  /** When it was sent (ISO 8601). */
+  at?: string;
+  /** Gone to the server; shown until its echo's row lands. */
+  sent?: boolean;
+}
+
+// How long a sent message stays dimmed waiting for its echo's row.
+export const SEND_PENDING_LINGER_MS = 3000;
+
 export interface NetworkState {
   networkId: number;
   channels: string[];
@@ -99,10 +114,11 @@ export interface NetworkState {
   // retire an offer toast whose offer disappeared while this tab was offline.
   dccChatOffers?: string[];
   lagMs?: number | null;
-  // Lines waiting in the network's outbound queue (#1149): a paste or a
-  // handshake burst the server would otherwise kill us for, going out paced.
-  // Seeded by the snapshot, kept current by `send-queue` frames.
-  sendQueueWaiting?: number;
+  // The user's messages the network's outbound queue is holding (#1326): a
+  // paste the server would otherwise kill us for, going out paced. Each shows
+  // dimmed at the foot of its buffer until it goes. Seeded by the snapshot,
+  // kept current by `send-pending` and `send-pending-done` frames.
+  sendPending?: PendingSend[];
   // Advertised draft/multiline limits when the network negotiated the cap,
   // else null/absent. Drives the composer's multiline-aware SPLIT/FLOOD hint
   // and upload-as-.txt gate. Refreshed by the snapshot pushed on connect. (#381)
@@ -516,12 +532,58 @@ export const useNetworksStore = defineStore('networks', {
         lagMs: typeof v === 'number' ? v : null,
       };
     },
-    applySendQueue(event: any) {
+    applySendPending(event: any) {
+      if (typeof event.id !== 'string' || typeof event.target !== 'string') return;
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
-      const v = event.waiting;
+      const held = existing.sendPending ?? [];
+      if (held.some((p) => p.id === event.id)) return;
       this.states[event.networkId] = {
         ...existing,
-        sendQueueWaiting: typeof v === 'number' ? v : 0,
+        sendPending: [
+          ...held,
+          {
+            id: event.id,
+            target: event.target,
+            kind: event.kind,
+            text: String(event.text ?? ''),
+            at: event.at,
+          },
+        ],
+      };
+    },
+    // The message went, or was dropped. Its row goes now, unless the real one
+    // is still to come as the server's echo (`rowFollows`): then it stays
+    // until that row lands (settleSendPending), so the line doesn't blink out
+    // and back in, or SEND_PENDING_LINGER_MS at most.
+    applySendPendingDone(event: any) {
+      const networkId = event.networkId;
+      const held = this.states[networkId]?.sendPending;
+      if (!held?.some((p) => p.id === event.id)) return;
+      if (!event.rowFollows) {
+        this.dropSendPending(networkId, event.id);
+        return;
+      }
+      this.states[networkId] = {
+        ...this.states[networkId],
+        sendPending: held.map((p) => (p.id === event.id ? { ...p, sent: true } : p)),
+      };
+      setTimeout(() => this.dropSendPending(networkId, event.id), SEND_PENDING_LINGER_MS);
+    },
+    // One of our own rows landed in `target`: it is the oldest sent message
+    // still shown as pending there.
+    settleSendPending(networkId: number | string, target: string) {
+      const folded = String(target).toLowerCase();
+      const done = this.states[networkId]?.sendPending?.find(
+        (p) => p.sent && p.target.toLowerCase() === folded,
+      );
+      if (done) this.dropSendPending(networkId, done.id);
+    },
+    dropSendPending(networkId: number | string, id: string) {
+      const existing = this.states[networkId];
+      if (!existing?.sendPending?.some((p) => p.id === id)) return;
+      this.states[networkId] = {
+        ...existing,
+        sendPending: existing.sendPending.filter((p) => p.id !== id),
       };
     },
   },
