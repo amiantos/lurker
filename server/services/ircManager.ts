@@ -168,9 +168,15 @@ export interface LineHooks {
   dropped?: (text: string) => void;
 }
 
-function lineHooks(hooks: LineHooks | undefined, text: string): SendHooks | undefined {
-  if (!hooks) return undefined;
-  return { onSent: () => hooks.sent?.(text), onDropped: () => hooks.dropped?.(text) };
+// `row`: publishes the sender's own row when the line goes (SendHooks.row);
+// none where the server's echo will be the row.
+function lineHooks(
+  hooks: LineHooks | undefined,
+  text: string,
+  row?: () => void,
+): SendHooks | undefined {
+  if (!hooks && !row) return undefined;
+  return { onSent: () => hooks?.sent?.(text), onDropped: () => hooks?.dropped?.(text), row };
 }
 
 // Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single
@@ -1027,16 +1033,17 @@ class IrcManager extends EventEmitter {
       // No reply tags here: a tag is cleartext, and which line a message on an
       // encrypted channel answers is itself something the wire shouldn't show.
       if (check.kind === 'ok') {
-        conn.sayEncrypted(target, text, opts.lineHooks);
-        conn.publish({
-          type: 'message',
-          target,
-          nick: conn.currentNick,
-          text,
-          kind: 'privmsg',
-          self: true,
-          e2e: true,
-        });
+        conn.sayEncrypted(target, text, opts.lineHooks, () =>
+          conn.publish({
+            type: 'message',
+            target,
+            nick: conn.currentNick,
+            text,
+            kind: 'privmsg',
+            self: true,
+            e2e: true,
+          }),
+        );
         return true;
       }
       // kind === 'disabled' → fall through to the normal plaintext send below.
@@ -1070,37 +1077,46 @@ class IrcManager extends EventEmitter {
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
     const batches = conn.outboundBatches(target, text);
     if (batches) {
-      const nick = conn.currentNick;
-      const echoes = conn.sendMultiline(target, text, reply?.tags, opts.lineHooks, batches);
-      if (!adoptEcho) {
-        echoes.forEach((echo, i) => {
-          conn.publish({
-            type: 'message',
-            target,
-            nick,
-            text: echo,
-            kind: 'privmsg',
-            self: true,
-            ...(i === 0 && reply ? { replyMsgid: reply.msgid } : {}),
-          });
-        });
-      }
+      conn.sendMultiline(
+        target,
+        text,
+        reply?.tags,
+        opts.lineHooks,
+        batches,
+        adoptEcho
+          ? undefined
+          : (echo, i) =>
+              conn.publish({
+                type: 'message',
+                target,
+                nick: conn.currentNick,
+                text: echo,
+                kind: 'privmsg',
+                self: true,
+                ...(i === 0 && reply ? { replyMsgid: reply.msgid } : {}),
+              }),
+      );
       return true;
     }
     const chunks = conn.sayChunks('PRIVMSG', target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.say(target, chunk, first ? reply.tags : null, lineHooks(opts.lineHooks, chunk));
-      if (adoptEcho) return;
-      conn.publish({
-        type: 'message',
+      const row = () =>
+        conn.publish({
+          type: 'message',
+          target,
+          nick: conn.currentNick,
+          text: chunk,
+          kind: 'privmsg',
+          self: true,
+          ...(first ? { replyMsgid: reply.msgid } : {}),
+        });
+      conn.say(
         target,
-        nick: conn.currentNick,
-        text: chunk,
-        kind: 'privmsg',
-        self: true,
-        ...(first ? { replyMsgid: reply.msgid } : {}),
-      });
+        chunk,
+        first ? reply.tags : null,
+        lineHooks(opts.lineHooks, chunk, adoptEcho ? undefined : row),
+      );
     });
     return true;
   }
@@ -1179,18 +1195,23 @@ class IrcManager extends EventEmitter {
     const chunks = conn.actionChunks(target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.action(target, chunk, first ? reply.tags : null, lineHooks(opts.lineHooks, chunk));
-      if (adoptEcho) return;
-      conn.publish({
-        type: 'action',
+      const row = () =>
+        conn.publish({
+          type: 'action',
+          target,
+          nick: conn.currentNick,
+          text: chunk,
+          // Shape parity with the adopted echo, which stamps kind:'action'.
+          kind: 'action',
+          self: true,
+          ...(first ? { replyMsgid: reply.msgid } : {}),
+        });
+      conn.action(
         target,
-        nick: conn.currentNick,
-        text: chunk,
-        // Shape parity with the adopted echo, which stamps kind:'action'.
-        kind: 'action',
-        self: true,
-        ...(first ? { replyMsgid: reply.msgid } : {}),
-      });
+        chunk,
+        first ? reply.tags : null,
+        lineHooks(opts.lineHooks, chunk, adoptEcho ? undefined : row),
+      );
     });
     return true;
   }
@@ -1229,16 +1250,16 @@ class IrcManager extends EventEmitter {
     const adoptEcho = conn.echoActive();
     const chunks = conn.sayChunks('NOTICE', target, text);
     for (const chunk of chunks) {
-      conn.notice(target, chunk, lineHooks(opts.lineHooks, chunk));
-      if (adoptEcho) continue;
-      conn.publish({
-        type: 'notice',
-        target,
-        nick: conn.currentNick,
-        text: chunk,
-        kind: 'notice',
-        self: true,
-      });
+      const row = () =>
+        conn.publish({
+          type: 'notice',
+          target,
+          nick: conn.currentNick,
+          text: chunk,
+          kind: 'notice',
+          self: true,
+        });
+      conn.notice(target, chunk, lineHooks(opts.lineHooks, chunk, adoptEcho ? undefined : row));
     }
     return true;
   }

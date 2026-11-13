@@ -70,6 +70,16 @@ export interface AwayState {
   backAt: string | null;
 }
 
+// A message of the user's held in a network's send queue (#1326).
+export interface PendingSend {
+  id: string;
+  target: string;
+  kind: 'privmsg' | 'action' | 'notice';
+  text: string;
+  /** When it was sent (ISO 8601). */
+  at?: string;
+}
+
 export interface NetworkState {
   networkId: number;
   channels: string[];
@@ -99,10 +109,11 @@ export interface NetworkState {
   // retire an offer toast whose offer disappeared while this tab was offline.
   dccChatOffers?: string[];
   lagMs?: number | null;
-  // Lines waiting in the network's outbound queue (#1149): a paste or a
-  // handshake burst the server would otherwise kill us for, going out paced.
-  // Seeded by the snapshot, kept current by `send-queue` frames.
-  sendQueueWaiting?: number;
+  // The user's messages the network's outbound queue is holding (#1326): a
+  // paste the server would otherwise kill us for, going out paced. Each shows
+  // dimmed at the foot of its buffer until it goes. Seeded by the snapshot,
+  // kept current by `send-pending` and `send-pending-done` frames.
+  sendPending?: PendingSend[];
   // Advertised draft/multiline limits when the network negotiated the cap,
   // else null/absent. Drives the composer's multiline-aware SPLIT/FLOOD hint
   // and upload-as-.txt gate. Refreshed by the snapshot pushed on connect. (#381)
@@ -516,12 +527,34 @@ export const useNetworksStore = defineStore('networks', {
         lagMs: typeof v === 'number' ? v : null,
       };
     },
-    applySendQueue(event: any) {
+    applySendPending(event: any) {
+      const pending = event.pending;
+      if (typeof pending?.id !== 'string' || typeof pending.target !== 'string') return;
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
-      const v = event.waiting;
+      const held = existing.sendPending ?? [];
+      if (held.some((p) => p.id === pending.id)) return;
       this.states[event.networkId] = {
         ...existing,
-        sendQueueWaiting: typeof v === 'number' ? v : 0,
+        sendPending: [
+          ...held,
+          {
+            id: pending.id,
+            target: pending.target,
+            kind: pending.kind,
+            text: String(pending.text ?? ''),
+            at: pending.at,
+          },
+        ],
+      };
+    },
+    // It went, or was dropped: either way the server sends this once the row
+    // that says so (ours, the echo's, or a "not sent" line) is out.
+    applySendPendingDone(event: any) {
+      const existing = this.states[event.networkId];
+      if (!existing?.sendPending?.some((p) => p.id === event.pendingId)) return;
+      this.states[event.networkId] = {
+        ...existing,
+        sendPending: existing.sendPending.filter((p) => p.id !== event.pendingId),
       };
     },
   },

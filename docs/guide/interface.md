@@ -37,9 +37,10 @@ A tour of the Lurker window and how messages are organized.
   you're in has replies you haven't seen. The Threads button, or `/threads`,
   lists the channel's threads.
 - Saved messages and user notes.
-- **N waiting** in the status bar: lines still to send. Lurker spaces out a long
-  paste or a burst so the server doesn't drop the connection for flooding; a line
-  that never made it (the connection dropped first) is marked in its buffer. What
+- **Dimmed messages** at the foot of a buffer: yours, still to send. Lurker
+  spaces out a long paste or a burst so the server doesn't drop the connection
+  for flooding; each message turns solid as it goes, and one that never made
+  it (the connection dropped first) is marked in its buffer. What
   you type goes ahead of Lurker's own housekeeping (refreshing names and modes
   after a join or a reconnect), and behind the join itself. If a server exempts
   you from its flood limits (you're an oper there, or you connect through a

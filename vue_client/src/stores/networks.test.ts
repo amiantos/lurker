@@ -164,3 +164,38 @@ describe('user metadata', () => {
     expect(networks.states[1]?.metadataLimits?.maxSubs).toBe(10);
   });
 });
+
+describe('messages held in the send queue (#1326)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  const held = (id: string, target = '#c') => ({
+    networkId: 1,
+    target: ':server:',
+    pending: { id, target, kind: 'privmsg', text: `text ${id}`, at: '2026-11-13T12:00:00.000Z' },
+  });
+  const ids = (store: ReturnType<typeof useNetworksStore>) =>
+    (store.states[1]?.sendPending ?? []).map((p) => p.id);
+
+  it('keeps each held message once, in the order they came', () => {
+    const store = useNetworksStore();
+    store.applySendPending(held('a'));
+    store.applySendPending(held('b'));
+    store.applySendPending(held('a'));
+    expect(ids(store)).toEqual(['a', 'b']);
+    expect(store.states[1].sendPending?.[0]).toMatchObject({ target: '#c', text: 'text a' });
+  });
+
+  it('removes one when the server says its wait is over, sent or not', () => {
+    const store = useNetworksStore();
+    store.applySendPending(held('a'));
+    store.applySendPending(held('b'));
+    store.applySendPendingDone({ networkId: 1, pendingId: 'a', sent: false });
+    expect(ids(store)).toEqual(['b']);
+    store.applySendPendingDone({ networkId: 1, pendingId: 'unknown', sent: true });
+    expect(ids(store)).toEqual(['b']);
+    store.applySendPendingDone({ networkId: 1, pendingId: 'b', sent: true });
+    expect(ids(store)).toEqual([]);
+  });
+});

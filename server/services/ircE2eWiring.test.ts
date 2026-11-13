@@ -138,7 +138,10 @@ describe('outbound encrypt (ircManager.send)', () => {
   });
 
   it('falls through to a normal plaintext send when E2E is disabled for the channel', () => {
-    const say = vi.fn<(target: string, text: string) => void>();
+    // Sends at once: the sender's row is published as the line goes (#1326).
+    const say = vi.fn<
+      (target: string, text: string, tags?: unknown, hooks?: { row?: () => void }) => void
+    >((_target, _text, _tags, hooks) => hooks?.row?.());
     const publish = vi.fn<(event: unknown) => void>();
     const fakeConn = {
       say,
@@ -158,8 +161,13 @@ describe('outbound encrypt (ircManager.send)', () => {
     ircManager.send(1, 1, '#plain', 'hello world');
 
     // The third argument is a reply's tags — none here; the fourth, the
-    // sender's line hooks (#1149).
-    expect(say).toHaveBeenCalledWith('#plain', 'hello world', null, undefined);
+    // sender's line hooks (#1149), which carry the row where no echo will.
+    expect(say).toHaveBeenCalledWith(
+      '#plain',
+      'hello world',
+      null,
+      expect.objectContaining({ row: expect.any(Function) }),
+    );
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'message', target: '#plain', text: 'hello world' }),
     );
@@ -402,7 +410,12 @@ describe('egress refuses cleartext actions/notices on an E2E channel (#2)', () =
 
     ircManager.action(1, 1, '#plainchan', 'waves');
 
-    expect(action).toHaveBeenCalledWith('#plainchan', 'waves', null, undefined);
+    expect(action).toHaveBeenCalledWith(
+      '#plainchan',
+      'waves',
+      null,
+      expect.objectContaining({ row: expect.any(Function) }),
+    );
     vi.restoreAllMocks();
   });
 });

@@ -498,6 +498,8 @@ interface ChatMessage {
   text?: string;
   time?: string;
   self?: boolean;
+  // Our own message, held in the send queue and not yet sent (#1326).
+  pending?: boolean;
   alt?: boolean;
   matched?: unknown;
   newNick?: string;
@@ -743,7 +745,57 @@ const buffer = computed(() => (networks.activeKey ? buffers.byKey(networks.activ
 // precedes, and by id it would sit under that join. Every read below that
 // is about what is on screen (the scroll anchors, the dividers, the tail)
 // takes this order; the pagers read the store's ends (buf.oldestId).
-const messages = computed(() => orderByTime(buffer.value?.messages || []));
+const stored = computed(() => orderByTime(buffer.value?.messages || []));
+// What is drawn: the stored rows, then what we sent that has not gone yet.
+// ⚠ Everything that reads the list's ends (the scroll anchors, the new-below
+// count, the loading notice) reads `stored`: a pending row has no id, and as
+// the tail it would hide every arrival above it from them.
+const messages = computed(() =>
+  pendingRows.value.length ? [...stored.value, ...pendingRows.value] : stored.value,
+);
+
+// What we sent to this buffer that the network's send queue is still holding
+// (#1326), as rows of our own at the foot of the list, dimmed until each goes.
+// Id-less, like an ephemeral status line: no actions, no anchor, no count.
+// Not under a detached slice: they belong after the live tail, not after it.
+const NO_PENDING: ChatMessage[] = [];
+const pendingRowCache = new Map<string, ChatMessage>();
+const pendingRows = computed((): ChatMessage[] => {
+  const b = buffer.value;
+  const held = b && b.networkId != null ? networks.states[b.networkId]?.sendPending : null;
+  if (!b || b.networkId == null || b.detached || !held?.length) {
+    pendingRowCache.clear();
+    return NO_PENDING;
+  }
+  const networkId = b.networkId as number;
+  const nick = networks.states[networkId]?.nick ?? '';
+  const rows: ChatMessage[] = [];
+  const seen = new Set<string>();
+  for (const p of held) {
+    if (buffers.findByTarget(networkId, p.target) !== b) continue;
+    // One object per held message while it waits, so its row is not rebuilt
+    // each time something else about the network changes.
+    const key = `${networks.activeKey}|${p.id}|${nick}`;
+    seen.add(key);
+    let row = pendingRowCache.get(key);
+    if (!row) {
+      row = {
+        networkId,
+        target: b.target,
+        type: p.kind === 'privmsg' ? 'message' : p.kind,
+        nick,
+        text: p.text,
+        time: p.at ?? new Date().toISOString(),
+        self: true,
+        pending: true,
+      };
+      pendingRowCache.set(key, row);
+    }
+    rows.push(row);
+  }
+  for (const key of pendingRowCache.keys()) if (!seen.has(key)) pendingRowCache.delete(key);
+  return rows.length ? rows : NO_PENDING;
+});
 
 // "Loading messages…" vs "No messages yet.": an empty list whose buffer is
 // unhydrated (fresh-connect shell / wiped detach slice) or mid-fetch is
@@ -754,7 +806,7 @@ const messages = computed(() => orderByTime(buffer.value?.messages || []));
 // viewport would shift scrollTop (see the comment atop the template).
 const initialLoading = computed(() => {
   const b = buffer.value;
-  if (!b || b.networkId == null || messages.value.length) return false;
+  if (!b || b.networkId == null || stored.value.length) return false;
   return b.loadingHistory || b.unseeded || b.pendingRefetch;
 });
 
@@ -811,6 +863,7 @@ function rowClass(row: RenderRow) {
   return {
     [`type-${m?.type}`]: true,
     self: m?.self,
+    pending: !!m?.pending,
     alt: row.alt,
     highlight: !!row.highlight && !row.nohilight,
     'cont-author': !!row.continuationAuthor,
@@ -2127,7 +2180,7 @@ watch([() => awayState.value?.since, () => awayState.value?.backAt], async (next
 // confusing) or is an id-less ephemeral status echo (a /e2e line, the user's
 // own command output), which shouldn't inflate the count.
 function maybeBumpNewBelow() {
-  const tail = messages.value[messages.value.length - 1] as ChatMessage | undefined;
+  const tail = stored.value[stored.value.length - 1] as ChatMessage | undefined;
   const nid = buffer.value?.networkId;
   const tailIgnored =
     tail &&
@@ -2309,9 +2362,9 @@ const { previewBody } = usePreviewBody();
 //   - live push: snap to bottom IF the user is already pinned there.
 watch(
   [
-    () => messages.value.length,
-    () => messages.value[0]?.id,
-    () => messages.value[messages.value.length - 1]?.id,
+    () => stored.value.length,
+    () => stored.value[0]?.id,
+    () => stored.value[stored.value.length - 1]?.id,
   ],
   async ([newLen, newFirstId, newLastId], [oldLen, oldFirstId, oldLastId]) => {
     const el = scroller.value;
@@ -2334,7 +2387,7 @@ watch(
     //     would otherwise match neither branch and fail to stick to bottom); and
     //   • a same-length cap-evict whose OLD tail was id-less is still an append,
     //     not a wholesale replace, so a reader scrolled up isn't yanked down.
-    const oldTailPresent = oldLastId != null && messages.value.some((m) => m.id === oldLastId);
+    const oldTailPresent = oldLastId != null && stored.value.some((m) => m.id === oldLastId);
     const appended =
       (lastChanged && oldTailPresent) ||
       (grew && !firstChanged) ||
@@ -2414,6 +2467,16 @@ watch(
       else maybeBumpNewBelow();
     }
     ensureViewportFilled();
+  },
+);
+
+// A message of ours began to wait: follow it down, as a live row is followed.
+watch(
+  () => pendingRows.value.length,
+  async (now, was) => {
+    if (now <= was || !stickToBottom.value) return;
+    await nextTick();
+    scrollToBottom();
   },
 );
 
@@ -2783,6 +2846,10 @@ watch(
 }
 .line:hover {
   background: var(--bg-soft);
+}
+/* Ours, and not sent yet: held in the network's send queue (#1326). */
+.line.pending {
+  opacity: 0.5;
 }
 /* The row whose tap-opened action menu is open (touch). Same background as
    hover, but authored without `:hover` so it survives the build's hover gating
