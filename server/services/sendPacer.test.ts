@@ -674,6 +674,27 @@ describe('SendPacer', () => {
       expect(sent).toHaveLength(9);
     });
 
+    it('asked by lane: one lane unpaced leaves the others their pace (#1320)', () => {
+      pacer.dispose();
+      pacer = new SendPacer({
+        send: (l) => {
+          sent.push(l);
+        },
+        ready: () => ready,
+        paced: (priority) => priority === 'low',
+      });
+      for (let i = 0; i < 8; i++) pacer.write(`PRIVMSG #c :${i}`);
+      expect(sent).toHaveLength(8);
+      // Charged nothing for those: five of the low lane fit, the sixth waits.
+      for (let i = 0; i < 6; i++) pacer.write(`WHO #c${i}`, { priority: 'low' });
+      expect(sent).toHaveLength(13);
+      // A normal line goes at once past the waiting one.
+      pacer.write('PRIVMSG #c :now');
+      expect(sent.at(-1)).toBe('PRIVMSG #c :now');
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('WHO #c5');
+    });
+
     it('still holds while holding() says so, and still drops with its socket', () => {
       let hold = true;
       pacer.dispose();

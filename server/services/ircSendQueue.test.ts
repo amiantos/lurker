@@ -830,12 +830,43 @@ describe('SAFERATE (#1320)', () => {
     conn.dispose();
   });
 
+  it("keeps pacing Lurker's own lines there, so they never crowd the server ahead of chat", () => {
+    const { conn, lines } = backlog();
+    isupport(conn, 'SAFERATE');
+    const replies = (
+      conn as unknown as { replies: { send: (asker: 'lurker', line: string) => void } }
+    ).replies;
+    for (let i = 0; i < 3; i++) replies.send('lurker', `AWAY :gone ${i}`);
+    expect(lines.filter((l) => l.startsWith('AWAY'))).toHaveLength(0);
+    // What the user types goes at once, past them.
+    conn.say('#c', 'typed');
+    expect(lines.at(-1)).toBe('PRIVMSG #c :typed');
+    vi.advanceTimersByTime(2000);
+    expect(lines.filter((l) => l.startsWith('AWAY'))).toHaveLength(1);
+    conn.dispose();
+  });
+
+  it('takes the token however it is written, and gives it up when the server takes it back', () => {
+    const { conn, lines } = backlog();
+    isupport(conn, 'CHANTYPES=# SAFERATE= NETWORK=Example');
+    conn.say('#c', 'at once');
+    expect(lines.at(-1)).toBe('PRIVMSG #c :at once');
+    isupport(conn, '-SAFERATE');
+    // The budget is as full as the backlog left it: this one waits again.
+    conn.say('#c', 'paced again');
+    expect(lines).not.toContain('PRIVMSG #c :paced again');
+    conn.dispose();
+  });
+
   it('forgets it with the socket: the next server speaks for itself', () => {
     const { conn, lines, registered } = backlog();
     isupport(conn, 'SAFERATE');
     conn.client.emit('close');
     lines.length = 0;
     registered(true);
+    // The next server's 005 says nothing of it. The framework keeps the last
+    // socket's tokens in its options, which is why they are not read there.
+    isupport(conn, 'CHANTYPES=# NETWORK=Example');
     for (let i = 0; i < 6; i++) conn.say('#c', `again ${i}`);
     expect(lines.filter((l) => l.startsWith('PRIVMSG #c :again'))).toHaveLength(5);
     conn.dispose();

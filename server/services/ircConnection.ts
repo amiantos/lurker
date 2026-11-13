@@ -1375,8 +1375,8 @@ export class IrcConnection {
   // Every outbound line, in order, paced by what the server charges for them
   // (sendPacer.ts, #1149). `sendQueueWaiting` mirrors its depth for snapshots.
   private readonly sendPacer: SendPacer;
-  // The server advertised SAFERATE in this connection's 005 (noteSafeRate).
-  private safeRate = false;
+  // The SAFERATE tokens this socket's 005 lines advertised (noteSafeRate).
+  private safeRateTokens = new Set<string>();
   private sendQueueWaiting = 0;
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
@@ -1621,9 +1621,14 @@ export class IrcConnection {
       onDepth: (waiting) => this.publishSendQueue(waiting),
       // Per line, so turning a network's flood protection off (#1193) applies
       // to what is already waiting (networkEdited).
-      // Nor while the server says it never drops a client for flooding
-      // (SAFERATE, #1320): it only delays one, and pacing would wait twice.
-      paced: () => this.network.flood_protection !== 0 && !this.safeRate,
+      // Nor, for what the user wrote and what must precede it, while the
+      // server says it never drops a client for flooding (SAFERATE, #1320):
+      // it only delays one, and pacing would wait twice. Lurker's own `low`
+      // lines keep their pace there: a reconnect's hundreds of MODE and WHO
+      // lines written at once would sit in the server's queue ahead of the
+      // next thing typed, with nothing here left to let it overtake them.
+      paced: (priority) =>
+        this.network.flood_protection !== 0 && !(this.safeRate && priority !== 'low'),
     });
     connection.write = (data: string, callback?: () => void) => {
       // A QUIT closes the socket from its write callback (Connection.end),
@@ -2343,6 +2348,10 @@ export class IrcConnection {
             this.adoptDeclaredCasemapping(param.slice('CASEMAPPING='.length));
           }
         }
+        // The raw tokens again, for the same reason (#1320): the options bag
+        // is never emptied between sockets, so a SAFERATE read there would be
+        // the last server's as much as this one's.
+        this.noteSafeRate(msg?.params ?? []);
       }
       const burstLine = event.line.replace(/[\r\n]+$/, '');
       if (rawCommand === '001') {
@@ -2873,7 +2882,7 @@ export class IrcConnection {
       this.monitor.reset();
       this.isupportComplete = false;
       // The next socket's server says for itself whether it flood-kills.
-      this.safeRate = false;
+      this.safeRateTokens.clear();
       // The next snapshot sends a null spec (clientModeSpec), so the burst's
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
@@ -2958,7 +2967,6 @@ export class IrcConnection {
     // this guard we'd send `MONITOR +` blind and trigger 421 on older
     // ircds, which our 'irc error' path surfaces to the user.
     on('server options', () => {
-      this.noteSafeRate();
       this.publishModeSpecIfChanged();
       this.publishReactSupportIfChanged();
       // A HOSTLEN changes the worst case while our own host is unknown.
@@ -8474,18 +8482,30 @@ export class IrcConnection {
     );
   }
 
-  // Whether the server says it never disconnects a client for flooding, read
-  // at each 005 (#1320). Ergo advertises a bare `SAFERATE`, soju the vendored
-  // `soju.im/SAFERATE` its spec names; Halloy and soju stop pacing on either.
-  // Such a server delays what it reads instead (fakelag), so the queue has
-  // nothing to protect: what waits goes now, and nothing waits after. Set only
-  // by a token that arrived, and forgotten with the socket.
-  private noteSafeRate(): void {
-    const network = this.client.network;
-    const safe = !!network?.supports('SAFERATE') || !!network?.supports('soju.im/SAFERATE');
-    if (safe === this.safeRate) return;
-    this.safeRate = safe;
-    this.sendPacer.redrain();
+  // Whether the server says it never disconnects a client for flooding
+  // (#1320), from the tokens of one 005 line. Ergo advertises a bare
+  // `SAFERATE`, soju the vendored `soju.im/SAFERATE` its spec names; Halloy
+  // and soju stop pacing on either. Such a server delays what it reads
+  // instead (fakelag), so the queue has less to protect: see `paced` where
+  // the queue is made. A token counts however it is written (`SAFERATE=` is
+  // the same token), `-SAFERATE` takes it back, and the set empties with the
+  // socket: only what this server said is ever read.
+  private noteSafeRate(params: readonly unknown[]): void {
+    const was = this.safeRate;
+    // The first parameter is our nick; the trailing text is no token's name.
+    for (const param of params.slice(1)) {
+      if (typeof param !== 'string') continue;
+      const name = param.split('=', 1)[0].toUpperCase();
+      const token = name.startsWith('-') ? name.slice(1) : name;
+      if (token !== 'SAFERATE' && token !== 'SOJU.IM/SAFERATE') continue;
+      if (name.startsWith('-')) this.safeRateTokens.delete(token);
+      else this.safeRateTokens.add(token);
+    }
+    if (this.safeRate !== was) this.sendPacer.redrain();
+  }
+
+  private get safeRate(): boolean {
+    return this.safeRateTokens.size > 0;
   }
 
   // A line the user was told went out, and then went with its socket (#1149).

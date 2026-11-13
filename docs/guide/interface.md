@@ -45,9 +45,9 @@ A tour of the Lurker window and how messages are organized.
   you from its flood limits (you're an oper there, or you connect through a
   bouncer that paces on its own), turn **Flood protection** off in that
   network's advanced options, or `/network modify <name> -noflood`; lines then
-  go out at once. A server that says it never disconnects for flooding (it
-  advertises `SAFERATE`, as Ergo and soju do) is not paced at all, whatever the
-  switch says.
+  go out at once. On a server that says it never disconnects for flooding (it
+  advertises `SAFERATE`, as Ergo and soju do), what you send is not paced at
+  all, whatever the switch says; only Lurker's own housekeeping still is.
 
 ## Direct messages & presence
 
