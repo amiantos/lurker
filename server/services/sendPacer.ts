@@ -307,6 +307,8 @@ export class SendPacer {
         entry.priority = lane;
         entry.seq = this.lanes[lane][at].seq;
         this.lanes[lane][at] = entry;
+        // A head replaced has another wait.
+        this.redrain();
         return this.handle(entry);
       }
       // The oldest keyed item goes to make room. Its onDropped may write
@@ -467,6 +469,7 @@ export class SendPacer {
 
   // The item and everything it expanded to.
   private remove(entry: Entry, dropped: boolean): boolean {
+    const headWas = this.head();
     const taken: Entry[] = [];
     for (const lane of LANES) {
       const queue = this.lanes[lane];
@@ -476,10 +479,20 @@ export class SendPacer {
       }
     }
     if (taken.length === 0) return false;
+    // Gone, not sent: an emptied queue is reported empty now.
+    this.emptyAtOnce = true;
     this.noteDepth();
     if (dropped) {
       const told = new Set<Entry>();
       for (const q of taken) this.tellDropped(q, told);
+    }
+    // The timer was set for the old head's wait; the new one's may be shorter.
+    // Timed again on the next tick, never here: a caller cancelling several
+    // items, or about to write in a cancelled one's place, must not have a
+    // line go out in between.
+    if (!this.draining && this.head() !== headWas) {
+      this.clearTimer();
+      if (this.head()) this.schedule(0);
     }
     return true;
   }

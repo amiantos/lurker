@@ -393,6 +393,38 @@ describe('SendPacer', () => {
       expect(sent).toHaveLength(5);
     });
 
+    it('times the next line by its own wait once the head is cancelled', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      const long = pacer.write(LONG); // fits in 4 s
+      pacer.write(SHORT); // fits in 2 s
+      expect(long.cancel()).toBe(true);
+      vi.advanceTimersByTime(1999);
+      expect(sent).toHaveLength(5);
+      vi.advanceTimersByTime(1);
+      expect(sent).toHaveLength(6);
+    });
+
+    it('sends nothing inside cancel(), so what is written next keeps its place', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      const low = pacer.write(LONG, { priority: 'low' });
+      pacer.write('WHO #c', { priority: 'low', unpaced: true });
+      expect(low.cancel()).toBe(true);
+      expect(sent).toHaveLength(5);
+      pacer.write('WHO #client', { unpaced: true });
+      vi.advanceTimersByTime(0);
+      expect(sent.slice(5)).toEqual(['WHO #client', 'WHO #c']);
+    });
+
+    it('times the queue again when a keyed write replaces the head', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write(LONG, { key: 'k' }); // fits in 4 s
+      pacer.write(SHORT, { key: 'k' }); // fits in 2 s
+      vi.advanceTimersByTime(1999);
+      expect(sent).toHaveLength(5);
+      vi.advanceTimersByTime(1);
+      expect(sent).toHaveLength(6);
+    });
+
     it("tells an expanded line's own onDropped and its item's, once each", () => {
       const log: string[] = [];
       for (let i = 0; i < 5; i++) pacer.write(SHORT);
