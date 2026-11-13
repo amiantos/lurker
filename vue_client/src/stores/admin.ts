@@ -11,6 +11,13 @@ import type { LiveClient, PushLogRow } from '../utils/pushLog.js';
 /** The server's default page of push log rows; a full page means there may be more. */
 const PUSH_LOG_PAGE = 100;
 
+export const IDENT_STATUSES = ['on', 'off', 'failed', 'unknown'] as const;
+
+export interface AdminIdent {
+  status: (typeof IDENT_STATUSES)[number];
+  host: 'server' | 'engine';
+}
+
 export interface AdminUser {
   id: number;
   username: string;
@@ -124,12 +131,13 @@ export interface AdminPresenceRow {
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: [] as AdminUser[],
-    // Whether an ident daemon is actually running (built-in identd or the
-    // oidentd file). False makes the per-user idents inert — the pane says so.
-    // null: the server can't tell (in engine mode ident runs on the engine,
-    // out of its sight), so the pane keeps the editor rather than claiming
-    // ident is off.
-    identdEnabled: false as boolean | null,
+    // Whether anything answers ident (built-in identd or the oidentd file), and
+    // which process would: this server, or its engine. 'off' makes the per-user
+    // idents inert, and the pane says so. 'failed' is ident set up but not
+    // answering. 'unknown' is the server unable to tell (the engine link is
+    // down, or the engine is too old to say), where the pane keeps the editor
+    // rather than claiming ident is off.
+    ident: { status: 'off', host: 'server' } as AdminIdent,
     invites: [] as AdminInvite[],
     loginLockouts: [] as AdminLoginLockout[],
     loginLockoutPolicy: null as AdminLoginLockoutPolicy | null,
@@ -187,13 +195,17 @@ export const useAdminStore = defineStore('admin', {
       const seq = ++this.usersFetchSeq;
       this.error = '';
       try {
-        const { users, identdEnabled } = await api('/api/admin/users');
+        const { users, ident } = await api('/api/admin/users');
         // A newer fetch or a local mutation superseded this GET while it was in
         // flight — its payload is stale, so drop it rather than clobber the
         // fresher state.
         if (seq !== this.usersFetchSeq) return;
         this.users = users || [];
-        this.identdEnabled = identdEnabled === null ? null : !!identdEnabled;
+        // Anything unrecognised is 'unknown', never 'off': off hides the editor.
+        this.ident = {
+          status: IDENT_STATUSES.includes(ident?.status) ? ident.status : 'unknown',
+          host: ident?.host === 'engine' ? 'engine' : 'server',
+        };
         this.usersLoaded = true;
       } catch (e: any) {
         if (seq !== this.usersFetchSeq) return;

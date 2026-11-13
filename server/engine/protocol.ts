@@ -16,6 +16,8 @@
 // exactly what it did before the engine existed). Adding an optional field or a
 // new op is a minor change; renaming or re-meaning one is a major.
 
+import type { IdentStatus } from '../services/identd.js';
+
 export const PROTOCOL_MAJOR = 1;
 // minor 2 (#459): `connect` carries an optional client certificate. An app that
 // needs one refuses to dial through an engine below this rather than connecting
@@ -53,7 +55,12 @@ export const PROTOCOL_MAJOR = 1;
 // did; the app does not send it there. Such a line, given again to the next
 // attach, says so (`kept` on `line`): it has been delivered before, and
 // whatever read it then must not act on it twice.
-export const PROTOCOL_MINOR = 7;
+// minor 8 (#1139): the engine's hello says what its ident services are doing
+// (`engine.ident`). The variables that turn ident on belong on the engine in
+// this topology, where the app cannot read them, so until this minor the admin
+// pane could not tell an operator that nothing answers ident. An engine below
+// this omits the field and the app says it cannot tell.
+export const PROTOCOL_MINOR = 8;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -182,7 +189,16 @@ export type AppToEngine =
   | { op: 'list' };
 
 export type EngineToApp =
-  | { op: 'hello'; protocol: number; minor: number; engine: { version: string }; held: string[] }
+  | {
+      op: 'hello';
+      protocol: number;
+      minor: number;
+      // `ident` is the state of the engine's ident services as it answers, not
+      // its configuration: a :113 that would not bind is 'failed'. It is not
+      // sent again if that changes; the next hello carries the new state.
+      engine: { version: string; ident?: IdentStatus };
+      held: string[];
+    }
   | { op: 'ping' }
   | { op: 'pong' }
   | { op: 'dialing'; id: string }

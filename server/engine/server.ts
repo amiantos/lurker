@@ -28,6 +28,8 @@ import {
 } from './protocol.js';
 import type { AppToEngine, ConnectionInfo, EngineToApp } from './protocol.js';
 import { isDialableCertPair } from '../utils/clientCert.js';
+import { identStatus } from '../services/identd.js';
+import type { IdentStatus } from '../services/identd.js';
 import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
 
 export interface EngineServerOptions {
@@ -40,6 +42,8 @@ export interface EngineServerOptions {
   dialTimeoutMs?: number;
   // End a session no link has claimed for this long. 0 disables.
   orphanMs?: number;
+  // Test seam; production reads this process's ident services.
+  identStatus?: () => IdentStatus;
 }
 
 // Past this much unsent data queued on a link the upstreams stop pushing and let
@@ -378,7 +382,7 @@ export class EngineServer {
         op: 'hello',
         protocol: PROTOCOL_MAJOR,
         minor: PROTOCOL_MINOR,
-        engine: { version: this.opts.version },
+        engine: { version: this.opts.version, ident: (this.opts.identStatus ?? identStatus)() },
         held: this.heldFor(link),
       });
       this.log(

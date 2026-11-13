@@ -42,12 +42,7 @@ import { ircLineParser } from 'irc-framework';
 import { LineBuffer } from './lineBuffer.js';
 import type { ByteBudget } from './lineBuffer.js';
 import type { ConnectionInfo, Endpoint, EngineToApp, SeqRange } from './protocol.js';
-import {
-  registerIdent,
-  unregisterIdent,
-  isIdentdEnabled,
-  isOidentdFileEnabled,
-} from '../services/identd.js';
+import { registerIdent, unregisterIdent, isIdentConfigured } from '../services/identd.js';
 import { dialThroughProxy } from '../utils/proxyDial.js';
 import { sameProxyRoute } from '../../shared/proxy.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
@@ -458,11 +453,7 @@ export class EngineUpstream extends EventEmitter {
     if (this.closing) return;
     this.local = { address: s.localAddress || '', port: s.localPort || 0 };
     this.remote = { address: s.remoteAddress || '', port: s.remotePort || 0 };
-    if (
-      this.opts.ident &&
-      this.identdId === null &&
-      (isIdentdEnabled() || isOidentdFileEnabled())
-    ) {
+    if (this.opts.ident && this.identdId === null && isIdentConfigured()) {
       this.identdId = registerIdent({
         localAddress: this.local.address,
         localPort: this.local.port,

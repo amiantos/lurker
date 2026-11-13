@@ -28,7 +28,9 @@ interface FakeEngine {
   close(): Promise<void>;
 }
 
-async function fakeEngine(): Promise<FakeEngine> {
+type HelloEngine = Extract<EngineToApp, { op: 'hello' }>['engine'];
+
+async function fakeEngine(engine: HelloEngine = { version: 'fake' }): Promise<FakeEngine> {
   const fake: FakeEngine = {
     port: 0,
     seen: [],
@@ -54,7 +56,7 @@ async function fakeEngine(): Promise<FakeEngine> {
               op: 'hello',
               protocol: PROTOCOL_MAJOR,
               minor: PROTOCOL_MINOR,
-              engine: { version: 'fake' },
+              engine,
               held: [],
             }),
           );
@@ -116,6 +118,34 @@ const connectFrame = (id: string): AppToEngine => ({
 });
 
 describe('EngineLink', () => {
+  describe('identStatus (#1139)', () => {
+    it("is the engine's word while the link is up, and unknown once it drops", async () => {
+      const fake = await fakeEngine({ version: 'fake', ident: 'failed' });
+      const link = await readyLink(fake);
+      expect(link.identStatus()).toBe('failed');
+      // The engine that answers next may not be the one that said this.
+      fake.peer!.destroy();
+      await until(() => link.state !== 'ready', 3000, 'link down');
+      expect(link.identStatus()).toBeNull();
+    });
+
+    it('is unknown for an engine too old to say', async () => {
+      const link = await readyLink(await fakeEngine());
+      expect(link.identStatus()).toBeNull();
+    });
+
+    it('is unknown for a word it does not know', async () => {
+      const said = { version: 'fake', ident: 'maybe' } as unknown as HelloEngine;
+      const link = await readyLink(await fakeEngine(said));
+      expect(link.identStatus()).toBeNull();
+    });
+
+    it('is unknown before the link has ever been up', () => {
+      const link = new EngineLink({ host: '127.0.0.1', port: 1, secret: 'x', log: () => {} });
+      expect(link.identStatus()).toBeNull();
+    });
+  });
+
   // What shutdown() does: one `detach` per connection, then stopEngineLink(),
   // all in one tick. Those frames must still reach the engine. A destroy()
   // closes the descriptor with them possibly still queued behind an unacked

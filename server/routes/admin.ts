@@ -36,8 +36,9 @@ import {
 } from '../db/accountRecovery.js';
 import ircManager from '../services/ircManager.js';
 import { presenceDiagnostics } from '../services/wsHub.js';
-import { isIdentdEnabled, isOidentdFileEnabled } from '../services/identd.js';
-import { engineConfigured } from '../services/engineLink.js';
+import { identStatus, isIdentConfigured } from '../services/identd.js';
+import type { IdentStatus } from '../services/identd.js';
+import { EngineLink, engineConfigured } from '../services/engineLink.js';
 import { isNodeMode } from '../utils/edition.js';
 import {
   clearLoginLockouts,
@@ -72,16 +73,21 @@ router.use('/dcc', adminDccRouter);
 // The push relay opt-in (lurker-dev/RELAY_PLAN.md §5a).
 router.use('/push', adminPushRouter);
 
-// Does anything answer ident lookups for this instance's connections? Whoever
-// holds the sockets does: this process, or the engine in engine mode — where
-// the variables belong on the engine, and this process can't see them (#1138).
-// So in engine mode "not set here" is null, can't tell, and the pane must not
-// claim ident is off. A setting this process CAN see still counts: a shared
-// .env feeds both processes.
-function identdStatus(): boolean | null {
-  const local = isIdentdEnabled() || isOidentdFileEnabled();
-  if (!engineConfigured()) return local;
-  return local || null;
+// Does anything answer ident lookups for this instance's connections, and
+// which process would? Whoever holds the sockets: this one, or the engine in
+// engine mode. The engine says in its hello (#1139). 'unknown' is the link
+// being down, or an engine too old to say, and the pane must not read it as
+// off (#1138). An older engine gets one guess: a setting this process can see
+// is probably the engine's too, since a shared .env feeds both.
+type IdentReport = { status: IdentStatus | 'unknown'; host: 'server' | 'engine' };
+
+function identReport(): IdentReport {
+  if (!engineConfigured()) return { status: identStatus(), host: 'server' };
+  const link = EngineLink.shared();
+  const said = link.identStatus();
+  if (said) return { status: said, host: 'engine' };
+  const guess = link.state === 'ready' && isIdentConfigured();
+  return { status: guess ? 'on' : 'unknown', host: 'engine' };
 }
 
 // invites.ts is still untyped — row shape inferred as any from the JS module
@@ -173,11 +179,11 @@ router.get('/users', (_req: Request, res: Response) => {
       // the URL issues a new one, which invalidates the old.
       recoveryExpiresAt: recoveryExpiries.get(u.id) ?? null,
     })),
-    // Whether either ident mode is running (null: can't tell). When neither is,
-    // the idents above are inert — the UI says so rather than implying networks
-    // see them. (The other half of the story, "may these be edited at all", is
-    // node edition, which the client already knows from /api/config.)
-    identdEnabled: identdStatus(),
+    // Whether ident is answered, and by which process. When it is not, the
+    // idents above are inert, and the UI says so and where to turn it on. (The
+    // other half, "may these be edited at all", is node edition, which the
+    // client already knows from /api/config.)
+    ident: identReport(),
   });
 });
 

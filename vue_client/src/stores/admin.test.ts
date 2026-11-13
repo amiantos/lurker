@@ -316,13 +316,29 @@ describe('admin store — push relay toggle', () => {
   });
 });
 
-// identdEnabled is tri-state since #1138: null is the server saying it can't
-// tell (engine mode), and folding it to false would hide the ident editor.
-describe('admin store — identdEnabled', () => {
-  it.each([true, false, null])('keeps the server answer %s as given', async (answer) => {
-    h.api.mockResolvedValueOnce({ users: [], identdEnabled: answer });
+// 'unknown' is the server saying it can't tell (the engine's ident is out of
+// its sight, #1138), and folding it to 'off' would hide the ident editor. So
+// would reading an answer this client doesn't know as off.
+describe('admin store — ident', () => {
+  it.each([
+    { status: 'on', host: 'server' },
+    { status: 'off', host: 'engine' },
+    { status: 'failed', host: 'engine' },
+    { status: 'unknown', host: 'engine' },
+  ])('keeps the server answer $status on the $host as given', async (answer) => {
+    h.api.mockResolvedValueOnce({ users: [], ident: answer });
     const store = useAdminStore();
     await store.fetchUsers();
-    expect(store.identdEnabled).toBe(answer);
+    expect(store.ident).toEqual(answer);
   });
+
+  it.each([undefined, null, {}, { status: 'paused', host: 'moon' }])(
+    'reads %j as unknown, never off',
+    async (answer) => {
+      h.api.mockResolvedValueOnce({ users: [], ident: answer });
+      const store = useAdminStore();
+      await store.fetchUsers();
+      expect(store.ident).toEqual({ status: 'unknown', host: 'server' });
+    },
+  );
 });

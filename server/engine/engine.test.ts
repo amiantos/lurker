@@ -140,6 +140,34 @@ describe('hello', () => {
     expect(ok.hello).toMatchObject({ op: 'hello', protocol: PROTOCOL_MAJOR, held: [] });
   });
 
+  // #1139: the state as of each hello, never one remembered from an earlier
+  // link, and from the ident services themselves when no seam is given.
+  it("says what the engine's ident services are doing", async () => {
+    expect((await link()).hello!.engine).toEqual({ version: 'test', ident: 'off' });
+
+    let ident: 'on' | 'failed' = 'failed';
+    const other = new EngineServer({
+      secret: SECRET,
+      bufferBytes: 4096,
+      bufferTotalBytes: 64 * 1024,
+      version: 'test',
+      log: () => {},
+      identStatus: () => ident,
+    });
+    const { port } = await other.listen(0, '127.0.0.1');
+    try {
+      const first = await TestLink.connect(port, SECRET);
+      links.push(first);
+      expect(first.hello!.engine.ident).toBe('failed');
+      ident = 'on';
+      const second = await TestLink.connect(port, SECRET);
+      links.push(second);
+      expect(second.hello!.engine.ident).toBe('on');
+    } finally {
+      await other.shutdown('test done', 500);
+    }
+  });
+
   it('answers a plain HTTP probe on the same port', async () => {
     const s = net.connect(enginePort, '127.0.0.1');
     await once(s, 'connect');

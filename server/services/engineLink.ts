@@ -24,6 +24,7 @@ import { FrameReader, PROTOCOL_MAJOR, encodeFrame, parseHostPort } from '../engi
 import { instanceId } from '../db/instanceId.js';
 import type { AppToEngine, EngineToApp } from '../engine/protocol.js';
 import { APP_VERSION } from '../utils/userAgent.js';
+import type { IdentStatus } from './identd.js';
 
 // This process's generation, for the engine's newest-wins rule (protocol.ts):
 // the start time in milliseconds — the unit every app version has sent, so a
@@ -135,6 +136,9 @@ export class EngineLink extends EventEmitter {
   // Minors are additive by contract, so this only ever answers "does the engine
   // already know about X" — never "is it too new".
   engineMinor: number | null = null;
+  // What the engine's last hello said of its ident services (minor 8). null:
+  // an engine too old to say.
+  private engineIdent: IdentStatus | null = null;
   refusedReason: string | null = null;
 
   private socket: net.Socket | null = null;
@@ -238,6 +242,13 @@ export class EngineLink extends EventEmitter {
    *  on the wire and the UI saying otherwise. */
   supportsProxy(): boolean {
     return this.engineMinor !== null && this.engineMinor >= PROXY_MINOR;
+  }
+
+  // Whether the engine answers ident (#1139). null is "cannot tell": the
+  // engine predates the report, or the link is not up, and what an engine said
+  // before the link dropped does not describe the one that answers next.
+  identStatus(): IdentStatus | null {
+    return this.state === 'ready' ? this.engineIdent : null;
   }
 
   /** Does this engine keep the lines an ack names (#1286)? One below this
@@ -444,6 +455,9 @@ export class EngineLink extends EventEmitter {
             this.engineVersion = frame.engine.version;
             // Older engines predate the field; absent means minor 1.
             this.engineMinor = typeof frame.minor === 'number' ? frame.minor : 1;
+            const ident = frame.engine.ident;
+            this.engineIdent =
+              ident === 'on' || ident === 'off' || ident === 'failed' ? ident : null;
             if (this.everReady) {
               this.log(`link restored to ${this.address} after ${this.attempt} attempt(s)`);
             }
