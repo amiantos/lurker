@@ -5,7 +5,7 @@
 // lanes, the bypasses, thunks, units, cancel, onSent/onDropped, hold and drop.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { SendPacer, lineCostMs, BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
+import { SendPacer, lineCostMs, unitCostMs, BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 
 const SHORT = 'PRIVMSG #c :hi'; // 16 bytes with CRLF: 2 s
 const LONG = `PRIVMSG #c :${'x'.repeat(284)}`; // 298 bytes with CRLF: 4 s
@@ -293,7 +293,7 @@ describe('SendPacer', () => {
   });
 
   describe('units', () => {
-    it('sends a unit back to back and charges for all of it after', () => {
+    it('sends a unit back to back and charges for it after, as a batch', () => {
       const batch = [
         'BATCH +r draft/multiline #c',
         `@batch=r ${LONG}`,
@@ -301,13 +301,38 @@ describe('SendPacer', () => {
         'BATCH -r',
       ];
       pacer.unit(batch);
+      expect(sent).toEqual(batch);
+      // 653 bytes: the opening BATCH and a bill of two messages, 6 s. The
+      // short line fits at once, where the lines' own 14 s held it 6 s (#1318).
+      expect(unitCostMs(batch)).toBe(6000);
+      pacer.write(SHORT);
+      expect(sent.at(-1)).toBe(SHORT);
+    });
+
+    it('holds what follows a long paste 2 s, not for the price of its every line (#1318)', () => {
+      // Four lines of 463 bytes: 28 s by the line, and 20 s of waiting.
+      const line = `@batch=r PRIVMSG #c :${'x'.repeat(440)}`;
+      const batch = ['BATCH +r draft/multiline #c', line, line, line, line, 'BATCH -r'];
+      pacer.unit(batch);
       pacer.write(SHORT);
       expect(sent).toEqual(batch);
-      // 2 + 5 + 5 + 2 = 14 s charged: the short line fits once 6 s have gone.
-      vi.advanceTimersByTime(5999);
-      expect(sent).toHaveLength(4);
+      // 1891 bytes: the opening BATCH and a bill of four, 10 s.
+      expect(unitCostMs(batch)).toBe(10_000);
+      vi.advanceTimersByTime(1999);
+      expect(sent).toHaveLength(6);
       vi.advanceTimersByTime(1);
       expect(sent.at(-1)).toBe(SHORT);
+    });
+
+    it('bills a batch of many short lines by its lines', () => {
+      // 100 lines of 25 bytes: 2539 bytes is a bill of five, 102 lines one of
+      // eleven (Ergo reckons a line at 60 bytes of its 512).
+      const batch = [
+        'BATCH +r draft/multiline #c',
+        ...Array.from({ length: 100 }, () => '@batch=r PRIVMSG #c :hi'),
+        'BATCH -r',
+      ];
+      expect(unitCostMs(batch)).toBe(12 * 2000);
     });
   });
 
