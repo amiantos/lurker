@@ -352,7 +352,7 @@ export type BacklogMode = 'replace' | 'append' | 'shell';
 // The channel modal's WS messages (#727): each one's verb and the input it
 // takes from the message. One table, so a message and its input can't drift.
 const CHANNEL_MODAL_VERBS: Record<
-  'get-mode-list' | 'set-channel-modes' | 'set-topic',
+  'get-mode-list' | 'set-channel-modes' | 'set-topic' | 'flush-send-queue',
   (msg: WsPayload) => [string, Record<string, unknown>]
 > = {
   'get-mode-list': (m) => [
@@ -364,6 +364,8 @@ const CHANNEL_MODAL_VERBS: Record<
     { networkId: m.networkId, channel: m.channel, changes: m.changes },
   ],
   'set-topic': (m) => ['set_topic', { networkId: m.networkId, channel: m.channel, topic: m.topic }],
+  // `/flushq` (#1322): the same shape, its `data` how many messages were dropped.
+  'flush-send-queue': (m) => ['flush_send_queue', { networkId: m.networkId }],
 };
 
 // Inbound message types that mutate IRC state or produce outbound IRC traffic.
@@ -394,6 +396,7 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'get-mode-list',
   'set-channel-modes',
   'set-topic',
+  'flush-send-queue',
 ]);
 
 // Options bag for fanOut.
@@ -4176,7 +4179,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // the network is down, rather than dropping the line.
       case 'get-mode-list':
       case 'set-channel-modes':
-      case 'set-topic': {
+      case 'set-topic':
+      case 'flush-send-queue': {
         const [verbName, input] = CHANNEL_MODAL_VERBS[msg.type](msg);
         const clientId = msg.clientId;
         void (async () => {

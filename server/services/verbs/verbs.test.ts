@@ -865,6 +865,18 @@ describe('agent control verbs', () => {
     });
   });
 
+  describe('flush_send_queue', () => {
+    it('is nothing dropped on a network with no connection, and refuses one the user doesn’t own', () => {
+      expect(callVerb('flush_send_queue', rwCtx(owner.id), { networkId: net.id })).toEqual({
+        ok: true,
+        dropped: 0,
+      });
+      expect(() => callVerb('flush_send_queue', rwCtx(owner.id), { networkId: 999999 })).toThrow(
+        'unknown network',
+      );
+    });
+  });
+
   describe('set_away', () => {
     it('is every network without a networkId, reports state, and needs no connection', () => {
       expect(callVerb('set_away', rwCtx(owner.id), { message: 'brb' })).toEqual({

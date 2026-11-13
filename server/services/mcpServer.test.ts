@@ -114,6 +114,7 @@ describe('MCP server', () => {
     expect(names).toEqual([
       'connect_network',
       'disconnect_network',
+      'flush_send_queue',
       'get_mode_list',
       'get_nick_note',
       'get_topic',

@@ -796,6 +796,135 @@ describe('flood protection off (#1193)', () => {
   });
 });
 
+describe('taking back what waits (#1322)', () => {
+  it("/flushq drops the user's waiting messages, marks each not sent, and keeps Lurker's own lines", () => {
+    const { conn, lines, published } = backlog();
+    conn.say('#c', 'one');
+    conn.action('bob', 'waves');
+    vi.spyOn(conn, 'multilineLimits').mockReturnValue({ maxBytes: 4096, maxLines: 100 });
+    conn.sendMultiline('#c', 'a\nb');
+    const replies = (
+      conn as unknown as { replies: { send: (asker: 'lurker', line: string) => void } }
+    ).replies;
+    replies.send('lurker', 'AWAY :gone');
+    expect(conn.flushSendQueue()).toBe(3);
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ target: '#c', text: 'not sent (send queue cleared): one' }),
+      expect.objectContaining({ target: 'bob', text: 'not sent (send queue cleared): /me waves' }),
+      expect.objectContaining({ target: '#c', text: 'not sent (send queue cleared): a\nb' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines.slice(5)).toEqual(['AWAY :gone']);
+    expect(conn.flushSendQueue()).toBe(0);
+    conn.dispose();
+  });
+
+  it('drops what waits for a channel we are kicked from, and nothing else', () => {
+    const { conn, lines, published } = backlog({ join: ['#c', '#d'] });
+    conn.say('#C', 'to the channel');
+    conn.say('#d', 'elsewhere');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({
+        target: '#C',
+        text: 'not sent (no longer in the channel): to the channel',
+      }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).toContain('PRIVMSG #d :elsewhere');
+    expect(lines).not.toContain('PRIVMSG #C :to the channel');
+    conn.dispose();
+  });
+
+  it("drops a line to the channel's ops (STATUSMSG) with it", () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.say('@#c', 'ops only');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): ops only' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG @#c :ops only');
+    conn.dispose();
+  });
+
+  it('drops them on a PART we did not send, too', () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.say('#c', 'too late');
+    conn.client.emit('part', { channel: '#c', nick: 'alice' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): too late' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG #c :too late');
+    conn.dispose();
+  });
+
+  it('keeps what waits behind a PART of our own: a /cycle, then a line', () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.part('#c');
+    conn.join('#c');
+    conn.say('#c', 'back');
+    // The PART goes at its turn, and its echo comes back before the JOIN's.
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toMatch(/^PART #c/);
+    conn.client.emit('part', { channel: '#c', nick: 'alice' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).toContain('PRIVMSG #c :back');
+    conn.dispose();
+  });
+
+  it('a kick that beats our own PART to the server is still a kick', () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.say('#c', 'bye');
+    conn.part('#c');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): bye' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG #c :bye');
+    conn.dispose();
+  });
+
+  it('drops a line to a list of recipients that names the channel', () => {
+    const { conn, lines } = backlog({ join: ['#c', '#d'] });
+    conn.say('#d,#c', 'both');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG #d,#c :both');
+    conn.dispose();
+  });
+
+  it('says so once a re-attach is over, when the channel went with one', () => {
+    const { conn, published } = backlog({ join: ['#c'] });
+    conn.say('#c', 'held');
+    conn.restoring = true;
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([]);
+    // The replay is done and the backlog read: the engine's 'live' phase.
+    conn.restoring = false;
+    (conn as unknown as { onEnginePhase: (phase: string, info: object) => void }).onEnginePhase(
+      'live',
+      {},
+    );
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): held' }),
+    ]);
+    conn.dispose();
+  });
+
+  it('leaves the queue alone when someone else is kicked', () => {
+    const { conn, lines } = backlog({ join: ['#c'], peers: ['bob'] });
+    conn.say('#c', 'still going');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'bob', message: 'out' });
+    vi.advanceTimersByTime(2000);
+    expect(lines).toContain('PRIVMSG #c :still going');
+    conn.dispose();
+  });
+});
+
 describe('SAFERATE (#1320)', () => {
   // The 005 as the server sends it, through the framework's own parser.
   function isupport(conn: IrcConnection, tokens: string): void {

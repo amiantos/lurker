@@ -271,6 +271,7 @@ import type { ChannelMode } from '../db/e2e.js';
 import { randomBytes } from 'node:crypto';
 import {
   isChannelTarget,
+  channelReadings,
   isDccChatTarget,
   isSinglePeerTarget,
   CHANNEL_PREFIX_CLASS,
@@ -4037,7 +4038,7 @@ export class IrcConnection {
       // branch now lowers autojoin, so a server that echoes our nick in the
       // PART prefix with different casing must not skip the correction.
       if (this.isSelfNick(eventNick)) {
-        this.deleteChannel(eventChannel.toLowerCase());
+        this.deleteChannel(eventChannel.toLowerCase(), true);
         this.sweepUserMetadata();
         // The echo lowers autojoin, not just ircManager.partChannel. That path
         // is the app's own /part and buffer-close, so a PART Lurker did not
@@ -6972,14 +6973,27 @@ export class IrcConnection {
     this.joinedFoldedCache = null;
   }
 
-  private deleteChannel(key: string): boolean {
+  private deleteChannel(key: string, partEcho = false): boolean {
     const folded = foldTargetFor(this.network.id, key);
     // The one place membership leaves the map, so the one place a part awaiting
     // its answer has been answered: the PART echo, a kick, a 442's eviction, the
     // engine's prune on re-attach. Unconditional — the mark must go even when
     // there was no entry to delete, or a PART for a channel we had already left
     // would leave one behind forever.
-    this.pendingParts.delete(folded);
+    const ownPart = this.pendingParts.delete(folded);
+    // What the user sent that still waits for the channel would bounce now, so
+    // it is taken back and said so (#1322; irssi purges a kicked channel's
+    // queued lines the same way). Here, so that every way out is covered: a
+    // kick, a 442's eviction, the re-attach prune of a channel lost while the
+    // link was down, a PART someone else sent for us. ⚠ Not at the echo of a
+    // PART of our own (`partEcho`: a kick that beats our PART to the server
+    // is still a kick), nor with a JOIN of ours on its way: what was typed
+    // before our PART went before it, and what waits behind it waits behind
+    // that JOIN (`/cycle`, then a line; a rejoin right after a kick) and will
+    // arrive.
+    if (!(partEcho && ownPart) && !this.pendingJoins.has(folded)) {
+      this.withdrawQueued('no longer in the channel', key);
+    }
     // ⚠ Fold-aware, like isChannelJoined and channelState (#707). Every caller
     // hands this a raw `.toLowerCase()` of whatever the SERVER said, while the
     // map is keyed by the name we joined under — and those differ whenever an
@@ -8396,6 +8410,8 @@ export class IrcConnection {
   ): WriteOptions {
     this.typingOver(target, false);
     return {
+      // What the user sent, to where: it can be taken back while it waits.
+      target,
       onSent: () => {
         this.noteUserSend(target);
         // An `xdcc send` arms its request once the bot has been asked (#1149):
@@ -8410,8 +8426,8 @@ export class IrcConnection {
         }
         hooks?.onSent?.();
       },
-      onDropped: () => {
-        this.reportNotSent(target, text);
+      onDropped: (why) => {
+        this.reportNotSent(target, text, why);
         hooks?.onDropped?.();
       },
     };
@@ -8485,7 +8501,7 @@ export class IrcConnection {
         }));
         return [...rekeys, encrypt];
       },
-      { onDropped: () => notSent('connection dropped') },
+      { target, onDropped: (why) => notSent(why ?? 'connection dropped') },
     );
   }
 
@@ -8531,9 +8547,40 @@ export class IrcConnection {
   // Said where the line was going, as a 404 is, with the text so it can be
   // sent again. Nothing when the connection is being disposed: there is no one
   // left to tell, and the apps' own not-connected affordance covers the rest.
-  private reportNotSent(target: string, text: string): void {
+  // `why` is the reason when it was taken back instead (withdrawQueued).
+  private reportNotSent(target: string, text: string, why = 'connection dropped'): void {
     if (this.disposed) return;
-    this.publish({ type: 'error', target, text: `not sent (connection dropped): ${text}` });
+    // Once a re-attach is over: publish() stores nothing while one replays,
+    // and a channel pruned by it (lost while the link was down) takes its
+    // waiting messages with it right then.
+    this.onceRestored(() => {
+      if (!this.disposed)
+        this.publish({ type: 'error', target, text: `not sent (${why}): ${text}` });
+    });
+  }
+
+  // Take back what the user sent that still waits in the send queue (#1322):
+  // all of it (`/flushq`), or what was for one channel. Each message is
+  // marked not sent where it was going, with `why`; Lurker's own lines stay,
+  // and so does a message whose first lines have gone (SendPacer.withdraw).
+  // Returns how many messages were taken.
+  // ⚠ A line to `@#chan` is for #chan too: every channel a target can be read
+  // as naming is checked (channelReadings). The whole line goes, for whoever
+  // else it named.
+  private withdrawQueued(why: string, channel?: string): number {
+    if (channel === undefined) return this.sendPacer.withdraw(() => true, why);
+    const fold = (name: string) => foldTargetFor(this.network.id, name);
+    const folded = fold(channel);
+    // A recipient list (`#c,#d`) is for each of them.
+    return this.sendPacer.withdraw(
+      (t) => t.split(',').some((one) => channelReadings(one).some((r) => fold(r) === folded)),
+      why,
+    );
+  }
+
+  /** `/flushq`: drop the user's messages still waiting to be sent. */
+  flushSendQueue(): number {
+    return this.withdrawQueued('send queue cleared');
   }
 
   // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
@@ -9169,6 +9216,9 @@ export class IrcConnection {
   // not been asked yet.
   private sendXdccRequest(bot: string, text: string, onSent?: () => void): void {
     this.trackDmPeer(bot);
+    // No `target`: a request taken back would leave its transfer marked
+    // requested with no clock running (the clock starts at onSent), and hold
+    // the bot's queue. /flushq leaves these.
     this.writeLine('PRIVMSG', bot, text, null, {
       onSent: () => {
         this.noteUserSend(bot);
@@ -12516,12 +12566,13 @@ export class IrcConnection {
       const echo = reassembleMultiline(batch);
       echoes.push(echo);
       this.sendPacer.unit(lines, {
+        target,
         onSent: () => {
           this.noteUserSend(target);
           hooks?.sent?.(echo);
         },
-        onDropped: () => {
-          this.reportNotSent(target, echo);
+        onDropped: (why) => {
+          this.reportNotSent(target, echo, why);
           hooks?.dropped?.(echo);
         },
       });

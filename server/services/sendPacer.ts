@@ -145,7 +145,7 @@ export function batchCostMs(lines: readonly string[]): number {
 export interface Line {
   text: string | (() => string | null);
   onSent?: (at: number) => void;
-  onDropped?: () => void;
+  onDropped?: (why?: string) => void;
 }
 
 /** What a thunk makes when its turn comes: lines, further thunks, or nothing. */
@@ -161,8 +161,12 @@ export interface WriteOptions {
   live?: () => boolean;
   /** Called right after the item's last line hits the socket. */
   onSent?: (at: number) => void;
-  /** Called when the item is dropped with its socket, or over the keyed cap. */
-  onDropped?: () => void;
+  /** Called when the item is dropped with its socket, or over the keyed cap,
+   *  or taken back by withdraw(), which says why. */
+  onDropped?: (why?: string) => void;
+  /** The conversation a message of the user's is for. Only an item that
+   *  names one can be taken back (withdraw): Lurker's own lines never are. */
+  target?: string;
   /** Not made to wait on the clock for itself (still behind what waits ahead
    *  of it in the lanes); charged, but never counted past the budget: a line
    *  the server's replies pace already (the header's third exception). Not
@@ -217,7 +221,10 @@ interface Entry {
   key?: string;
   live?: () => boolean;
   onSent?: (at: number) => void;
-  onDropped?: () => void;
+  onDropped?: (why?: string) => void;
+  target?: string;
+  /** A line of this item, or of what it expanded to, has gone (withdraw). */
+  began?: boolean;
   /** The item this one expanded from, for cancel(). */
   origin?: Entry;
   unpaced?: boolean;
@@ -275,6 +282,7 @@ export class SendPacer {
       onSent: opts.onSent,
       onDropped: opts.onDropped,
       unpaced: opts.unpaced,
+      target: opts.target,
     };
     // Before registration, straight out and uncharged. The held lines, if any,
     // were written to a registered connection and wait for it to come back;
@@ -324,7 +332,7 @@ export class SendPacer {
    *  that are not a batch are written one by one. */
   unit(
     lines: string[],
-    opts: Pick<WriteOptions, 'priority' | 'onSent' | 'onDropped'> = {},
+    opts: Pick<WriteOptions, 'priority' | 'onSent' | 'onDropped' | 'target'> = {},
   ): SendHandle {
     if (this.disposed || lines.length === 0) {
       if (opts.onDropped) this.guarded('an onDropped hook', opts.onDropped);
@@ -335,6 +343,7 @@ export class SendPacer {
       unit: lines,
       onSent: opts.onSent,
       onDropped: opts.onDropped,
+      target: opts.target,
     };
     if (!this.opts.ready()) {
       this.sendAtOnce(entry);
@@ -413,6 +422,45 @@ export class SendPacer {
     }
   }
 
+  /**
+   * Take back the user's messages still waiting for a conversation `match`
+   * accepts (#1322): the queue cleared by hand, or a channel we are no longer
+   * in. Each is told dropped, with `why`. Only items written with a `target`,
+   * and only whole: a message that has begun (a line of it has gone) is left
+   * to finish, since part of it is on the wire and "not sent" would not be
+   * true of it. One that was made into its lines and still waits whole is
+   * taken, lines and all. Nor one a refusal has told already: the close's
+   * drop() has the rest of it. Returns how many messages were taken.
+   */
+  withdraw(match: (target: string) => boolean, why: string): number {
+    const roots = new Set<Entry>();
+    const taken: Entry[] = [];
+    for (const lane of LANES) {
+      const queue = this.lanes[lane];
+      for (let i = 0; i < queue.length;) {
+        const root = this.rootOf(queue[i]);
+        if (
+          !root.began &&
+          !this.toldAtRefusal.has(root) &&
+          root.target !== undefined &&
+          match(root.target)
+        ) {
+          roots.add(root);
+          taken.push(...queue.splice(i, 1));
+        } else i++;
+      }
+    }
+    if (taken.length === 0) return 0;
+    // Gone, not sent: an emptied queue is reported empty now, as drop()'s is.
+    this.emptyAtOnce = true;
+    this.noteDepth();
+    const told = new Set<Entry>();
+    for (const q of taken) this.tellDropped(q, told, why);
+    // The head may be another item now, with another wait.
+    this.redrain();
+    return roots.size;
+  }
+
   private handle(entry: Entry): SendHandle {
     return { cancel: () => this.remove(entry, false) };
   }
@@ -444,15 +492,16 @@ export class SendPacer {
 
   // A line's own onDropped, and the item it came from's, once each. Guarded:
   // one hook that throws (a DB write) must not leave the rest untold.
-  private tellDropped(entry: Entry, told: Set<Entry>): void {
+  private tellDropped(entry: Entry, told: Set<Entry>, why?: string): void {
     if (!told.has(entry)) {
       told.add(entry);
-      if (entry.onDropped) this.guarded('an onDropped hook', entry.onDropped);
+      if (entry.onDropped) this.guarded('an onDropped hook', () => entry.onDropped!(why));
     }
     for (let o = entry.origin; o; o = o.origin) {
       if (told.has(o)) continue;
       told.add(o);
-      if (o.onDropped) this.guarded('an onDropped hook', o.onDropped);
+      const hook = o.onDropped;
+      if (hook) this.guarded('an onDropped hook', () => hook(why));
     }
   }
 
@@ -611,6 +660,7 @@ export class SendPacer {
     const text = entry.text!;
     if (!this.push(text)) return this.refuse(entry);
     const at = this.now();
+    this.rootOf(entry).began = true;
     if (charge) this.charge(this.costOf(text, entry), at, entry.unpaced === true);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
     return true;
