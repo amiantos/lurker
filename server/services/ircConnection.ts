@@ -1375,6 +1375,8 @@ export class IrcConnection {
   // Every outbound line, in order, paced by what the server charges for them
   // (sendPacer.ts, #1149). `sendQueueWaiting` mirrors its depth for snapshots.
   private readonly sendPacer: SendPacer;
+  // The server advertised SAFERATE in this connection's 005 (noteSafeRate).
+  private safeRate = false;
   private sendQueueWaiting = 0;
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
@@ -1619,7 +1621,9 @@ export class IrcConnection {
       onDepth: (waiting) => this.publishSendQueue(waiting),
       // Per line, so turning a network's flood protection off (#1193) applies
       // to what is already waiting (networkEdited).
-      paced: () => this.network.flood_protection !== 0,
+      // Nor while the server says it never drops a client for flooding
+      // (SAFERATE, #1320): it only delays one, and pacing would wait twice.
+      paced: () => this.network.flood_protection !== 0 && !this.safeRate,
     });
     connection.write = (data: string, callback?: () => void) => {
       // A QUIT closes the socket from its write callback (Connection.end),
@@ -2868,6 +2872,8 @@ export class IrcConnection {
       this.pendingMonitorSeed = false;
       this.monitor.reset();
       this.isupportComplete = false;
+      // The next socket's server says for itself whether it flood-kills.
+      this.safeRate = false;
       // The next snapshot sends a null spec (clientModeSpec), so the burst's
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
@@ -2952,6 +2958,7 @@ export class IrcConnection {
     // this guard we'd send `MONITOR +` blind and trigger 421 on older
     // ircds, which our 'irc error' path surfaces to the user.
     on('server options', () => {
+      this.noteSafeRate();
       this.publishModeSpecIfChanged();
       this.publishReactSupportIfChanged();
       // A HOSTLEN changes the worst case while our own host is unknown.
@@ -8465,6 +8472,20 @@ export class IrcConnection {
       },
       { onDropped: () => notSent('connection dropped') },
     );
+  }
+
+  // Whether the server says it never disconnects a client for flooding, read
+  // at each 005 (#1320). Ergo advertises a bare `SAFERATE`, soju the vendored
+  // `soju.im/SAFERATE` its spec names; Halloy and soju stop pacing on either.
+  // Such a server delays what it reads instead (fakelag), so the queue has
+  // nothing to protect: what waits goes now, and nothing waits after. Set only
+  // by a token that arrived, and forgotten with the socket.
+  private noteSafeRate(): void {
+    const network = this.client.network;
+    const safe = !!network?.supports('SAFERATE') || !!network?.supports('soju.im/SAFERATE');
+    if (safe === this.safeRate) return;
+    this.safeRate = safe;
+    this.sendPacer.redrain();
   }
 
   // A line the user was told went out, and then went with its socket (#1149).

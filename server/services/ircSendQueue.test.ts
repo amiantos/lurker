@@ -796,6 +796,52 @@ describe('flood protection off (#1193)', () => {
   });
 });
 
+describe('SAFERATE (#1320)', () => {
+  // The 005 as the server sends it, through the framework's own parser.
+  function isupport(conn: IrcConnection, tokens: string): void {
+    conn.client.connection.addReadBuffer(
+      `:irc.example.test 005 alice ${tokens} :are supported by this server`,
+    );
+  }
+
+  it.each(['SAFERATE', 'soju.im/SAFERATE'])(
+    'stops pacing once the server advertises %s, and sends what was waiting',
+    (token) => {
+      const { conn, lines } = backlog();
+      conn.say('#c', 'waiting');
+      conn.say('#c', 'too');
+      expect(lines).toHaveLength(5);
+      isupport(conn, `CHANTYPES=# ${token} NETWORK=Example`);
+      expect(lines.slice(-2)).toEqual(['PRIVMSG #c :waiting', 'PRIVMSG #c :too']);
+      const before = lines.length;
+      for (let i = 0; i < 10; i++) conn.say('#c', `burst ${i}`);
+      expect(lines).toHaveLength(before + 10);
+      conn.dispose();
+    },
+  );
+
+  it('keeps pacing a server whose 005 does not say it', () => {
+    const { conn, lines } = backlog();
+    conn.say('#c', 'waiting');
+    isupport(conn, 'CHANTYPES=# SAFELIST NETWORK=Example');
+    expect(lines).not.toContain('PRIVMSG #c :waiting');
+    vi.advanceTimersByTime(2000);
+    expect(lines).toContain('PRIVMSG #c :waiting');
+    conn.dispose();
+  });
+
+  it('forgets it with the socket: the next server speaks for itself', () => {
+    const { conn, lines, registered } = backlog();
+    isupport(conn, 'SAFERATE');
+    conn.client.emit('close');
+    lines.length = 0;
+    registered(true);
+    for (let i = 0; i < 6; i++) conn.say('#c', `again ${i}`);
+    expect(lines.filter((l) => l.startsWith('PRIVMSG #c :again'))).toHaveLength(5);
+    conn.dispose();
+  });
+});
+
 describe('typing notifications (#1301)', () => {
   // A registered connection that speaks message-tags, in #c and #d, its
   // budget unspent.
