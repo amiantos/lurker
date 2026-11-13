@@ -1032,6 +1032,27 @@ describe('a held message shows as pending (#1326)', () => {
     expect(onDropped.mock.calls).toEqual([['send queue cleared'], [undefined]]);
   });
 
+  it('gives a batch and an E2E message the same account: a reason only when taken back', () => {
+    const { conn } = backlog();
+    vi.spyOn(conn, 'multilineLimits').mockReturnValue({ maxBytes: 4096, maxLines: 100 });
+    const dropped = vi.fn<(text: string, why?: string) => void>();
+    conn.sendMultiline('#c', 'a\nb', null, { dropped });
+    conn.sayEncrypted('#x', 'secret', { dropped });
+    conn.flushSendQueue();
+    expect(dropped.mock.calls).toEqual([
+      ['a\nb', 'send queue cleared'],
+      ['secret', 'send queue cleared'],
+    ]);
+    dropped.mockClear();
+    conn.sendMultiline('#c', 'c\nd', null, { dropped });
+    conn.sayEncrypted('#x', 'again', { dropped });
+    conn.dispose();
+    expect(dropped.mock.calls).toEqual([
+      ['c\nd', undefined],
+      ['again', undefined],
+    ]);
+  });
+
   it('ends what was waiting for its echo when the connection is disposed', () => {
     const { conn, published } = backlog();
     conn.say('#c', 'gone');

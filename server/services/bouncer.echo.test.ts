@@ -206,17 +206,23 @@ describe('a client that did not ask for echo-message', () => {
     const otherMark = other.lines.length;
     c.send('PRIVMSG #room :taken back');
     c.send('PRIVMSG #room :lost with the socket');
-    await until(() => send.mock.calls.length === 2, 5000, 'relayed to the manager');
-    const taken = send.mock.calls[0][4]?.lineHooks;
-    const lost = send.mock.calls[1][4]?.lineHooks;
+    c.send('PRIVMSG bob :to a nick');
+    await until(() => send.mock.calls.length === 3, 5000, 'relayed to the manager');
+    const [taken, lost, toNick] = send.mock.calls.map((call) => call[4]?.lineHooks);
     send.mockRestore();
-    taken!.dropped!('taken back', 'no longer in the channel');
+    // Cut into two wire lines, both taken back: the client sent one line.
+    taken!.dropped!('taken', 'no longer in the channel');
+    taken!.dropped!('back', 'no longer in the channel');
     lost!.dropped!('lost with the socket');
-    expect((await linesAfter(c, mark, '#room')).filter((l) => l.includes(' 404 '))).toEqual([
+    // A 404 names a channel; a nick gets the numeric for a user.
+    toNick!.dropped!('to a nick', 'send queue cleared');
+    const refusals = (await linesAfter(c, mark, '#room')).filter((l) => / (404|531) /.test(l));
+    expect(refusals).toEqual([
       expect.stringMatching(/ 404 \S+ #room :Cannot send to channel \(no longer in the channel\)$/),
+      expect.stringMatching(/ 531 \S+ bob :Cannot send to user \(send queue cleared\)$/),
     ]);
     expect(
-      (await linesAfter(other, otherMark, '#room')).filter((l) => l.includes(' 404 ')),
+      (await linesAfter(other, otherMark, '#room')).filter((l) => / (404|531) /.test(l)),
     ).toEqual([]);
   });
 

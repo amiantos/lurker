@@ -8410,8 +8410,9 @@ export class IrcConnection {
   // sender chose, an attached bouncer client's among them (#1041), and its
   // lines and their echoes no longer matched.
   // `tags`: client-only tags for this line — a reply's (replyTags).
-  // `hooks.onSent` runs when the line has gone; `hooks.onDropped` when it went
-  // with its socket instead (#1149), after the user was told it was sent.
+  // `hooks.onSent` runs when the line has gone; `hooks.onDropped` when it never
+  // will: lost with its socket (#1149), or taken back from the queue (#1322),
+  // which alone comes with a reason.
   say(target: string, text: string, tags?: Record<string, string> | null, hooks?: SendHooks): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.writeUserLine('PRIVMSG', target, text, tags, 'privmsg', text, hooks, true);
@@ -8607,13 +8608,18 @@ export class IrcConnection {
     const held = this.holdSend(target, 'privmsg', text, row);
     // Said once: by the encrypt step, or by the drop.
     let reported = false;
-    // `toSender`: the reason for the sender's hook; none for a socket lost.
-    const notSent = (why: string, toSender: string | undefined = why) => {
+    // `why`: none for a socket lost, which the sender's hook is not given a
+    // reason for either.
+    const notSent = (why?: string) => {
       if (reported) return;
       reported = true;
       held.dropped();
-      this.publish({ type: 'error', target, text: `not sent (${why}): ${text}` });
-      hooks?.dropped?.(text, toSender);
+      this.publish({
+        type: 'error',
+        target,
+        text: `not sent (${why ?? 'connection dropped'}): ${text}`,
+      });
+      hooks?.dropped?.(text, why);
     };
     this.sendPacer.write(
       () => {
@@ -8668,7 +8674,7 @@ export class IrcConnection {
         }));
         return [...rekeys, encrypt];
       },
-      { target, onDropped: (why) => notSent(why ?? 'connection dropped', why) },
+      { target, onDropped: (why) => notSent(why) },
     );
     held.wrote();
   }

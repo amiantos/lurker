@@ -159,7 +159,8 @@ function awayWhere(networks: Network[]): string {
 
 /**
  * What a sender wants to know about each wire line of a message (#1149): that
- * it went (`sent`), or that it was dropped with its socket (`dropped`). The
+ * it went (`sent`), or that it never will (`dropped`): lost with its socket,
+ * or not sent by Lurker's own decision, which alone comes with a reason. The
  * text is the line's body as the sender's chunking cut it — what the bouncer
  * keys its echoes by — or, for an E2E message, the whole plaintext.
  */
