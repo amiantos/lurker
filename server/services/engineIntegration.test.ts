@@ -401,7 +401,7 @@ describe('IrcConnection through the engine', () => {
     await until(() => count('after the mark') === 1, 5000, 'a live line after re-attach');
   }, 20000);
 
-  it('a process that dies mid-batch leaves the whole batch to the next one (#1286)', async () => {
+  it('a link lost mid-batch brings the whole batch back, and its neighbours once (#1286)', async () => {
     const conn = ircManager.getConnection(userId, network.id)!;
     expect(conn.state).toBe('connected');
     const probe = vi.mocked(messagesDb.hasRecentMessageLike);
@@ -413,8 +413,10 @@ describe('IrcConnection through the engine', () => {
 
     // A multiline message starts, and a plain line arrives before it ends:
     // stored at once, while irc-framework still holds the batch's first line.
-    // The process dies there — a while later, so every ack it was going to
-    // send has gone — and the batch ends with nobody attached.
+    // The link dies there — a while later, so every ack that was going to be
+    // sent has gone — and the batch ends with nobody attached. (The same
+    // IrcConnection re-attaches; a second process on a second link is
+    // engineTransport.test.ts's.)
     const onEvent = (e: Ev) => {
       if (e.type !== 'message' || e.text !== 'plain mid-batch') return;
       ircManager.off('event', onEvent);

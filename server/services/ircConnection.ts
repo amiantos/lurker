@@ -7628,7 +7628,7 @@ export class IrcConnection {
         // them for the next process, had this one died before the batch ended.
         onBatchHoldExpired: ({ refs, lines }) =>
           console.warn(
-            `[engine] network ${this.network.id}: the server left ${refs.length === 1 ? 'a batch' : `${refs.length} batches`} open (${refs.join(', ')}); no longer holding the ack for ${lines} line${lines === 1 ? '' : 's'}`,
+            `[engine] network ${this.network.id}: the server left ${refs.length === 1 ? 'a batch' : `${refs.length} batches`} open (${refs.join(', ')}); no longer holding ${lines} line${lines === 1 ? '' : 's'} for ${refs.length === 1 ? 'it' : 'them'}`,
           ),
       },
     };
