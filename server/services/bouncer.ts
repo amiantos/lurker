@@ -3302,10 +3302,13 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           this.forgetEcho(kind, target, line);
           if (!why || refused) return;
           refused = true;
+          // A middle parameter: a target that could not be one (`:bob`, from
+          // `PRIVMSG ,:bob`) would begin the trailing text early.
+          const named = /^[^:\s][^\s]*$/.test(target) ? target : '*';
           if (channelReadings(target).length) {
-            this.numeric('404', `${target} :Cannot send to channel (${why})`);
+            this.numeric('404', `${named} :Cannot send to channel (${why})`);
           } else {
-            this.numeric('531', `${target} :Cannot send to user (${why})`);
+            this.numeric('531', `${named} :Cannot send to user (${why})`);
           }
         },
       };
