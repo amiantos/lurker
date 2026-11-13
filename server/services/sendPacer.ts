@@ -420,29 +420,30 @@ export class SendPacer {
    * Take back the user's messages still waiting for a conversation `match`
    * accepts (#1322): the queue cleared by hand, or a channel we are no longer
    * in. Each is told dropped, with `why`. Only items written with a `target`,
-   * and what they expanded to; a message whose first lines have gone loses
-   * the rest. Returns how many messages were taken.
+   * and only whole: a message that has begun (a thunk already made into its
+   * lines, some of them gone) is left to finish, since half of it is on the
+   * wire and "not sent" would not be true of it. Returns how many were taken.
    */
   withdraw(match: (target: string) => boolean, why: string): number {
-    const roots = new Set<Entry>();
     const taken: Entry[] = [];
     for (const lane of LANES) {
       const queue = this.lanes[lane];
       for (let i = 0; i < queue.length;) {
-        const root = this.rootOf(queue[i]);
-        if (root.target !== undefined && match(root.target)) {
-          roots.add(root);
+        const q = queue[i];
+        if (!q.origin && q.target !== undefined && match(q.target)) {
           taken.push(...queue.splice(i, 1));
         } else i++;
       }
     }
     if (taken.length === 0) return 0;
+    // Gone, not sent: an emptied queue is reported empty now, as drop()'s is.
+    this.emptyAtOnce = true;
     this.noteDepth();
     const told = new Set<Entry>();
     for (const q of taken) this.tellDropped(q, told, why);
     // The head may be another item now, with another wait.
     this.redrain();
-    return roots.size;
+    return taken.length;
   }
 
   private handle(entry: Entry): SendHandle {

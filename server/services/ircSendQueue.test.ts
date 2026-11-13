@@ -836,7 +836,19 @@ describe('taking back what waits (#1322)', () => {
     conn.dispose();
   });
 
-  it('drops them on a PART we did not send first, too', () => {
+  it("drops a line to the channel's ops (STATUSMSG) with it", () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.say('@#c', 'ops only');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): ops only' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG @#c :ops only');
+    conn.dispose();
+  });
+
+  it('drops them on a PART we did not send, too', () => {
     const { conn, lines, published } = backlog({ join: ['#c'] });
     conn.say('#c', 'too late');
     conn.client.emit('part', { channel: '#c', nick: 'alice' });
@@ -845,6 +857,21 @@ describe('taking back what waits (#1322)', () => {
     ]);
     vi.advanceTimersByTime(30_000);
     expect(lines).not.toContain('PRIVMSG #c :too late');
+    conn.dispose();
+  });
+
+  it('keeps what waits behind a PART of our own: a /cycle, then a line', () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.part('#c');
+    conn.join('#c');
+    conn.say('#c', 'back');
+    // The PART goes at its turn, and its echo comes back before the JOIN's.
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toMatch(/^PART #c/);
+    conn.client.emit('part', { channel: '#c', nick: 'alice' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).toContain('PRIVMSG #c :back');
     conn.dispose();
   });
 

@@ -25,7 +25,8 @@ If you know the command, you never need to reach for the mouse.
 - `/network` — view and manage your network connections.
 - `/flushq` — drop your messages still waiting to be sent on the current
   network (a long paste that flood protection is spacing out). Each one is
-  marked not sent in its buffer.
+  marked not sent in its buffer. Raw lines (`/quote`) and CTCP requests are
+  not messages and still go.
 - `/set`, `/get` — read and change settings from the keyboard.
 - `/away [message]` — set your away status on the current network; `/back` (or
   `/away` with no message) clears it. Add `-all` for every network. The **Scope

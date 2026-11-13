@@ -195,10 +195,11 @@ that network's host, rather than tearing the connection down and failing.
 
 ### `flush_send_queue` _(read-write)_
 
-Drop the messages you sent on a network that are still waiting in its send
-queue (flood protection spaces a long paste or a burst out). Each is marked not
-sent in its buffer; lines Lurker sends on its own are kept. Returns
-`{ ok: true, dropped }`.
+Drop the chat messages you sent on a network (messages, notices, `/me`, XDCC
+requests) that are still waiting in its send queue: flood protection spaces a
+long paste or a burst out. Each is marked not sent in its buffer. Raw lines and
+CTCP requests you sent, a message whose first lines have already gone, and the
+lines Lurker sends on its own are kept. Returns `{ ok: true, dropped }`.
 
 ### `get_topic` _(read)_ / `set_topic` _(read-write)_
 

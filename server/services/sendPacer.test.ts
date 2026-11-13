@@ -644,20 +644,40 @@ describe('SendPacer', () => {
       expect(sent.slice(5)).toEqual(['PRIVMSG #b :two', 'WHO #a']);
     });
 
-    it('takes what a thunk expanded to with it, as one message', () => {
+    it('leaves a message that has begun to finish: half of it is on the wire', () => {
       const onDropped = vi.fn<(why?: string) => void>();
       for (let i = 0; i < 4; i++) pacer.write(`PRIVMSG #fill :${i}`);
       pacer.write(() => ['PRIVMSG #a :1/3', 'PRIVMSG #a :2/3', 'PRIVMSG #a :3/3'], {
         target: '#a',
         onDropped,
       });
+      // A thunk not yet made into its lines is whole, and goes.
+      pacer.write(() => 'PRIVMSG #a :whole', { target: '#a', onDropped });
       // The first line went; two wait.
       expect(sent.at(-1)).toBe('PRIVMSG #a :1/3');
-      expect(pacer.pending).toBe(2);
       expect(pacer.withdraw(() => true, 'cleared')).toBe(1);
       expect(onDropped).toHaveBeenCalledExactlyOnceWith('cleared');
       vi.advanceTimersByTime(10_000);
-      expect(sent).toHaveLength(5);
+      expect(sent.slice(5)).toEqual(['PRIVMSG #a :2/3', 'PRIVMSG #a :3/3']);
+    });
+
+    it('reports an emptied queue empty at once, not after the hold', () => {
+      const depths: number[] = [];
+      pacer.dispose();
+      pacer = new SendPacer({
+        send: (l) => {
+          sent.push(l);
+        },
+        ready: () => ready,
+        onDepth: (n) => depths.push(n),
+      });
+      for (let i = 0; i < 5; i++) pacer.write(`PRIVMSG #fill :${i}`);
+      pacer.write('PRIVMSG #a :one', { target: '#a' });
+      vi.advanceTimersByTime(1);
+      expect(depths).toEqual([1]);
+      pacer.withdraw(() => true, 'cleared');
+      vi.advanceTimersByTime(1);
+      expect(depths).toEqual([1, 0]);
     });
 
     it('sends the next item at once when the one it waited behind is taken', () => {
