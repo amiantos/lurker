@@ -23,6 +23,9 @@ If you know the command, you never need to reach for the mouse.
   reads _message deleted_ everywhere afterwards, for everyone whose client
   understands; the reason, if you give one, travels with it.
 - `/network` — view and manage your network connections.
+- `/flushq` — drop your messages still waiting to be sent on the current
+  network (a long paste that flood protection is spacing out). Each one is
+  marked not sent in its buffer.
 - `/set`, `/get` — read and change settings from the keyboard.
 - `/away [message]` — set your away status on the current network; `/back` (or
   `/away` with no message) clears it. Add `-all` for every network. The **Scope

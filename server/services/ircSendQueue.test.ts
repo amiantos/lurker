@@ -796,6 +796,68 @@ describe('flood protection off (#1193)', () => {
   });
 });
 
+describe('taking back what waits (#1322)', () => {
+  it("/flushq drops the user's waiting messages, marks each not sent, and keeps Lurker's own lines", () => {
+    const { conn, lines, published } = backlog();
+    conn.say('#c', 'one');
+    conn.action('bob', 'waves');
+    vi.spyOn(conn, 'multilineLimits').mockReturnValue({ maxBytes: 4096, maxLines: 100 });
+    conn.sendMultiline('#c', 'a\nb');
+    const replies = (
+      conn as unknown as { replies: { send: (asker: 'lurker', line: string) => void } }
+    ).replies;
+    replies.send('lurker', 'AWAY :gone');
+    expect(conn.flushSendQueue()).toBe(3);
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ target: '#c', text: 'not sent (send queue cleared): one' }),
+      expect.objectContaining({ target: 'bob', text: 'not sent (send queue cleared): /me waves' }),
+      expect.objectContaining({ target: '#c', text: 'not sent (send queue cleared): a\nb' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines.slice(5)).toEqual(['AWAY :gone']);
+    expect(conn.flushSendQueue()).toBe(0);
+    conn.dispose();
+  });
+
+  it('drops what waits for a channel we are kicked from, and nothing else', () => {
+    const { conn, lines, published } = backlog({ join: ['#c', '#d'] });
+    conn.say('#C', 'to the channel');
+    conn.say('#d', 'elsewhere');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'alice', message: 'out' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({
+        target: '#C',
+        text: 'not sent (no longer in the channel): to the channel',
+      }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).toContain('PRIVMSG #d :elsewhere');
+    expect(lines).not.toContain('PRIVMSG #C :to the channel');
+    conn.dispose();
+  });
+
+  it('drops them on a PART we did not send first, too', () => {
+    const { conn, lines, published } = backlog({ join: ['#c'] });
+    conn.say('#c', 'too late');
+    conn.client.emit('part', { channel: '#c', nick: 'alice' });
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ text: 'not sent (no longer in the channel): too late' }),
+    ]);
+    vi.advanceTimersByTime(30_000);
+    expect(lines).not.toContain('PRIVMSG #c :too late');
+    conn.dispose();
+  });
+
+  it('leaves the queue alone when someone else is kicked', () => {
+    const { conn, lines } = backlog({ join: ['#c'], peers: ['bob'] });
+    conn.say('#c', 'still going');
+    conn.client.emit('kick', { channel: '#c', nick: 'op', kicked: 'bob', message: 'out' });
+    vi.advanceTimersByTime(2000);
+    expect(lines).toContain('PRIVMSG #c :still going');
+    conn.dispose();
+  });
+});
+
 describe('typing notifications (#1301)', () => {
   // A registered connection that speaks message-tags, in #c and #d, its
   // budget unspent.

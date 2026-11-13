@@ -394,6 +394,7 @@ const PAUSED_BLOCKED_TYPES = new Set([
   'get-mode-list',
   'set-channel-modes',
   'set-topic',
+  'flush-send-queue',
 ]);
 
 // Options bag for fanOut.
@@ -4199,6 +4200,30 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             data: result,
           });
         })();
+        break;
+      }
+      // `/flushq` (#1322). The ACK carries the verb's answer as `data`, so the
+      // asking client can say how many messages were dropped.
+      case 'flush-send-queue': {
+        let result: { ok: boolean; error?: string };
+        try {
+          result = callVerb(
+            'flush_send_queue',
+            { userId, scope: 'read-write', transport: 'ws' },
+            { networkId: msg.networkId },
+          ) as { ok: boolean; error?: string };
+        } catch (err) {
+          result = { ok: false, error: (err as NodeJS.ErrnoException).code || 'error' };
+        }
+        if (msg.clientId) {
+          send(ws, {
+            kind: 'send-result',
+            clientId: msg.clientId,
+            ok: !!result.ok,
+            error: result.ok ? undefined : result.error,
+            data: result,
+          });
+        }
         break;
       }
       case 'set-nick-note': {

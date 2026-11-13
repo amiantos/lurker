@@ -102,6 +102,20 @@ async function ack(frame: Frame, setup: () => void = () => {}): Promise<Frame> {
   }
 }
 
+describe('flush-send-queue (#1322)', () => {
+  it('answers with how many messages the verb dropped, and 0 for a network that is down', async () => {
+    const reply = await ack({ type: 'flush-send-queue', networkId }, () => {
+      const conn = { state: 'connected', network: { id: networkId }, flushSendQueue: () => 2 };
+      type Conn = ReturnType<typeof ircManager.listConnections>[number];
+      ircManager.connectionsForUser(userId).set(networkId, conn as unknown as Conn);
+    });
+    expect(reply).toMatchObject({ ok: true, data: { ok: true, dropped: 2 } });
+    ircManager.connectionsForUser(userId).clear();
+    const offline = await ack({ type: 'flush-send-queue', networkId });
+    expect(offline).toMatchObject({ ok: true, data: { ok: true, dropped: 0 } });
+  });
+});
+
 describe('channel modal WS messages', () => {
   it("get-mode-list answers with the list once the server's reply is in", async () => {
     const entries = [{ mask: '*!*@bad', setBy: 'op', setAt: null }];

@@ -4015,6 +4015,11 @@ export class IrcConnection {
       // branch now lowers autojoin, so a server that echoes our nick in the
       // PART prefix with different casing must not skip the correction.
       if (this.isSelfNick(eventNick)) {
+        // What still waits for the channel would bounce (a PART we did not
+        // send first: another client, a server forcing one), so it is taken
+        // back and said so. Our own /part waited behind what was typed before
+        // it, and finds nothing.
+        this.withdrawQueued('no longer in the channel', channel);
         this.deleteChannel(eventChannel.toLowerCase());
         this.sweepUserMetadata();
         // The echo lowers autojoin, not just ircManager.partChannel. That path
@@ -4102,6 +4107,8 @@ export class IrcConnection {
       // Lowering autojoin also prevents the reconnect replay — rejoining a
       // channel that just kicked you reads as ban evasion to ops.
       if (selfKicked) {
+        // irssi purges a kicked channel's queued lines the same way (#1322).
+        this.withdrawQueued('no longer in the channel', channel);
         this.deleteChannel(eventChannel.toLowerCase());
         this.sweepUserMetadata();
         try {
@@ -8374,6 +8381,8 @@ export class IrcConnection {
   ): WriteOptions {
     this.typingOver(target, false);
     return {
+      // What the user sent, to where: it can be taken back while it waits.
+      target,
       onSent: () => {
         this.noteUserSend(target);
         // An `xdcc send` arms its request once the bot has been asked (#1149):
@@ -8388,8 +8397,8 @@ export class IrcConnection {
         }
         hooks?.onSent?.();
       },
-      onDropped: () => {
-        this.reportNotSent(target, text);
+      onDropped: (why) => {
+        this.reportNotSent(target, text, why);
         hooks?.onDropped?.();
       },
     };
@@ -8463,7 +8472,7 @@ export class IrcConnection {
         }));
         return [...rekeys, encrypt];
       },
-      { onDropped: () => notSent('connection dropped') },
+      { target, onDropped: (why) => notSent(why ?? 'connection dropped') },
     );
   }
 
@@ -8471,9 +8480,26 @@ export class IrcConnection {
   // Said where the line was going, as a 404 is, with the text so it can be
   // sent again. Nothing when the connection is being disposed: there is no one
   // left to tell, and the apps' own not-connected affordance covers the rest.
-  private reportNotSent(target: string, text: string): void {
+  // `why` is the reason when it was taken back instead (withdrawQueued).
+  private reportNotSent(target: string, text: string, why = 'connection dropped'): void {
     if (this.disposed) return;
-    this.publish({ type: 'error', target, text: `not sent (connection dropped): ${text}` });
+    this.publish({ type: 'error', target, text: `not sent (${why}): ${text}` });
+  }
+
+  // Take back what the user sent that still waits in the send queue (#1322):
+  // all of it (`/flushq`), or what was for one conversation. Each message is
+  // marked not sent where it was going, with `why`; Lurker's own lines stay.
+  // Returns how many messages were taken.
+  private withdrawQueued(why: string, target?: string): number {
+    if (target === undefined) return this.sendPacer.withdraw(() => true, why);
+    const fold = (name: string) => foldTargetFor(this.network.id, name);
+    const folded = fold(target);
+    return this.sendPacer.withdraw((t) => fold(t) === folded, why);
+  }
+
+  /** `/flushq`: drop the user's messages still waiting to be sent. */
+  flushSendQueue(): number {
+    return this.withdrawQueued('send queue cleared');
   }
 
   // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
@@ -12456,12 +12482,13 @@ export class IrcConnection {
       const echo = reassembleMultiline(batch);
       echoes.push(echo);
       this.sendPacer.unit(lines, {
+        target,
         onSent: () => {
           this.noteUserSend(target);
           hooks?.sent?.(echo);
         },
-        onDropped: () => {
-          this.reportNotSent(target, echo);
+        onDropped: (why) => {
+          this.reportNotSent(target, echo, why);
           hooks?.dropped?.(echo);
         },
       });

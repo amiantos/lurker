@@ -645,6 +645,12 @@ class IrcManager extends EventEmitter {
     return conn;
   }
 
+  // `/flushq` (#1322): drop what the user sent on a network that still waits
+  // in its send queue. How many messages; none on a network with no connection.
+  flushSendQueue(userId: number, networkId: number): number {
+    return this.getConnection(userId, networkId)?.flushSendQueue() ?? 0;
+  }
+
   stopNetwork(userId: number, networkId: number, reason?: string): void {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return;

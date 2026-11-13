@@ -620,6 +620,64 @@ describe('SendPacer', () => {
     });
   });
 
+  describe('withdraw (#1322)', () => {
+    it('takes back the waiting items for a target, tells each why, and leaves the rest', () => {
+      const dropped: string[] = [];
+      for (let i = 0; i < 5; i++) pacer.write(`PRIVMSG #fill :${i}`);
+      pacer.write('PRIVMSG #a :one', {
+        target: '#a',
+        onDropped: (why) => dropped.push(`a1 ${why}`),
+      });
+      pacer.write('PRIVMSG #b :two', {
+        target: '#b',
+        onDropped: (why) => dropped.push(`b ${why}`),
+      });
+      pacer.unit(['BATCH +r draft/multiline #a', '@batch=r PRIVMSG #a :x', 'BATCH -r'], {
+        target: '#a',
+        onDropped: (why) => dropped.push(`a2 ${why}`),
+      });
+      pacer.write('WHO #a', { priority: 'low', onDropped: () => dropped.push('who') });
+      expect(pacer.withdraw((t) => t === '#a', 'gone')).toBe(2);
+      expect(dropped).toEqual(['a1 gone', 'a2 gone']);
+      expect(pacer.pending).toBe(2);
+      vi.advanceTimersByTime(4000);
+      expect(sent.slice(5)).toEqual(['PRIVMSG #b :two', 'WHO #a']);
+    });
+
+    it('takes what a thunk expanded to with it, as one message', () => {
+      const onDropped = vi.fn<(why?: string) => void>();
+      for (let i = 0; i < 4; i++) pacer.write(`PRIVMSG #fill :${i}`);
+      pacer.write(() => ['PRIVMSG #a :1/3', 'PRIVMSG #a :2/3', 'PRIVMSG #a :3/3'], {
+        target: '#a',
+        onDropped,
+      });
+      // The first line went; two wait.
+      expect(sent.at(-1)).toBe('PRIVMSG #a :1/3');
+      expect(pacer.pending).toBe(2);
+      expect(pacer.withdraw(() => true, 'cleared')).toBe(1);
+      expect(onDropped).toHaveBeenCalledExactlyOnceWith('cleared');
+      vi.advanceTimersByTime(10_000);
+      expect(sent).toHaveLength(5);
+    });
+
+    it('sends the next item at once when the one it waited behind is taken', () => {
+      for (let i = 0; i < 5; i++) pacer.write(`PRIVMSG #fill :${i}`);
+      pacer.write(LONG, { target: '#a' });
+      pacer.write(SHORT);
+      // The long line needs 4 s of room; the short one behind it only 2.
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(5);
+      expect(pacer.withdraw(() => true, 'cleared')).toBe(1);
+      expect(sent.at(-1)).toBe(SHORT);
+    });
+
+    it('is nothing when nothing of the kind waits', () => {
+      for (let i = 0; i < 6; i++) pacer.write(`PRIVMSG #fill :${i}`);
+      expect(pacer.withdraw(() => true, 'cleared')).toBe(0);
+      expect(pacer.pending).toBe(1);
+    });
+  });
+
   describe('flood protection off (#1193)', () => {
     let paced: boolean;
     beforeEach(() => {

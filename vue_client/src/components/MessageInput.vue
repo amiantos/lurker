@@ -2729,6 +2729,7 @@ const COMMANDS_LINES = [
   '  /away [-all|-one] [msg] — set away (no msg clears)',
   '  /back [-all|-one]      — clear away',
   '                           -all: every network; -one: just this one',
+  '  /flushq                — drop your messages still waiting to be sent on this network',
   '  /whois <nick>          — query user info (renders in server buffer)',
   '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
   '  /accept [nick…]        — caller ID (+g): let nicks message you; -nick removes; no arg lists',
@@ -4487,6 +4488,31 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         return true;
       }
       return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
+    }
+    case 'flushq': {
+      // HexChat's name for it (#1322). The server marks each dropped message
+      // not sent in its own buffer; this line is the count, or that there was
+      // nothing to drop.
+      const pending = socketSendWithAck({ type: 'flush-send-queue', networkId });
+      if (!pending) {
+        toastSendFailure('disconnected', line);
+        return false;
+      }
+      void pending.then((result) => {
+        if (!result.ok) {
+          toastSendFailure(result.error ?? 'unknown', line);
+          return;
+        }
+        const dropped = (result.data as { dropped?: number } | undefined)?.dropped ?? 0;
+        localInfo(
+          networkId,
+          target,
+          dropped === 0
+            ? 'nothing of yours is waiting to be sent'
+            : `dropped ${dropped} waiting ${dropped === 1 ? 'message' : 'messages'}`,
+        );
+      });
+      return true;
     }
     case 'whois': {
       const who = rest[0];
