@@ -393,6 +393,15 @@ describe('SendPacer', () => {
       expect(sent).toHaveLength(5);
     });
 
+    it('times the next line by its own wait once the head is cancelled', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      const long = pacer.write(LONG); // fits in 4 s
+      pacer.write(SHORT); // fits in 2 s
+      expect(long.cancel()).toBe(true);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(6);
+    });
+
     it("tells an expanded line's own onDropped and its item's, once each", () => {
       const log: string[] = [];
       for (let i = 0; i < 5; i++) pacer.write(SHORT);

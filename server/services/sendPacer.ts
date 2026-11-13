@@ -481,6 +481,8 @@ export class SendPacer {
       const told = new Set<Entry>();
       for (const q of taken) this.tellDropped(q, told);
     }
+    // The timer was set for the old head's wait; the new one's may be shorter.
+    this.redrain();
     return true;
   }
 
