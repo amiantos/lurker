@@ -84,6 +84,8 @@ let disabledReason: string | null = null;
 
 // Protocol minor at which `connect` learned to carry a proxy (#303).
 const PROXY_MINOR = 5;
+// Protocol minor at which `ack` learned to name lines to keep (#1286).
+const ACK_KEEP_MINOR = 7;
 // Protocol minor at which `connect` learned to carry a client certificate (#459).
 export const CLIENT_CERT_MINOR = 2;
 
@@ -236,6 +238,13 @@ export class EngineLink extends EventEmitter {
    *  on the wire and the UI saying otherwise. */
   supportsProxy(): boolean {
     return this.engineMinor !== null && this.engineMinor >= PROXY_MINOR;
+  }
+
+  /** Does this engine keep the lines an ack names (#1286)? One below this
+   *  ignores the field and forgets them, so an open batch is lost to a process
+   *  that attaches before it ends — as it always was there. */
+  supportsAckKeep(): boolean {
+    return this.engineMinor !== null && this.engineMinor >= ACK_KEEP_MINOR;
   }
 
   start(): void {

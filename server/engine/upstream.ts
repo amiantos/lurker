@@ -41,7 +41,7 @@ import { EventEmitter } from 'node:events';
 import { ircLineParser } from 'irc-framework';
 import { LineBuffer } from './lineBuffer.js';
 import type { ByteBudget } from './lineBuffer.js';
-import type { ConnectionInfo, Endpoint, EngineToApp } from './protocol.js';
+import type { ConnectionInfo, Endpoint, EngineToApp, SeqRange } from './protocol.js';
 import {
   registerIdent,
   unregisterIdent,
@@ -706,15 +706,26 @@ export class EngineUpstream extends EventEmitter {
         return;
       }
     }
-    // Seqs are contiguous and only ever trimmed from the front, so the first
-    // owed line is at a computable index — no rescan of everything already sent.
+    // The buffer is in seq order, so the first owed line is found by halving —
+    // no rescan of everything already sent. (Not by arithmetic: lines an ack
+    // asked to keep stay behind the ones forgotten around them, #1286.)
     const pending = this.buffer.pending();
-    const first =
-      pending.length && this.sentSeq >= pending[0].seq ? this.sentSeq - pending[0].seq + 1 : 0;
+    let first = 0;
+    for (let end = pending.length; first < end;) {
+      const mid = (first + end) >>> 1;
+      if (pending[mid].seq <= this.sentSeq) first = mid + 1;
+      else end = mid;
+    }
     for (let i = first; i < pending.length; i++) {
       const b = pending[i];
       this.sentSeq = b.seq;
-      const ok = sink.send({ op: 'line', id: this.id, seq: b.seq, line: b.line });
+      const ok = sink.send({
+        op: 'line',
+        id: this.id,
+        seq: b.seq,
+        line: b.line,
+        ...(this.buffer.wasKept(b) ? { kept: true as const } : {}),
+      });
       if (this.liveAfterSeq !== null && b.seq >= this.liveAfterSeq) this.sendLive();
       if (!ok) {
         this.stalled = true;
@@ -734,8 +745,8 @@ export class EngineUpstream extends EventEmitter {
     this.flush();
   }
 
-  ack(seq: number): void {
-    this.buffer.ack(seq);
+  ack(seq: number, keep: readonly SeqRange[] = []): void {
+    this.buffer.ack(seq, keep);
   }
 
   // Claim this socket for a sink. While still dialing there is nothing to replay:

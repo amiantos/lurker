@@ -37,6 +37,8 @@ import { until as poll } from '../test-utils/until.js';
 import { TestLink } from '../test-utils/engineLink.js';
 import { instanceId } from '../db/instanceId.js';
 import { EngineLink, engineConnectionId, isOurConnectionId } from './engineLink.js';
+import { EngineTransport } from './engineTransport.js';
+import { EventEmitter } from 'node:events';
 
 // The real module, every export wrapped so a test can ask whether the content
 // probe was consulted (#1068).
@@ -399,6 +401,78 @@ describe('IrcConnection through the engine', () => {
     // A fresh line after `live` is new, and stored.
     ircd.sendRaw('lurk', ':peer!~peer@peer.fake PRIVMSG #stay :after the mark');
     await until(() => count('after the mark') === 1, 5000, 'a live line after re-attach');
+  }, 20000);
+
+  it('a link lost mid-batch brings back the batch and nothing beside it (#1286)', async () => {
+    const conn = ircManager.getConnection(userId, network.id)!;
+    expect(conn.state).toBe('connected');
+    const count = (text: string) => rows().filter((r) => r.text === text).length;
+    const buffered = () => engine.info(engineId)?.bufferedLines ?? 0;
+    await until(() => buffered() === 0, 5000, 'nothing unacked before the batch');
+    const peer = ':peer!~peer@peer.fake';
+    // Every line the engine delivers, however many transports that takes.
+    const delivered: string[] = [];
+    const emit = vi.spyOn(EngineTransport.prototype, 'emit').mockImplementation(function (
+      this: EngineTransport,
+      name: string | symbol,
+      ...args: unknown[]
+    ) {
+      if (name === 'line' && typeof args[0] === 'string') delivered.push(args[0]);
+      return EventEmitter.prototype.emit.call(this, name, ...args);
+    });
+    const times = (text: string) => delivered.filter((l) => l.endsWith(`:${text}`)).length;
+
+    // A multiline message starts, and a plain line arrives before it ends:
+    // stored at once, while irc-framework still holds the batch's first line.
+    // The link dies there — a while later, so every ack that was going to be
+    // sent has gone — and the batch ends with nobody attached. (The same
+    // IrcConnection re-attaches; a second process on a second link is
+    // engineTransport.test.ts's.)
+    const onEvent = (e: Ev) => {
+      if (e.type !== 'message' || e.text !== 'plain mid-batch') return;
+      ircManager.off('event', onEvent);
+      setTimeout(() => {
+        EngineLink.shared().simulateLoss();
+        ircd.sendRaw('lurk', `@batch=ml ${peer} PRIVMSG #stay :batched two`);
+        ircd.sendRaw('lurk', ':fake.server BATCH -ml');
+      }, 50);
+    };
+    ircManager.on('event', onEvent);
+    managerEvents.length = 0;
+    // Metadata rides along: a value inside the batch, then a newer one
+    // outside it. Both are read as they arrive, not when the batch ends.
+    ircd.sendRaw('lurk', `${peer} BATCH +ml draft/multiline #stay`);
+    ircd.sendRaw('lurk', '@batch=ml :fake.server METADATA lurk display-name * :Old');
+    ircd.sendRaw('lurk', `@batch=ml ${peer} PRIVMSG #stay :batched one`);
+    ircd.sendRaw('lurk', ':fake.server METADATA lurk display-name * :New');
+    ircd.sendRaw('lurk', `${peer} PRIVMSG #stay :plain mid-batch`);
+
+    await until(
+      () => {
+        const trail = stateEvents(managerEvents);
+        return (
+          trail.includes('reconnecting') &&
+          trail.lastIndexOf('connected') > trail.indexOf('reconnecting')
+        );
+      },
+      5000,
+      'reconnecting → connected',
+    );
+    await until(() => !conn.catchingUp, 5000, 'live');
+    await until(() => buffered() === 0, 5000, 'the backlog was acked');
+
+    emit.mockRestore();
+    // The message is whole, once. Its first line was delivered twice — the
+    // engine kept it for this — and the plain line beside it once.
+    expect(count('batched one\nbatched two')).toBe(1);
+    expect(count('plain mid-batch')).toBe(1);
+    expect(times('batched one')).toBe(2);
+    expect(times('batched two')).toBe(1);
+    expect(times('plain mid-batch')).toBe(1);
+    // The batch's metadata line came twice too, and was read once: the value
+    // set after it stands.
+    expect(times('Old')).toBe(2);
+    expect(conn.userMetadataRecord('lurk')?.['display-name']).toBe('New');
   }, 20000);
 
   it('restartNetwork dials afresh: no restore of the quitting session, no reconnect row', async () => {

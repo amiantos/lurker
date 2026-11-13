@@ -45,7 +45,15 @@ export const PROTOCOL_MAJOR = 1;
 // on: the app keeps (socket, seq) and skips a re-delivered line by it, exactly,
 // instead of guessing from the line's content. An engine below this omits the
 // field, and the app keeps guessing.
-export const PROTOCOL_MINOR = 6;
+// minor 7 (#1286): `ack` carries an optional `keep`, the lines at or below
+// its seq the engine must NOT forget yet. A line inside an IRCv3 batch is not
+// stored when it is delivered: the app's IRC library holds it until the batch
+// ends, and a process that attaches in between needs the batch from its start.
+// An engine below this ignores the field and forgets them, as every engine
+// did; the app does not send it there. Such a line, given again to the next
+// attach, says so (`kept` on `line`): it has been delivered before, and
+// whatever read it then must not act on it twice.
+export const PROTOCOL_MINOR = 7;
 
 // One frame is one JSON object on one line. Most wrap a single IRC line (≤ 8191
 // bytes with tags); the one large frame is `attached`, whose replay is bounded by
@@ -54,6 +62,9 @@ export const PROTOCOL_MINOR = 6;
 // both sides so a misbehaving link can't make either process buffer without
 // bound.
 export const MAX_FRAME_BYTES = 256 * 1024;
+
+// Line seqs, inclusive.
+export type SeqRange = [from: number, to: number];
 
 export interface Endpoint {
   address: string;
@@ -152,8 +163,11 @@ export type AppToEngine =
     }
   | { op: 'write'; id: string; line: string }
   // Everything up to and including `seq` has been persisted; the engine may
-  // forget it.
-  | { op: 'ack'; id: string; seq: number }
+  // forget it — except the seqs in `keep` (minor 7): inclusive [from, to]
+  // ranges, ascending, of delivered lines the app holds unprocessed (an open
+  // batch's). Each ack states the whole set: a line kept by the last ack and
+  // absent from this one is forgotten.
+  | { op: 'ack'; id: string; seq: number; keep?: SeqRange[] }
   // Leave the socket alive and stop delivering to this link. The link closing is
   // the implicit form.
   | { op: 'detach'; id: string }
@@ -197,7 +211,8 @@ export type EngineToApp =
     }
   // The unacked backlog follows `attached` as ordinary `line` frames, then `live`
   // marks the point after which frames are real-time.
-  | { op: 'line'; id: string; seq: number; line: string }
+  // `kept` (minor 7): a line an ack asked the engine to keep, delivered again.
+  | { op: 'line'; id: string; seq: number; line: string; kept?: true }
   | { op: 'live'; id: string }
   | { op: 'gap'; id: string; gap: Gap }
   // The engine stopped serving this id to THIS link because a newer app process

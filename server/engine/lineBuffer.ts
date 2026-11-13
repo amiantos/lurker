@@ -16,7 +16,7 @@
 // spill-to-disk implementation would slot in behind the same interface if
 // cross-host engines ever need to cover hour-long detaches.
 
-import type { Gap } from './protocol.js';
+import type { Gap, SeqRange } from './protocol.js';
 
 export interface BufferedLine {
   seq: number;
@@ -58,10 +58,32 @@ export class ByteBudget {
 
 const lineBytes = (line: string): number => Buffer.byteLength(line, 'utf8') + 2;
 
+// An ack's `keep` as it came off the wire: whatever in it is a range, in
+// ascending order. Anything else is left out, which only ever means a line is
+// forgotten as it would have been without the field.
+export function keepRanges(raw: unknown): SeqRange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SeqRange[] = [];
+  for (const r of raw) {
+    if (!Array.isArray(r) || r.length !== 2) continue;
+    const [from, to] = r as unknown[];
+    if (
+      Number.isSafeInteger(from) &&
+      Number.isSafeInteger(to) &&
+      (from as number) <= (to as number)
+    )
+      out.push([from as number, to as number]);
+  }
+  return out.toSorted((a, b) => a[0] - b[0]);
+}
+
 export class LineBuffer {
   private lines: BufferedLine[] = [];
   private nextSeq = 1;
   private gap: Gap | null = null;
+  // The highest seq an ack has named. A line still here at or below it is one
+  // an ack asked to keep.
+  private acked = 0;
   bytes = 0;
 
   constructor(
@@ -99,6 +121,10 @@ export class LineBuffer {
     const size = lineBytes(dropped.line);
     this.bytes -= size;
     this.budget.used -= size;
+    // A kept line is not a hole: the app was given it, and what goes with it
+    // is only the copy for the app after that one. (The lines an ack kept are
+    // the oldest here, so they are also the first to go.)
+    if (dropped.seq <= this.acked) return;
     // Extend a gap that is already open rather than recording a second one:
     // the app only needs the outer bounds of the hole.
     if (this.gap) {
@@ -109,7 +135,11 @@ export class LineBuffer {
     }
   }
 
-  ack(seq: number): void {
+  // Forget everything at or below `seq`, except what `keep` names (ascending
+  // ranges, see keepRanges): lines the app was given and has not processed,
+  // which the next app to attach is owed again. They stay where they were, so
+  // the buffer is in seq order but no longer contiguous.
+  ack(seq: number, keep: readonly SeqRange[] = []): void {
     // An ack into the hole says the app had those lines after all (it was
     // attached and simply slow to ack, or the burst replay just delivered
     // them): shrink the reported hole to what is actually unaccounted for.
@@ -117,16 +147,27 @@ export class LineBuffer {
       if (seq >= this.gap.lastDroppedSeq) this.gap = null;
       else if (seq >= this.gap.firstDroppedSeq) this.gap.firstDroppedSeq = seq + 1;
     }
+    if (seq > this.acked) this.acked = seq;
     let freed = 0;
     let i = 0;
+    let kept = 0;
+    let k = 0;
     while (i < this.lines.length && this.lines[i].seq <= seq) {
-      freed += lineBytes(this.lines[i].line);
+      const line = this.lines[i];
+      while (k < keep.length && keep[k][1] < line.seq) k++;
+      if (k < keep.length && keep[k][0] <= line.seq) this.lines[kept++] = line;
+      else freed += lineBytes(line.line);
       i++;
     }
-    if (i === 0) return;
-    this.lines.splice(0, i);
+    if (i === kept) return;
+    this.lines.splice(kept, i - kept);
     this.bytes -= freed;
     this.budget.used -= freed;
+  }
+
+  // Whether a pending line is one an ack kept, and so has been delivered.
+  wasKept(line: BufferedLine): boolean {
+    return line.seq <= this.acked;
   }
 
   pending(): readonly BufferedLine[] {

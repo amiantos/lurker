@@ -1352,6 +1352,9 @@ export class IrcConnection {
   // once the same way (upstream.go:679). Null outside a line's handlers, so an
   // event a timer fires later gets the time it happened.
   lineArrivedAt: Date | null;
+  // Whether the line being read is one the engine kept and delivered again
+  // (EngineTransport.deliveringKept); false between lines.
+  lineKept = false;
   // Exact ciphertext lines we recently put on the wire for E2E sends, so the
   // echo-message reflection of our OWN ciphertext is recognized by content —
   // not by re-checking channel E2E state at echo time, which races /e2e off
@@ -2155,8 +2158,14 @@ export class IrcConnection {
       // (connection.js emits raw, then message), so they all read this value
       // before the microtask clears it.
       this.lineArrivedAt = new Date();
+      // A line the engine kept for an open batch and is delivering again
+      // (#1286): what acts on a line here, at once, acted on it the first
+      // time. What is only set aside here for the batch's end is set aside
+      // again, the close in between having cleared it.
+      this.lineKept = this.engineTransport?.deliveringKept === true;
       queueMicrotask(() => {
         this.lineArrivedAt = null;
+        this.lineKept = false;
         this.replyOwner = null;
         this.ctcpAnswerer = null;
         this.lineCommand = null;
@@ -2254,7 +2263,9 @@ export class IrcConnection {
       // State is applied whoever asked; only the echo reads replyOwner.
       if (rawCommand === 'METADATA' || METADATA_NUMERICS.has(rawCommand)) {
         const batched = !!(msg?.tags as Record<string, string> | undefined)?.batch;
-        this.onMetadataLine(rawCommand, msg?.params ?? [], batched);
+        // Not twice: a value read again would replace the one a later line
+        // has set since.
+        if (!this.lineKept) this.onMetadataLine(rawCommand, msg?.params ?? [], batched);
       } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'METADATA') {
         this.onMetadataFail(msg?.params ?? []);
       } else if (rawCommand === 'REDACT') {
