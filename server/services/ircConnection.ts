@@ -1377,6 +1377,8 @@ export class IrcConnection {
   private readonly sendPacer: SendPacer;
   // The SAFERATE tokens this socket's 005 lines advertised (noteSafeRate).
   private safeRateTokens = new Set<string>();
+  // A 005 of this socket's reached us as the server sent it, not in a replay.
+  private safeRateHeardLive = false;
   private sendQueueWaiting = 0;
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
@@ -2881,8 +2883,13 @@ export class IrcConnection {
       this.pendingMonitorSeed = false;
       this.monitor.reset();
       this.isupportComplete = false;
-      // The next socket's server says for itself whether it flood-kills.
-      this.safeRateTokens.clear();
+      // The next socket's server says for itself whether it flood-kills. The
+      // same socket, held by the engine while only our link to it dropped,
+      // has said so already (noteSafeRate).
+      if (!this.engineSocketAlive) {
+        this.safeRateTokens.clear();
+        this.safeRateHeardLive = false;
+      }
       // The next snapshot sends a null spec (clientModeSpec), so the burst's
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
@@ -8490,7 +8497,19 @@ export class IrcConnection {
   // the queue is made. A token counts however it is written (`SAFERATE=` is
   // the same token), `-SAFERATE` takes it back, and the set empties with the
   // socket: only what this server said is ever read.
+  //
+  // ⚠ A re-attach replays the registration burst as the engine recorded it,
+  // without any 005 the server sent later (a rehash). Once this process has
+  // heard the socket's 005s live, what it holds is the newer account and the
+  // replay is not read: a token taken back would return with it. A process
+  // that starts onto a held socket has only the replay to go by, and misses
+  // a later change until the next one (the engine keeps no such record).
   private noteSafeRate(params: readonly unknown[]): void {
+    if (this.restoring) {
+      if (this.safeRateHeardLive) return;
+    } else {
+      this.safeRateHeardLive = true;
+    }
     const was = this.safeRate;
     // The first parameter is our nick; the trailing text is no token's name.
     for (const param of params.slice(1)) {

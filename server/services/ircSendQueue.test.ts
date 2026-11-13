@@ -858,6 +858,23 @@ describe('SAFERATE (#1320)', () => {
     conn.dispose();
   });
 
+  it('keeps what the socket said through an engine link drop, over the replayed burst', () => {
+    const { conn, lines } = backlog();
+    isupport(conn, 'SAFERATE');
+    isupport(conn, '-SAFERATE');
+    // Only our link to the engine went; the engine still holds the socket.
+    const held = conn as unknown as { engineSocketAlive: boolean; restoring: boolean };
+    held.engineSocketAlive = true;
+    conn.client.emit('close');
+    // The re-attach replays the burst as recorded, before the withdrawal.
+    held.restoring = true;
+    isupport(conn, 'SAFERATE');
+    held.restoring = false;
+    conn.say('#c', 'still paced');
+    expect(lines).not.toContain('PRIVMSG #c :still paced');
+    conn.dispose();
+  });
+
   it('forgets it with the socket: the next server speaks for itself', () => {
     const { conn, lines, registered } = backlog();
     isupport(conn, 'SAFERATE');
