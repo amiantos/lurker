@@ -5,7 +5,7 @@
 // lanes, the bypasses, thunks, units, cancel, onSent/onDropped, hold and drop.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { SendPacer, lineCostMs, BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
+import { SendPacer, lineCostMs, batchCostMs, BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 
 const SHORT = 'PRIVMSG #c :hi'; // 16 bytes with CRLF: 2 s
 const LONG = `PRIVMSG #c :${'x'.repeat(284)}`; // 298 bytes with CRLF: 4 s
@@ -306,6 +306,38 @@ describe('SendPacer', () => {
       // 2 + 5 + 5 + 2 = 14 s charged: the short line fits once 6 s have gone.
       vi.advanceTimersByTime(5999);
       expect(sent).toHaveLength(4);
+      vi.advanceTimersByTime(1);
+      expect(sent.at(-1)).toBe(SHORT);
+    });
+
+    it('charges a long paste no more than a server bills a batch (#1318)', () => {
+      // Four lines of 463 bytes: 28 s by the line, and 20 s of waiting.
+      const line = `@batch=r PRIVMSG #c :${'x'.repeat(440)}`;
+      const batch = ['BATCH +r draft/multiline #c', line, line, line, line, 'BATCH -r'];
+      pacer.unit(batch);
+      pacer.write(SHORT);
+      expect(sent).toEqual(batch);
+      // UnrealIRCd's 17 s: the short line fits once 9 s have gone.
+      vi.advanceTimersByTime(8999);
+      expect(sent).toHaveLength(6);
+      vi.advanceTimersByTime(1);
+      expect(sent.at(-1)).toBe(SHORT);
+    });
+
+    it('charges a batch of many short lines what Ergo bills its lines', () => {
+      // 100 lines of 25 bytes: 2539 bytes is a bill of five, 102 lines one of
+      // eleven (Ergo reckons a line at 60 bytes of its 512). With the opening
+      // BATCH, twelve short lines: 24 s, past the 17 the lines' price stops at.
+      const batch = [
+        'BATCH +r draft/multiline #c',
+        ...Array.from({ length: 100 }, () => '@batch=r PRIVMSG #c :hi'),
+        'BATCH -r',
+      ];
+      expect(batchCostMs(batch)).toBe(24_000);
+      pacer.unit(batch);
+      pacer.write(SHORT);
+      vi.advanceTimersByTime(15_999);
+      expect(sent).toHaveLength(102);
       vi.advanceTimersByTime(1);
       expect(sent.at(-1)).toBe(SHORT);
     });

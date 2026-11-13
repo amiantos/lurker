@@ -12425,7 +12425,7 @@ export class IrcConnection {
   // is several messages, and only the first is the reply.
   // Each batch is one unit of the outbound queue (#1149): its lines go back
   // to back, since the message shows for no one until `BATCH -`, and the
-  // queue charges for all of them after.
+  // queue charges for it after, as a server bills a batch (sendPacer.ts).
   // `batches` is outboundBatches(target, text), passed when the caller has
   // gated on it already; nothing is sent, and [] returned, where that is null.
   sendMultiline(
