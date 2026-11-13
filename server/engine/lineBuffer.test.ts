@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { ByteBudget, LineBuffer } from './lineBuffer.js';
+import { ByteBudget, LineBuffer, keepRanges } from './lineBuffer.js';
 
 const seqs = (b: LineBuffer) => b.pending().map((l) => l.seq);
 
@@ -72,6 +72,68 @@ describe('LineBuffer', () => {
     b.ack(4); // and the rest
     expect(b.peekGap()).toBeNull();
     expect(b.length).toBe(4);
+  });
+
+  it('keeps the lines an ack names, until an ack stops naming them (#1286)', () => {
+    const budget = new ByteBudget(1024 * 1024);
+    const b = new LineBuffer(1024 * 1024, budget);
+    for (let i = 1; i <= 8; i++) b.push(`line ${i}`);
+    const each = b.bytes / 8;
+    b.ack(6, [
+      [2, 3],
+      [5, 5],
+    ]);
+    expect(seqs(b)).toEqual([2, 3, 5, 7, 8]);
+    expect(b.bytes).toBe(each * 5);
+    expect(budget.used).toBe(each * 5);
+    // The same ack again changes nothing; a range past the ack's seq, or over
+    // lines long gone, is not an instruction about anything.
+    b.ack(6, [
+      [1, 3],
+      [5, 5],
+      [7, 9],
+    ]);
+    expect(seqs(b)).toEqual([2, 3, 5, 7, 8]);
+    // Each ack states the whole set: 2 and 3 are no longer in it.
+    b.ack(7, [[5, 5]]);
+    expect(seqs(b)).toEqual([5, 8]);
+    // An ack BELOW a kept line says nothing about it.
+    b.ack(4);
+    expect(seqs(b)).toEqual([5, 8]);
+    b.ack(8);
+    expect(b.length).toBe(0);
+    expect(b.bytes).toBe(0);
+    expect(budget.used).toBe(0);
+  });
+
+  it('still reports a hole a kept line fell into (#1286)', () => {
+    // Each line is 12 bytes; the cap fits four.
+    const b = new LineBuffer(48, new ByteBudget(1024 * 1024));
+    for (let i = 1; i <= 3; i++) b.push('x'.repeat(10));
+    b.ack(3, [[2, 2]]);
+    expect(seqs(b)).toEqual([2]);
+    // Pressure sheds the oldest line, kept or not.
+    for (let i = 4; i <= 7; i++) b.push('x'.repeat(10));
+    expect(seqs(b)).toEqual([4, 5, 6, 7]);
+    expect(b.peekGap()).toMatchObject({ firstDroppedSeq: 2, lastDroppedSeq: 2 });
+    // The app still wants 2: the hole stands, where a plain ack past it
+    // would have meant "had it after all".
+    b.ack(5, [[2, 2]]);
+    expect(b.peekGap()).toMatchObject({ firstDroppedSeq: 2, lastDroppedSeq: 2 });
+    b.ack(5);
+    expect(b.peekGap()).toBeNull();
+  });
+
+  it('reads a `keep` off the wire: ranges in order, and nothing else', () => {
+    expect(keepRanges(undefined)).toEqual([]);
+    expect(keepRanges('1-2')).toEqual([]);
+    expect(
+      keepRanges([[5, 6], [1, 2], [4, 3], [1.5, 2], ['1', 2], [7], [8, 9, 10], null, [3, 3]]),
+    ).toEqual([
+      [1, 2],
+      [3, 3],
+      [5, 6],
+    ]);
   });
 
   it('extends an open gap rather than opening a second one', () => {

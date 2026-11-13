@@ -23,7 +23,7 @@ import {
   engineCloseCode,
   sanitizeReplay,
 } from './engineTransport.js';
-import type { BatchHoldExpired, EnginePhase, EnginePhaseInfo } from './engineTransport.js';
+import type { EnginePhase, EnginePhaseInfo } from './engineTransport.js';
 
 const SECRET = 'transport-secret';
 
@@ -91,16 +91,7 @@ interface Timeline {
 let counter = 0;
 
 // A Client through the engine, with everything it sees written to a timeline.
-function makeClient(
-  link: EngineLink,
-  id: string,
-  nick: string,
-  opts: {
-    timeoutMs?: number;
-    batchHoldMs?: number;
-    onBatchHoldExpired?: (info: BatchHoldExpired) => void;
-  } = {},
-) {
+function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutMs?: number } = {}) {
   const t: Timeline = {
     events: [],
     phases: [],
@@ -140,9 +131,7 @@ function makeClient(
     engineConnId: id,
     engineLink: link,
     engineConnectTimeoutMs: opts.timeoutMs ?? 3000,
-    ...(opts.batchHoldMs !== undefined ? { engineBatchHoldMs: opts.batchHoldMs } : {}),
     engineHooks: {
-      ...(opts.onBatchHoldExpired ? { onBatchHoldExpired: opts.onBatchHoldExpired } : {}),
       onTransport: (tr: unknown) => {
         t.transport = tr as EngineTransport;
       },
@@ -349,7 +338,7 @@ describe('EngineTransport', () => {
     expect(b.t.transport!.socket).toBe(socket);
   });
 
-  it('holds the ack below an open batch, so the next process is given the whole batch (#1286)', async () => {
+  it('has the engine keep an open batch’s lines, so the next process is given the whole batch (#1286)', async () => {
     const id = `t:${++counter}`;
     const linkA = newLink();
     const a = makeClient(linkA, id, 'batcher');
@@ -359,11 +348,6 @@ describe('EngineTransport', () => {
       () => a.t.events,
     );
     const buffered = () => engine.info(id)?.bufferedLines ?? 0;
-    await until(
-      () => buffered() === 0,
-      'registration acked',
-      () => [`buffered ${buffered()}`],
-    );
     const peer = ':peer!~peer@peer.fake';
 
     // A batch opens, one of its lines arrives, then a line outside it. The
@@ -377,12 +361,13 @@ describe('EngineTransport', () => {
       () => a.t.events,
     );
     expect(a.t.events).not.toContain('privmsg:batcher:batched 1');
-    // Acks are a microtask behind the line; a macrotask later they have gone.
-    await new Promise((r) => setTimeout(r, 50));
-    // Nothing from the batch's start on was acked — the plain line included,
-    // an ack being a watermark. (At least: a late line of the registration
-    // that lands after the start is held with them.)
-    expect(buffered()).toBeGreaterThanOrEqual(3);
+    // The engine forgot the plain line, and everything else, and kept the
+    // batch's two.
+    await until(
+      () => buffered() === 2,
+      'only the batch is kept',
+      () => [`buffered ${buffered()}`],
+    );
 
     // Process A dies mid-batch; the batch ends with nobody attached.
     linkA.simulateLoss();
@@ -395,12 +380,13 @@ describe('EngineTransport', () => {
     ircd.sendRaw('batcher', `@batch=hold ${peer} PRIVMSG batcher :batched 2`);
     ircd.sendRaw('batcher', ':fake.server BATCH -hold');
     await until(
-      () => buffered() >= 5,
+      () => buffered() === 4,
       'the engine buffered the rest',
       () => [`buffered ${buffered()}`],
     );
 
-    // Process B is given the batch from its start, so its Client can run it.
+    // Process B is given the batch from its start, so its Client can run it —
+    // and not the plain line, which A was done with.
     const linkB = newLink();
     const b = makeClient(linkB, id, 'batcher');
     await until(
@@ -409,11 +395,10 @@ describe('EngineTransport', () => {
       () => b.t.events,
     );
     expect(b.t.events.filter((e) => e.startsWith('privmsg:'))).toEqual([
-      'privmsg:batcher:plain',
       'privmsg:batcher:batched 1',
       'privmsg:batcher:batched 2',
     ]);
-    // The batch closed: everything is acked.
+    // The batch closed: nothing is kept.
     await until(
       () => buffered() === 0,
       'b acked the backlog',
@@ -421,7 +406,86 @@ describe('EngineTransport', () => {
     );
   });
 
-  it('acks as before once every open batch has closed, nested or interleaved (#1286)', async () => {
+  it('keeps a batch across a second death, and a batch that is still open after the attach (#1286)', async () => {
+    const id = `t:${++counter}`;
+    const peer = ':peer!~peer@peer.fake';
+    const buffered = () => engine.info(id)?.bufferedLines ?? 0;
+    const attach = async (nick = 'twice') => {
+      const link = newLink();
+      const c = makeClient(link, id, nick);
+      return { link, ...c };
+    };
+    const die = async (p: Awaited<ReturnType<typeof attach>>) => {
+      p.link.simulateLoss();
+      await until(
+        () => p.t.events.some((e) => e.startsWith('socket close:')),
+        'closed',
+        () => p.t.events,
+      );
+      p.link.stop();
+    };
+
+    const a = await attach();
+    await until(
+      () => a.t.events.includes('registered:twice'),
+      'registered',
+      () => a.t.events,
+    );
+    ircd.sendRaw('twice', ':fake.server BATCH +long example.org/test');
+    ircd.sendRaw('twice', `@batch=long ${peer} PRIVMSG twice :one`);
+    await until(
+      () => buffered() === 2,
+      'a: the batch is kept',
+      () => [`buffered ${buffered()}`],
+    );
+    await die(a);
+
+    // B is given the open batch, more of it arrives live, and B dies too.
+    const b = await attach();
+    await until(
+      () => b.t.events.includes('phase:live'),
+      'b live',
+      () => b.t.events,
+    );
+    ircd.sendRaw('twice', `${peer} PRIVMSG twice :plain for b`);
+    ircd.sendRaw('twice', `@batch=long ${peer} PRIVMSG twice :two`);
+    await until(
+      () => b.t.events.includes('privmsg:twice:plain for b'),
+      'b ran its plain line',
+      () => b.t.events,
+    );
+    await until(
+      () => buffered() === 3,
+      'b: the batch is kept, grown by one',
+      () => [`buffered ${buffered()}`],
+    );
+    await die(b);
+
+    // C gets all of it, and can finish it.
+    const c = await attach();
+    await until(
+      () => c.t.events.includes('phase:live'),
+      'c live',
+      () => c.t.events,
+    );
+    ircd.sendRaw('twice', ':fake.server BATCH -long');
+    await until(
+      () => c.t.events.includes('privmsg:twice:two'),
+      'c ran the batch',
+      () => c.t.events,
+    );
+    expect(c.t.events.filter((e) => e.startsWith('privmsg:'))).toEqual([
+      'privmsg:twice:one',
+      'privmsg:twice:two',
+    ]);
+    await until(
+      () => buffered() === 0,
+      'nothing kept',
+      () => [`buffered ${buffered()}`],
+    );
+  }, 20000);
+
+  it('keeps exactly the open batches’ lines: interleaved, nested, and not a look-alike (#1286)', async () => {
     const id = `t:${++counter}`;
     const link = newLink();
     const a = makeClient(link, id, 'nester');
@@ -431,121 +495,92 @@ describe('EngineTransport', () => {
       () => a.t.events,
     );
     const buffered = () => engine.info(id)?.bufferedLines ?? 0;
-    await until(
-      () => buffered() === 0,
-      'registration acked',
-      () => [`buffered ${buffered()}`],
-    );
     const peer = ':peer!~peer@peer.fake';
-    const settle = () => new Promise((r) => setTimeout(r, 50));
-    const seen = (text: string) =>
-      until(
+    let n = 0;
+    // A plain line as a barrier: once the Client has run it, everything sent
+    // before it has been delivered, and the count that follows is the keep.
+    const kept = async (count: number, what: string) => {
+      const text = `barrier ${++n}`;
+      ircd.sendRaw('nester', `${peer} PRIVMSG nester :${text}`);
+      await until(
         () => a.t.events.includes(`privmsg:nester:${text}`),
         `a ran "${text}"`,
         () => a.t.events,
       );
+      await until(
+        () => buffered() === count,
+        what,
+        () => [`buffered ${buffered()}, wanted ${count}`],
+      );
+    };
 
     ircd.sendRaw('nester', ':fake.server BATCH +one example.org/test');
     ircd.sendRaw('nester', ':fake.server BATCH +two example.org/test');
+    ircd.sendRaw('nester', `@batch=one ${peer} PRIVMSG nester :in one`);
+    await kept(3, 'both starts and the line of `one`');
     ircd.sendRaw('nester', ':fake.server BATCH -one');
-    ircd.sendRaw('nester', `${peer} PRIVMSG nester :after one`);
-    await seen('after one');
-    await settle();
-    // `one` closed, `two` is still open: held from `two` on.
-    expect(buffered()).toBeGreaterThanOrEqual(3);
+    await kept(1, '`one` ended: only the start of `two`');
 
-    // A line that only LOOKS like a batch ending — the word in a message —
-    // closes nothing.
+    // A line that only LOOKS like a batch ending — the words in a message —
+    // ends nothing, and a tag naming no open batch keeps nothing.
     ircd.sendRaw('nester', `${peer} PRIVMSG nester :BATCH -two`);
-    await seen('BATCH -two');
-    await settle();
-    expect(buffered()).toBeGreaterThanOrEqual(4);
+    ircd.sendRaw('nester', `@batch=one ${peer} PRIVMSG nester :late for one`);
+    await kept(1, 'still only the start of `two`');
 
-    // A tagged BATCH line is still a BATCH line (a nested batch's start).
+    // A batch inside `two`: its start and end are lines of `two`, and what it
+    // held is kept for as long as `two` is.
     ircd.sendRaw('nester', '@batch=two :fake.server BATCH +inner example.org/test');
+    ircd.sendRaw('nester', `@batch=inner ${peer} PRIVMSG nester :in inner`);
+    await kept(3, 'the start of `two`, the start of `inner`, its line');
     ircd.sendRaw('nester', '@batch=two :fake.server BATCH -inner');
+    await kept(4, '`inner` ended inside `two`: all of it still kept');
+
     ircd.sendRaw('nester', '@time=2026-01-01T00:00:00.000Z :fake.server BATCH -two');
-    ircd.sendRaw('nester', `${peer} PRIVMSG nester :after all`);
-    await seen('after all');
-    await until(
-      () => buffered() === 0,
-      'everything acked',
-      () => [`buffered ${buffered()}`],
-    );
+    await kept(0, 'everything ended');
+    expect(a.t.events.filter((e) => /:in (one|inner)$|late for one/.test(e))).toEqual([
+      'privmsg:nester:in one',
+    ]);
   });
 
-  it('stops holding for a batch the server never closes (#1286)', async () => {
+  it('acks plainly to an engine that predates `keep` (#1286)', async () => {
     const id = `t:${++counter}`;
     const link = newLink();
-    const released: BatchHoldExpired[] = [];
-    const a = makeClient(link, id, 'waiter', {
-      batchHoldMs: 400,
-      onBatchHoldExpired: (info) => released.push(info),
-    });
+    const a = makeClient(link, id, 'older');
     await until(
-      () => a.t.events.includes('registered:waiter'),
-      'a.t.events.includes("registered:waiter")',
+      () => a.t.events.includes('registered:older'),
+      'a.t.events.includes("registered:older")',
       () => a.t.events,
     );
-    const buffered = () => engine.info(id)?.bufferedLines ?? 0;
-    await until(
-      () => buffered() === 0,
-      'registration acked',
-      () => [`buffered ${buffered()}`],
-    );
+    const sent: Array<Record<string, unknown>> = [];
+    const send = link.send.bind(link);
+    link.send = ((frame: Record<string, unknown>) => {
+      sent.push(frame);
+      return send(frame as never);
+    }) as typeof link.send;
     const peer = ':peer!~peer@peer.fake';
+    const ackAfter = async (text: string) => {
+      sent.length = 0;
+      ircd.sendRaw('older', `${peer} PRIVMSG older :${text}`);
+      await until(
+        () => a.t.events.includes(`privmsg:older:${text}`),
+        `a ran "${text}"`,
+        () => a.t.events,
+      );
+      await until(
+        () => sent.some((f) => f.op === 'ack'),
+        'an ack went out',
+        () => sent,
+      );
+      return sent.findLast((f) => f.op === 'ack')!;
+    };
 
-    ircd.sendRaw('waiter', ':fake.server BATCH +stuck example.org/test');
-    ircd.sendRaw('waiter', `${peer} PRIVMSG waiter :held`);
-    await until(
-      () => a.t.events.includes('privmsg:waiter:held'),
-      'a ran the held line',
-      () => a.t.events,
-    );
-    await new Promise((r) => setTimeout(r, 50));
-    expect(buffered()).toBeGreaterThanOrEqual(2);
-    expect(released).toEqual([]);
-
-    // A batch whose lines are still coming is not stuck, however long ago it
-    // started: each one puts the deadline off.
-    await new Promise((r) => setTimeout(r, 250));
-    ircd.sendRaw('waiter', `@batch=stuck ${peer} PRIVMSG waiter :still coming`);
-    await new Promise((r) => setTimeout(r, 250));
-    ircd.sendRaw('waiter', `${peer} PRIVMSG waiter :still held`);
-    await until(
-      () => a.t.events.includes('privmsg:waiter:still held'),
-      'a ran the second held line',
-      () => a.t.events,
-    );
-    await new Promise((r) => setTimeout(r, 50));
-    expect(buffered()).toBeGreaterThanOrEqual(4);
-    expect(released).toEqual([]);
-
-    // Quiet past the deadline: the next line is acked, and all before it.
-    await new Promise((r) => setTimeout(r, 450));
-    ircd.sendRaw('waiter', `${peer} PRIVMSG waiter :released`);
-    await until(
-      () => buffered() === 0,
-      'the hold was given up',
-      () => [`buffered ${buffered()}`],
-    );
-    expect(released.map((r) => r.refs)).toEqual([['stuck']]);
-    expect(released[0].lines).toBeGreaterThanOrEqual(5);
-
-    // A late end for it is nothing: acks carry on.
-    ircd.sendRaw('waiter', ':fake.server BATCH -stuck');
-    ircd.sendRaw('waiter', `${peer} PRIVMSG waiter :later`);
-    await until(
-      () => a.t.events.includes('privmsg:waiter:later'),
-      'a ran the later line',
-      () => a.t.events,
-    );
-    await until(
-      () => buffered() === 0,
-      'still acking',
-      () => [`buffered ${buffered()}`],
-    );
-    expect(released).toHaveLength(1);
+    ircd.sendRaw('older', ':fake.server BATCH +b example.org/test');
+    // The positive control: this engine is told what to keep.
+    expect((await ackAfter('to a current engine')).keep).toEqual([
+      [expect.any(Number), expect.any(Number)],
+    ]);
+    link.engineMinor = 6;
+    expect(await ackAfter('to an older engine')).not.toHaveProperty('keep');
   });
 
   it('reports a takeover to the old process without a socket close', async () => {

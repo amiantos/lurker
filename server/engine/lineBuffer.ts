@@ -16,7 +16,7 @@
 // spill-to-disk implementation would slot in behind the same interface if
 // cross-host engines ever need to cover hour-long detaches.
 
-import type { Gap } from './protocol.js';
+import type { Gap, SeqRange } from './protocol.js';
 
 export interface BufferedLine {
   seq: number;
@@ -57,6 +57,25 @@ export class ByteBudget {
 }
 
 const lineBytes = (line: string): number => Buffer.byteLength(line, 'utf8') + 2;
+
+// An ack's `keep` as it came off the wire: whatever in it is a range, in
+// ascending order. Anything else is left out, which only ever means a line is
+// forgotten as it would have been without the field.
+export function keepRanges(raw: unknown): SeqRange[] {
+  if (!Array.isArray(raw)) return [];
+  const out: SeqRange[] = [];
+  for (const r of raw) {
+    if (!Array.isArray(r) || r.length !== 2) continue;
+    const [from, to] = r as unknown[];
+    if (
+      Number.isSafeInteger(from) &&
+      Number.isSafeInteger(to) &&
+      (from as number) <= (to as number)
+    )
+      out.push([from as number, to as number]);
+  }
+  return out.toSorted((a, b) => a[0] - b[0]);
+}
 
 export class LineBuffer {
   private lines: BufferedLine[] = [];
@@ -109,22 +128,34 @@ export class LineBuffer {
     }
   }
 
-  ack(seq: number): void {
+  // Forget everything at or below `seq`, except what `keep` names (ascending
+  // ranges, see keepRanges): lines the app was given and has not processed,
+  // which the next app to attach is owed again. They stay where they were, so
+  // the buffer is in seq order but no longer contiguous.
+  ack(seq: number, keep: readonly SeqRange[] = []): void {
     // An ack into the hole says the app had those lines after all (it was
     // attached and simply slow to ack, or the burst replay just delivered
     // them): shrink the reported hole to what is actually unaccounted for.
+    // Only up to the first line the app asked to keep: one of those in the
+    // hole is a line the next app will not get.
     if (this.gap) {
-      if (seq >= this.gap.lastDroppedSeq) this.gap = null;
-      else if (seq >= this.gap.firstDroppedSeq) this.gap.firstDroppedSeq = seq + 1;
+      const had = keep.length > 0 ? Math.min(seq, keep[0][0] - 1) : seq;
+      if (had >= this.gap.lastDroppedSeq) this.gap = null;
+      else if (had >= this.gap.firstDroppedSeq) this.gap.firstDroppedSeq = had + 1;
     }
     let freed = 0;
     let i = 0;
+    let kept = 0;
+    let k = 0;
     while (i < this.lines.length && this.lines[i].seq <= seq) {
-      freed += lineBytes(this.lines[i].line);
+      const line = this.lines[i];
+      while (k < keep.length && keep[k][1] < line.seq) k++;
+      if (k < keep.length && keep[k][0] <= line.seq) this.lines[kept++] = line;
+      else freed += lineBytes(line.line);
       i++;
     }
-    if (i === 0) return;
-    this.lines.splice(0, i);
+    if (i === kept) return;
+    this.lines.splice(kept, i - kept);
     this.bytes -= freed;
     this.budget.used -= freed;
   }

@@ -16,7 +16,7 @@
 
 import net from 'node:net';
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { ByteBudget } from './lineBuffer.js';
+import { ByteBudget, keepRanges } from './lineBuffer.js';
 import { EngineUpstream } from './upstream.js';
 import type { FrameSink } from './upstream.js';
 import {
@@ -436,7 +436,7 @@ export class EngineServer {
           u.silence();
         }
         if (frame.op === 'write') u.write(frame.line);
-        else if (frame.op === 'ack') u.ack(frame.seq);
+        else if (frame.op === 'ack') u.ack(frame.seq, keepRanges(frame.keep));
         else if (frame.op === 'detach') this.release(link, u);
         else u.close();
         return;
