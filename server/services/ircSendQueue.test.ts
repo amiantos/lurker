@@ -925,6 +925,100 @@ describe('taking back what waits (#1322)', () => {
   });
 });
 
+describe('SAFERATE (#1320)', () => {
+  // The 005 as the server sends it, through the framework's own parser.
+  function isupport(conn: IrcConnection, tokens: string): void {
+    conn.client.connection.addReadBuffer(
+      `:irc.example.test 005 alice ${tokens} :are supported by this server`,
+    );
+  }
+
+  it.each(['SAFERATE', 'soju.im/SAFERATE'])(
+    'stops pacing once the server advertises %s, and sends what was waiting',
+    (token) => {
+      const { conn, lines } = backlog();
+      conn.say('#c', 'waiting');
+      conn.say('#c', 'too');
+      expect(lines).toHaveLength(5);
+      isupport(conn, `CHANTYPES=# ${token} NETWORK=Example`);
+      expect(lines.slice(-2)).toEqual(['PRIVMSG #c :waiting', 'PRIVMSG #c :too']);
+      const before = lines.length;
+      for (let i = 0; i < 10; i++) conn.say('#c', `burst ${i}`);
+      expect(lines).toHaveLength(before + 10);
+      conn.dispose();
+    },
+  );
+
+  it('keeps pacing a server whose 005 does not say it', () => {
+    const { conn, lines } = backlog();
+    conn.say('#c', 'waiting');
+    isupport(conn, 'CHANTYPES=# SAFELIST NETWORK=Example');
+    expect(lines).not.toContain('PRIVMSG #c :waiting');
+    vi.advanceTimersByTime(2000);
+    expect(lines).toContain('PRIVMSG #c :waiting');
+    conn.dispose();
+  });
+
+  it("keeps pacing Lurker's own lines there, so they never crowd the server ahead of chat", () => {
+    const { conn, lines } = backlog();
+    isupport(conn, 'SAFERATE');
+    const replies = (
+      conn as unknown as { replies: { send: (asker: 'lurker', line: string) => void } }
+    ).replies;
+    for (let i = 0; i < 3; i++) replies.send('lurker', `AWAY :gone ${i}`);
+    expect(lines.filter((l) => l.startsWith('AWAY'))).toHaveLength(0);
+    // What the user types goes at once, past them.
+    conn.say('#c', 'typed');
+    expect(lines.at(-1)).toBe('PRIVMSG #c :typed');
+    vi.advanceTimersByTime(2000);
+    expect(lines.filter((l) => l.startsWith('AWAY'))).toHaveLength(1);
+    conn.dispose();
+  });
+
+  it('takes the token however it is written, and gives it up when the server takes it back', () => {
+    const { conn, lines } = backlog();
+    isupport(conn, 'CHANTYPES=# SAFERATE= NETWORK=Example');
+    conn.say('#c', 'at once');
+    expect(lines.at(-1)).toBe('PRIVMSG #c :at once');
+    isupport(conn, '-SAFERATE');
+    // The budget is as full as the backlog left it: this one waits again.
+    conn.say('#c', 'paced again');
+    expect(lines).not.toContain('PRIVMSG #c :paced again');
+    conn.dispose();
+  });
+
+  it('keeps what the socket said through an engine link drop, over the replayed burst', () => {
+    const { conn, lines } = backlog();
+    isupport(conn, 'SAFERATE');
+    isupport(conn, '-SAFERATE');
+    // Only our link to the engine went; the engine still holds the socket.
+    const held = conn as unknown as { engineSocketAlive: boolean; restoring: boolean };
+    held.engineSocketAlive = true;
+    conn.client.emit('close');
+    // The re-attach replays the burst as recorded, before the withdrawal.
+    held.restoring = true;
+    isupport(conn, 'SAFERATE');
+    held.restoring = false;
+    conn.say('#c', 'still paced');
+    expect(lines).not.toContain('PRIVMSG #c :still paced');
+    conn.dispose();
+  });
+
+  it('forgets it with the socket: the next server speaks for itself', () => {
+    const { conn, lines, registered } = backlog();
+    isupport(conn, 'SAFERATE');
+    conn.client.emit('close');
+    lines.length = 0;
+    registered(true);
+    // The next server's 005 says nothing of it. The framework keeps the last
+    // socket's tokens in its options, which is why they are not read there.
+    isupport(conn, 'CHANTYPES=# NETWORK=Example');
+    for (let i = 0; i < 6; i++) conn.say('#c', `again ${i}`);
+    expect(lines.filter((l) => l.startsWith('PRIVMSG #c :again'))).toHaveLength(5);
+    conn.dispose();
+  });
+});
+
 describe('typing notifications (#1301)', () => {
   // A registered connection that speaks message-tags, in #c and #d, its
   // budget unspent.
