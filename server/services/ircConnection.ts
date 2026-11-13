@@ -1375,6 +1375,10 @@ export class IrcConnection {
   // Every outbound line, in order, paced by what the server charges for them
   // (sendPacer.ts, #1149). `sendQueueWaiting` mirrors its depth for snapshots.
   private readonly sendPacer: SendPacer;
+  // The SAFERATE tokens this socket's 005 lines advertised (noteSafeRate).
+  private safeRateTokens = new Set<string>();
+  // A 005 of this socket's reached us as the server sent it, not in a replay.
+  private safeRateHeardLive = false;
   private sendQueueWaiting = 0;
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
@@ -1619,7 +1623,14 @@ export class IrcConnection {
       onDepth: (waiting) => this.publishSendQueue(waiting),
       // Per line, so turning a network's flood protection off (#1193) applies
       // to what is already waiting (networkEdited).
-      paced: () => this.network.flood_protection !== 0,
+      // Nor, for what the user wrote and what must precede it, while the
+      // server says it never drops a client for flooding (SAFERATE, #1320):
+      // it only delays one, and pacing would wait twice. Lurker's own `low`
+      // lines keep their pace there: a reconnect's hundreds of MODE and WHO
+      // lines written at once would sit in the server's queue ahead of the
+      // next thing typed, with nothing here left to let it overtake them.
+      paced: (priority) =>
+        this.network.flood_protection !== 0 && !(this.safeRate && priority !== 'low'),
     });
     connection.write = (data: string, callback?: () => void) => {
       // A QUIT closes the socket from its write callback (Connection.end),
@@ -2339,6 +2350,10 @@ export class IrcConnection {
             this.adoptDeclaredCasemapping(param.slice('CASEMAPPING='.length));
           }
         }
+        // The raw tokens again, for the same reason (#1320): the options bag
+        // is never emptied between sockets, so a SAFERATE read there would be
+        // the last server's as much as this one's.
+        this.noteSafeRate(msg?.params ?? []);
       }
       const burstLine = event.line.replace(/[\r\n]+$/, '');
       if (rawCommand === '001') {
@@ -2868,6 +2883,13 @@ export class IrcConnection {
       this.pendingMonitorSeed = false;
       this.monitor.reset();
       this.isupportComplete = false;
+      // The next socket's server says for itself whether it flood-kills. The
+      // same socket, held by the engine while only our link to it dropped,
+      // has said so already (noteSafeRate).
+      if (!this.engineSocketAlive) {
+        this.safeRateTokens.clear();
+        this.safeRateHeardLive = false;
+      }
       // The next snapshot sends a null spec (clientModeSpec), so the burst's
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
@@ -8465,6 +8487,44 @@ export class IrcConnection {
       },
       { onDropped: () => notSent('connection dropped') },
     );
+  }
+
+  // Whether the server says it never disconnects a client for flooding
+  // (#1320), from the tokens of one 005 line. Ergo advertises a bare
+  // `SAFERATE`, soju the vendored `soju.im/SAFERATE` its spec names; Halloy
+  // and soju stop pacing on either. Such a server delays what it reads
+  // instead (fakelag), so the queue has less to protect: see `paced` where
+  // the queue is made. A token counts however it is written (`SAFERATE=` is
+  // the same token), `-SAFERATE` takes it back, and the set empties with the
+  // socket: only what this server said is ever read.
+  //
+  // ⚠ A re-attach replays the registration burst as the engine recorded it,
+  // without any 005 the server sent later (a rehash). Once this process has
+  // heard the socket's 005s live, what it holds is the newer account and the
+  // replay is not read: a token taken back would return with it. A process
+  // that starts onto a held socket has only the replay to go by, and misses
+  // a later change until the next one (the engine keeps no such record).
+  private noteSafeRate(params: readonly unknown[]): void {
+    if (this.restoring) {
+      if (this.safeRateHeardLive) return;
+    } else {
+      this.safeRateHeardLive = true;
+    }
+    const was = this.safeRate;
+    // The first parameter is our nick; the trailing text is no token's name.
+    for (const param of params.slice(1)) {
+      if (typeof param !== 'string') continue;
+      const name = param.split('=', 1)[0].toUpperCase();
+      const token = name.startsWith('-') ? name.slice(1) : name;
+      if (token !== 'SAFERATE' && token !== 'SOJU.IM/SAFERATE') continue;
+      if (name.startsWith('-')) this.safeRateTokens.delete(token);
+      else this.safeRateTokens.add(token);
+    }
+    if (this.safeRate !== was) this.sendPacer.redrain();
+  }
+
+  private get safeRate(): boolean {
+    return this.safeRateTokens.size > 0;
   }
 
   // A line the user was told went out, and then went with its socket (#1149).

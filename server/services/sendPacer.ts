@@ -196,8 +196,12 @@ export interface SendPacerOptions {
    *  as its turn comes, so a flip applies to what already waits: off, a line
    *  costs nothing and goes at once, in the same order. A network whose
    *  server exempts the user (an oper, a bouncer that paces upstream itself)
-   *  turns it off. Absent means paced. */
-  paced?: () => boolean;
+   *  turns it off. Asked with the line's lane: a server that only delays a
+   *  flooder (SAFERATE, #1320) is not paced for what the user wrote, and
+   *  still is for Lurker's own `low` lines, which would otherwise pile up in
+   *  the server's own queue ahead of the user's next line. Absent means
+   *  paced. */
+  paced?: (priority: SendPriority) => boolean;
   /** Monotonic ms; injectable for tests. */
   now?: () => number;
   maxKeyed?: number;
@@ -466,7 +470,7 @@ export class SendPacer {
         // so what it builds is as fresh as it can be; a unit is admitted on
         // its first line and goes whole. Unpaced, nothing waits: not even for
         // what a unit charged past the budget before the switch was flipped.
-        if (this.paced() && !head.unpaced) {
+        if (this.paced(head) && !head.unpaced) {
           const ahead = this.since - this.now();
           const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
           const over = ahead + cost - BURST_BUDGET_MS;
@@ -607,7 +611,7 @@ export class SendPacer {
     const text = entry.text!;
     if (!this.push(text)) return this.refuse(entry);
     const at = this.now();
-    if (charge) this.charge(this.costOf(text), at, entry.unpaced === true);
+    if (charge) this.charge(this.costOf(text, entry), at, entry.unpaced === true);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
     return true;
   }
@@ -621,10 +625,10 @@ export class SendPacer {
         if (cost) this.charge(cost, this.now());
         return this.refuse(entry);
       }
-      cost += this.costOf(line);
+      cost += this.costOf(line, entry);
     }
     const at = this.now();
-    this.charge(this.paced() ? batchCostMs(entry.unit!) : 0, at);
+    this.charge(this.paced(entry) ? batchCostMs(entry.unit!) : 0, at);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
     return true;
   }
@@ -649,15 +653,15 @@ export class SendPacer {
   }
 
   // Paced unless the connection says otherwise.
-  private paced(): boolean {
-    return this.opts.paced ? this.opts.paced() : true;
+  private paced(entry: Entry): boolean {
+    return this.opts.paced ? this.opts.paced(entry.priority) : true;
   }
 
   // What a line is charged: nothing while unpaced. What was charged before a
   // flip stands and decays as it would have: the server may have counted it,
   // and an estimate that drifts drifts safe.
-  private costOf(line: string): number {
-    return this.paced() ? costOf(line) : 0;
+  private costOf(line: string, entry: Entry): number {
+    return this.paced(entry) ? costOf(line) : 0;
   }
 
   // `capped`: an unpaced line's charge counts only up to the budget (the
