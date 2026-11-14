@@ -72,14 +72,20 @@ export interface FlagSpec {
   /** The label of the value it takes, when it takes one: `dur` in `-time <dur>`. */
   readonly takes?: string;
   readonly summary?: string;
+  /** Other spellings the handler reads. Stepped over, never offered. */
+  readonly also?: readonly string[];
 }
 
 /** One shape a command's arguments can take. Most commands have exactly one. */
 export interface FormSpec {
   readonly args: readonly ArgSpec[];
   readonly flags?: readonly FlagSpec[];
-  /** Its options are read only ahead of everything else: `/away -all brb`. */
-  readonly flagsLead?: boolean;
+  /**
+   * Where the handler reads the options, when not anywhere: `lead` is ahead of
+   * the arguments (`/dcc send -secure bob`), `first` is one option, first
+   * (`/away -all brb`).
+   */
+  readonly flagsAt?: 'lead' | 'first';
   /**
    * A form with a summary is a thing of its own: its own row when its keyword
    * is completed, its own line in `/commands`. A form without one only teaches
@@ -125,14 +131,21 @@ const choice = (values: readonly string[], opts: ArgOpts & { label?: string } = 
   const { label, ...rest } = opts;
   return arg(label ?? values.join('|'), 'choice', { ...rest, values });
 };
-const flag = (name: string, takes?: string, summary?: string): FlagSpec => ({
+const flag = (
+  name: string,
+  takes?: string,
+  summary?: string,
+  also?: readonly string[],
+): FlagSpec => ({
   name,
   ...(takes ? { takes } : {}),
   ...(summary ? { summary } : {}),
+  ...(also ? { also } : {}),
 });
 
 interface FormOpts {
   flags?: readonly FlagSpec[];
+  flagsAt?: 'lead' | 'first';
   summary?: string;
   notes?: readonly string[];
 }
@@ -143,7 +156,7 @@ function form(args: readonly ArgSpec[], opts: FormOpts | string = {}): FormSpec 
 interface CmdOpts {
   args?: readonly ArgSpec[];
   flags?: readonly FlagSpec[];
-  flagsLead?: boolean;
+  flagsAt?: 'lead' | 'first';
   forms?: readonly FormSpec[];
   networkAgnostic?: boolean;
   notes?: readonly string[];
@@ -160,12 +173,12 @@ function cmd<const N extends readonly string[]>(
   summary: string,
   opts: CmdOpts = {},
 ): CommandSpec & { readonly names: N } {
-  const { args, flags, flagsLead, forms, ...rest } = opts;
+  const { args, flags, flagsAt, forms, ...rest } = opts;
   return {
     names,
     category,
     summary,
-    forms: forms ?? [form(args ?? [], flags ? { flags, ...(flagsLead ? { flagsLead } : {}) } : {})],
+    forms: forms ?? [form(args ?? [], flags ? { flags, ...(flagsAt ? { flagsAt } : {}) } : {})],
     ...rest,
   };
 }
@@ -203,12 +216,15 @@ const NETWORK_FLAGS = [
   flag('-sasl_password', 'p'),
   flag('-password', 'serverpass'),
   flag('-autosendcmd', "'cmds'"),
-  flag('-channel', '#chan'),
+  flag('-proxy', 'url'),
+  flag('-noproxy'),
   flag('-auto'),
   flag('-noauto'),
   flag('-flood'),
   flag('-noflood'),
 ];
+// What only a new network takes: its first channel, and a client certificate.
+const NETWORK_ADD_FLAGS = [...NETWORK_FLAGS, flag('-channel', '#chan'), flag('-cert')];
 const NET = arg('name', 'network');
 const BOT = arg('bot', 'nick');
 const ID = arg('id', 'word');
@@ -263,6 +279,7 @@ export const COMMANDS = [
       }),
       form([kw('send'), NICK, opt('file', 'word')], {
         flags: DCC_FLAGS,
+        flagsAt: 'lead',
         summary: 'send one of your files; with no file, pick or upload one',
         notes: [
           'the file is its name or its id from /dcc files; -passive asks them to listen',
@@ -360,13 +377,15 @@ export const COMMANDS = [
       choice(CANONICAL_ORDER, { label: 'LEVELS', optional: true, rest: true }),
     ],
     flags: [
-      flag('-network', undefined, 'only on this network'),
-      flag('-regexp', undefined, 'the pattern is a regular expression'),
-      flag('-full', undefined, 'the pattern matches whole words'),
+      flag('-network', undefined, 'only on this network', ['-net']),
+      flag('-global', undefined, 'on every network'),
+      flag('-regexp', undefined, 'the pattern is a regular expression', ['-regex']),
+      flag('-full', undefined, 'the pattern matches whole words', ['-word']),
       flag('-pattern', 'text', 'only lines containing this'),
       flag('-except', undefined, 'an exception to another rule'),
       flag('-time', 'dur', 'expires after this long'),
     ],
+    quoted: true,
     notes: [
       `LEVELS: ${CANONICAL_ORDER.join(' ')}`,
       'e.g. /ignore bob NOHIGHLIGHT   ·   /ignore -network -regexp -pattern (foo|bar) #chan',
@@ -380,13 +399,15 @@ export const COMMANDS = [
   cmd(['highlight', 'hilight'], 'Moderation', 'list, or add a highlight rule (global by default)', {
     args: [optText('text')],
     flags: [
-      flag('-network', undefined, 'only on this network'),
+      flag('-network', undefined, 'only on this network', ['-net']),
+      flag('-global', undefined, 'on every network'),
       flag('-mask', undefined, 'match the sender, not the text'),
-      flag('-full', undefined, 'whole words only'),
-      flag('-regexp', undefined, 'the text is a regular expression'),
-      flag('-matchcase', undefined, 'case sensitive'),
-      flag('-channels', '#a,#b', 'only in these channels'),
+      flag('-full', undefined, 'whole words only', ['-word']),
+      flag('-regexp', undefined, 'the text is a regular expression', ['-regex']),
+      flag('-matchcase', undefined, 'case sensitive', ['-case']),
+      flag('-channels', '#a,#b', 'only in these channels', ['-channel']),
     ],
+    quoted: true,
     notes: [
       'e.g. /highlight QUACK!   ·   /highlight -mask bob!*@*   ·   /highlight -network -regexp qu+ack',
     ],
@@ -430,13 +451,13 @@ export const COMMANDS = [
   cmd(['away'], 'Status', 'set away (no msg clears)', {
     args: [optText('msg')],
     flags: AWAY_FLAGS,
-    flagsLead: true,
+    flagsAt: 'first',
     notes: ['-all: every network; -one: just this one'],
     networkAgnostic: true,
   }),
   cmd(['back'], 'Status', 'clear away', {
     flags: AWAY_FLAGS,
-    flagsLead: true,
+    flagsAt: 'first',
     networkAgnostic: true,
   }),
   cmd(['displayname'], 'Status', 'the name shown for you on networks with IRCv3 metadata', {
@@ -474,7 +495,10 @@ export const COMMANDS = [
     quoted: true,
     forms: [
       form([kw('list', 'ls')], 'your networks'),
-      form([kw('add'), arg('name', 'word')], { flags: NETWORK_FLAGS, summary: 'add a network' }),
+      form([kw('add'), arg('name', 'word')], {
+        flags: NETWORK_ADD_FLAGS,
+        summary: 'add a network',
+      }),
       form([kw('modify', 'edit'), NET], { flags: NETWORK_FLAGS, summary: 'change a network' }),
       form([kw('remove', 'rm', 'del', 'delete'), NET], 'delete a network'),
       form([kw('move'), NET, arg('position', 'word')], 'reorder a network'),
@@ -534,12 +558,14 @@ export const COMMANDS = [
     usage: '/e2e <sub>',
     forms: [
       form(
-        [kw('on'), opt('#chan', 'channel'), choice(E2E_MODES, { optional: true })],
+        [kw('on', 'enable'), opt('#chan', 'channel'), choice(E2E_MODES, { optional: true })],
         'turn it on',
       ),
-      form([kw('off'), opt('#chan', 'channel')], 'turn it off'),
+      // Here, the channel left out.
+      form([kw('on', 'enable'), choice(E2E_MODES)]),
+      form([kw('off', 'disable'), opt('#chan', 'channel')], 'turn it off'),
       form([kw('mode'), choice(E2E_MODES)], 'how keys are exchanged'),
-      form([kw('handshake'), NICK], 'exchange keys with someone'),
+      form([kw('handshake', 'hs'), NICK], 'exchange keys with someone'),
       form([kw('accept'), NICK], 'accept a key request'),
       form([kw('decline'), NICK], 'decline a key request'),
       form([kw('revoke'), NICK], "stop trusting someone's key"),
@@ -551,7 +577,7 @@ export const COMMANDS = [
         flags: [flag('-all')],
         summary: 'forget a peer',
       }),
-      form([kw('fingerprint')], 'your key fingerprint'),
+      form([kw('fingerprint', 'fp')], 'your key fingerprint'),
       form([kw('status')], 'where this buffer stands'),
       form([kw('list')], { flags: [flag('-all')], summary: 'the peers you hold keys for' }),
       form([kw('autotrust'), kw('list')], 'the autotrust rules'),
@@ -568,6 +594,10 @@ export const COMMANDS = [
   cmd(['sheep'], 'App', 'a sheep', {
     forms: [
       form([choice([...SHEEP_COLORS, 'random'], { label: 'color', optional: true })]),
+      form([
+        kw('on', 'add', 'more', 'spawn', 'new'),
+        choice([...SHEEP_COLORS, 'random'], { label: 'color', optional: true }),
+      ]),
       form([kw('off'), choice(['all'], { optional: true })]),
       form([kw('list')]),
       form([kw('sounds'), choice(['on', 'off'], { optional: true })]),

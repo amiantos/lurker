@@ -209,8 +209,12 @@ interface Fit {
   readonly restFrom: number;
   /** The typed token is the value of this flag (`-time |`), not a positional. */
   readonly valueOf: FlagSpec | null;
-  /** How many positional tokens came before the typed one. */
+  /** How many arguments, keywords aside, came before the typed one. */
   readonly filled: number;
+  /** How many options came before it. */
+  readonly flagged: number;
+  /** A `--` came before it: what follows is text, dashes and all. */
+  readonly literal: boolean;
 }
 
 /**
@@ -231,7 +235,7 @@ function fittingForms(spec: CommandSpec, preceding: readonly string[], typing: s
 function findFlag(form: FormSpec, token: string): FlagSpec | undefined {
   if (!token.startsWith('-')) return undefined;
   const lower = token.toLowerCase();
-  return form.flags?.find((f) => f.name === lower);
+  return form.flags?.find((f) => f.name === lower || (f.also?.includes(lower) ?? false));
 }
 
 function keywordMatches(arg: ArgSpec, token: string): boolean {
@@ -256,20 +260,36 @@ function fit(
   const last = args.at(-1);
   let slot = 0;
   let filled = 0;
+  let flagged = 0;
+  let literal = false;
   let restFrom = -1;
+  const at = () => ({ filled, flagged, literal });
   for (let i = 0; i < preceding.length; i++) {
     const token = preceding[i];
-    const flag = findFlag(form, token);
+    if (form.flags?.length && !literal && token === '--') {
+      literal = true;
+      continue;
+    }
+    const flag = literal ? undefined : findFlag(form, token);
     if (flag) {
+      flagged++;
       if (!flag.takes) continue;
       // Its value is the next token: this one being typed, or one to step over.
       if (i === preceding.length - 1) {
-        return { form, arg: null, restFrom: -1, valueOf: flag, filled };
+        return { form, arg: null, restFrom: -1, valueOf: flag, ...at() };
       }
       i++;
+      // `-time 7 days`: a bare count takes its unit with it.
+      if (
+        flag.takes === 'dur' &&
+        /^\d+$/.test(preceding[i]) &&
+        /^[a-z]+$/i.test(preceding[i + 1] ?? '')
+      ) {
+        i++;
+      }
       continue;
     }
-    filled++;
+    if (args[Math.min(slot, args.length - 1)]?.kind !== 'keyword') filled++;
     if (slot >= args.length) {
       // Past the end, only a trailing `rest` slot takes more.
       if (last?.rest) continue;
@@ -288,11 +308,17 @@ function fit(
     // A word in an optional channel slot is more likely the text that follows
     // it: `/topic Lurker rocks` sets a topic, it doesn't name #lurker.
     if (typing && arg.optional && arg.kind === 'channel' && !isChannelTarget(typing)) return null;
-    return { form, arg, restFrom: preceding.length, valueOf: null, filled };
+    return { form, arg, restFrom: preceding.length, valueOf: null, ...at() };
   }
-  if (last?.rest) return { form, arg: last, restFrom, valueOf: null, filled };
+  if (last?.rest) return { form, arg: last, restFrom, valueOf: null, ...at() };
   // Every slot is filled. The form still fits, for the options it takes.
-  return form.flags?.length ? { form, arg: null, restFrom: -1, valueOf: null, filled } : null;
+  return form.flags?.length ? { form, arg: null, restFrom: -1, valueOf: null, ...at() } : null;
+}
+
+function takesFlagHere({ form, filled, flagged, literal }: Fit): boolean {
+  if (literal) return false;
+  if (!form.flagsAt) return true;
+  return filled === 0 && (form.flagsAt === 'lead' || flagged === 0);
 }
 
 function slotsFor(verb: string, fits: readonly Fit[], query: string): Slot[] {
@@ -303,12 +329,13 @@ function slotsFor(verb: string, fits: readonly Fit[], query: string): Slot[] {
     seen.add(key);
     slots.push(slot);
   };
-  for (const { form, arg, valueOf, filled } of fits) {
+  for (const fit of fits) {
+    const { form, arg, valueOf } = fit;
     // A flag's own value is opaque: a duration, a host, a password.
     if (valueOf) continue;
     // Options are offered once a `-` says one is being typed, and only where
     // the handler reads them.
-    if (query.startsWith('-') && !(form.flagsLead && filled > 0)) {
+    if (query.startsWith('-') && takesFlagHere(fit)) {
       for (const flag of form.flags ?? []) add(`flag:${flag.name}`, { type: 'flag', flag });
     }
     if (!arg) continue;

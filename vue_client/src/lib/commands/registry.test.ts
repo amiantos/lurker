@@ -92,7 +92,7 @@ describe('/commands', () => {
   it('names aliases, spells out long option lists, keeps the examples', () => {
     expect(text).toContain('— leave channel (keeps buffer) (aliases: /leave, /p)');
     expect(text).toContain(
-      '      opts: -network -regexp -full -pattern <text> -except -time <dur>',
+      '      opts: -network -global -regexp -full -pattern <text> -except -time <dur>',
     );
     expect(text).toContain('e.g. /theme apply light   ·   /theme save My Theme');
     expect(text).toContain(

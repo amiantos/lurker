@@ -337,3 +337,45 @@ describe('review fixes', () => {
     expect(arg('/op "bob al').query).toBe('al');
   });
 });
+
+describe('options where the handler reads them', () => {
+  it('/dcc send takes them ahead of the nick, /dcc chat anywhere', () => {
+    expect(values('/dcc send -se')).toEqual(['-secure']);
+    expect(values('/dcc send -passive -se')).toEqual(['-secure']);
+    expect(values('/dcc send bob -se')).toBeNull();
+    expect(values('/dcc chat bob -se')).toEqual(['-secure']);
+  });
+
+  it('/away takes one, first', () => {
+    expect(values('/away -')).toEqual(['-all', '-one']);
+    expect(values('/away -all -o')).toBeNull();
+  });
+
+  it('other spellings are stepped over, not offered', () => {
+    expect(arg('/ignore -net al').kind).toBe('nick');
+    expect(values('/ignore -ne')).toEqual(['-network']);
+    expect(arg('/e2e hs al').kind).toBe('nick');
+  });
+
+  it('a quoted pattern and a two-word duration are one value each', () => {
+    expect(arg('/ignore -pattern "foo bar" al').kind).toBe('nick');
+    expect(arg('/ignore -time 7 days al').kind).toBe('nick');
+    expect(arg('/ignore -time 5m al').kind).toBe('nick');
+  });
+
+  it('nothing is an option after --', () => {
+    expect(values('/highlight -n')).toEqual(['-network']);
+    expect(values('/highlight -- -n')).toBeNull();
+  });
+
+  it('only a new network takes -channel and -cert', () => {
+    expect(values('/network add x -c')).toEqual(['-channel', '-cert']);
+    expect(values('/network modify x -c')).toEqual([]);
+    expect(values('/network modify x -pr')).toEqual(['-proxy']);
+  });
+
+  it('/e2e on completes a mode with the channel left out', () => {
+    expect(values('/e2e on q')).toEqual(['quiet']);
+    expect(values('/e2e on #chan q')).toEqual(['quiet']);
+  });
+});

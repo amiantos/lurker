@@ -1486,8 +1486,8 @@ function onKeydown(e: KeyboardEvent): void {
     e.key === 'Escape' &&
     !e.shiftKey &&
     replies.forKey(networks.activeKey) &&
-    !pickerOpen.value &&
-    !channelPickerOpen.value &&
+    !(pickerOpen.value && (!commandCtx || nickPickerEl.value?.hasCandidates())) &&
+    !(channelPickerOpen.value && (!commandCtx || channelPickerEl.value?.hasCandidates())) &&
     !commandPickerOpen.value &&
     !emojiPickerOpen.value &&
     !historyPickerOpen.value
@@ -1733,13 +1733,17 @@ function liveCandidates(kind: LiveKind, query: string, preceding: readonly strin
     case 'network': {
       // `/network` reads quotes, and a name with a space needs them.
       const bare = q.replace(/^["']/, '');
-      return networks.networks
-        .map((n) => n.name)
-        .filter((name) => name.toLowerCase().startsWith(bare))
-        .map((name) => ({
-          value: /[\s"'\\]/.test(name) ? `"${name.replace(/(["\\])/g, '\\$1')}"` : name,
-          kind,
-        }));
+      const quote = (name: string) =>
+        /[\s"'\\]/.test(name) ? `"${name.replace(/(["\\])/g, '\\$1')}"` : name;
+      return [
+        // It takes an id too, and an id typed in full is not the start of a name.
+        ...networks.networks
+          .filter((n) => String(n.id) === bare)
+          .map((n) => ({ value: bare, detail: n.name, kind })),
+        ...networks.networks
+          .filter((n) => n.name.toLowerCase().startsWith(bare))
+          .map((n) => ({ value: quote(n.name), kind })),
+      ];
     }
     case 'avatarSet':
       return named(useAvatarSetsStore().all.map((a) => a.name));
@@ -1815,7 +1819,10 @@ function ownPickerFor(ctx: CompletionContext): 'nick' | 'channel' | null {
   const only = ctx.slots.every(
     (sl) => sl.type === 'live' && (sl.kind === 'nick' || sl.kind === 'channel'),
   );
-  return only ? ctx.kind : null;
+  if (!only) return null;
+  // A target is often either (`/notice #chan`, `/ignore #chan`), and what was
+  // typed says which.
+  return isChannelTarget(ctx.query) ? 'channel' : ctx.kind;
 }
 
 // What Tab walks through in place for a command context: the nick or channel
@@ -1857,8 +1864,13 @@ const CHAINS: ReadonlySet<Candidate['kind']> = new Set(['command', 'keyword', 's
 
 function onCommandPickerSelect(row: Candidate): void {
   const ctx = commandCtx;
-  if (!ctx) {
+  // The rows answer the token as it was when they were listed. The caret may
+  // have moved since (Home), or the draft changed under it from another device.
+  const el = inputEl.value;
+  const now = completionContext(text.value, el?.selectionStart ?? text.value.length);
+  if (!ctx || !now || now.start !== ctx.start || now.end !== ctx.end || now.query !== ctx.query) {
     closeCommandPicker();
+    refreshPicker();
     return;
   }
   commitCompletion({
@@ -2362,7 +2374,10 @@ function onInput() {
     // nothing else from here down.
     if (completion) resetCompletion();
     const el = inputEl.value;
-    if (el) refreshCommandCompletion(text.value, el.selectionStart ?? text.value.length);
+    // Nothing below runs here to close a picker the caret has left behind.
+    if (!el || !refreshCommandCompletion(text.value, el.selectionStart ?? text.value.length)) {
+      closeSuggesters();
+    }
     return;
   }
   if (!sendable.value || !active.value) return;
@@ -3051,10 +3066,12 @@ function modeShortcut(
   line: string,
 ): boolean {
   let channel = isChannelTarget(target) ? target : null;
-  let args = rest;
-  if (isChannelArg(rest[0])) {
-    channel = rest[0];
-    args = rest.slice(1);
+  // A completed nick leaves a space after it, which is not one more nick:
+  // `/op alice ` ops alice, once.
+  let args = rest.filter(Boolean);
+  if (isChannelArg(args[0])) {
+    channel = args[0];
+    args = args.slice(1);
   }
   if (!channel) {
     localInfo(networkId, target, `${usage} — no channel context`);

@@ -174,6 +174,32 @@ describe('slash-command completion', () => {
     expect(el.value).toBe('/op alice ');
   });
 
+  it('a completed nick is one nick on the wire', async () => {
+    const el = await composer();
+    await type(el, '/op al');
+    await key(el, 'Tab');
+    expect(el.value).toBe('/op alexis ');
+    await key(el, 'Enter');
+    expect(sent()).toEqual([{ type: 'raw', networkId: 1, line: 'MODE #mango +o alexis' }]);
+  });
+
+  it('a channel typed where a nick or a channel goes opens the channel picker', async () => {
+    const el = await composer();
+    await type(el, '/notice #ma');
+    expect(rows()).toEqual(['#mango']);
+    await type(el, '/notice al');
+    expect(rows()).toEqual(['alexis', 'alice']);
+  });
+
+  it('a pick is dropped when the caret has left the token it answered', async () => {
+    const el = await composer();
+    await type(el, '/dcc ch');
+    expect(rows().length).toBeGreaterThan(0);
+    el.setSelectionRange(0, 0);
+    await key(el, 'Tab');
+    expect(el.value).toBe('/dcc ch');
+  });
+
   it('a word where a channel is optional is text, not a channel', async () => {
     const el = await composer();
     await type(el, '/topic Mango');
@@ -273,6 +299,24 @@ describe('slash-command completion', () => {
     await key(el, 'Tab');
     expect(el.value).toBe('/join ');
     expect(rows()).toEqual(['#mango', '&local', '#apple']);
+  });
+
+  it('closes the channel picker in a server buffer once the caret moves past it', async () => {
+    const networks = useNetworksStore();
+    useBuffersStore().buffers['1:::server:1'] = {
+      networkId: 1,
+      target: ':server:1',
+      members: [],
+      messages: [],
+    } as never;
+    networks.activeKey = '1:::server:1';
+    const el = await composer();
+    await type(el, '/join #ma');
+    expect(rows()).toEqual(['#mango']);
+    await type(el, '/join #ma key');
+    expect(rows()).toEqual([]);
+    await key(el, 'Enter');
+    expect(sent()).toEqual([expect.objectContaining({ type: 'join', channel: '#ma' })]);
   });
 
   it('lists only what runs without a network in the system buffer', async () => {
