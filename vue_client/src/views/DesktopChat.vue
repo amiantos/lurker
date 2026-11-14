@@ -1046,12 +1046,6 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .topic .buffer {
   color: var(--accent);
 }
-/* After the status icons the topic sits one character away, as the icons sit
-   one character after the name: they take back one of .topic-meta's two. A
-   name with no icons keeps the full gap. */
-.topic .buffer :deep(.status-icons) {
-  margin-right: -1ch;
-}
 .topic .topic-text {
   color: var(--fg-muted);
   text-overflow: ellipsis;
@@ -1106,8 +1100,9 @@ button.topic-text:focus-visible {
 }
 
 /* Two-group layout for the topic bar: .topic-meta (name + topic text, spaced
-   by the 2ch gap — wider than the 1ch bar convention to give the name and
-   topic breathing room now that the │ divider is gone) sits left,
+   by the same distance the name sits from the forward button — wider than the
+   1ch bar convention to give the name and topic breathing room now that the │
+   divider is gone) sits left,
    .topic-actions (buffer/network/channel buttons) sits right.
    .topic uses justify-content:space-between to split them. .topic-meta
    shrinks first via min-width:0 + topic-text ellipsis, so the action
@@ -1115,7 +1110,9 @@ button.topic-text:focus-visible {
 .topic-meta {
   display: flex;
   align-items: baseline;
-  gap: 2ch;
+  /* What separates the forward button from the name: .topic's gap plus the
+     button's own side padding (.link). */
+  gap: calc(var(--space-4) + var(--space-2));
   /* flex:1 so the meta absorbs the free space and keeps the action cluster
      anchored to the right edge; min-width:0 lets the topic text ellipsis. */
   flex: 1;
