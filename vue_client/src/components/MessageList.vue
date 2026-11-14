@@ -485,6 +485,7 @@ import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 import { orderByTime } from '../lib/messageOrder.js';
+import { logLine, rowsInSelection, type LogContext } from '../lib/copyLog.js';
 import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
@@ -1919,6 +1920,50 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
   return segments.value;
 }
 
+// Copying a stretch of the list copies it as a text log (#608): each row the
+// selection touches, whole, as `[time] <nick> text` — see lib/copyLog. On the
+// document, not the scroller: the composer keeps focus while the reader
+// selects, and a copy is dispatched where the focus is.
+const logContext: LogContext<ChatMessage> = {
+  time,
+  prefix: prefixText,
+  hostSuffix: eventHostSuffix,
+  accountSuffix: joinAccountSuffix,
+  newMask: chghostMask,
+  modePhrase,
+};
+
+function onDocumentCopy(e: ClipboardEvent): void {
+  const root = scroller.value;
+  const selection = window.getSelection();
+  if (!root || !e.clipboardData || !selection || selection.isCollapsed) return;
+  // A field's own selection is the field's to copy, whatever is still
+  // highlighted in the list behind it.
+  const field = e.target;
+  if (
+    (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) &&
+    field.selectionStart !== field.selectionEnd
+  ) {
+    return;
+  }
+  // One range, wholly inside the list. Anything else (a select-all, a drag out
+  // into the member list, Firefox's multi-range selections) stays the browser's.
+  if (selection.rangeCount !== 1) return;
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.commonAncestorContainer)) return;
+  const rows = renderRows.value;
+  const picked = rowsInSelection(root, range);
+  // The page and the rows disagree on what is drawn: leave the copy alone
+  // rather than write the wrong lines.
+  if (picked.total !== rows.length || picked.withinCell) return;
+  const lines = picked.indexes
+    .map((i) => logLine(rows[i]!, logContext))
+    .filter((line): line is string => line !== null);
+  if (!lines.length) return;
+  e.clipboardData.setData('text/plain', lines.join('\n'));
+  e.preventDefault();
+}
+
 // The `╰─ N replies` under a line that started a thread (#1225).
 function openThreadAt(m: ChatMessage | undefined): void {
   const buf = buffer.value;
@@ -2641,10 +2686,12 @@ onMounted(() => {
   nowTimer = setInterval(() => {
     now.value = Date.now();
   }, 60_000);
+  document.addEventListener('copy', onDocumentCopy);
 });
 
 onBeforeUnmount(() => {
   setViewedBuffer(null);
+  document.removeEventListener('copy', onDocumentCopy);
   if (scrollerObserver) {
     scrollerObserver.disconnect();
     scrollerObserver = null;
