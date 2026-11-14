@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { isChannelTarget } from '../../../shared/channels.js';
+import { isChannelTarget, stripChannelPrefix } from '../../../shared/channels.js';
 
 // Shared candidate builder for channel completion — used by both Tab-completion
 // in MessageInput and the `#`-triggered ChannelPicker. Returns the targets of
@@ -11,6 +11,10 @@ import { isChannelTarget } from '../../../shared/channels.js';
 // `prefix` includes the leading '#' (it's the raw token under the cursor), and
 // the '#' stays in every result — unlike nicks' '@' sugar, '#' is part of the
 // channel name.
+//
+// A prefix with no sigil comes from a slash command's channel argument (#533):
+// `/join li` has already said it wants a channel, so the sigil the user hasn't
+// typed must not hide `#linux`. It matches the name with its sigils stripped.
 //
 // Candidate source is deliberately just the buffers the user is already in:
 // the point of channel completion is to quickly reference a channel you can
@@ -49,14 +53,15 @@ export function buildChannelCandidates(
   rank: (target: string) => number,
 ): string[] {
   const lower = prefix.toLowerCase();
+  const bare = !isChannelTarget(prefix);
+  const key = (t: string) => (bare ? stripChannelPrefix(t) : t).toLowerCase();
   return (
     buffers
       .map((b) => b.target ?? '')
-      // The classification half widens with everything else (#724); the TRIGGER that produced
-      // `prefix` is still `#`-only (see MessageInput), so today `lower` always starts with `#`
-      // and this can't actually surface an `&`/`+`/`!` channel. It asks the right question
-      // anyway, so a future trigger change doesn't have to remember to come back here.
-      .filter((t) => isChannelTarget(t) && t.toLowerCase().startsWith(lower))
+      // The classification half widens with everything else (#724). In prose the TRIGGER that
+      // produced `prefix` is still `#`-only (see MessageInput), so there `lower` always starts
+      // with `#`; a command's channel argument is what reaches the other three sigils.
+      .filter((t) => isChannelTarget(t) && key(t).startsWith(lower))
       // Rank each candidate once up front rather than inside the comparator: a
       // rank lookup is a linear scan of the MRU trail, and a comparator would
       // repeat it twice per comparison — on every keystroke, since the picker's

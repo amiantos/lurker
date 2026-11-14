@@ -116,6 +116,16 @@
       @select="onChannelPickerSelect"
       @close="closeChannelPicker"
     />
+    <!-- Slash-command completion (#533): commands, then subcommands, options
+         and named things. Nick and channel arguments use the two pickers above. -->
+    <CommandPicker
+      ref="commandPickerEl"
+      :open="commandPickerOpen"
+      :rows="commandPickerRows"
+      :anchor="formEl"
+      @select="onCommandPickerSelect"
+      @close="closeCommandPicker"
+    />
     <!-- Previous-input recall menu, opened by tapping the `>` prompt — the
          pointer path to history for mobile, where Up-arrow is unreachable
          (issue #204). Anchored to the form like the pickers above; `toggle-el`
@@ -156,7 +166,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
+import { ref, shallowRef, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
 import {
   tagSupport,
   useNetworksStore,
@@ -166,6 +176,14 @@ import {
 } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { helpLines, resolveVerb } from '../lib/commands/registry.js';
+import {
+  completionContext,
+  candidatesFor,
+  isComplete,
+  type Candidate,
+  type CompletionContext,
+  type LiveKind,
+} from '../lib/commands/completion.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
 import { parseRelayCommand } from '../lib/commands/relay.js';
@@ -275,6 +293,7 @@ import {
 import type { EmojiMatch } from '../utils/emojiData.js';
 import NickPicker from './NickPicker.vue';
 import ChannelPicker from './ChannelPicker.vue';
+import CommandPicker from './CommandPicker.vue';
 import HistoryPicker from './HistoryPicker.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import LongMessageUploadModal from './LongMessageUploadModal.vue';
@@ -407,6 +426,15 @@ const emojiPickerOpen = ref(false);
 const emojiPickerQuery = ref('');
 const emojiPickerEl = ref<InstanceType<typeof EmojiPicker> | null>(null);
 
+// Slash-command completion (#533). `commandCtx` is set while a command's grammar
+// is what opened a completion UI: the command picker itself, or the nick or
+// channel picker standing in for it on a nick or channel argument. It is what
+// tells those two that Enter may mean "send" (see commandEnterSends).
+const commandPickerEl = ref<InstanceType<typeof CommandPicker> | null>(null);
+const commandPickerOpen = ref(false);
+const commandPickerRows = shallowRef<readonly Candidate[]>([]);
+let commandCtx: CompletionContext | null = null;
+
 const active = computed(() => networks.activeBuffer);
 
 // The app-scoped system buffer (issue #355) has no network, so networks
@@ -432,6 +460,8 @@ const text = computed({
   set(value) {
     if (isSystemBuffer.value) {
       systemText.value = value;
+      // For command completion (#533); onInput does nothing else here.
+      onInput();
       return;
     }
     const a = active.value;
@@ -1284,7 +1314,7 @@ function onKeydown(e: KeyboardEvent): void {
         nickPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
         return;
       }
-    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
       e.preventDefault();
       nickPickerEl.value.confirmActive();
       return;
@@ -1304,9 +1334,28 @@ function onKeydown(e: KeyboardEvent): void {
         channelPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
         return;
       }
-    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
       e.preventDefault();
       channelPickerEl.value.confirmActive();
+      return;
+    }
+  }
+  // The command picker (#533) owns the same keys the same way, with one
+  // difference in Enter. `/` is an explicit prefix, like `@` and `#`, so Enter
+  // accepts the highlighted row; but a command line is also something you send,
+  // so once what's typed stands on its own (`/away`, `/dcc list`) Enter sends
+  // it. The two pickers above follow the same rule while a command's argument
+  // is what opened them. Tab always accepts.
+  if (commandPickerOpen.value && commandPickerEl.value?.hasCandidates()) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (!e.altKey && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        commandPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        return;
+      }
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
+      e.preventDefault();
+      commandPickerEl.value.confirmActive();
       return;
     }
   }
@@ -1431,6 +1480,7 @@ function onKeydown(e: KeyboardEvent): void {
     replies.forKey(networks.activeKey) &&
     !pickerOpen.value &&
     !channelPickerOpen.value &&
+    !commandPickerOpen.value &&
     !emojiPickerOpen.value &&
     !historyPickerOpen.value
   ) {
@@ -1586,6 +1636,7 @@ function closePicker() {
   pickerQuery.value = '';
   pickerTokenStart = -1;
   pickerTokenEnd = -1;
+  closeCommandPicker();
 }
 
 function closeChannelPicker() {
@@ -1593,6 +1644,164 @@ function closeChannelPicker() {
   channelPickerQuery.value = '';
   channelPickerTokenStart = -1;
   channelPickerTokenEnd = -1;
+  closeCommandPicker();
+}
+
+// Also drops `commandCtx`, so closing the nick or channel picker (which is how
+// every teardown path in this file closes "the pickers") ends a command
+// completion whichever of the three was showing it.
+function closeCommandPicker() {
+  commandPickerOpen.value = false;
+  commandPickerRows.value = [];
+  commandCtx = null;
+}
+
+// The lists a command's grammar can name that only this component can read.
+// Nicks and channels are absent on purpose: those slots open their own pickers.
+function liveCandidates(kind: LiveKind, query: string, preceding: readonly string[]): Candidate[] {
+  const q = query.toLowerCase();
+  const named = (names: readonly string[]): Candidate[] =>
+    names.filter((n) => n.toLowerCase().startsWith(q)).map((value) => ({ value, kind }));
+  switch (kind) {
+    case 'setting': {
+      // Keys are dotted paths, so a word from the middle (`compact`) has to find
+      // its key too. Prefix matches lead.
+      const exposed = REGISTRY.filter(settingExposed);
+      const row = (o: SettingOption): Candidate => ({
+        value: o.key,
+        detail: formatSettingValue(o, settings.effective(o.key)),
+        kind,
+      });
+      return [
+        ...exposed.filter((o) => o.key.startsWith(q)),
+        ...exposed.filter((o) => !o.key.startsWith(q) && o.key.includes(q)),
+      ].map(row);
+    }
+    case 'settingValue': {
+      const opt = lookupSetting(preceding[0] ?? '');
+      if (opt?.type === 'bool') return named(['on', 'off']);
+      if (opt?.type === 'enum') {
+        return opt.choices
+          .filter((c) => c.toLowerCase().startsWith(q))
+          .map((value) => ({
+            value,
+            ...(opt.choiceLabels?.[value] ? { detail: opt.choiceLabels[value] } : {}),
+            kind,
+          }));
+      }
+      return [];
+    }
+    case 'theme':
+      return named(useThemesStore().all.map((t) => t.name));
+    case 'network':
+      return named(networks.networks.map((n) => n.name));
+    case 'avatarSet':
+      return named(useAvatarSetsStore().all.map((a) => a.name));
+    default:
+      return [];
+  }
+}
+
+// Everything a command completion replaces when it opens.
+function closeSuggesters(): void {
+  closePicker();
+  closeStrip();
+  closeChannelPicker();
+  closeEmojiStrip();
+  closeEmojiPicker();
+}
+
+// Open whichever UI completes the token under the caret of a slash-command
+// line. False when there is nothing to complete there, and refreshPicker
+// carries on as it would for any other text, so `/me @al` still finds a nick.
+function refreshCommandCompletion(value: string, cursor: number): boolean {
+  const ctx = completionContext(value, cursor);
+  if (!ctx) {
+    closeCommandPicker();
+    return false;
+  }
+  // A slot that can only be a nick or a channel belongs to the picker that
+  // already lists those. Which of the two is the grammar's call (`/invite`
+  // takes either first), not the sigil's: `/join &lo` is a channel.
+  const peopleOrPlaces =
+    ctx.type === 'argument' &&
+    ctx.slots.every((sl) => sl.type === 'live' && (sl.kind === 'nick' || sl.kind === 'channel'));
+  if (ctx.type === 'argument' && peopleOrPlaces && ctx.kind === 'nick') {
+    closeSuggesters();
+    commandCtx = ctx;
+    pickerOpen.value = true;
+    // The `@` is tolerated as muscle memory, as it is on the strip.
+    pickerQuery.value = ctx.query.replace(/^@/, '');
+    pickerTokenStart = ctx.start;
+    pickerTokenEnd = ctx.end;
+    return true;
+  }
+  if (ctx.type === 'argument' && peopleOrPlaces && ctx.kind === 'channel') {
+    closeSuggesters();
+    commandCtx = ctx;
+    channelPickerOpen.value = true;
+    channelPickerQuery.value = ctx.query;
+    channelPickerTokenStart = ctx.start;
+    channelPickerTokenEnd = ctx.end;
+    return true;
+  }
+  const rows = candidatesFor(ctx, {
+    agnosticOnly: active.value?.networkId == null,
+    live: liveCandidates,
+  });
+  if (!rows.length) {
+    closeCommandPicker();
+    return false;
+  }
+  closeSuggesters();
+  commandCtx = ctx;
+  commandPickerRows.value = rows;
+  commandPickerOpen.value = true;
+  return true;
+}
+
+// Whether Enter should send the line rather than accept the highlighted row,
+// while a command completion is showing. It sends when what's typed already
+// stands: `/away`, `/dcc list`, `/kick bob`, or an argument not started yet
+// (`/part ` + Enter parts). Tab always accepts.
+function commandEnterSends(): boolean {
+  const ctx = commandCtx;
+  if (!ctx) return false;
+  if (commandPickerOpen.value) return isComplete(ctx, commandPickerRows.value);
+  if (ctx.type !== 'argument' || !ctx.query) return true;
+  const typed = ctx.query.replace(/^@/, '').toLowerCase();
+  const networkId = active.value?.networkId;
+  const buf = buffer.value;
+  if (networkId == null) return true;
+  const names = pickerOpen.value
+    ? buf
+      ? buildNickMatches(buf, networkId, typed)
+      : []
+    : buildChannelMatches(networkId, ctx.query);
+  return names.some((n) => n.toLowerCase() === typed);
+}
+
+// After a pick that came from a command's grammar, look again: the next slot
+// may have something to offer (`/dcc ` after `/dcc`). Queued behind
+// applyCompletion's own microtask, which is what parks the caret.
+function chainCommandCompletion(): void {
+  queueMicrotask(() => refreshPicker());
+}
+
+function onCommandPickerSelect(row: Candidate): void {
+  const ctx = commandCtx;
+  if (!ctx) {
+    closeCommandPicker();
+    return;
+  }
+  commitCompletion({
+    start: ctx.start,
+    end: ctx.end,
+    pick: row.value,
+    suffix: ' ',
+    matches: commandPickerRows.value.map((r) => r.value),
+  });
+  chainCommandCompletion();
 }
 
 function closeHistoryPicker() {
@@ -1726,6 +1935,11 @@ function refreshPicker() {
   const value = text.value;
   const cursor = el.selectionStart ?? value.length;
 
+  // A slash-command line asks the command's grammar first (#533). Where the
+  // grammar has nothing to say (free text, an unknown verb) the rest of this
+  // function runs as it would for any message.
+  if (refreshCommandCompletion(value, cursor)) return;
+
   // An in-progress `:shortcode:` owns the suggester slot — it isn't a nick
   // token, and both emoji UIs and the nick picker/strip share one slot over the
   // StatusBar. Both the desktop EmojiPicker (issue #348) and the mobile strip
@@ -1845,6 +2059,7 @@ function onPickerSelect(nick: string): void {
   // the session instead of being re-derived on each cycle: a walk seeded from
   // here has to keep reproducing the space the picker already inserted.
   const suffix = isAtLineStart(text.value.slice(0, pickerTokenStart)) ? addressSuffix() : ' ';
+  const fromCommand = commandCtx !== null;
   // pickerQuery is the token minus its '@' — the bare prefix buildNickMatches
   // expects. Read before commitCompletion, which closes the picker and clears it.
   commitCompletion({
@@ -1854,6 +2069,7 @@ function onPickerSelect(nick: string): void {
     suffix,
     matches: buf && networkId != null ? buildNickMatches(buf, networkId, pickerQuery.value) : [],
   });
+  if (fromCommand) chainCommandCompletion();
 }
 
 function onChannelPickerSelect(channel: string): void {
@@ -1863,6 +2079,7 @@ function onChannelPickerSelect(channel: string): void {
   }
   const networkId = active.value?.networkId;
   const token = text.value.slice(channelPickerTokenStart, channelPickerTokenEnd);
+  const fromCommand = commandCtx !== null;
   // Channels just get a trailing space — there's no "addressing" form like
   // nicks' addressSuffix(), and the '#' is already part of the inserted name. The sent
   // `#channel` renders as a clickable join link for the recipient
@@ -1874,6 +2091,7 @@ function onChannelPickerSelect(channel: string): void {
     suffix: ' ',
     matches: networkId == null ? [] : buildChannelMatches(networkId, token),
   });
+  if (fromCommand) chainCommandCompletion();
 }
 
 function onStripSelect(nick: string): void {
@@ -2074,6 +2292,15 @@ function onInput() {
   // must fire before the sendable gate so it also closes on :server: buffers
   // (editable but not "sendable"), where the menu can be open over /raw history.
   closeHistoryPicker();
+  if ((isSystemBuffer.value || isServer.value) && !isPaused.value) {
+    // The system buffer and a server buffer take slash commands and no chat:
+    // no nicks to complete, no typing state. They get command completion and
+    // nothing else from here down.
+    if (completion) resetCompletion();
+    const el = inputEl.value;
+    if (el) refreshCommandCompletion(text.value, el.selectionStart ?? text.value.length);
+    return;
+  }
   if (!sendable.value || !active.value) return;
   if (completion) resetCompletion();
   // Inline-convert a just-completed `:shortcode:`, then refresh the suggester
