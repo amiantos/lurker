@@ -485,6 +485,7 @@ import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 import { orderByTime } from '../lib/messageOrder.js';
+import { logLine, rowsInSelection, trimBlankEdges, type LogContext } from '../lib/copyLog.js';
 import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
@@ -544,6 +545,9 @@ interface ChatMessage {
   // who and when. On rows read back; a live deletion rides the redactions
   // store, which renderRows asks.
   redaction?: Redaction;
+  // A reply's text before its address came off for display: on the display
+  // clone only, for the copied log (#608, lib/copyLog).
+  addressedText?: string;
   msgid?: string;
   [key: string]: unknown;
 }
@@ -1626,7 +1630,11 @@ const renderRows = computed((): RenderRow[] => {
     if (m.replyTo) {
       const shown = replyQuote.shownReply(m.replyTo, mDisplay, networkId, bufTarget);
       replyParent = shown.parent;
-      if (shown.text !== (mDisplay.text ?? '')) mDisplay = { ...mDisplay, text: shown.text };
+      if (shown.text !== (mDisplay.text ?? '')) {
+        // The text as said rides along for the copied log (#608), which has
+        // no quote to carry the address.
+        mDisplay = { ...mDisplay, text: shown.text, addressedText: mDisplay.text ?? '' };
+      }
       // One quote for a split reply: obby and goguma tag every chunk of a long
       // one, where Lurker and halloy tag the first. Only while it reads as one
       // run of the same speaker's (collapseDisplay's author window; a relayed
@@ -1917,6 +1925,65 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     segmentsByMessage.set(m, segments);
   }
   return segments.value;
+}
+
+// Copying a stretch of the list copies it as a text log (#608): each row the
+// selection touches, whole, as `[time] <nick> text` — see lib/copyLog. On the
+// document, not the scroller: the composer keeps focus while the reader
+// selects, and a copy is dispatched where the focus is.
+const logContext: LogContext<ChatMessage> = {
+  time,
+  prefix: prefixText,
+  hostSuffix: eventHostSuffix,
+  accountSuffix: joinAccountSuffix,
+  newMask: chghostMask,
+  modePhrase,
+};
+
+function onDocumentCopy(e: ClipboardEvent): void {
+  const root = scroller.value;
+  const selection = window.getSelection();
+  if (!root || !e.clipboardData || !selection || selection.isCollapsed) return;
+  // A field's own selection is the field's to copy, whatever is still
+  // highlighted in the list behind it.
+  // A number or email field reports no selection at all (null), so a copy
+  // from one is taken as its own.
+  const field = e.target;
+  if (
+    (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) &&
+    (field.selectionStart === null || field.selectionStart !== field.selectionEnd)
+  ) {
+    return;
+  }
+  // Wholly inside the list. Anything else (a select-all, a drag out into the
+  // member list) stays the browser's. Firefox can hold a selection as several
+  // ranges; the log runs from the first one's start to the last one's end.
+  const range = selection.getRangeAt(0).cloneRange();
+  const tail = selection.getRangeAt(selection.rangeCount - 1);
+  range.setEnd(tail.endContainer, tail.endOffset);
+  if (range.collapsed || !root.contains(range.commonAncestorContainer)) return;
+  const rows = renderRows.value;
+  const picked = rowsInSelection(root, range);
+  // The page and the rows disagree on what is drawn: leave the copy alone
+  // rather than write the wrong lines.
+  if (picked.total !== rows.length) return;
+  // Inside one cell the browser's text is the copy, less the line breaks a
+  // triple-click hangs off it (trimBlankEdges). Taking the copy over leaves
+  // only plain text on the clipboard, so it's untouched when there are none.
+  if (picked.withinCell) {
+    const text = selection.toString();
+    const trimmed = trimBlankEdges(text);
+    if (!trimmed || trimmed === text) return;
+    e.clipboardData.setData('text/plain', trimmed);
+    e.preventDefault();
+    return;
+  }
+  const lines = picked.indexes
+    .map((i) => logLine(rows[i]!, logContext))
+    .filter((line): line is string => line !== null);
+  if (!lines.length) return;
+  e.clipboardData.setData('text/plain', lines.join('\n'));
+  e.preventDefault();
 }
 
 // The `╰─ N replies` under a line that started a thread (#1225).
@@ -2641,10 +2708,12 @@ onMounted(() => {
   nowTimer = setInterval(() => {
     now.value = Date.now();
   }, 60_000);
+  document.addEventListener('copy', onDocumentCopy);
 });
 
 onBeforeUnmount(() => {
   setViewedBuffer(null);
+  document.removeEventListener('copy', onDocumentCopy);
   if (scrollerObserver) {
     scrollerObserver.disconnect();
     scrollerObserver = null;
