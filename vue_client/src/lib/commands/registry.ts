@@ -78,6 +78,8 @@ export interface FlagSpec {
 export interface FormSpec {
   readonly args: readonly ArgSpec[];
   readonly flags?: readonly FlagSpec[];
+  /** Its options are read only ahead of everything else: `/away -all brb`. */
+  readonly flagsLead?: boolean;
   /**
    * A form with a summary is a thing of its own: its own row when its keyword
    * is completed, its own line in `/commands`. A form without one only teaches
@@ -102,6 +104,8 @@ export interface CommandSpec {
   readonly usage?: string;
   /** Works, completes its arguments, and is listed nowhere. */
   readonly hidden?: boolean;
+  /** Its handler reads quotes, so `"Libera Chat"` is one argument. */
+  readonly quoted?: boolean;
 }
 
 // ── Builders ────────────────────────────────────────────────────────────────
@@ -139,11 +143,13 @@ function form(args: readonly ArgSpec[], opts: FormOpts | string = {}): FormSpec 
 interface CmdOpts {
   args?: readonly ArgSpec[];
   flags?: readonly FlagSpec[];
+  flagsLead?: boolean;
   forms?: readonly FormSpec[];
   networkAgnostic?: boolean;
   notes?: readonly string[];
   usage?: string;
   hidden?: boolean;
+  quoted?: boolean;
 }
 
 // `const N` keeps each name a literal type, which is what lets the dispatcher's
@@ -154,12 +160,12 @@ function cmd<const N extends readonly string[]>(
   summary: string,
   opts: CmdOpts = {},
 ): CommandSpec & { readonly names: N } {
-  const { args, flags, forms, ...rest } = opts;
+  const { args, flags, flagsLead, forms, ...rest } = opts;
   return {
     names,
     category,
     summary,
-    forms: forms ?? [form(args ?? [], flags ? { flags } : {})],
+    forms: forms ?? [form(args ?? [], flags ? { flags, ...(flagsLead ? { flagsLead } : {}) } : {})],
     ...rest,
   };
 }
@@ -424,10 +430,15 @@ export const COMMANDS = [
   cmd(['away'], 'Status', 'set away (no msg clears)', {
     args: [optText('msg')],
     flags: AWAY_FLAGS,
+    flagsLead: true,
     notes: ['-all: every network; -one: just this one'],
     networkAgnostic: true,
   }),
-  cmd(['back'], 'Status', 'clear away', { flags: AWAY_FLAGS, networkAgnostic: true }),
+  cmd(['back'], 'Status', 'clear away', {
+    flags: AWAY_FLAGS,
+    flagsLead: true,
+    networkAgnostic: true,
+  }),
   cmd(['displayname'], 'Status', 'the name shown for you on networks with IRCv3 metadata', {
     args: [text('name|off')],
   }),
@@ -460,6 +471,7 @@ export const COMMANDS = [
   }),
   cmd(['network', 'net'], 'App', 'manage networks; runs from the system buffer', {
     usage: '/network [list]',
+    quoted: true,
     forms: [
       form([kw('list', 'ls')], 'your networks'),
       form([kw('add'), arg('name', 'word')], { flags: NETWORK_FLAGS, summary: 'add a network' }),
@@ -622,9 +634,16 @@ export function matchingCommands(
     const rest = pool.filter((spec) => !lead.includes(spec));
     return [...lead, ...rest].map((spec) => ({ spec, name: spec.names[0] }));
   }
+  // A name or alias typed in full leads, so the highlighted row is the one
+  // Enter runs: `/who` before `/whois`, `/q` before `/quit`.
+  let exact: CommandMatch | null = null;
   const canonical: CommandMatch[] = [];
   const aliased: CommandMatch[] = [];
   for (const spec of pool) {
+    if (needle && spec.names.includes(needle)) {
+      exact = { spec, name: needle };
+      continue;
+    }
     if (spec.names[0].startsWith(needle)) {
       canonical.push({ spec, name: spec.names[0] });
       continue;
@@ -635,7 +654,7 @@ export function matchingCommands(
   // Stable, so table order holds within each group: `/j` is `/join` before `/jitsi`.
   const featuredFirst = (a: CommandMatch, b: CommandMatch) =>
     Number(FEATURED.includes(b.name)) - Number(FEATURED.includes(a.name));
-  return [...canonical.toSorted(featuredFirst), ...aliased];
+  return [...(exact ? [exact] : []), ...canonical.toSorted(featuredFirst), ...aliased];
 }
 
 // ── Usage and the cheatsheet ────────────────────────────────────────────────

@@ -127,9 +127,59 @@ describe('slash-command completion', () => {
     const el = await composer();
     await type(el, '/msg al');
     expect(rows()).toEqual(['alexis', 'alice']);
-    await key(el, 'Enter');
+    await key(el, 'Tab');
     expect(el.value).toBe('/msg alexis ');
     expect(sent()).toEqual([]);
+  });
+
+  it('Enter sends a nick or channel argument as typed: the lists are not everyone', async () => {
+    const el = await composer();
+    await type(el, '/join #app');
+    expect(rows()).toEqual(['#apple']);
+    await key(el, 'Enter');
+    expect(sent()).toEqual([expect.objectContaining({ type: 'join', channel: '#app' })]);
+
+    vi.mocked(socketSend).mockClear();
+    await type(el, '/kick al');
+    expect(rows()).toEqual(['alexis', 'alice']);
+    await key(el, 'Enter');
+    expect(sent()).toEqual([{ type: 'raw', networkId: 1, line: 'KICK #mango al' }]);
+  });
+
+  it('Enter takes the row the arrows chose, whatever was typed', async () => {
+    const el = await composer();
+    await type(el, '/part ');
+    expect(rows()).toEqual(['#mango', '&local', '#apple']);
+    await key(el, 'ArrowUp');
+    await key(el, 'Enter');
+    expect(el.value).toBe('/part &local ');
+    expect(sent()).toEqual([]);
+
+    await type(el, '/who');
+    expect(rows()[0]).toBe('/who [mask]find users');
+    await key(el, 'ArrowUp');
+    await key(el, 'Enter');
+    expect(el.value).not.toBe('');
+    expect(el.value).not.toBe('/who ');
+    expect(sent()).toEqual([]);
+  });
+
+  it('a second Tab cycles the nick just completed instead of adding another', async () => {
+    const el = await composer();
+    await type(el, '/op al');
+    await key(el, 'Tab');
+    expect(el.value).toBe('/op alexis ');
+    expect(rows()).toEqual([]);
+    await key(el, 'Tab');
+    expect(el.value).toBe('/op alice ');
+  });
+
+  it('a word where a channel is optional is text, not a channel', async () => {
+    const el = await composer();
+    await type(el, '/topic Mango');
+    expect(rows()).toEqual([]);
+    await type(el, '/topic #ma');
+    expect(rows()).toEqual(['#mango']);
   });
 
   it('offers subcommands, each with its own form', async () => {
@@ -236,5 +286,32 @@ describe('slash-command completion', () => {
     await key(el, 'Tab');
     expect(el.value).toBe('/network ');
     expect(rows()[0]).toBe('/network listyour networks');
+  });
+
+  it('Tab completes in place in the system buffer once the picker is dismissed', async () => {
+    useNetworksStore().activeKey = SYSTEM_KEY;
+    const el = await composer();
+    await type(el, '/netw');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flush();
+    expect(rows()).toEqual([]);
+    await key(el, 'Tab');
+    expect(el.value).toBe('/network ');
+  });
+
+  it('quotes a network name that holds a space', async () => {
+    const networks = useNetworksStore();
+    networks.networks = [
+      { id: 1, name: 'testnet' },
+      { id: 2, name: 'Libera Chat' },
+    ] as never;
+    networks.activeKey = SYSTEM_KEY;
+    const el = await composer();
+    await type(el, '/network connect li');
+    expect(rows()).toEqual(['"Libera Chat"']);
+    await key(el, 'Tab');
+    expect(el.value).toBe('/network connect "Libera Chat" ');
+    await type(el, '/network modify "Libera Chat" -ho');
+    expect(rows()).toEqual(['-host <addr>']);
   });
 });

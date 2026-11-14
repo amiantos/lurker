@@ -31,7 +31,8 @@ arguments:
 
 Arrow keys move, **Tab** accepts, **Escape** closes the menu. **Enter** accepts
 too, unless what you typed is already complete: `/aw` + Enter becomes `/away `,
-and `/away` + Enter sends.
+and `/away` + Enter sends. On a nick or a channel, Enter sends what you typed
+(`/join #new` joins `#new`) unless you picked a row with the arrows.
 
 ## Common commands
 

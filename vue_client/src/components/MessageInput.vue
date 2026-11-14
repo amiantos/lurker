@@ -434,6 +434,11 @@ const commandPickerEl = ref<InstanceType<typeof CommandPicker> | null>(null);
 const commandPickerOpen = ref(false);
 const commandPickerRows = shallowRef<readonly Candidate[]>([]);
 let commandCtx: CompletionContext | null = null;
+// The arrows moved the highlight since the token last changed: the row is then
+// a choice, and Enter takes it whatever the typed text would do on its own.
+let commandNavigated = false;
+// One empty list for the closed picker, so closing it again changes nothing.
+const NO_ROWS: readonly Candidate[] = Object.freeze([]);
 
 const active = computed(() => networks.activeBuffer);
 
@@ -1312,6 +1317,7 @@ function onKeydown(e: KeyboardEvent): void {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         nickPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        commandNavigated = commandCtx !== null;
         return;
       }
     } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
@@ -1332,6 +1338,7 @@ function onKeydown(e: KeyboardEvent): void {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         channelPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        commandNavigated = commandCtx !== null;
         return;
       }
     } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
@@ -1344,13 +1351,14 @@ function onKeydown(e: KeyboardEvent): void {
   // difference in Enter. `/` is an explicit prefix, like `@` and `#`, so Enter
   // accepts the highlighted row; but a command line is also something you send,
   // so once what's typed stands on its own (`/away`, `/dcc list`) Enter sends
-  // it. The two pickers above follow the same rule while a command's argument
-  // is what opened them. Tab always accepts.
+  // it. While a command's argument is what opened the two pickers above, Enter
+  // sends there too, unless the arrows chose a row. Tab always accepts.
   if (commandPickerOpen.value && commandPickerEl.value?.hasCandidates()) {
     if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         commandPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        commandNavigated = true;
         return;
       }
     } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
@@ -1575,10 +1583,18 @@ function onKeydown(e: KeyboardEvent): void {
     if (completion) resetCompletion();
     return;
   }
-  if (!sendable.value) return;
-  e.preventDefault();
+  // The system buffer and a server buffer take commands and no chat, so Tab
+  // completes a command line there and is otherwise left to the browser.
+  const commandsOnly = !sendable.value;
+  if (commandsOnly && !((isSystemBuffer.value || isServer.value) && !isPaused.value)) return;
   const el = inputEl.value;
   if (!el) return;
+  if (commandsOnly && !completion) {
+    const at = el.selectionStart ?? text.value.length;
+    const here = completionContext(text.value, at);
+    if (!here || !commandTabMatches(here).length) return;
+  }
+  e.preventDefault();
 
   // A live session cycles — but only if the caret is still where the last
   // insertion left it. A click or tap inside the textarea moves the caret
@@ -1616,6 +1632,7 @@ function onKeydown(e: KeyboardEvent): void {
     applyCompletion();
     return;
   }
+  if (commandsOnly) return;
 
   const { token, start, end } = tokenAtCursor(value, cursor);
   if (!token) return;
@@ -1670,14 +1687,16 @@ function closeChannelPicker() {
 // completion whichever of the three was showing it.
 function closeCommandPicker() {
   commandPickerOpen.value = false;
-  commandPickerRows.value = [];
+  if (commandPickerRows.value.length) commandPickerRows.value = NO_ROWS;
   commandCtx = null;
+  commandNavigated = false;
 }
 
 // The lists a command's grammar can name that only this component can read.
 // Nicks and channels are absent on purpose: those slots open their own pickers.
 function liveCandidates(kind: LiveKind, query: string, preceding: readonly string[]): Candidate[] {
-  const q = query.toLowerCase();
+  // A value that holds spaces keeps the one a pick left after it.
+  const q = query.trimEnd().toLowerCase();
   const named = (names: readonly string[]): Candidate[] =>
     names.filter((n) => n.toLowerCase().startsWith(q)).map((value) => ({ value, kind }));
   switch (kind) {
@@ -1711,8 +1730,17 @@ function liveCandidates(kind: LiveKind, query: string, preceding: readonly strin
     }
     case 'theme':
       return named(useThemesStore().all.map((t) => t.name));
-    case 'network':
-      return named(networks.networks.map((n) => n.name));
+    case 'network': {
+      // `/network` reads quotes, and a name with a space needs them.
+      const bare = q.replace(/^["']/, '');
+      return networks.networks
+        .map((n) => n.name)
+        .filter((name) => name.toLowerCase().startsWith(bare))
+        .map((name) => ({
+          value: /[\s"'\\]/.test(name) ? `"${name.replace(/(["\\])/g, '\\$1')}"` : name,
+          kind,
+        }));
+    }
     case 'avatarSet':
       return named(useAvatarSetsStore().all.map((a) => a.name));
     default:
@@ -1738,44 +1766,56 @@ function refreshCommandCompletion(value: string, cursor: number): boolean {
     closeCommandPicker();
     return false;
   }
-  // A slot that can only be a nick or a channel belongs to the picker that
-  // already lists those. Which of the two is the grammar's call (`/invite`
-  // takes either first), not the sigil's: `/join &lo` is a channel.
-  const peopleOrPlaces =
-    ctx.type === 'argument' &&
-    ctx.slots.every((sl) => sl.type === 'live' && (sl.kind === 'nick' || sl.kind === 'channel'));
-  if (ctx.type === 'argument' && peopleOrPlaces && ctx.kind === 'nick') {
+  // A row the arrows chose stays chosen while the token it answers is the same.
+  const prev = commandCtx;
+  const navigated =
+    commandNavigated &&
+    prev !== null &&
+    prev.type === ctx.type &&
+    prev.start === ctx.start &&
+    prev.query === ctx.query;
+  const own = ownPickerFor(ctx);
+  if (ctx.type === 'argument' && own === 'nick') {
     closeSuggesters();
-    commandCtx = ctx;
     pickerOpen.value = true;
     // The `@` is tolerated as muscle memory, as it is on the strip.
     pickerQuery.value = ctx.query.replace(/^@/, '');
     pickerTokenStart = ctx.start;
     pickerTokenEnd = ctx.end;
-    return true;
-  }
-  if (ctx.type === 'argument' && peopleOrPlaces && ctx.kind === 'channel') {
+  } else if (ctx.type === 'argument' && own === 'channel') {
     closeSuggesters();
-    commandCtx = ctx;
     channelPickerOpen.value = true;
     channelPickerQuery.value = ctx.query;
     channelPickerTokenStart = ctx.start;
     channelPickerTokenEnd = ctx.end;
-    return true;
+  } else {
+    const rows = candidatesFor(ctx, {
+      agnosticOnly: active.value?.networkId == null,
+      live: liveCandidates,
+    });
+    if (!rows.length) {
+      closeCommandPicker();
+      return false;
+    }
+    closeSuggesters();
+    commandPickerRows.value = rows;
+    commandPickerOpen.value = true;
   }
-  const rows = candidatesFor(ctx, {
-    agnosticOnly: active.value?.networkId == null,
-    live: liveCandidates,
-  });
-  if (!rows.length) {
-    closeCommandPicker();
-    return false;
-  }
-  closeSuggesters();
   commandCtx = ctx;
-  commandPickerRows.value = rows;
-  commandPickerOpen.value = true;
+  commandNavigated = navigated;
   return true;
+}
+
+// A slot that can only be a nick or a channel belongs to the picker that
+// already lists those. Which of the two is the grammar's call (`/invite` takes
+// either first), not the sigil's: `/join &lo` is a channel.
+function ownPickerFor(ctx: CompletionContext): 'nick' | 'channel' | null {
+  if (ctx.type !== 'argument') return null;
+  if (ctx.kind !== 'nick' && ctx.kind !== 'channel') return null;
+  const only = ctx.slots.every(
+    (sl) => sl.type === 'live' && (sl.kind === 'nick' || sl.kind === 'channel'),
+  );
+  return only ? ctx.kind : null;
 }
 
 // What Tab walks through in place for a command context: the nick or channel
@@ -1783,14 +1823,12 @@ function refreshCommandCompletion(value: string, cursor: number): boolean {
 function commandTabMatches(ctx: CompletionContext): string[] {
   const networkId = active.value?.networkId;
   const buf = buffer.value;
-  if (ctx.type === 'argument' && networkId != null) {
-    const kinds = ctx.slots.flatMap((sl) => (sl.type === 'live' ? [sl.kind] : []));
-    if (kinds.length === ctx.slots.length && ctx.kind === 'nick') {
-      return buf ? buildNickMatches(buf, networkId, ctx.query.replace(/^@/, '')) : [];
-    }
-    if (kinds.length === ctx.slots.length && ctx.kind === 'channel') {
-      return buildChannelMatches(networkId, ctx.query);
-    }
+  const own = networkId == null ? null : ownPickerFor(ctx);
+  if (ctx.type === 'argument' && networkId != null && own === 'nick') {
+    return buf ? buildNickMatches(buf, networkId, ctx.query.replace(/^@/, '')) : [];
+  }
+  if (ctx.type === 'argument' && networkId != null && own === 'channel') {
+    return buildChannelMatches(networkId, ctx.query);
   }
   return candidatesFor(ctx, { agnosticOnly: networkId == null, live: liveCandidates }).map(
     (c) => c.value,
@@ -1798,32 +1836,24 @@ function commandTabMatches(ctx: CompletionContext): string[] {
 }
 
 // Whether Enter should send the line rather than accept the highlighted row,
-// while a command completion is showing. It sends when what's typed already
-// stands: `/away`, `/dcc list`, `/kick bob`, or an argument not started yet
-// (`/part ` + Enter parts). Tab always accepts.
+// while a command completion is showing. A row the arrows chose is accepted.
+// Otherwise the command picker sends when what's typed already stands (`/away`,
+// `/dcc list`, or an argument not started: `/part ` + Enter parts), and a nick
+// or channel argument always sends: the lists hold who is here and where you
+// are, not everyone `/msg` can reach or every channel `/join` can name.
+// Tab always accepts.
 function commandEnterSends(): boolean {
   const ctx = commandCtx;
   if (!ctx) return false;
+  if (commandNavigated) return false;
   if (commandPickerOpen.value) return isComplete(ctx, commandPickerRows.value);
-  if (ctx.type !== 'argument' || !ctx.query) return true;
-  const typed = ctx.query.replace(/^@/, '').toLowerCase();
-  const networkId = active.value?.networkId;
-  const buf = buffer.value;
-  if (networkId == null) return true;
-  const names = pickerOpen.value
-    ? buf
-      ? buildNickMatches(buf, networkId, typed)
-      : []
-    : buildChannelMatches(networkId, ctx.query);
-  return names.some((n) => n.toLowerCase() === typed);
+  return true;
 }
 
-// After a pick that came from a command's grammar, look again: the next slot
-// may have something to offer (`/dcc ` after `/dcc`). Queued behind
-// applyCompletion's own microtask, which is what parks the caret.
-function chainCommandCompletion(): void {
-  queueMicrotask(() => refreshPicker());
-}
+// The picks that lead somewhere: after a command, a subcommand or a setting
+// key, the next slot has its own list (`/jo` + Tab lands on `/join ` with the
+// channels up). A value ends its slot, and a repeat Tab cycles it instead.
+const CHAINS: ReadonlySet<Candidate['kind']> = new Set(['command', 'keyword', 'setting']);
 
 function onCommandPickerSelect(row: Candidate): void {
   const ctx = commandCtx;
@@ -1838,7 +1868,8 @@ function onCommandPickerSelect(row: Candidate): void {
     suffix: ' ',
     matches: commandPickerRows.value.map((r) => r.value),
   });
-  chainCommandCompletion();
+  // Queued behind applyCompletion's own microtask, which is what parks the caret.
+  if (CHAINS.has(row.kind)) queueMicrotask(() => refreshPicker());
 }
 
 function closeHistoryPicker() {
@@ -2096,7 +2127,6 @@ function onPickerSelect(nick: string): void {
   // the session instead of being re-derived on each cycle: a walk seeded from
   // here has to keep reproducing the space the picker already inserted.
   const suffix = isAtLineStart(text.value.slice(0, pickerTokenStart)) ? addressSuffix() : ' ';
-  const fromCommand = commandCtx !== null;
   // pickerQuery is the token minus its '@' — the bare prefix buildNickMatches
   // expects. Read before commitCompletion, which closes the picker and clears it.
   commitCompletion({
@@ -2106,7 +2136,6 @@ function onPickerSelect(nick: string): void {
     suffix,
     matches: buf && networkId != null ? buildNickMatches(buf, networkId, pickerQuery.value) : [],
   });
-  if (fromCommand) chainCommandCompletion();
 }
 
 function onChannelPickerSelect(channel: string): void {
@@ -2116,7 +2145,6 @@ function onChannelPickerSelect(channel: string): void {
   }
   const networkId = active.value?.networkId;
   const token = text.value.slice(channelPickerTokenStart, channelPickerTokenEnd);
-  const fromCommand = commandCtx !== null;
   // Channels just get a trailing space — there's no "addressing" form like
   // nicks' addressSuffix(), and the '#' is already part of the inserted name. The sent
   // `#channel` renders as a clickable join link for the recipient
@@ -2128,7 +2156,6 @@ function onChannelPickerSelect(channel: string): void {
     suffix: ' ',
     matches: networkId == null ? [] : buildChannelMatches(networkId, token),
   });
-  if (fromCommand) chainCommandCompletion();
 }
 
 function onStripSelect(nick: string): void {

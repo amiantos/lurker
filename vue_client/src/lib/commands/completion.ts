@@ -91,6 +91,31 @@ export type CompletionContext =
 const isSpace = (ch: string): boolean => /\s/.test(ch);
 
 /**
+ * Where the token starting at `from` ends. With `quoted`, as `tokenizeArgs`
+ * reads it: a quoted span and a backslashed character don't end a token.
+ */
+function tokenEnd(value: string, from: number, quoted: boolean): number {
+  let i = from;
+  let quote = '';
+  while (i < value.length) {
+    const ch = value[i];
+    if (quoted && ch === '\\' && i + 1 < value.length) {
+      i += 2;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = '';
+    } else if (quoted && (ch === '"' || ch === "'")) {
+      quote = ch;
+    } else if (isSpace(ch)) {
+      break;
+    }
+    i++;
+  }
+  return i;
+}
+
+/**
  * Classify the caret. Null when the line isn't a command, is a `//` escape,
  * names an unknown verb, or the caret is in a slot with nothing to suggest.
  */
@@ -127,7 +152,7 @@ export function completionContext(value: string, caret: number): CompletionConte
     const tokenStart = scan;
     // In the gap before this token: an empty new argument here.
     if (caret < tokenStart) break;
-    while (scan < value.length && !isSpace(value[scan])) scan++;
+    scan = tokenEnd(value, scan, spec.quoted === true);
     if (caret <= scan) {
       query = value.slice(tokenStart, caret);
       start = tokenStart;
@@ -184,6 +209,8 @@ interface Fit {
   readonly restFrom: number;
   /** The typed token is the value of this flag (`-time |`), not a positional. */
   readonly valueOf: FlagSpec | null;
+  /** How many positional tokens came before the typed one. */
+  readonly filled: number;
 }
 
 /**
@@ -228,6 +255,7 @@ function fit(
   const { args } = form;
   const last = args.at(-1);
   let slot = 0;
+  let filled = 0;
   let restFrom = -1;
   for (let i = 0; i < preceding.length; i++) {
     const token = preceding[i];
@@ -235,10 +263,13 @@ function fit(
     if (flag) {
       if (!flag.takes) continue;
       // Its value is the next token: this one being typed, or one to step over.
-      if (i === preceding.length - 1) return { form, arg: null, restFrom: -1, valueOf: flag };
+      if (i === preceding.length - 1) {
+        return { form, arg: null, restFrom: -1, valueOf: flag, filled };
+      }
       i++;
       continue;
     }
+    filled++;
     if (slot >= args.length) {
       // Past the end, only a trailing `rest` slot takes more.
       if (last?.rest) continue;
@@ -254,11 +285,14 @@ function fit(
     const arg = args[slot];
     // The half-typed token counts too, once there is one: `/invite #ot` is a channel.
     if (strict && typing && !agrees(arg, typing)) return null;
-    return { form, arg, restFrom: preceding.length, valueOf: null };
+    // A word in an optional channel slot is more likely the text that follows
+    // it: `/topic Lurker rocks` sets a topic, it doesn't name #lurker.
+    if (typing && arg.optional && arg.kind === 'channel' && !isChannelTarget(typing)) return null;
+    return { form, arg, restFrom: preceding.length, valueOf: null, filled };
   }
-  if (last?.rest) return { form, arg: last, restFrom, valueOf: null };
+  if (last?.rest) return { form, arg: last, restFrom, valueOf: null, filled };
   // Every slot is filled. The form still fits, for the options it takes.
-  return form.flags?.length ? { form, arg: null, restFrom: -1, valueOf: null } : null;
+  return form.flags?.length ? { form, arg: null, restFrom: -1, valueOf: null, filled } : null;
 }
 
 function slotsFor(verb: string, fits: readonly Fit[], query: string): Slot[] {
@@ -269,11 +303,12 @@ function slotsFor(verb: string, fits: readonly Fit[], query: string): Slot[] {
     seen.add(key);
     slots.push(slot);
   };
-  for (const { form, arg, valueOf } of fits) {
+  for (const { form, arg, valueOf, filled } of fits) {
     // A flag's own value is opaque: a duration, a host, a password.
     if (valueOf) continue;
-    // Options are offered once a `-` says one is being typed.
-    if (query.startsWith('-')) {
+    // Options are offered once a `-` says one is being typed, and only where
+    // the handler reads them.
+    if (query.startsWith('-') && !(form.flagsLead && filled > 0)) {
       for (const flag of form.flags ?? []) add(`flag:${flag.name}`, { type: 'flag', flag });
     }
     if (!arg) continue;
@@ -375,7 +410,8 @@ export function candidatesFor(
  */
 export function isComplete(context: CompletionContext, candidates: readonly Candidate[]): boolean {
   if (context.type === 'command') return specFor(context.query) !== undefined;
-  if (!context.query) return true;
-  const typed = context.query.toLowerCase();
+  // A value that holds spaces keeps the one a pick left after it.
+  const typed = context.query.trimEnd().toLowerCase();
+  if (!typed) return true;
   return candidates.some((c) => c.value.toLowerCase() === typed);
 }

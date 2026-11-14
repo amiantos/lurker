@@ -135,7 +135,8 @@ describe('no completion', () => {
 
 describe('commands as candidates', () => {
   it('matches a prefix on names, canonical first', () => {
-    expect(values('/j')).toEqual(['/join', '/jitsi']);
+    expect(values('/j')).toEqual(['/j', '/jitsi']);
+    expect(values('/ji')).toEqual(['/jitsi']);
   });
 
   it('shows an alias once, under the alias, when only the alias matches', () => {
@@ -297,5 +298,42 @@ describe('isComplete', () => {
   it('nothing typed in a slot sends', () => {
     expect(complete('/part ')).toBe(true);
     expect(complete('/dcc ')).toBe(true);
+  });
+});
+
+describe('review fixes', () => {
+  it('a name or alias typed in full leads', () => {
+    expect(values('/who')?.[0]).toBe('/who');
+    expect(values('/hop')).toEqual(['/hop']);
+  });
+
+  it('a value with spaces is whole with the space a pick left after it', () => {
+    const live = () =>
+      ['Monokai Plus', 'Monokai Plus Light'].map((value): Candidate => ({ value, kind: 'theme' }));
+    const ctx = arg('/theme apply Monokai Plus ');
+    expect(isComplete(ctx, candidatesFor(ctx, { live }))).toBe(true);
+  });
+
+  it('options that only lead are not offered after the text', () => {
+    expect(values('/away -a')).toEqual(['-all']);
+    expect(values('/away brb -a')).toBeNull();
+    expect(values('/ignore bob -n')).toEqual(['-network']);
+  });
+
+  it('a word in an optional channel slot is the text after it', () => {
+    expect(completionContext('/topic Lurker', 13)).toBeNull();
+    expect(completionContext('/part lunch', 11)).toBeNull();
+    expect(arg('/part #lu').kind).toBe('channel');
+    expect(arg('/part ').kind).toBe('channel');
+    expect(arg('/join li').kind).toBe('channel');
+  });
+
+  it('reads quotes where the command does', () => {
+    const ctx = arg('/network modify "My Net" -');
+    expect(ctx.preceding).toEqual(['modify', '"My Net"']);
+    expect(ctx.query).toBe('-');
+    expect(arg('/network connect "My N').query).toBe('"My N');
+    // Nowhere else: a quote in a message is a quote.
+    expect(arg('/op "bob al').query).toBe('al');
   });
 });
