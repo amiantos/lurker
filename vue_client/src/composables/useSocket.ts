@@ -410,6 +410,13 @@ function applyEvent(event: any): boolean {
     case 'channel-metadata':
       buffers.setChannelMetadata(event.networkId, event.target, event.values);
       break;
+    case 'peer-account':
+      networks.applyPeerAccount(
+        event.networkId,
+        event.nick,
+        typeof event.account === 'string' ? event.account : null,
+      );
+      break;
     case 'channel-joined':
       buffers.ensure(event.networkId, event.target);
       buffers.setJoined(event.networkId, event.target, true);

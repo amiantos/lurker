@@ -523,6 +523,8 @@ const NON_PERSISTED_TYPES = new Set([
   // State, like member-update; the snapshot carries it for a fresh client.
   'user-metadata',
   'channel-metadata',
+  // A tracked DM peer's services account, as it stands (#646). State too.
+  'peer-account',
 ]);
 
 // Diagnostic: a single synchronous IRC-event handler (NAMES/WHO member-list
@@ -1143,6 +1145,13 @@ export class IrcConnection {
   // appears, torn down only when the last one is released. Hydrated on
   // 'registered' and kept live via trackDmPeer + untrackDmPeer.
   trackedPeers: Map<string, PeerWatch>;
+  // The account a tracked peer's own line to us carried (account-tag), or a
+  // WHOIS of them reported, by lowercase nick: the sources for a DM peer we
+  // share no channel with (#646).
+  private heardAccounts: Map<string, string>;
+  // What clients were last told of each tracked peer's account (#646), by
+  // lowercase nick, so a peer is only spoken of again when it changes.
+  private toldPeerAccounts: Map<string, string>;
   // Last time we surfaced an undecryptable-E2E hint per (channel,peer,kind), to
   // collapse a multi-chunk message's per-chunk hints into one (#382). epoch ms.
   private readonly e2eHintAt = new Map<string, number>();
@@ -1759,6 +1768,8 @@ export class IrcConnection {
     // Hydrated on 'registered' from open DM buffers, and grown as new DM
     // activity arrives.
     this.trackedPeers = new Map();
+    this.heardAccounts = new Map();
+    this.toldPeerAccounts = new Map();
     // MONITOR (IRCv3) is the presence transport. `useMonitor` is set once
     // ISUPPORT confirms the server speaks it; `monitorLimit` is the per-
     // connection watch cap. `pendingMonitorSeed` flips true on 'registered'
@@ -3398,6 +3409,7 @@ export class IrcConnection {
         member.account = account;
         this.publishMemberUpdate(ch.name, member);
       }
+      this.syncPeerAccount(eventNick);
     });
 
     on('motd', (event: Record<string, unknown>) => {
@@ -3728,6 +3740,11 @@ export class IrcConnection {
       if (replay) return;
       if (eventNick && !isServer && !targetIsChannel && !isNotice) {
         this.trackDmPeer(eventNick);
+        this.noteHeardAccount(
+          eventNick,
+          event.account,
+          this.client.network.cap.enabled.includes('account-tag'),
+        );
       }
       if (eventNick) this.markPeerEvent(eventNick, 'online');
     });
@@ -3893,6 +3910,7 @@ export class IrcConnection {
         host: (event.hostname as string) || null,
         account: joinAccount,
       });
+      if (ch) this.syncPeerAccount(eventNick);
       // Someone joining a channel we're in (#1246): the server syncs the
       // room's metadata to them and tells the room nothing of theirs — ergo
       // broadcasts the JOIN, a MODE and an AWAY, and the spec asks no more —
@@ -4063,6 +4081,7 @@ export class IrcConnection {
       const ch = this.channels.get(eventChannel.toLowerCase());
       if (ch) ch.members.delete(eventNick.toLowerCase());
       this.forgetUserMetadata(eventNick);
+      this.syncPeerAccount(eventNick);
       this.publish({
         type: 'part',
         target: channel,
@@ -4131,6 +4150,7 @@ export class IrcConnection {
       const ch = this.channels.get(eventChannel.toLowerCase());
       if (ch) ch.members.delete(eventKicked.toLowerCase());
       this.forgetUserMetadata(eventKicked);
+      this.syncPeerAccount(eventKicked);
       // Were WE the one kicked? Decided here because this is the only place
       // that knows both the kicked nick and our current one — decorateMessage
       // sees neither, and a nick comparison made later would answer for the
@@ -4412,10 +4432,18 @@ export class IrcConnection {
       // (sending to it would 401), and the new name is reachable (if we have
       // a DM with them, or now). Don't fire either side for our own /nick.
       if (!isSelfNick) {
+        // The account we heard of rides the nick too (#646): 'offline' below
+        // drops it with the old one.
+        const heardAccount = this.heardAccounts.get(oldLower);
         this.markPeerEvent(eventNick, 'offline');
         this.markPeerEvent(eventNewNick, 'online');
         this.rekeyCtcpOutstanding(eventNick, eventNewNick);
         this.renameDmForNickChange(eventNick, eventNewNick, userhost, event.time);
+        if (heardAccount && this.trackedPeers.has(newLower)) {
+          this.heardAccounts.set(newLower, heardAccount);
+        }
+        this.syncPeerAccount(eventNick);
+        this.syncPeerAccount(eventNewNick);
         // The server took them off the accept list with the old nick, and the
         // 'online' above came before the rename made the new one a friend.
         this.acceptFriend(eventNewNick);
@@ -4853,6 +4881,15 @@ export class IrcConnection {
           m.host = u.hostname as string;
           changed = true;
         }
+        // WHOX carries the account (#508's follow-up, #646): the one way to
+        // learn it for a member who was here before us, since NAMES has none.
+        // A plain WHO has no such field and leaves what we know alone.
+        const account = normalizeAccount(u.account);
+        if (account !== undefined && m.account !== account) {
+          m.account = account;
+          changed = true;
+          this.syncPeerAccount(m.nick);
+        }
       }
       if (changed) {
         this.publishNames(ch);
@@ -4902,6 +4939,8 @@ export class IrcConnection {
     // is published here beyond the modal payload.
     on('whois', (event: Record<string, unknown>) => {
       if (!event || !event.nick) return;
+      // Whoever asked, what it says of a DM peer's account is news (#646).
+      if (!event.error) this.noteHeardAccount(event.nick as string, event.account, false);
       // A bouncer client's /whois is its own, not the profile modal's (#931).
       if (!this.replyForUser()) return;
       this.publishEphemeral({ type: 'whois_result', whois: event });
@@ -6211,6 +6250,8 @@ export class IrcConnection {
   // After we leave a channel: everyone we only knew from there. Deleting the
   // current key while iterating a Map is defined behaviour.
   private sweepUserMetadata(): void {
+    // The same moment for a DM peer's account, where that room was our source.
+    this.syncAllPeerAccounts();
     for (const lower of this.userMetadata.keys()) this.forgetUserMetadata(lower);
   }
 
@@ -6269,8 +6310,12 @@ export class IrcConnection {
     // Every sighting, not just transitions: the stored state can say online
     // from before a restart, when this socket has accepted nobody yet. Away
     // and back are sightings too (a WHO row or away-notify can come first).
-    if (state === 'offline') this.forgetAccepted(canonical);
-    else this.noteSeenOnline(canonical);
+    if (state === 'offline') {
+      this.forgetAccepted(canonical);
+      // Gone, and the account we heard of with them (#646).
+      this.heardAccounts.delete(canonical.toLowerCase());
+      this.syncPeerAccount(canonical);
+    } else this.noteSeenOnline(canonical);
     const prev = getPeerPresence(this.network.id, canonical);
     const prevState = prev?.state || null;
     let allowed = false;
@@ -6323,6 +6368,85 @@ export class IrcConnection {
     for (const nick of this.trackedPeers.keys()) {
       this.markPeerEvent(nick, 'offline');
     }
+    // Nobody's account outlives the socket that told us of it (#646). Said
+    // outright, not through syncPeerAccount: the state is still 'connected'
+    // here and the member maps still hold what the dead socket taught them.
+    this.heardAccounts.clear();
+    for (const nick of this.toldPeerAccounts.keys()) {
+      this.publishEphemeral({
+        type: 'peer-account',
+        target: this.serverTarget(),
+        nick,
+        account: null,
+      });
+    }
+    this.toldPeerAccounts.clear();
+  }
+
+  // ─── DM peer accounts (#646) ───────────────────────────────────────────────
+  // Which services account a tracked DM peer is logged in to, told to clients
+  // as its own small state: `peerAccounts` in the snapshot, a `peer-account`
+  // frame on a change. Not left to the client's member lists because those
+  // arrive per channel, on demand (#1292) — a client that hasn't opened the
+  // channel we share with the peer has no list to look in.
+
+  // The account we know `lower` is logged in to, or null: logged out and
+  // unknown alike, as nothing is shown for either. A shared channel is the
+  // better source (extended-join, account-notify and WHOX keep it current);
+  // their last line to us, or a WHOIS, is all there is without one.
+  private peerAccountOf(lower: string): string | null {
+    if (this.state !== 'connected') return null;
+    for (const ch of this.channels.values()) {
+      const account = ch.members.get(lower)?.account;
+      if (account !== undefined) return account;
+    }
+    return this.heardAccounts.get(lower) ?? null;
+  }
+
+  // Tell clients a tracked peer's account if it isn't what they were last told.
+  // Cheap for anyone else: called on every part, quit and account change.
+  private syncPeerAccount(nick: string): void {
+    const lower = nick.toLowerCase();
+    const account = this.trackedPeers.has(lower) ? this.peerAccountOf(lower) : null;
+    if ((this.toldPeerAccounts.get(lower) ?? null) === account) return;
+    if (account === null) this.toldPeerAccounts.delete(lower);
+    else this.toldPeerAccounts.set(lower, account);
+    this.publishEphemeral({
+      type: 'peer-account',
+      target: this.serverTarget(),
+      nick,
+      account,
+    });
+  }
+
+  // What a tracked peer's line to us, or a WHOIS of them, says of their
+  // account. `absentMeansOut`: no account here is the server saying they are
+  // logged out — true of a line under account-tag, never of a WHOIS, which
+  // many networks answer without a 330 for anyone.
+  private noteHeardAccount(nick: string, raw: unknown, absentMeansOut: boolean): void {
+    const lower = nick.toLowerCase();
+    if (!this.trackedPeers.has(lower)) return;
+    const account = raw === undefined || raw === '' ? null : normalizeAccount(raw);
+    if (typeof account === 'string') this.heardAccounts.set(lower, account);
+    else if (absentMeansOut) this.heardAccounts.delete(lower);
+    this.syncPeerAccount(nick);
+  }
+
+  // After we leave a channel, or a nick stops being tracked: whoever's account
+  // we can no longer vouch for.
+  private syncAllPeerAccounts(): void {
+    const nicks = new Set([...this.trackedPeers.keys(), ...this.toldPeerAccounts.keys()]);
+    for (const nick of nicks) this.syncPeerAccount(nick);
+  }
+
+  // Every tracked peer with a known account, for the snapshot.
+  private peerAccountsView(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const lower of this.trackedPeers.keys()) {
+      const account = this.peerAccountOf(lower);
+      if (account !== null) out[lower] = account;
+    }
+    return out;
   }
 
   // Deduped union of the nicks we want MONITORed — every tracked reason shares
@@ -6669,6 +6793,7 @@ export class IrcConnection {
       return true;
     }
     this.addPeerReason(lower, reason);
+    this.syncPeerAccount(nick);
     // A DM peer we share no channel with (#1269): the server tells us their
     // record when they come online while watched, never when we start
     // watching someone already there. Ask.
@@ -6754,6 +6879,8 @@ export class IrcConnection {
     existing?.reasons.delete('dm');
     if (existing && existing.reasons.size > 0) return; // still held → keep
     this.trackedPeers.delete(lower);
+    this.heardAccounts.delete(lower);
+    this.syncPeerAccount(nick);
     this.teardownPeerWatch(nick);
     // Nothing watches them now; what we hold of their metadata only goes stale.
     this.forgetUserMetadata(nick);
@@ -13922,6 +14049,9 @@ export class IrcConnection {
           })
           .map((row) => [row.nick.toLowerCase(), row]),
       ),
+      // Lowercase nick → services account, for the tracked DM peers known to
+      // be logged in (#646). Kept current by `peer-account` frames.
+      peerAccounts: this.peerAccountsView(),
     };
   }
 }

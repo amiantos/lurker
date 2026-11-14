@@ -104,15 +104,8 @@
       </div>
       <div class="topic-meta">
         <span v-if="isVirtual || active" class="buffer"
-          >{{ bufferLabel
-          }}<BadgeCheckIcon
-            v-if="peerAccount"
-            class="peer-account"
-            role="img"
-            :aria-label="`Logged in as ${peerAccount}`"
-            ><title>Logged in as {{ peerAccount }}</title></BadgeCheckIcon
-          ></span
-        >
+          >{{ bufferLabel }}<BufferStatusIcons v-if="statusBuf" :buf="statusBuf"
+        /></span>
         <template v-if="active && topic">
           <!-- A channel topic is user prose: auto-link it and open the full
                view on click. A DM's pseudo-topic is the peer's ident@host —
@@ -365,6 +358,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
+import BufferStatusIcons from '../components/BufferStatusIcons.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import ThreadPanel from '../components/ThreadPanel.vue';
@@ -412,7 +406,6 @@ import ProfileEditorModal from '../components/ProfileEditorModal.vue';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
 import {
-  BadgeCheckIcon,
   BellIcon,
   BookmarkIcon,
   ChevronLeftIcon,
@@ -446,7 +439,6 @@ const {
   active,
   activeBuf,
   topic,
-  peerAccount,
   isServerBuffer,
   isChannel,
   bufferLabel,
@@ -631,6 +623,14 @@ function sendDmFile() {
 // Channel notification level (always/highlights/nothing/muted) now lives in the
 // buffer context-menu ladder (right-click the sidebar row, or the topic-bar cog),
 // so there is no dedicated topic-bar bell anymore (issue #359).
+
+// The buffer whose standing facts sit by its name in the topic bar (#422): a
+// channel or a DM. The system console, a server buffer and the virtual ones
+// have none.
+const statusBuf = computed((): Buffer | null => {
+  const buf = activeBuf.value as Buffer | null;
+  return buf && (buf.kind === 'channel' || buf.kind === 'dm') ? buf : null;
+});
 
 // User count for the active channel buffer. Sits in the topic bar (next to
 // the members-toggle button) rather than the status bar — the count is a
@@ -1045,12 +1045,6 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .topic .buffer {
   color: var(--accent);
-}
-/* The DM peer is logged in to services (#646): a quiet mark after the name. */
-.topic .buffer .peer-account {
-  margin-left: var(--space-2);
-  color: var(--fg-muted);
-  vertical-align: text-bottom;
 }
 .topic .topic-text {
   color: var(--fg-muted);

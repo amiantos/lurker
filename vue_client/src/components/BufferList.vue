@@ -123,7 +123,6 @@
                     >{{ networkAbbrevs.get(row.networkId) || row.networkName }}</span
                   ></span
                 >
-                <BufferStatusIcons :buf="row.buf" />
                 <span
                   v-if="hasDraft(row.buf)"
                   class="badge draft"
@@ -233,7 +232,6 @@
                 @contextmenu.prevent="onBufferContextMenu($event, buf)"
               >
                 <span class="label">{{ labelFor(buf) }}</span>
-                <BufferStatusIcons :buf="buf" />
                 <span
                   v-if="hasDraft(buf)"
                   class="badge draft"
@@ -281,7 +279,6 @@
               @contextmenu.prevent="onBufferContextMenu($event, buf)"
             >
               <span class="label">{{ labelFor(buf) }}</span>
-              <BufferStatusIcons :buf="buf" />
               <span
                 v-if="hasDraft(buf)"
                 class="badge draft"
@@ -373,7 +370,6 @@ import {
 } from '../utils/peerPresence.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
-import BufferStatusIcons from './BufferStatusIcons.vue';
 import {
   ChevronsLeftIcon,
   EllipsisVerticalIcon,
@@ -1359,11 +1355,8 @@ onBeforeUnmount(() => {
 .channels li.peer-offline .label {
   font-style: italic;
 }
-/* The name takes what it needs and gives way first; the status slot after it
-   (BufferStatusIcons) takes the spare width, so its icons sit by the name. */
 .label {
-  flex: 0 1 auto;
-  min-width: 0;
+  flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

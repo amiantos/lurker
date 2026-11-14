@@ -2,8 +2,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// The status slot of a buffer-list row (#422): one icon per standing fact
-// about the buffer, each named for a pointer and for a screen reader.
+// The status icons by a buffer's name in the topic bar (#422, #646): one per
+// standing fact about the buffer, each named for a pointer and a screen reader.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
@@ -16,12 +16,12 @@ import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useE2eChannelsStore } from '../stores/e2eChannels.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useNetworksStore } from '../stores/networks.js';
 
 beforeEach(() => setActivePinia(createPinia()));
 
 function labels(buf: Buffer): string[] {
   const w = mount(BufferStatusIcons, { props: { buf } });
-  expect(w.find('.status-icons').exists()).toBe(true);
   return w.findAll('svg').map((svg) => {
     expect(svg.find('title').text()).toBe(svg.attributes('aria-label'));
     return svg.attributes('aria-label')!;
@@ -29,8 +29,50 @@ function labels(buf: Buffer): string[] {
 }
 
 describe('BufferStatusIcons', () => {
-  it('is an empty slot for a buffer with nothing to say', () => {
-    expect(labels(useBuffersStore().ensure(1, '#plain'))).toEqual([]);
+  it('renders nothing for a buffer with nothing to say', () => {
+    const w = mount(BufferStatusIcons, { props: { buf: useBuffersStore().ensure(1, '#plain') } });
+    expect(w.find('.status-icons').exists()).toBe(false);
+  });
+
+  describe('a DM whose peer is logged in (#646)', () => {
+    const connected = (extra: Record<string, unknown>) =>
+      useNetworksStore().applySnapshot([
+        { networkId: 1, channels: [], state: 'connected', ...extra },
+      ]);
+
+    it('says which account, on the server\u2019s word', () => {
+      connected({ peerAccounts: { bob: 'bobacct' } });
+      const buffers = useBuffersStore();
+      expect(labels(buffers.ensure(1, 'Bob'))).toEqual(['Logged in as bobacct']);
+      expect(labels(buffers.ensure(1, 'carol'))).toEqual([]);
+    });
+
+    it('follows a peer-account frame in and out', () => {
+      connected({ peerAccounts: {} });
+      const networks = useNetworksStore();
+      const bob = useBuffersStore().ensure(1, 'bob');
+      networks.applyPeerAccount(1, 'Bob', 'bobacct');
+      expect(labels(bob)).toEqual(['Logged in as bobacct']);
+      networks.applyPeerAccount(1, 'bob', null);
+      expect(labels(bob)).toEqual([]);
+    });
+
+    it('shows nothing while the network is not connected', () => {
+      connected({ peerAccounts: { bob: 'bobacct' }, state: 'disconnected' });
+      expect(labels(useBuffersStore().ensure(1, 'bob'))).toEqual([]);
+    });
+
+    it('never marks a channel that shares the name', () => {
+      connected({ peerAccounts: { '#bob': 'x' } });
+      expect(labels(useBuffersStore().ensure(1, '#bob'))).toEqual([]);
+    });
+
+    it('falls back to a held member list on a server that does not say', () => {
+      connected({});
+      const buffers = useBuffersStore();
+      buffers.setMembers(1, '#one', [{ nick: 'bob', modes: [], away: false, account: 'bobacct' }]);
+      expect(labels(buffers.ensure(1, 'bob'))).toEqual(['Logged in as bobacct']);
+    });
   });
 
   it('marks an encrypted channel', () => {

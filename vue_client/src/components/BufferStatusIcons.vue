@@ -3,15 +3,14 @@
   SPDX-License-Identifier: MPL-2.0
 -->
 <!--
-  The status slot of a buffer-list row (#422): small dim icons for standing
-  facts about the buffer, as opposed to the badges after it, which count what
-  is waiting. It sits between the name and the badges and takes the row's
-  spare width, so the icons hug the name and the badges stay at the edge.
+  The standing facts about a buffer, as small dim icons after its name in the
+  topic bar (#422, #646): encrypted, always-notify, muted, and for a DM, that
+  the peer is logged in to services. Renders nothing when none holds.
 
   A new state is one more entry in `items`.
 -->
 <template>
-  <span class="status-icons">
+  <span v-if="items.length" class="status-icons">
     <component
       :is="item.icon"
       v-for="item in items"
@@ -25,17 +24,20 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { BellOffIcon, BellRingIcon, LockIcon, type LucideIcon } from '@lucide/vue';
-import type { Buffer } from '../stores/buffers.js';
+import { BadgeCheckIcon, BellOffIcon, BellRingIcon, LockIcon, type LucideIcon } from '@lucide/vue';
+import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useE2eChannelsStore } from '../stores/e2eChannels.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useNetworksStore } from '../stores/networks.js';
 
 const props = defineProps<{ buf: Buffer }>();
 
+const buffers = useBuffersStore();
 const channelNotify = useChannelNotifyStore();
 const e2eChannels = useE2eChannelsStore();
 const ignores = useIgnoresStore();
+const networks = useNetworksStore();
 
 interface StatusItem {
   key: string;
@@ -43,10 +45,22 @@ interface StatusItem {
   label: string;
 }
 
+// The account a DM's peer is logged in to. The server says for the peers of
+// open DMs; one that predates that leaves the member lists we happen to hold.
+function peerAccount(networkId: number, nick: string): string | null {
+  const told = networks.peerAccountFor(networkId, nick);
+  if (told !== undefined) return told;
+  return buffers.accountFor(networkId, nick) || null;
+}
+
 const items = computed<StatusItem[]>(() => {
-  const { networkId, target } = props.buf;
+  const { networkId, target, kind } = props.buf;
   if (networkId == null) return [];
   const out: StatusItem[] = [];
+  const account = kind === 'dm' ? peerAccount(networkId, target) : null;
+  if (account) {
+    out.push({ key: 'account', icon: BadgeCheckIcon, label: `Logged in as ${account}` });
+  }
   if (e2eChannels.isEnabled(networkId, target)) {
     out.push({ key: 'e2e', icon: LockIcon, label: 'End-to-end encrypted' });
   }
@@ -62,11 +76,11 @@ const items = computed<StatusItem[]>(() => {
 
 <style scoped>
 .status-icons {
-  flex: 1 0 auto;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  padding-left: var(--space-2);
+  gap: var(--space-2);
+  margin-left: var(--space-3);
   color: var(--fg-muted);
+  vertical-align: text-bottom;
 }
 </style>
