@@ -1599,6 +1599,24 @@ function onKeydown(e: KeyboardEvent): void {
 
   const value = text.value;
   const cursor = el.selectionStart ?? value.length;
+
+  // A command line with its picker dismissed (Escape) still completes in place,
+  // through the same candidates the picker would have listed (#533).
+  const ctx = completionContext(value, cursor);
+  const commandMatches = ctx ? commandTabMatches(ctx) : [];
+  if (ctx && commandMatches.length) {
+    completion = {
+      prefix: value.slice(0, ctx.start),
+      tail: value.slice(ctx.end),
+      suffix: ' ',
+      matches: commandMatches,
+      index: 0,
+      caret: 0,
+    };
+    applyCompletion();
+    return;
+  }
+
   const { token, start, end } = tokenAtCursor(value, cursor);
   if (!token) return;
 
@@ -1758,6 +1776,25 @@ function refreshCommandCompletion(value: string, cursor: number): boolean {
   commandPickerRows.value = rows;
   commandPickerOpen.value = true;
   return true;
+}
+
+// What Tab walks through in place for a command context: the nick or channel
+// list where the grammar asks for one, the command picker's rows otherwise.
+function commandTabMatches(ctx: CompletionContext): string[] {
+  const networkId = active.value?.networkId;
+  const buf = buffer.value;
+  if (ctx.type === 'argument' && networkId != null) {
+    const kinds = ctx.slots.flatMap((sl) => (sl.type === 'live' ? [sl.kind] : []));
+    if (kinds.length === ctx.slots.length && ctx.kind === 'nick') {
+      return buf ? buildNickMatches(buf, networkId, ctx.query.replace(/^@/, '')) : [];
+    }
+    if (kinds.length === ctx.slots.length && ctx.kind === 'channel') {
+      return buildChannelMatches(networkId, ctx.query);
+    }
+  }
+  return candidatesFor(ctx, { agnosticOnly: networkId == null, live: liveCandidates }).map(
+    (c) => c.value,
+  );
 }
 
 // Whether Enter should send the line rather than accept the highlighted row,

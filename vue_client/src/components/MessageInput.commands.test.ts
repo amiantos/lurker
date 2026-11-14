@@ -187,6 +187,20 @@ describe('slash-command completion', () => {
     expect(sent()).toEqual([{ type: 'part', networkId: 1, channel: '#mango', reason: '' }]);
   });
 
+  it('Tab still completes in place once the picker is dismissed', async () => {
+    const el = await composer();
+    await type(el, '/dcc c');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await flush();
+    expect(rows()).toEqual([]);
+    await key(el, 'Tab');
+    expect(el.value).toBe('/dcc cancel ');
+    // The pick looked again and found nothing to offer for an id, so the next
+    // Tab is still the same walk.
+    await key(el, 'Tab');
+    expect(el.value).toBe('/dcc clear ');
+  });
+
   it('leaves free text to the ordinary pickers', async () => {
     const el = await composer();
     await type(el, '/me waves at @al');
