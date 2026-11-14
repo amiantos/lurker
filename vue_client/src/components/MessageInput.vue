@@ -116,6 +116,16 @@
       @select="onChannelPickerSelect"
       @close="closeChannelPicker"
     />
+    <!-- Slash-command completion (#533): commands, then subcommands, options
+         and named things. Nick and channel arguments use the two pickers above. -->
+    <CommandPicker
+      ref="commandPickerEl"
+      :open="commandPickerOpen"
+      :rows="commandPickerRows"
+      :anchor="formEl"
+      @select="onCommandPickerSelect"
+      @close="closeCommandPicker"
+    />
     <!-- Previous-input recall menu, opened by tapping the `>` prompt — the
          pointer path to history for mobile, where Up-arrow is unreachable
          (issue #204). Anchored to the form like the pickers above; `toggle-el`
@@ -156,7 +166,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
+import { ref, shallowRef, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
 import {
   tagSupport,
   useNetworksStore,
@@ -165,6 +175,15 @@ import {
   type Network,
 } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import { helpLines, resolveVerb } from '../lib/commands/registry.js';
+import {
+  completionContext,
+  candidatesFor,
+  isComplete,
+  type Candidate,
+  type CompletionContext,
+  type LiveKind,
+} from '../lib/commands/completion.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
 import { parseRelayCommand } from '../lib/commands/relay.js';
@@ -274,6 +293,7 @@ import {
 import type { EmojiMatch } from '../utils/emojiData.js';
 import NickPicker from './NickPicker.vue';
 import ChannelPicker from './ChannelPicker.vue';
+import CommandPicker from './CommandPicker.vue';
 import HistoryPicker from './HistoryPicker.vue';
 import EmojiPicker from './EmojiPicker.vue';
 import LongMessageUploadModal from './LongMessageUploadModal.vue';
@@ -406,6 +426,20 @@ const emojiPickerOpen = ref(false);
 const emojiPickerQuery = ref('');
 const emojiPickerEl = ref<InstanceType<typeof EmojiPicker> | null>(null);
 
+// Slash-command completion (#533). `commandCtx` is set while a command's grammar
+// is what opened a completion UI: the command picker itself, or the nick or
+// channel picker standing in for it on a nick or channel argument. It is what
+// tells those two that Enter may mean "send" (see commandEnterSends).
+const commandPickerEl = ref<InstanceType<typeof CommandPicker> | null>(null);
+const commandPickerOpen = ref(false);
+const commandPickerRows = shallowRef<readonly Candidate[]>([]);
+let commandCtx: CompletionContext | null = null;
+// The arrows moved the highlight since the token last changed: the row is then
+// a choice, and Enter takes it whatever the typed text would do on its own.
+let commandNavigated = false;
+// One empty list for the closed picker, so closing it again changes nothing.
+const NO_ROWS: readonly Candidate[] = Object.freeze([]);
+
 const active = computed(() => networks.activeBuffer);
 
 // The app-scoped system buffer (issue #355) has no network, so networks
@@ -431,6 +465,8 @@ const text = computed({
   set(value) {
     if (isSystemBuffer.value) {
       systemText.value = value;
+      // For command completion (#533); onInput does nothing else here.
+      onInput();
       return;
     }
     const a = active.value;
@@ -1281,9 +1317,10 @@ function onKeydown(e: KeyboardEvent): void {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         nickPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        commandNavigated = commandCtx !== null;
         return;
       }
-    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
       e.preventDefault();
       nickPickerEl.value.confirmActive();
       return;
@@ -1301,11 +1338,32 @@ function onKeydown(e: KeyboardEvent): void {
       if (!e.altKey && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
         channelPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        commandNavigated = commandCtx !== null;
         return;
       }
-    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
       e.preventDefault();
       channelPickerEl.value.confirmActive();
+      return;
+    }
+  }
+  // The command picker (#533) owns the same keys the same way, with one
+  // difference in Enter. `/` is an explicit prefix, like `@` and `#`, so Enter
+  // accepts the highlighted row; but a command line is also something you send,
+  // so once what's typed stands on its own (`/away`, `/dcc list`) Enter sends
+  // it. While a command's argument is what opened the two pickers above, Enter
+  // sends there too, unless the arrows chose a row. Tab always accepts.
+  if (commandPickerOpen.value && commandPickerEl.value?.hasCandidates()) {
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (!e.altKey && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        commandPickerEl.value.moveActive(e.key === 'ArrowUp' ? -1 : 1);
+        commandNavigated = true;
+        return;
+      }
+    } else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !commandEnterSends())) {
+      e.preventDefault();
+      commandPickerEl.value.confirmActive();
       return;
     }
   }
@@ -1428,8 +1486,9 @@ function onKeydown(e: KeyboardEvent): void {
     e.key === 'Escape' &&
     !e.shiftKey &&
     replies.forKey(networks.activeKey) &&
-    !pickerOpen.value &&
-    !channelPickerOpen.value &&
+    !(pickerOpen.value && (!commandCtx || nickPickerEl.value?.hasCandidates())) &&
+    !(channelPickerOpen.value && (!commandCtx || channelPickerEl.value?.hasCandidates())) &&
+    !commandPickerOpen.value &&
     !emojiPickerOpen.value &&
     !historyPickerOpen.value
   ) {
@@ -1524,10 +1583,18 @@ function onKeydown(e: KeyboardEvent): void {
     if (completion) resetCompletion();
     return;
   }
-  if (!sendable.value) return;
-  e.preventDefault();
+  // The system buffer and a server buffer take commands and no chat, so Tab
+  // completes a command line there and is otherwise left to the browser.
+  const commandsOnly = !sendable.value;
+  if (commandsOnly && !((isSystemBuffer.value || isServer.value) && !isPaused.value)) return;
   const el = inputEl.value;
   if (!el) return;
+  if (commandsOnly && !completion) {
+    const at = el.selectionStart ?? text.value.length;
+    const here = completionContext(text.value, at);
+    if (!here || !commandTabMatches(here).length) return;
+  }
+  e.preventDefault();
 
   // A live session cycles — but only if the caret is still where the last
   // insertion left it. A click or tap inside the textarea moves the caret
@@ -1548,6 +1615,25 @@ function onKeydown(e: KeyboardEvent): void {
 
   const value = text.value;
   const cursor = el.selectionStart ?? value.length;
+
+  // A command line with its picker dismissed (Escape) still completes in place,
+  // through the same candidates the picker would have listed (#533).
+  const ctx = completionContext(value, cursor);
+  const commandMatches = ctx ? commandTabMatches(ctx) : [];
+  if (ctx && commandMatches.length) {
+    completion = {
+      prefix: value.slice(0, ctx.start),
+      tail: value.slice(ctx.end),
+      suffix: ' ',
+      matches: commandMatches,
+      index: 0,
+      caret: 0,
+    };
+    applyCompletion();
+    return;
+  }
+  if (commandsOnly) return;
+
   const { token, start, end } = tokenAtCursor(value, cursor);
   if (!token) return;
 
@@ -1585,6 +1671,7 @@ function closePicker() {
   pickerQuery.value = '';
   pickerTokenStart = -1;
   pickerTokenEnd = -1;
+  closeCommandPicker();
 }
 
 function closeChannelPicker() {
@@ -1592,6 +1679,209 @@ function closeChannelPicker() {
   channelPickerQuery.value = '';
   channelPickerTokenStart = -1;
   channelPickerTokenEnd = -1;
+  closeCommandPicker();
+}
+
+// Also drops `commandCtx`, so closing the nick or channel picker (which is how
+// every teardown path in this file closes "the pickers") ends a command
+// completion whichever of the three was showing it.
+function closeCommandPicker() {
+  commandPickerOpen.value = false;
+  if (commandPickerRows.value.length) commandPickerRows.value = NO_ROWS;
+  commandCtx = null;
+  commandNavigated = false;
+}
+
+// The lists a command's grammar can name that only this component can read.
+// Nicks and channels are absent on purpose: those slots open their own pickers.
+function liveCandidates(kind: LiveKind, query: string, preceding: readonly string[]): Candidate[] {
+  // A value that holds spaces keeps the one a pick left after it.
+  const q = query.trimEnd().toLowerCase();
+  const named = (names: readonly string[]): Candidate[] =>
+    names.filter((n) => n.toLowerCase().startsWith(q)).map((value) => ({ value, kind }));
+  switch (kind) {
+    case 'setting': {
+      // Keys are dotted paths, so a word from the middle (`compact`) has to find
+      // its key too. Prefix matches lead.
+      const exposed = REGISTRY.filter(settingExposed);
+      const row = (o: SettingOption): Candidate => ({
+        value: o.key,
+        detail: formatSettingValue(o, settings.effective(o.key)),
+        kind,
+      });
+      return [
+        ...exposed.filter((o) => o.key.startsWith(q)),
+        ...exposed.filter((o) => !o.key.startsWith(q) && o.key.includes(q)),
+      ].map(row);
+    }
+    case 'settingValue': {
+      const opt = lookupSetting(preceding[0] ?? '');
+      if (opt?.type === 'bool') return named(['on', 'off']);
+      if (opt?.type === 'enum') {
+        return opt.choices
+          .filter((c) => c.toLowerCase().startsWith(q))
+          .map((value) => ({
+            value,
+            ...(opt.choiceLabels?.[value] ? { detail: opt.choiceLabels[value] } : {}),
+            kind,
+          }));
+      }
+      return [];
+    }
+    case 'theme':
+      return named(useThemesStore().all.map((t) => t.name));
+    case 'network': {
+      // `/network` reads quotes, and a name with a space needs them.
+      const bare = q.replace(/^["']/, '');
+      const quote = (name: string) =>
+        /[\s"'\\]/.test(name) ? `"${name.replace(/(["\\])/g, '\\$1')}"` : name;
+      return [
+        // It takes an id too, and an id typed in full is not the start of a name.
+        ...networks.networks
+          .filter((n) => String(n.id) === bare)
+          .map((n) => ({ value: bare, detail: n.name, kind })),
+        ...networks.networks
+          .filter((n) => n.name.toLowerCase().startsWith(bare))
+          .map((n) => ({ value: quote(n.name), kind })),
+      ];
+    }
+    case 'avatarSet':
+      return named(useAvatarSetsStore().all.map((a) => a.name));
+    default:
+      return [];
+  }
+}
+
+// Everything a command completion replaces when it opens.
+function closeSuggesters(): void {
+  closePicker();
+  closeStrip();
+  closeChannelPicker();
+  closeEmojiStrip();
+  closeEmojiPicker();
+}
+
+// Open whichever UI completes the token under the caret of a slash-command
+// line. False when there is nothing to complete there, and refreshPicker
+// carries on as it would for any other text, so `/me @al` still finds a nick.
+function refreshCommandCompletion(value: string, cursor: number): boolean {
+  const ctx = completionContext(value, cursor);
+  if (!ctx) {
+    closeCommandPicker();
+    return false;
+  }
+  // A row the arrows chose stays chosen while the token it answers is the same.
+  const prev = commandCtx;
+  const navigated =
+    commandNavigated &&
+    prev !== null &&
+    prev.type === ctx.type &&
+    prev.start === ctx.start &&
+    prev.query === ctx.query;
+  const own = ownPickerFor(ctx);
+  if (ctx.type === 'argument' && own === 'nick') {
+    closeSuggesters();
+    pickerOpen.value = true;
+    // The `@` is tolerated as muscle memory, as it is on the strip.
+    pickerQuery.value = ctx.query.replace(/^@/, '');
+    pickerTokenStart = ctx.start;
+    pickerTokenEnd = ctx.end;
+  } else if (ctx.type === 'argument' && own === 'channel') {
+    closeSuggesters();
+    channelPickerOpen.value = true;
+    channelPickerQuery.value = ctx.query;
+    channelPickerTokenStart = ctx.start;
+    channelPickerTokenEnd = ctx.end;
+  } else {
+    const rows = candidatesFor(ctx, {
+      agnosticOnly: active.value?.networkId == null,
+      live: liveCandidates,
+    });
+    if (!rows.length) {
+      closeCommandPicker();
+      return false;
+    }
+    closeSuggesters();
+    commandPickerRows.value = rows;
+    commandPickerOpen.value = true;
+  }
+  commandCtx = ctx;
+  commandNavigated = navigated;
+  return true;
+}
+
+// A slot that can only be a nick or a channel belongs to the picker that
+// already lists those. Which of the two is the grammar's call (`/invite` takes
+// either first), not the sigil's: `/join &lo` is a channel.
+function ownPickerFor(ctx: CompletionContext): 'nick' | 'channel' | null {
+  if (ctx.type !== 'argument') return null;
+  if (ctx.kind !== 'nick' && ctx.kind !== 'channel') return null;
+  const only = ctx.slots.every(
+    (sl) => sl.type === 'live' && (sl.kind === 'nick' || sl.kind === 'channel'),
+  );
+  if (!only) return null;
+  // A target is often either (`/notice #chan`, `/ignore #chan`), and what was
+  // typed says which.
+  return isChannelTarget(ctx.query) ? 'channel' : ctx.kind;
+}
+
+// What Tab walks through in place for a command context: the nick or channel
+// list where the grammar asks for one, the command picker's rows otherwise.
+function commandTabMatches(ctx: CompletionContext): string[] {
+  const networkId = active.value?.networkId;
+  const buf = buffer.value;
+  const own = networkId == null ? null : ownPickerFor(ctx);
+  if (ctx.type === 'argument' && networkId != null && own === 'nick') {
+    return buf ? buildNickMatches(buf, networkId, ctx.query.replace(/^@/, '')) : [];
+  }
+  if (ctx.type === 'argument' && networkId != null && own === 'channel') {
+    return buildChannelMatches(networkId, ctx.query);
+  }
+  return candidatesFor(ctx, { agnosticOnly: networkId == null, live: liveCandidates }).map(
+    (c) => c.value,
+  );
+}
+
+// Whether Enter should send the line rather than accept the highlighted row,
+// while a command completion is showing. A row the arrows chose is accepted.
+// Otherwise the command picker sends when what's typed already stands (`/away`,
+// `/dcc list`, or an argument not started: `/part ` + Enter parts), and a nick
+// or channel argument always sends: the lists hold who is here and where you
+// are, not everyone `/msg` can reach or every channel `/join` can name.
+// Tab always accepts.
+function commandEnterSends(): boolean {
+  const ctx = commandCtx;
+  if (!ctx) return false;
+  if (commandNavigated) return false;
+  if (commandPickerOpen.value) return isComplete(ctx, commandPickerRows.value);
+  return true;
+}
+
+// The picks that lead somewhere: after a command, a subcommand or a setting
+// key, the next slot has its own list (`/jo` + Tab lands on `/join ` with the
+// channels up). A value ends its slot, and a repeat Tab cycles it instead.
+const CHAINS: ReadonlySet<Candidate['kind']> = new Set(['command', 'keyword', 'setting']);
+
+function onCommandPickerSelect(row: Candidate): void {
+  const ctx = commandCtx;
+  // The rows answer the token as it was when they were listed. The caret may
+  // have moved since (Home), or the draft changed under it from another device.
+  const el = inputEl.value;
+  const now = completionContext(text.value, el?.selectionStart ?? text.value.length);
+  if (!ctx || !now || now.start !== ctx.start || now.end !== ctx.end || now.query !== ctx.query) {
+    closeCommandPicker();
+    refreshPicker();
+    return;
+  }
+  commitCompletion({
+    start: ctx.start,
+    end: ctx.end,
+    pick: row.value,
+    suffix: ' ',
+    matches: commandPickerRows.value.map((r) => r.value),
+  });
+  // Queued behind applyCompletion's own microtask, which is what parks the caret.
+  if (CHAINS.has(row.kind)) queueMicrotask(() => refreshPicker());
 }
 
 function closeHistoryPicker() {
@@ -1724,6 +2014,11 @@ function refreshPicker() {
   }
   const value = text.value;
   const cursor = el.selectionStart ?? value.length;
+
+  // A slash-command line asks the command's grammar first (#533). Where the
+  // grammar has nothing to say (free text, an unknown verb) the rest of this
+  // function runs as it would for any message.
+  if (refreshCommandCompletion(value, cursor)) return;
 
   // An in-progress `:shortcode:` owns the suggester slot — it isn't a nick
   // token, and both emoji UIs and the nick picker/strip share one slot over the
@@ -2073,6 +2368,18 @@ function onInput() {
   // must fire before the sendable gate so it also closes on :server: buffers
   // (editable but not "sendable"), where the menu can be open over /raw history.
   closeHistoryPicker();
+  if ((isSystemBuffer.value || isServer.value) && !isPaused.value) {
+    // The system buffer and a server buffer take slash commands and no chat:
+    // no nicks to complete, no typing state. They get command completion and
+    // nothing else from here down.
+    if (completion) resetCompletion();
+    const el = inputEl.value;
+    // Nothing below runs here to close a picker the caret has left behind.
+    if (!el || !refreshCommandCompletion(text.value, el.selectionStart ?? text.value.length)) {
+      closeSuggesters();
+    }
+    return;
+  }
   if (!sendable.value || !active.value) return;
   if (completion) resetCompletion();
   // Inline-convert a just-completed `:shortcode:`, then refresh the suggester
@@ -2709,103 +3016,6 @@ function formatHighlightEntry(entry: HighlightRule, idx: number, global = false)
   return `  ${idx}. ${summarizeHighlightEntry(entry, global)}`;
 }
 
-const COMMANDS_LINES = [
-  'commands:',
-  '  /me <text>             — emote in the current buffer',
-  '  /react <emoji|text>    — react to the last line someone else said here',
-  '  /delete [reason]       — delete the last line you said here, where the network allows it',
-  '  /slap <nick>           — slap someone around a bit with a large trout',
-  '  /shrug [text]          — say your text followed by ¯\\_(ツ)_/¯',
-  '  /msg <nick> <text>     — open a DM and send (alias: /query)',
-  '  /notice <tgt> <text>   — send a NOTICE to a channel or nick',
-  '  /ns <text>             — message NickServ (e.g. identify <pass>)',
-  '  /cs <text>             — message ChanServ',
-  '  /join <#chan>          — join a channel (alias: /j)',
-  '  /part [#chan] [reason] — leave channel (keeps buffer; aliases: /leave, /p)',
-  '  /close                 — close current buffer (parts if joined)',
-  '  /clear [off]           — hide buffer up to now (off = undo, show again)',
-  '  /threads               — the reply threads in this buffer (alias: /thread)',
-  '  /retention [n|off|default] — per-buffer history cap (no arg = show current)',
-  '  /away [-all|-one] [msg] — set away (no msg clears)',
-  '  /back [-all|-one]      — clear away',
-  '                           -all: every network; -one: just this one',
-  '  /flushq                — drop your messages still waiting to be sent on this network',
-  '  /whois <nick>          — query user info (renders in server buffer)',
-  '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
-  '  /accept [nick…]        — caller ID (+g): let nicks message you; -nick removes; no arg lists',
-  '  /displayname <name>|off — the name shown for you on networks with IRCv3 metadata',
-  '  /avatar <url>|off      — your avatar image (an https URL) on networks with IRCv3 metadata',
-  '  /metadata set|del|list|clear — any IRCv3 metadata key: set <key> <value> · del <key> · list [nick|#chan]',
-  '  /avatars [list|use <set>|delete <set>] — the tile set behind generated avatars (Settings › Appearance)',
-  '  /ping [nick]           — CTCP ping a user for round-trip latency',
-  '  /kick <nick> [reason]  — kick from current channel',
-  '  /kickban <nick> [msg]  — kick and ban in one step',
-  '  /op <nick…>            — give op (also /deop /voice /devoice /halfop /dehalfop)',
-  '  /ban <nick|mask>       — ban (also /unban /quiet /unquiet)',
-  '  /cycle [reason]        — part and rejoin this channel (alias: /hop)',
-  '  /mode <target> <flags> — set modes (target defaults to current channel)',
-  '  /topic [#chan] [text]  — show the topic, or set it',
-  '  /channel [#chan]       — open Channel Settings (alias: /chan)',
-  '  /nick <newnick>        — change your nick',
-  '  /quit [reason]         — disconnect from current network (alias: /disconnect)',
-  '  /reconnect             — reconnect to current network',
-  '  /list                  — list channels on current network',
-  '  /who [mask]            — find users (also /whowas /userhost /ison /names)',
-  '  /motd /version /time   — server info (also /admin /info /lusers /links /map /stats /help)',
-  '  /jitsi                 — start a video call (alias: /talk)',
-  '  /ignore [opts] [mask|#chan] [LEVELS] — list, or add an ignore rule (global by default)',
-  '      opts: -network -regexp -full -pattern <text> -except -time <dur>',
-  '      LEVELS: ALL PUBLIC MSGS NOTICES ACTIONS JOINS PARTS QUITS NICKS KICKS MODES TOPICS NOHIGHLIGHT',
-  '      e.g. /ignore bob NOHIGHLIGHT   ·   /ignore -network -regexp -pattern (foo|bar) #chan',
-  '  /unignore <index|mask> — remove an ignore (index from /ignore list)',
-  '  /highlight [opts] <text> — list, or add a highlight rule (global by default; alias: /hilight)',
-  '      opts: -network -mask -full -regexp -matchcase -channels <#a,#b>',
-  '      e.g. /highlight QUACK!   ·   /highlight -mask bob!*@*   ·   /highlight -network -regexp qu+ack',
-  '  /unhighlight <index|text> — remove a highlight (index from /highlight list; alias: /dehilight)',
-  '  /relay [list]          — list, mark, or unmark relay/bridge bots on this network',
-  '      e.g. /relay add relaybot   ·   /relay add bridge <{nick}> {message}   ·   /relay remove relaybot',
-  '      custom template mirrors the bot order with {source}/{nick}/{message} placeholders',
-  '      e.g. reversed: /relay add eyebot <{nick}> [{source}] {message}',
-  '  /network [list]        — manage networks (alias: /net); runs from the system buffer',
-  '      add [-host <addr>] [-port <n>] [-tls|-notls] [-nick <n>] [-user <u>] [-realname <name>]',
-  '          [-sasl_username <u>] [-sasl_password <p>] [-password <serverpass>]',
-  "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] [-flood|-noflood] <name>",
-  '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
-  '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
-  '  /dcc [list]            — DCC transfers: list, or accept/reject/cancel/download/delete <id>',
-  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
-  '  /dcc files             — the files you keep from DCC, until you delete them',
-  '  /xdcc add <bot> <pack> — queue an XDCC pack; the queue asks each bot for one at a time',
-  '      addl <bot> <first> <last>   ·   addm <bot> <pack> <pack>…   ·   queue [<bot>]',
-  "      rmp|rmpl|rmpm <bot> …  take packs out   ·   rmbot <bot>  drop that bot's queue",
-  '      e.g. /xdcc addl Ginpachi-Sensei 29 32   ·   /xdcc rmp Ginpachi-Sensei 31',
-  '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
-  '      the file is its name or its id from /dcc files; -passive asks them to listen',
-  "      (it's passive anyway when this server can't listen); -secure sends over TLS (SSEND)",
-  '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -secure bob 12',
-  '  /dcc retry <id>        — ask again for a queued pack that failed, next in its queue',
-  '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
-  '      one holding a partial download needs /dcc delete <id> first',
-  '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
-  '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
-  '      -passive asks them to listen; -secure chats over TLS (SCHAT, as KVIrc does)',
-  '      e.g. /dcc chat bob   ·   /dcc chat -secure bob   ·   /dcc close chat bob',
-  '  /set <key> <value…>    — change a setting; /set (or /set ?) lists all keys',
-  '  /get <key>             — read a setting back (output in the system buffer)',
-  '  /theme [list]          — theme presets: apply/save/delete <name>, mode [single|system]',
-  '      e.g. /theme apply light   ·   /theme save My Theme   ·   /theme use dark Ocean',
-  '      built-ins: Monokai Plus + Monokai Plus Light (dark/light work as shorthands)',
-  '  /raw <line>            — send a raw IRC line (alias: /quote)',
-  '  /e2e <sub>             — end-to-end encryption for a channel (experimental; /e2e help)',
-  '      on [#chan] [auto|normal|quiet]   ·   off [#chan]   ·   mode <auto|normal|quiet>',
-  '      handshake <nick>   ·   accept <nick>   ·   decline <nick>',
-  '      revoke <nick>   ·   unrevoke <nick>   ·   reverify <nick>   ·   verify <nick>',
-  '      rotate [#chan]   ·   forget [-all] <nick|handle>   ·   fingerprint   ·   status   ·   list [-all]',
-  '      autotrust <list | add <scope> <pattern> | remove <pattern>>   ·   export   ·   import',
-  '  /commands              — this list',
-  '  //text                 — send literal "/text" as a message (escape)',
-];
-
 /**
  * Whether a COMMAND ARGUMENT names a channel — `/part &local`, `/kick &local bob`.
  *
@@ -2856,10 +3066,12 @@ function modeShortcut(
   line: string,
 ): boolean {
   let channel = isChannelTarget(target) ? target : null;
-  let args = rest;
-  if (isChannelArg(rest[0])) {
-    channel = rest[0];
-    args = rest.slice(1);
+  // A completed nick leaves a space after it, which is not one more nick:
+  // `/op alice ` ops alice, once.
+  let args = rest.filter(Boolean);
+  if (isChannelArg(args[0])) {
+    channel = args[0];
+    args = args.slice(1);
   }
   if (!channel) {
     localInfo(networkId, target, `${usage} — no channel context`);
@@ -4083,7 +4295,10 @@ function runGet(argLine: string, networkId: number | null, target: string): void
 function handleCommand(line: string, networkId: number | null, target: string): boolean {
   const [cmd, ...rest] = line.slice(1).split(/\s+/);
   const argLine = line.slice(1 + cmd.length).trim();
-  const verb = cmd.toLowerCase();
+  // Typed against the command table (lib/commands/registry.ts): every verb the
+  // table names needs a case below, and every case needs a verb in the table,
+  // or this file stops type-checking. Null is a word the table doesn't know.
+  const verb = resolveVerb(cmd);
 
   // Network-agnostic commands act on global / user-wide state (the local command
   // cheatsheet, away on every network, the per-user ignore list), so they run
@@ -4092,7 +4307,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
   // for the switch below.
   switch (verb) {
     case 'commands':
-      for (const commandLine of COMMANDS_LINES) localInfo(networkId, target, commandLine);
+      for (const commandLine of helpLines()) localInfo(networkId, target, commandLine);
       return true;
     case 'away':
     case 'back': {
@@ -4170,9 +4385,16 @@ function handleCommand(line: string, networkId: number | null, target: string): 
 
   // Everything else acts on a specific network/buffer.
   if (networkId == null) {
-    localInfo(null, target, `/${verb} needs an active network — switch to a channel or DM first.`);
+    localInfo(
+      null,
+      target,
+      `/${cmd.toLowerCase()} needs an active network — switch to a channel or DM first.`,
+    );
     return true;
   }
+
+  // Anything Lurker has no command for goes to the server as typed.
+  if (verb === null) return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
 
   switch (verb) {
     case 'e2e': {
@@ -4918,8 +5140,11 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         line,
       );
     }
-    default:
-      return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
+    default: {
+      // Unreachable while the switches and the table agree.
+      const unhandled: never = verb;
+      return unhandled;
+    }
   }
 }
 </script>

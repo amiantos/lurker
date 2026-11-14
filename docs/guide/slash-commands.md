@@ -14,10 +14,30 @@ If you know the command, you never need to reach for the mouse.
 - Type `/` in the message box to start a command.
 - App-scoped commands (like settings and network management) run regardless of
   which buffer you're in; their output appears in the **system buffer**.
+- A word Lurker has no command for is sent to the server as typed.
+
+## Completion
+
+Typing `/` opens a menu of commands, each with its usage and what it does. It
+narrows as you type. Past the command, the menu follows the command's own
+arguments:
+
+- `/join `, `/part ` list your channels; `/msg `, `/kick ` list nicks. No `#` or
+  `@` needed.
+- `/dcc `, `/theme `, `/network ` list their subcommands.
+- `/ignore -` lists its options.
+- `/set ` lists setting keys with their current value, then the values a key
+  takes. `/theme apply ` lists your themes.
+
+Arrow keys move, **Tab** accepts, **Escape** closes the menu. **Enter** accepts
+too, unless what you typed is already complete: `/aw` + Enter becomes `/away `,
+and `/away` + Enter sends. On a nick or a channel, Enter sends what you typed
+(`/join #new` joins `#new`) unless you picked a row with the arrows.
 
 ## Common commands
 
-- `/help` — list available commands.
+- `/commands` — list every command. (`/help` asks the IRC server for its own
+  help.)
 - `/delete [reason]` — delete the last line you said in this buffer, on a network
   that supports message deletion (ergo does, when its admin allows it). The line
   reads _message deleted_ everywhere afterwards, for everyone whose client
@@ -45,5 +65,5 @@ If you know the command, you never need to reach for the mouse.
 ## Reference
 
 A complete, always-current command reference is planned, generated directly from
-Lurker's command definitions. Until then, `/help` in the app is the source of
-truth.
+Lurker's command definitions. Until then, `/commands` in the app is the source of
+truth; it is printed from the same table the completion menu reads.
