@@ -208,15 +208,14 @@ function touches(range: Range, el: Element): boolean {
   return false;
 }
 
-// A selection's text without the blank lines at its edges. Safari's
-// triple-click runs the selection on to the start of the next row and copies a
-// blank line for every block it passed on the way (the row's hover buttons),
-// so a line pasted with six empty lines under it. An edge with a single line
-// break is every browser's ordinary triple-click and stays, as do the spaces
-// at the edges of a selection: the caller takes the copy over only when this
-// changed something, and taking it over costs the clipboard its rich text.
+// A selection's text without the line breaks at its edges. A triple-click runs
+// the selection on to the start of the next row, and the browser copies a line
+// break for every block it passed on the way: one in Chrome, and in Safari one
+// more per hover button, so a line pasted with six empty lines under it. Spaces
+// at the edges of a selection that has no line break there are the reader's
+// and stay.
 export function trimBlankEdges(text: string): string {
-  return text.replace(/^\s*\n\s*\n\s*|\s*\n\s*\n\s*$/g, '');
+  return text.replace(/^\s*\n\s*|\s*\n\s*$/g, '');
 }
 
 export interface RowSelection {

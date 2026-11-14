@@ -31,12 +31,11 @@ function line(m: Partial<Msg>, c = ctx()): string | null {
 }
 
 describe('trimBlankEdges', () => {
-  it('drops blank lines at the edges and nothing else', () => {
+  it('drops line breaks at the edges and nothing else', () => {
     expect(trimBlankEdges('a line\n\n\n\n\n\n')).toBe('a line');
     expect(trimBlankEdges('\n \n  a line \n \n')).toBe('a line');
-    // One line break at an edge is an ordinary triple-click: left alone.
-    expect(trimBlankEdges('a line\n')).toBe('a line\n');
-    expect(trimBlankEdges('one\n\ntwo\n')).toBe('one\n\ntwo\n');
+    expect(trimBlankEdges('a line\n')).toBe('a line');
+    expect(trimBlankEdges('one\n\ntwo\n')).toBe('one\n\ntwo');
     expect(trimBlankEdges(' word ')).toBe(' word ');
     expect(trimBlankEdges('\n\n')).toBe('');
   });

@@ -1967,9 +1967,9 @@ function onDocumentCopy(e: ClipboardEvent): void {
   // The page and the rows disagree on what is drawn: leave the copy alone
   // rather than write the wrong lines.
   if (picked.total !== rows.length) return;
-  // Inside one cell the browser's text is the copy, less the blank lines
-  // Safari's triple-click hangs off it (trimBlankEdges); untouched when there
-  // are none, so the browser keeps its own copy and its rich text.
+  // Inside one cell the browser's text is the copy, less the line breaks a
+  // triple-click hangs off it (trimBlankEdges). Taking the copy over leaves
+  // only plain text on the clipboard, so it's untouched when there are none.
   if (picked.withinCell) {
     const text = selection.toString();
     const trimmed = trimBlankEdges(text);
