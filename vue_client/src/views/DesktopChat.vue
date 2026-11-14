@@ -1046,6 +1046,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .topic .buffer {
   color: var(--accent);
 }
+/* After the status icons the topic sits one character away, as the icons sit
+   one character after the name: they take back one of .topic-meta's two. A
+   name with no icons keeps the full gap. */
+.topic .buffer :deep(.status-icons) {
+  margin-right: -1ch;
+}
 .topic .topic-text {
   color: var(--fg-muted);
   text-overflow: ellipsis;
