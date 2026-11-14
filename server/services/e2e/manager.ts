@@ -59,6 +59,7 @@ import * as keyring from '../../db/e2e.js';
 import { foldTargetFor } from '../../db/buffers.js';
 import { RateLimiter } from './rateLimiter.js';
 import { ReplayCache } from './replayCache.js';
+import { isChannelContext } from './context.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
@@ -211,6 +212,7 @@ export class E2eManager {
   private readonly now: () => number;
   private readonly tsToleranceSecs: number;
   private readonly identities = new Map<number, Identity>();
+  private channelsListener: ((userId: number, networkId: number) => void) | null = null;
   private readonly pending = new Map<string, PendingHandshake>();
   private readonly pendingInbound = new Map<string, PendingInbound>();
   private readonly pendingKeyChange = new Map<string, PendingKeyChange>();
@@ -314,6 +316,7 @@ export class E2eManager {
   ): boolean {
     try {
       keyring.setChannelConfig(userId, networkId, { channel, enabled, mode });
+      this.channelsChanged(userId, networkId);
       return true;
     } catch (err) {
       console.warn(`e2e setChannelConfig ${channel}: ${(err as Error).message}`);
@@ -351,6 +354,38 @@ export class E2eManager {
       if (cfg.enabled) out.set(foldTargetFor(networkId, cfg.channel), cfg.channel);
     }
     return out;
+  }
+
+  /**
+   * The names of a network's E2E-enabled channels, for a client to mark them (#422): the
+   * snapshot's `e2eChannels` and the `e2e-channels-changed` frame. Channels only — a config
+   * row can also be an `@ident@host` PM context, which names no buffer. Display only, so it
+   * never throws: a keyring that can't be read marks nothing.
+   */
+  enabledChannelNames(userId: number, networkId: number): string[] {
+    try {
+      return keyring
+        .listChannelConfigs(userId, networkId)
+        .filter((cfg) => cfg.enabled && isChannelContext(cfg.channel))
+        .map((cfg) => cfg.channel);
+    } catch (err) {
+      console.warn(`e2e enabledChannelNames: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  /** Called with (userId, networkId) after a network's channel configs were written: a
+   *  toggle, a mode change, an import. The WS hub tells the user's clients. One listener. */
+  onChannelsChanged(listener: ((userId: number, networkId: number) => void) | null): void {
+    this.channelsListener = listener;
+  }
+
+  private channelsChanged(userId: number, networkId: number): void {
+    try {
+      this.channelsListener?.(userId, networkId);
+    } catch (err) {
+      console.warn(`e2e channelsChanged: ${(err as Error).message}`);
+    }
   }
 
   // ─── outbound handshake ──────────────────────────────────────────────────────
@@ -1473,6 +1508,7 @@ export class E2eManager {
       const identityChanged =
         !current || !equalBytes(current.fingerprint, data.identity.fingerprint);
       keyring.replaceKeyringForImport(userId, networkId, data, this.nowUnix());
+      this.channelsChanged(userId, networkId);
       // The cached identity may now be stale (import can change it) — drop it so
       // the next load re-reads the imported key.
       this.identities.delete(userId);

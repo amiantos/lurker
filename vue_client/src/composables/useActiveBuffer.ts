@@ -14,6 +14,7 @@ export interface ActiveBufferState {
   active: ComputedRef<{ networkId: number; target: string; network: unknown } | null>;
   activeBuf: ComputedRef<unknown>;
   topic: ComputedRef<string | undefined>;
+  peerAccount: ComputedRef<string | null>;
   isServerBuffer: ComputedRef<boolean>;
   isChannel: ComputedRef<boolean>;
   bufferLabel: ComputedRef<string>;
@@ -60,6 +61,15 @@ export function useActiveBuffer(): ActiveBufferState {
     }
     return buf.topic ?? undefined;
   });
+  // The services account a DM's peer is logged in to (#646), for the mark by
+  // their name. Known only through a channel we share with them (extended-join,
+  // account-notify, WHOX); otherwise, and for a peer the server says is logged
+  // out, null — unknown is not a statement, so nothing is shown for either.
+  const peerAccount = computed((): string | null => {
+    const buf = activeBuf.value;
+    if (!buf || buf.kind !== 'dm' || buf.networkId == null) return null;
+    return buffers.accountFor(buf.networkId, buf.target) || null;
+  });
   const isServerBuffer = computed(() => !!active.value?.target?.startsWith(':server:'));
   const isChannel = computed(() => isChannelTarget(active.value?.target));
   const bufferLabel = computed(() => {
@@ -75,6 +85,7 @@ export function useActiveBuffer(): ActiveBufferState {
     active,
     activeBuf,
     topic,
+    peerAccount,
     isServerBuffer,
     isChannel,
     bufferLabel,

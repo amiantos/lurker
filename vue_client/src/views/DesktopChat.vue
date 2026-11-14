@@ -103,7 +103,16 @@
         </button>
       </div>
       <div class="topic-meta">
-        <span v-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
+        <span v-if="isVirtual || active" class="buffer"
+          >{{ bufferLabel
+          }}<BadgeCheckIcon
+            v-if="peerAccount"
+            class="peer-account"
+            role="img"
+            :aria-label="`Logged in as ${peerAccount}`"
+            ><title>Logged in as {{ peerAccount }}</title></BadgeCheckIcon
+          ></span
+        >
         <template v-if="active && topic">
           <!-- A channel topic is user prose: auto-link it and open the full
                view on click. A DM's pseudo-topic is the peer's ident@host —
@@ -403,6 +412,7 @@ import ProfileEditorModal from '../components/ProfileEditorModal.vue';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
 import {
+  BadgeCheckIcon,
   BellIcon,
   BookmarkIcon,
   ChevronLeftIcon,
@@ -436,6 +446,7 @@ const {
   active,
   activeBuf,
   topic,
+  peerAccount,
   isServerBuffer,
   isChannel,
   bufferLabel,
@@ -1034,6 +1045,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .topic .buffer {
   color: var(--accent);
+}
+/* The DM peer is logged in to services (#646): a quiet mark after the name. */
+.topic .buffer .peer-account {
+  margin-left: var(--space-2);
+  color: var(--fg-muted);
+  vertical-align: text-bottom;
 }
 .topic .topic-text {
   color: var(--fg-muted);
