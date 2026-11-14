@@ -75,21 +75,20 @@ const items = computed<StatusItem[]>(() => {
 </script>
 
 <style scoped>
-/* Plain inline, not a flex row, so the icons can be placed against the text's
-   baseline. The global .lucide rule centres an icon on capital height (0.35em
-   up), which rides high beside a channel or nick: those are nearly always
-   lowercase. 0.27em centres on the lowercase letters instead. */
+/* Plain inline, not a flex row, so the icons keep a vertical-align against the
+   text's baseline. */
 .status-icons {
   margin-left: var(--space-3);
   color: var(--fg-muted);
 }
-/* Snapped to whole pixels. The text and the icon each round to the pixel grid
-   on their own, so a fractional offset lands a pixel higher or lower depending
-   on where the bar happens to fall on the page; a whole one cannot. The first
-   declaration is for a browser without round(). */
+/* The global .lucide offset, snapped to whole pixels. The text and the icon
+   each round to the pixel grid on their own, so a fractional offset lands a
+   pixel higher or lower depending on where the bar happens to fall on the
+   page; a whole one cannot. The first declaration is for a browser without
+   round(). */
 .status-icons :deep(svg) {
-  vertical-align: calc(0.27em - var(--icon-size) / 2);
-  vertical-align: round(calc(0.27em - var(--icon-size) / 2), 1px);
+  vertical-align: calc(0.35em - var(--icon-size) / 2);
+  vertical-align: round(calc(0.35em - var(--icon-size) / 2), 1px);
 }
 .status-icons :deep(svg + svg) {
   margin-left: var(--space-2);
