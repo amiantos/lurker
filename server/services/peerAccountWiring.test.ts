@@ -242,4 +242,57 @@ describe('a DM peer’s account (#646)', () => {
     ]);
     expect(accounts()).toEqual({});
   });
+
+  it('follows account-notify for a peer we share no channel with', () => {
+    // extended-monitor sends ACCOUNT for a MONITORed nick in no channel of ours.
+    const { conn, told } = harness();
+    conn.trackDmPeer('bob');
+    conn.client.emit('account', { nick: 'bob', account: 'bobacct' });
+    conn.client.emit('account', { nick: 'bob', account: false });
+    expect(told()).toEqual([
+      ['bob', 'bobacct'],
+      ['bob', null],
+    ]);
+  });
+
+  it('does not fall back to an older line once a shared channel saw them log out', () => {
+    const { conn, told, join, accounts } = harness();
+    conn.trackDmPeer('bob');
+    conn.client.emit('whois', { nick: 'bob', account: 'bobacct' });
+    join('#one', 'bob', { account: 'bobacct' });
+    conn.client.emit('account', { nick: 'bob', account: false });
+    conn.client.emit('part', { channel: '#one', nick: 'bob' });
+    expect(told()).toEqual([
+      ['bob', 'bobacct'],
+      ['bob', null],
+    ]);
+    expect(accounts()).toEqual({});
+  });
+
+  it('is forgotten when a NAMES shows they left while we were not told', () => {
+    const { conn, told, join, accounts } = harness();
+    conn.trackDmPeer('bob');
+    join('#one', 'bob', { account: 'bobacct' });
+    conn.client.emit('userlist', { channel: '#one', users: [{ nick: 'alice', modes: [] }] });
+    expect(told()).toEqual([
+      ['bob', 'bobacct'],
+      ['bob', null],
+    ]);
+    expect(accounts()).toEqual({});
+  });
+
+  it('is forgotten when the engine dials a new socket, and told afresh after', () => {
+    // The socket died while our link to the engine was down: no 'socket close'.
+    const { conn, told, join } = harness();
+    conn.trackDmPeer('bob');
+    conn.client.emit('whois', { nick: 'bob', account: 'bobacct' });
+    (conn as unknown as { onEnginePhase(p: string, i: object): void }).onEnginePhase('dialing', {});
+    conn.state = 'connected';
+    join('#one', 'bob', { account: 'bobacct' });
+    expect(told()).toEqual([
+      ['bob', 'bobacct'],
+      ['bob', null],
+      ['bob', 'bobacct'],
+    ]);
+  });
 });

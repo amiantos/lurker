@@ -4,7 +4,7 @@
 import { defineStore } from 'pinia';
 import { useBuffersStore } from './buffers.js';
 
-// Which channels have end-to-end encryption on (#422), so the buffer list can
+// Which channels have end-to-end encryption on (#422), so the topic bar can
 // mark them. The server is the source of truth: the snapshot carries each
 // network's list as `e2eChannels`, and an `e2e-channels-changed` frame replaces
 // one network's list whole after `/e2e on|off|mode` or a keyring import.

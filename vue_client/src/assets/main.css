@@ -345,7 +345,11 @@ a {
   width: var(--icon-size);
   height: var(--icon-size);
   flex-shrink: 0;
-  vertical-align: calc(0.35em - var(--icon-size) / 2);
+  /* A token, set here and not on :root so it follows an --icon-size set
+     anywhere above the icon: a place that needs the offset snapped to whole
+     pixels reads this one. */
+  --icon-valign: calc(0.35em - var(--icon-size) / 2);
+  vertical-align: var(--icon-valign);
 }
 /* An on state drawn as a filled glyph (a starred upload). */
 .lucide.icon-filled {

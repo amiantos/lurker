@@ -3409,7 +3409,9 @@ export class IrcConnection {
         member.account = account;
         this.publishMemberUpdate(ch.name, member);
       }
-      this.syncPeerAccount(eventNick);
+      // A peer we share no channel with reaches us here too, under
+      // extended-monitor, and a logout is as much news as a login.
+      this.noteHeardAccount(eventNick, event.account, true);
     });
 
     on('motd', (event: Record<string, unknown>) => {
@@ -3740,11 +3742,7 @@ export class IrcConnection {
       if (replay) return;
       if (eventNick && !isServer && !targetIsChannel && !isNotice) {
         this.trackDmPeer(eventNick);
-        this.noteHeardAccount(
-          eventNick,
-          event.account,
-          this.client.network.cap.enabled.includes('account-tag'),
-        );
+        this.noteHeardAccount(eventNick, event.account, this.capEnabled('account-tag'));
       }
       if (eventNick) this.markPeerEvent(eventNick, 'online');
     });
@@ -4766,6 +4764,8 @@ export class IrcConnection {
       for (const lc of prev.keys()) {
         if (!ch.members.has(lc)) this.forgetUserMetadata(this.nickSpelling(lc));
       }
+      // And a DM peer among them took what this room told us of their account.
+      this.syncAllPeerAccounts();
       for (const lc of ch.members.keys()) {
         if (this.metadataUnconfirmed.has(lc) && !this.peerSyncs.has(lc)) unconfirmed = true;
       }
@@ -6250,8 +6250,6 @@ export class IrcConnection {
   // After we leave a channel: everyone we only knew from there. Deleting the
   // current key while iterating a Map is defined behaviour.
   private sweepUserMetadata(): void {
-    // The same moment for a DM peer's account, where that room was our source.
-    this.syncAllPeerAccounts();
     for (const lower of this.userMetadata.keys()) this.forgetUserMetadata(lower);
   }
 
@@ -6368,9 +6366,14 @@ export class IrcConnection {
     for (const nick of this.trackedPeers.keys()) {
       this.markPeerEvent(nick, 'offline');
     }
-    // Nobody's account outlives the socket that told us of it (#646). Said
-    // outright, not through syncPeerAccount: the state is still 'connected'
-    // here and the member maps still hold what the dead socket taught them.
+    this.forgetPeerAccounts();
+  }
+
+  // Nobody's account outlives the socket that told us of it (#646): on a socket
+  // close, and when the engine dials a new socket for one that died while our
+  // link to it was down. Said outright, not through syncPeerAccount, so it
+  // holds whatever the state and the member maps say at that moment.
+  private forgetPeerAccounts(): void {
     this.heardAccounts.clear();
     for (const nick of this.toldPeerAccounts.keys()) {
       this.publishEphemeral({
@@ -6396,17 +6399,31 @@ export class IrcConnection {
   // their last line to us, or a WHOIS, is all there is without one.
   private peerAccountOf(lower: string): string | null {
     if (this.state !== 'connected') return null;
+    const shared = this.channelAccountOf(lower);
+    if (shared !== undefined) return shared;
+    return this.heardAccounts.get(lower) ?? null;
+  }
+
+  // What the channels we share with `lower` say: an account, null for logged
+  // out, undefined when none of them knows.
+  private channelAccountOf(lower: string): string | null | undefined {
     for (const ch of this.channels.values()) {
       const account = ch.members.get(lower)?.account;
       if (account !== undefined) return account;
     }
-    return this.heardAccounts.get(lower) ?? null;
+    return undefined;
   }
 
   // Tell clients a tracked peer's account if it isn't what they were last told.
   // Cheap for anyone else: called on every part, quit and account change.
   private syncPeerAccount(nick: string): void {
     const lower = nick.toLowerCase();
+    // What a shared channel says replaces what we heard before it, for good:
+    // when they leave that channel, an older line of theirs must not speak for
+    // an account the channel may since have seen them log out of.
+    if (this.heardAccounts.has(lower) && this.channelAccountOf(lower) !== undefined) {
+      this.heardAccounts.delete(lower);
+    }
     const account = this.trackedPeers.has(lower) ? this.peerAccountOf(lower) : null;
     if ((this.toldPeerAccounts.get(lower) ?? null) === account) return;
     if (account === null) this.toldPeerAccounts.delete(lower);
@@ -7182,6 +7199,8 @@ export class IrcConnection {
       this.joinedFoldedCache = null;
       // Everyone we knew only from that room (#1246).
       this.sweepUserMetadata();
+      // And a DM peer's account, where that room was our source (#646).
+      this.syncAllPeerAccounts();
     }
     return deleted;
   }
@@ -7856,6 +7875,7 @@ export class IrcConnection {
         // died while our link to the engine was down, so 'socket close' never
         // saw it go.
         this.forgetJoinedChannels();
+        this.forgetPeerAccounts();
         this.announceConnecting();
         break;
       case 'attached': {

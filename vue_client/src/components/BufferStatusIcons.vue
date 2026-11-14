@@ -29,7 +29,6 @@ import { useBuffersStore, type Buffer } from '../stores/buffers.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useE2eChannelsStore } from '../stores/e2eChannels.js';
 import { useIgnoresStore } from '../stores/ignores.js';
-import { useNetworksStore } from '../stores/networks.js';
 
 const props = defineProps<{ buf: Buffer }>();
 
@@ -37,7 +36,6 @@ const buffers = useBuffersStore();
 const channelNotify = useChannelNotifyStore();
 const e2eChannels = useE2eChannelsStore();
 const ignores = useIgnoresStore();
-const networks = useNetworksStore();
 
 interface StatusItem {
   key: string;
@@ -45,19 +43,11 @@ interface StatusItem {
   label: string;
 }
 
-// The account a DM's peer is logged in to. The server says for the peers of
-// open DMs; one that predates that leaves the member lists we happen to hold.
-function peerAccount(networkId: number, nick: string): string | null {
-  const told = networks.peerAccountFor(networkId, nick);
-  if (told !== undefined) return told;
-  return buffers.accountFor(networkId, nick) || null;
-}
-
 const items = computed<StatusItem[]>(() => {
   const { networkId, target, kind } = props.buf;
   if (networkId == null) return [];
   const out: StatusItem[] = [];
-  const account = kind === 'dm' ? peerAccount(networkId, target) : null;
+  const account = kind === 'dm' ? buffers.knownAccountFor(networkId, target) : null;
   if (account) {
     out.push({ key: 'account', icon: BadgeCheckIcon, label: `Logged in as ${account}` });
   }
@@ -87,8 +77,8 @@ const items = computed<StatusItem[]>(() => {
    page; a whole one cannot. The first declaration is for a browser without
    round(). */
 .status-icons :deep(svg) {
-  vertical-align: calc(0.35em - var(--icon-size) / 2);
-  vertical-align: round(calc(0.35em - var(--icon-size) / 2), 1px);
+  vertical-align: var(--icon-valign);
+  vertical-align: round(var(--icon-valign), 1px);
 }
 .status-icons :deep(svg + svg) {
   margin-left: var(--space-2);
