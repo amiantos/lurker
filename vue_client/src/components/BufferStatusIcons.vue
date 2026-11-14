@@ -68,8 +68,9 @@ const items = computed<StatusItem[]>(() => {
 /* Plain inline, not a flex row, so the icons keep a vertical-align against the
    text's baseline. */
 .status-icons {
-  /* One character, the bar's own unit of space. */
-  margin-left: 1ch;
+  /* The topic bar's spacing between the forward button, the name and the
+     topic (.topic-meta's gap in DesktopChat). */
+  margin-left: calc(var(--space-4) + var(--space-2));
   color: var(--fg-muted);
 }
 /* The global .lucide offset, snapped to whole pixels. The text and the icon
