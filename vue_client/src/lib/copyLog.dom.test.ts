@@ -60,7 +60,8 @@ describe('rowsInSelection', () => {
       range([text(rows[0]!, '.body'), 0], [text(rows[1]!, '.prefix'), 0]),
     );
     expect(picked.indexes).toEqual([0]);
-    expect(picked.withinCell).toBe(true);
+    // The whole line, taken at once: a line of the log, not a part of a cell.
+    expect(picked.withinCell).toBe(false);
   });
 
   it('leaves out an end row whose only selected text cannot be selected', () => {
@@ -82,6 +83,25 @@ describe('rowsInSelection', () => {
       range([text(rows[0]!, '.body'), 1], [text(rows[2]!, '.body'), 2]),
     );
     expect(picked.indexes).toEqual([0, 1, 2]);
+  });
+
+  it('takes a triple-click as the whole line, and a drag over the same words as a part', () => {
+    const el = build(
+      line('1', 'a', 'see <a href="#">https://example.com</a><div class="attachments">card</div>') +
+        line('2', 'b', 'two'),
+    );
+    const rows = el.querySelectorAll('.line');
+    const body = rows[0]!.querySelector('.body')!;
+    const words = body.firstChild as Text;
+    const link = body.querySelector('a')!.firstChild as Text;
+    const card = body.querySelector('.attachments')!;
+    // Triple-click: on to the block under the words, or to the next row.
+    expect(rowsInSelection(el, range([words, 0], [card, 0])).withinCell).toBe(false);
+    expect(rowsInSelection(el, range([body, 0], [rows[1]!, 0])).withinCell).toBe(false);
+    // A drag from the first letter to the last ends inside the words.
+    expect(rowsInSelection(el, range([words, 0], [link, link.length])).withinCell).toBe(true);
+    // Running past the end without the start is still a part.
+    expect(rowsInSelection(el, range([link, 0], [card, 0])).withinCell).toBe(true);
   });
 
   it('says when the selection stays inside one cell', () => {

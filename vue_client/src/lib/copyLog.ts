@@ -227,8 +227,40 @@ export interface RowSelection {
   // for text — a row between them is covered whether or not it has any (a
   // line that is only an image has none).
   indexes: number[];
-  // The selection sits inside a single cell of a single row.
+  // The selection sits inside a single cell of a single row, and is a part of
+  // it: a word, a nick, a link. A whole line taken at once (a triple-click) is
+  // a line of the log like any other.
   withinCell: boolean;
+}
+
+// What a row's body holds besides the line's own words.
+const BODY_EXTRAS = '.reply-quote, .attachments, .reaction-row, .thread-chip, .time';
+
+// Whether the selection is the row's whole text, taken the way a triple-click
+// takes it: from the start of the words on past their end, to wherever the
+// next block begins. A drag across the same words ends inside them, and stays
+// a part — it is how a reader copies a line that is only a link.
+function wholeLine(range: Range, row: Element): boolean {
+  const body = row.querySelector(':scope > .body');
+  if (!body) return false;
+  const doc = row.ownerDocument;
+  const walker = doc.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  let first: Node | null = null;
+  let last: Node | null = null;
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!node.textContent?.trim() || node.parentElement?.closest(BODY_EXTRAS)) continue;
+    if (unselectable(node, body)) continue;
+    first ??= node;
+    last = node;
+  }
+  if (!first || !last) return false;
+  const words = doc.createRange();
+  words.setStart(first, 0);
+  words.setEnd(last, last.textContent?.length ?? 0);
+  return (
+    range.compareBoundaryPoints(Range.START_TO_START, words) <= 0 &&
+    range.compareBoundaryPoints(Range.END_TO_END, words) > 0
+  );
 }
 
 export function rowsInSelection(root: Element, range: Range): RowSelection {
@@ -241,8 +273,9 @@ export function rowsInSelection(root: Element, range: Range): RowSelection {
   for (let i = first; i !== -1 && i <= last; i++) indexes.push(i);
   let withinCell = false;
   if (indexes.length === 1) {
-    const cells = Array.from(rows[indexes[0]!]!.querySelectorAll(CELL_SELECTOR));
-    withinCell = cells.filter((cell) => touches(range, cell)).length <= 1;
+    const row = rows[indexes[0]!]!;
+    const cells = Array.from(row.querySelectorAll(CELL_SELECTOR));
+    withinCell = cells.filter((cell) => touches(range, cell)).length <= 1 && !wholeLine(range, row);
   }
   return { total: rows.length, indexes, withinCell };
 }

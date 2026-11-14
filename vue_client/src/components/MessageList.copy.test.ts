@@ -154,7 +154,20 @@ describe('MessageList copy', () => {
     expect(copy()).toBeNull();
   });
 
-  it('drops the blank lines Safari’s triple-click hangs off a line', () => {
+  it('copies a triple-clicked line whole, with its time and nick', () => {
+    mountList();
+    // As a triple-click leaves it: from the start of the words to the start
+    // of the next row.
+    const next = wrapper!.find('[data-msg-id="3"]').element;
+    const range = document.createRange();
+    range.setStart(textNode(2, 'it has the fix'), 0);
+    range.setEnd(next, 0);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    expect(copy()).toBe('[12:04:02] <alice> it has the fix');
+  });
+
+  it('drops the line breaks a selection inside a line ends on', () => {
     mountList();
     const body = textNode(1, 'thinking');
     select([body, 0], [body, body.length]);
