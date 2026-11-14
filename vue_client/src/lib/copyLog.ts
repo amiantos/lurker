@@ -178,6 +178,15 @@ function touches(range: Range, el: Element): boolean {
   return range.intersectsNode(el) && selectedTextIn(range, el).trim() !== '';
 }
 
+// A selection's text without the blank lines at its edges. Safari's
+// triple-click runs the selection on to the start of the next row and copies a
+// blank line for every block it passed on the way (the row's hover buttons),
+// so a line pasted with six empty lines under it. Spaces at the edges of a
+// selection that has no such lines are the reader's and stay.
+export function trimBlankEdges(text: string): string {
+  return text.replace(/^\s*\n\s*|\s*\n\s*$/g, '');
+}
+
 export interface RowSelection {
   // How many row elements the scroller holds: the caller checks it against its
   // own row count before trusting an index.

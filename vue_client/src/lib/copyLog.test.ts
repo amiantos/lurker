@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { logLine, type LogContext, type LogMessage } from './copyLog.js';
+import { logLine, trimBlankEdges, type LogContext, type LogMessage } from './copyLog.js';
 import type { ConsolidationGroup } from '../../../shared/consolidate.js';
 
 interface Msg extends LogMessage {
@@ -29,6 +29,16 @@ const T = '2026-10-05T12:04:05.000Z';
 function line(m: Partial<Msg>, c = ctx()): string | null {
   return logLine({ m: { type: 'message', time: T, ...m } }, c);
 }
+
+describe('trimBlankEdges', () => {
+  it('drops blank lines at the edges and nothing else', () => {
+    expect(trimBlankEdges('a line\n\n\n\n\n\n')).toBe('a line');
+    expect(trimBlankEdges('\n  a line \n \n')).toBe('a line');
+    expect(trimBlankEdges('one\n\ntwo\n')).toBe('one\n\ntwo');
+    expect(trimBlankEdges(' word ')).toBe(' word ');
+    expect(trimBlankEdges('\n\n')).toBe('');
+  });
+});
 
 describe('logLine', () => {
   it('writes chat lines the way IRC logs do', () => {

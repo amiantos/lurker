@@ -154,6 +154,14 @@ describe('MessageList copy', () => {
     expect(copy()).toBeNull();
   });
 
+  it('drops the blank lines Safari’s triple-click hangs off a line', () => {
+    mountList();
+    const body = textNode(1, 'thinking');
+    select([body, 0], [body, body.length]);
+    vi.spyOn(window.getSelection()!, 'toString').mockReturnValue('so I was thinking\n\n\n\n\n\n');
+    expect(copy()).toBe('so I was thinking');
+  });
+
   it('leaves a field’s own selection to the field', () => {
     mountList();
     select([textNode(1, 'thinking'), 5], [textNode(5, 'sure'), 4]);

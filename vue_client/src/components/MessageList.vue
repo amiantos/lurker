@@ -485,7 +485,7 @@ import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 import { orderByTime } from '../lib/messageOrder.js';
-import { logLine, rowsInSelection, type LogContext } from '../lib/copyLog.js';
+import { logLine, rowsInSelection, trimBlankEdges, type LogContext } from '../lib/copyLog.js';
 import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
@@ -1955,7 +1955,18 @@ function onDocumentCopy(e: ClipboardEvent): void {
   const picked = rowsInSelection(root, range);
   // The page and the rows disagree on what is drawn: leave the copy alone
   // rather than write the wrong lines.
-  if (picked.total !== rows.length || picked.withinCell) return;
+  if (picked.total !== rows.length) return;
+  // Inside one cell the browser's text is the copy, less the blank lines
+  // Safari's triple-click hangs off it (trimBlankEdges); untouched when there
+  // are none, so the browser keeps its own copy and its rich text.
+  if (picked.withinCell) {
+    const text = selection.toString();
+    const trimmed = trimBlankEdges(text);
+    if (!trimmed || trimmed === text) return;
+    e.clipboardData.setData('text/plain', trimmed);
+    e.preventDefault();
+    return;
+  }
   const lines = picked.indexes
     .map((i) => logLine(rows[i]!, logContext))
     .filter((line): line is string => line !== null);
