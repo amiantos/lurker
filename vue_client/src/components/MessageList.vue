@@ -545,6 +545,9 @@ interface ChatMessage {
   // who and when. On rows read back; a live deletion rides the redactions
   // store, which renderRows asks.
   redaction?: Redaction;
+  // A reply's text before its address came off for display: on the display
+  // clone only, for the copied log (#608, lib/copyLog).
+  addressedText?: string;
   msgid?: string;
   [key: string]: unknown;
 }
@@ -1627,7 +1630,11 @@ const renderRows = computed((): RenderRow[] => {
     if (m.replyTo) {
       const shown = replyQuote.shownReply(m.replyTo, mDisplay, networkId, bufTarget);
       replyParent = shown.parent;
-      if (shown.text !== (mDisplay.text ?? '')) mDisplay = { ...mDisplay, text: shown.text };
+      if (shown.text !== (mDisplay.text ?? '')) {
+        // The text as said rides along for the copied log (#608), which has
+        // no quote to carry the address.
+        mDisplay = { ...mDisplay, text: shown.text, addressedText: mDisplay.text ?? '' };
+      }
       // One quote for a split reply: obby and goguma tag every chunk of a long
       // one, where Lurker and halloy tag the first. Only while it reads as one
       // run of the same speaker's (collapseDisplay's author window; a relayed
@@ -1939,18 +1946,22 @@ function onDocumentCopy(e: ClipboardEvent): void {
   if (!root || !e.clipboardData || !selection || selection.isCollapsed) return;
   // A field's own selection is the field's to copy, whatever is still
   // highlighted in the list behind it.
+  // A number or email field reports no selection at all (null), so a copy
+  // from one is taken as its own.
   const field = e.target;
   if (
     (field instanceof HTMLTextAreaElement || field instanceof HTMLInputElement) &&
-    field.selectionStart !== field.selectionEnd
+    (field.selectionStart === null || field.selectionStart !== field.selectionEnd)
   ) {
     return;
   }
-  // One range, wholly inside the list. Anything else (a select-all, a drag out
-  // into the member list, Firefox's multi-range selections) stays the browser's.
-  if (selection.rangeCount !== 1) return;
-  const range = selection.getRangeAt(0);
-  if (!root.contains(range.commonAncestorContainer)) return;
+  // Wholly inside the list. Anything else (a select-all, a drag out into the
+  // member list) stays the browser's. Firefox can hold a selection as several
+  // ranges; the log runs from the first one's start to the last one's end.
+  const range = selection.getRangeAt(0).cloneRange();
+  const tail = selection.getRangeAt(selection.rangeCount - 1);
+  range.setEnd(tail.endContainer, tail.endOffset);
+  if (range.collapsed || !root.contains(range.commonAncestorContainer)) return;
   const rows = renderRows.value;
   const picked = rowsInSelection(root, range);
   // The page and the rows disagree on what is drawn: leave the copy alone

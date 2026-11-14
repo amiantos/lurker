@@ -33,8 +33,10 @@ function line(m: Partial<Msg>, c = ctx()): string | null {
 describe('trimBlankEdges', () => {
   it('drops blank lines at the edges and nothing else', () => {
     expect(trimBlankEdges('a line\n\n\n\n\n\n')).toBe('a line');
-    expect(trimBlankEdges('\n  a line \n \n')).toBe('a line');
-    expect(trimBlankEdges('one\n\ntwo\n')).toBe('one\n\ntwo');
+    expect(trimBlankEdges('\n \n  a line \n \n')).toBe('a line');
+    // One line break at an edge is an ordinary triple-click: left alone.
+    expect(trimBlankEdges('a line\n')).toBe('a line\n');
+    expect(trimBlankEdges('one\n\ntwo\n')).toBe('one\n\ntwo\n');
     expect(trimBlankEdges(' word ')).toBe(' word ');
     expect(trimBlankEdges('\n\n')).toBe('');
   });
@@ -53,6 +55,13 @@ describe('logLine', () => {
     );
     expect(line({ nick: 'alice', text: 'it was \x0301,01the butler\x03' })).toBe(
       '[12:04:05] <alice> it was ||the butler||',
+    );
+  });
+
+  it('keeps a line’s whitespace, and the address a reply was said with', () => {
+    expect(line({ nick: 'alice', text: '    return x;' })).toBe('[12:04:05] <alice>     return x;');
+    expect(line({ nick: 'bob', text: 'yes, ship it', addressedText: 'alice: yes, ship it' })).toBe(
+      '[12:04:05] <bob> alice: yes, ship it',
     );
   });
 

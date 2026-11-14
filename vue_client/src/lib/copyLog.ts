@@ -22,7 +22,8 @@ import { redactionLabel, type Redaction } from '../../../shared/redaction.js';
 import { describeMode } from '../../../shared/modeNarration.js';
 import type { ModeChange } from '../../../shared/modes.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
-import { copyQuoteFor } from '../utils/replyText.js';
+import { quoteMarks } from '../../../shared/replies.js';
+import { hidesText, parseIrcFormatting } from '../utils/nickColor.js';
 
 export interface LogMessage {
   type: string;
@@ -35,6 +36,9 @@ export interface LogMessage {
   modes?: ModeChange[];
   redaction?: Redaction;
   relaySource?: string | null;
+  // The text before the list took the reply address off it (`alice: yes` drawn
+  // as `yes` under a quote of alice). A log has no quote, so it writes this.
+  addressedText?: string;
 }
 
 export interface LogRow<M extends LogMessage> {
@@ -66,12 +70,24 @@ function reason(text: string | undefined): string {
   return text ? ` (${stripFormatting(text)})` : '';
 }
 
-// A chat line, by the rule Copy quote reads by (copyQuoteFor): `<nick> text`,
-// `* nick text`, `-nick- text`, formatting dropped and a spoiler kept `||…||`.
+// A line's text as a log keeps it: formatting codes dropped, a spoiler written
+// back as the `||…||` it was typed as, and the whitespace left alone — pasted
+// code keeps its indentation, where a quote (replyText) folds it away.
+function plainText(text: string): string {
+  return parseIrcFormatting(text)
+    .map((run) => (hidesText(run.fg, run.bg) ? `||${run.text}||` : run.text))
+    .join('');
+}
+
+// A chat line the way IRC writes it (quoteMarks): `<nick> text`, `* nick text`,
+// `-nick- text`.
 function chatLine(m: LogMessage): string {
-  const text = m.redaction ? redactionLabel(m.redaction, m.nick) : (m.text ?? '');
+  const [open, close] = quoteMarks(m.type);
+  const text = m.redaction
+    ? redactionLabel(m.redaction, m.nick)
+    : plainText(m.addressedText ?? m.text ?? '');
   const source = m.relaySource ? `[${m.relaySource}] ` : '';
-  return copyQuoteFor({ nick: m.nick ?? '', type: m.type, text: source + text });
+  return `${open}${m.nick ?? ''}${close} ${source}${text}`.trimEnd();
 }
 
 // An event line's words, as the list prints them after the mark.
@@ -161,39 +177,56 @@ const ROW_SELECTOR = '.line, .unread-divider, .presence-divider, .date-divider, 
 const CELL_SELECTOR =
   ':scope > .time, :scope > .prefix, :scope > .body, :scope > .head > .prefix, :scope > .head > .relay-source, :scope > .head > .time';
 
-// The part of the selection that falls inside `el`, as text.
-function selectedTextIn(range: Range, el: Element): string {
-  const part = el.ownerDocument.createRange();
-  part.selectNodeContents(el);
-  if (range.compareBoundaryPoints(Range.START_TO_START, part) > 0) {
-    part.setStart(range.startContainer, range.startOffset);
+// Text the reader cannot have highlighted: not drawn (the compact layout keeps
+// an unheaded row's leading time in the page and hides it) or not selectable
+// (an avatar's initial).
+function unselectable(node: Node, within: Element): boolean {
+  const view = within.ownerDocument.defaultView;
+  for (let el = node.parentElement; el && view; el = el.parentElement) {
+    const style = view.getComputedStyle(el);
+    if (style.display === 'none' || style.userSelect === 'none') return true;
+    if (el === within) break;
   }
-  if (range.compareBoundaryPoints(Range.END_TO_END, part) < 0) {
-    part.setEnd(range.endContainer, range.endOffset);
-  }
-  return part.toString();
+  return false;
 }
 
+// Whether any text the reader could highlight inside `el` is in the selection.
+// A range that only reaches the edge of `el` (a drag, or a triple-click, that
+// ends at the start of the next row) intersects it and selects nothing in it.
 function touches(range: Range, el: Element): boolean {
-  return range.intersectsNode(el) && selectedTextIn(range, el).trim() !== '';
+  if (!range.intersectsNode(el)) return false;
+  const doc = el.ownerDocument;
+  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (!range.intersectsNode(node)) continue;
+    const part = doc.createRange();
+    part.selectNodeContents(node);
+    if (node === range.startContainer) part.setStart(node, range.startOffset);
+    if (node === range.endContainer) part.setEnd(node, range.endOffset);
+    if (part.toString().trim() !== '' && !unselectable(node, el)) return true;
+  }
+  return false;
 }
 
 // A selection's text without the blank lines at its edges. Safari's
 // triple-click runs the selection on to the start of the next row and copies a
 // blank line for every block it passed on the way (the row's hover buttons),
-// so a line pasted with six empty lines under it. Spaces at the edges of a
-// selection that has no such lines are the reader's and stay.
+// so a line pasted with six empty lines under it. An edge with a single line
+// break is every browser's ordinary triple-click and stays, as do the spaces
+// at the edges of a selection: the caller takes the copy over only when this
+// changed something, and taking it over costs the clipboard its rich text.
 export function trimBlankEdges(text: string): string {
-  return text.replace(/^\s*\n\s*|\s*\n\s*$/g, '');
+  return text.replace(/^\s*\n\s*\n\s*|\s*\n\s*\n\s*$/g, '');
 }
 
 export interface RowSelection {
   // How many row elements the scroller holds: the caller checks it against its
   // own row count before trusting an index.
   total: number;
-  // The rows with selected text in them, as indexes into the render rows. A
-  // row the selection only reaches the edge of (a drag that ends at the start
-  // of the next line) is not one.
+  // The rows the selection covers, as indexes into the render rows: from the
+  // first with selected text in it to the last. Only the two ends are asked
+  // for text — a row between them is covered whether or not it has any (a
+  // line that is only an image has none).
   indexes: number[];
   // The selection sits inside a single cell of a single row.
   withinCell: boolean;
@@ -201,10 +234,12 @@ export interface RowSelection {
 
 export function rowsInSelection(root: Element, range: Range): RowSelection {
   const rows = Array.from(root.children).filter((el) => el.matches(ROW_SELECTOR));
+  let first = rows.findIndex((el) => range.intersectsNode(el));
+  let last = rows.findLastIndex((el) => range.intersectsNode(el));
+  while (first !== -1 && first <= last && !touches(range, rows[first]!)) first++;
+  while (last > first && !touches(range, rows[last]!)) last--;
   const indexes: number[] = [];
-  rows.forEach((el, i) => {
-    if (touches(range, el)) indexes.push(i);
-  });
+  for (let i = first; i !== -1 && i <= last; i++) indexes.push(i);
   let withinCell = false;
   if (indexes.length === 1) {
     const cells = Array.from(rows[indexes[0]!]!.querySelectorAll(CELL_SELECTOR));
