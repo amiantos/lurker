@@ -83,8 +83,13 @@ const items = computed<StatusItem[]>(() => {
   margin-left: var(--space-3);
   color: var(--fg-muted);
 }
+/* Snapped to whole pixels. The text and the icon each round to the pixel grid
+   on their own, so a fractional offset lands a pixel higher or lower depending
+   on where the bar happens to fall on the page; a whole one cannot. The first
+   declaration is for a browser without round(). */
 .status-icons :deep(svg) {
   vertical-align: calc(0.27em - var(--icon-size) / 2);
+  vertical-align: round(calc(0.27em - var(--icon-size) / 2), 1px);
 }
 .status-icons :deep(svg + svg) {
   margin-left: var(--space-2);
