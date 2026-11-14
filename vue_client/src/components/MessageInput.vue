@@ -165,6 +165,7 @@ import {
   type Network,
 } from '../stores/networks.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import { helpLines, resolveVerb } from '../lib/commands/registry.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
 import { parseRelayCommand } from '../lib/commands/relay.js';
@@ -2709,103 +2710,6 @@ function formatHighlightEntry(entry: HighlightRule, idx: number, global = false)
   return `  ${idx}. ${summarizeHighlightEntry(entry, global)}`;
 }
 
-const COMMANDS_LINES = [
-  'commands:',
-  '  /me <text>             — emote in the current buffer',
-  '  /react <emoji|text>    — react to the last line someone else said here',
-  '  /delete [reason]       — delete the last line you said here, where the network allows it',
-  '  /slap <nick>           — slap someone around a bit with a large trout',
-  '  /shrug [text]          — say your text followed by ¯\\_(ツ)_/¯',
-  '  /msg <nick> <text>     — open a DM and send (alias: /query)',
-  '  /notice <tgt> <text>   — send a NOTICE to a channel or nick',
-  '  /ns <text>             — message NickServ (e.g. identify <pass>)',
-  '  /cs <text>             — message ChanServ',
-  '  /join <#chan>          — join a channel (alias: /j)',
-  '  /part [#chan] [reason] — leave channel (keeps buffer; aliases: /leave, /p)',
-  '  /close                 — close current buffer (parts if joined)',
-  '  /clear [off]           — hide buffer up to now (off = undo, show again)',
-  '  /threads               — the reply threads in this buffer (alias: /thread)',
-  '  /retention [n|off|default] — per-buffer history cap (no arg = show current)',
-  '  /away [-all|-one] [msg] — set away (no msg clears)',
-  '  /back [-all|-one]      — clear away',
-  '                           -all: every network; -one: just this one',
-  '  /flushq                — drop your messages still waiting to be sent on this network',
-  '  /whois <nick>          — query user info (renders in server buffer)',
-  '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
-  '  /accept [nick…]        — caller ID (+g): let nicks message you; -nick removes; no arg lists',
-  '  /displayname <name>|off — the name shown for you on networks with IRCv3 metadata',
-  '  /avatar <url>|off      — your avatar image (an https URL) on networks with IRCv3 metadata',
-  '  /metadata set|del|list|clear — any IRCv3 metadata key: set <key> <value> · del <key> · list [nick|#chan]',
-  '  /avatars [list|use <set>|delete <set>] — the tile set behind generated avatars (Settings › Appearance)',
-  '  /ping [nick]           — CTCP ping a user for round-trip latency',
-  '  /kick <nick> [reason]  — kick from current channel',
-  '  /kickban <nick> [msg]  — kick and ban in one step',
-  '  /op <nick…>            — give op (also /deop /voice /devoice /halfop /dehalfop)',
-  '  /ban <nick|mask>       — ban (also /unban /quiet /unquiet)',
-  '  /cycle [reason]        — part and rejoin this channel (alias: /hop)',
-  '  /mode <target> <flags> — set modes (target defaults to current channel)',
-  '  /topic [#chan] [text]  — show the topic, or set it',
-  '  /channel [#chan]       — open Channel Settings (alias: /chan)',
-  '  /nick <newnick>        — change your nick',
-  '  /quit [reason]         — disconnect from current network (alias: /disconnect)',
-  '  /reconnect             — reconnect to current network',
-  '  /list                  — list channels on current network',
-  '  /who [mask]            — find users (also /whowas /userhost /ison /names)',
-  '  /motd /version /time   — server info (also /admin /info /lusers /links /map /stats /help)',
-  '  /jitsi                 — start a video call (alias: /talk)',
-  '  /ignore [opts] [mask|#chan] [LEVELS] — list, or add an ignore rule (global by default)',
-  '      opts: -network -regexp -full -pattern <text> -except -time <dur>',
-  '      LEVELS: ALL PUBLIC MSGS NOTICES ACTIONS JOINS PARTS QUITS NICKS KICKS MODES TOPICS NOHIGHLIGHT',
-  '      e.g. /ignore bob NOHIGHLIGHT   ·   /ignore -network -regexp -pattern (foo|bar) #chan',
-  '  /unignore <index|mask> — remove an ignore (index from /ignore list)',
-  '  /highlight [opts] <text> — list, or add a highlight rule (global by default; alias: /hilight)',
-  '      opts: -network -mask -full -regexp -matchcase -channels <#a,#b>',
-  '      e.g. /highlight QUACK!   ·   /highlight -mask bob!*@*   ·   /highlight -network -regexp qu+ack',
-  '  /unhighlight <index|text> — remove a highlight (index from /highlight list; alias: /dehilight)',
-  '  /relay [list]          — list, mark, or unmark relay/bridge bots on this network',
-  '      e.g. /relay add relaybot   ·   /relay add bridge <{nick}> {message}   ·   /relay remove relaybot',
-  '      custom template mirrors the bot order with {source}/{nick}/{message} placeholders',
-  '      e.g. reversed: /relay add eyebot <{nick}> [{source}] {message}',
-  '  /network [list]        — manage networks (alias: /net); runs from the system buffer',
-  '      add [-host <addr>] [-port <n>] [-tls|-notls] [-nick <n>] [-user <u>] [-realname <name>]',
-  '          [-sasl_username <u>] [-sasl_password <p>] [-password <serverpass>]',
-  "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] [-flood|-noflood] <name>",
-  '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
-  '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
-  '  /dcc [list]            — DCC transfers: list, or accept/reject/cancel/download/delete <id>',
-  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
-  '  /dcc files             — the files you keep from DCC, until you delete them',
-  '  /xdcc add <bot> <pack> — queue an XDCC pack; the queue asks each bot for one at a time',
-  '      addl <bot> <first> <last>   ·   addm <bot> <pack> <pack>…   ·   queue [<bot>]',
-  "      rmp|rmpl|rmpm <bot> …  take packs out   ·   rmbot <bot>  drop that bot's queue",
-  '      e.g. /xdcc addl Ginpachi-Sensei 29 32   ·   /xdcc rmp Ginpachi-Sensei 31',
-  '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
-  '      the file is its name or its id from /dcc files; -passive asks them to listen',
-  "      (it's passive anyway when this server can't listen); -secure sends over TLS (SSEND)",
-  '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -secure bob 12',
-  '  /dcc retry <id>        — ask again for a queued pack that failed, next in its queue',
-  '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
-  '      one holding a partial download needs /dcc delete <id> first',
-  '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
-  '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
-  '      -passive asks them to listen; -secure chats over TLS (SCHAT, as KVIrc does)',
-  '      e.g. /dcc chat bob   ·   /dcc chat -secure bob   ·   /dcc close chat bob',
-  '  /set <key> <value…>    — change a setting; /set (or /set ?) lists all keys',
-  '  /get <key>             — read a setting back (output in the system buffer)',
-  '  /theme [list]          — theme presets: apply/save/delete <name>, mode [single|system]',
-  '      e.g. /theme apply light   ·   /theme save My Theme   ·   /theme use dark Ocean',
-  '      built-ins: Monokai Plus + Monokai Plus Light (dark/light work as shorthands)',
-  '  /raw <line>            — send a raw IRC line (alias: /quote)',
-  '  /e2e <sub>             — end-to-end encryption for a channel (experimental; /e2e help)',
-  '      on [#chan] [auto|normal|quiet]   ·   off [#chan]   ·   mode <auto|normal|quiet>',
-  '      handshake <nick>   ·   accept <nick>   ·   decline <nick>',
-  '      revoke <nick>   ·   unrevoke <nick>   ·   reverify <nick>   ·   verify <nick>',
-  '      rotate [#chan]   ·   forget [-all] <nick|handle>   ·   fingerprint   ·   status   ·   list [-all]',
-  '      autotrust <list | add <scope> <pattern> | remove <pattern>>   ·   export   ·   import',
-  '  /commands              — this list',
-  '  //text                 — send literal "/text" as a message (escape)',
-];
-
 /**
  * Whether a COMMAND ARGUMENT names a channel — `/part &local`, `/kick &local bob`.
  *
@@ -4083,7 +3987,10 @@ function runGet(argLine: string, networkId: number | null, target: string): void
 function handleCommand(line: string, networkId: number | null, target: string): boolean {
   const [cmd, ...rest] = line.slice(1).split(/\s+/);
   const argLine = line.slice(1 + cmd.length).trim();
-  const verb = cmd.toLowerCase();
+  // Typed against the command table (lib/commands/registry.ts): every verb the
+  // table names needs a case below, and every case needs a verb in the table,
+  // or this file stops type-checking. Null is a word the table doesn't know.
+  const verb = resolveVerb(cmd);
 
   // Network-agnostic commands act on global / user-wide state (the local command
   // cheatsheet, away on every network, the per-user ignore list), so they run
@@ -4092,7 +3999,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
   // for the switch below.
   switch (verb) {
     case 'commands':
-      for (const commandLine of COMMANDS_LINES) localInfo(networkId, target, commandLine);
+      for (const commandLine of helpLines()) localInfo(networkId, target, commandLine);
       return true;
     case 'away':
     case 'back': {
@@ -4170,9 +4077,16 @@ function handleCommand(line: string, networkId: number | null, target: string): 
 
   // Everything else acts on a specific network/buffer.
   if (networkId == null) {
-    localInfo(null, target, `/${verb} needs an active network — switch to a channel or DM first.`);
+    localInfo(
+      null,
+      target,
+      `/${cmd.toLowerCase()} needs an active network — switch to a channel or DM first.`,
+    );
     return true;
   }
+
+  // Anything Lurker has no command for goes to the server as typed.
+  if (verb === null) return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
 
   switch (verb) {
     case 'e2e': {
@@ -4918,8 +4832,11 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         line,
       );
     }
-    default:
-      return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
+    default: {
+      // Unreachable while the switches and the table agree.
+      const unhandled: never = verb;
+      return unhandled;
+    }
   }
 }
 </script>

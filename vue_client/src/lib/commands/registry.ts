@@ -424,6 +424,7 @@ export const COMMANDS = [
   cmd(['away'], 'Status', 'set away (no msg clears)', {
     args: [optText('msg')],
     flags: AWAY_FLAGS,
+    notes: ['-all: every network; -one: just this one'],
     networkAgnostic: true,
   }),
   cmd(['back'], 'Status', 'clear away', { flags: AWAY_FLAGS, networkAgnostic: true }),
