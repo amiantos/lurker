@@ -75,12 +75,18 @@ const items = computed<StatusItem[]>(() => {
 </script>
 
 <style scoped>
+/* Plain inline, not a flex row, so the icons can be placed against the text's
+   baseline. The global .lucide rule centres an icon on capital height (0.35em
+   up), which rides high beside a channel or nick: those are nearly always
+   lowercase. 0.27em centres on the lowercase letters instead. */
 .status-icons {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
   margin-left: var(--space-3);
   color: var(--fg-muted);
-  vertical-align: text-bottom;
+}
+.status-icons :deep(svg) {
+  vertical-align: calc(0.27em - var(--icon-size) / 2);
+}
+.status-icons :deep(svg + svg) {
+  margin-left: var(--space-2);
 }
 </style>
