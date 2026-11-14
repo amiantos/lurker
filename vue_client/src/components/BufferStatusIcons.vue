@@ -68,7 +68,8 @@ const items = computed<StatusItem[]>(() => {
 /* Plain inline, not a flex row, so the icons keep a vertical-align against the
    text's baseline. */
 .status-icons {
-  margin-left: var(--space-3);
+  /* One character, the bar's own unit of space. */
+  margin-left: 1ch;
   color: var(--fg-muted);
 }
 /* The global .lucide offset, snapped to whole pixels. The text and the icon
