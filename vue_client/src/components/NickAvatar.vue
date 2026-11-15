@@ -116,8 +116,9 @@ const color = computed(() => {
 });
 // What reads on that colour, near-white or near-black: the letter's ink, the
 // silhouette's, a placeholder glyph's. The colour is any CSS the user typed,
-// so the engine says what it is.
-const ink = computed(() => avatarInk(themeColor(color.value)));
+// so the engine says what it is. A nick with no colour, or one the engine
+// cannot read, leaves the tile on its own background (.avatar, --bg-soft).
+const ink = computed(() => avatarInk(themeColor(color.value) ?? themeColor('var(--bg-soft)')));
 
 const src = computed(() => {
   if (fromMetadata.value) return meta.value!.avatarUrl as string;

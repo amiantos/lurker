@@ -7,6 +7,7 @@ import {
   RENAMED_SETTING_KEYS,
   currentLayoutValue,
   currentSettingKey,
+  currentSettingWrite,
   withCurrentSettingKeys,
 } from './settingsRenames.js';
 import { REGISTRY } from './settingsRegistry.js';
@@ -64,14 +65,59 @@ describe('the layout value', () => {
   });
 
   it('is nothing, so the default, for every other old choice', () => {
-    for (const was of ['auto', 'standard', 'traditional', '', 7, null, undefined]) {
+    for (const was of ['auto', 'standard', '', 7, null, undefined]) {
       expect(currentLayoutValue(was)).toBeNull();
     }
     expect(layout.default).toBe('traditional');
   });
 
+  // A choice somebody made, not an absence: an import keeps it.
+  it('is traditional for traditional', () => {
+    expect(currentLayoutValue('traditional')).toBe('traditional');
+  });
+
   it('only ever answers with a choice the registry offers', () => {
     expect(layout.type === 'enum' && layout.choices).toEqual(['traditional', 'modern']);
     expect(layout.type === 'enum' && layout.choices).toContain(currentLayoutValue('compact'));
+  });
+});
+
+describe('a write from a client built before the rename', () => {
+  it('lands under the current key', () => {
+    expect(currentSettingWrite('look.message.compact.indent', 2)).toEqual([
+      'look.message.modern.indent',
+      2,
+    ]);
+    expect(currentSettingWrite('look.font.size', 14)).toEqual(['look.font.size', 14]);
+  });
+
+  it('spells an old layout as the one it is now', () => {
+    expect(currentSettingWrite(LAYOUT_SETTING_KEY, 'compact')).toEqual([
+      LAYOUT_SETTING_KEY,
+      'modern',
+    ]);
+    for (const was of ['auto', 'standard']) {
+      expect(currentSettingWrite(LAYOUT_SETTING_KEY, was)).toEqual([
+        LAYOUT_SETTING_KEY,
+        'traditional',
+      ]);
+    }
+    // Not a layout at all: left for validation to refuse.
+    expect(currentSettingWrite(LAYOUT_SETTING_KEY, 'sideways')).toEqual([
+      LAYOUT_SETTING_KEY,
+      'sideways',
+    ]);
+  });
+
+  it('points an old avatar set id at the set it became', () => {
+    expect(currentSettingWrite('look.avatars.set', 'plain-light')).toEqual([
+      'look.avatars.set',
+      'plain',
+    ]);
+    expect(currentSettingWrite('look.avatars.set', 'initial-dark')).toEqual([
+      'look.avatars.set',
+      'initial',
+    ]);
+    expect(currentSettingWrite('look.avatars.set', '12')).toEqual(['look.avatars.set', '12']);
   });
 });

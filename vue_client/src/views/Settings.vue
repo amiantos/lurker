@@ -146,7 +146,7 @@ const appearanceSubsections = computed<SettingsSubsection[]>(() => {
   // registry group: each section renders its own [data-setting-group] heading
   // for the scroll-spy.
   const subsections: SettingsSubsection[] = [
-    { id: 'layout', label: 'Message layout' },
+    { id: 'message-layout', label: 'Message layout' },
     { id: 'themes', label: 'Themes' },
     { id: 'avatars', label: 'Avatars' },
   ];

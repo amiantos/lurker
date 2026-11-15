@@ -19,6 +19,7 @@ import {
   BUILTIN_AVATAR_SETS,
   DEFAULT_AVATAR_SET,
   DEFAULT_STOP_CHARS,
+  currentAvatarSetId,
   tileIndex,
   tileUrl,
   type AvatarInk,
@@ -98,7 +99,11 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
     /** The pointer, resolved; one at a set we don't have falls back to the registry default. */
     activeSetId(): string {
       const settings = useSettingsStore();
-      const id = String(settings.effective(AVATAR_SET_POINTER_KEY) ?? DEFAULT_AVATAR_SET);
+      // An id from before the Initial and Plain sets merged (an old client can
+      // still write one) is the set it became.
+      const id = currentAvatarSetId(
+        String(settings.effective(AVATAR_SET_POINTER_KEY) ?? DEFAULT_AVATAR_SET),
+      );
       return this.byId(id) ? id : DEFAULT_AVATAR_SET;
     },
     activeSet(): AvatarSetEntry {

@@ -232,6 +232,18 @@ describe('slash-command completion', () => {
     expect(rows()).toEqual(['on', 'off']);
   });
 
+  // The Appearance pane draws these two by hand, so no registry pane lists
+  // them; /set reaches them all the same.
+  it('offers the message layout and the avatars switch to /set', async () => {
+    const el = await composer();
+    await type(el, '/set look.message.lay');
+    expect(rows()).toEqual(['look.message.layouttraditional (Traditional)']);
+    await key(el, 'Tab');
+    expect(rows()).toEqual(['traditionalTraditional', 'modernModern']);
+    await type(el, '/set look.message.avatars');
+    expect(rows()).toEqual(['look.message.avatarsfalse']);
+  });
+
   it('Enter sends a command that is already whole', async () => {
     const el = await composer();
     await type(el, '/away');

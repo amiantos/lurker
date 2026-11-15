@@ -469,9 +469,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     label: 'Message layout',
     // `layout` is absent from CATEGORIES, as `avatars` is: the Appearance
     // pane's Message layout section draws this key and look.message.avatars
-    // as one picker, so the registry pane leaves it alone.
+    // as one picker, so the registry pane leaves it alone. /set still reaches
+    // both (COMMAND_CATEGORY_HOME).
     category: 'layout',
-    group: 'layout',
+    group: 'message-layout',
     type: 'enum',
     choices: ['traditional', 'modern'],
     choiceLabels: {
@@ -2052,6 +2053,17 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       "server's local time.",
   },
   {
+    key: 'onboarding.look_answered',
+    label: 'Onboarding look answered',
+    category: 'system',
+    group: 'onboarding',
+    type: 'bool',
+    default: false,
+    description:
+      'Set once the first-run flow has asked how chat should look, so a flow that ' +
+      'is offered again starts past the question and never writes over the answer.',
+  },
+  {
     key: 'onboarding.completed',
     label: 'Onboarding completed',
     category: 'system',
@@ -2273,6 +2285,16 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'data', label: 'Data', kind: 'bespoke' },
   { id: 'about', label: 'About', kind: 'bespoke' },
 ]);
+
+// Categories a bespoke section draws by hand, so they are absent from
+// CATEGORIES and the registry panes skip them, but whose keys are ordinary
+// settings a user may still type: /set, /get and the /set listing treat each
+// as part of the category named here. (`theme` and `system` are absent from
+// both: pointers and flags the app writes, not settings.)
+export const COMMAND_CATEGORY_HOME: Readonly<Record<string, string>> = Object.freeze({
+  layout: 'appearance',
+  avatars: 'appearance',
+});
 
 // Sub-group labels used inside a category pane (one heading per `group` field
 // in REGISTRY). Groups without an entry here fall back to the raw group id.

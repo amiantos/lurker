@@ -10,6 +10,7 @@ import {
   getOption,
   defaultsAsObject,
   CATEGORIES,
+  COMMAND_CATEGORY_HOME,
   GROUPS,
   THEMED_KEYS,
   themedDefaults,
@@ -22,7 +23,16 @@ import type {
   FeatureFlag,
 } from '../../../shared/settingsRegistry.js';
 
-export { REGISTRY, getOption, defaultsAsObject, CATEGORIES, GROUPS, THEMED_KEYS, themedDefaults };
+export {
+  REGISTRY,
+  getOption,
+  defaultsAsObject,
+  CATEGORIES,
+  COMMAND_CATEGORY_HOME,
+  GROUPS,
+  THEMED_KEYS,
+  themedDefaults,
+};
 
 export function getDefault(key: string): SettingValue | undefined {
   const opt = getOption(key);

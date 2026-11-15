@@ -9,7 +9,7 @@
 -->
 
 <template>
-  <h3 id="layout" class="subhead" data-setting-group="layout">Message layout</h3>
+  <h3 id="message-layout" class="subhead" data-setting-group="message-layout">Message layout</h3>
   <LayoutPicker :model-value="current" :disabled="busy" @update:model-value="pick" />
   <p v-if="error" class="error inline">{{ error }}</p>
 </template>

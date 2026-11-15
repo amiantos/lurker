@@ -181,10 +181,13 @@ import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
 import { useAuthStore } from '../stores/auth.js';
-import { useOnboarding } from '../composables/useOnboarding.js';
+import { LOOK_ANSWERED_SETTING, useOnboarding } from '../composables/useOnboarding.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useViewport } from '../composables/useViewport.js';
 import {
+  AVATARS_KEY,
+  LAYOUT_KEY,
+  currentLayoutChoice,
   firstRunLayoutChoice,
   layoutChoices,
   layoutChoiceWrites,
@@ -205,7 +208,18 @@ const onboarding = useOnboarding();
 const settings = useSettingsStore();
 const { isMobile } = useViewport();
 
-const step = ref<'look' | 'pick' | 'setup'>(onboarding.lookAnswered.value ? 'pick' : 'look');
+// The look is asked once per account: the flow is offered again after an Esc,
+// and to an old account with no networks, and neither is asked twice.
+const lookAnswered = (): boolean =>
+  onboarding.lookAnswered.value || settings.effective(LOOK_ANSWERED_SETTING) === true;
+const step = ref<'look' | 'pick' | 'setup'>(lookAnswered() ? 'pick' : 'look');
+
+// An account that has said nothing about its look: neither key is stored. One
+// that has (an account from before this question, with the flow offered to it
+// because it has no networks) starts on what it has, and its avatars stay as
+// they are whatever it picks.
+const freshLook = (): boolean =>
+  !Object.hasOwn(settings.values, LAYOUT_KEY) && !Object.hasOwn(settings.values, AVATARS_KEY);
 
 // The look step. Nothing is written until Continue: the cards are a choice
 // being made, and Esc out of the flow should leave the account as it was.
@@ -213,10 +227,18 @@ const step = ref<'look' | 'pick' | 'setup'>(onboarding.lookAnswered.value ? 'pic
 // phone has no Traditional — and otherwise the screen's own starting look.
 const clickedLook = ref<LayoutChoice | null>(null);
 const look = computed<LayoutChoice>({
-  get: () =>
-    clickedLook.value && layoutChoices(isMobile.value).includes(clickedLook.value)
-      ? clickedLook.value
-      : firstRunLayoutChoice(isMobile.value),
+  get: () => {
+    if (clickedLook.value && layoutChoices(isMobile.value).includes(clickedLook.value)) {
+      return clickedLook.value;
+    }
+    return freshLook()
+      ? firstRunLayoutChoice(isMobile.value)
+      : currentLayoutChoice(
+          settings.effective(LAYOUT_KEY),
+          settings.effective(AVATARS_KEY),
+          isMobile.value,
+        );
+  },
   set: (choice) => {
     clickedLook.value = choice;
   },
@@ -226,9 +248,10 @@ const savingLook = ref(false);
 async function confirmLook(): Promise<void> {
   savingLook.value = true;
   try {
-    await settings.patchMany(
-      layoutChoiceWrites(look.value, { isMobile: isMobile.value, firstRun: true }),
-    );
+    await settings.patchMany({
+      ...layoutChoiceWrites(look.value, { isMobile: isMobile.value, firstRun: freshLook() }),
+      [LOOK_ANSWERED_SETTING]: true,
+    });
   } catch {
     // A look that did not save is not a reason to hold up getting connected:
     // the account keeps the defaults and Settings has the same picker.
@@ -348,13 +371,9 @@ async function submit(): Promise<void> {
 // Skipped before the look was answered, a new account still gets what the
 // question would have defaulted to that the registry does not: avatars on.
 function skip(): void {
-  if (!onboarding.lookAnswered.value) {
-    onboarding.lookAnswered.value = true;
-    settings.patchMany(skippedLayoutWrites()).catch(() => {
-      /* non-critical, as above */
-    });
-  }
-  void onboarding.complete();
+  const also = !lookAnswered() && freshLook() ? skippedLayoutWrites() : {};
+  onboarding.lookAnswered.value = true;
+  void onboarding.complete(also);
 }
 </script>
 

@@ -207,7 +207,13 @@ import { foldThemeName, themeNameError } from '../../../shared/themePresets.js';
 import type { ThemePreset } from '../../../shared/themePresets.js';
 import { formatColumns } from '../lib/commands/output.js';
 import { api } from '../api.js';
-import { REGISTRY, getOption, optionVisible, CATEGORIES } from '../utils/settingsRegistry.js';
+import {
+  REGISTRY,
+  getOption,
+  optionVisible,
+  CATEGORIES,
+  COMMAND_CATEGORY_HOME,
+} from '../utils/settingsRegistry.js';
 import type { SettingOption } from '../../../shared/settingsRegistry.js';
 import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore, type BufferMessage } from '../stores/buffers.js';
@@ -4218,9 +4224,15 @@ function printFingerprints(cert: ClientCertDigest, reply: (msg: string) => void)
 // auto-syncs) AND is visible in this edition (selfHostedOnly knobs are hidden in
 // the hosted build). Category *kind* is irrelevant: bespoke panes like
 // Notifications still own registry-backed keys, which belong in the surface.
+// The category a setting is listed under: its own, or for a key a bespoke
+// section draws (the message layout, the avatars), the pane that section is in.
+function commandCategory(opt: SettingOption): string {
+  return COMMAND_CATEGORY_HOME[opt.category] ?? opt.category;
+}
+
 function settingExposed(opt: SettingOption): boolean {
   return (
-    CATEGORIES.some((c) => c.id === opt.category) &&
+    CATEGORIES.some((c) => c.id === commandCategory(opt)) &&
     // ⚠ Same visibility rule as the settings pane, deliberately. `/set` is a first-class way to
     // operate every setting, so a key hidden in one surface and offered in the other is a
     // half-hidden feature — and `requiresFeature` keys have no server behind them at all.
@@ -4242,7 +4254,7 @@ function lookupSetting(key: string): SettingOption | null {
 function listSettings(networkId: number | null, target: string): void {
   localInfo(networkId, target, 'settings — /set <key> <value> to change, /get <key> to read:');
   for (const cat of CATEGORIES) {
-    const opts = REGISTRY.filter((o) => o.category === cat.id && settingExposed(o));
+    const opts = REGISTRY.filter((o) => commandCategory(o) === cat.id && settingExposed(o));
     if (!opts.length) continue;
     localInfo(networkId, target, `${cat.label.toLowerCase()}:`);
     const rows = opts.map((o) => [`  ${o.key}`, formatSettingValue(o, settings.effective(o.key))]);

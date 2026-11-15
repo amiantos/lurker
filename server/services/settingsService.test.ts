@@ -107,6 +107,36 @@ describe('update', () => {
   });
 });
 
+// A client built before a rename (shared/settingsRenames.ts): an old tab, an
+// app build from before it.
+describe('a write under a name from before a rename', () => {
+  it('stores an old key under the current one', () => {
+    const res = settingsService.update(user.id, { 'look.message.compact.indent': 2 });
+    expect(res.ok && res.values['look.message.modern.indent']).toBe(2);
+    expect(res.ok && 'look.message.compact.indent' in res.values).toBe(false);
+    const reset = settingsService.update(user.id, {}, ['look.message.compact.indent']);
+    expect(reset.ok && 'look.message.modern.indent' in reset.values).toBe(false);
+  });
+
+  it('stores an old layout and an old avatar set as what they are now', () => {
+    const res = settingsService.update(user.id, {
+      'look.message.layout': 'compact',
+      'look.avatars.set': 'plain-light',
+    });
+    expect(res.ok && res.values['look.message.layout']).toBe('modern');
+    expect(res.ok && res.values['look.avatars.set']).toBe('plain');
+    // `auto` is Traditional, the default, so the row goes.
+    const auto = settingsService.update(user.id, { 'look.message.layout': 'auto' });
+    expect(auto.ok && 'look.message.layout' in auto.values).toBe(false);
+    settingsService.reset(user.id, 'look.avatars.set');
+  });
+
+  it('names the key the client sent when the value is refused', () => {
+    const res = settingsService.update(user.id, { 'look.message.compact.indent': 'wide' });
+    expect(!res.ok && res.key).toBe('look.message.compact.indent');
+  });
+});
+
 describe('reset', () => {
   it('drops the override and returns the merged values', () => {
     settingsService.update(user.id, { 'look.font.size': 18 });

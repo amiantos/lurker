@@ -101,6 +101,7 @@ describe('OnboardingFlow — the look step', () => {
     expect(patchMany).toHaveBeenCalledWith({
       'look.message.layout': 'modern',
       'look.message.avatars': false,
+      'onboarding.look_answered': true,
     });
     expect(wrapper!.find('.network-picker-stub').exists()).toBe(true);
     expect(cards()).toHaveLength(0);
@@ -113,6 +114,7 @@ describe('OnboardingFlow — the look step', () => {
     expect(patchMany).toHaveBeenCalledWith({
       'look.message.layout': 'traditional',
       'look.message.avatars': true,
+      'onboarding.look_answered': true,
     });
   });
 
@@ -123,7 +125,10 @@ describe('OnboardingFlow — the look step', () => {
     await cards()[1].trigger('click');
     await continueButton().trigger('click');
     await flushPromises();
-    expect(patchMany).toHaveBeenCalledWith({ 'look.message.avatars': false });
+    expect(patchMany).toHaveBeenCalledWith({
+      'look.message.avatars': false,
+      'onboarding.look_answered': true,
+    });
   });
 
   it('falls back to what a phone offers when the screen narrows under a Traditional pick', async () => {
@@ -134,7 +139,10 @@ describe('OnboardingFlow — the look step', () => {
     expect(checked().find('.name').text()).toBe('With avatars');
     await continueButton().trigger('click');
     await flushPromises();
-    expect(patchMany).toHaveBeenCalledWith({ 'look.message.avatars': true });
+    expect(patchMany).toHaveBeenCalledWith({
+      'look.message.avatars': true,
+      'onboarding.look_answered': true,
+    });
   });
 
   it('moves on to the networks even when the look did not save', async () => {
@@ -159,7 +167,41 @@ describe('OnboardingFlow — the look step', () => {
     mountFlow(false);
     await wrapper!.find('.skip').trigger('click');
     await flushPromises();
-    expect(patchMany).toHaveBeenCalledWith({ 'look.message.avatars': true });
+    // One write, with the flag that ends the flow: two would race.
+    expect(patchMany).toHaveBeenCalledTimes(1);
+    expect(patchMany).toHaveBeenCalledWith({
+      'look.message.avatars': true,
+      'onboarding.completed': true,
+    });
+  });
+
+  // The flow is offered again after an Esc, on any device.
+  it('starts past the look on an account that already answered it', () => {
+    mountFlow(false, { 'onboarding.look_answered': true, 'look.message.layout': 'modern' });
+    expect(cards()).toHaveLength(0);
+    expect(wrapper!.find('.network-picker-stub').exists()).toBe(true);
+    expect(patchMany).not.toHaveBeenCalled();
+  });
+
+  // An account from before the question, offered the flow for having no networks.
+  it('starts an account with a stored look on that look, and leaves its avatars alone', async () => {
+    mountFlow(false, { 'look.message.layout': 'modern' });
+    expect(checked().find('.name').text()).toBe('Modern');
+    await cards()[0].trigger('click');
+    await continueButton().trigger('click');
+    await flushPromises();
+    expect(patchMany).toHaveBeenCalledWith({
+      'look.message.layout': 'traditional',
+      'onboarding.look_answered': true,
+    });
+  });
+
+  it('does not turn avatars on when an account with a stored look skips', async () => {
+    mountFlow(false, { 'look.message.layout': 'modern' });
+    await wrapper!.find('.skip').trigger('click');
+    await flushPromises();
+    expect(patchMany).toHaveBeenCalledTimes(1);
+    expect(patchMany).toHaveBeenCalledWith({ 'onboarding.completed': true });
   });
 
   it('leaves the answer alone when setup is skipped after it', async () => {
