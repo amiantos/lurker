@@ -92,11 +92,11 @@ function labelFor(choice: LayoutChoice): string {
 // the cards read 12:01 wherever the reader is.
 const RUNS = [
   {
-    nick: 'ann',
+    nick: 'amiantos',
     at: new Date(2026, 0, 1, 12, 1, 7),
     texts: ['anyone seen the build?', 'never mind, fixed it'],
   },
-  { nick: 'bob', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['nice, ship it tonight'] },
+  { nick: 'relyimah', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['nice, ship it tonight'] },
 ];
 // A line later in a run was sent a little after the one before: the grid
 // hides a time that repeats the row above's (look.message.collapse_timestamps,
@@ -107,8 +107,8 @@ const RUNS = [
 // more, enough to show the columns holding from row to row.
 const GRID_RUNS = [
   ...RUNS,
-  { nick: 'ann', at: new Date(2026, 0, 1, 12, 3, 18), texts: ['tagging it now'] },
-  { nick: 'bob', at: new Date(2026, 0, 1, 12, 4, 2), texts: ['thanks!'] },
+  { nick: 'amiantos', at: new Date(2026, 0, 1, 12, 3, 18), texts: ['tagging it now'] },
+  { nick: 'relyimah', at: new Date(2026, 0, 1, 12, 4, 2), texts: ['thanks!'] },
 ];
 const ROWS = GRID_RUNS.flatMap((run) =>
   run.texts.map((text, i) => ({
