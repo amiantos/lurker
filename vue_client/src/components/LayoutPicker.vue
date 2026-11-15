@@ -130,8 +130,11 @@ function time(at: Date, key: string): string {
 /* Two columns: the two modern cards side by side, and Traditional across
    both. The grid is the wide layout (a time to the second, the nick column's
    16ch floor, then the text on one line), so half a row cannot show it as it
-   is. A width too narrow for two modern cards, a phone's, stacks them. */
+   is. A width too narrow for two modern cards, a phone's, stacks them.
+   Capped at the width of a settings row: wider, and auto-fit opens a third
+   column that the two modern cards leave empty. */
 .layout-picker {
+  max-width: 70ch;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(25ch, 100%), 1fr));
   gap: var(--space-6);
