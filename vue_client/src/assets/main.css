@@ -31,7 +31,7 @@
   --member-halfop: #78dce8;
   --member-voice: #b3db82;
 
-  --mono: 'Input Mono', 'Input', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --font-size: 14px;
   --font-weight: 400;
   /* Compact-layout density (#1186): rewritten live by useTheme from

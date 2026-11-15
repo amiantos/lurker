@@ -196,10 +196,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'fonts',
     themed: true,
     type: 'string',
-    default: "'Input Mono', 'Input', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    default: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     description:
       'Font family stack used everywhere in the UI. The first installed font wins. ' +
-      'Input Mono is the intended primary; the rest are system monospace fallbacks.',
+      'The default is the system monospace fonts.',
   },
   {
     key: 'look.font.size',
