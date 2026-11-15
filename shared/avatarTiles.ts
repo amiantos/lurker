@@ -15,36 +15,81 @@
 
 // What look.avatars.set points at out of the box, and where a dangling
 // pointer falls back to.
-export const DEFAULT_AVATAR_SET = 'initial-dark';
+export const DEFAULT_AVATAR_SET = 'initial';
 // The art set: Ealain pieces with the colour keyed out (tools/build-avatar-set.mjs).
 export const EALAIN_AVATAR_SET = 'ealain';
+
+// What a letter, a silhouette or a placeholder glyph is drawn in over a tile's
+// colour: near-white or near-black, whichever reads on it.
+export type AvatarInk = 'light' | 'dark';
 
 /**
  * The sets that ship with the client. A `tiles` set is static files under
  * `url` with a manifest.json; an `initial` set has no files — the client draws
- * the first letter of the name in the box, in the given ink.
+ * the first letter of the name in the box; a `plain` set is one silhouette
+ * kept in both inks (`urls`), and the tile's colour says which file.
  */
 export interface BuiltinAvatarSet {
   id: string;
   name: string;
-  kind: 'tiles' | 'initial';
+  kind: 'tiles' | 'initial' | 'plain';
   url?: string;
-  ink?: 'light' | 'dark';
+  urls?: Readonly<Record<AvatarInk, string>>;
 }
 export const BUILTIN_AVATAR_SETS: readonly BuiltinAvatarSet[] = [
   { id: EALAIN_AVATAR_SET, name: 'Ealain', kind: 'tiles', url: '/avatars/ealain' },
-  // One tile each, a bust silhouette — the generic avatar every chat app has
-  // — in white or in near-black, for anyone who finds the art too much. Which
-  // reads better depends on the nick palette, so both are offered and the
-  // user picks.
-  { id: 'plain-light', name: 'Plain (Light)', kind: 'tiles', url: '/avatars/plain-light' },
-  { id: 'plain-dark', name: 'Plain (Dark)', kind: 'tiles', url: '/avatars/plain-dark' },
+  // One tile, a bust silhouette — the generic avatar every chat app has — for
+  // anyone who finds the art too much.
+  {
+    id: 'plain',
+    name: 'Plain',
+    kind: 'plain',
+    urls: { light: '/avatars/plain-light', dark: '/avatars/plain-dark' },
+  },
   // The first letter of the display name (or the nick), as many clients do.
-  { id: 'initial-light', name: 'Initial (Light)', kind: 'initial', ink: 'light' },
-  { id: 'initial-dark', name: 'Initial (Dark)', kind: 'initial', ink: 'dark' },
+  { id: 'initial', name: 'Initial', kind: 'initial' },
 ];
 export function isBuiltinAvatarSetId(id: string): boolean {
   return BUILTIN_AVATAR_SETS.some((set) => set.id === id);
+}
+// Initial and Plain each came in a light and a dark ink the user chose between,
+// until the ink followed the tile's colour. A pointer stored under one of the
+// old ids means the set it became; any other id is returned as it is.
+const LEGACY_AVATAR_SETS: Readonly<Record<string, string>> = {
+  'initial-light': 'initial',
+  'initial-dark': 'initial',
+  'plain-light': 'plain',
+  'plain-dark': 'plain',
+};
+export const LEGACY_AVATAR_SET_IDS: readonly string[] = Object.keys(LEGACY_AVATAR_SETS);
+export function currentAvatarSetId(id: string): string {
+  return Object.prototype.hasOwnProperty.call(LEGACY_AVATAR_SETS, id) ? LEGACY_AVATAR_SETS[id] : id;
+}
+
+// Above this relative luminance a tile's colour takes dark ink, at or below it
+// light. The two built-in nick palettes sit either side: the dark theme's
+// pastels start at 0.305 and the light theme's stop at 0.274, so each keeps
+// the ink it was drawn for, and a palette that mixes both gets each tile right.
+// Nearer the light palette's end than the middle of that gap, so the dark
+// theme's muted grey (#939293, 0.289) keeps dark ink too: the apps draw a
+// server line's mark on it. Every client carries this number.
+export const AVATAR_INK_LUMINANCE = 0.28;
+
+function linearChannel(c: number): number {
+  const cs = c / 255;
+  return cs <= 0.04045 ? cs / 12.92 : ((cs + 0.055) / 1.055) ** 2.4;
+}
+/** WCAG 2 relative luminance of an sRGB colour (channels 0..255), 0 (black) .. 1 (white). */
+export function relativeLuminance({ r, g, b }: { r: number; g: number; b: number }): number {
+  return 0.2126 * linearChannel(r) + 0.7152 * linearChannel(g) + 0.0722 * linearChannel(b);
+}
+/**
+ * The ink for a tile of this colour. Null (a colour nothing could resolve)
+ * takes dark ink, what the default palette's tiles take.
+ */
+export function avatarInk(color: { r: number; g: number; b: number } | null): AvatarInk {
+  if (!color) return 'dark';
+  return relativeLuminance(color) > AVATAR_INK_LUMINANCE ? 'dark' : 'light';
 }
 // The stop characters the nick colour uses by default (look.nick.color_stop_chars).
 export const DEFAULT_STOP_CHARS = '_|';

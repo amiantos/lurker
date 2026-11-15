@@ -38,7 +38,7 @@ function message(id: number, nick: string, minute: number, second = 0) {
 function mountCompact(opts: { keepSettings?: boolean } = {}) {
   if (!opts.keepSettings) {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.collapse_timestamps': true,
       'look.nick.show_mode_prefix': true,
     } as never;
@@ -139,8 +139,8 @@ describe('MessageList — compact head timestamp', () => {
     expect(eventRow(5).trailing).toMatch(/^2026-10-05 /);
     wrapper!.unmount();
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
-      'look.buffer.date_format_compact': '',
+      'look.message.layout': 'modern',
+      'look.buffer.date_format_modern': '',
     } as never;
     mountCompact({ keepSettings: true });
     expect(row(1).headTime).toMatch(/^\d\d:\d\d$/);
@@ -232,15 +232,15 @@ describe('MessageList — compact notice runs', () => {
 
   it('gives a notice head a placeholder tile: the colour and a megaphone, no face', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     } as never;
     // Every bundled tile set, as if its manifest had loaded (no fetch here).
     useAvatarSetsStore().builtinManifests = {
-      ealain: { count: 32, ext: 'webp' },
-      'plain-light': { count: 1, ext: 'webp' },
-      'plain-dark': { count: 1, ext: 'webp' },
+      '/avatars/ealain': { count: 32, ext: 'webp' },
+      '/avatars/plain-light': { count: 1, ext: 'webp' },
+      '/avatars/plain-dark': { count: 1, ext: 'webp' },
     };
     mountCompact({ keepSettings: true });
     expect(head(15)!.querySelector('.prefix')?.textContent).toBe('-irc.example.net-');
@@ -282,14 +282,14 @@ describe('MessageList — compact notice runs', () => {
 
   it('colours the server’s head and tile in the network’s colour, as the system buffer does', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     } as never;
     useAvatarSetsStore().builtinManifests = {
-      ealain: { count: 32, ext: 'webp' },
-      'plain-light': { count: 1, ext: 'webp' },
-      'plain-dark': { count: 1, ext: 'webp' },
+      '/avatars/ealain': { count: 32, ext: 'webp' },
+      '/avatars/plain-light': { count: 1, ext: 'webp' },
+      '/avatars/plain-dark': { count: 1, ext: 'webp' },
     };
     mountCompact({ keepSettings: true });
     const tile = line(16).querySelector(':scope > .avatar') as HTMLElement;
@@ -313,14 +313,14 @@ describe('MessageList — compact notice runs', () => {
   // keeps the tap for the nick menu.
   it('lets a tap on a placeholder tile fall through to the row', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     } as never;
     useAvatarSetsStore().builtinManifests = {
-      ealain: { count: 32, ext: 'webp' },
-      'plain-light': { count: 1, ext: 'webp' },
-      'plain-dark': { count: 1, ext: 'webp' },
+      '/avatars/ealain': { count: 32, ext: 'webp' },
+      '/avatars/plain-light': { count: 1, ext: 'webp' },
+      '/avatars/plain-dark': { count: 1, ext: 'webp' },
     };
     mountCompact({ keepSettings: true });
     const reached = (id: number) => {
@@ -348,7 +348,7 @@ describe('MessageList — compact notice runs', () => {
 
   it('keeps every notice on its own -nick- line in the standard layout', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'standard',
+      'look.message.layout': 'traditional',
       'look.message.collapse_authors': true,
     } as never;
     mountCompact({ keepSettings: true });

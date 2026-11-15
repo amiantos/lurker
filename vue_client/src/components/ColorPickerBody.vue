@@ -164,17 +164,9 @@ import { StarIcon } from '@lucide/vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { COLOR_VARS } from '../composables/useTheme.js';
 import { getOption } from '../../../shared/settingsRegistry.js';
-import {
-  contrastRatio,
-  formatRatio,
-  harmonies,
-  hsvToRgb,
-  parseComputedRgb,
-  parseHex,
-  rgbToHsv,
-  toHex,
-} from '../lib/color.js';
+import { contrastRatio, formatRatio, harmonies, hsvToRgb, rgbToHsv, toHex } from '../lib/color.js';
 import type { HSV, RGB } from '../lib/color.js';
+import { resolveCssColor } from '../lib/cssColor.js';
 
 const FAVORITES_KEY = 'look.color.favorites';
 const VAR_REF_RE = /^var\(\s*--[\w-]+\s*\)$/;
@@ -194,47 +186,6 @@ const emit = defineEmits<{
 const settings = useSettingsStore();
 const rootEl = ref<HTMLElement | null>(null);
 const squareEl = ref<HTMLElement | null>(null);
-
-/**
- * Resolve any CSS colour the browser accepts to sRGB. Hex is parsed directly;
- * everything else goes through a probe span appended to the picker (so var()
- * resolves against the live theme) and its computed `color`. A browser that
- * keeps the computed value in a non-rgb form (oklch, color(srgb …)) gets a
- * second chance through a 1×1 canvas, which normalises anything it can paint.
- */
-function resolveCssColor(value: string, host: HTMLElement | null): RGB | null {
-  const v = value.trim();
-  if (!v) return null;
-  const hex = parseHex(v);
-  if (hex) return hex;
-  if (!host || typeof document === 'undefined') return null;
-  if (typeof CSS !== 'undefined' && CSS.supports && !CSS.supports('color', v)) return null;
-  const probe = document.createElement('span');
-  probe.style.color = v;
-  // An unparseable value leaves the property empty: the browser said no.
-  if (!probe.style.color) return null;
-  host.appendChild(probe);
-  const computedColor = getComputedStyle(probe).color;
-  host.removeChild(probe);
-  const rgb = parseComputedRgb(computedColor);
-  if (rgb) return rgb;
-  try {
-    const canvas = document.createElement('canvas');
-    canvas.width = 1;
-    canvas.height = 1;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.fillStyle = computedColor;
-    ctx.fillRect(0, 0, 1, 1);
-    const d = ctx.getImageData(0, 0, 1, 1).data;
-    // Nothing painted (transparent in a form the regex above didn't catch):
-    // no colour to report, same as parseComputedRgb's zero-alpha refusal.
-    if (d[3] === 0) return null;
-    return { r: d[0], g: d[1], b: d[2] };
-  } catch {
-    return null;
-  }
-}
 
 // Resolution needs the DOM, so it lives in a ref refreshed by a watcher rather
 // than a computed: a computed would run before mount with no host.

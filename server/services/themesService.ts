@@ -16,6 +16,7 @@ import {
   themeNameError,
 } from '../../shared/themePresets.js';
 import { validate, getOption } from './settingsRegistry.js';
+import { withCurrentSettingKeys } from '../../shared/settingsRenames.js';
 import type { ThemeRow } from '../db/themes.js';
 import {
   listThemesForUser,
@@ -45,7 +46,9 @@ function validateValues(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { ok: false, error: 'values must be an object of { settingKey: value }' };
   }
-  const entries = Object.entries(raw as Record<string, unknown>);
+  // A client from before a rename (shared/settingsRenames.ts) snapshots its
+  // theme under the old keys; they land under the current ones.
+  const entries = Object.entries(withCurrentSettingKeys(raw as Record<string, unknown>));
   if (!entries.length) return { ok: false, error: 'values must not be empty' };
   const values: Record<string, SettingValue> = {};
   for (const [key, value] of entries) {

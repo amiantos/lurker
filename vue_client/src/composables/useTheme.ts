@@ -5,6 +5,7 @@ import { watchEffect } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useViewport } from './useViewport.js';
 import { parseComputedRgb, parseHex } from '../lib/color.js';
+import { bumpThemeEpoch } from '../lib/cssColor.js';
 
 // Maps each settings key to the CSS custom property it controls. Anything in
 // here is live-rewritten on :root whenever the settings store changes, so the
@@ -93,17 +94,18 @@ export function useTheme(): void {
     // read, in the registry's units (px, percent, characters), turned into
     // the lengths MessageList's compact rules consume.
     root.style.setProperty(
-      '--compact-group-gap',
-      `${settings.effective('look.message.compact.group_gap')}px`,
+      '--modern-group-gap',
+      `${settings.effective('look.message.modern.group_gap')}px`,
     );
     root.style.setProperty(
-      '--compact-line-height',
-      String(Number(settings.effective('look.message.compact.line_height')) / 100),
+      '--modern-line-height',
+      String(Number(settings.effective('look.message.modern.line_height')) / 100),
     );
     root.style.setProperty(
-      '--compact-indent',
-      `${settings.effective('look.message.compact.indent')}ch`,
+      '--modern-indent',
+      `${settings.effective('look.message.modern.indent')}ch`,
     );
     root.style.colorScheme = computedColorScheme(String(settings.effective('look.color.bg')));
+    bumpThemeEpoch();
   });
 }

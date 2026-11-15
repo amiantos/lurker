@@ -3,6 +3,7 @@
 
 import { EventEmitter } from 'events';
 import type { SettingValue } from '../../shared/settingsRegistry.js';
+import { currentSettingKey, currentSettingWrite } from '../../shared/settingsRenames.js';
 import { validate, getOption } from './settingsRegistry.js';
 import { setUserSetting, deleteUserSetting, getUserSettings } from '../db/settings.js';
 
@@ -106,10 +107,14 @@ class SettingsService extends EventEmitter {
     changes: Record<string, unknown>,
     resets: string[] = [],
   ): { ok: false; error: string; key: string } | { ok: true; values: Record<string, unknown> } {
+    // A client from before a rename (shared/settingsRenames.ts) still writes
+    // the old key or value; it lands under the current one.
+    resets = resets.map(currentSettingKey);
     const validated: Record<string, SettingValue> = {};
-    for (const [key, raw] of Object.entries(changes)) {
+    for (const [sentKey, sent] of Object.entries(changes)) {
+      const [key, raw] = currentSettingWrite(sentKey, sent);
       const result = validate(key, raw);
-      if (!result.ok) return { ok: false, error: result.error, key };
+      if (!result.ok) return { ok: false, error: result.error, key: sentKey };
       validated[key] = result.value;
     }
     for (const key of resets) {
@@ -149,6 +154,7 @@ class SettingsService extends EventEmitter {
     userId: number,
     key: string,
   ): { ok: false; error: string } | { ok: true; values: Record<string, unknown> } {
+    key = currentSettingKey(key);
     const opt = getOption(key);
     if (!opt) return { ok: false, error: `unknown setting: ${key}` };
     deleteUserSetting(userId, key);

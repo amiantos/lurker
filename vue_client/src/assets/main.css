@@ -31,14 +31,14 @@
   --member-halfop: #78dce8;
   --member-voice: #b3db82;
 
-  --mono: 'Input Mono', 'Input', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --font-size: 14px;
   --font-weight: 400;
   /* Compact-layout density (#1186): rewritten live by useTheme from
-     look.message.compact.*; these are the registry defaults. */
-  --compact-group-gap: 10px;
-  --compact-line-height: 1.55;
-  --compact-indent: 1ch;
+     look.message.modern.*; these are the registry defaults. */
+  --modern-group-gap: 10px;
+  --modern-line-height: 1.55;
+  --modern-indent: 1ch;
 
   /* ----------------------------------------------------------------------
      Internal design tokens.

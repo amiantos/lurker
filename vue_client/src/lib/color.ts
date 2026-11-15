@@ -5,7 +5,11 @@
 // WCAG contrast, and the harmony swatches. Everything here is sRGB and
 // 8-bit; the picker edits literal colours and anything fancier (var(),
 // color-mix(), oklch()) is resolved to sRGB by the browser before it gets
-// here (see ColorPicker.vue's resolveCssColor).
+// here (see cssColor.ts's resolveCssColor).
+
+// Shared with the avatar tiles, whose ink follows it (shared/avatarTiles.ts).
+import { relativeLuminance } from '../../../shared/avatarTiles.js';
+export { relativeLuminance };
 
 export interface RGB {
   r: number;
@@ -104,16 +108,6 @@ export function hsvToRgb({ h, s, v }: HSV): RGB {
       [rn, gn, bn] = [v, p, q];
   }
   return { r: clamp255(rn * 255), g: clamp255(gn * 255), b: clamp255(bn * 255) };
-}
-
-/** WCAG 2 relative luminance of an sRGB colour, 0 (black) .. 1 (white). */
-function linearChannel(c: number): number {
-  const cs = c / 255;
-  return cs <= 0.04045 ? cs / 12.92 : ((cs + 0.055) / 1.055) ** 2.4;
-}
-
-export function relativeLuminance({ r, g, b }: RGB): number {
-  return 0.2126 * linearChannel(r) + 0.7152 * linearChannel(g) + 0.0722 * linearChannel(b);
 }
 
 /** WCAG 2 contrast ratio, always >= 1 (order of the two colours is irrelevant). */

@@ -6,13 +6,22 @@
 
 import { ref } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
+import type { SettingValue } from '../../../shared/settingsRegistry.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useConfigStore } from '../stores/config.js';
 
 export const ONBOARDING_SETTING = 'onboarding.completed';
+// The look question was answered (or skipped past): a flow offered again, on
+// this device or another, starts after it.
+export const LOOK_ANSWERED_SETTING = 'onboarding.look_answered';
 
 const isOpen = ref(false);
+
+// Whether the flow's first question, how chat should look, has been answered
+// this session. Here and not in the component: the shells remount the flow on
+// a Desktop<->Mobile swap, and it should come back at the step after.
+const lookAnswered = ref(false);
 
 // Whether evaluate() has already reached a verdict this session. The shells
 // remount useChatBootstrap on every Desktop<->Mobile viewport swap, so evaluate()
@@ -29,6 +38,7 @@ let decided = false;
 // Called from useSessionReset alongside resetSocket/resetPresence.
 export function resetOnboarding(): void {
   isOpen.value = false;
+  lookAnswered.value = false;
   decided = false;
 }
 
@@ -105,17 +115,22 @@ export function useOnboarding() {
 
   // Both "I finished" and "I skipped, deliberately" land here — from the flow's
   // point of view they're the same event, because both mean "never show again".
-  async function complete(): Promise<void> {
+  // `also` rides the same write: what a skip decides besides "never again".
+  async function complete(also: Record<string, SettingValue> = {}): Promise<void> {
     isOpen.value = false;
     const settings = useSettingsStore();
-    if (settings.effective(ONBOARDING_SETTING) === true) return;
+    const alone = Object.keys(also).length === 0;
+    if (alone && settings.effective(ONBOARDING_SETTING) === true) return;
     try {
-      await settings.setValue(ONBOARDING_SETTING, true);
+      // One write either way: two would each answer with the whole settings
+      // map, and the later answer would drop what the other wrote.
+      if (alone) await settings.setValue(ONBOARDING_SETTING, true);
+      else await settings.patchMany({ ...also, [ONBOARDING_SETTING]: true });
     } catch {
       // Non-critical: the flow has already closed for this session, and the
       // next boot will simply offer it again.
     }
   }
 
-  return { isOpen, evaluate, dismiss, complete };
+  return { isOpen, lookAnswered, evaluate, dismiss, complete };
 }

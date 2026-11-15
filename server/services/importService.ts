@@ -51,7 +51,13 @@ import {
   AVATAR_SET_MAX_TILES,
   AVATAR_SET_UNPACKED_MAX_BYTES,
 } from '../../shared/avatarSets.js';
-import { isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
+import { currentAvatarSetId, isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
+import {
+  LAYOUT_SETTING_KEY,
+  currentLayoutValue,
+  currentSettingKey,
+  withCurrentSettingKeys,
+} from '../../shared/settingsRenames.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import {
   importRow as importBufferRow,
@@ -409,6 +415,18 @@ function insertTable(
   const rows = data[table] || [];
   const { stmt, cols } = buildInsertStatement(table, def);
 
+  // Settings keys the archive holds under their current name. A row under a
+  // key's old name is dropped where the archive has both (an older server can
+  // end up with both), not re-keyed onto the same (user, key) twice.
+  const currentKeys =
+    table === 'user_settings'
+      ? new Set(
+          rows
+            .map((r) => r?.key)
+            .filter((k) => typeof k === 'string' && currentSettingKey(k) === k),
+        )
+      : null;
+
   let inserted = 0;
   for (const original of rows) {
     const row = rekeyRow(original, def, idMaps, targetUserId);
@@ -531,8 +549,30 @@ function insertTable(
       }
     }
 
+    // An archive from before the layouts were renamed (schema v28) lands as
+    // that migration would have left the install it came from: a setting under
+    // the key it has now, and the layout itself under its new name, or dropped
+    // to the default where the old choice is gone.
+    if (table === 'user_settings' && typeof row.key === 'string') {
+      const now = currentSettingKey(row.key);
+      if (now !== row.key && currentKeys?.has(now)) continue;
+      row.key = now;
+      if (row.key === LAYOUT_SETTING_KEY) {
+        let was: unknown;
+        try {
+          was = JSON.parse(String(row.value));
+        } catch {
+          continue;
+        }
+        const now = currentLayoutValue(was);
+        if (now === null) continue;
+        row.value = JSON.stringify(now);
+      }
+    }
+
     // The avatar-set pointer (#607): same shape as the theme pointers, with
-    // the built-in ids ('default', 'plain-*', 'initial-*') travelling as-is.
+    // the built-in ids ('ealain', 'plain', 'initial') travelling as-is, and
+    // one from before Initial and Plain were a set each moved to its set.
     if (
       table === 'user_settings' &&
       typeof row.key === 'string' &&
@@ -545,7 +585,9 @@ function insertTable(
         continue;
       }
       if (typeof oldId !== 'string') continue;
-      if (!isBuiltinAvatarSetId(oldId)) {
+      if (oldId !== currentAvatarSetId(oldId)) {
+        row.value = JSON.stringify(currentAvatarSetId(oldId));
+      } else if (!isBuiltinAvatarSetId(oldId)) {
         const n = Number(oldId);
         if (!Number.isInteger(n) || String(n) !== oldId) continue;
         const mapped = idMaps.avatar_sets?.get(n);
@@ -567,6 +609,11 @@ function insertTable(
         values = JSON.parse(String(row.values_json));
       } catch {
         continue;
+      }
+      // Under the keys the settings have now: the service drops a key it does
+      // not know, and an older archive's density values would go with it.
+      if (values && typeof values === 'object' && !Array.isArray(values)) {
+        values = withCurrentSettingKeys(values as Record<string, unknown>);
       }
       const result = themesService.create(row.user_id as number, { name: row.name, values });
       if (!result.ok) continue;
@@ -952,7 +999,21 @@ export async function importFromZipFile(
         const oldId = Number(row.id);
         if (!Number.isInteger(oldId)) continue;
         const tiles = avatarTiles.get(oldId) ?? [];
-        const result = await avatarSetsService.createFromImages(targetUserId, row.name, tiles);
+        let result = await avatarSetsService.createFromImages(targetUserId, row.name, tiles);
+        // An upload could be named Plain or Initial until those became the
+        // bundled sets' own names. It comes back under a name that says so
+        // rather than not at all.
+        if (
+          !result.ok &&
+          typeof row.name === 'string' &&
+          ['plain', 'initial'].includes(row.name.trim().toLowerCase())
+        ) {
+          result = await avatarSetsService.createFromImages(
+            targetUserId,
+            `${row.name.trim()} (uploaded)`,
+            tiles,
+          );
+        }
         if (result.ok) avatarSetIds.set(row.id, result.set.id);
       }
 

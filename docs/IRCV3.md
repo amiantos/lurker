@@ -63,7 +63,7 @@ refresh.
 On a network that stores profile data (Ergo does), a member's chosen display
 name shows in place of their nick in the message list, the member list and DM
 rows — the nick stays the identity: it's in the hover, the profile, the colour
-and the mention matching — and their avatar shows in the compact layout and
+and the mention matching — and their avatar shows in the modern layout and
 the profile modal. Set yours with `/displayname` and `/avatar`, or in the
 network menu's Edit Profile. Lurker remembers yours per network and sets it
 again after every connect, since most servers forget it when you disconnect.

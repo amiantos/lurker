@@ -4,7 +4,9 @@
 -->
 
 <!--
-  First-run flow (#300). Two steps, not three: NetworkPicker (reused verbatim
+  First-run flow (#300). First how chat should look (LayoutPicker: the one
+  setting with no default that suits everyone, so a new account is asked), then
+  two steps, not three, to get connected: NetworkPicker (reused verbatim
   from the add-network flow), then one screen that takes a nick and the channels
   to land in. Identity and channels share a screen because they share a submit —
   channels are passed to POST /api/networks as `default_channel`, which the
@@ -21,7 +23,7 @@
 <template>
   <AppModal
     word="welcome"
-    size="xl"
+    size="lg"
     :fill-height="step === 'pick'"
     close-title="Close for now"
     @close="onboarding.dismiss"
@@ -30,18 +32,34 @@
       <button type="button" class="link skip" @click="skip">Skip setup</button>
     </template>
     <template #title>
-      <h2 v-if="step === 'pick'">welcome to lurker</h2>
+      <h2 v-if="step === 'look'">welcome to lurker</h2>
+      <h2 v-else-if="step === 'pick'">pick a network</h2>
       <h2 v-else>{{ picked ? `connect to ${picked.name}` : 'connect to a network' }}</h2>
     </template>
     <template #subtitle>
-      <span v-if="step === 'pick'">
+      <span v-if="step === 'look'">
+        How should chat look? You can change it any time in Settings.
+      </span>
+      <span v-else-if="step === 'pick'">
         IRC is a collection of independent networks. Pick one to get started — you can add more
         whenever you like.
       </span>
       <span v-else>Choose a nick and where to land.</span>
     </template>
 
-    <NetworkPicker v-if="step === 'pick'" auto-pick-sole @select="onPick" @manual="onManual" />
+    <div v-if="step === 'look'" class="modal-form">
+      <div class="setup">
+        <LayoutPicker v-model="look" :disabled="savingLook" />
+      </div>
+      <footer class="modal-footer">
+        <span class="spacer"></span>
+        <button type="button" class="btn-primary" :disabled="savingLook" @click="confirmLook">
+          Continue
+        </button>
+      </footer>
+    </div>
+
+    <NetworkPicker v-else-if="step === 'pick'" auto-pick-sole @select="onPick" @manual="onManual" />
 
     <form v-else class="modal-form" @submit.prevent="submit">
       <div class="setup">
@@ -156,13 +174,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
+import LayoutPicker from './LayoutPicker.vue';
 import NetworkPicker from './NetworkPicker.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useConfigStore } from '../stores/config.js';
 import { useAuthStore } from '../stores/auth.js';
-import { useOnboarding } from '../composables/useOnboarding.js';
+import { LOOK_ANSWERED_SETTING, useOnboarding } from '../composables/useOnboarding.js';
+import { useSettingsStore } from '../stores/settings.js';
+import { useViewport } from '../composables/useViewport.js';
+import {
+  AVATARS_KEY,
+  LAYOUT_KEY,
+  currentLayoutChoice,
+  firstRunLayoutChoice,
+  layoutChoices,
+  layoutChoiceWrites,
+  skippedLayoutWrites,
+  type LayoutChoice,
+} from '../lib/layoutChoice.js';
 import { nickFromUsername } from '../utils/ircNick.js';
 import {
   FALLBACK_CHANNEL,
@@ -174,8 +205,73 @@ const networks = useNetworksStore();
 const config = useConfigStore();
 const auth = useAuthStore();
 const onboarding = useOnboarding();
+const settings = useSettingsStore();
+const { isMobile } = useViewport();
 
-const step = ref<'pick' | 'setup'>('pick');
+// The look is asked once per account: the flow is offered again after an Esc,
+// and to an old account with no networks, and neither is asked twice.
+const lookAnswered = (): boolean =>
+  onboarding.lookAnswered.value || settings.effective(LOOK_ANSWERED_SETTING) === true;
+const step = ref<'look' | 'pick' | 'setup'>(lookAnswered() ? 'pick' : 'look');
+// Answered in another tab or on another device while this one still shows the
+// question: move on, and leave that answer as it is.
+watch(
+  () => settings.effective(LOOK_ANSWERED_SETTING) === true,
+  (answered) => {
+    if (answered && step.value === 'look') step.value = 'pick';
+  },
+);
+
+// An account that has said nothing about its look: neither key is stored. One
+// that has (an account from before this question, with the flow offered to it
+// because it has no networks) starts on what it has, and its avatars stay as
+// they are whatever it picks.
+const freshLook = (): boolean =>
+  !Object.hasOwn(settings.values, LAYOUT_KEY) && !Object.hasOwn(settings.values, AVATARS_KEY);
+
+// The look step. Nothing is written until Continue: the cards are a choice
+// being made, and Esc out of the flow should leave the account as it was.
+// What the user clicked holds only while this screen still offers it — a
+// phone has no Traditional — and otherwise the screen's own starting look.
+const clickedLook = ref<LayoutChoice | null>(null);
+const look = computed<LayoutChoice>({
+  get: () => {
+    if (clickedLook.value && layoutChoices(isMobile.value).includes(clickedLook.value)) {
+      return clickedLook.value;
+    }
+    return freshLook()
+      ? firstRunLayoutChoice(isMobile.value)
+      : currentLayoutChoice(
+          settings.effective(LAYOUT_KEY),
+          settings.effective(AVATARS_KEY),
+          isMobile.value,
+        );
+  },
+  set: (choice) => {
+    clickedLook.value = choice;
+  },
+});
+const savingLook = ref(false);
+
+async function confirmLook(): Promise<void> {
+  if (lookAnswered()) {
+    step.value = 'pick';
+    return;
+  }
+  savingLook.value = true;
+  try {
+    await settings.patchMany({
+      ...layoutChoiceWrites(look.value, { isMobile: isMobile.value, firstRun: freshLook() }),
+      [LOOK_ANSWERED_SETTING]: true,
+    });
+  } catch {
+    // A look that did not save is not a reason to hold up getting connected:
+    // the account keeps the defaults and Settings has the same picker.
+  }
+  savingLook.value = false;
+  onboarding.lookAnswered.value = true;
+  step.value = 'pick';
+}
 // The picker picked the one network on offer; nothing to go back to.
 const solePick = ref(false);
 const picked = ref<NetworkPreset | null>(null);
@@ -283,8 +379,13 @@ async function submit(): Promise<void> {
 // this session (see onboarding.dismiss): a power user choosing to hand-configure
 // has made a decision, while someone hitting Esc has not. From here the + button
 // in the sidebar is the ordinary path, and the empty state points at it.
+//
+// Skipped before the look was answered, a new account still gets what the
+// question would have defaulted to that the registry does not: avatars on.
 function skip(): void {
-  void onboarding.complete();
+  const also = !lookAnswered() && freshLook() ? skippedLayoutWrites() : {};
+  onboarding.lookAnswered.value = true;
+  void onboarding.complete(also);
 }
 </script>
 

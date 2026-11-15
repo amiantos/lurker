@@ -132,7 +132,7 @@ export interface EnumOption extends BaseOption {
   default: string;
   // Display text per choice, for enums whose stored values read as identifiers
   // rather than as English. Omit and clients render the raw value, which is the
-  // right answer for a choice like `auto` / `standard` / `compact`.
+  // right answer for a choice whose ids are already the words.
   //
   // The values stay the ids — see the note on `chat.image_modal.enabled` about
   // keys aging. Renaming a stored enum value is a MIGRATION, and doing one to
@@ -196,10 +196,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'fonts',
     themed: true,
     type: 'string',
-    default: "'Input Mono', 'Input', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+    default: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     description:
       'Font family stack used everywhere in the UI. The first installed font wins. ' +
-      'Input Mono is the intended primary; the rest are system monospace fallbacks.',
+      'The default is the system monospace fonts.',
   },
   {
     key: 'look.font.size',
@@ -467,19 +467,26 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'look.message.layout',
     label: 'Message layout',
-    category: 'appearance',
-    group: 'messages',
+    // `layout` is absent from CATEGORIES, as `avatars` is: the Appearance
+    // pane's Message layout section draws this key and look.message.avatars
+    // as one picker, so the registry pane leaves it alone. /set still reaches
+    // both (COMMAND_CATEGORY_HOME).
+    category: 'layout',
+    group: 'message-layout',
     type: 'enum',
-    choices: ['auto', 'standard', 'compact'],
-    default: 'auto',
+    choices: ['traditional', 'modern'],
+    choiceLabels: {
+      traditional: 'Traditional',
+      modern: 'Modern',
+    } as Readonly<Record<string, string>>,
+    default: 'traditional',
     description:
-      'How message rows are laid out. "auto" (default) uses the standard ' +
-      'three-column grid on desktop and the compact two-line layout on ' +
-      'mobile. "standard" forces the three-column grid everywhere. ' +
-      '"compact" forces the two-line layout (nick + time on top, body ' +
-      'below) everywhere — useful on low-resolution desktop displays ' +
-      'where the columns squeeze the body too far. In compact mode ' +
-      'repeated authors always collapse (notices, status lines and the ' +
+      'How message rows are laid out. "traditional" (the default) is ' +
+      'the three-column grid: time, nick, text. "modern" is the ' +
+      'two-line layout: nick and time on top, text below, with avatars if ' +
+      'they are on. A phone-width screen always uses modern: the grid does ' +
+      'not fit there. In the modern layout repeated authors always ' +
+      'collapse (notices, status lines and the ' +
       "server's own text too, each in runs of its own), and only the head " +
       'line of each run shows a time, so the timestamp collapse setting ' +
       'below does not apply.',
@@ -493,9 +500,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: false,
     description:
       'Hide the nick on consecutive messages from the same author so a run ' +
-      'reads as one grouped block. In the standard layout only plain ' +
+      'reads as one grouped block. In the traditional layout only plain ' +
       'messages collapse; actions, notices, and system events always show ' +
-      'their author (the compact layout groups more: see Message layout). ' +
+      'their author (the modern layout groups more: see Message layout). ' +
       'Reset by any divider (date/unread/away/back) or by a gap larger ' +
       'than the window below.',
   },
@@ -525,7 +532,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Hide the timestamp on consecutive rows that would display the exact ' +
       'same time string (driven by look.buffer.time_format). Reduces visual ' +
       'noise in fast bursts without losing any information. Not used by ' +
-      'the compact message layout.',
+      'the modern message layout.',
   },
 
   // ─── Compact layout density (#1186) ──────────────────────────────────
@@ -536,8 +543,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   // ceilings are layout sanity for a phone's width, not policy. None of
   // these touch the standard layout.
   {
-    key: 'look.message.compact.group_gap',
-    label: 'Compact group gap (px)',
+    key: 'look.message.modern.group_gap',
+    label: 'Modern group gap (px)',
     category: 'appearance',
     group: 'messages',
     themed: true,
@@ -546,13 +553,13 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 48,
     default: 10,
     description:
-      'Vertical space in pixels between message groups in the compact ' +
+      'Vertical space in pixels between message groups in the modern ' +
       'layout: before each head line, action, notice, event or divider. ' +
       'Rows within a run stay flush. 0 packs the buffer like a terminal.',
   },
   {
-    key: 'look.message.compact.line_height',
-    label: 'Compact line height (%)',
+    key: 'look.message.modern.line_height',
+    label: 'Modern line height (%)',
     category: 'appearance',
     group: 'messages',
     themed: true,
@@ -561,13 +568,13 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 250,
     default: 155,
     description:
-      'Line height of message text in the compact layout, as a percentage ' +
+      'Line height of message text in the modern layout, as a percentage ' +
       'of the font size. 100 sets the lines solid; 155 is the default ' +
       'everywhere else in the UI.',
   },
   {
-    key: 'look.message.compact.indent',
-    label: 'Compact body indent (chars)',
+    key: 'look.message.modern.indent',
+    label: 'Modern body indent (chars)',
     category: 'appearance',
     group: 'messages',
     themed: true,
@@ -579,7 +586,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     dependsOn: [{ key: 'look.message.avatars', in: [false] }],
     description:
       'How many characters the text of a message sits in from the nick ' +
-      'above it in the compact layout. 0 puts the text flush under the ' +
+      'above it in the modern layout. 0 puts the text flush under the ' +
       'nick. Ignored while avatars are on: the avatar gutter is the indent.',
   },
 
@@ -839,29 +846,29 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
   },
   {
-    key: 'look.buffer.time_format_compact',
-    label: 'Compact-layout timestamp format',
+    key: 'look.buffer.time_format_modern',
+    label: 'Modern-layout timestamp format',
     category: 'appearance',
     group: 'misc',
     type: 'string',
     default: 'HH:mm',
     description:
-      'Time format used in chat buffers when the compact message layout is ' +
-      'active (look.message.layout = compact, or = auto on mobile). ' +
-      "Defaults to HH:mm — compact's timestamp sits by the nick, and " +
+      'Time format used in chat buffers when the modern message layout is ' +
+      'active (look.message.layout = modern, or any layout on a phone). ' +
+      "Defaults to HH:mm — the modern layout's timestamp sits by the nick, and " +
       'seconds are rarely useful at a glance. ' +
       'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
       'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
   },
   {
-    key: 'look.buffer.date_format_compact',
-    label: 'Compact-layout date format',
+    key: 'look.buffer.date_format_modern',
+    label: 'Modern-layout date format',
     category: 'appearance',
     group: 'misc',
     type: 'string',
     default: 'YYYY-MM-DD',
     description:
-      'In the compact layout, the date shown before the time on lines from a day other than ' +
+      'In the modern layout, the date shown before the time on lines from a day other than ' +
       'today. Same tokens as the time formats. Empty string never shows a date.',
   },
   {
@@ -1967,7 +1974,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
   // ─── Avatars (#607) ─────────────────────────────────────────────────────
   // `avatars` is absent from CATEGORIES so the registry pane never renders
-  // these; the Appearance pane's Avatars section does, beside the sets. The
+  // these; the Appearance pane does: the switch as one of the Message layout
+  // section's looks, the pointer in the Avatars section beside the sets. The
   // pointer works like the theme pointers: the bundled ids are in
   // avatarTiles.ts, anything else is the id of a set the user uploaded.
   {
@@ -1978,9 +1986,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'An avatar beside each author in the compact layout. Uses placeholders selected below if ' +
+      'An avatar beside each author in the modern layout. Uses placeholders selected below if ' +
       "the user does not have an avatar or avatars aren't supported by the server. Only displays " +
-      'in Compact message layouts.',
+      'in the modern message layout.',
   },
   {
     key: 'look.avatars.set',
@@ -1988,11 +1996,11 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'avatars',
     group: 'sets',
     type: 'string',
-    default: 'initial-dark',
+    default: 'initial',
     description:
-      'Which set generated avatars draw from: "initial-light" or "initial-dark" for the first ' +
-      'letter of the name, "plain-light" or "plain-dark" for a bust silhouette, "ealain" for the ' +
-      'bundled art, or the id of a set you uploaded.',
+      'Which set generated avatars draw from: "initial" for the first letter of the name, ' +
+      '"plain" for a bust silhouette, "ealain" for the bundled art, or the id of a set you ' +
+      'uploaded.',
   },
   {
     key: 'look.theme.active',
@@ -2043,6 +2051,17 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'auto-away message. The client auto-detects and syncs this on bootstrap, so ' +
       'travelling updates it on next connect. Leave blank to fall back to the ' +
       "server's local time.",
+  },
+  {
+    key: 'onboarding.look_answered',
+    label: 'Onboarding look answered',
+    category: 'system',
+    group: 'onboarding',
+    type: 'bool',
+    default: false,
+    description:
+      'Set once the first-run flow has asked how chat should look, so a flow that ' +
+      'is offered again starts past the question and never writes over the answer.',
   },
   {
     key: 'onboarding.completed',
@@ -2266,6 +2285,16 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'data', label: 'Data', kind: 'bespoke' },
   { id: 'about', label: 'About', kind: 'bespoke' },
 ]);
+
+// Categories a bespoke section draws by hand, so they are absent from
+// CATEGORIES and the registry panes skip them, but whose keys are ordinary
+// settings a user may still type: /set, /get and the /set listing treat each
+// as part of the category named here. (`theme` and `system` are absent from
+// both: pointers and flags the app writes, not settings.)
+export const COMMAND_CATEGORY_HOME: Readonly<Record<string, string>> = Object.freeze({
+  layout: 'appearance',
+  avatars: 'appearance',
+});
 
 // Sub-group labels used inside a category pane (one heading per `group` field
 // in REGISTRY). Groups without an entry here fall back to the raw group id.

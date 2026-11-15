@@ -1758,6 +1758,116 @@ describe('importFromZipBuffer — avatar sets', () => {
       .get(bob.id, 'look.avatars.set') as { value: string };
     expect(JSON.parse(pointer.value)).toBe(String(bobSets[0].id));
   });
+
+  // An archive from before schema v28: it names settings and choices by what
+  // they were called then, and lands as the migration would have left the
+  // install it came from.
+  it('moves settings and themes from an older archive to their current names', async () => {
+    const themesService = (await import('./themesService.js')).default;
+    const { alice } = seedAlice();
+    setUserSetting(alice.id, 'look.message.layout', 'standard');
+    setUserSetting(alice.id, 'look.avatars.set', 'plain-dark');
+    setUserSetting(alice.id, 'look.message.compact.indent', 3);
+    setUserSetting(alice.id, 'look.buffer.time_format_compact', 'HH:mm:ss');
+    // As a v27 install stored it: the service would refuse the old key today.
+    db.prepare(`INSERT INTO user_themes (user_id, name, values_json) VALUES (?, ?, ?)`).run(
+      alice.id,
+      'Tight',
+      JSON.stringify({ 'look.color.bg': '#101010', 'look.message.compact.group_gap': 4 }),
+    );
+    const carol = createUser(`carol_old_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    setUserSetting(carol.id, 'look.message.layout', 'compact');
+    setUserSetting(carol.id, 'look.avatars.set', 'initial-light');
+
+    const read = (userId: number, key: string) => {
+      const row = db
+        .prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+        .get(userId, key) as { value: string } | undefined;
+      return row ? JSON.parse(row.value) : undefined;
+    };
+    const into = async (fromId: number) => {
+      const to = createUser(`old_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      await importFromZipBuffer(to.id, await exportToBuffer(fromId, { includeMessages: false }));
+      return to.id;
+    };
+
+    const fromAlice = await into(alice.id);
+    expect(read(fromAlice, 'look.message.layout')).toBeUndefined();
+    expect(read(fromAlice, 'look.avatars.set')).toBe('plain');
+    expect(read(fromAlice, 'look.message.modern.indent')).toBe(3);
+    expect(read(fromAlice, 'look.buffer.time_format_modern')).toBe('HH:mm:ss');
+    expect(read(fromAlice, 'look.message.compact.indent')).toBeUndefined();
+    expect(read(fromAlice, 'look.buffer.time_format_compact')).toBeUndefined();
+    expect(themesService.list(fromAlice).find((t) => t.name === 'Tight')?.values).toEqual({
+      'look.color.bg': '#101010',
+      'look.message.modern.group_gap': 4,
+    });
+
+    const fromCarol = await into(carol.id);
+    expect(read(fromCarol, 'look.message.layout')).toBe('modern');
+    expect(read(fromCarol, 'look.avatars.set')).toBe('initial');
+  });
+
+  // An older server can hold a setting under both names (a newer archive
+  // imported into it, then an old client's write). The current one wins, and
+  // the restore does not trip on the pair.
+  it('takes the current key where an archive holds a setting under both names', async () => {
+    const { alice } = seedAlice();
+    setUserSetting(alice.id, 'look.message.compact.indent', 3);
+    setUserSetting(alice.id, 'look.message.modern.indent', 2);
+    const to = createUser(`both_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    await importFromZipBuffer(to.id, await exportToBuffer(alice.id, { includeMessages: false }));
+    const rows = db
+      .prepare(`SELECT key, value FROM user_settings WHERE user_id = ? AND key LIKE '%indent'`)
+      .all(to.id) as Array<{ key: string; value: string }>;
+    expect(rows).toEqual([{ key: 'look.message.modern.indent', value: '2' }]);
+  });
+
+  // "Plain" and "Initial" were free names for an upload until the bundled
+  // sets took them.
+  it('brings back an uploaded set whose name a bundled set has since taken', async () => {
+    const { alice } = seedAlice();
+    const avatarSets = (await import('./avatarSetsService.js')).default;
+    const square = (color: string) =>
+      sharp({ create: { width: 16, height: 16, channels: 4, background: color } })
+        .png()
+        .toBuffer();
+    const made = await avatarSets.createFromImages(alice.id, 'Blocks two', [
+      { name: 'a.png', data: await square('#ff0000') },
+      { name: 'b.png', data: await square('#00ff00') },
+      { name: 'c.png', data: await square('#0000ff') },
+      { name: 'd.png', data: await square('#ffffff') },
+    ]);
+    const setId = made.ok ? made.set.id : 0;
+    // As an install from before the names were reserved stored it.
+    db.prepare(`UPDATE avatar_sets SET name = 'Plain' WHERE id = ?`).run(setId);
+    setUserSetting(alice.id, 'look.avatars.set', String(setId));
+    const to = createUser(`plain_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    await importFromZipBuffer(to.id, await exportToBuffer(alice.id, { includeMessages: false }));
+    const sets = avatarSets.list(to.id);
+    expect(sets.map((s) => s.name)).toEqual(['Plain (uploaded)']);
+    const pointer = db
+      .prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+      .get(to.id, 'look.avatars.set') as { value: string };
+    expect(JSON.parse(pointer.value)).toBe(String(sets[0].id));
+  });
+
+  it('keeps a current archive as it is', async () => {
+    const { alice } = seedAlice();
+    setUserSetting(alice.id, 'look.message.layout', 'modern');
+    setUserSetting(alice.id, 'look.message.modern.indent', 2);
+    const to = createUser(`now_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    await importFromZipBuffer(to.id, await exportToBuffer(alice.id, { includeMessages: false }));
+    const rows = db
+      .prepare(
+        `SELECT key, value FROM user_settings WHERE user_id = ? AND key LIKE 'look.message.%'`,
+      )
+      .all(to.id) as Array<{ key: string; value: string }>;
+    expect(Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)]))).toEqual({
+      'look.message.layout': 'modern',
+      'look.message.modern.indent': 2,
+    });
+  });
 });
 
 // ---- archive bounds (zip bomb) ----
