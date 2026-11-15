@@ -467,8 +467,11 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'look.message.layout',
     label: 'Message layout',
-    category: 'appearance',
-    group: 'messages',
+    // `layout` is absent from CATEGORIES, as `avatars` is: the Appearance
+    // pane's Message layout section draws this key and look.message.avatars
+    // as one picker, so the registry pane leaves it alone.
+    category: 'layout',
+    group: 'layout',
     type: 'enum',
     // ⚠ The ids are the layouts' names from before they were Traditional and
     // Modern, kept under the rule below (EnumOption.choiceLabels): the label is
@@ -1975,7 +1978,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
   // ─── Avatars (#607) ─────────────────────────────────────────────────────
   // `avatars` is absent from CATEGORIES so the registry pane never renders
-  // these; the Appearance pane's Avatars section does, beside the sets. The
+  // these; the Appearance pane does: the switch as one of the Message layout
+  // section's looks, the pointer in the Avatars section beside the sets. The
   // pointer works like the theme pointers: the bundled ids are in
   // avatarTiles.ts, anything else is the id of a set the user uploaded.
   {

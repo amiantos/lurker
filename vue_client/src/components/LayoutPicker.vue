@@ -1,0 +1,197 @@
+<!--
+  Copyright (c) 2026 Brad Root
+  SPDX-License-Identifier: MPL-2.0
+-->
+
+<!--
+  The message layout, picked by looking at it: one card per look this screen
+  can draw (lib/layoutChoice.ts), each a few lines of chat laid out that way in
+  the live theme, nick colours and avatar set. Three on a desktop (Traditional,
+  Modern, Modern with avatars), the two modern ones on a phone.
+
+  Controlled: the parent holds the choice and decides what picking writes. The
+  Appearance pane writes on every pick; the first run writes on Continue.
+
+  The cards are drawn here rather than by MessageList: a sample needs none of
+  its machinery (history, scroll, menus), only its shapes, and a preview that
+  pulled in the list would preview the user's current layout three times.
+-->
+
+<template>
+  <div class="layout-picker" role="radiogroup" aria-label="Message layout">
+    <button
+      v-for="choice in choices"
+      :key="choice"
+      type="button"
+      role="radio"
+      class="look"
+      :class="{ on: choice === modelValue }"
+      :aria-checked="choice === modelValue"
+      :disabled="disabled"
+      @click="emit('update:modelValue', choice)"
+    >
+      <span class="sample" :class="choice" aria-hidden="true">
+        <template v-if="choice === 'traditional'">
+          <span v-for="(row, i) in ROWS" :key="i" class="row">
+            <span class="time">{{ row.time }}</span>
+            <span class="nick" :style="{ color: nicks.color(row.nick) ?? undefined }">{{
+              row.nick
+            }}</span>
+            <span class="text">{{ row.text }}</span>
+          </span>
+        </template>
+        <template v-else>
+          <span v-for="(run, i) in RUNS" :key="i" class="run">
+            <NickAvatar v-if="choice === 'modern-avatars'" class="tile" :nick="run.nick" plain />
+            <span class="lines">
+              <span class="head">
+                <span class="nick" :style="{ color: nicks.color(run.nick) ?? undefined }">{{
+                  run.nick
+                }}</span>
+                <span class="time">{{ run.time }}</span>
+              </span>
+              <span v-for="(text, j) in run.texts" :key="j" class="text">{{ text }}</span>
+            </span>
+          </span>
+        </template>
+      </span>
+      <span class="name">{{ labelFor(choice) }}</span>
+    </button>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue';
+import NickAvatar from './NickAvatar.vue';
+import { useNickColors } from '../composables/useNickColors.js';
+import { useViewport } from '../composables/useViewport.js';
+import { LAYOUT_CHOICE_LABELS, layoutChoices, type LayoutChoice } from '../lib/layoutChoice.js';
+
+defineProps<{
+  modelValue: LayoutChoice;
+  disabled?: boolean;
+}>();
+const emit = defineEmits<{ 'update:modelValue': [choice: LayoutChoice] }>();
+
+const nicks = useNickColors();
+const { isMobile } = useViewport();
+const choices = computed(() => layoutChoices(isMobile.value));
+
+// On a phone both looks are modern, so the cards say what differs.
+function labelFor(choice: LayoutChoice): string {
+  if (!isMobile.value) return LAYOUT_CHOICE_LABELS[choice];
+  return choice === 'modern-avatars' ? 'With avatars' : 'Without avatars';
+}
+
+// The same short exchange in each card: two authors, one of them twice in a
+// row, which is where the layouts differ most. Short enough that three cards
+// fit side by side in a settings pane.
+const RUNS = [
+  { nick: 'ann', time: '12:01', texts: ['hi all', 'found it'] },
+  { nick: 'bob', time: '12:02', texts: ['nice!'] },
+];
+const ROWS = RUNS.flatMap((run) =>
+  run.texts.map((text) => ({ nick: run.nick, time: run.time, text })),
+);
+</script>
+
+<style scoped>
+.layout-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+}
+.look {
+  flex: 1 1 16ch;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--fg-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.look:hover:not(:disabled) {
+  border-color: var(--fg-muted);
+}
+.look.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.look:disabled {
+  cursor: default;
+}
+.name {
+  text-align: center;
+}
+.look.on .name {
+  font-weight: 600;
+}
+
+/* The sample: chat, not chrome, so it takes the chat's foreground and never
+   the card's muted or accent text. A fixed height keeps the three cards level
+   whichever look has more lines. */
+.sample {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 9.5em;
+  overflow: hidden;
+  color: var(--fg);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.sample .time {
+  color: var(--fg-muted);
+}
+.sample .nick {
+  font-weight: 600;
+}
+.sample .text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Traditional: the three columns, nicks right-aligned against the text. */
+.sample.traditional {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-content: center;
+  column-gap: 1ch;
+}
+.sample.traditional .row {
+  display: contents;
+}
+.sample.traditional .nick {
+  justify-self: end;
+}
+
+/* Modern: a head line over the text, runs set apart; with avatars, a tile in
+   a gutter beside each run. */
+.sample .run {
+  display: flex;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.sample .run + .run {
+  margin-top: var(--compact-group-gap);
+}
+.sample .lines {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sample .head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75ch;
+}
+.sample .tile {
+  --avatar-size: 2.25em;
+}
+</style>

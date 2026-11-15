@@ -14,6 +14,11 @@ export const ONBOARDING_SETTING = 'onboarding.completed';
 
 const isOpen = ref(false);
 
+// Whether the flow's first question, how chat should look, has been answered
+// this session. Here and not in the component: the shells remount the flow on
+// a Desktop<->Mobile swap, and it should come back at the step after.
+const lookAnswered = ref(false);
+
 // Whether evaluate() has already reached a verdict this session. The shells
 // remount useChatBootstrap on every Desktop<->Mobile viewport swap, so evaluate()
 // runs more than once per session — and without this latch, a flow the user
@@ -29,6 +34,7 @@ let decided = false;
 // Called from useSessionReset alongside resetSocket/resetPresence.
 export function resetOnboarding(): void {
   isOpen.value = false;
+  lookAnswered.value = false;
   decided = false;
 }
 
@@ -117,5 +123,5 @@ export function useOnboarding() {
     }
   }
 
-  return { isOpen, evaluate, dismiss, complete };
+  return { isOpen, lookAnswered, evaluate, dismiss, complete };
 }

@@ -2,29 +2,20 @@
   Copyright (c) 2026 Brad Root
   SPDX-License-Identifier: MPL-2.0
 
-  Avatars (#607): the second bespoke section of the Appearance pane, after
-  Themes. The "Show avatars" switch (a registry row rendered here rather than
-  with the message rows, so it sits with what it switches on), a preview of the
-  active set over the nick palette, the list of sets (the bundled ones plus
-  the user's uploads) with Use/Delete, and an upload box for a zip of square
-  images. Everything here is also operable via /avatars (slash-command-first).
+  Avatars (#607): a bespoke section of the Appearance pane, after Message
+  layout, which is where avatars are switched on (they are one of its looks).
+  A preview of the active set over the nick palette, the list of sets (the
+  bundled ones plus the user's uploads) with Use/Delete, and an upload box for
+  a zip of square images. Everything here is also operable via /avatars
+  (slash-command-first).
 -->
 
 <template>
   <h3 id="avatars" class="subhead" data-setting-group="avatars">Avatars</h3>
-  <ul class="rows">
-    <SettingsRow
-      :opt="showAvatarsOption"
-      :value="settings.effective(showAvatarsOption.key)"
-      :modified="settings.isModified(showAvatarsOption.key)"
-      :baseline="settings.baseline(showAvatarsOption.key)"
-      @commit="(v) => onCommit(showAvatarsOption.key, v)"
-      @reset="onReset(showAvatarsOption.key)"
-    />
-  </ul>
+  <p class="muted small">
+    Shown for anyone without a picture of their own, in the Modern with avatars layout.
+  </p>
   <p v-if="error" class="error inline">{{ error }}</p>
-
-  <h3 class="subhead">Avatar Placeholders</h3>
 
   <div class="preview" aria-label="Preview of the active avatar set">
     <NickAvatar v-for="nick in SAMPLE_NICKS" :key="nick" :nick="nick" />
@@ -87,12 +78,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useAvatarSetsStore, type AvatarSetEntry } from '../../stores/avatarSets.js';
-import { useSettingsStore } from '../../stores/settings.js';
 import { useImeSafeInput } from '../../composables/useImeSafeInput.js';
-import { getOption } from '../../utils/settingsRegistry.js';
-import type { SettingValue } from '../../../../shared/settingsRegistry.js';
 import NickAvatar from '../NickAvatar.vue';
-import SettingsRow from '../SettingsRow.vue';
 import {
   AVATAR_SET_MAX_TILES,
   AVATAR_SET_MIN_TILES,
@@ -106,11 +93,6 @@ import {
 const SAMPLE_NICKS = ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'grace', 'heidi'];
 
 const avatarSets = useAvatarSetsStore();
-const settings = useSettingsStore();
-// The switch, rendered here beside what it switches on (its category is the
-// hidden `avatars`, so the registry pane leaves it to this section).
-const showAvatarsOption = getOption('look.message.avatars')!;
-
 const error = ref('');
 const busy = ref(false);
 const progress = ref(0);
@@ -128,24 +110,6 @@ onMounted(() => {
     });
   }
 });
-
-async function onCommit(key: string, value: SettingValue) {
-  error.value = '';
-  try {
-    await settings.setValue(key, value);
-  } catch (e: any) {
-    error.value = e?.message || 'failed to save';
-  }
-}
-
-async function onReset(key: string) {
-  error.value = '';
-  try {
-    await settings.reset(key);
-  } catch (e: any) {
-    error.value = e?.message || 'failed to reset';
-  }
-}
 
 async function run(fn: () => Promise<void>) {
   if (busy.value) return;
@@ -206,11 +170,6 @@ function upload() {
 
 <style src="./panes.css"></style>
 <style scoped>
-.rows {
-  list-style: none;
-  margin: 0 0 var(--space-5);
-  padding: 0;
-}
 .tag {
   color: var(--fg-muted);
 }
