@@ -87,7 +87,7 @@ function labelFor(choice: LayoutChoice): string {
 // row, which is where the layouts differ most. Short enough that three cards
 // fit side by side in a settings pane.
 const RUNS = [
-  { nick: 'ann', time: '12:01', texts: ['hi all', 'found it'] },
+  { nick: 'ann', time: '12:01', texts: ['hi all', 'fixed'] },
   { nick: 'bob', time: '12:02', texts: ['nice!'] },
 ];
 const ROWS = RUNS.flatMap((run) =>
@@ -135,8 +135,13 @@ const ROWS = RUNS.flatMap((run) =>
 
 /* The sample: chat, not chrome, so it takes the chat's foreground and never
    the card's muted or accent text. A fixed height keeps the three cards level
-   whichever look has more lines. */
+   whichever look has more lines.
+
+   ⚠ Each look below restates MessageList's own rules for it (the paddings,
+   the separator, the indent, the gutter), in the same tokens, so a card reads
+   as the list will. A change to how a layout is drawn there belongs here too. */
 .sample {
+  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -149,33 +154,53 @@ const ROWS = RUNS.flatMap((run) =>
 .sample .time {
   color: var(--fg-muted);
 }
-.sample .nick {
-  font-weight: 600;
-}
 .sample .text {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* Traditional: the three columns, nicks right-aligned against the text. */
+/* Traditional: time | nick | text. The gaps are each cell's padding, with a
+   separator down the text column's left edge, continuous from row to row. */
 .sample.traditional {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr);
+  grid-template-columns: max-content max-content minmax(0, 1fr);
   align-content: center;
-  column-gap: 1ch;
+  column-gap: 0;
+  line-height: 1.55;
 }
 .sample.traditional .row {
   display: contents;
 }
+.sample.traditional .time {
+  padding-right: 1ch;
+}
 .sample.traditional .nick {
   justify-self: end;
+  padding-right: 1ch;
+}
+.sample.traditional .text {
+  position: relative;
+  padding-left: 1ch;
+}
+.sample.traditional .text::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--border);
 }
 
-/* Modern: a head line over the text, runs set apart; with avatars, a tile in
-   a gutter beside each run. */
+/* Modern: a head line (nick, then time) over the text, at the density the
+   user set (#1186): the line height, the gap before each run, and the text's
+   indent under the nick. No separator. */
+.sample.modern,
+.sample.modern-avatars {
+  line-height: var(--compact-line-height);
+}
 .sample .run {
-  display: flex;
-  gap: var(--space-4);
+  position: relative;
   min-width: 0;
 }
 .sample .run + .run {
@@ -191,7 +216,41 @@ const ROWS = RUNS.flatMap((run) =>
   align-items: baseline;
   gap: 0.75ch;
 }
-.sample .tile {
-  --avatar-size: 2.25em;
+.sample.modern .text {
+  padding-left: var(--compact-indent);
+}
+
+/* With avatars: a gutter holding the tile on a run's first row, a hairline
+   down its right edge through the gaps between runs, and the text flush
+   beside it. The gutter is the indent, and weight tells the nick from the
+   text. */
+.sample.modern-avatars {
+  --avatar-size: min(2.7em, 2lh);
+  --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
+}
+.sample.modern-avatars::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: round(var(--avatar-gutter), 1px);
+  width: 1px;
+  background: var(--border);
+}
+.sample.modern-avatars .run {
+  padding-left: calc(var(--avatar-gutter) + var(--space-5));
+}
+.sample.modern-avatars .tile {
+  position: absolute;
+  left: 0;
+  top: calc((2lh - var(--avatar-size)) / 2);
+}
+.sample.modern-avatars .nick {
+  font-weight: 600;
+}
+@media (max-width: 768px) {
+  .sample.modern-avatars {
+    --avatar-size: min(2.25em, 2lh);
+  }
 }
 </style>
