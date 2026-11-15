@@ -142,12 +142,12 @@ interface SettingsSubsection {
 
 const appearanceSubsections = computed<SettingsSubsection[]>(() => {
   const seen = new Set<string>();
-  // Themes leads the pane but isn't a registry group — ThemesSection renders
-  // its own [data-setting-group="themes"] heading for the scroll-spy.
-  // Message layout and Avatars (#607) likewise: each section's own heading.
+  // Message layout leads the pane, then Themes and Avatars (#607). None is a
+  // registry group: each section renders its own [data-setting-group] heading
+  // for the scroll-spy.
   const subsections: SettingsSubsection[] = [
-    { id: 'themes', label: 'Themes' },
     { id: 'layout', label: 'Message layout' },
+    { id: 'themes', label: 'Themes' },
     { id: 'avatars', label: 'Avatars' },
   ];
   for (const opt of REGISTRY) {

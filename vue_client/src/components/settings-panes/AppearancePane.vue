@@ -2,7 +2,7 @@
   Copyright (c) 2026 Brad Root
   SPDX-License-Identifier: MPL-2.0
 
-  Appearance: bespoke for the leading sections (Themes, Message layout,
+  Appearance: bespoke for the leading sections (Message layout, Themes,
   Avatars) — every other appearance option below them is still ordinary
   registry rows, rendered by the embedded RegistryPane (the UploadsPane
   pattern). The embedded pane keeps emitting the [data-setting-group] headings
@@ -14,8 +14,8 @@
 <template>
   <section id="appearance" class="settings-pane">
     <h2>Appearance</h2>
-    <ThemesSection />
     <LayoutSection />
+    <ThemesSection />
     <AvatarsSection />
     <RegistryPane category-id="appearance" embedded />
   </section>
