@@ -42,6 +42,7 @@ const ALT = isMac ? '⌥' : 'Alt';
 
 const shortcuts = computed<ShortcutRow[]>(() => [
   { keys: [MOD, 'K'], label: 'Jump to channel (quick switcher)' },
+  { keys: [MOD, 'Shift', 'F'], label: 'Search messages' },
   { keys: [ALT, '↑'], label: 'Previous channel' },
   { keys: [ALT, '↓'], label: 'Next channel' },
   { keys: [ALT, 'Shift', '↑'], label: 'Previous unread channel' },

@@ -29,6 +29,19 @@ describe('useTheme — compact density variables', () => {
     expect(read('--modern-indent')).toBe('1ch');
   });
 
+  // #1268: unset by default, so the rule reading it falls back to the row's
+  // own colour (an alternating row's included) instead of forcing var(--fg).
+  it('leaves the own-message colour variable unset until one is chosen', async () => {
+    await nextTick();
+    expect(read('--self-fg')).toBe('');
+    useSettingsStore().values = { 'look.color.message.self_fg': '#ffd866' } as never;
+    await nextTick();
+    expect(read('--self-fg')).toBe('#ffd866');
+    useSettingsStore().values = {} as never;
+    await nextTick();
+    expect(read('--self-fg')).toBe('');
+  });
+
   it('follows a changed setting live: percent becomes a unitless multiplier', async () => {
     useSettingsStore().values = {
       'look.message.modern.group_gap': 0,

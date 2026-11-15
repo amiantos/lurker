@@ -113,7 +113,10 @@
               <span
                 v-else
                 class="t-body"
-                :class="{ italic: row.line.type === 'action' && actionItalic }"
+                :class="{
+                  italic: row.line.type === 'action' && actionItalic,
+                  own: row.line.type === 'message' && !!row.line.self,
+                }"
                 ><template v-if="row.line.type === 'action'"
                   ><NickRef :nick="String(row.line.nick ?? '')" />{{ ' ' }}</template
                 ><MessageBody
@@ -945,6 +948,10 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
   min-width: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* As in the timeline: your own messages in the colour you set (#1268). */
+.t-body.own {
+  color: var(--self-fg, inherit);
 }
 .t-body.italic {
   font-style: italic;

@@ -462,6 +462,20 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Defaults to a slightly dimmed foreground. Nick colors and ' +
       'inline-highlighted segments still override this.',
   },
+  // Empty, not var(--fg): an unset colour leaves your lines in the row's own
+  // foreground, which on an alternating row is alt_fg (#1268).
+  {
+    key: 'look.color.message.self_fg',
+    label: 'Your own message text',
+    category: 'appearance',
+    group: 'messages',
+    themed: true,
+    type: 'color',
+    default: '',
+    description:
+      'Color for the text of messages you send, to pick them out at a glance. ' +
+      'Any CSS color value; leave empty to match everyone else.',
+  },
 
   // ─── Per-line display collapsing (nick / timestamp dedupe) ────────────
   {
