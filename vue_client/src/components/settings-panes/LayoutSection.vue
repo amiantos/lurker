@@ -57,6 +57,10 @@ async function pick(choice: LayoutChoice) {
 
 <style src="./panes.css"></style>
 <style scoped>
+/* The width of the pane's column of rows. */
+.layout-picker {
+  max-width: 70ch;
+}
 .error.inline {
   padding-top: var(--space-3);
 }
