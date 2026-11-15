@@ -25,7 +25,7 @@
       type="button"
       role="radio"
       class="look"
-      :class="{ on: choice === modelValue }"
+      :class="[choice, { on: choice === modelValue }]"
       :aria-checked="choice === modelValue"
       :disabled="disabled"
       @click="emit('update:modelValue', choice)"
@@ -86,25 +86,29 @@ function labelFor(choice: LayoutChoice): string {
   return choice === 'modern-avatars' ? 'With avatars' : 'Without avatars';
 }
 
-// The same short exchange in each card: two authors, one of them twice in a
-// row, which is where the layouts differ most. Short enough that three cards
-// fit side by side in a settings pane with a timestamp down to the second.
-// Local times, so the cards read 12:01 wherever the reader is.
+// The same exchange in each card: two authors, one of them twice in a row,
+// which is where the layouts differ most. Lines long enough to read as chat,
+// short enough to fit a modern card beside its avatar gutter. Local times, so
+// the cards read 12:01 wherever the reader is.
 const RUNS = [
-  { nick: 'ann', at: new Date(2026, 0, 1, 12, 1, 7), texts: ['hello', 'fixed'] },
-  { nick: 'bob', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['nice!'] },
+  {
+    nick: 'ann',
+    at: new Date(2026, 0, 1, 12, 1, 7),
+    texts: ['anyone seen the build?', 'never mind, fixed it'],
+  },
+  { nick: 'bob', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['nice, ship it tonight'] },
 ];
 // A line later in a run was sent a little after the one before: the grid
 // hides a time that repeats the row above's (look.message.collapse_timestamps,
 // on by default), and two rows stamped alike would show a time the list would not.
 //
 // The grid spends one row on a line where a modern run spends a head and a
-// line, so the same exchange leaves its card half empty beside the other two.
-// It carries on for two more lines to fill the same height.
+// line, so the same exchange is over in three rows. It carries on for two
+// more, enough to show the columns holding from row to row.
 const GRID_RUNS = [
   ...RUNS,
-  { nick: 'ann', at: new Date(2026, 0, 1, 12, 3, 18), texts: ['ship it?'] },
-  { nick: 'bob', at: new Date(2026, 0, 1, 12, 4, 2), texts: ['yes'] },
+  { nick: 'ann', at: new Date(2026, 0, 1, 12, 3, 18), texts: ['tagging it now'] },
+  { nick: 'bob', at: new Date(2026, 0, 1, 12, 4, 2), texts: ['thanks!'] },
 ];
 const ROWS = GRID_RUNS.flatMap((run) =>
   run.texts.map((text, i) => ({
@@ -123,14 +127,17 @@ function time(at: Date, key: string): string {
 </script>
 
 <style scoped>
-/* Every card the same width, whichever look it holds: equal columns, each
-   wide enough for the widest sample (the grid's time to the second, a nick
-   and a word), and as many to a row as fit. In ch, so it holds at any font
-   size; a screen too narrow for two stacks them. */
+/* Two columns: the two modern cards side by side, and Traditional across
+   both. The grid is the wide layout (a time to the second, the nick column's
+   16ch floor, then the text on one line), so half a row cannot show it as it
+   is. A width too narrow for two modern cards, a phone's, stacks them. */
 .layout-picker {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(25ch, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(25ch, 100%), 1fr));
   gap: var(--space-6);
+}
+.look.traditional {
+  grid-column: 1 / -1;
 }
 .look {
   min-width: 0;
@@ -164,8 +171,8 @@ function time(at: Date, key: string): string {
 }
 
 /* The sample: chat, not chrome, so it takes the chat's foreground and never
-   the card's muted or accent text. A fixed height keeps the three cards level
-   whichever look has more lines.
+   the card's muted or accent text. A fixed height keeps the two modern cards
+   level; the grid, on a row of its own, is as tall as its lines.
 
    ⚠ Each look below restates MessageList's own rules for it (the paddings,
    the separator, the indent, the gutter), in the same tokens, so a card reads
@@ -189,11 +196,14 @@ function time(at: Date, key: string): string {
   text-overflow: ellipsis;
 }
 
-/* Traditional: time | nick | text. The gaps are each cell's padding, with a
-   separator down the text column's left edge, continuous from row to row. */
+/* Traditional: time | nick | text. The nick column keeps the list's 16ch
+   floor, nicks set against its right edge. The gaps are each cell's padding,
+   with a separator down the text column's left edge, continuous from row to
+   row. */
 .sample.traditional {
   display: grid;
-  grid-template-columns: max-content max-content minmax(0, 1fr);
+  min-height: 0;
+  grid-template-columns: max-content minmax(16ch, max-content) minmax(0, 1fr);
   align-content: center;
   column-gap: 0;
   line-height: 1.55;

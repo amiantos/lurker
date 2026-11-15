@@ -57,10 +57,9 @@ async function pick(choice: LayoutChoice) {
 
 <style src="./panes.css"></style>
 <style scoped>
-/* Wider than the pane's 70ch column of rows: three cards side by side, each
-   wide enough for the grid's sample, need the room, and the pane has it. */
+/* The width of the pane's column of rows. */
 .layout-picker {
-  max-width: 90ch;
+  max-width: 70ch;
 }
 .error.inline {
   padding-top: var(--space-3);
