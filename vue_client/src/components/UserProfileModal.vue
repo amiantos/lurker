@@ -593,7 +593,6 @@ function copyHostmask() {
   object-fit: cover;
   border-radius: var(--radius-md);
   margin: 0 0 var(--space-3) var(--space-5);
-  background: var(--bg-soft);
 }
 dl {
   display: grid;

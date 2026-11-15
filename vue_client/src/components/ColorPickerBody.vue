@@ -200,7 +200,9 @@ const hsv = reactive<HSV>({ h: 0, s: 0, v: 0 });
 let sliderHex: string | null = null;
 
 function refresh(): void {
-  rgb.value = resolveCssColor(props.modelValue, rootEl.value);
+  // An empty value (a colour that may be unset) starts from the text colour
+  // it falls back to, so the square and strip work before anything is typed.
+  rgb.value = resolveCssColor(props.modelValue.trim() || 'var(--fg)', rootEl.value);
   if (!rgb.value) return;
   const hex = toHex(rgb.value);
   if (hex === sliderHex) return;
@@ -254,7 +256,14 @@ function refreshTheme(): void {
       seen.add(hex);
       out.push(sw);
     }
-    if (key !== props.settingKey && !VAR_REF_RE.test(stored.trim()) && !targets.has(hex)) {
+    // Never a key that may be empty (the own-message colour): its variable
+    // goes when it is cleared, and a reference to it would go blank with it.
+    if (
+      key !== props.settingKey &&
+      getOption(key)?.default !== '' &&
+      !VAR_REF_RE.test(stored.trim()) &&
+      !targets.has(hex)
+    ) {
       targets.set(hex, sw);
     }
   }
