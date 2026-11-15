@@ -23,6 +23,9 @@ export const COLOR_VARS: Record<string, string> = {
   'look.color.border': '--border',
   'look.color.message.alt_bg': '--alt-bg',
   'look.color.message.alt_fg': '--alt-fg',
+  // Empty by default, and setProperty('') removes the variable, so the rule
+  // that reads it falls back to the row's own colour.
+  'look.color.message.self_fg': '--self-fg',
   'look.color.buffer.unread': '--buffer-unread',
   'look.color.buffer.highlight': '--buffer-highlight',
   'look.color.member.owner': '--member-owner',

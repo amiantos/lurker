@@ -85,6 +85,11 @@
             />
           </label>
         </div>
+        <label v-if="!isEdit">
+          <span>Channels to join</span>
+          <input v-model="form.default_channel" :placeholder="channelPlaceholder" />
+          <small>Comma-separated, e.g. #lurker, #libera</small>
+        </label>
         <button type="button" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
           {{ showAdvanced ? '− Advanced options' : '+ Advanced options' }}
         </button>
@@ -109,11 +114,6 @@
               :disabled="clearServerPassword"
               :placeholder="serverPasswordPlaceholder"
             />
-          </label>
-          <label v-if="!isEdit">
-            <span>Channels to join</span>
-            <input v-model="form.default_channel" :placeholder="channelPlaceholder" />
-            <small>Comma-separated, e.g. #lurker, #libera</small>
           </label>
           <hr class="divider" />
           <label>

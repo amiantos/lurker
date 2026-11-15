@@ -6,9 +6,10 @@
 <!--
   A nick's avatar (#607): a square in the nick's colour with one image of the
   active tile set over it, or the avatar the user set through IRCv3 metadata
-  (served by the media proxy, never the origin) when there is one. An image
-  that fails to load falls back to the tile, so a dead URL never leaves a
-  blank. Sized by the --avatar-size custom property the surface sets.
+  (served by the media proxy, never the origin) when there is one. That one
+  is drawn over nothing (#1315): a round or cut-out picture should not sit on
+  a square of the nick's colour. An image that fails to load falls back to
+  the tile, so a dead URL never leaves a blank. Sized by the --avatar-size custom property the surface sets.
 
   A `mark` tile (#1180) is a placeholder, never a face, an initial or a
   metadata picture: a notice's is a megaphone over the nick's colour, and the
@@ -28,7 +29,7 @@
       'mark-notice': mark === 'notice',
       'mark-server': mark === 'server',
     }"
-    :style="{ background: color ?? undefined }"
+    :style="{ background: fromMetadata ? 'transparent' : (color ?? undefined) }"
     :title="nick"
     role="img"
     :aria-label="nick"

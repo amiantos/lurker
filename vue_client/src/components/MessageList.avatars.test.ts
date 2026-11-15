@@ -105,6 +105,25 @@ describe('MessageList — compact avatars', () => {
     expect(bob.classList.contains('metadata')).toBe(true);
   });
 
+  // #1315: a picture someone chose is drawn over nothing, so a round or
+  // cut-out one is not sat on a square of their nick colour. The colour comes
+  // back with the tile when the picture fails to load.
+  it('drops the nick colour behind a metadata avatar, and restores it with the tile', async () => {
+    mountWith({
+      'look.message.layout': 'modern',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    });
+    const bob = avatarOf(3) as HTMLElement;
+    expect(bob.style.background).toBe('transparent');
+    bob.querySelector('img')!.dispatchEvent(new Event('error'));
+    await wrapper!.vm.$nextTick();
+    const tile = avatarOf(3) as HTMLElement;
+    expect(tile.classList.contains('metadata')).toBe(false);
+    expect(tile.style.background).not.toBe('transparent');
+    expect(tile.style.background).not.toBe('');
+  });
+
   it('draws the first letter of the shown name for an Initial set', () => {
     mountWith({
       'look.message.layout': 'modern',

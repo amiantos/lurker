@@ -141,8 +141,9 @@ export function useKeyboardShortcuts({
       onOpenSwitcher?.();
       return;
     }
-    // Cmd/Ctrl + F — message search
-    if (isCmd(e) && !e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+    // Cmd/Ctrl + Shift + F — message search. Plain Cmd/Ctrl + F is left to
+    // the browser's find-in-page (#1310).
+    if (isCmd(e) && e.shiftKey && !e.altKey && (e.key === 'f' || e.key === 'F')) {
       e.preventDefault();
       onOpenSearch?.();
       return;

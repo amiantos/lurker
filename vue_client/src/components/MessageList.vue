@@ -1894,6 +1894,7 @@ function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
 function bodyClass(m: ChatMessage | undefined) {
   return {
     italic: m?.type === 'action' && actionItalic.value,
+    own: m?.type === 'message' && !!m.self,
     'meta-body': m?.type !== 'message' && m?.type !== 'action' && m?.type !== 'notice',
   };
 }
@@ -3166,6 +3167,11 @@ watch(
 .body .deleted {
   color: var(--fg-muted);
   font-style: italic;
+}
+/* Your own messages in the colour you set for them (#1268), or the row's
+   when you set none. Explicit mIRC colours, nicks and links keep theirs. */
+.body.own {
+  color: var(--self-fg, inherit);
 }
 .body.italic {
   font-style: italic;
