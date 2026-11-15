@@ -94,9 +94,9 @@ const RUNS = [
   {
     nick: 'amiantos',
     at: new Date(2026, 0, 1, 12, 1, 7),
-    texts: ['anyone seen the build?', 'never mind, fixed it'],
+    texts: ['anyone seen the build?', "hoping y'all like it"],
   },
-  { nick: 'relyimah', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['nice, ship it tonight'] },
+  { nick: 'relyimah', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['looks nice, ship it'] },
 ];
 // A line later in a run was sent a little after the one before: the grid
 // hides a time that repeats the row above's (look.message.collapse_timestamps,
