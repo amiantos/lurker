@@ -1758,6 +1758,37 @@ describe('importFromZipBuffer — avatar sets', () => {
       .get(bob.id, 'look.avatars.set') as { value: string };
     expect(JSON.parse(pointer.value)).toBe(String(bobSets[0].id));
   });
+
+  // An archive from before schema v28: it names choices that are gone, and
+  // lands as the migration would have left the install it came from.
+  it('moves settings from an older archive to their current choices', async () => {
+    const { alice } = seedAlice();
+    setUserSetting(alice.id, 'look.message.layout', 'standard');
+    setUserSetting(alice.id, 'look.avatars.set', 'plain-dark');
+    const carol = createUser(`carol_old_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    setUserSetting(carol.id, 'look.message.layout', 'compact');
+    setUserSetting(carol.id, 'look.avatars.set', 'initial-light');
+
+    const read = (userId: number, key: string) => {
+      const row = db
+        .prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+        .get(userId, key) as { value: string } | undefined;
+      return row ? JSON.parse(row.value) : undefined;
+    };
+    const into = async (fromId: number) => {
+      const to = createUser(`old_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+      await importFromZipBuffer(to.id, await exportToBuffer(fromId, { includeMessages: false }));
+      return to.id;
+    };
+
+    const fromAlice = await into(alice.id);
+    expect(read(fromAlice, 'look.message.layout')).toBeUndefined();
+    expect(read(fromAlice, 'look.avatars.set')).toBe('plain');
+
+    const fromCarol = await into(carol.id);
+    expect(read(fromCarol, 'look.message.layout')).toBe('compact');
+    expect(read(fromCarol, 'look.avatars.set')).toBe('initial');
+  });
 });
 
 // ---- archive bounds (zip bomb) ----

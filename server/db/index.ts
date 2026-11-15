@@ -9,6 +9,11 @@ import path from 'path';
 import fs from 'fs';
 import { isNodeMode } from '../utils/edition.js';
 import { EARLY_PRUNE_TYPES } from '../../shared/eventFilter.js';
+import {
+  DEFAULT_AVATAR_SET,
+  LEGACY_AVATAR_SET_IDS,
+  currentAvatarSetId,
+} from '../../shared/avatarTiles.js';
 import { foldBufferCase } from './foldBufferCase.js';
 import {
   normalizeMessagesBufferIds,
@@ -1793,7 +1798,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 27;
+const SCHEMA_VERSION = 28;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -3249,6 +3254,36 @@ if (schemaVersion < 26) {
 // asked. Defaulted, so no row needs rewriting: everything before was plain.
 if (schemaVersion < 27) {
   ensureColumn('dcc_transfers', 'secure', 'INTEGER NOT NULL DEFAULT 0');
+}
+// Two settings lost choices. The message layout's `standard` (the grid on
+// every screen, phones included) is gone, and `auto` is what it was on a
+// desktop: those rows drop to the default. The Initial and Plain avatar sets
+// each came in two inks and are one set now that the ink follows the tile's
+// colour: a pointer at an old id moves to the set it became, or drops where
+// that is the default. user_settings values are JSON, hence the quotes.
+if (schemaVersion < 28) {
+  const layouts = db
+    .prepare(`DELETE FROM user_settings WHERE key = 'look.message.layout' AND value = ?`)
+    .run(JSON.stringify('standard')).changes;
+  let sets = 0;
+  for (const old of LEGACY_AVATAR_SET_IDS) {
+    const now = currentAvatarSetId(old);
+    sets +=
+      now === DEFAULT_AVATAR_SET
+        ? db
+            .prepare(`DELETE FROM user_settings WHERE key = 'look.avatars.set' AND value = ?`)
+            .run(JSON.stringify(old)).changes
+        : db
+            .prepare(
+              `UPDATE user_settings SET value = ? WHERE key = 'look.avatars.set' AND value = ?`,
+            )
+            .run(JSON.stringify(now), JSON.stringify(old)).changes;
+  }
+  if (layouts + sets > 0) {
+    console.log(
+      `[db] ${layouts} message layout and ${sets} avatar set setting(s) moved to their current choices`,
+    );
+  }
 }
 // The queue's lookups by bot and pack (a failed pack's later tries, a bot's
 // packs waiting or out). Partial: most rows aren't a queue's. After the block

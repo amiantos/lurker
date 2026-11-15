@@ -4,7 +4,7 @@
 // Avatar tile sets (#607): the bundled sets (shared/avatarTiles.ts, the tile
 // ones under public/avatars/) and the sets the user uploaded
 // (/api/avatar-sets), plus the pointer that picks one (look.avatars.set,
-// 'initial-dark' out of the box). Answers "which image goes
+// 'initial' out of the box). Answers "which image goes
 // on this nick's tile" — the nick colour behind it is the nick colour's
 // business, and a metadata avatar replaces the whole tile where one is set
 // (NickAvatar.vue).
@@ -21,7 +21,9 @@ import {
   DEFAULT_STOP_CHARS,
   tileIndex,
   tileUrl,
+  type AvatarInk,
   type AvatarSetManifest,
+  type BuiltinAvatarSet,
 } from '../../../shared/avatarTiles.js';
 import { AVATAR_TILE_EXT, type AvatarSetSummary } from '../../../shared/avatarSets.js';
 
@@ -35,13 +37,23 @@ export interface AvatarSetEntry {
   builtin: boolean;
   baseUrl: string;
   ext: string;
-  // An Initial set draws a letter in this ink instead of a tile.
-  initialInk?: 'light' | 'dark';
+  // `initial` draws a letter instead of a tile; `plain` is one silhouette kept
+  // in both inks, and the tile's colour says which (`inkBaseUrls`).
+  kind: 'tiles' | 'initial' | 'plain';
+  inkBaseUrls?: Readonly<Record<AvatarInk, string>>;
+}
+
+// Where a bundled set's manifests are: one per directory of tiles.
+function manifestUrls(set: BuiltinAvatarSet): string[] {
+  if (set.kind === 'tiles') return set.url ? [set.url] : [];
+  if (set.kind === 'plain') return set.urls ? [set.urls.light, set.urls.dark] : [];
+  return [];
 }
 
 export const useAvatarSetsStore = defineStore('avatarSets', {
   state: () => ({
-    // Each bundled set's manifest, once fetched; absent until then (no tile).
+    // Each bundled tile directory's manifest by its URL, once fetched; absent
+    // until then (no tile).
     builtinManifests: {} as Record<string, AvatarSetManifest>,
     builtinLoad: null as Promise<void> | null,
     // The user's uploaded sets, as the server lists them.
@@ -51,26 +63,22 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
   getters: {
     /** The bundled sets first, then the uploaded ones (server keeps them name-sorted). */
     all(state): AvatarSetEntry[] {
-      const bundled: AvatarSetEntry[] = BUILTIN_AVATAR_SETS.map((set) =>
-        set.kind === 'initial'
-          ? {
-              id: set.id,
-              name: set.name,
-              count: 1,
-              builtin: true,
-              baseUrl: '',
-              ext: '',
-              initialInk: set.ink,
-            }
-          : {
-              id: set.id,
-              name: set.name,
-              count: state.builtinManifests[set.id]?.count ?? 0,
-              builtin: true,
-              baseUrl: set.url ?? '',
-              ext: state.builtinManifests[set.id]?.ext ?? AVATAR_TILE_EXT,
-            },
-      );
+      const bundled: AvatarSetEntry[] = BUILTIN_AVATAR_SETS.map((set) => {
+        // A Plain set's two directories hold the same tiles; the light one
+        // speaks for the count.
+        const url = set.kind === 'plain' ? (set.urls?.light ?? '') : (set.url ?? '');
+        const manifest = state.builtinManifests[url];
+        return {
+          id: set.id,
+          name: set.name,
+          count: set.kind === 'initial' ? 1 : (manifest?.count ?? 0),
+          builtin: true,
+          baseUrl: set.kind === 'initial' ? '' : url,
+          ext: set.kind === 'initial' ? '' : (manifest?.ext ?? AVATAR_TILE_EXT),
+          kind: set.kind,
+          inkBaseUrls: set.urls,
+        };
+      });
       return [
         ...bundled,
         ...state.saved.map((s) => ({
@@ -80,6 +88,7 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
           builtin: false,
           baseUrl: `/api/avatar-sets/${s.id}`,
           ext: AVATAR_TILE_EXT,
+          kind: 'tiles' as const,
         })),
       ];
     },
@@ -96,17 +105,28 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
       return this.byId(this.activeSetId) || this.all[0];
     },
     // The tile image for a nick, or null while the set has no tiles to pick
-    // from (the coloured square still shows).
-    tileFor(): (nick: string) => string | null {
-      return (nick: string) => {
+    // from (the coloured square still shows). `ink` is what reads on the
+    // nick's colour: a Plain set has its silhouette in each.
+    tileFor(state): (nick: string, ink: AvatarInk) => string | null {
+      return (nick: string, ink: AvatarInk) => {
         const set = this.activeSet;
-        if (!set || set.count <= 0 || set.initialInk) return null;
+        if (!set || set.kind === 'initial') return null;
+        let baseUrl = set.baseUrl;
+        let count = set.count;
+        let ext = set.ext;
+        if (set.kind === 'plain') {
+          baseUrl = set.inkBaseUrls?.[ink] ?? '';
+          const manifest = state.builtinManifests[baseUrl];
+          count = manifest?.count ?? 0;
+          ext = manifest?.ext ?? AVATAR_TILE_EXT;
+        }
+        if (count <= 0) return null;
         const settings = useSettingsStore();
         const stopChars = String(
           settings.effective('look.nick.color_stop_chars') ?? DEFAULT_STOP_CHARS,
         );
-        const index = tileIndex(nick, set.count, stopChars);
-        return index < 0 ? null : tileUrl(set.baseUrl, index, set.ext);
+        const index = tileIndex(nick, count, stopChars);
+        return index < 0 ? null : tileUrl(baseUrl, index, ext);
       };
     },
   },
@@ -119,20 +139,20 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
     ensureBuiltins(): Promise<void> {
       if (this.builtinLoad) return this.builtinLoad;
       if (typeof fetch !== 'function') return Promise.resolve();
-      const missing = BUILTIN_AVATAR_SETS.filter(
-        (set) => set.kind === 'tiles' && !this.builtinManifests[set.id],
+      const missing = BUILTIN_AVATAR_SETS.flatMap(manifestUrls).filter(
+        (url) => !this.builtinManifests[url],
       );
       if (missing.length === 0) return Promise.resolve();
       this.builtinLoad = (async () => {
         await Promise.all(
-          missing.map(async (set) => {
+          missing.map(async (url) => {
             try {
-              const res = await fetch(`${set.url}/manifest.json`, { cache: 'no-cache' });
+              const res = await fetch(`${url}/manifest.json`, { cache: 'no-cache' });
               if (!res.ok) return;
               const body = (await res.json()) as Partial<AvatarSetManifest>;
               const count = Number(body.count);
               if (!Number.isInteger(count) || count <= 0) return;
-              this.builtinManifests[set.id] = {
+              this.builtinManifests[url] = {
                 count,
                 ext: typeof body.ext === 'string' ? body.ext : AVATAR_TILE_EXT,
               };

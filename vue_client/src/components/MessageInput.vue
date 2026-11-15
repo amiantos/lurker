@@ -3752,7 +3752,7 @@ async function runAvatars(
     const on = settings.effective('look.message.avatars') === true;
     reply(
       on
-        ? '  avatars are on (compact layout)'
+        ? '  avatars are on (modern layout)'
         : '  avatars are off — Settings › Appearance › Avatars, or /set look.message.avatars true',
     );
     return;

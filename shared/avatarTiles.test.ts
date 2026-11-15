@@ -2,7 +2,95 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from 'vitest';
-import { tileIndex, tileUrl } from './avatarTiles.js';
+import {
+  AVATAR_INK_LUMINANCE,
+  BUILTIN_AVATAR_SETS,
+  DEFAULT_AVATAR_SET,
+  LEGACY_AVATAR_SET_IDS,
+  avatarInk,
+  currentAvatarSetId,
+  isBuiltinAvatarSetId,
+  relativeLuminance,
+  tileIndex,
+  tileUrl,
+} from './avatarTiles.js';
+import { REGISTRY } from './settingsRegistry.js';
+import { getBuiltinTheme } from './themePresets.js';
+
+const rgb = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  return { r: n >> 16, g: (n >> 8) & 255, b: n & 255 };
+};
+
+describe('avatarInk', () => {
+  it('is dark on a light colour, light on a dark one, and dark for no colour', () => {
+    expect(avatarInk(rgb('#ffffff'))).toBe('dark');
+    expect(avatarInk(rgb('#ffd866'))).toBe('dark');
+    expect(avatarInk(rgb('#000000'))).toBe('light');
+    expect(avatarInk(rgb('#3163c0'))).toBe('light');
+    expect(avatarInk(null)).toBe('dark');
+  });
+
+  it('turns at the threshold: above it dark, at it light', () => {
+    // Greys either side of the line, found from the luminance itself.
+    let below = 0;
+    while (relativeLuminance({ r: below + 1, g: below + 1, b: below + 1 }) <= AVATAR_INK_LUMINANCE)
+      below++;
+    const above = below + 1;
+    expect(avatarInk({ r: below, g: below, b: below })).toBe('light');
+    expect(avatarInk({ r: above, g: above, b: above })).toBe('dark');
+  });
+
+  // The threshold is where it is so each built-in theme keeps the ink its
+  // palette was drawn for. A palette edit that crosses it should fail here.
+  it("gives the dark theme's whole nick palette dark ink", () => {
+    const palette = REGISTRY.find((o) => o.key === 'look.nick.colors')!.default as string[];
+    expect(palette.length).toBeGreaterThan(0);
+    for (const hex of palette) expect([hex, avatarInk(rgb(hex))]).toEqual([hex, 'dark']);
+  });
+
+  it("gives the light theme's whole nick palette light ink", () => {
+    const light = getBuiltinTheme('light')!;
+    const palette = light.values['look.nick.colors'] as string[];
+    expect(palette.length).toBeGreaterThan(0);
+    for (const hex of palette) expect([hex, avatarInk(rgb(hex))]).toEqual([hex, 'light']);
+  });
+});
+
+describe('the bundled sets', () => {
+  it('has the default among them', () => {
+    expect(isBuiltinAvatarSetId(DEFAULT_AVATAR_SET)).toBe(true);
+    expect(REGISTRY.find((o) => o.key === 'look.avatars.set')!.default).toBe(DEFAULT_AVATAR_SET);
+  });
+
+  it('moves each id from before the ink was automatic to the set it became', () => {
+    expect(currentAvatarSetId('initial-light')).toBe('initial');
+    expect(currentAvatarSetId('initial-dark')).toBe('initial');
+    expect(currentAvatarSetId('plain-light')).toBe('plain');
+    expect(currentAvatarSetId('plain-dark')).toBe('plain');
+    expect([...LEGACY_AVATAR_SET_IDS].sort()).toEqual([
+      'initial-dark',
+      'initial-light',
+      'plain-dark',
+      'plain-light',
+    ]);
+    for (const old of LEGACY_AVATAR_SET_IDS) {
+      expect(isBuiltinAvatarSetId(old)).toBe(false);
+      expect(isBuiltinAvatarSetId(currentAvatarSetId(old))).toBe(true);
+    }
+  });
+
+  it('leaves every other id alone, an inherited name included', () => {
+    for (const id of ['ealain', 'initial', 'plain', '12', 'toString', 'constructor']) {
+      expect(currentAvatarSetId(id)).toBe(id);
+    }
+  });
+
+  it('keeps a Plain set in both inks', () => {
+    const plain = BUILTIN_AVATAR_SETS.find((s) => s.id === 'plain')!;
+    expect(plain.urls).toEqual({ light: '/avatars/plain-light', dark: '/avatars/plain-dark' });
+  });
+});
 
 describe('tileIndex', () => {
   it('is deterministic and inside the set', () => {

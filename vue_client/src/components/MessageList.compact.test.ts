@@ -238,9 +238,9 @@ describe('MessageList — compact notice runs', () => {
     } as never;
     // Every bundled tile set, as if its manifest had loaded (no fetch here).
     useAvatarSetsStore().builtinManifests = {
-      ealain: { count: 32, ext: 'webp' },
-      'plain-light': { count: 1, ext: 'webp' },
-      'plain-dark': { count: 1, ext: 'webp' },
+      '/avatars/ealain': { count: 32, ext: 'webp' },
+      '/avatars/plain-light': { count: 1, ext: 'webp' },
+      '/avatars/plain-dark': { count: 1, ext: 'webp' },
     };
     mountCompact({ keepSettings: true });
     expect(head(15)!.querySelector('.prefix')?.textContent).toBe('-irc.example.net-');
@@ -287,9 +287,9 @@ describe('MessageList — compact notice runs', () => {
       'look.avatars.set': 'ealain',
     } as never;
     useAvatarSetsStore().builtinManifests = {
-      ealain: { count: 32, ext: 'webp' },
-      'plain-light': { count: 1, ext: 'webp' },
-      'plain-dark': { count: 1, ext: 'webp' },
+      '/avatars/ealain': { count: 32, ext: 'webp' },
+      '/avatars/plain-light': { count: 1, ext: 'webp' },
+      '/avatars/plain-dark': { count: 1, ext: 'webp' },
     };
     mountCompact({ keepSettings: true });
     const tile = line(16).querySelector(':scope > .avatar') as HTMLElement;
@@ -318,9 +318,9 @@ describe('MessageList — compact notice runs', () => {
       'look.avatars.set': 'ealain',
     } as never;
     useAvatarSetsStore().builtinManifests = {
-      ealain: { count: 32, ext: 'webp' },
-      'plain-light': { count: 1, ext: 'webp' },
-      'plain-dark': { count: 1, ext: 'webp' },
+      '/avatars/ealain': { count: 32, ext: 'webp' },
+      '/avatars/plain-light': { count: 1, ext: 'webp' },
+      '/avatars/plain-dark': { count: 1, ext: 'webp' },
     };
     mountCompact({ keepSettings: true });
     const reached = (id: number) => {
@@ -348,7 +348,7 @@ describe('MessageList — compact notice runs', () => {
 
   it('keeps every notice on its own -nick- line in the standard layout', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'standard',
+      'look.message.layout': 'auto',
       'look.message.collapse_authors': true,
     } as never;
     mountCompact({ keepSettings: true });

@@ -1288,16 +1288,14 @@ const collapseTimestampsEnabled = computed(
   () => !!settings.effective('look.message.collapse_timestamps'),
 );
 
-// look.message.layout: auto / standard / compact. Compact swaps the 3-column
-// subgrid for a two-line stack (head: who + time, body below) on headed rows
-// (`headed`); actions and activity events stay single-line. Auto picks
-// compact on mobile-width viewports so phone users get the reflow by default.
-const layoutSetting = computed(() => settings.effective('look.message.layout') || 'auto');
-const compactMode = computed(() => {
-  if (layoutSetting.value === 'compact') return true;
-  if (layoutSetting.value === 'standard') return false;
-  return isMobile.value;
-});
+// look.message.layout: auto (Traditional) / compact (Modern); the ids are the
+// layouts' older names, and this file's. Compact swaps the 3-column subgrid
+// for a two-line stack (head: who + time, body below) on headed rows
+// (`headed`); actions and activity events stay single-line. A mobile-width
+// viewport is always compact: the grid does not fit a phone.
+const compactMode = computed(
+  () => isMobile.value || settings.effective('look.message.layout') === 'compact',
+);
 
 // Compact mode forces author collapsing — the head is the only place the
 // nick appears, and without collapsing the buffer is wall-to-wall headers.
@@ -3199,7 +3197,7 @@ watch(
   }
 }
 
-/* Compact layout (look.message.layout = compact, or = auto on mobile):
+/* Compact layout (look.message.layout = compact, or any layout on mobile):
    IRCCloud-style two-column row — content on the left, timestamp on the
    right — with messages getting a head line (nick, time at the right)
    above. Only the

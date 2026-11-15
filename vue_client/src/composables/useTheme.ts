@@ -5,6 +5,7 @@ import { watchEffect } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useViewport } from './useViewport.js';
 import { parseComputedRgb, parseHex } from '../lib/color.js';
+import { bumpThemeEpoch } from '../lib/cssColor.js';
 
 // Maps each settings key to the CSS custom property it controls. Anything in
 // here is live-rewritten on :root whenever the settings store changes, so the
@@ -105,5 +106,6 @@ export function useTheme(): void {
       `${settings.effective('look.message.compact.indent')}ch`,
     );
     root.style.colorScheme = computedColorScheme(String(settings.effective('look.color.bg')));
+    bumpThemeEpoch();
   });
 }

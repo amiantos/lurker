@@ -27,6 +27,8 @@ export const AVATAR_SET_UNPACKED_MAX_BYTES = 64 * 1024 * 1024;
 export const RESERVED_AVATAR_SET_NAMES = [
   'default',
   'ealain',
+  'plain',
+  'initial',
   'plain (light)',
   'plain (dark)',
   'initial (light)',

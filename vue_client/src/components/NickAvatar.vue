@@ -43,8 +43,8 @@
       alt=""
       draggable="false"
       @error="onError"
-    /><span v-else-if="initial" class="initial" :class="initial.ink" aria-hidden="true">{{
-      initial.letter
+    /><span v-else-if="initial" class="initial" :class="ink" aria-hidden="true">{{
+      initial
     }}</span></span
   >
 </template>
@@ -56,6 +56,8 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
+import { themeColor } from '../lib/cssColor.js';
+import { avatarInk } from '../../../shared/avatarTiles.js';
 
 const props = withDefaults(
   defineProps<{
@@ -102,22 +104,6 @@ watch(
   },
 );
 const fromMetadata = computed(() => !!meta.value?.avatarUrl && !failed.value);
-const src = computed(() => {
-  if (fromMetadata.value) return meta.value!.avatarUrl as string;
-  return props.nick ? avatarSets.tileFor(props.nick) : null;
-});
-// An Initial set: the first letter of what the head prints — the display
-// name where there is one, else the nick — in the set's ink.
-const initial = computed(() => {
-  const ink = avatarSets.activeSet?.initialInk;
-  if (!ink || !props.nick) return null;
-  const shown = props.plain ? null : displayNames.plainDisplayNameFor(props.networkId, props.nick);
-  const first = Array.from(shown ?? props.nick)[0];
-  return first ? { ink, letter: first.toUpperCase() } : null;
-});
-// The megaphone's ink: the Initial sets say which reads on their tiles; a
-// picture set has no say, and the silhouettes are light.
-const ink = computed(() => avatarSets.activeSet?.initialInk ?? 'light');
 
 const isSelf = computed(() => {
   if (props.self !== undefined) return props.self;
@@ -127,6 +113,23 @@ const isSelf = computed(() => {
 const color = computed(() => {
   if (isSelf.value) return nicks.selfColor.value;
   return props.nick ? nicks.color(props.nick) : null;
+});
+// What reads on that colour, near-white or near-black: the letter's ink, the
+// silhouette's, a placeholder glyph's. The colour is any CSS the user typed,
+// so the engine says what it is.
+const ink = computed(() => avatarInk(themeColor(color.value)));
+
+const src = computed(() => {
+  if (fromMetadata.value) return meta.value!.avatarUrl as string;
+  return props.nick ? avatarSets.tileFor(props.nick, ink.value) : null;
+});
+// An Initial set: the first letter of what the head prints — the display
+// name where there is one, else the nick.
+const initial = computed(() => {
+  if (avatarSets.activeSet?.kind !== 'initial' || !props.nick) return null;
+  const shown = props.plain ? null : displayNames.plainDisplayNameFor(props.networkId, props.nick);
+  const first = Array.from(shown ?? props.nick)[0];
+  return first ? first.toUpperCase() : null;
 });
 
 function onError(): void {

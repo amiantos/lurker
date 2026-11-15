@@ -51,7 +51,7 @@ import {
   AVATAR_SET_MAX_TILES,
   AVATAR_SET_UNPACKED_MAX_BYTES,
 } from '../../shared/avatarSets.js';
-import { isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
+import { currentAvatarSetId, isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import {
   importRow as importBufferRow,
@@ -531,8 +531,19 @@ function insertTable(
       }
     }
 
+    // An archive from before the message layout lost `standard` (schema v28):
+    // the row drops, as the migration drops it, and the default applies.
+    if (
+      table === 'user_settings' &&
+      row.key === 'look.message.layout' &&
+      row.value === JSON.stringify('standard')
+    ) {
+      continue;
+    }
+
     // The avatar-set pointer (#607): same shape as the theme pointers, with
-    // the built-in ids ('default', 'plain-*', 'initial-*') travelling as-is.
+    // the built-in ids ('ealain', 'plain', 'initial') travelling as-is, and
+    // one from before Initial and Plain were a set each moved to its set.
     if (
       table === 'user_settings' &&
       typeof row.key === 'string' &&
@@ -545,7 +556,9 @@ function insertTable(
         continue;
       }
       if (typeof oldId !== 'string') continue;
-      if (!isBuiltinAvatarSetId(oldId)) {
+      if (oldId !== currentAvatarSetId(oldId)) {
+        row.value = JSON.stringify(currentAvatarSetId(oldId));
+      } else if (!isBuiltinAvatarSetId(oldId)) {
         const n = Number(oldId);
         if (!Number.isInteger(n) || String(n) !== oldId) continue;
         const mapped = idMaps.avatar_sets?.get(n);
