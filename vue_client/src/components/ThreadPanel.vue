@@ -276,9 +276,9 @@ const selfColor = computed<string | null>(
 // its settings apply: avatars, and the compact timestamp format with a date
 // prefix on lines from another day (empty = never).
 const showAvatars = computed(() => settings.effective('look.message.avatars') === true);
-const tsFormat = computed(() => settings.effective('look.buffer.time_format_compact') as string);
+const tsFormat = computed(() => settings.effective('look.buffer.time_format_modern') as string);
 const compactDateFormat = computed(() =>
-  String(settings.effective('look.buffer.date_format_compact') ?? ''),
+  String(settings.effective('look.buffer.date_format_modern') ?? ''),
 );
 const collapseWindowMs = computed(
   () =>
@@ -821,7 +821,7 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
    speaker's run shares one head. Density is the user's (#1186): the three
    tokens useTheme writes. ── */
 .lines.compact {
-  line-height: var(--compact-line-height, 1.55);
+  line-height: var(--modern-line-height, 1.55);
 }
 .lines.compact .t-line {
   display: grid;
@@ -833,7 +833,7 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
   column-gap: 0.75ch;
   position: relative;
   padding: var(--space-1) var(--space-4);
-  margin-top: var(--compact-group-gap, 0);
+  margin-top: var(--modern-group-gap, 0);
 }
 .lines.compact .t-line.cont {
   margin-top: 0;
@@ -857,7 +857,7 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 .lines.compact .head ~ .t-body,
 .lines.compact .t-line.cont > .t-body {
   grid-column: 1 / -1;
-  padding-left: var(--compact-indent, 0);
+  padding-left: var(--modern-indent, 0);
 }
 /* Action and notice rows in compact: one line, time then prefix then body. */
 .lines.compact .t-line:has(> .time:first-child) {

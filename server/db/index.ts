@@ -14,6 +14,13 @@ import {
   LEGACY_AVATAR_SET_IDS,
   currentAvatarSetId,
 } from '../../shared/avatarTiles.js';
+import {
+  LAYOUT_SETTING_KEY,
+  RENAMED_SETTING_KEYS,
+  currentLayoutValue,
+  currentSettingKey,
+  withCurrentSettingKeys,
+} from '../../shared/settingsRenames.js';
 import { foldBufferCase } from './foldBufferCase.js';
 import {
   normalizeMessagesBufferIds,
@@ -3255,33 +3262,91 @@ if (schemaVersion < 26) {
 if (schemaVersion < 27) {
   ensureColumn('dcc_transfers', 'secure', 'INTEGER NOT NULL DEFAULT 0');
 }
-// Two settings lost choices. The message layout's `standard` (the grid on
-// every screen, phones included) is gone, and `auto` is what it was on a
-// desktop: those rows drop to the default. The Initial and Plain avatar sets
-// each came in two inks and are one set now that the ink follows the tile's
-// colour: a pointer at an old id moves to the set it became, or drops where
-// that is the default. user_settings values are JSON, hence the quotes.
+// The message layouts were renamed: "standard" is Traditional and "compact"
+// is Modern, and every setting that said so moved with them
+// (shared/settingsRenames.ts).
+//  - The density and timestamp keys are stored under their new names, in
+//    user_settings and inside every saved theme's values.
+//  - look.message.layout holds `modern` where it held `compact`. `auto` and
+//    `standard` rows drop to the default, `traditional`: `standard` forced the
+//    grid onto phones, which no choice does now.
+//  - The Initial and Plain avatar sets each came in two inks and are one set
+//    now that the ink follows the tile's colour: a pointer at an old id moves
+//    to the set it became, or drops where that is the default.
+// user_settings values are JSON, hence the stringify. Immediate: it reads the
+// themes before it writes them.
 if (schemaVersion < 28) {
-  const layouts = db
-    .prepare(`DELETE FROM user_settings WHERE key = 'look.message.layout' AND value = ?`)
-    .run(JSON.stringify('standard')).changes;
-  let sets = 0;
-  for (const old of LEGACY_AVATAR_SET_IDS) {
-    const now = currentAvatarSetId(old);
-    sets +=
-      now === DEFAULT_AVATAR_SET
-        ? db
-            .prepare(`DELETE FROM user_settings WHERE key = 'look.avatars.set' AND value = ?`)
-            .run(JSON.stringify(old)).changes
-        : db
-            .prepare(
-              `UPDATE user_settings SET value = ? WHERE key = 'look.avatars.set' AND value = ?`,
-            )
-            .run(JSON.stringify(now), JSON.stringify(old)).changes;
-  }
-  if (layouts + sets > 0) {
+  const moved = db
+    .transaction(() => {
+      let keys = 0;
+      const rekey = db.prepare(`UPDATE OR REPLACE user_settings SET key = ? WHERE key = ?`);
+      for (const [oldKey, newKey] of Object.entries(RENAMED_SETTING_KEYS)) {
+        keys += rekey.run(newKey, oldKey).changes;
+      }
+
+      let themes = 0;
+      const rows = db.prepare(`SELECT id, values_json FROM user_themes`).all() as Array<{
+        id: number;
+        values_json: string;
+      }>;
+      const retheme = db.prepare(`UPDATE user_themes SET values_json = ? WHERE id = ?`);
+      for (const row of rows) {
+        let values: unknown;
+        try {
+          values = JSON.parse(row.values_json);
+        } catch {
+          continue;
+        }
+        if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
+        const had = values as Record<string, unknown>;
+        if (!Object.keys(had).some((key) => currentSettingKey(key) !== key)) continue;
+        retheme.run(JSON.stringify(withCurrentSettingKeys(had)), row.id);
+        themes++;
+      }
+
+      let layouts = 0;
+      const layoutRows = db
+        .prepare(`SELECT user_id, value FROM user_settings WHERE key = ?`)
+        .all(LAYOUT_SETTING_KEY) as Array<{ user_id: number; value: string }>;
+      const setLayout = db.prepare(
+        `UPDATE user_settings SET value = ? WHERE user_id = ? AND key = ?`,
+      );
+      const dropLayout = db.prepare(`DELETE FROM user_settings WHERE user_id = ? AND key = ?`);
+      for (const row of layoutRows) {
+        let was: unknown;
+        try {
+          was = JSON.parse(row.value);
+        } catch {
+          was = undefined;
+        }
+        const now = currentLayoutValue(was);
+        if (now === was) continue;
+        if (now === null) dropLayout.run(row.user_id, LAYOUT_SETTING_KEY);
+        else setLayout.run(JSON.stringify(now), row.user_id, LAYOUT_SETTING_KEY);
+        layouts++;
+      }
+
+      let sets = 0;
+      for (const old of LEGACY_AVATAR_SET_IDS) {
+        const now = currentAvatarSetId(old);
+        sets +=
+          now === DEFAULT_AVATAR_SET
+            ? db
+                .prepare(`DELETE FROM user_settings WHERE key = 'look.avatars.set' AND value = ?`)
+                .run(JSON.stringify(old)).changes
+            : db
+                .prepare(
+                  `UPDATE user_settings SET value = ? WHERE key = 'look.avatars.set' AND value = ?`,
+                )
+                .run(JSON.stringify(now), JSON.stringify(old)).changes;
+      }
+      return { keys, themes, layouts, sets };
+    })
+    .immediate();
+  if (moved.keys + moved.themes + moved.layouts + moved.sets > 0) {
     console.log(
-      `[db] ${layouts} message layout and ${sets} avatar set setting(s) moved to their current choices`,
+      `[db] layouts renamed: ${moved.keys} setting(s) re-keyed, ${moved.themes} theme(s), ` +
+        `${moved.layouts} layout choice(s), ${moved.sets} avatar set pointer(s)`,
     );
   }
 }

@@ -473,20 +473,15 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'layout',
     group: 'layout',
     type: 'enum',
-    // ⚠ The ids are the layouts' names from before they were Traditional and
-    // Modern, kept under the rule below (EnumOption.choiceLabels): the label is
-    // what users read. `auto` earned its name when a third choice, `standard`,
-    // forced the grid onto phones too; that one is gone (schema v28 drops its
-    // rows) and `auto` is what is left of both.
-    choices: ['auto', 'compact'],
+    choices: ['traditional', 'modern'],
     choiceLabels: {
-      auto: 'Traditional',
-      compact: 'Modern',
+      traditional: 'Traditional',
+      modern: 'Modern',
     } as Readonly<Record<string, string>>,
-    default: 'auto',
+    default: 'traditional',
     description:
-      'How message rows are laid out. Traditional ("auto", the default) is ' +
-      'the three-column grid: time, nick, text. Modern ("compact") is the ' +
+      'How message rows are laid out. "traditional" (the default) is ' +
+      'the three-column grid: time, nick, text. "modern" is the ' +
       'two-line layout: nick and time on top, text below, with avatars if ' +
       'they are on. A phone-width screen always uses modern: the grid does ' +
       'not fit there. In the modern layout repeated authors always ' +
@@ -547,7 +542,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   // ceilings are layout sanity for a phone's width, not policy. None of
   // these touch the standard layout.
   {
-    key: 'look.message.compact.group_gap',
+    key: 'look.message.modern.group_gap',
     label: 'Modern group gap (px)',
     category: 'appearance',
     group: 'messages',
@@ -562,7 +557,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Rows within a run stay flush. 0 packs the buffer like a terminal.',
   },
   {
-    key: 'look.message.compact.line_height',
+    key: 'look.message.modern.line_height',
     label: 'Modern line height (%)',
     category: 'appearance',
     group: 'messages',
@@ -577,7 +572,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'everywhere else in the UI.',
   },
   {
-    key: 'look.message.compact.indent',
+    key: 'look.message.modern.indent',
     label: 'Modern body indent (chars)',
     category: 'appearance',
     group: 'messages',
@@ -850,7 +845,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
   },
   {
-    key: 'look.buffer.time_format_compact',
+    key: 'look.buffer.time_format_modern',
     label: 'Modern-layout timestamp format',
     category: 'appearance',
     group: 'misc',
@@ -858,14 +853,14 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 'HH:mm',
     description:
       'Time format used in chat buffers when the modern message layout is ' +
-      'active (look.message.layout = compact, or any layout on a phone). ' +
+      'active (look.message.layout = modern, or any layout on a phone). ' +
       "Defaults to HH:mm — the modern layout's timestamp sits by the nick, and " +
       'seconds are rarely useful at a glance. ' +
       'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
       'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
   },
   {
-    key: 'look.buffer.date_format_compact',
+    key: 'look.buffer.date_format_modern',
     label: 'Modern-layout date format',
     category: 'appearance',
     group: 'misc',

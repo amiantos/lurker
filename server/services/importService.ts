@@ -52,6 +52,12 @@ import {
   AVATAR_SET_UNPACKED_MAX_BYTES,
 } from '../../shared/avatarSets.js';
 import { currentAvatarSetId, isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
+import {
+  LAYOUT_SETTING_KEY,
+  currentLayoutValue,
+  currentSettingKey,
+  withCurrentSettingKeys,
+} from '../../shared/settingsRenames.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import {
   importRow as importBufferRow,
@@ -531,14 +537,23 @@ function insertTable(
       }
     }
 
-    // An archive from before the message layout lost `standard` (schema v28):
-    // the row drops, as the migration drops it, and the default applies.
-    if (
-      table === 'user_settings' &&
-      row.key === 'look.message.layout' &&
-      row.value === JSON.stringify('standard')
-    ) {
-      continue;
+    // An archive from before the layouts were renamed (schema v28) lands as
+    // that migration would have left the install it came from: a setting under
+    // the key it has now, and the layout itself under its new name, or dropped
+    // to the default where the old choice is gone.
+    if (table === 'user_settings' && typeof row.key === 'string') {
+      row.key = currentSettingKey(row.key);
+      if (row.key === LAYOUT_SETTING_KEY) {
+        let was: unknown;
+        try {
+          was = JSON.parse(String(row.value));
+        } catch {
+          continue;
+        }
+        const now = currentLayoutValue(was);
+        if (now === null) continue;
+        row.value = JSON.stringify(now);
+      }
     }
 
     // The avatar-set pointer (#607): same shape as the theme pointers, with
@@ -580,6 +595,11 @@ function insertTable(
         values = JSON.parse(String(row.values_json));
       } catch {
         continue;
+      }
+      // Under the keys the settings have now: the service drops a key it does
+      // not know, and an older archive's density values would go with it.
+      if (values && typeof values === 'object' && !Array.isArray(values)) {
+        values = withCurrentSettingKeys(values as Record<string, unknown>);
       }
       const result = themesService.create(row.user_id as number, { name: row.name, values });
       if (!result.ok) continue;

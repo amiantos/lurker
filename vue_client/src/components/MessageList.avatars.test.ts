@@ -78,7 +78,7 @@ describe('MessageList — compact avatars', () => {
 
   it('draws a tile on the first row of a run and reserves the gutter on the rest', () => {
     mountWith({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     });
@@ -96,7 +96,7 @@ describe('MessageList — compact avatars', () => {
 
   it('shows the metadata avatar as the server minted it, never an origin', () => {
     mountWith({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     });
@@ -107,7 +107,7 @@ describe('MessageList — compact avatars', () => {
 
   it('draws the first letter of the shown name for an Initial set', () => {
     mountWith({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'initial',
     });
@@ -123,7 +123,7 @@ describe('MessageList — compact avatars', () => {
   // here, so every nick's tile is that colour.
   it('inks an Initial letter light on a dark colour and dark on a light one', () => {
     const base = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'initial',
     };
@@ -136,7 +136,7 @@ describe('MessageList — compact avatars', () => {
 
   it("takes a Plain set's silhouette from the directory of the ink that reads", () => {
     const base = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'plain',
     };
@@ -153,7 +153,7 @@ describe('MessageList — compact avatars', () => {
 
   it('falls back to the default set for a pointer at a set that is gone', () => {
     mountWith({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': '999',
     });
@@ -161,11 +161,11 @@ describe('MessageList — compact avatars', () => {
   });
 
   it('draws nothing with the setting off, and nothing in the traditional layout', () => {
-    mountWith({ 'look.message.layout': 'compact' });
+    mountWith({ 'look.message.layout': 'modern' });
     expect(wrapper!.find('.message-list').classes()).not.toContain('avatars');
     expect(avatarOf(1)).toBeNull();
     wrapper!.unmount();
-    mountWith({ 'look.message.layout': 'auto', 'look.message.avatars': true });
+    mountWith({ 'look.message.layout': 'traditional', 'look.message.avatars': true });
     expect(wrapper!.find('.message-list').classes()).not.toContain('avatars');
     expect(avatarOf(1)).toBeNull();
   });

@@ -1759,12 +1759,22 @@ describe('importFromZipBuffer — avatar sets', () => {
     expect(JSON.parse(pointer.value)).toBe(String(bobSets[0].id));
   });
 
-  // An archive from before schema v28: it names choices that are gone, and
-  // lands as the migration would have left the install it came from.
-  it('moves settings from an older archive to their current choices', async () => {
+  // An archive from before schema v28: it names settings and choices by what
+  // they were called then, and lands as the migration would have left the
+  // install it came from.
+  it('moves settings and themes from an older archive to their current names', async () => {
+    const themesService = (await import('./themesService.js')).default;
     const { alice } = seedAlice();
     setUserSetting(alice.id, 'look.message.layout', 'standard');
     setUserSetting(alice.id, 'look.avatars.set', 'plain-dark');
+    setUserSetting(alice.id, 'look.message.compact.indent', 3);
+    setUserSetting(alice.id, 'look.buffer.time_format_compact', 'HH:mm:ss');
+    // As a v27 install stored it: the service would refuse the old key today.
+    db.prepare(`INSERT INTO user_themes (user_id, name, values_json) VALUES (?, ?, ?)`).run(
+      alice.id,
+      'Tight',
+      JSON.stringify({ 'look.color.bg': '#101010', 'look.message.compact.group_gap': 4 }),
+    );
     const carol = createUser(`carol_old_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     setUserSetting(carol.id, 'look.message.layout', 'compact');
     setUserSetting(carol.id, 'look.avatars.set', 'initial-light');
@@ -1784,10 +1794,35 @@ describe('importFromZipBuffer — avatar sets', () => {
     const fromAlice = await into(alice.id);
     expect(read(fromAlice, 'look.message.layout')).toBeUndefined();
     expect(read(fromAlice, 'look.avatars.set')).toBe('plain');
+    expect(read(fromAlice, 'look.message.modern.indent')).toBe(3);
+    expect(read(fromAlice, 'look.buffer.time_format_modern')).toBe('HH:mm:ss');
+    expect(read(fromAlice, 'look.message.compact.indent')).toBeUndefined();
+    expect(read(fromAlice, 'look.buffer.time_format_compact')).toBeUndefined();
+    expect(themesService.list(fromAlice).find((t) => t.name === 'Tight')?.values).toEqual({
+      'look.color.bg': '#101010',
+      'look.message.modern.group_gap': 4,
+    });
 
     const fromCarol = await into(carol.id);
-    expect(read(fromCarol, 'look.message.layout')).toBe('compact');
+    expect(read(fromCarol, 'look.message.layout')).toBe('modern');
     expect(read(fromCarol, 'look.avatars.set')).toBe('initial');
+  });
+
+  it('keeps a current archive as it is', async () => {
+    const { alice } = seedAlice();
+    setUserSetting(alice.id, 'look.message.layout', 'modern');
+    setUserSetting(alice.id, 'look.message.modern.indent', 2);
+    const to = createUser(`now_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    await importFromZipBuffer(to.id, await exportToBuffer(alice.id, { includeMessages: false }));
+    const rows = db
+      .prepare(
+        `SELECT key, value FROM user_settings WHERE user_id = ? AND key LIKE 'look.message.%'`,
+      )
+      .all(to.id) as Array<{ key: string; value: string }>;
+    expect(Object.fromEntries(rows.map((r) => [r.key, JSON.parse(r.value)]))).toEqual({
+      'look.message.layout': 'modern',
+      'look.message.modern.indent': 2,
+    });
   });
 });
 

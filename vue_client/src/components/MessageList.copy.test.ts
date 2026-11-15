@@ -115,10 +115,10 @@ describe('MessageList copy', () => {
 
   it('writes the same lines in the compact layout', () => {
     mountList({
-      'look.message.layout': 'compact',
-      'look.buffer.time_format_compact': 'HH:mm',
+      'look.message.layout': 'modern',
+      'look.buffer.time_format_modern': 'HH:mm',
       // The fixture's day is not today; keep the date off the compact time.
-      'look.buffer.date_format_compact': '',
+      'look.buffer.date_format_modern': '',
     });
     select([textNode(2, 'fix'), 0], [textNode(5, 'sure'), 4]);
     expect(copy()).toBe(

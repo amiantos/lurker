@@ -24,27 +24,27 @@ describe('useTheme — compact density variables', () => {
 
   it('writes the registry defaults on install, in the units the CSS consumes', async () => {
     await nextTick();
-    expect(read('--compact-group-gap')).toBe('10px');
-    expect(read('--compact-line-height')).toBe('1.55');
-    expect(read('--compact-indent')).toBe('1ch');
+    expect(read('--modern-group-gap')).toBe('10px');
+    expect(read('--modern-line-height')).toBe('1.55');
+    expect(read('--modern-indent')).toBe('1ch');
   });
 
   it('follows a changed setting live: percent becomes a unitless multiplier', async () => {
     useSettingsStore().values = {
-      'look.message.compact.group_gap': 0,
-      'look.message.compact.line_height': 120,
-      'look.message.compact.indent': 0,
+      'look.message.modern.group_gap': 0,
+      'look.message.modern.line_height': 120,
+      'look.message.modern.indent': 0,
     } as never;
     await nextTick();
-    expect(read('--compact-group-gap')).toBe('0px');
-    expect(read('--compact-line-height')).toBe('1.2');
-    expect(read('--compact-indent')).toBe('0ch');
+    expect(read('--modern-group-gap')).toBe('0px');
+    expect(read('--modern-line-height')).toBe('1.2');
+    expect(read('--modern-indent')).toBe('0ch');
   });
 
   it('a reset falls back to the default without a stale override lingering', async () => {
     useSettingsStore().values = {} as never;
     await nextTick();
-    expect(read('--compact-group-gap')).toBe('10px');
-    expect(read('--compact-indent')).toBe('1ch');
+    expect(read('--modern-group-gap')).toBe('10px');
+    expect(read('--modern-indent')).toBe('1ch');
   });
 });

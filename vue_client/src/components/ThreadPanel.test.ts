@@ -432,7 +432,7 @@ describe('ThreadPanel', () => {
     expect(w.find('[data-msg-id="4"] .head').exists()).toBe(true);
 
     // The list's standard layout never fits the panel: still compact.
-    useSettingsStore().values['look.message.layout'] = 'auto';
+    useSettingsStore().values['look.message.layout'] = 'traditional';
     await w.vm.$nextTick();
     expect(w.find('.lines').classes()).toContain('compact');
     expect(w.find('[data-msg-id="3"]').classes()).toContain('cont');

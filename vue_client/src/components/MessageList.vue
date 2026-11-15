@@ -643,7 +643,7 @@ const selfColor = computed<string | null>(
 // granularity follows the active format automatically.
 const tsFormat = computed(() =>
   settings.effective(
-    compactMode.value ? 'look.buffer.time_format_compact' : 'look.buffer.time_format',
+    compactMode.value ? 'look.buffer.time_format_modern' : 'look.buffer.time_format',
   ),
 );
 
@@ -840,9 +840,9 @@ const nickSet = computed((): Set<string> => {
 });
 
 // Compact rows from a day other than today carry the date before the time,
-// as Discord's do (look.buffer.date_format_compact; empty = never).
+// as Discord's do (look.buffer.date_format_modern; empty = never).
 const compactDateFormat = computed(() =>
-  compactMode.value ? String(settings.effective('look.buffer.date_format_compact') ?? '') : '',
+  compactMode.value ? String(settings.effective('look.buffer.date_format_modern') ?? '') : '',
 );
 function time(iso: string | undefined): string {
   const t = formatTimestamp(iso ?? '', (tsFormat.value as string) ?? '');
@@ -1288,13 +1288,14 @@ const collapseTimestampsEnabled = computed(
   () => !!settings.effective('look.message.collapse_timestamps'),
 );
 
-// look.message.layout: auto (Traditional) / compact (Modern); the ids are the
-// layouts' older names, and this file's. Compact swaps the 3-column subgrid
+// look.message.layout: traditional / modern. Modern is `compact` in this
+// file's own names (its classes, this computed), from before the layouts were
+// renamed; the settings moved, the code did not. Compact swaps the 3-column subgrid
 // for a two-line stack (head: who + time, body below) on headed rows
 // (`headed`); actions and activity events stay single-line. A mobile-width
 // viewport is always compact: the grid does not fit a phone.
 const compactMode = computed(
-  () => isMobile.value || settings.effective('look.message.layout') === 'compact',
+  () => isMobile.value || settings.effective('look.message.layout') === 'modern',
 );
 
 // Compact mode forces author collapsing — the head is the only place the
@@ -3197,7 +3198,7 @@ watch(
   }
 }
 
-/* Compact layout (look.message.layout = compact, or any layout on mobile):
+/* Compact layout (look.message.layout = modern, or any layout on mobile):
    IRCCloud-style two-column row — content on the left, timestamp on the
    right — with messages getting a head line (nick, time at the right)
    above. Only the
@@ -3207,9 +3208,9 @@ watch(
   /* Single content column — the 3-col subgrid alignment goes away. */
   grid-template-columns: minmax(0, 1fr);
   /* Density is the user's (#1186): useTheme writes these three from
-     look.message.compact.* — the line height here, the group gap and the
+     look.message.modern.* — the line height here, the group gap and the
      body indent below. */
-  line-height: var(--compact-line-height);
+  line-height: var(--modern-line-height);
 }
 .message-list.compact .line {
   /* Per-row grid: head spans every column above the body row; body row
@@ -3233,7 +3234,7 @@ watch(
      consolidation summary). Transparent (not padding) so adjacent hover
      backgrounds don't touch across the gap. Adjacent siblings collapse
      vertical margins, so back-to-back clusters get one gap, not two. */
-  margin-top: var(--compact-group-gap);
+  margin-top: var(--modern-group-gap);
 }
 /* Continuation message rows render only body + time — no head, no cluster
    start — and should sit tight under the previous line. */
@@ -3244,7 +3245,7 @@ watch(
    so give them the same top gap as .line in compact mode, and the same side
    padding. */
 .message-list.compact > .notice {
-  margin-top: var(--compact-group-gap);
+  margin-top: var(--modern-group-gap);
   padding-inline: var(--space-4);
 }
 .message-list.compact .line > .head {
@@ -3287,7 +3288,7 @@ watch(
 .message-list.compact .line > .head ~ .body,
 .message-list.compact .line.cont-author > .body {
   grid-column: 1 / 3;
-  padding-left: var(--compact-indent);
+  padding-left: var(--modern-indent);
 }
 .message-list.compact .line > .time {
   /* The right-edge time track goes unused: an event row's time follows its

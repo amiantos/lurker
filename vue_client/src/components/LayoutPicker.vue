@@ -197,14 +197,14 @@ const ROWS = RUNS.flatMap((run) =>
    indent under the nick. No separator. */
 .sample.modern,
 .sample.modern-avatars {
-  line-height: var(--compact-line-height);
+  line-height: var(--modern-line-height);
 }
 .sample .run {
   position: relative;
   min-width: 0;
 }
 .sample .run + .run {
-  margin-top: var(--compact-group-gap);
+  margin-top: var(--modern-group-gap);
 }
 .sample .lines {
   display: flex;
@@ -217,7 +217,7 @@ const ROWS = RUNS.flatMap((run) =>
   gap: 0.75ch;
 }
 .sample.modern .text {
-  padding-left: var(--compact-indent);
+  padding-left: var(--modern-indent);
 }
 
 /* With avatars: a gutter holding the tile on a run's first row, a hairline

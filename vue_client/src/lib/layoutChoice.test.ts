@@ -28,23 +28,23 @@ describe('layoutChoices', () => {
 
 describe('currentLayoutChoice', () => {
   it('reads the desktop from the layout, then the avatars', () => {
-    expect(currentLayoutChoice('auto', false, false)).toBe('traditional');
-    expect(currentLayoutChoice('auto', true, false)).toBe('traditional');
+    expect(currentLayoutChoice('traditional', false, false)).toBe('traditional');
+    expect(currentLayoutChoice('traditional', true, false)).toBe('traditional');
     expect(currentLayoutChoice(undefined, true, false)).toBe('traditional');
-    expect(currentLayoutChoice('compact', false, false)).toBe('modern');
-    expect(currentLayoutChoice('compact', true, false)).toBe('modern-avatars');
+    expect(currentLayoutChoice('modern', false, false)).toBe('modern');
+    expect(currentLayoutChoice('modern', true, false)).toBe('modern-avatars');
   });
 
   it('reads a phone from the avatars alone: it is modern whatever the layout says', () => {
-    expect(currentLayoutChoice('auto', true, true)).toBe('modern-avatars');
-    expect(currentLayoutChoice('auto', false, true)).toBe('modern');
-    expect(currentLayoutChoice('compact', true, true)).toBe('modern-avatars');
-    expect(currentLayoutChoice('compact', undefined, true)).toBe('modern');
+    expect(currentLayoutChoice('traditional', true, true)).toBe('modern-avatars');
+    expect(currentLayoutChoice('traditional', false, true)).toBe('modern');
+    expect(currentLayoutChoice('modern', true, true)).toBe('modern-avatars');
+    expect(currentLayoutChoice('modern', undefined, true)).toBe('modern');
   });
 
   it('only ever answers with a look the screen offers', () => {
     for (const isMobile of [false, true]) {
-      for (const layout of ['auto', 'compact']) {
+      for (const layout of ['traditional', 'modern']) {
         for (const avatars of [false, true]) {
           expect(layoutChoices(isMobile)).toContain(currentLayoutChoice(layout, avatars, isMobile));
         }
@@ -56,18 +56,18 @@ describe('currentLayoutChoice', () => {
 describe('layoutChoiceWrites', () => {
   it('writes both keys for a modern look on a desktop', () => {
     expect(layoutChoiceWrites('modern', { isMobile: false })).toEqual({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': false,
     });
     expect(layoutChoiceWrites('modern-avatars', { isMobile: false })).toEqual({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
     });
   });
 
   it('leaves the avatars alone for Traditional, which does not show them', () => {
     expect(layoutChoiceWrites('traditional', { isMobile: false })).toEqual({
-      'look.message.layout': 'auto',
+      'look.message.layout': 'traditional',
     });
   });
 
@@ -84,7 +84,7 @@ describe('layoutChoiceWrites', () => {
 
   it('turns avatars on for a first-run Traditional, for the phone it will be opened on', () => {
     expect(layoutChoiceWrites('traditional', { isMobile: false, firstRun: true })).toEqual({
-      'look.message.layout': 'auto',
+      'look.message.layout': 'traditional',
       'look.message.avatars': true,
     });
     // Plain Modern is the one pick that says no avatars.
@@ -100,7 +100,7 @@ describe('layoutChoiceWrites', () => {
         const w = layoutChoiceWrites(choice, { isMobile });
         expect(
           currentLayoutChoice(
-            w['look.message.layout'] ?? 'auto',
+            w['look.message.layout'] ?? 'traditional',
             w['look.message.avatars'] ?? false,
             isMobile,
           ),
@@ -111,8 +111,8 @@ describe('layoutChoiceWrites', () => {
 
   it('writes only values the registry takes', () => {
     const layout = REGISTRY.find((o) => o.key === 'look.message.layout')!;
-    expect(layout.type === 'enum' && layout.choices).toEqual(['auto', 'compact']);
-    expect(layout.default).toBe('auto');
+    expect(layout.type === 'enum' && layout.choices).toEqual(['traditional', 'modern']);
+    expect(layout.default).toBe('traditional');
     expect(REGISTRY.find((o) => o.key === 'look.message.avatars')!.default).toBe(false);
   });
 });

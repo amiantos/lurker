@@ -10,9 +10,9 @@ All tokens live in one file: [`vue_client/src/assets/main.css`](../vue_client/sr
 
 ## Two tiers of token
 
-**1. Themeable tokens** — colors, fonts, and the compact layout's density
-(`--compact-group-gap`, `--compact-line-height`, `--compact-indent`, from the
-`look.message.compact.*` settings). These are user-configurable: the
+**1. Themeable tokens** — colors, fonts, and the modern layout's density
+(`--modern-group-gap`, `--modern-line-height`, `--modern-indent`, from the
+`look.message.modern.*` settings). These are user-configurable: the
 Settings UI writes them onto the page live (via `useTheme()`), so changing a
 color in Settings re-themes the whole app instantly. The values in `main.css`
 are just the defaults for the first paint.

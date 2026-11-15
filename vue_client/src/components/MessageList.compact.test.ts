@@ -38,7 +38,7 @@ function message(id: number, nick: string, minute: number, second = 0) {
 function mountCompact(opts: { keepSettings?: boolean } = {}) {
   if (!opts.keepSettings) {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.collapse_timestamps': true,
       'look.nick.show_mode_prefix': true,
     } as never;
@@ -139,8 +139,8 @@ describe('MessageList — compact head timestamp', () => {
     expect(eventRow(5).trailing).toMatch(/^2026-10-05 /);
     wrapper!.unmount();
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
-      'look.buffer.date_format_compact': '',
+      'look.message.layout': 'modern',
+      'look.buffer.date_format_modern': '',
     } as never;
     mountCompact({ keepSettings: true });
     expect(row(1).headTime).toMatch(/^\d\d:\d\d$/);
@@ -232,7 +232,7 @@ describe('MessageList — compact notice runs', () => {
 
   it('gives a notice head a placeholder tile: the colour and a megaphone, no face', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     } as never;
@@ -282,7 +282,7 @@ describe('MessageList — compact notice runs', () => {
 
   it('colours the server’s head and tile in the network’s colour, as the system buffer does', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     } as never;
@@ -313,7 +313,7 @@ describe('MessageList — compact notice runs', () => {
   // keeps the tap for the nick menu.
   it('lets a tap on a placeholder tile fall through to the row', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': true,
       'look.avatars.set': 'ealain',
     } as never;
@@ -348,7 +348,7 @@ describe('MessageList — compact notice runs', () => {
 
   it('keeps every notice on its own -nick- line in the standard layout', () => {
     useSettingsStore().values = {
-      'look.message.layout': 'auto',
+      'look.message.layout': 'traditional',
       'look.message.collapse_authors': true,
     } as never;
     mountCompact({ keepSettings: true });

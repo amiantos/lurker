@@ -143,9 +143,9 @@ describe('defaultsAsObject', () => {
 describe('themed keys', () => {
   it('snapshots the compact density knobs (#1186) alongside the fonts and colours', () => {
     const knobs = [
-      'look.message.compact.group_gap',
-      'look.message.compact.line_height',
-      'look.message.compact.indent',
+      'look.message.modern.group_gap',
+      'look.message.modern.line_height',
+      'look.message.modern.indent',
     ];
     for (const key of knobs) {
       expect(THEMED_KEYS).toContain(key);
@@ -160,14 +160,14 @@ describe('themed keys', () => {
 
   it('ranges: a gap of 0 and a solid line height are allowed, a negative gap is not', () => {
     for (const [key, v] of [
-      ['look.message.compact.group_gap', 0],
-      ['look.message.compact.line_height', 100],
-      ['look.message.compact.indent', 0],
+      ['look.message.modern.group_gap', 0],
+      ['look.message.modern.line_height', 100],
+      ['look.message.modern.indent', 0],
     ] as const) {
       const out = validate(key, v);
       expect(out.ok && out.value).toBe(v);
     }
-    expect(validate('look.message.compact.group_gap', -1).ok).toBe(false);
-    expect(validate('look.message.compact.line_height', 99).ok).toBe(false);
+    expect(validate('look.message.modern.group_gap', -1).ok).toBe(false);
+    expect(validate('look.message.modern.line_height', 99).ok).toBe(false);
   });
 });

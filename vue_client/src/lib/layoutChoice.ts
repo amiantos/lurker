@@ -34,7 +34,7 @@ export function currentLayoutChoice(
   avatars: unknown,
   isMobile: boolean,
 ): LayoutChoice {
-  if (!isMobile && layout !== 'compact') return 'traditional';
+  if (!isMobile && layout !== 'modern') return 'traditional';
   return avatars === true ? 'modern-avatars' : 'modern';
 }
 
@@ -56,9 +56,11 @@ export function layoutChoiceWrites(
   const avatars = choice === 'modern-avatars';
   if (opts.isMobile) return { [AVATARS_KEY]: avatars };
   if (choice === 'traditional') {
-    return opts.firstRun ? { [LAYOUT_KEY]: 'auto', [AVATARS_KEY]: true } : { [LAYOUT_KEY]: 'auto' };
+    return opts.firstRun
+      ? { [LAYOUT_KEY]: 'traditional', [AVATARS_KEY]: true }
+      : { [LAYOUT_KEY]: 'traditional' };
   }
-  return { [LAYOUT_KEY]: 'compact', [AVATARS_KEY]: avatars };
+  return { [LAYOUT_KEY]: 'modern', [AVATARS_KEY]: avatars };
 }
 
 /** A new account that skipped the question: the first-run default, written. */

@@ -79,7 +79,7 @@ describe('OnboardingFlow — the look step', () => {
     await flushPromises();
     expect(patchMany).toHaveBeenCalledTimes(1);
     expect(patchMany).toHaveBeenCalledWith({
-      'look.message.layout': 'compact',
+      'look.message.layout': 'modern',
       'look.message.avatars': false,
     });
     expect(wrapper!.find('.network-picker-stub').exists()).toBe(true);
@@ -91,7 +91,7 @@ describe('OnboardingFlow — the look step', () => {
     await continueButton().trigger('click');
     await flushPromises();
     expect(patchMany).toHaveBeenCalledWith({
-      'look.message.layout': 'auto',
+      'look.message.layout': 'traditional',
       'look.message.avatars': true,
     });
   });
