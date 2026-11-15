@@ -2018,6 +2018,18 @@ export function fanOutIgnoreList(userId: number, networkId: number | null): void
   });
 }
 
+// A network's E2E-enabled channels changed (`/e2e on|off|mode`, a keyring
+// import): every tab gets the whole list again, as the snapshot's
+// `e2eChannels` carries it, and replaces its own (#422). The whole list and not
+// the one channel because an import can move any number of them at once.
+e2eManager.onChannelsChanged((userId, networkId) => {
+  fanOut(userId, {
+    kind: 'e2e-channels-changed',
+    networkId,
+    channels: e2eManager.enabledChannelNames(userId, networkId),
+  });
+});
+
 // Whether an ignore rule is one dmMutesUnread can see: the whole-buffer shape
 // channelMutesUnread accepts (NOUNREAD, anyone-mask, no pattern, not an
 // exception). Gates the DM re-serve below, so the far more common rules — a

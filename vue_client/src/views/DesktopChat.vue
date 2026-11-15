@@ -103,7 +103,9 @@
         </button>
       </div>
       <div class="topic-meta">
-        <span v-if="isVirtual || active" class="buffer">{{ bufferLabel }}</span>
+        <span v-if="isVirtual || active" class="buffer"
+          >{{ bufferLabel }}<BufferStatusIcons v-if="statusBuf" :buf="statusBuf"
+        /></span>
         <template v-if="active && topic">
           <!-- A channel topic is user prose: auto-link it and open the full
                view on click. A DM's pseudo-topic is the peer's ident@host —
@@ -356,6 +358,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useAuthStore } from '../stores/auth.js';
 import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
+import BufferStatusIcons from '../components/BufferStatusIcons.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import ThreadPanel from '../components/ThreadPanel.vue';
@@ -620,6 +623,14 @@ function sendDmFile() {
 // Channel notification level (always/highlights/nothing/muted) now lives in the
 // buffer context-menu ladder (right-click the sidebar row, or the topic-bar cog),
 // so there is no dedicated topic-bar bell anymore (issue #359).
+
+// The buffer whose standing facts sit by its name in the topic bar (#422): a
+// channel or a DM. The system console, a server buffer and the virtual ones
+// have none.
+const statusBuf = computed((): Buffer | null => {
+  const buf = activeBuf.value as Buffer | null;
+  return buf && (buf.kind === 'channel' || buf.kind === 'dm') ? buf : null;
+});
 
 // User count for the active channel buffer. Sits in the topic bar (next to
 // the members-toggle button) rather than the status bar — the count is a
@@ -1089,8 +1100,9 @@ button.topic-text:focus-visible {
 }
 
 /* Two-group layout for the topic bar: .topic-meta (name + topic text, spaced
-   by the 2ch gap — wider than the 1ch bar convention to give the name and
-   topic breathing room now that the │ divider is gone) sits left,
+   by the same distance the name sits from the forward button — wider than the
+   1ch bar convention to give the name and topic breathing room now that the │
+   divider is gone) sits left,
    .topic-actions (buffer/network/channel buttons) sits right.
    .topic uses justify-content:space-between to split them. .topic-meta
    shrinks first via min-width:0 + topic-text ellipsis, so the action
@@ -1098,7 +1110,9 @@ button.topic-text:focus-visible {
 .topic-meta {
   display: flex;
   align-items: baseline;
-  gap: 2ch;
+  /* What separates the forward button from the name: .topic's gap plus the
+     button's own side padding (.link). */
+  gap: calc(var(--space-4) + var(--space-2));
   /* flex:1 so the meta absorbs the free space and keeps the action cluster
      anchored to the right edge; min-width:0 lets the topic text ellipsis. */
   flex: 1;

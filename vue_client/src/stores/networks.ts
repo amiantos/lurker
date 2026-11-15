@@ -88,6 +88,10 @@ export interface NetworkState {
   userModes?: string;
   away?: AwayState | null;
   peerPresence?: Record<string, PeerPresenceEntry>;
+  // Lowercase nick → the services account a DM peer is logged in to (#646).
+  // Seeded by the snapshot, kept current by `peer-account` frames. Absent on
+  // a server that predates it — which says nothing of anyone.
+  peerAccounts?: Record<string, string>;
   // IRCv3 metadata per nick, keyed by lowercase nick like peerPresence (#607).
   // Seeded by the snapshot, replaced record-by-record by `user-metadata`
   // frames (values: null forgets the nick).
@@ -250,6 +254,17 @@ export const useNetworksStore = defineStore('networks', {
         if (netState && netState.state !== 'connected')
           return { nick, state: 'offline', stateAt: null, awayMessage: null };
         return netState?.peerPresence?.[nick.toLowerCase()] ?? null;
+      },
+    // The services account a DM peer is known to be logged in to (#646), or
+    // null: logged out and unknown alike. undefined is a server that predates
+    // `peerAccounts` and so says nothing of anyone.
+    peerAccountFor:
+      (state) =>
+      (networkId: number | string, nick: string): string | null | undefined => {
+        const netState = state.states[networkId];
+        if (!netState || netState.state !== 'connected') return null;
+        if (!netState.peerAccounts) return undefined;
+        return netState.peerAccounts[nick.toLowerCase()] ?? null;
       },
     // A nick's IRCv3 metadata on a network (#607), or null when none is known.
     metadataFor:
@@ -500,6 +515,15 @@ export const useNetworksStore = defineStore('networks', {
       if (!state.userMetadata) state.userMetadata = {};
       if (values) state.userMetadata[nick.toLowerCase()] = values;
       else delete state.userMetadata[nick.toLowerCase()];
+    },
+    // One DM peer's account as it now stands (#646); null forgets it.
+    applyPeerAccount(networkId: number | string, nick: string, account: string | null) {
+      if (!networkId || !nick) return;
+      const existing = this.states[networkId] || { networkId: Number(networkId), channels: [] };
+      const peerAccounts = { ...existing.peerAccounts };
+      if (account) peerAccounts[nick.toLowerCase()] = account;
+      else delete peerAccounts[nick.toLowerCase()];
+      this.states[networkId] = { ...existing, peerAccounts };
     },
     applyDccChatState(networkId: number | string, nick: string, live: boolean, secure = false) {
       if (!networkId || !nick) return;

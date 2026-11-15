@@ -25,6 +25,7 @@ import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore, type FavoriteEntry } from '../stores/favorites.js';
 import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
+import { useE2eChannelsStore } from '../stores/e2eChannels.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -408,6 +409,13 @@ function applyEvent(event: any): boolean {
       break;
     case 'channel-metadata':
       buffers.setChannelMetadata(event.networkId, event.target, event.values);
+      break;
+    case 'peer-account':
+      networks.applyPeerAccount(
+        event.networkId,
+        event.nick,
+        typeof event.account === 'string' ? event.account : null,
+      );
       break;
     case 'channel-joined':
       buffers.ensure(event.networkId, event.target);
@@ -817,6 +825,7 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   pins.applySnapshot(snapshot);
   nicklistCollapse.applySnapshot(snapshot);
   channelNotify.applySnapshot(snapshot);
+  useE2eChannelsStore().applySnapshot(snapshot);
   ignores.applySnapshot(snapshot, globalIgnores);
   nickNotes.applySnapshot(snapshot);
   relayBots.applySnapshot(snapshot);
@@ -1222,6 +1231,10 @@ function handleMessage(raw: string): void {
     channelNotify.applyChange(payload.networkId, payload.target, {
       notifyAlways: !!payload.notifyAlways,
     });
+    return;
+  }
+  if (payload.kind === 'e2e-channels-changed') {
+    useE2eChannelsStore().applyChange(payload.networkId, payload.channels);
     return;
   }
   if (payload.kind === 'ignore-list-updated') {

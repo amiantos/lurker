@@ -582,6 +582,15 @@ export const useBuffersStore = defineStore('buffers', {
         }
         return undefined;
       },
+    // The account `nick` is logged in to, from either source (#646): what the
+    // server says of an open DM's peer, else the member lists held here. The
+    // server's word covers a peer whose shared channel isn't loaded (#1292).
+    knownAccountFor(): (networkId: number | string, nick: string) => string | null {
+      return (networkId, nick) =>
+        useNetworksStore().peerAccountFor(networkId, nick) ||
+        this.accountFor(networkId, nick) ||
+        null;
+    },
     // The peer's ident@hostname for a DM header (#695 QA follow-up — the slot
     // a channel's topic occupies). Live shared-channel member data first (the
     // freshest source, present even for a history-less DM opened from the

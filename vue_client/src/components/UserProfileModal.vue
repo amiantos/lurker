@@ -273,7 +273,7 @@ const awayMessage = computed(() => {
 const account = computed(() => {
   const fromWhois = (whois.value?.account as string) || '';
   if (fromWhois) return fromWhois;
-  return buffers.accountFor(props.networkId, props.nick) || '';
+  return buffers.knownAccountFor(props.networkId, props.nick) || '';
 });
 
 const presenceClass = computed(() => {

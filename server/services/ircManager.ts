@@ -1694,6 +1694,8 @@ class IrcManager extends EventEmitter {
         pinned: pinsByNetwork.get(networkId) || [],
         collapsedNicklists: collapsedByNetwork.get(networkId) || {},
         channelNotify: notifyByNetwork.get(networkId) || {},
+        // The E2E-enabled channels, so a client can mark them (#422).
+        e2eChannels: e2eManager.enabledChannelNames(userId, networkId),
         ignoredMasks: ignoresByNetwork.get(networkId) || [],
         nickNotes: notesByNetwork.get(networkId) || [],
         relayBots: relayBotsByNetwork.get(networkId) || [],
