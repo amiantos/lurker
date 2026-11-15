@@ -55,6 +55,13 @@ describe('avatarInk', () => {
     expect(palette.length).toBeGreaterThan(0);
     for (const hex of palette) expect([hex, avatarInk(rgb(hex))]).toEqual([hex, 'light']);
   });
+  // The apps draw a server line's mark on the theme's muted grey; the number
+  // is theirs too (AvatarInk.luminanceThreshold in both kits).
+  it("keeps dark ink on the dark theme's muted grey", () => {
+    expect(AVATAR_INK_LUMINANCE).toBe(0.28);
+    expect(avatarInk(rgb('#939293'))).toBe('dark');
+    expect(avatarInk(rgb('#706b6e'))).toBe('light');
+  });
 });
 
 describe('the bundled sets', () => {

@@ -70,7 +70,10 @@ export function currentAvatarSetId(id: string): string {
 // light. The two built-in nick palettes sit either side: the dark theme's
 // pastels start at 0.305 and the light theme's stop at 0.274, so each keeps
 // the ink it was drawn for, and a palette that mixes both gets each tile right.
-export const AVATAR_INK_LUMINANCE = 0.29;
+// Nearer the light palette's end than the middle of that gap, so the dark
+// theme's muted grey (#939293, 0.289) keeps dark ink too: the apps draw a
+// server line's mark on it. Every client carries this number.
+export const AVATAR_INK_LUMINANCE = 0.28;
 
 function linearChannel(c: number): number {
   const cs = c / 255;
