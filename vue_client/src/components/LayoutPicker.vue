@@ -97,7 +97,16 @@ const RUNS = [
 // A line later in a run was sent a little after the one before: the grid
 // hides a time that repeats the row above's (look.message.collapse_timestamps,
 // on by default), and two rows stamped alike would show a time the list would not.
-const ROWS = RUNS.flatMap((run) =>
+//
+// The grid spends one row on a line where a modern run spends a head and a
+// line, so the same exchange leaves its card half empty beside the other two.
+// It carries on for two more lines to fill the same height.
+const GRID_RUNS = [
+  ...RUNS,
+  { nick: 'ann', at: new Date(2026, 0, 1, 12, 3, 18), texts: ['ship it?'] },
+  { nick: 'bob', at: new Date(2026, 0, 1, 12, 4, 2), texts: ['yes'] },
+];
+const ROWS = GRID_RUNS.flatMap((run) =>
   run.texts.map((text, i) => ({
     nick: run.nick,
     at: new Date(run.at.getTime() + i * 24_000),

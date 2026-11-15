@@ -78,7 +78,7 @@ describe('OnboardingFlow — the look step', () => {
         [i].findAll('.time')
         .map((t) => t.text());
     // The registry defaults: the grid to the second, the modern head to the minute.
-    expect(times(0)).toEqual(['12:01:07', '12:01:31', '12:02:43']);
+    expect(times(0)).toEqual(['12:01:07', '12:01:31', '12:02:43', '12:03:18', '12:04:02']);
     expect(times(1)).toEqual(['12:01', '12:02']);
     expect(times(2)).toEqual(['12:01', '12:02']);
     wrapper!.unmount();
