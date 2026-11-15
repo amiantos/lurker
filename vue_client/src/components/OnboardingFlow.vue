@@ -23,7 +23,7 @@
 <template>
   <AppModal
     word="welcome"
-    :size="step === 'look' ? 'lg' : 'xl'"
+    size="lg"
     :fill-height="step === 'pick'"
     close-title="Close for now"
     @close="onboarding.dismiss"
