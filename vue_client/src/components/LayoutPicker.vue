@@ -25,7 +25,7 @@
       type="button"
       role="radio"
       class="look"
-      :class="{ on: choice === modelValue }"
+      :class="[choice, { on: choice === modelValue }]"
       :aria-checked="choice === modelValue"
       :disabled="disabled"
       @click="emit('update:modelValue', choice)"
@@ -33,7 +33,7 @@
       <span class="sample" :class="choice" aria-hidden="true">
         <template v-if="choice === 'traditional'">
           <span v-for="(row, i) in ROWS" :key="i" class="row">
-            <span class="time">{{ row.time }}</span>
+            <span class="time">{{ time(row.at, 'look.buffer.time_format') }}</span>
             <span class="nick" :style="{ color: nicks.color(row.nick) ?? undefined }">{{
               row.nick
             }}</span>
@@ -48,7 +48,7 @@
                 <span class="nick" :style="{ color: nicks.color(run.nick) ?? undefined }">{{
                   run.nick
                 }}</span>
-                <span class="time">{{ run.time }}</span>
+                <span class="time">{{ time(run.at, 'look.buffer.time_format_modern') }}</span>
               </span>
               <span v-for="(text, j) in run.texts" :key="j" class="text">{{ text }}</span>
             </span>
@@ -64,6 +64,8 @@
 import { computed } from 'vue';
 import NickAvatar from './NickAvatar.vue';
 import { useNickColors } from '../composables/useNickColors.js';
+import { useSettingsStore } from '../stores/settings.js';
+import { formatTimestamp } from '../utils/timestamp.js';
 import { useViewport } from '../composables/useViewport.js';
 import { LAYOUT_CHOICE_LABELS, layoutChoices, type LayoutChoice } from '../lib/layoutChoice.js';
 
@@ -74,6 +76,7 @@ defineProps<{
 const emit = defineEmits<{ 'update:modelValue': [choice: LayoutChoice] }>();
 
 const nicks = useNickColors();
+const settings = useSettingsStore();
 const { isMobile } = useViewport();
 const choices = computed(() => layoutChoices(isMobile.value));
 
@@ -85,14 +88,29 @@ function labelFor(choice: LayoutChoice): string {
 
 // The same short exchange in each card: two authors, one of them twice in a
 // row, which is where the layouts differ most. Short enough that three cards
-// fit side by side in a settings pane.
+// fit side by side in a settings pane with a timestamp down to the second.
+// Local times, so the cards read 12:01 wherever the reader is.
 const RUNS = [
-  { nick: 'ann', time: '12:01', texts: ['hi all', 'fixed'] },
-  { nick: 'bob', time: '12:02', texts: ['nice!'] },
+  { nick: 'ann', at: new Date(2026, 0, 1, 12, 1, 7), texts: ['hello', 'fixed'] },
+  { nick: 'bob', at: new Date(2026, 0, 1, 12, 2, 43), texts: ['nice!'] },
 ];
+// A line later in a run was sent a little after the one before: the grid
+// hides a time that repeats the row above's (look.message.collapse_timestamps,
+// on by default), and two rows stamped alike would show a time the list would not.
 const ROWS = RUNS.flatMap((run) =>
-  run.texts.map((text) => ({ nick: run.nick, time: run.time, text })),
+  run.texts.map((text, i) => ({
+    nick: run.nick,
+    at: new Date(run.at.getTime() + i * 24_000),
+    text,
+  })),
 );
+
+// Each layout's own timestamp setting, as MessageList reads them: the grid's
+// (to the second out of the box) and the modern head's (to the minute). An
+// empty format hides the time, here as there.
+function time(at: Date, key: string): string {
+  return formatTimestamp(at.toISOString(), String(settings.effective(key) ?? ''));
+}
 </script>
 
 <style scoped>
@@ -115,6 +133,11 @@ const ROWS = RUNS.flatMap((run) =>
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+/* The grid is the wide layout — a time to the second, a nick, then the text
+   on one line — so its card takes the larger share of the row. */
+.look.traditional {
+  flex: 1.6 1 24ch;
 }
 .look:hover:not(:disabled) {
   border-color: var(--fg-muted);

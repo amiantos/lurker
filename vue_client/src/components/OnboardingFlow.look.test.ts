@@ -20,9 +20,10 @@ let patchMany: ReturnType<typeof vi.fn<PatchMany>>;
 // Requests the flow tried to make. None: see the last test.
 let fetched = 0;
 
-function mountFlow(isMobile: boolean) {
+function mountFlow(isMobile: boolean, values: Record<string, unknown> = {}) {
   useViewport().isMobile.value = isMobile;
   const settings = useSettingsStore();
+  settings.values = values as never;
   patchMany = vi.fn<PatchMany>(async () => {});
   settings.patchMany = patchMany as never;
   // Every bundled tile set, as if its manifest had loaded: the avatar card
@@ -68,6 +69,25 @@ describe('OnboardingFlow — the look step', () => {
     expect(checked().find('.name').text()).toBe('Traditional');
     expect(wrapper!.find('.network-picker-stub').exists()).toBe(false);
     expect(patchMany).not.toHaveBeenCalled();
+  });
+
+  it("shows each look's times in that layout's own format", () => {
+    mountFlow(false);
+    const times = (i: number) =>
+      cards()
+        [i].findAll('.time')
+        .map((t) => t.text());
+    // The registry defaults: the grid to the second, the modern head to the minute.
+    expect(times(0)).toEqual(['12:01:07', '12:01:31', '12:02:43']);
+    expect(times(1)).toEqual(['12:01', '12:02']);
+    expect(times(2)).toEqual(['12:01', '12:02']);
+    wrapper!.unmount();
+    mountFlow(false, {
+      'look.buffer.time_format': 'hh:mm a',
+      'look.buffer.time_format_modern': '',
+    });
+    expect(times(0)[0]).toBe('12:01 pm');
+    expect(times(1)).toEqual(['', '']);
   });
 
   it('writes nothing until Continue, then the pick, then moves to the networks', async () => {
