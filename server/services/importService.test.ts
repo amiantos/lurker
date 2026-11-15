@@ -1808,6 +1808,50 @@ describe('importFromZipBuffer — avatar sets', () => {
     expect(read(fromCarol, 'look.avatars.set')).toBe('initial');
   });
 
+  // An older server can hold a setting under both names (a newer archive
+  // imported into it, then an old client's write). The current one wins, and
+  // the restore does not trip on the pair.
+  it('takes the current key where an archive holds a setting under both names', async () => {
+    const { alice } = seedAlice();
+    setUserSetting(alice.id, 'look.message.compact.indent', 3);
+    setUserSetting(alice.id, 'look.message.modern.indent', 2);
+    const to = createUser(`both_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    await importFromZipBuffer(to.id, await exportToBuffer(alice.id, { includeMessages: false }));
+    const rows = db
+      .prepare(`SELECT key, value FROM user_settings WHERE user_id = ? AND key LIKE '%indent'`)
+      .all(to.id) as Array<{ key: string; value: string }>;
+    expect(rows).toEqual([{ key: 'look.message.modern.indent', value: '2' }]);
+  });
+
+  // "Plain" and "Initial" were free names for an upload until the bundled
+  // sets took them.
+  it('brings back an uploaded set whose name a bundled set has since taken', async () => {
+    const { alice } = seedAlice();
+    const avatarSets = (await import('./avatarSetsService.js')).default;
+    const square = (color: string) =>
+      sharp({ create: { width: 16, height: 16, channels: 4, background: color } })
+        .png()
+        .toBuffer();
+    const made = await avatarSets.createFromImages(alice.id, 'Blocks two', [
+      { name: 'a.png', data: await square('#ff0000') },
+      { name: 'b.png', data: await square('#00ff00') },
+      { name: 'c.png', data: await square('#0000ff') },
+      { name: 'd.png', data: await square('#ffffff') },
+    ]);
+    const setId = made.ok ? made.set.id : 0;
+    // As an install from before the names were reserved stored it.
+    db.prepare(`UPDATE avatar_sets SET name = 'Plain' WHERE id = ?`).run(setId);
+    setUserSetting(alice.id, 'look.avatars.set', String(setId));
+    const to = createUser(`plain_into_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    await importFromZipBuffer(to.id, await exportToBuffer(alice.id, { includeMessages: false }));
+    const sets = avatarSets.list(to.id);
+    expect(sets.map((s) => s.name)).toEqual(['Plain (uploaded)']);
+    const pointer = db
+      .prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+      .get(to.id, 'look.avatars.set') as { value: string };
+    expect(JSON.parse(pointer.value)).toBe(String(sets[0].id));
+  });
+
   it('keeps a current archive as it is', async () => {
     const { alice } = seedAlice();
     setUserSetting(alice.id, 'look.message.layout', 'modern');

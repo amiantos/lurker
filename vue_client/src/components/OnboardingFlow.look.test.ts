@@ -183,6 +183,18 @@ describe('OnboardingFlow — the look step', () => {
     expect(patchMany).not.toHaveBeenCalled();
   });
 
+  it('moves on, writing nothing, when another tab answers while this one is asking', async () => {
+    mountFlow(false);
+    useSettingsStore().values = {
+      'onboarding.look_answered': true,
+      'look.message.layout': 'modern',
+    } as never;
+    await flushPromises();
+    expect(cards()).toHaveLength(0);
+    expect(wrapper!.find('.network-picker-stub').exists()).toBe(true);
+    expect(patchMany).not.toHaveBeenCalled();
+  });
+
   // An account from before the question, offered the flow for having no networks.
   it('starts an account with a stored look on that look, and leaves its avatars alone', async () => {
     mountFlow(false, { 'look.message.layout': 'modern' });

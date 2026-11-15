@@ -55,6 +55,22 @@ describe('POST /api/themes', () => {
     expect(res.body.theme.id).toBeGreaterThan(0);
   });
 
+  // A tab from before the density keys were renamed snapshots its theme
+  // under the old ones.
+  it('stores a theme sent under a renamed key under the current one', async () => {
+    const res = await aliceAgent
+      .post('/api/themes')
+      .send({ name: 'Old tab', values: { 'look.message.compact.group_gap': 4 } });
+    expect(res.status).toBe(201);
+    expect(res.body.theme.values).toEqual({ 'look.message.modern.group_gap': 4 });
+    const put = await aliceAgent
+      .put(`/api/themes/${res.body.theme.id}`)
+      .send({ values: { 'look.message.compact.group_gap': 6 } });
+    expect(put.status).toBe(200);
+    expect(put.body.theme.values).toEqual({ 'look.message.modern.group_gap': 6 });
+    await aliceAgent.delete(`/api/themes/${res.body.theme.id}`);
+  });
+
   it('rejects reserved names, empty names, and over-long names', async () => {
     for (const name of [
       'Dark',

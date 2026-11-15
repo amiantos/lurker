@@ -174,7 +174,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import LayoutPicker from './LayoutPicker.vue';
 import NetworkPicker from './NetworkPicker.vue';
@@ -213,6 +213,14 @@ const { isMobile } = useViewport();
 const lookAnswered = (): boolean =>
   onboarding.lookAnswered.value || settings.effective(LOOK_ANSWERED_SETTING) === true;
 const step = ref<'look' | 'pick' | 'setup'>(lookAnswered() ? 'pick' : 'look');
+// Answered in another tab or on another device while this one still shows the
+// question: move on, and leave that answer as it is.
+watch(
+  () => settings.effective(LOOK_ANSWERED_SETTING) === true,
+  (answered) => {
+    if (answered && step.value === 'look') step.value = 'pick';
+  },
+);
 
 // An account that has said nothing about its look: neither key is stored. One
 // that has (an account from before this question, with the flow offered to it
@@ -246,6 +254,10 @@ const look = computed<LayoutChoice>({
 const savingLook = ref(false);
 
 async function confirmLook(): Promise<void> {
+  if (lookAnswered()) {
+    step.value = 'pick';
+    return;
+  }
   savingLook.value = true;
   try {
     await settings.patchMany({

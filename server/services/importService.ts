@@ -415,6 +415,18 @@ function insertTable(
   const rows = data[table] || [];
   const { stmt, cols } = buildInsertStatement(table, def);
 
+  // Settings keys the archive holds under their current name. A row under a
+  // key's old name is dropped where the archive has both (an older server can
+  // end up with both), not re-keyed onto the same (user, key) twice.
+  const currentKeys =
+    table === 'user_settings'
+      ? new Set(
+          rows
+            .map((r) => r?.key)
+            .filter((k) => typeof k === 'string' && currentSettingKey(k) === k),
+        )
+      : null;
+
   let inserted = 0;
   for (const original of rows) {
     const row = rekeyRow(original, def, idMaps, targetUserId);
@@ -542,7 +554,9 @@ function insertTable(
     // the key it has now, and the layout itself under its new name, or dropped
     // to the default where the old choice is gone.
     if (table === 'user_settings' && typeof row.key === 'string') {
-      row.key = currentSettingKey(row.key);
+      const now = currentSettingKey(row.key);
+      if (now !== row.key && currentKeys?.has(now)) continue;
+      row.key = now;
       if (row.key === LAYOUT_SETTING_KEY) {
         let was: unknown;
         try {
@@ -985,7 +999,21 @@ export async function importFromZipFile(
         const oldId = Number(row.id);
         if (!Number.isInteger(oldId)) continue;
         const tiles = avatarTiles.get(oldId) ?? [];
-        const result = await avatarSetsService.createFromImages(targetUserId, row.name, tiles);
+        let result = await avatarSetsService.createFromImages(targetUserId, row.name, tiles);
+        // An upload could be named Plain or Initial until those became the
+        // bundled sets' own names. It comes back under a name that says so
+        // rather than not at all.
+        if (
+          !result.ok &&
+          typeof row.name === 'string' &&
+          ['plain', 'initial'].includes(row.name.trim().toLowerCase())
+        ) {
+          result = await avatarSetsService.createFromImages(
+            targetUserId,
+            `${row.name.trim()} (uploaded)`,
+            tiles,
+          );
+        }
         if (result.ok) avatarSetIds.set(row.id, result.set.id);
       }
 
