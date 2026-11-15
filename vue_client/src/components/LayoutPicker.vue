@@ -25,7 +25,7 @@
       type="button"
       role="radio"
       class="look"
-      :class="[choice, { on: choice === modelValue }]"
+      :class="{ on: choice === modelValue }"
       :aria-checked="choice === modelValue"
       :disabled="disabled"
       @click="emit('update:modelValue', choice)"
@@ -114,13 +114,16 @@ function time(at: Date, key: string): string {
 </script>
 
 <style scoped>
+/* Every card the same width, whichever look it holds: equal columns, each
+   wide enough for the widest sample (the grid's time to the second, a nick
+   and a word), and as many to a row as fit. In ch, so it holds at any font
+   size; a screen too narrow for two stacks them. */
 .layout-picker {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(25ch, 1fr));
   gap: var(--space-6);
 }
 .look {
-  flex: 1 1 16ch;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -133,11 +136,6 @@ function time(at: Date, key: string): string {
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-/* The grid is the wide layout — a time to the second, a nick, then the text
-   on one line — so its card takes the larger share of the row. */
-.look.traditional {
-  flex: 1.6 1 24ch;
 }
 .look:hover:not(:disabled) {
   border-color: var(--fg-muted);
