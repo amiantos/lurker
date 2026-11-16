@@ -62,6 +62,34 @@ and `/away` + Enter sends. On a nick or a channel, Enter sends what you typed
   picks one, `/avatars delete <set>` removes an upload. The sets live in
   Settings › Appearance › Avatars.
 
+## Aliases
+
+An alias is a command of your own: a name for one or more commands, with what you
+type after it filled in.
+
+```
+/alias wii /whois $1 $1
+/alias cycle /part; /join $channel
+/alias brb /me will be right back
+```
+
+`/wii bob` then runs `/whois bob bob`.
+
+- `/alias` lists them, `/alias -wii` or `/unalias wii` removes one. They are also
+  in **Settings › Aliases**, and they follow you to every browser you sign in
+  from.
+- `;` separates commands. Write `\;` for a semicolon that is part of the text.
+- `$1` to `$9` are the words you typed, `$2-` is the second word to the end,
+  `$2-3` a span, and `$*` everything.
+- `$channel` is the buffer you ran it in, `$nick` your nick there, `$network` the
+  network. `$$` is a plain `$`.
+- If the alias names none of the typed words, they go on the end:
+  `/alias j /join`, then `/j #lurker`.
+- An alias can share a name with a built-in command, and then runs in its place.
+  Inside its own definition the name still means the built-in:
+  `/alias quit /quit gone fishing`.
+- Aliases can run other aliases.
+
 ## Reference
 
 A complete, always-current command reference is planned, generated directly from

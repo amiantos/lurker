@@ -714,6 +714,18 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_nick_notes_user_net
       ON user_nick_notes(user_id, network_id);
 
+    -- Command aliases (#276): a name the user gives to one or more commands.
+    -- Per user, not per network. name is stored lower case and without its
+    -- slash (shared/aliases.ts), so the key is the word as typed, folded.
+    CREATE TABLE IF NOT EXISTS user_aliases (
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     -- Per-(user, network, nick) relay-bot marks (#277). A marked nick is a
     -- relay / bridge bot; the client re-attributes its messages to the speaker
     -- embedded in the envelope, e.g. [Discord] <alice> hi. Row presence is the

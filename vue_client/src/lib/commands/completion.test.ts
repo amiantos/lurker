@@ -379,3 +379,55 @@ describe('options where the handler reads them', () => {
     expect(values('/e2e on #chan q')).toEqual(['quiet']);
   });
 });
+
+describe("the user's own aliases (#276)", () => {
+  const aliases = [
+    { name: 'j2', body: '/join' },
+    { name: 'jchat', body: 'dcc chat' },
+    { name: 'quit', body: '/quit gone fishing' },
+    { name: 'wii', body: '/whois $1 $1' },
+    { name: 'both', body: '/part; /join' },
+    { name: 'far', body: '/j2' },
+  ];
+  const own = (value: string, caret = value.length) => completionContext(value, caret, aliases);
+  const rows = (value: string) => candidatesFor(own(value)!, { aliases });
+
+  it('lists them with the commands, a name typed in full first', () => {
+    expect(rows('/j').map((c) => c.value)).toEqual(['/j', '/jitsi', '/j2', '/jchat']);
+    expect(rows('/j2').map((c) => c.value)).toEqual(['/j2']);
+    expect(rows('/wi')).toEqual([{ value: '/wii', detail: '→ /whois $1 $1', kind: 'command' }]);
+  });
+
+  it('lists one in place of the command it replaces', () => {
+    expect(rows('/quit')).toEqual([
+      { value: '/quit', detail: '→ /quit gone fishing', kind: 'command' },
+    ]);
+  });
+
+  it('a whole alias name sends', () => {
+    const complete = (value: string) => isComplete(own(value)!, rows(value));
+    expect(complete('/wii')).toBe(true);
+    expect(complete('/wi')).toBe(false);
+  });
+
+  it('completes the arguments of a plain rename as the command it stands for', () => {
+    expect(own('/j2 #li')).toMatchObject({ verb: 'join', kind: 'channel', query: '#li', index: 0 });
+  });
+
+  it('counts the words its body already supplies', () => {
+    // `/jchat ` is `/dcc chat `: past the keyword, at the nick.
+    expect(own('/jchat bo')).toMatchObject({ verb: 'dcc', kind: 'nick', query: 'bo', index: 1 });
+    // A reason is free text, so there is nothing to offer.
+    expect(own('/quit lat')).toBeNull();
+  });
+
+  it('offers nothing where a typed word has no one slot, or the body is another alias', () => {
+    expect(own('/wii bo')).toBeNull();
+    expect(own('/both #a')).toBeNull();
+    expect(own('/far #a')).toBeNull();
+  });
+
+  it('leaves commands alone when there are no aliases', () => {
+    expect(completionContext('/join #li', 9)).toMatchObject({ verb: 'join', kind: 'channel' });
+  });
+});

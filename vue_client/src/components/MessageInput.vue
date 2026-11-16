@@ -253,6 +253,9 @@ import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
+import { useAliasesStore } from '../stores/aliases.js';
+import { expandAlias, MAX_ALIAS_DEPTH } from '../../../shared/aliases.js';
+import { aliasListLines, parseAliasArgs } from '../lib/commands/alias.js';
 import { ensureChannelPrefix, isChannelTarget } from '../../../shared/channels.js';
 import { batchModeLines, DEFAULT_MAX_MODES } from '../../../shared/channelModes.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
@@ -345,6 +348,7 @@ const toasts = useToastsStore();
 const ignores = useIgnoresStore();
 const relayBots = useRelayBotsStore();
 const highlightRules = useHighlightRulesStore();
+const aliases = useAliasesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
 const channelModal = useChannelModal();
@@ -1597,7 +1601,7 @@ function onKeydown(e: KeyboardEvent): void {
   if (!el) return;
   if (commandsOnly && !completion) {
     const at = el.selectionStart ?? text.value.length;
-    const here = completionContext(text.value, at);
+    const here = completionContext(text.value, at, aliases.aliases);
     if (!here || !commandTabMatches(here).length) return;
   }
   e.preventDefault();
@@ -1624,7 +1628,7 @@ function onKeydown(e: KeyboardEvent): void {
 
   // A command line with its picker dismissed (Escape) still completes in place,
   // through the same candidates the picker would have listed (#533).
-  const ctx = completionContext(value, cursor);
+  const ctx = completionContext(value, cursor, aliases.aliases);
   const commandMatches = ctx ? commandTabMatches(ctx) : [];
   if (ctx && commandMatches.length) {
     completion = {
@@ -1753,6 +1757,10 @@ function liveCandidates(kind: LiveKind, query: string, preceding: readonly strin
     }
     case 'avatarSet':
       return named(useAvatarSetsStore().all.map((a) => a.name));
+    case 'alias':
+      return aliases.aliases
+        .filter((a) => a.name.startsWith(q.replace(/^[-/]+/, '')))
+        .map((a) => ({ value: (q.startsWith('-') ? '-' : '') + a.name, detail: a.body, kind }));
     default:
       return [];
   }
@@ -1771,7 +1779,7 @@ function closeSuggesters(): void {
 // line. False when there is nothing to complete there, and refreshPicker
 // carries on as it would for any other text, so `/me @al` still finds a nick.
 function refreshCommandCompletion(value: string, cursor: number): boolean {
-  const ctx = completionContext(value, cursor);
+  const ctx = completionContext(value, cursor, aliases.aliases);
   if (!ctx) {
     closeCommandPicker();
     return false;
@@ -1801,6 +1809,7 @@ function refreshCommandCompletion(value: string, cursor: number): boolean {
   } else {
     const rows = candidatesFor(ctx, {
       agnosticOnly: active.value?.networkId == null,
+      aliases: aliases.aliases,
       live: liveCandidates,
     });
     if (!rows.length) {
@@ -1843,9 +1852,11 @@ function commandTabMatches(ctx: CompletionContext): string[] {
   if (ctx.type === 'argument' && networkId != null && own === 'channel') {
     return buildChannelMatches(networkId, ctx.query);
   }
-  return candidatesFor(ctx, { agnosticOnly: networkId == null, live: liveCandidates }).map(
-    (c) => c.value,
-  );
+  return candidatesFor(ctx, {
+    agnosticOnly: networkId == null,
+    aliases: aliases.aliases,
+    live: liveCandidates,
+  }).map((c) => c.value);
 }
 
 // Whether Enter should send the line rather than accept the highlighted row,
@@ -1873,7 +1884,11 @@ function onCommandPickerSelect(row: Candidate): void {
   // The rows answer the token as it was when they were listed. The caret may
   // have moved since (Home), or the draft changed under it from another device.
   const el = inputEl.value;
-  const now = completionContext(text.value, el?.selectionStart ?? text.value.length);
+  const now = completionContext(
+    text.value,
+    el?.selectionStart ?? text.value.length,
+    aliases.aliases,
+  );
   if (!ctx || !now || now.start !== ctx.start || now.end !== ctx.end || now.query !== ctx.query) {
     closeCommandPicker();
     refreshPicker();
@@ -2895,7 +2910,9 @@ async function submit() {
     if (ack) {
       const result = await ack.promise;
       if (!result.ok) {
-        restoreFailedSend(ack.origin.networkId, ack.origin.target, ack.origin.line);
+        // `raw`, not the origin's line: for an alias (#276) that is one of the
+        // commands it expanded to, and what was typed is what comes back.
+        restoreFailedSend(ack.origin.networkId, ack.origin.target, raw);
         giveBackReply(ack.origin.reply ?? null);
       }
     }
@@ -4054,6 +4071,53 @@ function runUnhighlight(argLine: string, networkId: number | null, target: strin
   return true;
 }
 
+// /alias and /unalias (#276) manage the per-user alias list, the same one the
+// Settings pane edits. Network-agnostic, so they run from the system buffer.
+function runAlias(
+  argLine: string,
+  networkId: number | null,
+  target: string,
+  verb: 'alias' | 'unalias' = 'alias',
+): boolean {
+  const reply = (msg: string) => localInfo(networkId, target, msg);
+  if (verb === 'unalias' && !argLine) {
+    reply('usage: /unalias <name>');
+    return true;
+  }
+  const parsed = parseAliasArgs(argLine);
+  const failed = (e: any) => reply(`/${verb}: ${e?.message || 'failed'}`);
+  switch (parsed.kind) {
+    case 'error':
+      reply(`/${verb}: ${parsed.error}`);
+      break;
+    case 'list':
+      for (const line of aliasListLines(aliases.aliases, parsed.prefix)) reply(line);
+      break;
+    case 'remove':
+      if (!aliases.find(parsed.name)) {
+        reply(`/${verb}: no alias called /${parsed.name}`);
+        break;
+      }
+      aliases
+        .remove(parsed.name)
+        .then(() => reply(`removed alias /${parsed.name}`))
+        .catch(failed);
+      break;
+    case 'set':
+      aliases
+        .set(parsed.name, parsed.body)
+        .then(({ alias, created }) =>
+          reply(
+            `alias /${alias.name} ${created ? 'added' : 'changed'}` +
+              (resolveVerb(alias.name) ? `, in place of the /${alias.name} command` : ''),
+          ),
+        )
+        .catch(failed);
+      break;
+  }
+  return true;
+}
+
 // Resolve a /network ref to a configured network. Prefer a case-insensitive
 // name match (folds inconsistent server casing like the rest of the app), then
 // fall back to a numeric id so `/network connect 3` works too.
@@ -4304,9 +4368,44 @@ function runGet(argLine: string, networkId: number | null, target: string): void
   }
 }
 
-function handleCommand(line: string, networkId: number | null, target: string): boolean {
+// `running` is the aliases (#276) this line is already inside of, outermost
+// first. A name in it is not expanded again: an alias's own name in its body is
+// the command it replaced (`/alias quit /quit gone fishing`), which is also
+// what keeps one from running forever.
+function handleCommand(
+  line: string,
+  networkId: number | null,
+  target: string,
+  running: readonly string[] = [],
+): boolean {
   const [cmd, ...rest] = line.slice(1).split(/\s+/);
   const argLine = line.slice(1 + cmd.length).trim();
+  // An alias wins over a command of its name, so it is looked up first.
+  const alias = aliases.find(cmd);
+  if (alias && !running.includes(alias.name)) {
+    if (running.length >= MAX_ALIAS_DEPTH) {
+      localInfo(
+        networkId,
+        target,
+        `/${running[0]}: stopped at /${alias.name}, ${MAX_ALIAS_DEPTH} aliases deep.`,
+      );
+      return true;
+    }
+    const lines = expandAlias(alias.body, argLine, {
+      channel: networkId == null ? '' : target,
+      nick: networkId == null ? '' : networks.states[networkId]?.nick || '',
+      network:
+        networkId == null ? '' : (networks.networks.find((n) => n.id === networkId)?.name ?? ''),
+    });
+    // A command that couldn't be sent (the socket is closed) ends the run. The
+    // typed line stays in the composer only if nothing went out before it.
+    let ran = false;
+    for (const expanded of lines) {
+      if (!handleCommand(expanded, networkId, target, [...running, alias.name])) return ran;
+      ran = true;
+    }
+    return true;
+  }
   // Typed against the command table (lib/commands/registry.ts): every verb the
   // table names needs a case below, and every case needs a verb in the table,
   // or this file stops type-checking. Null is a word the table doesn't know.
@@ -4349,6 +4448,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return runIgnore(argLine, networkId, target);
     case 'unignore':
       return runUnignore(argLine, networkId, target);
+    case 'alias':
+      return runAlias(argLine, networkId, target);
+    case 'unalias':
+      return runAlias(argLine ? `-${argLine.replace(/^-/, '')}` : '', networkId, target, 'unalias');
     case 'highlight':
     case 'hilight':
       return runHighlight(argLine, networkId, target);

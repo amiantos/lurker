@@ -836,6 +836,7 @@ function resetImportedData(userId: number): void {
   const wipe = db.transaction(() => {
     db.prepare('DELETE FROM networks WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM highlight_rules WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM user_aliases WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM avatar_sets WHERE user_id = ?').run(userId);

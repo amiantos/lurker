@@ -18,6 +18,7 @@
 // offer their own (`/dcc ` is list, files, accept, …).
 
 import { isChannelTarget } from '../../../../shared/channels.js';
+import { aliasTarget, type Alias } from '../../../../shared/aliases.js';
 import {
   matchingCommands,
   specFor,
@@ -33,7 +34,7 @@ import {
 /** The kinds whose candidates are live lists the composer has to supply. */
 export type LiveKind = Extract<
   ArgKind,
-  'channel' | 'nick' | 'setting' | 'settingValue' | 'theme' | 'network' | 'avatarSet'
+  'channel' | 'nick' | 'setting' | 'settingValue' | 'theme' | 'network' | 'avatarSet' | 'alias'
 >;
 
 const LIVE: ReadonlySet<ArgKind> = new Set<LiveKind>([
@@ -44,6 +45,7 @@ const LIVE: ReadonlySet<ArgKind> = new Set<LiveKind>([
   'theme',
   'network',
   'avatarSet',
+  'alias',
 ]);
 
 /** One thing the token under the caret could be. */
@@ -70,7 +72,10 @@ export type CompletionContext =
   | {
       readonly type: 'argument';
       readonly spec: CommandSpec;
-      /** The verb as typed, lowercased: the alias when an alias was used. */
+      /**
+       * The verb as typed, lowercased: `hop` for `/hop`, not `cycle`. For one of
+       * the user's own aliases, the command it stands for.
+       */
       readonly verb: string;
       /** Which token after the verb the caret is in, counting from 0. */
       readonly index: number;
@@ -118,8 +123,16 @@ function tokenEnd(value: string, from: number, quoted: boolean): number {
 /**
  * Classify the caret. Null when the line isn't a command, is a `//` escape,
  * names an unknown verb, or the caret is in a slot with nothing to suggest.
+ *
+ * `aliases` are the user's own (#276). An alias wins over a command of its
+ * name, as it does on send, and one that is a plain rename (`/alias j2 /join`)
+ * completes its arguments as the command it stands for.
  */
-export function completionContext(value: string, caret: number): CompletionContext | null {
+export function completionContext(
+  value: string,
+  caret: number,
+  aliases: readonly Alias[] = [],
+): CompletionContext | null {
   if (caret < 0 || caret > value.length) return null;
   // The command must open the line. ` /join` is text to the channel, here as in
   // the dispatcher, irssi and the apps.
@@ -136,13 +149,21 @@ export function completionContext(value: string, caret: number): CompletionConte
   }
 
   // Past the verb. An unknown one goes raw on send, so its arguments are opaque.
-  const verb = value.slice(1, verbEnd).toLowerCase();
+  const typed = value.slice(1, verbEnd).toLowerCase();
+  const alias = aliases.find((a) => a.name === typed);
+  // One level, as WeeChat has it: the body names a command, not another alias.
+  // Its own name there is the command it replaced, so that case falls out too.
+  const target = alias ? aliasTarget(alias.body) : null;
+  if (alias && !target) return null;
+  const verb = target?.verb ?? typed;
   const spec = specFor(verb);
   if (!spec) return null;
 
   // Find the token the caret is in, or the empty slot it is poised to start.
-  const preceding: string[] = [];
-  const starts: number[] = [];
+  // The words an alias's body supplies come first; they have no place in the
+  // line, which the -1 says.
+  const preceding: string[] = [...(target?.words ?? [])];
+  const starts: number[] = preceding.map(() => -1);
   let query = '';
   let start = caret;
   let end = caret;
@@ -169,7 +190,10 @@ export function completionContext(value: string, caret: number): CompletionConte
   // spaces (a theme called "My Theme") is completed as one value: everything
   // from where it began, not just the word under the caret.
   if (first?.arg?.rest && SPANNING.has(first.arg.kind)) {
-    if (first.restFrom >= 0 && first.restFrom < starts.length) start = starts[first.restFrom];
+    if (first.restFrom >= 0 && first.restFrom < starts.length) {
+      // Begun in an alias's body: what can be replaced starts at the first typed word.
+      start = starts.slice(first.restFrom).find((at) => at >= 0) ?? start;
+    }
     query = value.slice(start, caret);
     end = value.length;
   }
@@ -371,6 +395,8 @@ export interface Candidate {
 export interface CandidateSource {
   /** The system buffer: only commands that run without a network. */
   readonly agnosticOnly?: boolean;
+  /** The user's own aliases (#276), listed with the commands. */
+  readonly aliases?: readonly Alias[];
   /**
    * The live lists. Called with what has been typed of the token; returns its
    * own matches, best first, since each list ranks its own way (recent
@@ -390,14 +416,24 @@ export function candidatesFor(
   source: CandidateSource = {},
 ): Candidate[] {
   if (context.type === 'command') {
-    return matchingCommands(context.query, { agnosticOnly: source.agnosticOnly }).map(
-      ({ spec, name }) => ({
+    const needle = context.query.toLowerCase();
+    const own = (source.aliases ?? [])
+      .filter((a) => a.name.startsWith(needle))
+      .map((a): Candidate => ({ value: `/${a.name}`, detail: `→ ${a.body}`, kind: 'command' }));
+    const taken = new Set(own.map((row) => row.value));
+    const commands = matchingCommands(context.query, { agnosticOnly: source.agnosticOnly })
+      .map(({ spec, name }): Candidate => ({
         value: `/${name}`,
         label: commandUsage(spec, name),
         detail: name === spec.names[0] ? spec.summary : `alias of /${spec.names[0]}`,
         kind: 'command',
-      }),
-    );
+      }))
+      // An alias replaces the command of its name, here as on send.
+      .filter((row) => !taken.has(row.value));
+    // A name typed in full leads, so the highlighted row is the one Enter runs.
+    const exact = own.filter((row) => row.value === `/${needle}`);
+    const rest = own.filter((row) => row.value !== `/${needle}`);
+    return [...exact, ...commands, ...rest];
   }
   const needle = context.query.toLowerCase();
   const rows: Candidate[] = [];
@@ -436,7 +472,10 @@ export function candidatesFor(
  * optional slot must not swallow the Enter that runs `/part `.
  */
 export function isComplete(context: CompletionContext, candidates: readonly Candidate[]): boolean {
-  if (context.type === 'command') return specFor(context.query) !== undefined;
+  if (context.type === 'command') {
+    const typed = `/${context.query.toLowerCase()}`;
+    return specFor(context.query) !== undefined || candidates.some((c) => c.value === typed);
+  }
   // A value that holds spaces keeps the one a pick left after it.
   const typed = context.query.trimEnd().toLowerCase();
   if (!typed) return true;
