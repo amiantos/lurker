@@ -1503,12 +1503,46 @@ describe('refused-message handler routing (#283)', () => {
     );
   });
 
-  it('says so when the list is empty, and not after one that had entries', () => {
+  it('says so when the list is empty', () => {
     const empty = topicLinesFor(
-      [':irc.example.test 368 nick #anime :End of channel ban list'],
+      [':irc.example.test 368 nick #ANIME :End of channel ban list'],
       'MODE #anime +b',
     );
-    expect(empty.said).toEqual([{ target: '#anime', text: 'No bans are set on #anime.' }]);
+    expect(empty.said).toEqual([{ target: '#anime', text: 'No bans are set on #ANIME.' }]);
+  });
+
+  it('does not call a refused list empty', () => {
+    // A non-op asking for +e gets a 482, and some servers send the end after
+    // it. That end is the user's line too; the list was refused, not empty.
+    const { said } = topicLinesFor(
+      [
+        ":irc.example.test 482 nick #anime :You're not a channel operator",
+        ':irc.example.test 349 nick #anime :End of channel exception list',
+      ],
+      'MODE #anime +e',
+    );
+    expect(said).toEqual([]);
+  });
+
+  it('says nothing at the end of a list that had entries, nor for a stray second end', () => {
+    const { said } = topicLinesFor(
+      [
+        ':irc.example.test 367 nick #anime *!*@bad.example op 1700000000',
+        ':irc.example.test 368 nick #anime :End of channel ban list',
+      ],
+      'MODE #anime +b',
+    );
+    expect(said).toHaveLength(1);
+    const again = topicLinesFor(
+      [
+        ':irc.example.test 367 nick #anime *!*@bad.example',
+        ':irc.example.test 368 nick #anime :End of channel ban list',
+        ':irc.example.test 368 nick #anime :End of channel ban list',
+      ],
+      'MODE #anime +b',
+    );
+    // The second end answers nothing the user asked: one query, one end.
+    expect(again.said).toEqual([{ target: '#anime', text: 'Ban: *!*@bad.example' }]);
   });
 
   it.each([
@@ -1568,13 +1602,11 @@ describe('refused-message handler routing (#283)', () => {
       ),
     ).toEqual({
       channel: '#c',
-      list: 'q',
       end: false,
       text: 'Quiet: *!*@loud.example · set by op · WHEN',
     });
     expect(modeListReplyLine('729', ['me', '&local', 'q', 'End'], stamp)).toEqual({
       channel: '&local',
-      list: 'q',
       end: true,
       text: 'No quiets are set on &local.',
     });

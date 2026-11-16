@@ -1556,10 +1556,6 @@ export class IrcConnection {
   restoreUnattended: boolean;
   private restoredCallbacks: Array<() => void>;
   private restoreQueue: string[];
-  // Mode lists the user asked for that have shown an entry in their channel
-  // and not ended yet (`<folded channel> <list>`), so the end of an empty one
-  // can be told apart and said (#315). Per socket.
-  private readonly modeListsShown = new Set<string>();
   private restoreTimer: ReturnType<typeof setTimeout> | null;
   // The restore step in flight: the folded channel and which of its replies
   // are still owed. Null between steps and outside a restore.
@@ -2492,21 +2488,17 @@ export class IrcConnection {
       // The same for a ban, exception, invite-exception or quiet list the
       // user asked for (`/mode #chan +b`, #315): each entry in the channel,
       // with who set it and when, where the server buffer has the raw line.
-      // An empty list is said too, since its only line is the end.
+      // An empty list is said too, since its only line is the end. Empty is
+      // the router's word for it: an end that follows a refusal (a non-op's
+      // 482, then the 349 some servers still send) is the user's line too,
+      // and is not a list with nothing in it.
       if (this.replyOwner === 'user') {
         const listReply = modeListReplyLine(rawCommand, msg?.params ?? [], (at) =>
-          wallClockStamp(at, effectiveSetting(this.network.user_id, 'system.timezone')),
+          wallClockStamp(at, cachedSetting(this.network.user_id, 'system.timezone')),
         );
         const listChannel = listReply ? this.channelState(listReply.channel) : undefined;
-        if (listReply && listChannel) {
-          const key = `${foldTargetFor(this.network.id, listChannel.name)} ${listReply.list}`;
-          if (!listReply.end) {
-            if (this.modeListsShown.size >= 50) this.modeListsShown.clear();
-            this.modeListsShown.add(key);
-            this.publishEphemeral({ type: 'motd', target: listChannel.name, text: listReply.text });
-          } else if (!this.modeListsShown.delete(key)) {
-            this.publishEphemeral({ type: 'motd', target: listChannel.name, text: listReply.text });
-          }
+        if (listReply && listChannel && (!listReply.end || this.replies.endedEmpty)) {
+          this.publishEphemeral({ type: 'motd', target: listChannel.name, text: listReply.text });
         }
       }
       // A reply to the restore step in flight is what releases the next
@@ -2921,7 +2913,6 @@ export class IrcConnection {
       this.replayBatches.clear();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
-      this.modeListsShown.clear();
       // Nobody is present now; the records stay as last known (#1246) and
       // the next registration's SYNCs refresh those still there (#607).
       this.markAllMetadataAbsent();
@@ -14812,43 +14803,42 @@ export function topicReplyLine(
 //   346 <client> <channel> <mask> [<setter> [<ts>]]            end 347
 //   728 <client> <channel> <letter> <mask> [<setter> [<ts>]]   end 729
 // The shapes modeList.ts reads for the channel modal; a 367 can come with the
-// mask alone. `list` names the list, so an end can be matched to its entries;
-// an end's text is what to say when there were none.
-const MODE_LIST_REPLIES: Record<string, { list: string; end: boolean; one: string; none: string }> =
-  {
-    '367': { list: 'b', end: false, one: 'Ban', none: '' },
-    '368': { list: 'b', end: true, one: '', none: 'No bans are set' },
-    '348': { list: 'e', end: false, one: 'Ban exception', none: '' },
-    '349': { list: 'e', end: true, one: '', none: 'No ban exceptions are set' },
-    '346': { list: 'I', end: false, one: 'Invite exception', none: '' },
-    '347': { list: 'I', end: true, one: '', none: 'No invite exceptions are set' },
-    '728': { list: 'q', end: false, one: 'Quiet', none: '' },
-    '729': { list: 'q', end: true, one: '', none: 'No quiets are set' },
-  };
+// mask alone. Which numerics are a list's is the router's table
+// (listModeNumerics): a list it cannot track has no asker, and is not said.
+// An end's text is what to say when the list had nothing in it.
+const MODE_LIST_WORDS: Record<string, { one: string; none: string }> = {
+  b: { one: 'Ban', none: 'No bans are set' },
+  e: { one: 'Ban exception', none: 'No ban exceptions are set' },
+  I: { one: 'Invite exception', none: 'No invite exceptions are set' },
+  q: { one: 'Quiet', none: 'No quiets are set' },
+};
 
 export function modeListReplyLine(
   numeric: string,
   params: WireParams,
   stamp: (at: Date) => string,
-): { channel: string; list: string; end: boolean; text: string } | null {
-  const spec = MODE_LIST_REPLIES[numeric];
-  if (!spec) return null;
-  const channel = params[1];
-  if (typeof channel !== 'string' || !isChannelTarget(channel)) return null;
-  if (spec.end) {
-    return { channel, list: spec.list, end: true, text: `${spec.none} on ${channel}.` };
+): { channel: string; end: boolean; text: string } | null {
+  for (const [letter, words] of Object.entries(MODE_LIST_WORDS)) {
+    const numerics = listModeNumerics(letter);
+    if (!numerics || (numeric !== numerics.item && numeric !== numerics.end)) continue;
+    const channel = params[1];
+    if (typeof channel !== 'string' || !isChannelTarget(channel)) return null;
+    if (numeric === numerics.end) {
+      return { channel, end: true, text: `${words.none} on ${channel}.` };
+    }
+    const at = numeric === '728' ? 3 : 2;
+    const mask = params[at];
+    if (typeof mask !== 'string' || !mask) return null;
+    const setter = params[at + 1];
+    const iso = unixSecondsToIso(params[at + 2]);
+    const parts = [
+      `${words.one}: ${mask}`,
+      typeof setter === 'string' && setter ? `set by ${setter.split('!')[0]}` : '',
+      iso ? stamp(new Date(iso)) : '',
+    ];
+    return { channel, end: false, text: parts.filter(Boolean).join(' · ') };
   }
-  const at = numeric === '728' ? 3 : 2;
-  const mask = params[at];
-  if (typeof mask !== 'string' || !mask) return null;
-  const setter = params[at + 1];
-  const iso = unixSecondsToIso(typeof params[at + 2] === 'string' ? params[at + 2] : undefined);
-  const parts = [
-    `${spec.one}: ${mask}`,
-    typeof setter === 'string' && setter ? `set by ${setter.split('!')[0]}` : '',
-    iso ? stamp(new Date(iso)) : '',
-  ];
-  return { channel, list: spec.list, end: false, text: parts.filter(Boolean).join(' · ') };
+  return null;
 }
 
 // ERR_NOSUCHNICK (401) is the failure you actually hit first — you kick or
