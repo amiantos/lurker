@@ -114,6 +114,7 @@ describe('newly-colliding rows merge (the #foo[bar] ≡ #foo{bar} fix)', () => {
         absorbedTarget: '#foo[bar]',
         draftChanged: false,
         survivorOpen: true,
+        rulesMoved: { ignore: [], highlight: false },
       },
     ]);
     // One row remains, open, and BOTH spellings resolve to it now.

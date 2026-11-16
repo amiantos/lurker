@@ -45,6 +45,7 @@ import type { ConnectionInfo, Endpoint, EngineToApp, SeqRange } from './protocol
 import { registerIdent, unregisterIdent, isIdentConfigured } from '../services/identd.js';
 import { dialThroughProxy } from '../utils/proxyDial.js';
 import { sameProxyRoute } from '../../shared/proxy.js';
+import { isChannelTarget } from '../../shared/channels.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
 
 export interface UpstreamOptions {
@@ -640,14 +641,21 @@ export class EngineUpstream extends EventEmitter {
       if (!oldName || !newName) return false;
       const key = oldName.toLowerCase();
       if (!this.channels.has(key)) return false;
-      // The server form MUST carry the reason as a third parameter — an empty
-      // string when there is none, which still parses as a third parameter —
-      // so a two-parameter line is a server handing us its REASON as the new
-      // name. Checked here and nowhere else in this file because a bogus JOIN
-      // only adds a phantom to the set, while a bogus rename DROPS the channel
-      // we are actually in. A comma too: a channel name cannot hold one, and a
-      // server that answered with a list would take the real channel out.
-      if (params.length < 3 || /[\s,]/.test(newName)) return false;
+      // Two parameters or three. The spec has the server form always carry the
+      // reason as a third (an empty string when there is none), and ergo, the
+      // one ircd that implements this, leaves it off when there is none (2.18,
+      // probed live for #858: `:op!u@h RENAME #a #b`). Requiring three took
+      // ergo's reasonless rename for no rename at all, and the next re-attach
+      // replayed the old name: the very thing this block is here to prevent.
+      // So the second parameter is the new name whatever follows it, and what
+      // keeps a stray sentence out is its shape: a channel name holds no space,
+      // and no comma either (a server that answered with a list would take the
+      // real channel out). Checked here and nowhere else in this file because
+      // a bogus JOIN only adds a phantom to the set, while a bogus rename
+      // DROPS the channel we are actually in.
+      // And it is a channel by the test the app applies to the same line
+      // (onRenameLine), so the two never disagree about where we are.
+      if (/[\s,]/.test(newName) || !isChannelTarget(newName)) return false;
       this.channels.delete(key);
       // A rename that only changes case renames the same key, so the delete
       // above and this set are the same entry — it ends up spelled the new way.

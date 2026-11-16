@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { REDACTION_CAP } from '../../shared/redaction.js';
+import { CHANNEL_RENAME_CAP } from '../../shared/channelRename.js';
 
 // What an attached bouncer client may receive, given the caps it negotiated.
 //
@@ -204,6 +205,9 @@ const CAP_GATED_COMMANDS: Record<string, string> = {
   CHGHOST: 'chghost',
   SETNAME: 'setname',
   REDACT: REDACTION_CAP,
+  // The fallback for a client without it is the bouncer's (relayChannelRename):
+  // it needs the channel's topic and members, which this filter doesn't hold.
+  RENAME: CHANNEL_RENAME_CAP,
   MARKREAD: 'draft/read-marker',
   METADATA: 'draft/metadata-2',
 };

@@ -60,7 +60,13 @@ export const PROTOCOL_MAJOR = 1;
 // this omits the field and the app says it cannot tell. The state can change
 // under a link that stays up for weeks (a listener that dies late), so the
 // engine says so again when it does: the `ident` op.
-export const PROTOCOL_MINOR = 8;
+// minor 9 (#858): the engine follows a RENAME that carries no reason. The
+// spec has the server always send a third parameter, so minor 3 required one;
+// ergo, the one ircd with the cap, sends two when no reason was given, and an
+// engine below this keeps the old name for those and replays it at the next
+// re-attach. This is the minor the app waits for before it asks for
+// draft/channel-rename at all.
+export const PROTOCOL_MINOR = 9;
 
 // What a process's ident services are doing (services/identd.ts identStatus):
 //   on      the :113 listener is bound, or the oidentd file is being written

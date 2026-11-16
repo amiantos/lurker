@@ -24,6 +24,8 @@ import db from '../db/index.js';
 import * as messagesDb from '../db/messages.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import { getBuffer } from '../db/buffers.js';
+import { CHANNEL_RENAME_CAP } from '../../shared/channelRename.js';
 import { setUserPaused } from '../db/users.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
@@ -84,7 +86,13 @@ beforeAll(async () => {
     // version to discover on an already-registered socket. One the server
     // grants, one it advertises and then refuses. (#888)
     ircd: {
-      caps: [...DEFAULT_CAPS, 'draft/channel-rename', 'draft/refused', 'draft/granted'],
+      caps: [
+        ...DEFAULT_CAPS,
+        'draft/channel-rename',
+        'draft/unasked',
+        'draft/refused',
+        'draft/granted',
+      ],
       refuse: ['draft/refused'],
     },
   });
@@ -798,10 +806,49 @@ describe('IrcConnection through the engine', () => {
     }
   });
 
+  // #858: draft/channel-rename, the whole way through. The engine has to
+  // follow the rename too, or the next app to attach is told it sits in a
+  // channel that no longer exists.
+  it('follows a channel rename, and a restarted app finds the channel under its new name', async () => {
+    const conn = ircManager.getConnection(userId, network.id)!;
+    expect(conn.state).toBe('connected');
+    // Asked for in the registration burst, not behind it: a cap taken after
+    // the 001 comes back late on every re-attach, and an attached IRC client
+    // is told the network lost it and found it again.
+    const asked = sentBy('lurk').filter(
+      (l) => l.startsWith('CAP REQ') && l.includes(CHANNEL_RENAME_CAP),
+    );
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('server-time');
+
+    conn.join('#before');
+    await until(() => conn.isChannelJoined('#before'), 5000, 'joined #before');
+    const id = getBuffer(userId, network.id, '#before')!.id;
+    // No reason, as ergo sends it: two parameters.
+    ircd.sendRaw('lurk', ':oper!o@peer.fake RENAME #before #after');
+    await until(() => conn.isChannelJoined('#after'), 5000, 'followed the rename');
+    expect(conn.isChannelJoined('#before')).toBe(false);
+    expect(getBuffer(userId, network.id, '#before')).toBeUndefined();
+    expect(getBuffer(userId, network.id, '#after')!.id).toBe(id);
+
+    // "Deploy": this app goes away and another attaches to the held socket.
+    ircManager.shutdown();
+    await until(() => engine.held().includes(engineId), 5000, 'engine holds it');
+    const next = ircManager.startNetwork(userId, network.id)!;
+    await until(() => next.state === 'connected', 8000, 'reattached');
+    await until(() => !next.catchingUp, 8000, 'live');
+    expect(next.isChannelJoined('#after')).toBe(true);
+    expect(next.isChannelJoined('#before')).toBe(false);
+    // Still one buffer, the one it always was: the replay named the channel
+    // as it is now, so nothing minted a second row for either name.
+    expect(getBuffer(userId, network.id, '#before')).toBeUndefined();
+    expect(getBuffer(userId, network.id, '#after')!.id).toBe(id);
+  }, 30000);
+
   // #888: the engine holds sockets across deploys, so a cap a new app version
   // starts asking for would otherwise wait for the user's next real reconnect.
   it('a newer app negotiates a cap on the held socket, and the engine keeps it', async () => {
-    const CAP = 'draft/channel-rename';
+    const CAP = 'draft/unasked';
     const conn = ircManager.getConnection(userId, network.id)!;
     expect(conn.state).toBe('connected');
     // Advertised all along, wanted by nobody: this socket registered without it.

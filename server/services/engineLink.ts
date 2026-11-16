@@ -92,6 +92,8 @@ let disabledReason: string | null = null;
 const PROXY_MINOR = 5;
 // Protocol minor at which `ack` learned to name lines to keep (#1286).
 const ACK_KEEP_MINOR = 7;
+// Protocol minor at which the engine follows every RENAME ergo sends (#858).
+const CHANNEL_RENAME_MINOR = 9;
 // Protocol minor at which `connect` learned to carry a client certificate (#459).
 export const CLIENT_CERT_MINOR = 2;
 
@@ -254,6 +256,14 @@ export class EngineLink extends EventEmitter {
   // before the link dropped does not describe the one that answers next.
   identStatus(): IdentStatus | null {
     return this.state === 'ready' ? this.engineIdent : null;
+  }
+
+  /** Does this engine follow a channel rename in the set it replays (#858)?
+   *  One below this keeps the old name for a RENAME sent without a reason,
+   *  which is how ergo sends it, and synthesises a JOIN for a channel that no
+   *  longer exists at the next re-attach. False until a hello has been seen. */
+  followsChannelRename(): boolean {
+    return this.engineMinor !== null && this.engineMinor >= CHANNEL_RENAME_MINOR;
   }
 
   /** Does this engine keep the lines an ack names (#1286)? One below this

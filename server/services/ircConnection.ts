@@ -17,7 +17,9 @@ import {
   replyRootFor,
   redactMessage,
 } from '../db/messages.js';
-import { renameBuffer as renameDmBuffer } from '../db/renameBuffer.js';
+import { renameBuffer } from '../db/renameBuffer.js';
+import type { RuleScopeMoves } from '../db/ruleScopeRename.js';
+import { CHANNEL_RENAME_CAP } from '../../shared/channelRename.js';
 import { refoldNetworkBuffers } from '../db/refoldBuffers.js';
 import { normalizeCasemapping } from '../db/casemapping.js';
 import {
@@ -266,7 +268,10 @@ import {
   xdccPlaceholderName,
   xdccTrigger,
 } from '../../shared/xdcc.js';
-import { getChannelConfig as getE2eChannelConfig } from '../db/e2e.js';
+import {
+  getChannelConfig as getE2eChannelConfig,
+  listChannelConfigs as listE2eChannelConfigs,
+} from '../db/e2e.js';
 import type { ChannelMode } from '../db/e2e.js';
 import { randomBytes } from 'node:crypto';
 import {
@@ -1739,6 +1744,9 @@ export class IrcConnection {
     // the channel"), which would be stored as chat, and a reaction as "x
     // sent a TAGMSG". No-op where the network doesn't offer it.
     this.client.requestCap('draft/event-playback');
+    // draft/channel-rename (#858) is NOT asked for here: whether it may be
+    // depends on the engine, which has not said hello yet when this runs. See
+    // wantChannelRenameCap.
     this.userMetadata = new Map();
     this.metadataAbsent = new Map();
     this.metadataNicks = new Map();
@@ -2344,6 +2352,17 @@ export class IrcConnection {
         }
       } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'REDACT') {
         this.onRedactFail(msg?.params ?? []);
+      } else if (rawCommand === 'RENAME') {
+        // draft/channel-rename (#858). Read raw: irc-framework doesn't model
+        // RENAME, and the bouncer's own raw listener, which runs after this
+        // one, has to find the channel under its new name already. Not a
+        // line given a second time (#1286): the buffer has moved.
+        // Nor one inside a batch: a history page that replayed an old rename
+        // would move whatever holds that name today, and that cannot be undone.
+        const batched = !!(msg?.tags as Record<string, string> | undefined)?.batch;
+        if (!this.lineKept && !batched) this.onRenameLine(msg);
+      } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'RENAME') {
+        this.onRenameFail(msg?.params ?? []);
       } else if (
         this.replyOwner === 'lurker' &&
         (rawCommand === 'BATCH' ||
@@ -4004,12 +4023,13 @@ export class IrcConnection {
             record.target !== eventChannel &&
             foldTarget(record.target) !== foldTarget(eventChannel)
           ) {
-            const adopted = renameDmBuffer(
+            const adopted = renameBuffer(
               this.network.user_id,
               this.network.id,
               record.target,
               eventChannel,
             );
+            if (adopted?.renamed) this.applyRuleScopeMoves(adopted.rulesMoved);
             if (adopted?.renamed && adopted.open) this.announceBufferRenamed(adopted);
           }
         } catch (_) {
@@ -5445,6 +5465,269 @@ export class IrcConnection {
     });
   }
 
+  // ── IRCv3 channel rename (draft/channel-rename, #858) ────────────────────
+  /** Ask for draft/channel-rename on the next negotiation, if this connection
+   *  may have it. Returns whether it is (now) wanted.
+   *
+   *  With the cap a rename arrives as one RENAME line; without it the server
+   *  PARTs us from the old name and JOINs us to the new one, which works and
+   *  splits the history in two. What decides is the engine: one below
+   *  protocol minor 9 keeps the old name in the set it replays for a RENAME
+   *  sent without a reason (ergo's form), so after the next deploy the app
+   *  would be told it sits in a channel that no longer exists. Until the
+   *  engine has said hello its minor is unknown, and the answer is no: it
+   *  is asked again when the engine starts the dial (onEnginePhase), in time
+   *  for the burst, and at each re-attach, where a CAP REQ on a socket held
+   *  since before this release picks it up (requestUnnegotiatedCaps, #888). */
+  private wantChannelRenameCap(): boolean {
+    // irc-framework copies the list to its command handler when connect() is
+    // called, and that copy is what it answers CAP LS from. A change made
+    // after that (the engine's 'dialing' phase) has to be made there too.
+    const handler = (
+      this.client as unknown as {
+        command_handler?: {
+          request_extra_caps?: string[];
+          requestExtraCaps?: (caps: string[]) => void;
+        };
+      }
+    ).command_handler;
+    const wanted = (this.client.request_extra_caps || []).includes(CHANNEL_RENAME_CAP);
+    if (engineConfigured() && !EngineLink.shared().followsChannelRename()) {
+      // Wanted through an engine that has since been replaced by an older
+      // one: the next socket must not ask.
+      if (wanted) {
+        const without = (caps: string[] | undefined) =>
+          (caps || []).filter((name) => name !== CHANNEL_RENAME_CAP);
+        (this.client as unknown as { request_extra_caps: string[] }).request_extra_caps = without(
+          this.client.request_extra_caps,
+        );
+        if (handler?.request_extra_caps) {
+          handler.request_extra_caps = without(handler.request_extra_caps);
+        }
+      }
+      return false;
+    }
+    if (wanted) return true;
+    this.client.requestCap(CHANNEL_RENAME_CAP);
+    handler?.requestExtraCaps?.([CHANNEL_RENAME_CAP]);
+    return true;
+  }
+
+  /** `:who RENAME <old> <new> [:<reason>]`: a channel we are in changed its
+   *  name and kept everything else. The buffer keeps its id and its history
+   *  and takes the new name (db/renameBuffer, the primitive a DM nick-follow
+   *  uses), the live state moves with it, and the channel gets a line saying
+   *  so.
+   *
+   *  The reason is optional on the wire both ways: the spec has the server
+   *  always send it, empty when there is none, and ergo leaves it off.
+   *
+   *  ⚠ "A channel we are in" is judged by the buffer, not only the live map.
+   *  A rename that happened while no app was attached reaches a fresh process
+   *  in the engine's backlog, AFTER the replay has joined it to the new name:
+   *  the map has never heard of the old one, the registry holds it with all
+   *  its history, and a second, empty row was just minted under the new name.
+   *  That is renameBuffer's merge, and the row with the history survives.
+   *
+   *  ⚠ Known limit, same window: if the user also holds a CLOSED buffer under
+   *  the new name (a channel of that name they once left), the replay's JOIN
+   *  is taken for a channel they left and is PARTed before this line arrives
+   *  to say otherwise (the join handler's restoring arm). The histories still
+   *  merge; the user has to join again. Knowing better would take reading
+   *  the backlog ahead of the replay. */
+  private onRenameLine(msg: { prefix?: string; nick?: string; params?: string[] } | undefined) {
+    const params = msg?.params ?? [];
+    const from = params[0] ?? '';
+    const to = params[1] ?? '';
+    // A name holds no space and no comma; anything else in that place is not
+    // a name, and acting on it would rename a real buffer to a sentence.
+    if (!isChannelTarget(from) || !isChannelTarget(to) || /[\s,]/.test(to)) return;
+    // A line the engine gives again, because a predecessor's ack was lost,
+    // was acted on then: its row is under the catch-up mark (alreadyPersisted
+    // reads the same). Acting twice is not harmless here. If the old name has
+    // been taken again since, by a channel joined after the rename, the
+    // second pass would merge that channel into this one for good.
+    const t = this.engineTransport;
+    if (
+      this.catchingUp &&
+      t?.socket &&
+      t.deliveringSeq !== null &&
+      t.deliveringSeq <= this.readCatchUpMark(t.socket)
+    ) {
+      return;
+    }
+    const reason = (params[2] ?? '').trim();
+    const live = this.channelState(from);
+    let result: ReturnType<typeof renameBuffer>;
+    try {
+      const row = getBuffer(this.network.user_id, this.network.id, from);
+      // Neither a row nor a live entry: not ours (or this very line, given
+      // again after the buffer already moved).
+      if (!row && !live) return;
+      result = row ? renameBuffer(this.network.user_id, this.network.id, from, to) : undefined;
+    } catch (e) {
+      console.warn('[rename] channel rename failed:', (e as Error)?.message || e);
+      return;
+    }
+    // Encryption is keyed by the channel's name on the wire (the e2e tables
+    // are wire contexts, db/bufferKeyedTables), so under the new name there
+    // is none until it is turned on again. Compared under the network's fold:
+    // the row is spelled the way `/e2e on` was typed, the line the way the
+    // server spells the channel.
+    // Said only when it is true of the new name: a rename that changes case
+    // alone keeps its config (the column ignores case), and a name that was
+    // encrypted before still is.
+    const encryptedAs = (name: string) => {
+      const folded = foldTargetFor(this.network.id, name);
+      return listE2eChannelConfigs(this.network.user_id, this.network.id).some(
+        (cfg) => cfg.enabled && foldTargetFor(this.network.id, cfg.channel) === folded,
+      );
+    };
+    const wasEncrypted = this.quietly(
+      () =>
+        encryptedAs(from) &&
+        !getE2eChannelConfig(this.network.user_id, this.network.id, to)?.enabled &&
+        !encryptedAs(to),
+      false,
+    );
+    this.rekeyChannel(from, to);
+    if (result?.renamed) {
+      this.applyRuleScopeMoves(result.rulesMoved);
+      // Closed everywhere: nothing for a client to rekey, and a frame would
+      // put a row back in every sidebar (see renameDmForNickChange).
+      if (result.open) this.announceBufferRenamed(result);
+      // A merge absorbed the row already under the new name, and when that
+      // row was the engine replay's it was the one clients held as joined,
+      // with the members: they drop it, and keep the old buffer they were
+      // told we had left. Say where things stand for the one that is left.
+      const merged = this.channelState(to);
+      if (result.open && result.merged && merged) {
+        this.publish({ type: 'channel-joined', target: merged.name });
+        this.publishNames(merged);
+        this.publishTopic(merged);
+        this.publishChannelModes(merged);
+      }
+    }
+    const by = msg?.nick || (msg?.prefix ?? '').split('!')[0] || 'The server';
+    this.publish({
+      type: 'motd',
+      target: to,
+      text: `${by} renamed this channel from ${from} to ${to}${reason ? ` (${reason})` : ''}`,
+    });
+    if (wasEncrypted) {
+      this.publish({
+        type: 'error',
+        target: to,
+        text: `Encryption was on for ${from} and is off for ${to}. Type /e2e on to turn it back on.`,
+      });
+    }
+  }
+
+  /** Move the live state of a channel to its new name: the membership entry
+   *  (topic, members and modes ride in it) and the maps keyed by the name.
+   *  Leaving an entry behind is how a renamed channel keeps a stale
+   *  can't-speak-here mark, or waits forever on a NAMES the old name was owed.
+   *
+   *  Not moved: what is keyed by the name as it went out on the wire and is
+   *  answered under that name (pendingJoins, pendingParts, pendingJoinKeys, a
+   *  mode-list fetch in flight). A line still waiting in the send queue for
+   *  the old name is left to go: the server refuses it, and says so. */
+  private rekeyChannel(from: string, to: string): void {
+    const fold = (name: string) => foldTargetFor(this.network.id, name);
+    const fromFolded = fold(from);
+    const toFolded = fold(to);
+    // By the name each entry holds, not by its key: the keys are a plain
+    // lowercase of the name we joined under, which on an ascii network is
+    // not the fold (`#Ärger` sits under `#ärger`). channelState's rule.
+    let oldKey: string | undefined;
+    let newTaken = false;
+    for (const [key, entry] of this.channels) {
+      const folded = fold(entry.name);
+      if (folded === fromFolded) oldKey = key;
+      else if (folded === toFolded) newTaken = true;
+    }
+    const ch = oldKey === undefined ? undefined : this.channels.get(oldKey);
+    // An entry already under the new name means the engine's replay got here
+    // first (see onRenameLine) and every live entry is one the engine says we
+    // are in NOW. Then an entry under the old name is not this channel: it is
+    // another, renamed to that name later in the same backlog, and it stays.
+    if (ch && oldKey !== undefined && !newTaken) {
+      this.channels.delete(oldKey);
+      ch.name = to;
+      this.channels.set(to.toLowerCase(), ch);
+      this.joinedFoldedCache = null;
+    }
+    // A restore step still queued for it asks under the name it has now.
+    this.restoreQueue = this.restoreQueue.map((name) => (fold(name) === fromFolded ? to : name));
+    const moveIn = (set: Set<string>, a: string, b: string) => {
+      if (a !== b && set.delete(a)) set.add(b);
+    };
+    const moveKey = <V>(map: Map<string, V>, a: string, b: string) => {
+      const value = map.get(a);
+      if (a === b || value === undefined) return;
+      map.delete(a);
+      map.set(b, value);
+    };
+    const fromLower = from.toLowerCase();
+    const toLower = to.toLowerCase();
+    moveIn(this.unsendableTargets, fromLower, toLower);
+    moveKey(this.lastUserSendAt, fromLower, toLower);
+    moveKey(this.e2eHintAt, fromLower, toLower);
+    moveKey(this.restoreQuiet, fromLower, toLower);
+    moveIn(this.namesHeard, fromFolded, toFolded);
+    moveKey(this.pendingBackfill, fromFolded, toFolded);
+    // A typing notification in flight is dropped, not moved: its record and
+    // its timers hold the old name, and a `done` addressed there goes nowhere.
+    // The channel stops showing us typing when its own timeout runs out.
+    const typing = this.typingOut.get(fromFolded);
+    if (typing) {
+      if (typing.gapTimer) clearTimeout(typing.gapTimer);
+      if (typing.forgetTimer) clearTimeout(typing.forgetTimer);
+      this.typingOut.delete(fromFolded);
+    }
+  }
+
+  /** Rule scopes followed a buffer to its new name (#719): drop the compiled
+   *  sets that held the old one, and tell the user's clients their lists
+   *  changed. Highlight rules announce themselves on invalidate; the ignore
+   *  lists ride an event to wsHub, which owns that frame. */
+  private applyRuleScopeMoves(moves: RuleScopeMoves): void {
+    for (const networkId of moves.ignore) {
+      ignoreRulesService.invalidate(this.network.user_id, networkId);
+    }
+    if (moves.highlight) highlightRulesService.invalidate(this.network.user_id);
+    if (moves.ignore.length > 0) {
+      this.publishEphemeral({
+        type: 'ignore-lists-moved',
+        target: this.serverTarget(),
+        scopes: moves.ignore,
+      });
+    }
+  }
+
+  /** `FAIL RENAME <code> [<old> <new>] :<text>`: the server refused a rename
+   *  we asked for. Said in the channel it was about when we are in it, the way
+   *  a refused kick is (#434), and in the server buffer otherwise (a
+   *  `/rename #other #new` from elsewhere, a FAIL that names no channel):
+   *  only numerics are printed there on their own, so it would show nowhere. */
+  private onRenameFail(params: string[]): void {
+    if (!this.replyForUser()) return;
+    const code = params[1] ?? '';
+    const text = params.length > 2 ? params[params.length - 1] : '';
+    const named = params.length > 3 ? params[2] : '';
+    const to = params.length > 4 ? params[3] : '';
+    const why = text ? (code ? `${text} (${code})` : text) : code || 'the server refused';
+    const channel = named ? this.channelState(named) : undefined;
+    this.publish({
+      type: 'error',
+      target: channel ? channel.name : this.serverTarget(),
+      text: channel
+        ? `Couldn't rename this channel${to ? ` to ${to}` : ''}: ${why}`
+        : `Couldn't rename ${named || 'the channel'}${to ? ` to ${to}` : ''}: ${why}`,
+      raw: { command: 'FAIL', params },
+    });
+  }
+
   serverTarget(): string {
     return `:server:${this.network.id}`;
   }
@@ -6616,6 +6899,7 @@ export class IrcConnection {
           ` (refold ${Date.now() - startedAt}ms)`,
       );
       for (const m of merges) {
+        this.applyRuleScopeMoves(m.rulesMoved);
         // A closed survivor (both twins were closed) is never announced:
         // clients hold no state for closed buffers, so there is nothing to
         // correct — and a merged frame would make them materialize a sidebar
@@ -6705,11 +6989,11 @@ export class IrcConnection {
     userhost: string | null,
     time: unknown,
   ): void {
-    let result: ReturnType<typeof renameDmBuffer>;
+    let result: ReturnType<typeof renameBuffer>;
     try {
       const row = getBuffer(this.network.user_id, this.network.id, oldNick);
       if (!row || row.kind !== 'dm') return;
-      result = renameDmBuffer(this.network.user_id, this.network.id, oldNick, newNick);
+      result = renameBuffer(this.network.user_id, this.network.id, oldNick, newNick);
     } catch (e) {
       console.warn('[nick] DM rename failed:', (e as Error)?.message || e);
       return;
@@ -6754,6 +7038,9 @@ export class IrcConnection {
       this.untrackDmPeer(oldNick);
       this.trackDmPeer(newNick);
     }
+    // Before the announcement: wsHub re-serves the DM's counts on it, and a
+    // mute that followed the buffer has to be in the compiled set by then.
+    this.applyRuleScopeMoves(result.rulesMoved);
     // A closed DM renames silently: clients hold no state for closed buffers,
     // so there is nothing to rekey — and a MERGED frame for one would make
     // them materialize a sidebar row for a conversation closed everywhere.
@@ -7619,6 +7906,7 @@ export class IrcConnection {
     // In engine mode the notice waits for the engine to say it is dialing — a
     // CONNECT it answers with ATTACH connects nothing (see onEnginePhase).
     if (!engineConfigured()) this.announceConnecting();
+    this.wantChannelRenameCap();
     this.resetRestoreState();
     this.client.connect({
       host: this.network.host,
@@ -7860,6 +8148,14 @@ export class IrcConnection {
   private onEnginePhase(phase: EnginePhase, info: EnginePhaseInfo): void {
     switch (phase) {
       case 'dialing':
+        // The engine is opening a socket, so it has said hello and its minor
+        // is known, which connect() could not count on. Still ahead of the
+        // server's CAP LS, which is when irc-framework reads the list, so the
+        // cap is asked for in the registration burst and is in every replay
+        // of it. Asked for after registration instead, it would come back
+        // only behind the replayed 001 on each re-attach, and an attached IRC
+        // client would be told the network lost it and found it again.
+        this.wantChannelRenameCap();
         this.resetRestoreState();
         // A fresh socket: no stored seq is about it.
         this.pruneCatchUpMarks(null);
@@ -7934,6 +8230,7 @@ export class IrcConnection {
         // made while the link was down, or while no process was attached, and
         // nothing here knows what it was last told. The 305/306 is Lurker's.
         this.sendAwayState();
+        this.wantChannelRenameCap();
         this.requestUnnegotiatedCaps();
         // The held socket kept its metadata subscriptions, so the SUB the
         // replayed 001 drew adds nothing and ergo answers it with no 774

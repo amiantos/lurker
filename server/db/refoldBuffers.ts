@@ -6,6 +6,7 @@ import { foldTargetWith } from './casemapping.js';
 import type { Casemapping } from './casemapping.js';
 import { absorbBufferRow } from './renameBuffer.js';
 import { invalidateCasemappingCache } from './buffers.js';
+import { moveRuleScopes, type RuleScopeMoves } from './ruleScopeRename.js';
 
 // Re-fold one network's buffer registry under a newly-declared CASEMAPPING
 // (#707). Runs when the capture path (ircConnection's raw-005 token scan)
@@ -42,6 +43,9 @@ export interface RefoldMerge {
    *  group) must NOT be announced, or clients materialize a sidebar row for
    *  a conversation closed everywhere. */
   survivorOpen: boolean;
+  /** Rule lists whose scopes moved from the absorbed spelling to the
+   *  survivor's (#719); the caller invalidates and announces them. */
+  rulesMoved: RuleScopeMoves;
 }
 
 interface Row {
@@ -102,6 +106,15 @@ const work = db.transaction(
           // have just written, so later absorbs in this group pass the
           // already-open survivor state instead of re-flipping it.
           if (absorbed.state === 'open') survivor.state = 'open';
+          // A mute on the spelling that goes away would stop matching: the
+          // matcher compares text, and `#foo[bar]` is not `#foo{bar}` to it.
+          const rulesMoved = moveRuleScopes(
+            userId,
+            networkId,
+            absorbed.target,
+            survivor.target,
+            (name) => foldTargetWith(mapping, name),
+          );
           merges.push({
             survivorId: survivor.id,
             survivorTarget: survivor.target,
@@ -109,6 +122,7 @@ const work = db.transaction(
             absorbedTarget: absorbed.target,
             draftChanged,
             survivorOpen: survivor.state === 'open',
+            rulesMoved,
           });
         }
       }

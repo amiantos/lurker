@@ -191,6 +191,7 @@ import { parseDccCommand } from '../lib/commands/dcc.js';
 import { parseXdccCommand } from '../lib/commands/xdcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
+import { parseRename } from '../lib/commands/rename.js';
 import {
   ownMetadataRefusal,
   parseAvatarCommand,
@@ -4973,6 +4974,19 @@ function handleCommand(
         { type: 'raw', networkId, line: `KICK ${channel} ${nick}${trailer}` },
         line,
       );
+    }
+    case 'rename': {
+      // /rename <#newname> [reason]          (in a channel buffer)
+      // /rename <#chan> <#newname> [reason]  (anywhere)
+      // IRCv3 draft/channel-rename (#858). The server's answer does the rest:
+      // a RENAME moves the buffer for everyone in it, a refusal is said in
+      // the channel.
+      const parsed = parseRename(rest, target, (name) => !!buffers.findByTarget(networkId, name));
+      if ('error' in parsed) {
+        localInfo(networkId, target, parsed.error);
+        return true;
+      }
+      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
     }
     case 'invite': {
       // /invite <nick>             (in a channel buffer → invite to it)

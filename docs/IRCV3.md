@@ -226,6 +226,32 @@ from your server, not hidden.
   `server/db/messages.ts` (`redactMessage`), `server/services/bouncer.ts`
   (`handleClientRedact`)
 
+### A renamed channel stays the same channel
+
+When an op renames a channel on a network that supports it, the buffer keeps its
+place, its history, its pin and its mute, and takes the new name; a line in the
+channel says who renamed it and why. Without this the network parts you from the old
+name and joins you to the new one, and your history is split between two buffers.
+An op can do it from Lurker with `/rename #newname [reason]`.
+
+- **`draft/channel-rename`**: Lurker asks for it and follows every `RENAME` for a
+  channel it is in. The reason is optional on the wire both ways (the spec has the
+  server always send one; ergo leaves it off when there is none). If you already
+  hold a buffer under the new name, a channel you were once in, the two become one.
+  Rules scoped to the old name follow it: a mute, and any highlight or ignore rule
+  that names the channel. A pattern that only matched it (`#old*`) is left as you
+  wrote it, and a rule that also covers other networks keeps the old name and gains
+  the new one. A refusal (`FAIL RENAME …`) is said in the channel.
+  End-to-end encryption does not follow: it is keyed by the channel's name, so it is
+  off under the new one until you turn it on again, and Lurker says so in the channel.
+  Attached IRC clients that negotiate the cap get the `RENAME`; one that doesn't gets
+  the spec's fallback, a `PART` of the old name and a `JOIN` of the new with its topic
+  and names. With the IRC engine, the cap is asked for only once the engine is on
+  protocol 1.9, which follows these renames across an app restart.
+  <br>`server/services/ircConnection.ts` (`onRenameLine`, `wantChannelRenameCap`),
+  `server/db/renameBuffer.ts`, `server/db/ruleScopeRename.ts`,
+  `server/services/bouncer.ts` (`relayChannelRename`)
+
 ### You can see when someone is typing
 
 Typing indicators in channels and DMs, both directions — Lurker sends yours and
@@ -308,6 +334,7 @@ we advertise only what we actually implement.
 | Network list delivered as one grouped burst                                                                  | `batch`                                                       |
 | Attach a file in your client and get a link to send, when `PUBLIC_BASE_URL` is set                           | `soju.im/FILEHOST`                                            |
 | People's away, account and host changes, when your network sends them                                        | `away-notify`, `account-notify`, `chghost`                    |
+| A renamed channel as one `RENAME`, when your network sends them and your client asks                         | `draft/channel-rename`                                        |
 | The same for people you `MONITOR` but share no channel with                                                  | `extended-monitor`, `draft/extended-monitor`                  |
 | Accounts on JOINs and on each message, when your network sends them                                          | `extended-join`, `account-tag`                                |
 | Display names and avatars, when your network keeps them — SUB to the keys you show                           | `draft/metadata-2`                                            |
@@ -455,6 +482,7 @@ attaching to Lurker.
 | `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
 | `+reply`, `+draft/reply`                |   ✅   |    —    |
 | `draft/message-redaction`               |   ✅   |   ✅    |
+| `draft/channel-rename`                  |   ✅   |   ✅    |
 | `draft/chathistory`                     |   ✅   |   ✅    |
 | `draft/event-playback`                  |   ✅   |   ✅    |
 | `draft/read-marker`                     |   —    |   ✅    |
@@ -506,7 +534,6 @@ you, not by spec number.
 | `draft/account-registration` | Register a network account during onboarding, instead of sending someone off to `/msg NickServ`.                                                                                 |
 | `draft/pre-away`             | Set away state before registration finishes, closing the brief window on reconnect where you appear present but aren't.                                                          |
 | `utf8only`                   | Skip encoding guesswork on networks that guarantee UTF-8.                                                                                                                        |
-| `draft/channel-rename`       | Follow a channel rename without a part/join cycle.                                                                                                                               |
 | `sts`                        | Automatic upgrade to TLS and downgrade protection. Lower priority than it sounds — Lurker connects with TLS directly — but it would harden a misconfigured plaintext connection. |
 
 ### Low value or not applicable

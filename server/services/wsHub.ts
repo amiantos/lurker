@@ -2585,7 +2585,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       });
       return;
     }
-    // A buffer changed names (a DM peer's NICK; later, channel RENAME). This
+    // Ignore rules whose channel scope followed a renamed or merged buffer
+    // (#719): the lists changed with no client having asked, so every tab
+    // gets the touched buckets again. Not a message; it stops here.
+    if ((event as { type?: string }).type === 'ignore-lists-moved') {
+      const scopes = (event as unknown as { scopes?: (number | null)[] }).scopes ?? [];
+      for (const scope of scopes) fanOutIgnoreList(eventUserId, scope);
+      return;
+    }
+    // A buffer changed names (a DM peer's NICK, a channel's RENAME). This
     // is a lifecycle frame, not a message — intercept before decoration so it
     // can't leak to clients as a kind:'irc' row. Fanned to EVERY socket
     // including any originator: it describes a fact, not an instruction

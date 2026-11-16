@@ -5,12 +5,16 @@ import db from './index.js';
 import { foldTargetFor } from './buffers.js';
 import { resolveBuffer } from './bufferResolve.js';
 import { renumberFavorites } from './favoriteBuffers.js';
+import { moveRuleScopes, NO_RULE_SCOPE_MOVES, type RuleScopeMoves } from './ruleScopeRename.js';
 
-// Rename a buffer — the primitive behind DM nick-follows (and, when the
-// draft/channel-rename CAP lands, channel renames). Under the normalized
+// Rename a buffer — the primitive behind DM nick-follows and channel renames
+// (draft/channel-rename, #858). Under the normalized
 // schema this is what the closed PR #706 spent 650 lines approximating with
 // name-keyed rewrites: identity is buffers.id, so the plain case is ONE
-// UPDATE on one row, and nothing else in the database mentions the name.
+// UPDATE on one row. The one other place that mentions the name is a rule
+// scoped to it (a mute, a highlight or ignore rule's channel list): those are
+// patterns that cannot hold an id, and follow in the same transaction (#719,
+// ruleScopeRename.ts).
 //
 // THE invariant (CLIENT_PROTOCOL §5.2): a buffer's id never changes, renames
 // included. A merge therefore deletes the OTHER row — the SOURCE survives.
@@ -46,6 +50,10 @@ export interface RenameResult {
    *  state for closed buffers, and a merged frame for one makes them
    *  materialize a sidebar row for a conversation closed everywhere. */
   open: boolean;
+  /** Rule lists whose scopes followed the buffer to its new name (#719):
+   *  mutes, and highlight or ignore rules scoped to the old one. The caller
+   *  invalidates their compiled sets and announces them. */
+  rulesMoved: RuleScopeMoves;
 }
 
 const setNameStmt = db.prepare(`UPDATE buffers SET target = ?, target_folded = ? WHERE id = ?`);
@@ -200,6 +208,7 @@ const work = db.transaction(
       merged: false,
       draftChanged: false,
       open: src.state === 'open',
+      rulesMoved: NO_RULE_SCOPE_MOVES,
     };
     // Sentinels never rename; a rename onto a sentinel name is nonsense.
     if (src.target.startsWith(':') || to.startsWith(':')) return noop;
@@ -218,9 +227,22 @@ const work = db.transaction(
         merged: false,
         draftChanged: false,
         open: src.state === 'open',
+        // The same identity under the fold is not always the same text: on an
+        // rfc1459 network `#chat{dev}` and `#chat[dev]` are one channel, and
+        // a rule scope is matched as text, without regard to ASCII case only.
+        // A change of case alone moves nothing (moveScopeEntry).
+        rulesMoved: moveRuleScopes(userId, networkId, src.target, to, (name) =>
+          foldTargetFor(networkId, name),
+        ),
       };
     }
 
+    // The name itself changes from here on, so whatever was scoped to the old
+    // one follows it (#719). On a merge the destination's own rules already
+    // name `to`, and stay.
+    const rulesMoved = moveRuleScopes(userId, networkId, src.target, to, (name) =>
+      foldTargetFor(networkId, name),
+    );
     const dest = resolveBuffer(userId, networkId, to);
     if (!dest) {
       setNameStmt.run(to, toFolded, src.id);
@@ -232,6 +254,7 @@ const work = db.transaction(
         merged: false,
         draftChanged: false,
         open: src.state === 'open',
+        rulesMoved,
       };
     }
 
@@ -248,6 +271,7 @@ const work = db.transaction(
       draftChanged,
       // Visibility union already applied by absorbBufferRow.
       open: src.state === 'open' || dest.state === 'open',
+      rulesMoved,
     };
   },
 );

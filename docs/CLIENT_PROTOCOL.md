@@ -909,7 +909,7 @@ a v1 client.
 | `send-result`                                                                                                                    | `clientId, ok, error?`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Ack for `send`/`action`/`notice`                                                                                                                                                                                                                                  |
 | `buffer-opened` / `buffer-closed` / `buffer-reopened`                                                                            | `networkId, target, bufferId?` (absent only on the ack for a channel still being JOINed — no row yet)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Buffer lifecycle (§9.1). `buffer-opened` is an ack to the socket that asked **and** a fan-out to the user's other devices — only focus on your own (§4.3)                                                                                                         |
 | `buffer-cleared`                                                                                                                 | `networkId, target, bufferId, clearedBeforeId, clearedAt`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `/clear` marker                                                                                                                                                                                                                                                   |
-| `buffer-renamed`                                                                                                                 | `networkId, from, to, bufferId, merged, mergedFromBufferId?` — see §9.7                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | A buffer kept its id across a name event: DM follows a peer's NICK, or a CASEMAPPING refold merged case-twins (any kind)                                                                                                                                          |
+| `buffer-renamed`                                                                                                                 | `networkId, from, to, bufferId, merged, mergedFromBufferId?` — see §9.7                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | A buffer kept its id across a name event: DM follows a peer's NICK, a channel was renamed, or a CASEMAPPING refold merged case-twins                                                                                                                              |
 | `pins-changed`                                                                                                                   | `networkId, pinned[], pinnedIds[]` (parallel-indexed: `pinnedIds[i]` is `pinned[i]`'s buffer)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Authoritative pin order                                                                                                                                                                                                                                           |
 | `favorites-changed`                                                                                                              | `favorites:[{networkId, target, bufferId}]` — the FULL global order; replace wholesale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Connect burst + authoritative favorites order                                                                                                                                                                                                                     |
 | `threads-changed`                                                                                                                | `threads:[{networkId, target, bufferId, rootMsgid, root, unread, highlighted, lastReplyId, lastReplyTime}]` — the FULL list of reply threads the user follows (posted in, was highlighted in, or started), each with its own unread count; replace wholesale. `root` is the first line excerpted like a reply's `parent`, or `null` when it's gone                                                                                                                                                                                                                                                                                                            | Connect burst, every reply in a followed thread, `thread-read`                                                                                                                                                                                                    |
@@ -1458,13 +1458,14 @@ nicklist patch arrives separately as `member-update`).
 
 ### 9.7 Renames keep a buffer's identity
 
-**Two producers emit this frame today**, for buffers of any kind: a DM
-following its peer's `/nick` (weechat/irssi parity), and the CASEMAPPING
-refold (#707) merging rows — channels included — that fold together under a
-newly-declared mapping. Channel renames (`draft/channel-rename`) will reuse it
-too. ⚠ The producers orient `from`/`to` differently on a merge: the DM path
-absorbs the row that already held `to`, the refold path absorbs the `from` row
-(the survivor keeps its own name, so `from ≠ to` with no actual rename).
+**Three producers emit this frame**, for buffers of any kind: a DM
+following its peer's `/nick` (weechat/irssi parity), a channel the network
+renamed (`draft/channel-rename`, #858), and the CASEMAPPING refold (#707)
+merging rows — channels included — that fold together under a newly-declared
+mapping. ⚠ The producers orient `from`/`to` differently on a merge: the DM and
+channel paths absorb the row that already held `to`, the refold path absorbs
+the `from` row (the survivor keeps its own name, so `from ≠ to` with no actual
+rename).
 Never derive which buffer died from orientation — `mergedFromBufferId` is the
 absorbed row, `bufferId` the survivor, and `to` is always the survivor's final
 name.
@@ -1507,10 +1508,27 @@ The contract, in the order a client should apply it:
 - The DM also receives an ordinary persisted `type:'nick'` row ("x is now
   known as y"), AFTER the rename, so it renders under the new name with the
   same code path channel nick rows use.
-- What deliberately does NOT follow a rename: highlight/ignore rules scoped
-  to the old name (glob patterns, possibly cross-network), and e2e crypto
-  contexts (wire-keyed; a DM context keys on the peer's host and is already
-  rename-proof).
+- A renamed channel receives an ordinary persisted `type:'motd'` row after
+  the rename ("op renamed this channel from #old to #new (reason)"), and the
+  channel's members, topic and modes are unchanged: they belong to the buffer,
+  which is the same one. No `channel-parted` or `channel-joined` is sent,
+  with one exception: when the rename was a merge (the user already held a
+  buffer under the new name, which a client may have held as the joined one),
+  `channel-joined`, `names`, `channel-topic` and `channel-modes` for the
+  surviving buffer follow the frame.
+- **Rule scopes follow the buffer** (#719). A mute is an ignore rule scoped to
+  the buffer's name, and highlight and ignore rules can be scoped to names
+  too; an entry that is the old name is rewritten to the new one server-side,
+  for a rename and for a merge alike. The changed lists arrive the way any
+  rule change does: `ignore-list-updated` for each bucket touched, ahead of
+  the `buffer-renamed` frame, and `highlight-rules-changed`. A glob that only
+  matched the old name is not rewritten, and a rule that spans other networks
+  (a global ignore rule; a highlight rule with no network, or several) keeps
+  the old name and gains the new one.
+- What deliberately does NOT follow a rename: e2e crypto contexts (wire-keyed;
+  a DM context keys on the peer's host and is already rename-proof). A renamed
+  channel that had encryption on gets a `type:'error'` row saying it is off
+  under the new name.
 
 ### 9.8 Command aliases
 
