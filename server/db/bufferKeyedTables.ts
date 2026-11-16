@@ -17,8 +17,9 @@
 //   - 'pending'      — still name-keyed; scheduled for the satellite rebuild.
 //   - 'glob-list'    — a CSV of channel GLOBS that may span networks. These
 //                      are match patterns, not identities: they cannot
-//                      reference a buffer_id and deliberately do not follow
-//                      renames.
+//                      reference a buffer_id. An entry that IS a buffer's
+//                      name is rewritten when that buffer is renamed or
+//                      merged (#719, ruleScopeRename.ts); a glob is not.
 //   - 'wire-context' — keyed by an IRC-side context string that only
 //                      COINCIDES with a buffer name sometimes. The e2e tables'
 //                      `channel` is the canonical case: it also holds
@@ -30,7 +31,8 @@
 //                      — and must NEVER grow a buffer_id (the drift test
 //                      enforces it). DM contexts are already rename-proof
 //                      (host-keyed); a channel rename starting a fresh crypto
-//                      context is correct, not a bug.
+//                      context is correct, not a bug (the channel is told
+//                      encryption is off under its new name, #858).
 //
 // The companion test introspects the live schema in BOTH directions, so this
 // list cannot silently drift from reality (its predecessor did exactly that:
@@ -174,14 +176,14 @@ export const BUFFER_SCOPED_TABLES: readonly BufferScopedTable[] = [
     status: 'glob-list',
     targetColumn: 'channels',
     scope: ['user_id'],
-    note: 'CSV of channel globs, may span networks — never id-keyed',
+    note: 'CSV of channel globs, may span networks — never id-keyed; literal entries follow a rename (#719)',
   },
   {
     table: 'ignored_masks',
     status: 'glob-list',
     targetColumn: 'channels',
     scope: ['user_id', 'network_id'],
-    note: 'CSV of channel globs — never id-keyed',
+    note: 'CSV of channel globs — never id-keyed; literal entries follow a rename (#719)',
   },
 ];
 

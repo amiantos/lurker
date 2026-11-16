@@ -118,6 +118,7 @@ describe('ClientLineFilter', () => {
     ['setname', ':n!u@h SETNAME :New Name'],
     ['message-tags', '@+typing=active :n!u@h TAGMSG #c'],
     ['draft/message-redaction', ':n!u@h REDACT #c abc'],
+    ['draft/channel-rename', ':n!u@h RENAME #c #d :tidy'],
     ['draft/read-marker', ':irc.test MARKREAD #c timestamp=2026-01-01T00:00:00.000Z'],
     ['draft/metadata-2', ':irc.test METADATA me avatar * :https://example.test/a.png'],
     ['chghost', ':n!u@h CHGHOST u2 h2'],

@@ -118,6 +118,7 @@ import type { MonitorHolder } from './monitorList.js';
 import { METADATA_CAP, isValidMetadataKey } from './ircMetadata.js';
 import { reassembleMultiline, splitSay } from './messageSplit.js';
 import { IRC_LINE_BYTES, MIN_TEXT_BUDGET } from '../../shared/wireBudget.js';
+import { CHANNEL_RENAME_CAP } from '../../shared/channelRename.js';
 import { isServicesNick } from '../utils/servicesNick.js';
 import type { ReplyClient } from './replyRouter.js';
 
@@ -190,6 +191,12 @@ const PASSTHROUGH_CAPS = [
   // own REDACT takes the web app's road (handleClientRedact). Offered only
   // while the network has it, since every REDACT a client sees comes from it.
   REDACTION_CAP,
+  // draft/channel-rename (#858): a client with it gets the network's RENAME as
+  // it came; one without gets the spec's fallback, a PART of the old name and
+  // a JOIN of the new (relayChannelRename). Only while the network has it:
+  // without it the network sends Lurker that same PART and JOIN, and they
+  // relay as they are.
+  CHANNEL_RENAME_CAP,
 ];
 
 // A line that could be metadata: the command, after an optional tag and
@@ -465,6 +472,19 @@ export function rewriteNumericTarget(line: string, nick: string): string {
 // A relayed line that may be a NICK, for a look before parsing. The command is
 // case-insensitive on the wire, as every IRC command is.
 const SELF_NICK_HINT = / nick /i;
+// The same look-before-parsing for a channel rename.
+const RENAME_HINT = / rename /i;
+
+// The old name, the new one and the reason when `line` is a server's RENAME
+// (draft/channel-rename), else null. The reason is optional: the spec has the
+// server always send one, empty when there is none, and ergo leaves it off.
+export function channelRename(line: string): { from: string; to: string; reason: string } | null {
+  const msg = parseLine(line);
+  if (!msg || msg.command !== 'RENAME') return null;
+  const [from, to, reason = ''] = msg.params;
+  if (!from || !to || /[\s,]/.test(to)) return null;
+  return { from, to, reason };
+}
 
 // The new nick when `line` is a NICK from `self` — the nick a client knows
 // itself by, compared under the network's casemapping — else null.
@@ -1671,6 +1691,13 @@ class BouncerSession implements MonitorHolder, ReplyClient {
             : !this.welcomed;
         if (!news) return;
       }
+      // A channel changed its name (#858). The connection's own raw listener
+      // ran first, so the channel is already under the new name there.
+      const moved = RENAME_HINT.test(` ${out}`) ? channelRename(out) : null;
+      if (moved) {
+        this.relayChannelRename(moved, out, relayedAt);
+        return;
+      }
       this.write(out, relayedAt);
       if (renamed) this.toldNick = renamed;
       // The network's own NAMES for a channel the burst held back: nothing more
@@ -2261,28 +2288,75 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     this.welcomed = true;
     const nick = this.currentNick() || '*';
     const realname = conn.client.user?.gecos || this.network?.realname || nick;
-    for (const ch of conn.channels.values()) {
-      // Our own account as this channel knows it, from our extended JOIN or ACCOUNT.
-      const account = ch.members.get(nick.toLowerCase())?.account;
-      const accountParam = typeof account === 'string' ? account : '*';
-      this.write(`:${this.selfPrefix()} JOIN ${ch.name} ${accountParam} :${realname}`);
-      this.joinsSent.add(foldTargetFor(this.networkId, ch.name));
-      if (ch.topic) this.write(`:${SERVER_NAME} 332 ${nick} ${ch.name} :${ch.topic}`);
-      // After the topic and before NAMES, where soju sends it (forwardChannel).
-      this.sendReadMarker(ch.name);
-      // A channel whose NAMES the connection hasn't heard yet (a restore asks
-      // for them one channel at a time) gets its 353/366 once it has
-      // (onNamesHeard). An empty list now would stick: irssi takes a channel's
-      // members from the first NAMES only.
-      if (conn.membersPending(ch.name)) {
-        this.namesPending.add(foldTargetFor(this.networkId, ch.name));
-        continue;
-      }
-      this.sendNames(ch.name);
-    }
+    for (const ch of conn.channels.values()) this.sendChannelBurst(conn, ch, nick, realname);
     // The metadata the spec has a server send after a JOIN (#607), for the keys
     // this client subscribed to before it attached (a re-attach keeps them).
     this.replayMetadata();
+  }
+
+  // One channel's JOIN, topic and NAMES: a row of the attach burst, and what
+  // stands in for a RENAME for a client that cannot take one.
+  private sendChannelBurst(
+    conn: IrcConnection,
+    ch: { name: string; topic: string | null; members: Map<string, { account?: string | null }> },
+    nick: string,
+    realname: string,
+  ): void {
+    // Our own account as this channel knows it, from our extended JOIN or ACCOUNT.
+    const account = ch.members.get(nick.toLowerCase())?.account;
+    const accountParam = typeof account === 'string' ? account : '*';
+    this.write(`:${this.selfPrefix()} JOIN ${ch.name} ${accountParam} :${realname}`);
+    this.joinsSent.add(foldTargetFor(this.networkId, ch.name));
+    if (ch.topic) this.write(`:${SERVER_NAME} 332 ${nick} ${ch.name} :${ch.topic}`);
+    // After the topic and before NAMES, where soju sends it (forwardChannel).
+    this.sendReadMarker(ch.name);
+    // A channel whose NAMES the connection hasn't heard yet (a restore asks
+    // for them one channel at a time) gets its 353/366 once it has
+    // (onNamesHeard). An empty list now would stick: irssi takes a channel's
+    // members from the first NAMES only.
+    if (conn.membersPending(ch.name)) {
+      this.namesPending.add(foldTargetFor(this.networkId, ch.name));
+      return;
+    }
+    this.sendNames(ch.name);
+  }
+
+  // The network renamed a channel (draft/channel-rename, #858). A client that
+  // negotiated the cap gets the line. Any other gets what the spec has a
+  // server send a client without it, in the words ergo uses: a PART of the old
+  // name carrying the reason, then the new channel as if just joined. soju and
+  // ZNC have nothing here to follow; neither asks a network for the cap.
+  private relayChannelRename(
+    moved: { from: string; to: string; reason: string },
+    line: string,
+    relayedAt: Date,
+  ): void {
+    const conn = this.conn;
+    if (!conn) return;
+    const fromFolded = foldTargetFor(this.networkId, moved.from);
+    const toFolded = foldTargetFor(this.networkId, moved.to);
+    // A channel this client was never told it is in: nothing to rename. It
+    // learns the channel under its new name with the burst that welcomes it.
+    if (!this.joinsSent.delete(fromFolded)) return;
+    if (this.namesPending.delete(fromFolded)) this.namesPending.add(toFolded);
+    if (this.caps.has(CHANNEL_RENAME_CAP)) {
+      this.joinsSent.add(toFolded);
+      this.write(line, relayedAt);
+      return;
+    }
+    // Only a change of case: the spec has no fallback sent for it, since a
+    // client compares names without case and is already in that channel.
+    if (fromFolded === toFolded) {
+      this.joinsSent.add(toFolded);
+      return;
+    }
+    const why = moved.reason ? `Channel renamed: ${moved.reason}` : 'Channel renamed';
+    this.write(`:${this.selfPrefix()} PART ${moved.from} :${why}`, relayedAt);
+    const ch = conn.channelState(moved.to);
+    if (!ch) return;
+    const nick = this.currentNick() || '*';
+    const realname = conn.client.user?.gecos || this.network?.realname || nick;
+    this.sendChannelBurst(conn, ch, nick, realname);
   }
 
   // --- draft/metadata-2 (#607) ---------------------------------------------

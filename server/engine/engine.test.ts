@@ -407,12 +407,14 @@ describe('attach after the app is gone', () => {
     // the new way.
     ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #new #New :case only');
     await a.waitForLine(id, /RENAME #new #New/);
-    // A server spelling the line the client way — two parameters, the second
-    // its reason — must not be read as a rename to that text: the channel we
-    // are really in would be the thing that went missing. The reason can look
-    // like anything, including a bare channel name.
-    ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #New :#reason');
-    await a.waitForLine(id, /RENAME #New :#reason/);
+    // No reason, the way ergo sends it: two parameters, where the spec has a
+    // third that is empty. Still a rename (#858).
+    ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #New #Bare');
+    await a.waitForLine(id, /RENAME #New #Bare$/);
+    ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #Bare #New :');
+    await a.waitForLine(id, /RENAME #Bare #New :/);
+    // A sentence where the new name belongs is not one: a channel name holds
+    // no space, and taking this would drop the channel we are really in.
     ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #New :#New is moving to #Newer');
     await a.waitForLine(id, /RENAME #New :#New is moving/);
     // And a well-formed line whose new name is a LIST: a channel name cannot

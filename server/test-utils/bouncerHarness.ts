@@ -15,6 +15,7 @@
 
 import net from 'net';
 import { REDACTION_CAP } from '../../shared/redaction.js';
+import { CHANNEL_RENAME_CAP } from '../../shared/channelRename.js';
 import tls from 'tls';
 import { EventEmitter, once } from 'node:events';
 import ircManager from '../services/ircManager.js';
@@ -72,6 +73,7 @@ export const UPSTREAM_CAPS = [
   'extended-monitor',
   'draft/metadata-2',
   REDACTION_CAP,
+  CHANNEL_RENAME_CAP,
 ];
 
 // Minimal stand-in for IrcConnection covering exactly what bouncer.ts reads.

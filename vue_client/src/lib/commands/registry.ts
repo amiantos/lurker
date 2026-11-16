@@ -351,6 +351,9 @@ export const COMMANDS = [
   // Moderation
   cmd(['kick'], 'Moderation', 'kick from current channel', { forms: inChannel(NICK, REASON) }),
   cmd(['kickban'], 'Moderation', 'kick and ban in one step', { forms: inChannel(NICK, REASON) }),
+  cmd(['rename'], 'Moderation', 'rename the channel (where the network supports it)', {
+    forms: inChannel(arg('#newname', 'channel'), REASON),
+  }),
   cmd(['op'], 'Moderation', 'give op', { forms: inChannel(NICKS) }),
   cmd(['deop'], 'Moderation', 'take op', { forms: inChannel(NICKS) }),
   cmd(['voice'], 'Moderation', 'give voice', { forms: inChannel(NICKS) }),
