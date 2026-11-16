@@ -65,7 +65,18 @@ export interface RenameResult {
   rulesMoved: RuleScopeMoves;
 }
 
-const setNameStmt = db.prepare(`UPDATE buffers SET target = ?, target_folded = ? WHERE id = ?`);
+const setOwnNameStmt = db.prepare(`UPDATE buffers SET target = ?, target_folded = ? WHERE id = ?`);
+// A row still draining into the buffer (bufferMergeDrain.ts) is shown under
+// the buffer's name wherever a line of it is joined to its row for one (the
+// target a reaction or a REDACT on that line is sent to), so it takes the new
+// name too. Not the fold: it has none.
+const setDrainingNameStmt = db.prepare(`UPDATE buffers SET target = ? WHERE merged_into = ?`);
+const setName = {
+  run(target: string, folded: string, id: number): void {
+    setOwnNameStmt.run(target, folded, id);
+    setDrainingNameStmt.run(target, id);
+  },
+};
 const setOpenStmt = db.prepare(`UPDATE buffers SET state = 'open', closed_at = NULL WHERE id = ?`);
 const deleteRowStmt = db.prepare(`DELETE FROM buffers WHERE id = ?`);
 
@@ -247,7 +258,7 @@ const work = db.transaction(
     // casing. Announced (the display changed) but never a merge.
     if (toFolded === src.targetFolded) {
       if (src.target === to) return noop;
-      setNameStmt.run(to, toFolded, src.id);
+      setName.run(to, toFolded, src.id);
       return {
         renamed: true,
         bufferId: src.id,
@@ -274,7 +285,7 @@ const work = db.transaction(
     );
     const dest = resolveBuffer(userId, networkId, to);
     if (!dest) {
-      setNameStmt.run(to, toFolded, src.id);
+      setName.run(to, toFolded, src.id);
       return {
         renamed: true,
         bufferId: src.id,
@@ -289,7 +300,7 @@ const work = db.transaction(
 
     // Merge: the destination row is absorbed into the (surviving) source.
     const { draftChanged } = absorbBufferRow(userId, networkId, src, dest, chunkRows);
-    setNameStmt.run(to, toFolded, src.id);
+    setName.run(to, toFolded, src.id);
     return {
       renamed: true,
       bufferId: src.id,

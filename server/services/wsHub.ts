@@ -84,7 +84,8 @@ import {
   kindForTarget,
   foldTargetFor,
 } from '../db/buffers.js';
-import { resolveBuffer, requireBufferForUser } from '../db/bufferResolve.js';
+import { getBufferById, resolveBuffer, requireBufferForUser } from '../db/bufferResolve.js';
+import { onMergeDrained } from '../db/bufferMergeDrain.js';
 import { getDraftForBuffer } from '../db/drafts.js';
 import type { BufferStateRow } from '../db/buffers.js';
 import {
@@ -1422,6 +1423,23 @@ export function threadsChangedFrame(userId: number): WsPayload {
 // of replies — a bridge answering in a thread the user is in — sends it once
 // per event-loop turn, not once per line.
 const threadsChangedPending = new Set<number>();
+// A large merge's history has all arrived (#1307, db/bufferMergeDrain.ts).
+// The read-state and thread list sent with the merge were counted over the
+// part that had: serve them again, now that they are right. Not another
+// buffer-renamed: clients were told of the merge once.
+onMergeDrained((survivorId) => {
+  const buf = getBufferById(survivorId);
+  if (!buf || buf.state !== 'open') return;
+  broadcastReadState(
+    buf.userId,
+    buf.networkId,
+    buf.target,
+    getReadState(buf.userId, buf.networkId, buf.target),
+    buf.id,
+  );
+  scheduleThreadsChanged(buf.userId);
+});
+
 function scheduleThreadsChanged(userId: number): void {
   if (threadsChangedPending.has(userId)) return;
   threadsChangedPending.add(userId);

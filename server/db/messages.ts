@@ -4,6 +4,7 @@
 import db from './index.js';
 import { idInHalves } from './idInHalves.js';
 import {
+  findAcrossDrain,
   resolveBuffer,
   resolveBufferIdByNetwork,
   resolveOrMintForInsert,
@@ -535,7 +536,10 @@ export function findReplyParent(
   bufferId: number,
   msgid: string,
 ): ReplyParent | null {
-  const row = replyParentStmt.get(networkId, msgid, bufferId) as { parent: string } | undefined;
+  const row = findAcrossDrain(
+    bufferId,
+    (id) => replyParentStmt.get(networkId, msgid, id) as { parent: string } | undefined,
+  );
   return row ? parseReplyParent(row.parent) : null;
 }
 
@@ -560,9 +564,10 @@ export function replyRootFor(
   parentMsgid: string,
 ): string {
   if (bufferId === undefined) return parentMsgid;
-  const row = replyRootStmt.get(networkId, parentMsgid, bufferId) as
-    | { root: string | null }
-    | undefined;
+  const row = findAcrossDrain(
+    bufferId,
+    (id) => replyRootStmt.get(networkId, parentMsgid, id) as { root: string | null } | undefined,
+  );
   return row?.root || parentMsgid;
 }
 
@@ -586,9 +591,10 @@ export function replySendMsgid(
 ): string | null {
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return null;
-  const row = replySendStmt.get(messageId, userId, networkId, bufferId) as
-    | { msgid: string }
-    | undefined;
+  const row = findAcrossDrain(
+    bufferId,
+    (id) => replySendStmt.get(messageId, userId, networkId, id) as { msgid: string } | undefined,
+  );
   return row?.msgid ?? null;
 }
 
@@ -709,16 +715,22 @@ export interface RedactedLine {
 // second REDACT for the same line — two sessions, a replay — changes nothing
 // and publishes nothing).
 export const redactMessage = db.transaction((r: RedactInput): RedactedLine | null => {
-  const row = redactTargetStmt.get(r.networkId, r.msgid, r.bufferId) as
-    | {
-        id: number;
-        buffer_id: number;
-        nick: string | null;
-        self: number;
-        time: string;
-        text: string | null;
-      }
-    | undefined;
+  // In the buffer, or in the part of its history a merge has yet to move in
+  // (#1307): a REDACT that found nothing there would leave the words for good.
+  const row = findAcrossDrain(
+    r.bufferId,
+    (id) =>
+      redactTargetStmt.get(r.networkId, r.msgid, id) as
+        | {
+            id: number;
+            buffer_id: number;
+            nick: string | null;
+            self: number;
+            time: string;
+            text: string | null;
+          }
+        | undefined,
+  );
   if (!row) return null;
   const stamp = { time: r.time, by: r.by, reason: r.reason ?? null };
   const info = redactStmt.run({ id: row.id, ...stamp });
@@ -736,7 +748,9 @@ export const redactMessage = db.transaction((r: RedactInput): RedactedLine | nul
       }
     }
   }
-  return { id: row.id, bufferId: row.buffer_id, nick: row.nick, self: row.self === 1, mirrors };
+  // The buffer asked about, not the row's: a line still draining sits under
+  // an id clients have dropped.
+  return { id: row.id, bufferId: r.bufferId, nick: row.nick, self: row.self === 1, mirrors };
 });
 
 // The deletions among a set of the user's lines, for a client re-syncing after

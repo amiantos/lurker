@@ -34,12 +34,14 @@ import { RENDERABLE_MAX_SCAN } from './messages.js';
 // merge by fetching the survivor's latest page again, and that page is whole
 // after the first chunk (a chunk is at least the most one page read scans).
 // What is short for the seconds a drain takes is the survivor's OLDER
-// history, to everything that reads by buffer: a page far back, a search
-// inside the buffer, a count above a read pointer further back than a chunk,
-// and a redaction, reaction or reply that names a line not yet moved (it
-// finds no such line there, as for a line that has aged out). A hit on such
-// a line from a search across buffers carries the absorbed id, which clients
-// have dropped. Nothing stored is lost.
+// history, to what READS by buffer: a page far back, a search inside the
+// buffer, a count above a read pointer further back than a chunk (served
+// again when the drain is done, onMergeDrained). A hit on a line not yet
+// moved, from a search across buffers, carries the absorbed id, which
+// clients have dropped. Nothing stored is lost, and nothing is lost that
+// arrives meanwhile: a lookup a WRITE hangs on (the line a REDACT, a reaction
+// or a reply names) looks in the draining rows too
+// (bufferResolve.findAcrossDrain).
 //
 // Each chunk is "move the newest N that are left", which holds no cursor and
 // can be given again after a kill: boot calls kickMergeDrain and it goes on
@@ -138,16 +140,35 @@ const deleteDrainedStmt = db.prepare(`
      AND NOT EXISTS (SELECT 1 FROM messages WHERE buffer_id = buffers.id)
 `);
 
-const drainChunkTx = db.transaction((chunkRows: number): boolean => {
+// What a chunk did: nothing to do, a chunk moved, or the last chunk moved
+// and the row deleted (then: whose history is now whole).
+type ChunkResult = { more: false } | { more: true; drainedInto?: number };
+
+const drainChunkTx = db.transaction((chunkRows: number): ChunkResult => {
   const next = nextDrainingStmt.get() as { id: number; survivorId: number } | undefined;
-  if (!next) return false;
+  if (!next) return { more: false };
   const moved = moveMessageChunk(next.survivorId, next.id, chunkRows);
   if (moved < chunkRows && deleteDrainedStmt.run(next.id).changes > 0) {
     // The survivor's line cap now counts the whole merged history.
     markBufferDirty(next.survivorId);
+    return { more: true, drainedInto: next.survivorId };
   }
-  return true;
+  return { more: true };
 });
+
+const drainedListeners = new Set<(survivorId: number) => void>();
+
+/**
+ * Be told when a buffer's merged history has all arrived. What was computed
+ * from the buffer's rows while they were arriving (a count above a read
+ * pointer further back than the first chunk, the followed threads) can be
+ * served again then. Called after the last chunk's commit, never for a merge
+ * that fit in one. Returns the unsubscribe.
+ */
+export function onMergeDrained(cb: (survivorId: number) => void): () => void {
+  drainedListeners.add(cb);
+  return () => drainedListeners.delete(cb);
+}
 
 /**
  * Move one chunk for the oldest draining buffer, deleting its row once it is
@@ -159,7 +180,17 @@ export function drainMergeChunk(chunkRows?: number): boolean {
   // Looked for outside the transaction first: nearly every call at boot, and
   // the last call of every drain, finds nothing and takes no write lock.
   if (!nextDrainingStmt.get()) return false;
-  return drainChunkTx.immediate(mergeChunkRows(chunkRows));
+  const result = drainChunkTx.immediate(mergeChunkRows(chunkRows));
+  if (result.more && result.drainedInto !== undefined) {
+    for (const cb of drainedListeners) {
+      try {
+        cb(result.drainedInto);
+      } catch (e) {
+        console.warn('[merge] drained listener failed:', (e as Error)?.message || e);
+      }
+    }
+  }
+  return result.more;
 }
 
 /** Drain everything, without giving the loop back. For tools and tests; the

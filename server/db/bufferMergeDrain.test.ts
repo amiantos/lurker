@@ -26,6 +26,8 @@ let refoldNetworkBuffers: typeof import('./refoldBuffers.js').refoldNetworkBuffe
 let bufferReads: typeof import('./bufferReads.js');
 let pinned: typeof import('./pinnedBuffers.js');
 let drafts: typeof import('./drafts.js');
+let reactions: typeof import('./reactions.js');
+let threads: typeof import('./threadFollows.js');
 let createNetwork: typeof import('./networks.js').createNetwork;
 let userId: number;
 let networkId: number;
@@ -83,6 +85,8 @@ beforeAll(async () => {
   bufferReads = await import('./bufferReads.js');
   pinned = await import('./pinnedBuffers.js');
   drafts = await import('./drafts.js');
+  reactions = await import('./reactions.js');
+  threads = await import('./threadFollows.js');
   userId = createUser('drain-alice').id;
   networkId = createNetwork(userId, {
     name: 'libera',
@@ -405,6 +409,114 @@ describe('merges that meet a drain in progress', () => {
 
     drain.drainMergesNow(CHUNK);
     expect(idsIn(survivorId)).toEqual([...kept, ...moved]);
+  });
+});
+
+describe('a write that names a line not yet moved', () => {
+  // The oldest line of the absorbed buffer, with a msgid, a reply under it
+  // and the user following that thread: all of it older than the first chunk.
+  function mergeWithOldThread(): { survivor: number; absorbed: number; root: number; to: string } {
+    const { from, to } = pair();
+    seedMany(from, 1);
+    const stamp = (text: string, extra: object) =>
+      Number(
+        messages.insertMessage({
+          networkId,
+          target: to,
+          time: new Date().toISOString(),
+          type: 'message',
+          nick: 'peer',
+          text,
+          ...extra,
+        }).id,
+      );
+    const root = stamp('the root line', { msgid: `root-${to}` });
+    stamp('a reply', {
+      msgid: `reply-${to}`,
+      replyMsgid: `root-${to}`,
+      replyRootMsgid: `root-${to}`,
+    });
+    seedMany(to, 12);
+    const survivor = buffers.getBuffer(userId, networkId, from)!.id;
+    const absorbed = buffers.getBuffer(userId, networkId, to)!.id;
+    threads.followThread(userId, absorbed, `root-${to}`, 0);
+    renameBuffer(userId, networkId, from, to, CHUNK);
+    expect(idsIn(absorbed)).toContain(root);
+    return { survivor, absorbed, root, to };
+  }
+
+  it('a REDACT finds it, and answers with the buffer clients hold', () => {
+    const { survivor, root, to } = mergeWithOldThread();
+    const line = messages.redactMessage({
+      networkId,
+      bufferId: survivor,
+      msgid: `root-${to}`,
+      by: 'peer',
+      time: new Date().toISOString(),
+    });
+    expect(line).toMatchObject({ id: root, bufferId: survivor });
+    drain.drainMergesNow(CHUNK);
+    expect(db.prepare(`SELECT text FROM messages WHERE id = ?`).get(root)).toEqual({ text: null });
+  });
+
+  it('a reaction and a reply find their parent', () => {
+    const { survivor, root, to } = mergeWithOldThread();
+    expect(reactions.findReactionParent(networkId, survivor, `root-${to}`)).toMatchObject({
+      id: root,
+      bufferId: survivor,
+    });
+    expect(messages.findReplyParent(networkId, survivor, `root-${to}`)?.id).toBe(root);
+    // A reply to the reply roots where its parent does, not at the parent.
+    expect(messages.replyRootFor(networkId, survivor, `reply-${to}`)).toBe(`root-${to}`);
+    expect(messages.replySendMsgid(userId, networkId, to, root)).toBe(`root-${to}`);
+  });
+
+  it('a followed thread is not forgotten while its replies are on their way', () => {
+    const { survivor, to } = mergeWithOldThread();
+    // The list the merge's own follow-up builds: the thread has no reply in
+    // the survivor yet, which is how a thread retention took looks.
+    expect(threads.listFollowedThreads(userId).map((t) => t.rootMsgid)).not.toContain(`root-${to}`);
+    drain.drainMergesNow(CHUNK);
+    expect(
+      threads
+        .listFollowedThreads(userId)
+        .filter((t) => t.rootMsgid === `root-${to}`)
+        .map((t) => t.bufferId),
+    ).toEqual([survivor]);
+  });
+
+  it('a second rename mid-drain renames the draining row with the buffer', () => {
+    const { root, to } = mergeWithOldThread();
+    const again = `${to}_away`;
+    renameBuffer(userId, networkId, to, again, CHUNK);
+    // The target a REDACT of the user's on that line would be sent to.
+    expect(messages.redactSendTarget(userId, root)?.target).toBe(again);
+  });
+});
+
+describe('when the drain is done', () => {
+  it('says so once, for the survivor, and never for a merge that fit in a chunk', () => {
+    const heard: number[] = [];
+    const off = drain.onMergeDrained((id) => heard.push(id));
+    try {
+      const small = pair();
+      seedMany(small.from, 1);
+      seedMany(small.to, CHUNK);
+      renameBuffer(userId, networkId, small.from, small.to, CHUNK);
+      vi.runAllTimers();
+      expect(heard).toEqual([]);
+
+      const big = pair();
+      seedMany(big.from, 1);
+      seedMany(big.to, 12);
+      const survivor = buffers.getBuffer(userId, networkId, big.from)!.id;
+      renameBuffer(userId, networkId, big.from, big.to, CHUNK);
+      expect(heard).toEqual([]);
+      vi.runAllTimers();
+      expect(heard).toEqual([survivor]);
+    } finally {
+      off();
+    }
   });
 });
 
