@@ -2338,6 +2338,16 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // A channel this client was never told it is in: nothing to rename. It
     // learns the channel under its new name with the burst that welcomes it.
     if (!this.joinsSent.delete(fromFolded)) return;
+    const why = moved.reason ? `Channel renamed: ${moved.reason}` : 'Channel renamed';
+    // Already told it is in the new one: an engine replay joined it there
+    // before this line came through in the backlog. A RENAME onto a channel
+    // the client has open, or a second JOIN of it, would have it rebuild the
+    // window (irssi does). All that is left to say is that the old one is gone.
+    if (fromFolded !== toFolded && this.joinsSent.has(toFolded)) {
+      this.namesPending.delete(fromFolded);
+      this.write(`:${this.selfPrefix()} PART ${moved.from} :${why}`, relayedAt);
+      return;
+    }
     if (this.namesPending.delete(fromFolded)) this.namesPending.add(toFolded);
     if (this.caps.has(CHANNEL_RENAME_CAP)) {
       this.joinsSent.add(toFolded);
@@ -2350,7 +2360,6 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       this.joinsSent.add(toFolded);
       return;
     }
-    const why = moved.reason ? `Channel renamed: ${moved.reason}` : 'Channel renamed';
     this.write(`:${this.selfPrefix()} PART ${moved.from} :${why}`, relayedAt);
     const ch = conn.channelState(moved.to);
     if (!ch) return;

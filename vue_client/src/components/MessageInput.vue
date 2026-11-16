@@ -4981,7 +4981,7 @@ function handleCommand(
       // IRCv3 draft/channel-rename (#858). The server's answer does the rest:
       // a RENAME moves the buffer for everyone in it, a refusal is said in
       // the channel.
-      const parsed = parseRename(rest, target);
+      const parsed = parseRename(rest, target, (name) => !!buffers.findByTarget(networkId, name));
       if ('error' in parsed) {
         localInfo(networkId, target, parsed.error);
         return true;

@@ -222,6 +222,35 @@ describe('a channel rename through the bouncer (#858)', () => {
     expect(part.endsWith(`PART ${from} :Channel renamed`)).toBe(true);
   });
 
+  it.each([
+    ['with the cap', [CHANNEL_RENAME_CAP]],
+    ['without it', []],
+  ])(
+    'a client %s that was already joined to the new name is only parted from the old',
+    async (_what, caps) => {
+      // An engine replay joins the client to the new name, and the RENAME
+      // comes through after it, in the backlog. A RENAME onto a channel the
+      // client has open, or a second JOIN of it, would have it rebuild the
+      // window.
+      const acct = await seedAccount();
+      const { from, to } = names();
+      await join(acct, from);
+      const c = await attach(acct, caps);
+      await c.waitFor((l) => commandOf(l) === 'JOIN' && l.includes(from));
+      await join(acct, to);
+      await c.waitFor((l) => commandOf(l) === 'JOIN' && l.includes(to));
+      const at = c.lines.length;
+
+      ircd.sendRaw(acct.nick, `:op!o@peer.fake RENAME ${from} ${to}`);
+      await c.waitFor((l) => commandOf(l) === 'PART' && l.includes(from), 5000);
+      c.send(`NAMES #probe-${chanSeq}`);
+      await c.waitFor((l) => commandOf(l) === '366' && l.includes(`#probe-${chanSeq}`), 5000);
+
+      const got = since(c, at).filter((l) => ['PART', 'JOIN', 'RENAME'].includes(commandOf(l)));
+      expect(got).toEqual([expect.stringContaining(`PART ${from} :Channel renamed`)]);
+    },
+  );
+
   it('sends a client without the cap nothing for a rename that only changes case', async () => {
     const acct = await seedAccount();
     const { from } = names();

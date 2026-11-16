@@ -190,6 +190,25 @@ describe('rule scopes follow a rename (#719)', () => {
     expect(result.rulesMoved).toEqual({ ignore: [], highlight: false });
   });
 
+  it('moves a mute when the new name is the same channel under the fold, spelled otherwise', () => {
+    // rfc1459: `{` is the lowercase of `[`, so this is one channel and the
+    // rename is "casing only" to the registry. The matcher compares text.
+    const w = world();
+    refoldNetworkBuffers(w.user.id, w.here.id, 'rfc1459');
+    w.channel('#chat{dev}');
+    ignores.addRule({
+      userId: w.user.id,
+      networkId: w.here.id,
+      rule: rule({ channels: ['#chat{dev}'] }),
+    });
+
+    const result = renameBuffer(w.user.id, w.here.id, '#chat{dev}', '#chat[dev]')!;
+
+    expect(result).toMatchObject({ renamed: true, merged: false });
+    expect(w.ignoreScopes(w.here.id)).toEqual([['#chat[dev]']]);
+    expect(result.rulesMoved.ignore).toEqual([w.here.id]);
+  });
+
   it('a merge of two muted buffers leaves one mute, with the longer life', () => {
     const w = world();
     w.channel('#old');

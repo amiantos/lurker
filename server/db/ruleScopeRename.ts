@@ -218,11 +218,3 @@ export function moveRuleScopes(
     highlight: moveHighlightScopes(userId, networkId, from, to, fold),
   };
 }
-
-/** Two results as one, for a caller that makes several moves in a pass. */
-export function mergeRuleScopeMoves(a: RuleScopeMoves, b: RuleScopeMoves): RuleScopeMoves {
-  return {
-    ignore: [...new Set([...a.ignore, ...b.ignore])],
-    highlight: a.highlight || b.highlight,
-  };
-}

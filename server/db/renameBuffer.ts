@@ -227,9 +227,13 @@ const work = db.transaction(
         merged: false,
         draftChanged: false,
         open: src.state === 'open',
-        // A rule scope is matched without regard to case, so one that named
-        // the old casing names the new one already.
-        rulesMoved: NO_RULE_SCOPE_MOVES,
+        // The same identity under the fold is not always the same text: on an
+        // rfc1459 network `#chat{dev}` and `#chat[dev]` are one channel, and
+        // a rule scope is matched as text, without regard to ASCII case only.
+        // A change of case alone moves nothing (moveScopeEntry).
+        rulesMoved: moveRuleScopes(userId, networkId, src.target, to, (name) =>
+          foldTargetFor(networkId, name),
+        ),
       };
     }
 

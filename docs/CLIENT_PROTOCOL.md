@@ -1511,7 +1511,11 @@ The contract, in the order a client should apply it:
 - A renamed channel receives an ordinary persisted `type:'motd'` row after
   the rename ("op renamed this channel from #old to #new (reason)"), and the
   channel's members, topic and modes are unchanged: they belong to the buffer,
-  which is the same one. No `channel-parted` or `channel-joined` is sent.
+  which is the same one. No `channel-parted` or `channel-joined` is sent,
+  with one exception: when the rename was a merge (the user already held a
+  buffer under the new name, which a client may have held as the joined one),
+  `channel-joined`, `names`, `channel-topic` and `channel-modes` for the
+  surviving buffer follow the frame.
 - **Rule scopes follow the buffer** (#719). A mute is an ignore rule scoped to
   the buffer's name, and highlight and ignore rules can be scoped to names
   too; an entry that is the old name is rewritten to the new one server-side,

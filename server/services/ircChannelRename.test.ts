@@ -170,7 +170,7 @@ describe('an inbound RENAME (#858)', () => {
     // joins a fresh process to the NEW name (it followed the RENAME), and the
     // RENAME itself comes after, in the backlog: the live map never held the
     // old name, and the registry has it with all its history.
-    const { conn, network, read, joined, row, of } = makeConn();
+    const { conn, network, read, joined, row, of, published } = makeConn();
     ensureOpen(network.user_id, network.id, '#old', { kind: 'channel', autojoin: true });
     const id = row('#old')!.id;
     const fresh = joined('#new');
@@ -186,6 +186,51 @@ describe('an inbound RENAME (#858)', () => {
     ]);
     // The entry the replay made is the live one, and stays.
     expect(conn.channelState('#new')!.topic).toBe('asked for after the replay');
+    // Clients held the absorbed row as the joined one and drop it with the
+    // merge; the row that is left is the one they were told we had parted.
+    // So they are told again where things stand, after the rename.
+    const renamed = published.indexOf(of('buffer-renamed')[0]);
+    const rejoined = published.findIndex((e) => e.type === 'channel-joined' && e.target === '#new');
+    const names = published.findIndex((e) => e.type === 'names' && e.target === '#new');
+    expect(rejoined).toBeGreaterThan(renamed);
+    expect(names).toBeGreaterThan(renamed);
+    expect(of('channel-topic')).toEqual([
+      expect.objectContaining({ target: '#new', topic: 'asked for after the replay' }),
+    ]);
+  });
+
+  it('an ordinary rename re-announces nothing: the buffer clients hold is the live one', () => {
+    const { read, joined, of } = makeConn();
+    joined('#old');
+
+    read(':op!u@h RENAME #old #new');
+
+    expect(of('channel-joined')).toEqual([]);
+    expect(of('names')).toEqual([]);
+  });
+
+  it('does not act on a rename replayed inside a batch', () => {
+    // A history page that held an old rename would move whatever has that
+    // name today.
+    const { conn, read, joined, row, published } = makeConn();
+    joined('#old');
+
+    read('@batch=hist1 :op!u@h RENAME #old #new :long ago');
+
+    expect(row('#old')).toBeDefined();
+    expect(conn.isChannelJoined('#old')).toBe(true);
+    expect(published).toEqual([]);
+  });
+
+  it('drops a typing notification in flight rather than leave it on the old name', () => {
+    const { conn, read, joined } = makeConn();
+    joined('#old');
+    const typing = (conn as unknown as { typingOut: Map<string, unknown> }).typingOut;
+    typing.set('#old', { target: '#old', gapTimer: null, forgetTimer: null });
+
+    read(':op!u@h RENAME #old #new');
+
+    expect(typing.size).toBe(0);
   });
 
   it('given a second time, does nothing: the buffer has already moved', () => {
@@ -263,8 +308,9 @@ describe('an inbound RENAME (#858)', () => {
   it('says so when the channel was encrypted, since the new name is not', () => {
     const { network, read, joined, of } = makeConn();
     joined('#old');
+    // Spelled as it was typed at `/e2e on`, not as the server spells it.
     setChannelConfig(network.user_id, network.id, {
-      channel: '#old',
+      channel: '#OLD',
       enabled: true,
       mode: 'normal',
     } as Parameters<typeof setChannelConfig>[2]);
@@ -367,13 +413,33 @@ describe('a refused rename', () => {
     ]);
   });
 
-  it('stays out of any channel when it names one we are not in', () => {
-    const { read, joined, of } = makeConn();
+  it('is said in the server buffer when it names a channel we are not in', () => {
+    // `/rename #other #taken` from anywhere. Only numerics print there on
+    // their own, so without this the command would seem to do nothing.
+    const { network, read, joined, of } = makeConn();
     joined('#mine');
 
     read(':irc.example.test FAIL RENAME CANNOT_RENAME #other #taken :Cannot rename channel');
 
-    expect(of('error').filter((e) => e.target === '#mine')).toEqual([]);
+    expect(of('error')).toEqual([
+      expect.objectContaining({
+        target: `:server:${network.id}`,
+        text: "Couldn't rename #other to #taken: Cannot rename channel (CANNOT_RENAME)",
+      }),
+    ]);
+  });
+
+  it('and when it names no channel at all', () => {
+    const { network, read, of } = makeConn();
+
+    read(':irc.example.test FAIL RENAME NEED_MORE_PARAMS :Not enough parameters');
+
+    expect(of('error')).toEqual([
+      expect.objectContaining({
+        target: `:server:${network.id}`,
+        text: "Couldn't rename the channel: Not enough parameters (NEED_MORE_PARAMS)",
+      }),
+    ]);
   });
 });
 

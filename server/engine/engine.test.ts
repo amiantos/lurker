@@ -417,6 +417,10 @@ describe('attach after the app is gone', () => {
     // no space, and taking this would drop the channel we are really in.
     ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #New :#New is moving to #Newer');
     await a.waitForLine(id, /RENAME #New :#New is moving/);
+    // Nor is a word that is no channel: the app ignores such a line, and the
+    // two must agree about where we are.
+    ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #New oops');
+    await a.waitForLine(id, /RENAME #New oops/);
     // And a well-formed line whose new name is a LIST: a channel name cannot
     // hold a comma, and taking one would drop the channel we are in.
     ircd.sendRaw('renamer', ':oper!o@peer.fake RENAME #New #New,#Other :tidy');

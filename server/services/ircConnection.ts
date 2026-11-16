@@ -268,7 +268,10 @@ import {
   xdccPlaceholderName,
   xdccTrigger,
 } from '../../shared/xdcc.js';
-import { getChannelConfig as getE2eChannelConfig } from '../db/e2e.js';
+import {
+  getChannelConfig as getE2eChannelConfig,
+  listChannelConfigs as listE2eChannelConfigs,
+} from '../db/e2e.js';
 import type { ChannelMode } from '../db/e2e.js';
 import { randomBytes } from 'node:crypto';
 import {
@@ -2354,7 +2357,10 @@ export class IrcConnection {
         // RENAME, and the bouncer's own raw listener, which runs after this
         // one, has to find the channel under its new name already. Not a
         // line given a second time (#1286): the buffer has moved.
-        if (!this.lineKept) this.onRenameLine(msg);
+        // Nor one inside a batch: a history page that replayed an old rename
+        // would move whatever holds that name today, and that cannot be undone.
+        const batched = !!(msg?.tags as Record<string, string> | undefined)?.batch;
+        if (!this.lineKept && !batched) this.onRenameLine(msg);
       } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'RENAME') {
         this.onRenameFail(msg?.params ?? []);
       } else if (
@@ -4023,6 +4029,7 @@ export class IrcConnection {
               record.target,
               eventChannel,
             );
+            if (adopted?.renamed) this.applyRuleScopeMoves(adopted.rulesMoved);
             if (adopted?.renamed && adopted.open) this.announceBufferRenamed(adopted);
           }
         } catch (_) {
@@ -5524,9 +5531,15 @@ export class IrcConnection {
     }
     // Encryption is keyed by the channel's name on the wire (the e2e tables
     // are wire contexts, db/bufferKeyedTables), so under the new name there
-    // is none until it is turned on again. Read before anything moves.
+    // is none until it is turned on again. Compared under the network's fold:
+    // the row is spelled the way `/e2e on` was typed, the line the way the
+    // server spells the channel.
+    const fromFolded = foldTargetFor(this.network.id, from);
     const wasEncrypted = this.quietly(
-      () => !!getE2eChannelConfig(this.network.user_id, this.network.id, from)?.enabled,
+      () =>
+        listE2eChannelConfigs(this.network.user_id, this.network.id).some(
+          (cfg) => cfg.enabled && foldTargetFor(this.network.id, cfg.channel) === fromFolded,
+        ),
       false,
     );
     this.rekeyChannel(from, to);
@@ -5535,6 +5548,17 @@ export class IrcConnection {
       // Closed everywhere: nothing for a client to rekey, and a frame would
       // put a row back in every sidebar (see renameDmForNickChange).
       if (result.open) this.announceBufferRenamed(result);
+      // A merge absorbed the row already under the new name, and when that
+      // row was the engine replay's it was the one clients held as joined,
+      // with the members: they drop it, and keep the old buffer they were
+      // told we had left. Say where things stand for the one that is left.
+      const merged = this.channelState(to);
+      if (result.open && result.merged && merged) {
+        this.publish({ type: 'channel-joined', target: merged.name });
+        this.publishNames(merged);
+        this.publishTopic(merged);
+        this.publishChannelModes(merged);
+      }
     }
     const by = msg?.nick || (msg?.prefix ?? '').split('!')[0] || 'The server';
     this.publish({
@@ -5552,7 +5576,7 @@ export class IrcConnection {
   }
 
   /** Move the live state of a channel to its new name: the membership entry
-   *  (topic, members and modes ride in it) and every map keyed by the name.
+   *  (topic, members and modes ride in it) and the maps keyed by the name.
    *  Leaving an entry behind is how a renamed channel keeps a stale
    *  can't-speak-here mark, or waits forever on a NAMES the old name was owed.
    *
@@ -5599,7 +5623,15 @@ export class IrcConnection {
     moveKey(this.restoreQuiet, fromLower, toLower);
     moveIn(this.namesHeard, fromFolded, toFolded);
     moveKey(this.pendingBackfill, fromFolded, toFolded);
-    moveKey(this.typingOut, fromFolded, toFolded);
+    // A typing notification in flight is dropped, not moved: its record and
+    // its timers hold the old name, and a `done` addressed there goes nowhere.
+    // The channel stops showing us typing when its own timeout runs out.
+    const typing = this.typingOut.get(fromFolded);
+    if (typing) {
+      if (typing.gapTimer) clearTimeout(typing.gapTimer);
+      if (typing.forgetTimer) clearTimeout(typing.forgetTimer);
+      this.typingOut.delete(fromFolded);
+    }
   }
 
   /** Rule scopes followed a buffer to its new name (#719): drop the compiled
@@ -5620,21 +5652,25 @@ export class IrcConnection {
     }
   }
 
-  /** `FAIL RENAME <code> <old> <new> :<text>`: the server refused a rename we
-   *  asked for. Said in the channel it was about when we are in it, the way a
-   *  refused kick is (#434); the raw line still goes to the server buffer. */
+  /** `FAIL RENAME <code> [<old> <new>] :<text>`: the server refused a rename
+   *  we asked for. Said in the channel it was about when we are in it, the way
+   *  a refused kick is (#434), and in the server buffer otherwise (a
+   *  `/rename #other #new` from elsewhere, a FAIL that names no channel):
+   *  only numerics are printed there on their own, so it would show nowhere. */
   private onRenameFail(params: string[]): void {
     if (!this.replyForUser()) return;
-    const channel = this.channelState(params[2] ?? '');
-    if (!channel) return;
-    const to = params[3] ?? '';
-    const text = params.length > 4 ? params[params.length - 1] : '';
     const code = params[1] ?? '';
+    const text = params.length > 2 ? params[params.length - 1] : '';
+    const named = params.length > 3 ? params[2] : '';
+    const to = params.length > 4 ? params[3] : '';
     const why = text ? (code ? `${text} (${code})` : text) : code || 'the server refused';
+    const channel = named ? this.channelState(named) : undefined;
     this.publish({
       type: 'error',
-      target: channel.name,
-      text: `Couldn't rename this channel${to ? ` to ${to}` : ''}: ${why}`,
+      target: channel ? channel.name : this.serverTarget(),
+      text: channel
+        ? `Couldn't rename this channel${to ? ` to ${to}` : ''}: ${why}`
+        : `Couldn't rename ${named || 'the channel'}${to ? ` to ${to}` : ''}: ${why}`,
       raw: { command: 'FAIL', params },
     });
   }

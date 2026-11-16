@@ -45,6 +45,7 @@ import type { ConnectionInfo, Endpoint, EngineToApp, SeqRange } from './protocol
 import { registerIdent, unregisterIdent, isIdentConfigured } from '../services/identd.js';
 import { dialThroughProxy } from '../utils/proxyDial.js';
 import { sameProxyRoute } from '../../shared/proxy.js';
+import { isChannelTarget } from '../../shared/channels.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
 
 export interface UpstreamOptions {
@@ -652,7 +653,9 @@ export class EngineUpstream extends EventEmitter {
       // real channel out). Checked here and nowhere else in this file because
       // a bogus JOIN only adds a phantom to the set, while a bogus rename
       // DROPS the channel we are actually in.
-      if (/[\s,]/.test(newName)) return false;
+      // And it is a channel by the test the app applies to the same line
+      // (onRenameLine), so the two never disagree about where we are.
+      if (/[\s,]/.test(newName) || !isChannelTarget(newName)) return false;
       this.channels.delete(key);
       // A rename that only changes case renames the same key, so the delete
       // above and this set are the same entry — it ends up spelled the new way.
