@@ -5480,17 +5480,36 @@ export class IrcConnection {
    *  for the burst, and at each re-attach, where a CAP REQ on a socket held
    *  since before this release picks it up (requestUnnegotiatedCaps, #888). */
   private wantChannelRenameCap(): boolean {
-    if ((this.client.request_extra_caps || []).includes(CHANNEL_RENAME_CAP)) return true;
-    if (engineConfigured() && !EngineLink.shared().followsChannelRename()) return false;
-    this.client.requestCap(CHANNEL_RENAME_CAP);
     // irc-framework copies the list to its command handler when connect() is
-    // called, and that copy is what it answers CAP LS from. Asked for after
-    // that (the engine's 'dialing' phase), it has to go there too.
-    (
+    // called, and that copy is what it answers CAP LS from. A change made
+    // after that (the engine's 'dialing' phase) has to be made there too.
+    const handler = (
       this.client as unknown as {
-        command_handler?: { requestExtraCaps?: (caps: string[]) => void };
+        command_handler?: {
+          request_extra_caps?: string[];
+          requestExtraCaps?: (caps: string[]) => void;
+        };
       }
-    ).command_handler?.requestExtraCaps?.([CHANNEL_RENAME_CAP]);
+    ).command_handler;
+    const wanted = (this.client.request_extra_caps || []).includes(CHANNEL_RENAME_CAP);
+    if (engineConfigured() && !EngineLink.shared().followsChannelRename()) {
+      // Wanted through an engine that has since been replaced by an older
+      // one: the next socket must not ask.
+      if (wanted) {
+        const without = (caps: string[] | undefined) =>
+          (caps || []).filter((name) => name !== CHANNEL_RENAME_CAP);
+        (this.client as unknown as { request_extra_caps: string[] }).request_extra_caps = without(
+          this.client.request_extra_caps,
+        );
+        if (handler?.request_extra_caps) {
+          handler.request_extra_caps = without(handler.request_extra_caps);
+        }
+      }
+      return false;
+    }
+    if (wanted) return true;
+    this.client.requestCap(CHANNEL_RENAME_CAP);
+    handler?.requestExtraCaps?.([CHANNEL_RENAME_CAP]);
     return true;
   }
 
@@ -5508,7 +5527,14 @@ export class IrcConnection {
    *  in the engine's backlog, AFTER the replay has joined it to the new name:
    *  the map has never heard of the old one, the registry holds it with all
    *  its history, and a second, empty row was just minted under the new name.
-   *  That is renameBuffer's merge, and the row with the history survives. */
+   *  That is renameBuffer's merge, and the row with the history survives.
+   *
+   *  ⚠ Known limit, same window: if the user also holds a CLOSED buffer under
+   *  the new name (a channel of that name they once left), the replay's JOIN
+   *  is taken for a channel they left and is PARTed before this line arrives
+   *  to say otherwise (the join handler's restoring arm). The histories still
+   *  merge; the user has to join again. Knowing better would take reading
+   *  the backlog ahead of the replay. */
   private onRenameLine(msg: { prefix?: string; nick?: string; params?: string[] } | undefined) {
     const params = msg?.params ?? [];
     const from = params[0] ?? '';
@@ -5516,6 +5542,20 @@ export class IrcConnection {
     // A name holds no space and no comma; anything else in that place is not
     // a name, and acting on it would rename a real buffer to a sentence.
     if (!isChannelTarget(from) || !isChannelTarget(to) || /[\s,]/.test(to)) return;
+    // A line the engine gives again, because a predecessor's ack was lost,
+    // was acted on then: its row is under the catch-up mark (alreadyPersisted
+    // reads the same). Acting twice is not harmless here. If the old name has
+    // been taken again since, by a channel joined after the rename, the
+    // second pass would merge that channel into this one for good.
+    const t = this.engineTransport;
+    if (
+      this.catchingUp &&
+      t?.socket &&
+      t.deliveringSeq !== null &&
+      t.deliveringSeq <= this.readCatchUpMark(t.socket)
+    ) {
+      return;
+    }
     const reason = (params[2] ?? '').trim();
     const live = this.channelState(from);
     let result: ReturnType<typeof renameBuffer>;
@@ -5534,12 +5574,20 @@ export class IrcConnection {
     // is none until it is turned on again. Compared under the network's fold:
     // the row is spelled the way `/e2e on` was typed, the line the way the
     // server spells the channel.
-    const fromFolded = foldTargetFor(this.network.id, from);
+    // Said only when it is true of the new name: a rename that changes case
+    // alone keeps its config (the column ignores case), and a name that was
+    // encrypted before still is.
+    const encryptedAs = (name: string) => {
+      const folded = foldTargetFor(this.network.id, name);
+      return listE2eChannelConfigs(this.network.user_id, this.network.id).some(
+        (cfg) => cfg.enabled && foldTargetFor(this.network.id, cfg.channel) === folded,
+      );
+    };
     const wasEncrypted = this.quietly(
       () =>
-        listE2eChannelConfigs(this.network.user_id, this.network.id).some(
-          (cfg) => cfg.enabled && foldTargetFor(this.network.id, cfg.channel) === fromFolded,
-        ),
+        encryptedAs(from) &&
+        !getE2eChannelConfig(this.network.user_id, this.network.id, to)?.enabled &&
+        !encryptedAs(to),
       false,
     );
     this.rekeyChannel(from, to);
@@ -5588,24 +5636,29 @@ export class IrcConnection {
     const fold = (name: string) => foldTargetFor(this.network.id, name);
     const fromFolded = fold(from);
     const toFolded = fold(to);
+    // By the name each entry holds, not by its key: the keys are a plain
+    // lowercase of the name we joined under, which on an ascii network is
+    // not the fold (`#Ärger` sits under `#ärger`). channelState's rule.
     let oldKey: string | undefined;
-    let newKey: string | undefined;
-    for (const key of this.channels.keys()) {
-      const folded = fold(key);
+    let newTaken = false;
+    for (const [key, entry] of this.channels) {
+      const folded = fold(entry.name);
       if (folded === fromFolded) oldKey = key;
-      else if (folded === toFolded) newKey = key;
+      else if (folded === toFolded) newTaken = true;
     }
     const ch = oldKey === undefined ? undefined : this.channels.get(oldKey);
-    if (ch && oldKey !== undefined) {
+    // An entry already under the new name means the engine's replay got here
+    // first (see onRenameLine) and every live entry is one the engine says we
+    // are in NOW. Then an entry under the old name is not this channel: it is
+    // another, renamed to that name later in the same backlog, and it stays.
+    if (ch && oldKey !== undefined && !newTaken) {
       this.channels.delete(oldKey);
-      // An entry already under the new name is the engine replay's (see
-      // onRenameLine): it is the fresher of the two, and stays.
-      if (newKey === undefined) {
-        ch.name = to;
-        this.channels.set(to.toLowerCase(), ch);
-      }
+      ch.name = to;
+      this.channels.set(to.toLowerCase(), ch);
       this.joinedFoldedCache = null;
     }
+    // A restore step still queued for it asks under the name it has now.
+    this.restoreQueue = this.restoreQueue.map((name) => (fold(name) === fromFolded ? to : name));
     const moveIn = (set: Set<string>, a: string, b: string) => {
       if (a !== b && set.delete(a)) set.add(b);
     };

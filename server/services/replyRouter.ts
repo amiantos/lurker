@@ -870,6 +870,13 @@ export class ReplyRouter {
         }
         return;
       }
+      case 'RENAME':
+        // draft/channel-rename (#858): no JOIN comes for the new name, and
+        // what is cached under it is some earlier channel's. The old name's
+        // describes nothing any more.
+        this.modes.delete(this.opts.fold(params[0] ?? ''));
+        this.modes.delete(this.opts.fold(params[1] ?? ''));
+        return;
       case 'JOIN':
         if (source && this.opts.fold(source) === this.opts.fold(this.opts.ownNick())) {
           for (const channel of (params[0] ?? '').split(',')) {

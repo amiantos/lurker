@@ -271,14 +271,99 @@ describe('an inbound RENAME (#858)', () => {
     expect(published.filter((e) => e.type !== 'unknown')).toEqual([]);
   });
 
-  it('follows on all four channel prefixes', () => {
+  it.each([
+    ['#old', '#new'],
+    ['&local', '&lokal'],
+    ['+modeless', '+plain'],
+    ['!safe', '!safer'],
+    ['#old', '&new'],
+  ])('follows %s to %s: a channel is any of the four prefixes', (from, to) => {
     const { conn, read, joined, row } = makeConn();
-    joined('&local');
+    joined(from);
 
-    read(':op!u@h RENAME &local &lokal');
+    read(`:op!u@h RENAME ${from} ${to}`);
 
-    expect(row('&lokal')).toBeDefined();
-    expect(conn.isChannelJoined('&lokal')).toBe(true);
+    expect(row(to)).toBeDefined();
+    expect(conn.isChannelJoined(to)).toBe(true);
+    expect(conn.isChannelJoined(from)).toBe(false);
+  });
+
+  it('finds the live channel by its name, not by the key it is stored under', () => {
+    // The map's keys are a plain lowercase of the joined name. With no
+    // CASEMAPPING declared the fold is the same thing, so this is the case a
+    // key lookup gets right too; what it pins is that the entry moves when
+    // the server spells the old name in another case.
+    const { conn, read, joined } = makeConn();
+    joined('#Ärger');
+
+    read(':op!u@h RENAME #ärger #new');
+
+    expect(conn.isChannelJoined('#new')).toBe(true);
+    expect(conn.channelState('#new')!.name).toBe('#new');
+    expect(conn.isChannelJoined('#Ärger')).toBe(false);
+  });
+
+  it('two renames in one backlog, the second onto the first one’s old name', () => {
+    // While no app was attached: #a became #b, then #c became #a. The replay
+    // joins us to what we are in now, #a and #b; the two RENAMEs follow in
+    // the order they happened. The live #a is the channel that used to be #c
+    // and must still be there at the end.
+    const { conn, network, read, row } = makeConn();
+    ensureOpen(network.user_id, network.id, '#a', { kind: 'channel', autojoin: true });
+    ensureOpen(network.user_id, network.id, '#c', { kind: 'channel', autojoin: true });
+    const wasA = row('#a')!.id;
+    const wasC = row('#c')!.id;
+    conn.upsertChannel('#a').topic = 'the channel that was #c';
+    conn.upsertChannel('#b');
+
+    read(':op!u@h RENAME #a #b');
+    read(':op!u@h RENAME #c #a');
+
+    expect(conn.isChannelJoined('#a')).toBe(true);
+    expect(conn.isChannelJoined('#b')).toBe(true);
+    expect(conn.channelState('#a')!.topic).toBe('the channel that was #c');
+    // And each history under the name its channel has now.
+    expect(row('#b')!.id).toBe(wasA);
+    expect(row('#a')!.id).toBe(wasC);
+  });
+
+  it('a restore step still queued for the channel asks under its new name', () => {
+    const { conn, read, joined } = makeConn();
+    joined('#old');
+    const peek = conn as unknown as { restoreQueue: string[] };
+    peek.restoreQueue = ['#other', '#old'];
+
+    read(':op!u@h RENAME #old #new');
+
+    expect(peek.restoreQueue).toEqual(['#other', '#new']);
+  });
+
+  it('given again by the engine after its row was stored, does nothing', () => {
+    // The ack was lost and the line comes back in the next backlog. In
+    // between, the old name was taken again by a channel we then joined:
+    // acting twice would merge that channel into the renamed one for good.
+    const { conn, read, joined, row, published } = makeConn();
+    joined('#new');
+    joined('#old');
+    const stays = row('#old')!.id;
+    const peek = conn as unknown as {
+      catchingUp: boolean;
+      engineTransport: { socket: string; deliveringSeq: number | null } | null;
+      readCatchUpMark: (socket: string) => number;
+    };
+    peek.catchingUp = true;
+    peek.engineTransport = { socket: 's1', deliveringSeq: 7 };
+    peek.readCatchUpMark = () => 9;
+
+    read(':op!u@h RENAME #old #new');
+
+    expect(row('#old')!.id).toBe(stays);
+    expect(published).toEqual([]);
+
+    // Above the mark it is news, and acted on.
+    peek.readCatchUpMark = () => 6;
+    read(':op!u@h RENAME #old #new');
+    expect(row('#old')).toBeUndefined();
   });
 
   it('a closed buffer renames without an announcement', () => {
@@ -323,6 +408,36 @@ describe('an inbound RENAME (#858)', () => {
         text: 'Encryption was on for #old and is off for #new. Type /e2e on to turn it back on.',
       }),
     ]);
+  });
+
+  it('says nothing when only the case changed: the config is still the channel’s', () => {
+    const { network, read, joined, of } = makeConn();
+    joined('#old');
+    setChannelConfig(network.user_id, network.id, {
+      channel: '#old',
+      enabled: true,
+      mode: 'normal',
+    } as Parameters<typeof setChannelConfig>[2]);
+
+    read(':op!u@h RENAME #old #OLD');
+
+    expect(of('error')).toEqual([]);
+  });
+
+  it('says nothing when the new name has encryption on already', () => {
+    const { network, read, joined, of } = makeConn();
+    joined('#old');
+    for (const channel of ['#old', '#new']) {
+      setChannelConfig(network.user_id, network.id, {
+        channel,
+        enabled: true,
+        mode: 'normal',
+      } as Parameters<typeof setChannelConfig>[2]);
+    }
+
+    read(':op!u@h RENAME #old #new');
+
+    expect(of('error')).toEqual([]);
   });
 
   it('and says nothing about encryption when there was none', () => {
@@ -452,6 +567,24 @@ describe('asking for the cap', () => {
     conn.connect();
 
     expect(conn.client.request_extra_caps).toContain(CHANNEL_RENAME_CAP);
+  });
+
+  it('stops asking when the engine it would go through cannot follow a rename', () => {
+    // An engine replaced by an older one while this app stayed up: the cap
+    // was wanted through the old one, and the next socket must not ask.
+    const { conn } = makeConn();
+    const want = () =>
+      (conn as unknown as { wantChannelRenameCap: () => boolean }).wantChannelRenameCap();
+    expect(want()).toBe(true);
+    expect(conn.client.request_extra_caps).toContain(CHANNEL_RENAME_CAP);
+    process.env.LURKER_ENGINE_URL = 'tcp://127.0.0.1:1';
+    try {
+      // No hello seen: an engine nothing is known about.
+      expect(want()).toBe(false);
+      expect(conn.client.request_extra_caps).not.toContain(CHANNEL_RENAME_CAP);
+    } finally {
+      delete process.env.LURKER_ENGINE_URL;
+    }
   });
 
   it('asks once, however many times it connects', () => {

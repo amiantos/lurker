@@ -89,6 +89,13 @@ describe('moveScopeEntry', () => {
     expect(moveScopeEntry(['#old*', '#ol?'], '#old', '#new', lower, true)).toBeNull();
   });
 
+  it('leaves one alone even when a channel really has that name', () => {
+    // `#old*` is a legal channel name and a glob to the matcher: rewritten,
+    // every other channel it covered would lose the rule.
+    expect(moveScopeEntry(['#old*'], '#old*', '#new', lower, true)).toBeNull();
+    expect(moveScopeEntry(['#ol?'], '#ol?', '#new', lower, true)).toBeNull();
+  });
+
   it('answers null when nothing names the old buffer', () => {
     expect(moveScopeEntry(['#other'], '#old', '#new', lower, true)).toBeNull();
   });

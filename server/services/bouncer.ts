@@ -478,11 +478,19 @@ const RENAME_HINT = / rename /i;
 // The old name, the new one and the reason when `line` is a server's RENAME
 // (draft/channel-rename), else null. The reason is optional: the spec has the
 // server always send one, empty when there is none, and ergo leaves it off.
-export function channelRename(line: string): { from: string; to: string; reason: string } | null {
+// 'ignored' for a RENAME the connection did not act on, which no client is
+// sent: passed through, it would read as a rename that happened.
+export function channelRename(
+  line: string,
+): { from: string; to: string; reason: string } | 'ignored' | null {
   const msg = parseLine(line);
   if (!msg || msg.command !== 'RENAME') return null;
   const [from, to, reason = ''] = msg.params;
-  if (!from || !to || /[\s,]/.test(to)) return null;
+  // The connection's own tests (IrcConnection.onRenameLine): a line it did not
+  // act on is not a rename to tell a client about. One inside a batch is
+  // history, not news.
+  if (msg.tags.some((tag) => tag === 'batch' || tag.startsWith('batch='))) return 'ignored';
+  if (!isChannelTarget(from) || !isChannelTarget(to) || /[\s,]/.test(to)) return 'ignored';
   return { from, to, reason };
 }
 
@@ -1695,11 +1703,16 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // ran first, so the channel is already under the new name there.
       const moved = RENAME_HINT.test(` ${out}`) ? channelRename(out) : null;
       if (moved) {
-        this.relayChannelRename(moved, out, relayedAt);
+        if (moved !== 'ignored') this.relayChannelRename(moved, out, relayedAt);
         return;
       }
       this.write(out, relayedAt);
       if (renamed) this.toldNick = renamed;
+      // Out of a channel: no longer one this client has been told it is in.
+      // Left in the set, a later rename onto that name would be taken for a
+      // channel the client already has open (relayChannelRename).
+      const left = selfLeftChannel(out, this.currentNick());
+      if (left) this.joinsSent.delete(foldTargetFor(this.networkId, left));
       // The network's own NAMES for a channel the burst held back: nothing more
       // to send for it.
       if (this.namesPending.size > 0) {
@@ -3677,6 +3690,17 @@ function readMarkerBoundTime(bound: string): string | null {
 }
 
 // The channel a relayed line has `nick` joining, or null for any other line.
+// The channel when `line` takes `nick` out of one: its own PART, or a KICK
+// that names it.
+function selfLeftChannel(line: string, nick: string | null): string | null {
+  if (!nick || !/^(PART|KICK) /i.test(line.slice(lineHead(line).length))) return null;
+  const msg = parseLine(line);
+  if (!msg) return null;
+  const who = msg.command === 'KICK' ? msg.params[1] : msg.source?.split('!')[0];
+  if (!who || who.toLowerCase() !== nick.toLowerCase()) return null;
+  return msg.params[0] || null;
+}
+
 function selfJoinChannel(line: string, nick: string | null): string | null {
   if (!nick || !/^JOIN /i.test(line.slice(lineHead(line).length))) return null;
   const msg = parseLine(line);

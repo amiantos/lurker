@@ -51,7 +51,10 @@ export function moveScopeEntry(
 ): string[] | null {
   const fromFolded = fold(from);
   const toLower = to.toLowerCase();
-  const names = (entry: string) => fold(entry) === fromFolded && entry.toLowerCase() !== toLower;
+  // `*` and `?` make an entry a glob to the matcher even when a channel is
+  // really called that: it may cover other channels too, so it stays.
+  const names = (entry: string) =>
+    !/[*?]/.test(entry) && fold(entry) === fromFolded && entry.toLowerCase() !== toLower;
   if (!list.some(names)) return null;
   const out: string[] = [];
   const seen = new Set<string>();

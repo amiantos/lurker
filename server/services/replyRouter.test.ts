@@ -859,6 +859,16 @@ describe('MODE #chan from cache', () => {
     expect(elsewhere.writes).toEqual(['MODE #c']);
   });
 
+  it('asks the network after a rename onto the name: what is cached was another channel’s', () => {
+    // #c was a channel we were in once and its modes are still held. The
+    // channel renamed to #c now brings no JOIN to drop them (#858).
+    const { router, writes, hear } = setup({ joined: ['#c'] });
+    hear(MODE_IS);
+    hear(':op!~u@h RENAME #old #c');
+    router.send(new Client(), 'MODE #c');
+    expect(writes).toEqual(['MODE #c']);
+  });
+
   it('sends the user’s MODE to the network', () => {
     const { router, writes, hear } = setup({ joined: ['#c'] });
     hear(MODE_IS);

@@ -251,6 +251,54 @@ describe('a channel rename through the bouncer (#858)', () => {
     },
   );
 
+  it('a client that was once in a channel of the new name, and left, is joined to it', async () => {
+    // Having been there before is not being there now: the client must not be
+    // taken for one that already has the channel open.
+    const acct = await seedAccount();
+    const { from, to } = names();
+    await join(acct, from);
+    await join(acct, to);
+    const c = await attach(acct);
+    await c.waitFor((l) => commandOf(l) === 'JOIN' && l.includes(to));
+    c.send(`PART ${to}`);
+    await c.waitFor((l) => commandOf(l) === 'PART' && l.includes(to), 5000);
+    await until(() => !acct.conn.isChannelJoined(to), 5000, `parted ${to}`);
+    const at = c.lines.length;
+
+    ircd.sendRaw(acct.nick, `:op!o@peer.fake RENAME ${from} ${to}`);
+    // Not waitFor: it matches lines already received, and this channel's
+    // NAMES was sent once before, at the attach.
+    await until(
+      () => since(c, at).some((l) => commandOf(l) === '366' && l.includes(to)),
+      5000,
+      `names for ${to} again`,
+    );
+
+    const got = since(c, at).filter((l) => ['PART', 'JOIN'].includes(commandOf(l)));
+    expect(got).toEqual([
+      expect.stringContaining(`PART ${from} :Channel renamed`),
+      expect.stringContaining(`JOIN ${to}`),
+    ]);
+  });
+
+  it('tells a client nothing of a rename replayed inside a batch', async () => {
+    const acct = await seedAccount();
+    const { from, to } = names();
+    await join(acct, from);
+    const c = await attach(acct, [CHANNEL_RENAME_CAP]);
+    await c.waitFor((l) => commandOf(l) === 'JOIN' && l.includes(from));
+    const at = c.lines.length;
+
+    ircd.sendRaw(acct.nick, `@batch=hist9 :op!o@peer.fake RENAME ${from} ${to} :long ago`);
+    c.send(`NAMES #probe-b${chanSeq}`);
+    await c.waitFor((l) => commandOf(l) === '366' && l.includes(`#probe-b${chanSeq}`), 5000);
+
+    expect(since(c, at).filter((l) => ['PART', 'JOIN', 'RENAME'].includes(commandOf(l)))).toEqual(
+      [],
+    );
+    expect(acct.conn.isChannelJoined(from)).toBe(true);
+  });
+
   it('sends a client without the cap nothing for a rename that only changes case', async () => {
     const acct = await seedAccount();
     const { from } = names();
