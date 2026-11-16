@@ -1500,7 +1500,10 @@ The contract, in the order a client should apply it:
   per the orientation warning above), then apply the rename; done in that
   order there is no key collision. The surviving conversation keeps its id.
   The merged history interleaves server-side, so wipe the local slice and
-  re-hydrate rather than guessing at the interleave.
+  re-hydrate rather than guessing at the interleave. The latest page is whole
+  when the frame is sent. When the absorbed buffer was very large (past a
+  thousand lines), the server moves its older history over the next few
+  seconds, and a page far back fetched in that time can come up short.
 - **Corrections ride behind a merge.** `read-state`, `pins-changed`,
   `favorites-changed`, and (when the surviving draft changed) `draft-updated`
   frames follow immediately — the merge changed those server-side and an idle

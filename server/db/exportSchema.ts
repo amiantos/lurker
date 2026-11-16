@@ -197,8 +197,15 @@ export const EXPORT_TABLES = Object.freeze({
     // target install mints its own at account/network creation, and an
     // archived ':server:<id>' target embeds the SOURCE install's network id.
     // The importer independently drops any that appear (older archives).
-    rowWhere: "target NOT LIKE ':%'",
+    // A row a merge is still draining (#1307) is not a buffer either: its
+    // messages ship like any others and land in the survivor by name.
+    rowWhere: "target NOT LIKE ':%' AND merged_into IS NULL",
     fkRekey: { user_id: 'users', network_id: 'networks' },
+    skippedColumns: {
+      merged_into:
+        'install-local: set only on a row whose messages a merge is still moving ' +
+        '(bufferMergeDrain.ts), and such rows are not exported',
+    },
     // The +k channel key gates entry to the channel — same credential class as
     // the network secrets, so same at-rest treatment.
     encryptedColumns: ['key'],

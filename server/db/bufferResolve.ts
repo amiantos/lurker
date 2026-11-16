@@ -74,7 +74,11 @@ const byNetworkStmt = db.prepare(`
     AND target_folded = ?
 `);
 
-const byIdStmt = db.prepare(`SELECT ${IDENTITY_COLS} FROM buffers WHERE id = ?`);
+// Not a row a merge is still draining (#1307, bufferMergeDrain.ts): to a
+// client that id is the absorbed buffer, which the merge told it is gone.
+const byIdStmt = db.prepare(
+  `SELECT ${IDENTITY_COLS} FROM buffers WHERE id = ? AND merged_into IS NULL`,
+);
 
 /** Resolve (user, network, name) → identity, or undefined when no row exists. */
 export function resolveBuffer(

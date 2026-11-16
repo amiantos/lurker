@@ -1678,7 +1678,7 @@ export function listRecentForBuffers(
 // because "which buffers exist" had to be derived from the messages table.
 const listBufferTargetsStmt = db.prepare(`
   SELECT target FROM buffers b
-  WHERE b.network_id = ?
+  WHERE b.network_id = ? AND b.merged_into IS NULL
     AND EXISTS (SELECT 1 FROM messages m WHERE m.buffer_id = b.id)
   ORDER BY target
 `);
@@ -1698,7 +1698,7 @@ export function listBuffersForNetwork(networkId: number): BufferSummary[] {
       `SELECT b.target AS target, MAX(m.time) AS lastMessageAt
          FROM buffers b
          JOIN messages m ON m.buffer_id = b.id
-        WHERE b.network_id = ?
+        WHERE b.network_id = ? AND b.merged_into IS NULL
           AND b.kind NOT IN ('server', 'system', 'dcc')
           AND substr(b.target, 1, 1) <> '='
         GROUP BY b.id
@@ -1719,7 +1719,7 @@ export function maxIdByBuffer(networkId: number): MaxIdByBufferRow[] {
          SELECT b.target AS target,
                 (SELECT MAX(m.id) FROM messages m WHERE m.buffer_id = b.id) AS maxId
          FROM buffers b
-         WHERE b.network_id = ?
+         WHERE b.network_id = ? AND b.merged_into IS NULL
        ) WHERE maxId IS NOT NULL`,
     )
     .all(networkId) as MaxIdByBufferRow[];
@@ -1968,7 +1968,7 @@ export function newestConversationTime(
 // rows (idx_messages_net is by id, and MAX(time) over it would read them all).
 const networkBuffersStmt = db.prepare(
   `SELECT id, target_folded AS target FROM buffers
-   WHERE network_id = ? AND kind IN ('channel', 'dm')`,
+   WHERE network_id = ? AND kind IN ('channel', 'dm') AND merged_into IS NULL`,
 );
 export function newestConversationTimes(
   networkId: number,

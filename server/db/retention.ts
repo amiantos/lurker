@@ -50,10 +50,15 @@ export function seedUserBuffersDirty(userId: number): void {
   for (const row of rows) dirtyBuffers.add(row.id);
 }
 
-const ownerStmt = db.prepare(`SELECT user_id AS userId FROM buffers WHERE id = ?`);
+const ownerStmt = db.prepare(
+  `SELECT user_id AS userId FROM buffers WHERE id = ? AND merged_into IS NULL`,
+);
 
 /** The buffer's owning user, or undefined for a buffer deleted since it was
- *  marked dirty (the cascade already took its messages with it). */
+ *  marked dirty (the cascade already took its messages with it). Undefined
+ *  too for a row a merge is still draining (#1307): its rows are the tail of
+ *  the survivor's history, and a line cap counted over them alone would cut
+ *  lines the survivor's cap keeps. The drain marks the survivor when done. */
 export function bufferOwnerId(bufferId: number): number | undefined {
   const row = ownerStmt.get(bufferId) as { userId: number } | undefined;
   return row?.userId;
@@ -476,12 +481,18 @@ const GC_BOOKMARKED_BUFFERS = `
   SELECT m.buffer_id FROM user_bookmarks ub JOIN messages m ON m.id = ub.message_id
    WHERE ub.user_id = ? AND m.buffer_id IS NOT NULL`;
 
+// A closed buffer a merge is still draining history INTO (#1307) is not
+// collected: deleting it cascades to the rows that have not arrived, and the
+// bookmark exclusion above cannot see a bookmark among them.
+const GC_NOT_DRAINED_INTO = `NOT EXISTS (SELECT 1 FROM buffers d WHERE d.merged_into = buffers.id)`;
+
 const gcEligibleStmt = db.prepare(`
   SELECT id FROM buffers
    WHERE user_id = ? AND state = 'closed' AND closed_at IS NOT NULL
      AND kind NOT IN ('server', 'system') AND autojoin = 0
      AND ${GC_AGE}
      AND id NOT IN (${GC_BOOKMARKED_BUFFERS})
+     AND ${GC_NOT_DRAINED_INTO}
    LIMIT ?
 `);
 
@@ -521,6 +532,7 @@ const gcDeleteStmt = db.prepare(`
   DELETE FROM buffers
    WHERE id = ? AND user_id = ? AND state = 'closed' AND ${GC_AGE}
      AND NOT EXISTS (SELECT 1 FROM messages WHERE buffer_id = buffers.id)
+     AND ${GC_NOT_DRAINED_INTO}
 `);
 
 /** Remove the drained buffer row; the FK cascade takes its satellite rows.

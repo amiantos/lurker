@@ -5,6 +5,7 @@ import db from './index.js';
 import { foldTargetWith } from './casemapping.js';
 import type { Casemapping } from './casemapping.js';
 import { absorbBufferRow } from './renameBuffer.js';
+import { kickMergeDrain } from './bufferMergeDrain.js';
 import { invalidateCasemappingCache } from './buffers.js';
 import { moveRuleScopes, type RuleScopeMoves } from './ruleScopeRename.js';
 
@@ -58,17 +59,24 @@ interface Row {
 // Sentinels (kind server/system) never re-fold — their ':'-prefixed names are
 // ours, not the network's. A 'dcc' row DOES: `=Nick` folds like any other
 // target, so leaving it out would strand a stale target_folded and let the next
-// ensureBuffer('=Nick') mint a duplicate buffer under the new mapping.
+// ensureBuffer('=Nick') mint a duplicate buffer under the new mapping. A row
+// an earlier merge is still draining (bufferMergeDrain.ts) is not a buffer.
 const rowsStmt = db.prepare(`
   SELECT id, target, target_folded, state FROM buffers
   WHERE user_id = ? AND network_id = ? AND kind IN ('channel', 'dm', 'dcc')
+    AND merged_into IS NULL
 `);
 const lastMessageStmt = db.prepare(`SELECT MAX(id) AS m FROM messages WHERE buffer_id = ?`);
 const setFoldedStmt = db.prepare(`UPDATE buffers SET target_folded = ? WHERE id = ?`);
 const storeMappingStmt = db.prepare(`UPDATE networks SET casemapping = ? WHERE id = ?`);
 
 const work = db.transaction(
-  (userId: number, networkId: number, mapping: Casemapping): RefoldMerge[] => {
+  (
+    userId: number,
+    networkId: number,
+    mapping: Casemapping,
+    chunkRows: number | undefined,
+  ): { merges: RefoldMerge[]; draining: boolean } => {
     // The mapping is stored INSIDE the refold transaction, not before it: the
     // stored value is the capture path's only "already done" signal, so a
     // mapping committed ahead of a refold that then failed (Litestream write
@@ -87,6 +95,7 @@ const work = db.transaction(
     }
 
     const merges: RefoldMerge[] = [];
+    let draining = false;
     // Surviving row id → its fold under the new rule.
     const finalFolds: { row: Row; folded: string }[] = [];
     for (const [folded, group] of groups) {
@@ -101,7 +110,9 @@ const work = db.transaction(
           .sort((a, b) => b.open - a.open || b.last - a.last || a.row.id - b.row.id);
         survivor = ranked[0].row;
         for (const { row: absorbed } of ranked.slice(1)) {
-          const { draftChanged } = absorbBufferRow(userId, networkId, survivor, absorbed);
+          const absorb = absorbBufferRow(userId, networkId, survivor, absorbed, chunkRows);
+          const { draftChanged } = absorb;
+          if (absorb.draining) draining = true;
           // Keep the in-memory copy honest with the union absorbBufferRow may
           // have just written, so later absorbs in this group pass the
           // already-open survivor state instead of re-flipping it.
@@ -139,7 +150,7 @@ const work = db.transaction(
     for (const { row, folded } of finalFolds) {
       if (row.target_folded !== folded) setFoldedStmt.run(folded, row.id);
     }
-    return merges;
+    return { merges, draining };
   },
 );
 
@@ -147,14 +158,17 @@ const work = db.transaction(
  * Re-fold every buffer of (user, network) under `mapping`, merging rows that
  * now collide. Returns the merges for the caller to announce (one
  * buffer-renamed frame each, merged: true). One IMMEDIATE transaction — it
- * reads before it writes, the Litestream SQLITE_BUSY_SNAPSHOT shape.
+ * reads before it writes, the Litestream SQLITE_BUSY_SNAPSHOT shape. History
+ * past the first chunk of a merge follows in the background (#1307).
  */
 export function refoldNetworkBuffers(
   userId: number,
   networkId: number,
   mapping: Casemapping,
+  chunkRows?: number,
 ): RefoldMerge[] {
-  const merges = work.immediate(userId, networkId, mapping);
+  const { merges, draining } = work.immediate(userId, networkId, mapping, chunkRows);
+  if (draining) kickMergeDrain(chunkRows);
   // Only after the commit: an invalidation before a rolled-back store would
   // just re-read the old value, but this ordering keeps the cache unable to
   // ever run ahead of the database.

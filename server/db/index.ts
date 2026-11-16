@@ -1584,6 +1584,19 @@ try {
 // a code contract (and sentinel rows are undeletable by kind guard).
 ensureColumn('messages', 'buffer_id', 'INTEGER REFERENCES buffers(id) ON DELETE CASCADE');
 
+// A merge too big for one transaction leaves the absorbed row behind while
+// its messages follow in chunks (#1307, db/bufferMergeDrain.ts): merged_into
+// names the buffer they are moving to, and is NULL on every real buffer.
+// CASCADE, because a survivor deleted mid-drain takes the conversation with
+// it, the part not yet moved included. The index is what the drain, the boot
+// resume and that cascade look the column up by; partial, since nearly every
+// row is NULL.
+ensureColumn('buffers', 'merged_into', 'INTEGER REFERENCES buffers(id) ON DELETE CASCADE');
+db.exec(
+  `CREATE INDEX IF NOT EXISTS idx_buffers_merged_into ON buffers(merged_into)
+   WHERE merged_into IS NOT NULL`,
+);
+
 // Persist which rule matched each message so the highlights modal can read
 // from disk instead of scanning whatever happens to be loaded in client memory.
 // Partial index keeps it cheap — only matched rows live in the index.
