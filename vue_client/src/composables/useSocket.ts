@@ -17,6 +17,7 @@ import { primePreviews } from './useLinkPreview.js';
 import { previewableEventTexts } from '../utils/previewEvents.js';
 import { useConfigStore } from '../stores/config.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
+import { useAliasesStore } from '../stores/aliases.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { bufferClosed, applyBufferRenamed } from '../lib/bufferLifecycle.js';
 import { useDraftStore, pendingReplyFrom } from '../stores/drafts.js';
@@ -838,6 +839,10 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
     .catch(() => {
       /* ignore — server stamp (m.matched) still drives highlighting */
     });
+  // Command aliases (#276) aren't in the snapshot either, and the composer
+  // needs them before the first line is typed. Every (re)connect, since an
+  // aliases-changed frame sent while this device was away never arrived.
+  useAliasesStore().load();
   // Saved themes: the only live refresh is the themes-changed frame, which a
   // disconnected device never received. Refetch on every (re)connect so a
   // theme edited elsewhere while this device slept doesn't render stale.
@@ -1091,6 +1096,10 @@ function handleMessage(raw: string): void {
     useThemesStore()
       .fetchAll()
       .catch(() => {});
+    return;
+  }
+  if (payload.kind === 'aliases-changed') {
+    useAliasesStore().applyServerChanged();
     return;
   }
   if (payload.kind === 'highlight-rules-changed') {

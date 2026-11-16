@@ -253,6 +253,14 @@ import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
+import { useAliasesStore } from '../stores/aliases.js';
+import {
+  MAX_ALIAS_COMMANDS,
+  MAX_ALIAS_DEPTH,
+  resolveAliases,
+  type AliasContext,
+} from '../../../shared/aliases.js';
+import { aliasListLines, parseAliasArgs } from '../lib/commands/alias.js';
 import { ensureChannelPrefix, isChannelTarget } from '../../../shared/channels.js';
 import { batchModeLines, DEFAULT_MAX_MODES } from '../../../shared/channelModes.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
@@ -345,6 +353,7 @@ const toasts = useToastsStore();
 const ignores = useIgnoresStore();
 const relayBots = useRelayBotsStore();
 const highlightRules = useHighlightRulesStore();
+const aliases = useAliasesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
 const channelModal = useChannelModal();
@@ -652,7 +661,11 @@ function chatBody(text: string): string {
 // signal "no split risk".
 // `target` is set where the command names its own (/msg); otherwise the body
 // goes to the active buffer.
-function bodyForSplit(raw: string): { body: string; isAction: boolean; target?: string } {
+// `expanded`: `raw` is a command an alias came to, not to be expanded again.
+function bodyForSplit(
+  raw: string,
+  expanded = false,
+): { body: string; isAction: boolean; target?: string } {
   if (!raw) return { body: '', isAction: false };
   // // escape: `//foo` is a literal `/foo` message, not a command, so it does
   // pass through PRIVMSG and is subject to the splitter. Plain and //-escaped
@@ -660,6 +673,28 @@ function bodyForSplit(raw: string): { body: string; isAction: boolean; target?: 
   // post-rewrite bytes here or the split estimate drifts low.
   if (raw.startsWith('//')) return { body: applySpoilerMarkup(raw.slice(1)), isAction: false };
   if (raw[0] !== '/') return { body: applySpoilerMarkup(raw), isAction: false };
+  // An alias (#276) is gated as what it sends. It can run several commands; the
+  // one with the most to say stands for it, since each is its own message.
+  if (!expanded && aliases.find(raw.split(/\s/, 1)[0])) {
+    const at = active.value;
+    const { lines } = resolveAliases(
+      raw,
+      aliases.aliases,
+      aliasContext(at?.networkId ?? null, at?.target ?? ''),
+    );
+    // A /me that can't go out refuses the whole line, as it would typed alone.
+    // Failing that, the command that splits into the most lines.
+    type Part = { body: string; isAction: boolean; target?: string };
+    const weigh = (part: Part): number => {
+      const bytes = lineBudget(part.target, part.isAction);
+      if (!part.isAction) return chunkCountForSay(part.body, bytes);
+      return chunkCountForAction(part.body, bytes) > 1 ? Infinity : 1;
+    };
+    const none: Part = { body: '', isAction: false };
+    return lines
+      .map((line): Part => bodyForSplit(line, true))
+      .reduce((worst, next) => (weigh(next) > weigh(worst) ? next : worst), none);
+  }
   const m = raw.match(/^\/(\w+)\s*(.*)$/s);
   if (!m) return { body: '', isAction: false };
   const cmd = m[1].toLowerCase();
@@ -678,6 +713,8 @@ function bodyForSplit(raw: string): { body: string; isAction: boolean; target?: 
   // the wire. Built by the same helper the send path uses so the estimate and the
   // payload can't drift.
   if (cmd === 'shrug') return { body: chatBody(shrugBody(m[2])), isAction: false };
+  // /say is a plain message with a verb in front. The send path trims the text.
+  if (cmd === 'say') return { body: chatBody(m[2].trim()), isAction: false };
   if (cmd === 'msg' || cmd === 'query') {
     // /msg <who> <body...> — drop the recipient nick from the body. Split-and-rejoin rather than
     // slicing at the first space, because that is exactly what the send path does:
@@ -1597,7 +1634,7 @@ function onKeydown(e: KeyboardEvent): void {
   if (!el) return;
   if (commandsOnly && !completion) {
     const at = el.selectionStart ?? text.value.length;
-    const here = completionContext(text.value, at);
+    const here = completionContext(text.value, at, aliases.aliases);
     if (!here || !commandTabMatches(here).length) return;
   }
   e.preventDefault();
@@ -1624,7 +1661,7 @@ function onKeydown(e: KeyboardEvent): void {
 
   // A command line with its picker dismissed (Escape) still completes in place,
   // through the same candidates the picker would have listed (#533).
-  const ctx = completionContext(value, cursor);
+  const ctx = completionContext(value, cursor, aliases.aliases);
   const commandMatches = ctx ? commandTabMatches(ctx) : [];
   if (ctx && commandMatches.length) {
     completion = {
@@ -1753,6 +1790,10 @@ function liveCandidates(kind: LiveKind, query: string, preceding: readonly strin
     }
     case 'avatarSet':
       return named(useAvatarSetsStore().all.map((a) => a.name));
+    case 'alias':
+      return aliases.aliases
+        .filter((a) => a.name.startsWith(q.replace(/^\/+/, '')))
+        .map((a) => ({ value: a.name, detail: a.body, kind }));
     default:
       return [];
   }
@@ -1771,7 +1812,7 @@ function closeSuggesters(): void {
 // line. False when there is nothing to complete there, and refreshPicker
 // carries on as it would for any other text, so `/me @al` still finds a nick.
 function refreshCommandCompletion(value: string, cursor: number): boolean {
-  const ctx = completionContext(value, cursor);
+  const ctx = completionContext(value, cursor, aliases.aliases);
   if (!ctx) {
     closeCommandPicker();
     return false;
@@ -1801,6 +1842,7 @@ function refreshCommandCompletion(value: string, cursor: number): boolean {
   } else {
     const rows = candidatesFor(ctx, {
       agnosticOnly: active.value?.networkId == null,
+      aliases: aliases.aliases,
       live: liveCandidates,
     });
     if (!rows.length) {
@@ -1843,9 +1885,11 @@ function commandTabMatches(ctx: CompletionContext): string[] {
   if (ctx.type === 'argument' && networkId != null && own === 'channel') {
     return buildChannelMatches(networkId, ctx.query);
   }
-  return candidatesFor(ctx, { agnosticOnly: networkId == null, live: liveCandidates }).map(
-    (c) => c.value,
-  );
+  return candidatesFor(ctx, {
+    agnosticOnly: networkId == null,
+    aliases: aliases.aliases,
+    live: liveCandidates,
+  }).map((c) => c.value);
 }
 
 // Whether Enter should send the line rather than accept the highlighted row,
@@ -1873,7 +1917,11 @@ function onCommandPickerSelect(row: Candidate): void {
   // The rows answer the token as it was when they were listed. The caret may
   // have moved since (Home), or the draft changed under it from another device.
   const el = inputEl.value;
-  const now = completionContext(text.value, el?.selectionStart ?? text.value.length);
+  const now = completionContext(
+    text.value,
+    el?.selectionStart ?? text.value.length,
+    aliases.aliases,
+  );
   if (!ctx || !now || now.start !== ctx.start || now.end !== ctx.end || now.query !== ctx.query) {
     closeCommandPicker();
     refreshPicker();
@@ -2788,6 +2836,8 @@ async function submit() {
     if (isPaused.value) return;
     const escaped = raw.startsWith('//');
     if (raw.startsWith('/') && !escaped) {
+      // See the same wait on the network path below.
+      if (!aliases.loaded && aliases.loading) await aliases.settled();
       handleCommand(raw, null, SYSTEM_KEY);
     } else {
       localInfo(null, SYSTEM_KEY, 'Not a command — type /commands to see what you can run here.');
@@ -2883,21 +2933,33 @@ async function submit() {
     const said = chatMessagesSent;
     // Cleared first so a stale ack from an earlier command can't be mistaken for
     // this one's.
-    pendingCommandAck = null;
+    pendingCommandAcks = [];
+    // A command typed before the alias list has arrived waits for it. Run
+    // against an empty list, `/quit` would be the built-in for someone whose
+    // `/quit` is an alias, and their own commands would go to the server raw.
+    if (!aliases.loaded && aliases.loading) await aliases.settled();
     const handled = await handleCommand(raw, networkId, target);
     if (!handled) return;
     // Taken first: a /me that went out as a reply carries it in its origin.
-    const ack = takeCommandAck();
+    // More than one only for an alias (#276) that says several things.
+    const acks = takeCommandAcks();
     commitInput(raw, networkId, target, {
       isChatMessage: chatMessagesSent > said,
-      reply: ack?.origin.reply?.reply ?? null,
+      reply: acks.find((ack) => ack.origin.reply)?.origin.reply?.reply ?? null,
     });
-    if (ack) {
-      const result = await ack.promise;
-      if (!result.ok) {
-        restoreFailedSend(ack.origin.networkId, ack.origin.target, ack.origin.line);
-        giveBackReply(ack.origin.reply ?? null);
+    if (acks.length) {
+      const results = await Promise.all(acks.map((ack) => ack.promise));
+      // The line comes back only when none of it went out: a half-delivered
+      // alias, typed again, would say the delivered half twice.
+      const whole = acks.every((ack) => !ack.origin.partial);
+      if (whole && results.every((result) => !result.ok)) {
+        const { origin } = acks[0];
+        restoreFailedSend(origin.networkId, origin.target, origin.line);
       }
+      // A reply goes back with the send that carried it.
+      acks.forEach((ack, i) => {
+        if (!results[i].ok) giveBackReply(ack.origin.reply ?? null);
+      });
     }
     return;
   }
@@ -3267,8 +3329,9 @@ function sendOrToast(payload: Record<string, unknown>, body: string): boolean {
 // to sequence wrongly against the read.
 let chatMessagesSent = 0;
 
-// The ACK of the last command that put something on the wire, plus the buffer it
-// was TYPED IN and the line as typed. submit() picks this up AFTER commitInput.
+// The ACK of each command that put something on the wire, plus the buffer it
+// was TYPED IN and the line as typed. One per typed line, unless the line was an
+// alias (#276) that says several things. submit() picks these up AFTER commitInput.
 //
 // ⚠⚠ Handed up rather than restored inside ackedSend, and the ordering is the
 // reason. submit does `await handleCommand(...)` — one microtask — and only then
@@ -3287,16 +3350,22 @@ interface CommandOrigin {
   target: string;
   line: string;
   reply?: TakenReply | null;
+  /** An alias (#276) ran other commands beside this one, which no ACK answers for. */
+  partial?: boolean;
 }
-let pendingCommandAck: CommandAck | null = null;
+let pendingCommandAcks: CommandAck[] = [];
+
+// The alias line being run, while one is: what a failed send hands back is what
+// was typed (`/greet bob`), not the command it came to (`/me waves at bob`).
+let typedAliasLine: string | null = null;
 
 // Read-and-clear. A function rather than a bare read because TypeScript narrows
-// the module-level `let` to `null` at the reset in submit() and doesn't widen it
+// the module-level `let` to `[]` at the reset in submit() and doesn't widen it
 // back across the `await handleCommand(...)` that fills it in.
-function takeCommandAck(): CommandAck | null {
-  const ack = pendingCommandAck;
-  pendingCommandAck = null;
-  return ack;
+function takeCommandAcks(): CommandAck[] {
+  const acks = pendingCommandAcks;
+  pendingCommandAcks = [];
+  return acks;
 }
 
 // `origin` is the buffer the command was TYPED IN plus the line as typed, so a
@@ -3320,7 +3389,12 @@ function ackedSend(
     if (!result.ok) toastSendFailure(result.error ?? 'unknown', body);
     return result;
   });
-  if (origin) pendingCommandAck = { promise: settled, origin };
+  if (origin) {
+    pendingCommandAcks.push({
+      promise: settled,
+      origin: typedAliasLine == null ? origin : { ...origin, line: typedAliasLine },
+    });
+  }
   return true;
 }
 
@@ -4054,6 +4128,53 @@ function runUnhighlight(argLine: string, networkId: number | null, target: strin
   return true;
 }
 
+// /alias and /unalias (#276) manage the per-user alias list, the same one the
+// Settings pane edits. Network-agnostic, so they run from the system buffer.
+function runAlias(
+  argLine: string,
+  networkId: number | null,
+  target: string,
+  verb: 'alias' | 'unalias' = 'alias',
+): boolean {
+  const reply = (msg: string) => localInfo(networkId, target, msg);
+  if (verb === 'unalias' && !argLine) {
+    reply('usage: /unalias <name>');
+    return true;
+  }
+  const parsed = parseAliasArgs(argLine);
+  const failed = (e: any) => reply(`/${verb}: ${e?.message || 'failed'}`);
+  switch (parsed.kind) {
+    case 'error':
+      reply(`/${verb}: ${parsed.error}`);
+      break;
+    case 'list':
+      for (const line of aliasListLines(aliases.aliases, parsed.prefix)) reply(line);
+      break;
+    case 'remove':
+      if (!aliases.find(parsed.name)) {
+        reply(`/${verb}: no alias called /${parsed.name}`);
+        break;
+      }
+      aliases
+        .remove(parsed.name)
+        .then(() => reply(`removed alias /${parsed.name}`))
+        .catch(failed);
+      break;
+    case 'set':
+      aliases
+        .set(parsed.name, parsed.body)
+        .then(({ alias, created }) =>
+          reply(
+            `alias /${alias.name} ${created ? 'added' : 'changed'}` +
+              (resolveVerb(alias.name) ? `, in place of the /${alias.name} command` : ''),
+          ),
+        )
+        .catch(failed);
+      break;
+  }
+  return true;
+}
+
 // Resolve a /network ref to a configured network. Prefer a case-insensitive
 // name match (folds inconsistent server casing like the rest of the app), then
 // fall back to a numeric id so `/network connect 3` works too.
@@ -4304,9 +4425,69 @@ function runGet(argLine: string, networkId: number | null, target: string): void
   }
 }
 
-function handleCommand(line: string, networkId: number | null, target: string): boolean {
+// Where an alias (#276) is being run, for `$channel`, `$nick` and `$network`.
+function aliasContext(networkId: number | null, target: string): AliasContext {
+  if (networkId == null) return { channel: '', nick: '', network: '' };
+  return {
+    // A `:server:` buffer is no place to send to; a channel, a nick and a
+    // `=nick` DCC chat all are.
+    channel: target.startsWith(':') ? '' : target,
+    nick: networks.states[networkId]?.nick || '',
+    network: networks.networks.find((n) => n.id === networkId)?.name ?? '',
+  };
+}
+
+// `expanded`: the line is a command an alias (#276) came to, and is run as it
+// stands. resolveAliases has been all the way down already, and what is left
+// that still names an alias is that alias's own name in its body, which is the
+// command it replaced.
+function handleCommand(
+  line: string,
+  networkId: number | null,
+  target: string,
+  expanded = false,
+): boolean {
   const [cmd, ...rest] = line.slice(1).split(/\s+/);
   const argLine = line.slice(1 + cmd.length).trim();
+  // An alias wins over a command of its name, so it is looked up first.
+  if (!expanded && aliases.find(cmd)) {
+    const { lines, stoppedAt, tooMany } = resolveAliases(
+      line,
+      aliases.aliases,
+      aliasContext(networkId, target),
+    );
+    const name = cmd.toLowerCase();
+    if (tooMany) {
+      localInfo(
+        networkId,
+        target,
+        `/${name}: not run, it comes to more than ${MAX_ALIAS_COMMANDS} commands.`,
+      );
+    } else if (stoppedAt) {
+      localInfo(
+        networkId,
+        target,
+        `/${name}: /${stoppedAt} not run, ${MAX_ALIAS_DEPTH} aliases deep.`,
+      );
+    }
+    // A command that couldn't be sent means the socket is closed, and it was
+    // closed for the ones before it too: this loop never yields. So the run
+    // ends there and the typed line stays in the composer.
+    const before = pendingCommandAcks.length;
+    typedAliasLine = line;
+    try {
+      for (const command of lines) {
+        if (!handleCommand(command, networkId, target, true)) return false;
+      }
+    } finally {
+      typedAliasLine = null;
+    }
+    // Commands that went out with no ACK to wait on (a raw line, a join) can't
+    // be seen failing, so the ones that can don't speak for the whole line.
+    const tracked = pendingCommandAcks.slice(before);
+    if (tracked.length < lines.length) for (const ack of tracked) ack.origin.partial = true;
+    return true;
+  }
   // Typed against the command table (lib/commands/registry.ts): every verb the
   // table names needs a case below, and every case needs a verb in the table,
   // or this file stops type-checking. Null is a word the table doesn't know.
@@ -4349,6 +4530,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       return runIgnore(argLine, networkId, target);
     case 'unignore':
       return runUnignore(argLine, networkId, target);
+    case 'alias':
+      return runAlias(argLine, networkId, target);
+    case 'unalias':
+      return runAlias(argLine ? `-${argLine.replace(/^-/, '')}` : '', networkId, target, 'unalias');
     case 'highlight':
     case 'hilight':
       return runHighlight(argLine, networkId, target);
@@ -5102,6 +5287,21 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       }
       const slapText = `slaps ${who} around a bit with a large trout`;
       return ackedSend({ type: 'action', networkId, target, text: slapText }, slapText, {
+        networkId,
+        target,
+        line,
+      });
+    }
+    case 'say': {
+      // The text, said here. What an alias (#276) reaches for to speak in the
+      // buffer it was run in; typed by hand it is the text with more keystrokes,
+      // except that a leading slash stays text.
+      if (isServer.value) {
+        localInfo(networkId, target, 'usage: /say <text> — run inside a channel or DM');
+        return true;
+      }
+      if (!argLine) return true;
+      return ackedSend({ type: 'send', networkId, target, text: chatBody(argLine) }, argLine, {
         networkId,
         target,
         line,

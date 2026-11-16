@@ -8,6 +8,7 @@ import { useHighlightsStore } from '../stores/highlights.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
+import { resetAliases } from '../stores/aliases.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
@@ -47,6 +48,7 @@ export function resetSession(): void {
   // every connect, which hid the gap for the ids and never covered the rows at all.
   useBookmarksStore().$reset();
   useHighlightRulesStore().$reset();
+  resetAliases();
   useInputHistoryStore().$reset();
   useNavHistoryStore().$reset();
   useRecentBuffersStore().$reset();

@@ -33,8 +33,8 @@ export type CommandCategory = (typeof COMMAND_CATEGORIES)[number];
  * - `keyword`: a literal word that picks one of a command's forms (`chat` in
  *   `/dcc chat <nick>`). Completed from the forms themselves.
  * - `choice`: one of a fixed list carried on the slot (`values`).
- * - `setting` `settingValue` `theme` `network` `avatarSet`: live lists the
- *   composer supplies.
+ * - `setting` `settingValue` `theme` `network` `avatarSet` `alias`: live lists
+ *   the composer supplies.
  * - `text` `word` `newNick`: nothing to suggest. Free text to the end of the
  *   line, one opaque token, and a value only you can supply.
  */
@@ -48,6 +48,7 @@ export type ArgKind =
   | 'theme'
   | 'network'
   | 'avatarSet'
+  | 'alias'
   | 'text'
   | 'word'
   | 'newNick';
@@ -235,6 +236,7 @@ const ID = arg('id', 'word');
 export const COMMANDS = [
   // Messaging
   cmd(['me'], 'Messaging', 'emote in the current buffer', { args: [text('text')] }),
+  cmd(['say'], 'Messaging', 'say your text in the current buffer', { args: [text('text')] }),
   cmd(['msg', 'query'], 'Messaging', 'open a DM and send', { args: [NICK, optText('text')] }),
   cmd(['notice'], 'Messaging', 'send a NOTICE to a channel or nick', {
     args: [arg('tgt', 'nick'), text('text')],
@@ -552,6 +554,22 @@ export const COMMANDS = [
         'delete a set',
       ),
     ],
+    networkAgnostic: true,
+  }),
+  cmd(['alias'], 'App', 'list your aliases, or name a command of your own', {
+    // A word, not a list of the aliases: `/alias wi` + Enter lists by prefix,
+    // and a picker row there would turn it into `/alias wii`.
+    args: [opt('name', 'word'), optText('command')],
+    notes: [
+      'e.g. /alias greet /me waves at $1   ·   /alias cycle /part; /join $channel',
+      '$1..$9 are the words typed after it, $2- the second to the end, $* all of them',
+      '$channel, $nick and $network are where it was run; \\; is a ; that does not split',
+      '/alias -name removes one; the full list is in Settings › Aliases',
+    ],
+    networkAgnostic: true,
+  }),
+  cmd(['unalias'], 'App', 'remove an alias', {
+    args: [arg('name', 'alias')],
     networkAgnostic: true,
   }),
   cmd(['e2e'], 'App', 'end-to-end encryption for a channel (experimental; /e2e help)', {

@@ -24,6 +24,7 @@ import settingsService, { cachedSetting, forgetCachedSettings } from './settings
 import themesService from './themesService.js';
 import avatarSetsService from './avatarSetsService.js';
 import highlightRulesService from './highlightRulesService.js';
+import aliasesService from './aliasesService.js';
 import draftsService from './draftsService.js';
 import * as systemLog from './systemLog.js';
 import * as pushService from './pushService.js';
@@ -2802,6 +2803,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
 
   highlightRulesService.on('change', ({ userId }) => {
     fanOut(userId, { kind: 'highlight-rules-changed' });
+  });
+
+  // Command aliases (#276). Refetch-on-any-change, like highlight rules.
+  aliasesService.on('change', ({ userId }: { userId: number }) => {
+    fanOut(userId, { kind: 'aliases-changed' });
   });
 
   // Saved theme presets changed (create/update/delete, this or another device).
