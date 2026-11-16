@@ -4,6 +4,7 @@
 import db from './index.js';
 import { BUFFER_SCOPED_TABLES } from './bufferKeyedTables.js';
 import { markBufferDirty } from './retention.js';
+import { RENDERABLE_MAX_SCAN } from './messages.js';
 
 // Moving a merged buffer's history, a chunk at a time (#1307).
 //
@@ -27,26 +28,31 @@ import { markBufferDirty } from './retention.js';
 //   - the registry's listings and the lookup by id leave it out;
 //   - it holds no satellite state: what the survivor did not adopt is deleted
 //     with the merge, as the cascade would have deleted it;
-//   - `target` keeps the name it had, which is what a search hit on a row not
-//     yet moved is shown under.
+//   - `target` keeps the name it had.
 //
 // Newest first is what keeps the window small for a reader. Clients answer a
 // merge by fetching the survivor's latest page again, and that page is whole
-// after the first chunk; so are the read pointer and the counts above it.
+// after the first chunk (a chunk is at least the most one page read scans).
 // What is short for the seconds a drain takes is the survivor's OLDER
-// history: a page far back, or a search inside it. Nothing is lost.
+// history, to everything that reads by buffer: a page far back, a search
+// inside the buffer, a count above a read pointer further back than a chunk,
+// and a redaction, reaction or reply that names a line not yet moved (it
+// finds no such line there, as for a line that has aged out). A hit on such
+// a line from a search across buffers carries the absorbed id, which clients
+// have dropped. Nothing stored is lost.
 //
 // Each chunk is "move the newest N that are left", which holds no cursor and
 // can be given again after a kill: boot calls kickMergeDrain and it goes on
 // from wherever the last committed chunk stopped.
 
-/** Rows moved per transaction. Measured on a 3M-row database, warm NVMe,
- *  moving 128,631 rows: 1,000 is 25 ms a chunk (p95 31, worst 44) and 2.9 s
- *  in all, against 2.6 s for the one statement that held the loop throughout.
- *  2,000 halves the chunk count for 41 ms a chunk; 500 gains little. Slow
- *  storage multiplies these, and has a long way to go to the event loop
- *  monitor's 500 ms. */
-export const MERGE_CHUNK_ROWS = 1_000;
+/** Rows moved per transaction. No fewer than one page read scans
+ *  (RENDERABLE_MAX_SCAN), so the page a client fetches on the merge is whole
+ *  after the first chunk. Measured on a 3M-row database, warm NVMe, moving
+ *  128,631 rows: 41 ms a chunk (p95 55, worst 62) and 2.7 s in all, against
+ *  2.6 s for the one statement that held the loop throughout. Slow storage
+ *  multiplies these, and has a long way to go to the event loop monitor's
+ *  500 ms. */
+export const MERGE_CHUNK_ROWS = RENDERABLE_MAX_SCAN;
 
 /** A caller's chunk size, as a whole number of rows of at least one. */
 export function mergeChunkRows(requested?: number): number {
@@ -110,10 +116,14 @@ export function repointDraining(survivorId: number, absorbedId: number): void {
 
 /** Leave `absorbedId` behind as a draining row of `survivorId`: it still has
  *  messages, and they follow in the background. Runs inside the merge's
- *  transaction, after the survivor has adopted what it adopts. */
-export function leaveDraining(survivorId: number, absorbedId: number): void {
+ *  transaction, after the survivor has adopted what it adopts. Starts the
+ *  drain itself: its first step is a turn of the loop away, by which time the
+ *  (synchronous) transaction has committed, or rolled back and left nothing
+ *  to drain. */
+export function leaveDraining(survivorId: number, absorbedId: number, chunkRows?: number): void {
   for (const stmt of satelliteDeletes) stmt.run(absorbedId);
   hideStmt.run(survivorId, drainingFold(absorbedId), absorbedId);
+  kickMergeDrain(chunkRows);
 }
 
 const nextDrainingStmt = db.prepare(`
@@ -131,7 +141,7 @@ const deleteDrainedStmt = db.prepare(`
 const drainChunkTx = db.transaction((chunkRows: number): boolean => {
   const next = nextDrainingStmt.get() as { id: number; survivorId: number } | undefined;
   if (!next) return false;
-  const moved = moveChunkStmt.run(next.survivorId, next.id, chunkRows).changes;
+  const moved = moveMessageChunk(next.survivorId, next.id, chunkRows);
   if (moved < chunkRows && deleteDrainedStmt.run(next.id).changes > 0) {
     // The survivor's line cap now counts the whole merged history.
     markBufferDirty(next.survivorId);
@@ -146,6 +156,9 @@ const drainChunkTx = db.transaction((chunkRows: number): boolean => {
  * shape, db/index.ts).
  */
 export function drainMergeChunk(chunkRows?: number): boolean {
+  // Looked for outside the transaction first: nearly every call at boot, and
+  // the last call of every drain, finds nothing and takes no write lock.
+  if (!nextDrainingStmt.get()) return false;
   return drainChunkTx.immediate(mergeChunkRows(chunkRows));
 }
 

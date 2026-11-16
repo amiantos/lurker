@@ -1501,7 +1501,7 @@ The contract, in the order a client should apply it:
   order there is no key collision. The surviving conversation keeps its id.
   The merged history interleaves server-side, so wipe the local slice and
   re-hydrate rather than guessing at the interleave. The latest page is whole
-  when the frame is sent. When the absorbed buffer was very large (past a
+  when the frame is sent. When the absorbed buffer was very large (past two
   thousand lines), the server moves its older history over the next few
   seconds, and a page far back fetched in that time can come up short.
 - **Corrections ride behind a merge.** `read-state`, `pins-changed`,

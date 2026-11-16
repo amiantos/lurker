@@ -22,7 +22,6 @@ let messages: typeof import('./messages.js');
 let retention: typeof import('./retention.js');
 let drain: typeof import('./bufferMergeDrain.js');
 let renameBuffer: typeof import('./renameBuffer.js').renameBuffer;
-let absorbBufferRow: typeof import('./renameBuffer.js').absorbBufferRow;
 let refoldNetworkBuffers: typeof import('./refoldBuffers.js').refoldNetworkBuffers;
 let bufferReads: typeof import('./bufferReads.js');
 let pinned: typeof import('./pinnedBuffers.js');
@@ -79,7 +78,7 @@ beforeAll(async () => {
   messages = await import('./messages.js');
   retention = await import('./retention.js');
   drain = await import('./bufferMergeDrain.js');
-  ({ renameBuffer, absorbBufferRow } = await import('./renameBuffer.js'));
+  ({ renameBuffer } = await import('./renameBuffer.js'));
   ({ refoldNetworkBuffers } = await import('./refoldBuffers.js'));
   bufferReads = await import('./bufferReads.js');
   pinned = await import('./pinnedBuffers.js');
@@ -124,7 +123,6 @@ describe('a merge that fits in one chunk', () => {
       bufferId: survivor,
       mergedFromBufferId: absorbed,
     });
-    expect(result).not.toHaveProperty('draining');
     expect(idsIn(survivor)).toEqual([...own, ...theirs].sort((a, b) => a - b));
     expect(db.prepare(`SELECT 1 FROM buffers WHERE id = ?`).get(absorbed)).toBeUndefined();
     expect(drainingRows()).toEqual([]);
@@ -206,6 +204,18 @@ describe('a merge bigger than one chunk', () => {
     expect(once(messages.listBufferTargets(networkId))).toEqual([to]);
     expect(once(messages.listBuffersForNetwork(networkId).map((b) => b.target))).toEqual([to]);
     expect(once(messages.maxIdByBuffer(networkId).map((b) => b.target))).toEqual([to]);
+    expect(
+      once(
+        messages
+          .listActiveTargetsInWindow(
+            networkId,
+            '2000-01-01T00:00:00.000Z',
+            '2100-01-01T00:00:00.000Z',
+            100,
+          )
+          .map((b) => b.target),
+      ),
+    ).toEqual([to]);
     // Closed is how the row is filed, and it is not a closed buffer either.
     expect(
       [...buffers.closedFoldedSetForNetwork(networkId)].filter((f) => f.includes('merging')),
@@ -284,11 +294,15 @@ describe('the background drain', () => {
     const { from, to } = pair();
     seedMany(from, 1);
     const theirs = seedMany(to, 12);
-    // What a process killed mid-drain leaves on disk: the merge committed,
-    // and no runner knows of it (the absorb alone starts none).
+    // What a process killed mid-drain leaves on disk, written as the merge
+    // writes it but by hand, so that no runner in this process knows of it.
     const src = resolve.resolveBuffer(userId, networkId, from)!;
     const dest = resolve.resolveBuffer(userId, networkId, to)!;
-    db.transaction(() => absorbBufferRow(userId, networkId, src, dest, CHUNK))();
+    db.prepare(`UPDATE buffers SET merged_into = ?, target_folded = ? WHERE id = ?`).run(
+      src.id,
+      `\u0000merging:${dest.id}`,
+      dest.id,
+    );
     expect(drainingRows()).toEqual([{ id: dest.id, merged_into: src.id }]);
     expect(vi.getTimerCount()).toBe(0);
 
@@ -445,6 +459,27 @@ describe('the chunk statement', () => {
     expect(plan.join('\n')).toMatch(/idx_messages_buf_unread \(buffer_id=\?\)/);
     expect(plan.join('\n')).not.toMatch(/TEMP B-TREE/);
     expect(plan.filter((d) => d.startsWith('SCAN messages'))).toEqual([]);
+  });
+
+  it('moves at least what one page read scans, so the page fetched on a merge is whole', () => {
+    expect(drain.MERGE_CHUNK_ROWS).toBeGreaterThanOrEqual(messages.RENDERABLE_MAX_SCAN);
+  });
+
+  it('a rolled-back merge leaves nothing draining, and the kick it queued finds nothing', () => {
+    const { from, to } = pair();
+    seedMany(from, 1);
+    const theirs = seedMany(to, 12);
+    const absorbed = buffers.getBuffer(userId, networkId, to)!.id;
+    expect(() =>
+      db.transaction(() => {
+        renameBuffer(userId, networkId, from, to, CHUNK);
+        throw new Error('caller fails after the merge');
+      })(),
+    ).toThrow('caller fails');
+    vi.runAllTimers();
+    expect(drainingRows()).toEqual([]);
+    expect(idsIn(absorbed)).toEqual(theirs);
+    expect(buffers.getBuffer(userId, networkId, to)?.id).toBe(absorbed);
   });
 
   it('takes a whole number of rows of at least one, whatever it is handed', () => {

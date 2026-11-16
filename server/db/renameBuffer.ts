@@ -8,7 +8,6 @@ import { renumberFavorites } from './favoriteBuffers.js';
 import { moveRuleScopes, NO_RULE_SCOPE_MOVES, type RuleScopeMoves } from './ruleScopeRename.js';
 import {
   bufferHasMessages,
-  kickMergeDrain,
   leaveDraining,
   mergeChunkRows,
   moveMessageChunk,
@@ -174,8 +173,8 @@ const renumberPinsStmt = db.prepare(`
  * History moves a chunk at a time (#1307). The newest `chunkRows` messages
  * move here; when that is all of them the absorbed row is deleted as ever.
  * When more are left the row stays behind, out of every lookup and listing,
- * and `draining` is true: the caller calls kickMergeDrain once its
- * transaction has committed, and the rest follow in the background.
+ * and the rest follow in the background once the caller's transaction has
+ * committed.
  */
 export function absorbBufferRow(
   userId: number,
@@ -183,7 +182,7 @@ export function absorbBufferRow(
   survivor: { id: number; state: string },
   absorbed: { id: number; state: string },
   chunkRows?: number,
-): { draftChanged: boolean; draining: boolean } {
+): { draftChanged: boolean } {
   const draftBefore = (draftBodyStmt.get(userId, survivor.id) as { body: string } | undefined)
     ?.body;
   const chunk = mergeChunkRows(chunkRows);
@@ -205,9 +204,11 @@ export function absorbBufferRow(
   // UPDATE OR IGNORE above that lost to the survivor left rows behind). With
   // history still to move it stays, as a draining row, and they are deleted
   // by hand.
-  const draining = moved === chunk && bufferHasMessages(absorbed.id);
-  if (draining) leaveDraining(survivor.id, absorbed.id);
-  else deleteRowStmt.run(absorbed.id);
+  if (moved === chunk && bufferHasMessages(absorbed.id)) {
+    leaveDraining(survivor.id, absorbed.id, chunk);
+  } else {
+    deleteRowStmt.run(absorbed.id);
+  }
   renumberPinsStmt.run(userId, networkId);
   // Favorites density is per user alone (global order). Unlike the pins twin
   // above, the module's renumber is exported (the network-delete route needs
@@ -215,7 +216,7 @@ export function absorbBufferRow(
   // own, so it nests fine inside the caller's.
   renumberFavorites(userId);
   const draftAfter = (draftBodyStmt.get(userId, survivor.id) as { body: string } | undefined)?.body;
-  return { draftChanged: draftAfter !== draftBefore, draining };
+  return { draftChanged: draftAfter !== draftBefore };
 }
 
 const work = db.transaction(
@@ -225,7 +226,7 @@ const work = db.transaction(
     from: string,
     to: string,
     chunkRows: number | undefined,
-  ): (RenameResult & { draining?: boolean }) | undefined => {
+  ): RenameResult | undefined => {
     const src = resolveBuffer(userId, networkId, from);
     if (!src) return undefined;
     const noop: RenameResult = {
@@ -287,7 +288,7 @@ const work = db.transaction(
     }
 
     // Merge: the destination row is absorbed into the (surviving) source.
-    const { draftChanged, draining } = absorbBufferRow(userId, networkId, src, dest, chunkRows);
+    const { draftChanged } = absorbBufferRow(userId, networkId, src, dest, chunkRows);
     setNameStmt.run(to, toFolded, src.id);
     return {
       renamed: true,
@@ -300,7 +301,6 @@ const work = db.transaction(
       // Visibility union already applied by absorbBufferRow.
       open: src.state === 'open' || dest.state === 'open',
       rulesMoved,
-      draining,
     };
   },
 );
@@ -314,7 +314,7 @@ const work = db.transaction(
  *
  * A merge of a buffer with more than `chunkRows` messages (production never
  * passes it) is whole in every respect but its older history, which the
- * background drain started here moves in after the commit.
+ * background drain moves in after the commit.
  */
 export function renameBuffer(
   userId: number,
@@ -324,9 +324,5 @@ export function renameBuffer(
   chunkRows?: number,
 ): RenameResult | undefined {
   if (!to || !from) return undefined;
-  const found = work.immediate(userId, networkId, from, to, chunkRows);
-  if (!found) return undefined;
-  const { draining, ...result } = found;
-  if (draining) kickMergeDrain(chunkRows);
-  return result;
+  return work.immediate(userId, networkId, from, to, chunkRows);
 }

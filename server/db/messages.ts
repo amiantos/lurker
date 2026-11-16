@@ -1571,8 +1571,11 @@ export function listActiveTargetsInWindow(
   // one an attached client will happily open a query on and then PRIVMSG — a
   // name that must never reach the wire. A DCC chat is a live socket this
   // process owns, not account state to mirror to other clients.
+  // And not a row a merge is still draining (#1307): it keeps the name its
+  // survivor now holds, and would list that conversation twice.
   const buffersOnly = `b.kind NOT IN ('server', 'system', 'dcc')
-          AND substr(b.target, 1, 1) <> '='`;
+          AND substr(b.target, 1, 1) <> '='
+          AND b.merged_into IS NULL`;
   // Our own lines where the bouncer never replays them — a DM, to a client that
   // takes no self-messages, or a services buffer, to anyone — are no one's news
   // either: TARGETS mustn't list a buffer, or a time, its window won't deliver.

@@ -6899,12 +6899,11 @@ export class IrcConnection {
     try {
       const stored = networkCasemapping(this.network.id);
       if (stored === declared) return;
-      // Synchronous by design (better-sqlite3), and bounded by the absorbed
-      // rows' history sizes: a merge repoints messages wholesale, so a
-      // case-twin with a very large history blocks the loop for the
-      // duration. Accepted with eyes open — it runs ONCE per network, on the
-      // first connect that declares the mapping — and the duration is logged
-      // so a slow one is visible rather than a mystery stall.
+      // Synchronous by design (better-sqlite3), and bounded: each merge
+      // moves one chunk of the absorbed row's history here and leaves the
+      // rest to the background drain (#1307, db/bufferMergeDrain.ts). The
+      // duration is logged so a slow one is visible rather than a mystery
+      // stall; it does not cover the drain.
       const startedAt = Date.now();
       const merges = refoldNetworkBuffers(this.network.user_id, this.network.id, declared);
       this.logNet(
