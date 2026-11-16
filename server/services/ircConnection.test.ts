@@ -26,6 +26,7 @@ import {
   outgoingNickIntents,
   commandResultError,
   topicReplyLine,
+  modeListReplyLine,
   isCommandResultErrorTag,
   sendRejectionTargetKind,
   sendRejectionText,
@@ -1477,6 +1478,110 @@ describe('refused-message handler routing (#283)', () => {
         text: '#elsewhere Their topic',
       }),
     );
+  });
+
+  // #315 — a ban, exception or invite-exception list the user asked for is
+  // said in its channel, like a topic; the server buffer keeps the raw lines.
+  it('says a ban list the user asked for in its channel, entry by entry', () => {
+    const { said, publish } = topicLinesFor(
+      [
+        ':irc.example.test 367 nick #ANIME *!*@bad.example op!o@host 1700000000',
+        ':irc.example.test 367 nick #ANIME *!*@worse.example',
+        ':irc.example.test 368 nick #ANIME :End of channel ban list',
+      ],
+      'MODE #anime +b',
+    );
+    expect(said.map((l) => l.target)).toEqual(['#anime', '#anime']);
+    expect(said[0].text).toMatch(
+      /^Ban: \*!\*@bad\.example · set by op · 2023-11-1[45] \d\d:\d\d:\d\d[+-]\d{4}$/,
+    );
+    // A server that sends the mask alone.
+    expect(said[1].text).toBe('Ban: *!*@worse.example');
+    // Additive: the server's own lines are still the server buffer's.
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'motd', target: ':server:1' }),
+    );
+  });
+
+  it('says so when the list is empty, and not after one that had entries', () => {
+    const empty = topicLinesFor(
+      [':irc.example.test 368 nick #anime :End of channel ban list'],
+      'MODE #anime +b',
+    );
+    expect(empty.said).toEqual([{ target: '#anime', text: 'No bans are set on #anime.' }]);
+  });
+
+  it.each([
+    ['e', '348', '349', 'Ban exception: *!*@ok.example · set by op', 'No ban exceptions are set'],
+    [
+      'I',
+      '346',
+      '347',
+      'Invite exception: *!*@ok.example · set by op',
+      'No invite exceptions are set',
+    ],
+  ])('does the same for +%s', (letter, item, end, line, none) => {
+    const full = topicLinesFor(
+      [
+        `:irc.example.test ${item} nick #anime *!*@ok.example op`,
+        `:irc.example.test ${end} nick #anime :End of list`,
+      ],
+      `MODE #anime +${letter}`,
+    );
+    expect(full.said).toEqual([{ target: '#anime', text: line }]);
+    const empty = topicLinesFor(
+      [`:irc.example.test ${end} nick #anime :End of list`],
+      `MODE #anime +${letter}`,
+    );
+    expect(empty.said).toEqual([{ target: '#anime', text: `${none} on #anime.` }]);
+  });
+
+  it('says nothing in the channel for a list nobody asked for', () => {
+    const { said } = topicLinesFor(
+      [
+        ':irc.example.test 367 nick #anime *!*@bad.example op 1700000000',
+        ':irc.example.test 368 nick #anime :End of channel ban list',
+      ],
+      null,
+    );
+    expect(said).toEqual([]);
+  });
+
+  it('leaves a list for a channel we are not in to the server buffer', () => {
+    const { said, publish } = topicLinesFor(
+      [':irc.example.test 367 nick #elsewhere *!*@bad.example op 1700000000'],
+      'MODE #elsewhere +b',
+    );
+    expect(said).toEqual([]);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'motd', target: ':server:1' }),
+    );
+  });
+
+  it('reads a quiet list, whose mask sits one parameter later', () => {
+    const stamp = () => 'WHEN';
+    expect(
+      modeListReplyLine(
+        '728',
+        ['me', '#c', 'q', '*!*@loud.example', 'op!o@h', '1700000000'],
+        stamp,
+      ),
+    ).toEqual({
+      channel: '#c',
+      list: 'q',
+      end: false,
+      text: 'Quiet: *!*@loud.example · set by op · WHEN',
+    });
+    expect(modeListReplyLine('729', ['me', '&local', 'q', 'End'], stamp)).toEqual({
+      channel: '&local',
+      list: 'q',
+      end: true,
+      text: 'No quiets are set on &local.',
+    });
+    // Not a list line, not a channel, no mask.
+    expect(modeListReplyLine('324', ['me', '#c', '+nt'], stamp)).toBeNull();
+    expect(modeListReplyLine('367', ['me', 'bob', '*!*@x'], stamp)).toBeNull();
+    expect(modeListReplyLine('367', ['me', '#c'], stamp)).toBeNull();
   });
 
   it('reads both shapes of 333, and neither from a line that has none', () => {
