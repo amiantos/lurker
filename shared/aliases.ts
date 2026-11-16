@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Command aliases (#276): a name the user gives to one or more commands, with
-// the typed arguments substituted in. `/alias wii /whois $1 $1`, then `/wii bob`.
+// the typed arguments substituted in. `/alias greet /me waves at $1`, then
+// `/greet bob`.
 //
 // Shared so the server validates a definition with the rules the client expands
 // it by, and so there is one description of the grammar for the mobile apps to
@@ -29,6 +30,13 @@ export const ALIAS_BODY_MAX = 4096;
  * bounds a long chain of different ones.
  */
 export const MAX_ALIAS_DEPTH = 10;
+
+/**
+ * How many commands one typed line may come to. Depth alone doesn't bound it:
+ * six aliases that each run the next twenty times are 3.2 million commands,
+ * built while the line is still being typed. Past this, nothing is run.
+ */
+export const MAX_ALIAS_COMMANDS = 500;
 
 /**
  * Names no alias may take: the two commands that manage aliases, so one that
@@ -210,6 +218,8 @@ export interface ResolvedAliases {
   readonly lines: string[];
   /** The alias that was not expanded because the chain was already too deep. */
   readonly stoppedAt: string | null;
+  /** The line came to more than MAX_ALIAS_COMMANDS commands; `lines` is empty. */
+  readonly tooMany: boolean;
 }
 
 /**
@@ -225,25 +235,39 @@ export function resolveAliases(
   line: string,
   aliases: readonly Alias[],
   ctx: AliasContext,
-  running: readonly string[] = [],
 ): ResolvedAliases {
+  const lines: string[] = [];
+  const state = { stoppedAt: null as string | null, tooMany: false };
+  collect(line, aliases, ctx, [], lines, state);
+  return state.tooMany ? { lines: [], ...state } : { lines, ...state };
+}
+
+function collect(
+  line: string,
+  aliases: readonly Alias[],
+  ctx: AliasContext,
+  running: readonly string[],
+  lines: string[],
+  state: { stoppedAt: string | null; tooMany: boolean },
+): void {
+  if (state.tooMany) return;
   const space = line.search(/\s/);
   const verb = aliasKey(space === -1 ? line : line.slice(0, space));
   const alias = aliases.find((a) => a.name === verb);
   // A reserved name is never run as an alias, however it got into the list.
   if (!alias || running.includes(verb) || RESERVED_ALIAS_NAMES.includes(verb)) {
-    return { lines: [line], stoppedAt: null };
+    if (lines.length >= MAX_ALIAS_COMMANDS) state.tooMany = true;
+    else lines.push(line);
+    return;
   }
-  if (running.length >= MAX_ALIAS_DEPTH) return { lines: [], stoppedAt: verb };
-  const lines: string[] = [];
-  let stoppedAt: string | null = null;
+  if (running.length >= MAX_ALIAS_DEPTH) {
+    state.stoppedAt ??= verb;
+    return;
+  }
   const args = space === -1 ? '' : line.slice(space);
   for (const expanded of expandAlias(alias.body, args, ctx)) {
-    const inner = resolveAliases(expanded, aliases, ctx, [...running, verb]);
-    lines.push(...inner.lines);
-    stoppedAt ??= inner.stoppedAt;
+    collect(expanded, aliases, ctx, [...running, verb], lines, state);
   }
-  return { lines, stoppedAt };
 }
 
 /**

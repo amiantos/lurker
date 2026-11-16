@@ -10,6 +10,7 @@ import {
   resolveAliases,
   splitAliasBody,
   ALIAS_NAME_MAX,
+  MAX_ALIAS_COMMANDS,
 } from './aliases.js';
 
 const ctx = { channel: '#lurker', nick: 'brad', network: 'Libera' };
@@ -162,6 +163,30 @@ describe('aliasTarget', () => {
   });
 });
 
+describe('resolveAliases, fanned out', () => {
+  const twenty = (next: string) => Array.from({ length: 20 }, () => next).join(';');
+
+  it('runs nothing once a line comes to too many commands', () => {
+    // 20^6 commands, six deep: under the depth limit, far over any sane count.
+    const chain = Array.from({ length: 6 }, (_, i) => ({
+      name: `f${i}`,
+      body: i === 5 ? '/quote END' : twenty(`/f${i + 1}`),
+    }));
+    chain[4].body = twenty('/f5');
+    const out = resolveAliases('/f0', chain, ctx);
+    expect(out).toEqual({ lines: [], stoppedAt: null, tooMany: true });
+  });
+
+  it('runs a line that comes to exactly the limit', () => {
+    const body = Array.from({ length: MAX_ALIAS_COMMANDS }, () => '/quote X').join(';');
+    const out = resolveAliases('/big', [{ name: 'big', body }], ctx);
+    expect(out.lines).toHaveLength(MAX_ALIAS_COMMANDS);
+    expect(out.tooMany).toBe(false);
+    const over = resolveAliases('/big', [{ name: 'big', body: `${body};/quote X` }], ctx);
+    expect(over).toEqual({ lines: [], stoppedAt: null, tooMany: true });
+  });
+});
+
 describe('resolveAliases', () => {
   const resolve = (line: string, aliases: { name: string; body: string }[]) =>
     resolveAliases(line, aliases, ctx);
@@ -170,6 +195,7 @@ describe('resolveAliases', () => {
     expect(resolve('/join  #a', [{ name: 'j2', body: '/join' }])).toEqual({
       lines: ['/join  #a'],
       stoppedAt: null,
+      tooMany: false,
     });
   });
 
@@ -198,7 +224,7 @@ describe('resolveAliases', () => {
 
   it('stops a chain that is too deep, and names where', () => {
     const chain = Array.from({ length: 12 }, (_, i) => ({ name: `a${i}`, body: `/a${i + 1}` }));
-    expect(resolve('/a0', chain)).toEqual({ lines: [], stoppedAt: 'a10' });
+    expect(resolve('/a0', chain)).toEqual({ lines: [], stoppedAt: 'a10', tooMany: false });
     expect(resolve('/a2', chain).lines).toEqual(['/a12']);
   });
 });

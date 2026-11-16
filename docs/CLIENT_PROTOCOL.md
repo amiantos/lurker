@@ -1514,7 +1514,7 @@ The contract, in the order a client should apply it:
 
 ### 9.8 Command aliases
 
-An alias is a name the user gives to one or more commands (`/alias wii /whois $1 $1`).
+An alias is a name the user gives to one or more commands (`/alias greet /me waves at $1`).
 The server stores and validates the list (`/api/aliases`, §10) and fans
 `aliases-changed` when it moves; **expanding one is the client's job**, since
 commands run in the client. A client with a command line should expand them the
@@ -1542,7 +1542,8 @@ same way, so an alias means one thing on every device. The reference is
 - **Nesting**: each resulting line runs as if typed, so it may name another
   alias. A name already running in the current chain is not expanded again, so
   an alias's own name inside its body is the command it replaced. Stop at 10
-  aliases deep.
+  aliases deep, and run nothing at all when one typed line comes to more than
+  500 commands.
 
 ## 10. HTTP API reference
 

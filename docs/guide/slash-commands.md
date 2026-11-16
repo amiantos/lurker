@@ -68,14 +68,14 @@ An alias is a command of your own: a name for one or more commands, with what yo
 type after it filled in.
 
 ```
-/alias wii /whois $1 $1
+/alias greet /me waves at $1
 /alias cycle /part; /join $channel
-/alias brb /me will be right back
+/alias brb /say be right back
 ```
 
-`/wii bob` then runs `/whois bob bob`.
+`/greet bob` then runs `/me waves at bob`.
 
-- `/alias` lists them, `/alias -wii` or `/unalias wii` removes one. They are also
+- `/alias` lists them, `/alias -greet` or `/unalias greet` removes one. They are also
   in **Settings › Aliases**, and they follow you to every browser you sign in
   from.
 - `;` separates commands. Write `\;` for a semicolon that is part of the text.
@@ -89,6 +89,8 @@ type after it filled in.
   Inside its own definition the name still means the built-in:
   `/alias quit /quit gone fishing`.
 - Aliases can run other aliases.
+- `/say <text>` says the text in the current buffer, which is how an alias
+  speaks. `/me` works too.
 
 ## Reference
 

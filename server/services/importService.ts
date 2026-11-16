@@ -1027,6 +1027,9 @@ export async function importFromZipFile(
         // archive's on the NOCASE UNIQUE constraint (or silently merge).
         db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(targetUserId);
         db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(targetUserId);
+        // And aliases (#276), for the same reason: a name in both would fail
+        // the primary key, and one in neither would merge.
+        db.prepare('DELETE FROM user_aliases WHERE user_id = ?').run(targetUserId);
         // avatar_sets were wiped and re-ingested just above, outside this tx.
         for (const table of IMPORT_ORDER) {
           const def = EXPORT_TABLES[table as keyof typeof EXPORT_TABLES] as

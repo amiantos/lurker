@@ -254,7 +254,12 @@ import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
 import { useAliasesStore } from '../stores/aliases.js';
-import { MAX_ALIAS_DEPTH, resolveAliases, type AliasContext } from '../../../shared/aliases.js';
+import {
+  MAX_ALIAS_COMMANDS,
+  MAX_ALIAS_DEPTH,
+  resolveAliases,
+  type AliasContext,
+} from '../../../shared/aliases.js';
 import { aliasListLines, parseAliasArgs } from '../lib/commands/alias.js';
 import { ensureChannelPrefix, isChannelTarget } from '../../../shared/channels.js';
 import { batchModeLines, DEFAULT_MAX_MODES } from '../../../shared/channelModes.js';
@@ -677,12 +682,18 @@ function bodyForSplit(
       aliases.aliases,
       aliasContext(at?.networkId ?? null, at?.target ?? ''),
     );
+    // A /me that can't go out refuses the whole line, as it would typed alone.
+    // Failing that, the command that splits into the most lines.
+    type Part = { body: string; isAction: boolean; target?: string };
+    const weigh = (part: Part): number => {
+      const bytes = lineBudget(part.target, part.isAction);
+      if (!part.isAction) return chunkCountForSay(part.body, bytes);
+      return chunkCountForAction(part.body, bytes) > 1 ? Infinity : 1;
+    };
+    const none: Part = { body: '', isAction: false };
     return lines
-      .map((line) => bodyForSplit(line, true))
-      .reduce((most, next) => (next.body.length > most.body.length ? next : most), {
-        body: '',
-        isAction: false,
-      });
+      .map((line): Part => bodyForSplit(line, true))
+      .reduce((worst, next) => (weigh(next) > weigh(worst) ? next : worst), none);
   }
   const m = raw.match(/^\/(\w+)\s*(.*)$/s);
   if (!m) return { body: '', isAction: false };
@@ -702,6 +713,8 @@ function bodyForSplit(
   // the wire. Built by the same helper the send path uses so the estimate and the
   // payload can't drift.
   if (cmd === 'shrug') return { body: chatBody(shrugBody(m[2])), isAction: false };
+  // /say is a plain message with a verb in front. The send path trims the text.
+  if (cmd === 'say') return { body: chatBody(m[2].trim()), isAction: false };
   if (cmd === 'msg' || cmd === 'query') {
     // /msg <who> <body...> — drop the recipient nick from the body. Split-and-rejoin rather than
     // slicing at the first space, because that is exactly what the send path does:
@@ -2823,6 +2836,8 @@ async function submit() {
     if (isPaused.value) return;
     const escaped = raw.startsWith('//');
     if (raw.startsWith('/') && !escaped) {
+      // See the same wait on the network path below.
+      if (!aliases.loaded && aliases.loading) await aliases.settled();
       handleCommand(raw, null, SYSTEM_KEY);
     } else {
       localInfo(null, SYSTEM_KEY, 'Not a command — type /commands to see what you can run here.');
@@ -2919,6 +2934,10 @@ async function submit() {
     // Cleared first so a stale ack from an earlier command can't be mistaken for
     // this one's.
     pendingCommandAcks = [];
+    // A command typed before the alias list has arrived waits for it. Run
+    // against an empty list, `/quit` would be the built-in for someone whose
+    // `/quit` is an alias, and their own commands would go to the server raw.
+    if (!aliases.loaded && aliases.loading) await aliases.settled();
     const handled = await handleCommand(raw, networkId, target);
     if (!handled) return;
     // Taken first: a /me that went out as a reply carries it in its origin.
@@ -2932,7 +2951,8 @@ async function submit() {
       const results = await Promise.all(acks.map((ack) => ack.promise));
       // The line comes back only when none of it went out: a half-delivered
       // alias, typed again, would say the delivered half twice.
-      if (results.every((result) => !result.ok)) {
+      const whole = acks.every((ack) => !ack.origin.partial);
+      if (whole && results.every((result) => !result.ok)) {
         const { origin } = acks[0];
         restoreFailedSend(origin.networkId, origin.target, origin.line);
       }
@@ -3330,6 +3350,8 @@ interface CommandOrigin {
   target: string;
   line: string;
   reply?: TakenReply | null;
+  /** An alias (#276) ran other commands beside this one, which no ACK answers for. */
+  partial?: boolean;
 }
 let pendingCommandAcks: CommandAck[] = [];
 
@@ -4429,30 +4451,41 @@ function handleCommand(
   const argLine = line.slice(1 + cmd.length).trim();
   // An alias wins over a command of its name, so it is looked up first.
   if (!expanded && aliases.find(cmd)) {
-    const { lines, stoppedAt } = resolveAliases(
+    const { lines, stoppedAt, tooMany } = resolveAliases(
       line,
       aliases.aliases,
       aliasContext(networkId, target),
     );
-    if (stoppedAt) {
+    const name = cmd.toLowerCase();
+    if (tooMany) {
       localInfo(
         networkId,
         target,
-        `/${cmd.toLowerCase()}: /${stoppedAt} not run, ${MAX_ALIAS_DEPTH} aliases deep.`,
+        `/${name}: not run, it comes to more than ${MAX_ALIAS_COMMANDS} commands.`,
+      );
+    } else if (stoppedAt) {
+      localInfo(
+        networkId,
+        target,
+        `/${name}: /${stoppedAt} not run, ${MAX_ALIAS_DEPTH} aliases deep.`,
       );
     }
-    // A command that couldn't be sent (the socket is closed) ends the run. The
-    // typed line stays in the composer only if nothing went out before it.
+    // A command that couldn't be sent means the socket is closed, and it was
+    // closed for the ones before it too: this loop never yields. So the run
+    // ends there and the typed line stays in the composer.
+    const before = pendingCommandAcks.length;
     typedAliasLine = line;
     try {
-      let ran = false;
       for (const command of lines) {
-        if (!handleCommand(command, networkId, target, true)) return ran;
-        ran = true;
+        if (!handleCommand(command, networkId, target, true)) return false;
       }
     } finally {
       typedAliasLine = null;
     }
+    // Commands that went out with no ACK to wait on (a raw line, a join) can't
+    // be seen failing, so the ones that can don't speak for the whole line.
+    const tracked = pendingCommandAcks.slice(before);
+    if (tracked.length < lines.length) for (const ack of tracked) ack.origin.partial = true;
     return true;
   }
   // Typed against the command table (lib/commands/registry.ts): every verb the
@@ -5254,6 +5287,21 @@ function handleCommand(
       }
       const slapText = `slaps ${who} around a bit with a large trout`;
       return ackedSend({ type: 'action', networkId, target, text: slapText }, slapText, {
+        networkId,
+        target,
+        line,
+      });
+    }
+    case 'say': {
+      // The text, said here. What an alias (#276) reaches for to speak in the
+      // buffer it was run in; typed by hand it is the text with more keystrokes,
+      // except that a leading slash stays text.
+      if (isServer.value) {
+        localInfo(networkId, target, 'usage: /say <text> — run inside a channel or DM');
+        return true;
+      }
+      if (!argLine) return true;
+      return ackedSend({ type: 'send', networkId, target, text: chatBody(argLine) }, argLine, {
         networkId,
         target,
         line,

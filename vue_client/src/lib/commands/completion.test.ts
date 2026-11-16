@@ -427,6 +427,16 @@ describe("the user's own aliases (#276)", () => {
     expect(own('/far #a')).toBeNull();
   });
 
+  it('offers nothing when the command it names is itself replaced', () => {
+    const replaced = [...aliases, { name: 'join', body: '/msg bob $*' }];
+    expect(completionContext('/j2 #li', 7, replaced)).toBeNull();
+    // Its own name in its body is still the command.
+    expect(completionContext('/join #li', 9, [{ name: 'join', body: '/join' }])).toMatchObject({
+      verb: 'join',
+      kind: 'channel',
+    });
+  });
+
   it('leaves commands alone when there are no aliases', () => {
     expect(completionContext('/join #li', 9)).toMatchObject({ verb: 'join', kind: 'channel' });
   });

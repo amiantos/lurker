@@ -155,6 +155,8 @@ export function completionContext(
   // Its own name there is the command it replaced, so that case falls out too.
   const target = alias ? aliasTarget(alias.body) : null;
   if (alias && !target) return null;
+  // The command it names is itself replaced by another alias: not that command.
+  if (target && target.verb !== typed && aliases.some((a) => a.name === target.verb)) return null;
   const verb = target?.verb ?? typed;
   const spec = specFor(verb);
   if (!spec) return null;

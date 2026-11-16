@@ -18,7 +18,8 @@
     <p v-if="loadError" class="error inline">{{ loadError }}</p>
 
     <p v-if="!store.aliases.length" class="muted small">
-      No aliases yet. Add one below, or type <code>/alias wii /whois $1 $1</code> in any buffer.
+      No aliases yet. Add one below, or type <code>/alias greet /me waves at $1</code> in any
+      buffer.
     </p>
     <ul v-else class="device-list">
       <li v-for="alias in store.aliases" :key="alias.name" class="device">
@@ -46,7 +47,7 @@
           @keydown.enter="blockImeEnter"
           type="text"
           :maxlength="ALIAS_NAME_MAX + 1"
-          placeholder="wii"
+          placeholder="greet"
           spellcheck="false"
           autocapitalize="off"
           autocomplete="off"
@@ -59,7 +60,7 @@
           @input="onBodyInput"
           @keydown.enter="blockImeEnter"
           type="text"
-          placeholder="/whois $1 $1"
+          placeholder="/me waves at $1"
           spellcheck="false"
           autocapitalize="off"
           autocomplete="off"

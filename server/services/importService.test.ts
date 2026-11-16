@@ -1716,6 +1716,29 @@ describe('user_themes — export/import', () => {
   });
 });
 
+// Command aliases (#276) travel in data.json like any per-user table.
+describe('user_aliases — export/import', () => {
+  it("round-trips aliases, replacing a zero-network account's own", async () => {
+    const aliases = (await import('./aliasesService.js')).default;
+    const { alice } = seedAlice();
+    aliases.set(alice.id, 'greet', '/me waves at $1');
+    aliases.set(alice.id, 'cycle', '/part; /join $channel');
+    const buf = await exportToBuffer(alice.id, { includeMessages: false });
+
+    // One with a name the archive also holds, which would fail the primary
+    // key if the import merged, and one it doesn't, which would linger.
+    const bob = createUser(`bob_alias_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    aliases.set(bob.id, 'greet', '/me nods');
+    aliases.set(bob.id, 'mine', '/quit');
+
+    await importFromZipBuffer(bob.id, buf);
+    expect(aliases.list(bob.id)).toEqual([
+      { name: 'cycle', body: '/part; /join $channel' },
+      { name: 'greet', body: '/me waves at $1' },
+    ]);
+  });
+});
+
 // Uploaded avatar sets (#607): the rows travel in data.json, the tiles as
 // avatar_sets/<id>/<nnn>.webp entries, and the look.avatars.set pointer
 // rewrites through the id map like a theme pointer.

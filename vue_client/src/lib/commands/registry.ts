@@ -236,6 +236,7 @@ const ID = arg('id', 'word');
 export const COMMANDS = [
   // Messaging
   cmd(['me'], 'Messaging', 'emote in the current buffer', { args: [text('text')] }),
+  cmd(['say'], 'Messaging', 'say your text in the current buffer', { args: [text('text')] }),
   cmd(['msg', 'query'], 'Messaging', 'open a DM and send', { args: [NICK, optText('text')] }),
   cmd(['notice'], 'Messaging', 'send a NOTICE to a channel or nick', {
     args: [arg('tgt', 'nick'), text('text')],
@@ -560,7 +561,7 @@ export const COMMANDS = [
     // and a picker row there would turn it into `/alias wii`.
     args: [opt('name', 'word'), optText('command')],
     notes: [
-      'e.g. /alias wii /whois $1 $1   ·   /alias cycle /part; /join $channel',
+      'e.g. /alias greet /me waves at $1   ·   /alias cycle /part; /join $channel',
       '$1..$9 are the words typed after it, $2- the second to the end, $* all of them',
       '$channel, $nick and $network are where it was run; \\; is a ; that does not split',
       '/alias -name removes one; the full list is in Settings › Aliases',

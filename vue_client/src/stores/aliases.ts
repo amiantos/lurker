@@ -18,11 +18,24 @@ const byName = (a: Alias, b: Alias): number => a.name.localeCompare(b.name);
 // predate it, and would put a removed alias back.
 let inflight: Promise<void> | null = null;
 let stale = false;
+// Bumped on sign-out: an answer to a request the last account made is not this
+// account's list.
+let session = 0;
 
 // The first load is retried, because nothing else would: until it succeeds the
 // composer has no aliases, and `/wii bob` goes to the server as `wii bob`.
 const RETRY_AFTER_MS = [2_000, 10_000, 30_000];
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Empty the store for a new session, and disown whatever is still in flight. */
+export function resetAliases(): void {
+  session += 1;
+  inflight = null;
+  stale = false;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
+  useAliasesStore().$reset();
+}
 
 export const useAliasesStore = defineStore('aliases', {
   state: () => ({
@@ -48,23 +61,32 @@ export const useAliasesStore = defineStore('aliases', {
       }
       this.loading = true;
       this.error = '';
-      inflight = (async () => {
+      const mine = session;
+      const run = (async () => {
         try {
           do {
             stale = false;
             const { aliases } = await api('/api/aliases');
+            if (mine !== session) return;
             this.aliases = aliases || [];
             this.loaded = true;
           } while (stale);
         } catch (e: any) {
-          this.error = e.message || 'failed to load aliases';
+          if (mine === session) this.error = e.message || 'failed to load aliases';
           throw e;
         } finally {
-          this.loading = false;
-          inflight = null;
+          if (mine === session) {
+            this.loading = false;
+            inflight = null;
+          }
         }
       })();
-      return inflight;
+      inflight = run;
+      return run;
+    },
+    /** The first load, if it is still out: what a command typed this early waits for. */
+    settled(): Promise<void> {
+      return this.loaded || !inflight ? Promise.resolve() : inflight.catch(() => {});
     },
     /** Load on (re)connect, trying again a few times if the first load fails. */
     load(attempt = 0) {
@@ -72,7 +94,7 @@ export const useAliasesStore = defineStore('aliases', {
       retryTimer = null;
       this.fetchAll().catch(() => {
         const wait = RETRY_AFTER_MS[attempt];
-        if (this.loaded || wait === undefined) return;
+        if (this.loaded || wait === undefined || retryTimer) return;
         retryTimer = setTimeout(() => this.load(attempt + 1), wait);
       });
     },
@@ -80,6 +102,7 @@ export const useAliasesStore = defineStore('aliases', {
     async set(name: string, body: string): Promise<{ alias: Alias; created: boolean }> {
       const { alias, created } = await api(path(name), { method: 'PUT', body: { body } });
       this.aliases = [...this.aliases.filter((a) => a.name !== alias.name), alias].sort(byName);
+      this.reconcile();
       return { alias, created };
     },
     /** Edit one in place: a new name, a new body, or both. */
@@ -89,11 +112,19 @@ export const useAliasesStore = defineStore('aliases', {
         ...this.aliases.filter((a) => a.name !== name && a.name !== alias.name),
         alias,
       ].sort(byName);
+      this.reconcile();
       return alias as Alias;
     },
     async remove(name: string) {
       await api(path(name), { method: 'DELETE' });
       this.aliases = this.aliases.filter((a) => a.name !== name);
+      this.reconcile();
+    },
+    // A write's answer is applied at once, then the list is read back: another
+    // device's later write may have been fetched while this answer was on its
+    // way, and applying it last would undo that.
+    reconcile() {
+      this.fetchAll().catch(() => {});
     },
     applyServerChanged() {
       this.fetchAll().catch(() => {

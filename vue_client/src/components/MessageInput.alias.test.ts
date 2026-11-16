@@ -21,7 +21,9 @@ import MessageInput from './MessageInput.vue';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<(payload: Record<string, unknown>) => boolean>(() => true),
-  socketSendWithAck: vi.fn<() => Promise<never> | null>(() => null),
+  socketSendWithAck: vi.fn<(payload: Record<string, unknown>) => Promise<{ ok: boolean }> | null>(
+    () => null,
+  ),
   onSocketOpen: vi.fn<() => () => void>(() => () => {}),
 }));
 
@@ -48,6 +50,23 @@ function seed(aliases: Alias[]) {
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/** A stand-in for /api/aliases holding `held`: writes change it, a read returns it. */
+function serve(held: Alias[]) {
+  let list = held;
+  vi.mocked(api).mockImplementation(async (path, opts) => {
+    const name = decodeURIComponent(path.split('/')[3] ?? '');
+    if (opts?.method === 'DELETE') list = list.filter((a) => a.name !== name);
+    if (opts?.method === 'PUT') {
+      const created = !list.some((a) => a.name === name);
+      const alias = { name, body: (opts.body as { body?: string } | undefined)?.body ?? '' };
+      list = [...list.filter((a) => a.name !== name), alias];
+      return { alias, created };
+    }
+    return opts?.method ? { ok: true } : { aliases: list };
+  });
+}
+const writes = () => vi.mocked(api).mock.calls.filter(([, opts]) => opts?.method);
 
 async function run(command: string) {
   const wrapper = mount(MessageInput, { attachTo: document.body });
@@ -79,6 +98,8 @@ describe('running an alias', () => {
     setActivePinia(createPinia());
     vi.mocked(socketSend).mockClear();
     vi.mocked(socketSend).mockImplementation(() => true);
+    vi.mocked(socketSendWithAck).mockReset();
+    vi.mocked(socketSendWithAck).mockReturnValue(null);
   });
   afterEach(() => {
     for (const wrapper of mounted) wrapper.unmount();
@@ -151,6 +172,25 @@ describe('running an alias', () => {
     expect(raws()).toEqual(['END']);
   });
 
+  it('runs nothing when the line comes to too many commands', async () => {
+    const twenty = (next: string) => Array.from({ length: 20 }, () => next).join(';');
+    seed([
+      { name: 'f0', body: twenty('/f1') },
+      { name: 'f1', body: twenty('/f2') },
+      { name: 'f2', body: twenty('/quote X') },
+    ]);
+    await run('/f0');
+    expect(raws()).toEqual([]);
+    expect(printed()).toEqual(['/f0: not run, it comes to more than 500 commands.']);
+  });
+
+  it('keeps the typed line when a send fails after a command that only printed', async () => {
+    seed([{ name: 'pp', body: '/alias; /quote PING' }]);
+    vi.mocked(socketSend).mockImplementation((p) => (p as { type: string }).type !== 'raw');
+    const el = await run('/pp');
+    expect(el.value).toBe('/pp');
+  });
+
   it('clears the composer once it has run', async () => {
     seed([{ name: 'pp', body: '/quote PING' }]);
     const el = await run('/pp');
@@ -186,6 +226,18 @@ describe('running an alias', () => {
     expect(useToastsStore().items.map((t) => t.title)).toEqual(['Action message too long']);
   });
 
+  it('says things with /say, in the buffer it was run in', async () => {
+    seed([{ name: 'brb', body: '/say be right back, $1' }]);
+    vi.mocked(socketSendWithAck).mockReturnValue(Promise.resolve({ ok: true }));
+    await run('/brb bob');
+    expect(vi.mocked(socketSendWithAck)).toHaveBeenCalledWith({
+      type: 'send',
+      networkId: 7,
+      target: '#chan',
+      text: 'be right back, bob',
+    });
+  });
+
   it('is not run by an escaped slash', async () => {
     seed([{ name: 'pp', body: '/quote PING' }]);
     await run('//pp');
@@ -215,10 +267,7 @@ describe('/alias and /unalias', () => {
 
   it('defines one, and says when it takes the place of a command', async () => {
     seed([]);
-    vi.mocked(api).mockResolvedValue({
-      alias: { name: 'msg', body: '/notice $1 $2-' },
-      created: true,
-    });
+    serve([]);
     await run('/alias /MSG /notice $1 $2-');
     expect(vi.mocked(api)).toHaveBeenCalledWith('/api/aliases/msg', {
       method: 'PUT',
@@ -230,10 +279,7 @@ describe('/alias and /unalias', () => {
 
   it('keeps every command of a body it is given', async () => {
     seed([]);
-    vi.mocked(api).mockResolvedValue({
-      alias: { name: 'pfft', body: '/msg p hi; /msg f hi' },
-      created: true,
-    });
+    serve([]);
     await run('/alias pfft /msg p hi; /msg f hi');
     expect(vi.mocked(api)).toHaveBeenCalledWith('/api/aliases/pfft', {
       method: 'PUT',
@@ -246,10 +292,13 @@ describe('/alias and /unalias', () => {
       { name: 'j2', body: '/join' },
       { name: 'wii', body: '/whois $1 $1' },
     ]);
-    vi.mocked(api).mockResolvedValue({ ok: true });
+    serve([
+      { name: 'j2', body: '/join' },
+      { name: 'wii', body: '/whois $1 $1' },
+    ]);
     await run('/alias -j2');
     await run('/unalias WII');
-    expect(vi.mocked(api).mock.calls).toEqual([
+    expect(writes()).toEqual([
       ['/api/aliases/j2', { method: 'DELETE' }],
       ['/api/aliases/wii', { method: 'DELETE' }],
     ]);
@@ -272,7 +321,7 @@ describe('/alias and /unalias', () => {
     // The server refuses these names. A list that held one anyway (an import)
     // must not take the two commands that could remove it.
     seed([{ name: 'alias', body: '/quote HIJACKED' }]);
-    vi.mocked(api).mockResolvedValue({ ok: true });
+    serve([{ name: 'alias', body: '/quote HIJACKED' }]);
     await run('/alias');
     expect(printed()).toEqual(['aliases (1):', '  /alias  /quote HIJACKED']);
     await run('/unalias alias');
