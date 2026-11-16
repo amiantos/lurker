@@ -13,7 +13,8 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useAliasesStore } from '../stores/aliases.js';
-import { socketSend } from '../composables/useSocket.js';
+import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
+import { useToastsStore } from '../stores/toasts.js';
 import { api } from '../api.js';
 import { MAX_ALIAS_DEPTH, type Alias } from '../../../shared/aliases.js';
 import MessageInput from './MessageInput.vue';
@@ -136,7 +137,7 @@ describe('running an alias', () => {
     await run('/a0');
     expect(raws()).toEqual([]);
     expect(printed()).toEqual([
-      `/a0: stopped at /a${MAX_ALIAS_DEPTH}, ${MAX_ALIAS_DEPTH} aliases deep.`,
+      `/a0: /a${MAX_ALIAS_DEPTH} not run, ${MAX_ALIAS_DEPTH} aliases deep.`,
     ]);
   });
 
@@ -161,6 +162,28 @@ describe('running an alias', () => {
     vi.mocked(socketSend).mockImplementation((p) => (p as { type: string }).type !== 'raw');
     const el = await run('/pp');
     expect(el.value).toBe('/pp');
+  });
+
+  it('fills $channel with nothing in a server buffer', async () => {
+    seed([{ name: 'here', body: '/quote AT [$channel] $nick' }]);
+    const networks = useNetworksStore();
+    useBuffersStore().buffers['7:::server:7'] = {
+      networkId: 7,
+      target: ':server:7',
+      members: [],
+      messages: [],
+    } as never;
+    networks.activeKey = '7:::server:7';
+    await run('/here');
+    expect(raws()).toEqual(['AT [] me']);
+  });
+
+  it('is held to the limits of the command it runs', async () => {
+    // `/me` can't be split across lines; neither can an alias of it.
+    seed([{ name: 'emote', body: '/me' }]);
+    await run(`/emote ${'long '.repeat(400)}`);
+    expect(vi.mocked(socketSendWithAck)).not.toHaveBeenCalled();
+    expect(useToastsStore().items.map((t) => t.title)).toEqual(['Action message too long']);
   });
 
   it('is not run by an escaped slash', async () => {
@@ -246,10 +269,24 @@ describe('/alias and /unalias', () => {
   });
 
   it('cannot be replaced by an alias that got in some other way', async () => {
-    // The server refuses these names; a list that held one anyway must not lock
-    // the user out of removing it.
-    seed([{ name: 'j2', body: '/join' }]);
+    // The server refuses these names. A list that held one anyway (an import)
+    // must not take the two commands that could remove it.
+    seed([{ name: 'alias', body: '/quote HIJACKED' }]);
+    vi.mocked(api).mockResolvedValue({ ok: true });
     await run('/alias');
-    expect(printed()[0]).toBe('aliases (1):');
+    expect(printed()).toEqual(['aliases (1):', '  /alias  /quote HIJACKED']);
+    await run('/unalias alias');
+    expect(vi.mocked(api)).toHaveBeenCalledWith('/api/aliases/alias', { method: 'DELETE' });
+    expect(raws()).toEqual([]);
+  });
+
+  it('lists by the start of a name on Enter, with no picker in the way', async () => {
+    seed([
+      { name: 'j2', body: '/join' },
+      { name: 'wii', body: '/whois $1 $1' },
+    ]);
+    const el = await run('/alias wi');
+    expect(el.value).toBe('');
+    expect(printed()).toEqual(['aliases (1):', '  /wii  /whois $1 $1']);
   });
 });

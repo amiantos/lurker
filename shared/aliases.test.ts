@@ -7,6 +7,7 @@ import {
   expandAlias,
   normalizeAliasBody,
   normalizeAliasName,
+  resolveAliases,
   splitAliasBody,
   ALIAS_NAME_MAX,
 } from './aliases.js';
@@ -70,6 +71,13 @@ describe('expandAlias', () => {
     expect(expand('/whois $1 $1', 'bob')).toEqual(['/whois bob bob']);
     expect(expand('/kick $1 $2-', 'bob being a bob')).toEqual(['/kick bob being a bob']);
     expect(expand('/x $2-3 | $3-', 'a b c d')).toEqual(['/x b c | c d']);
+  });
+
+  it('reads a dash before a letter or a variable as a dash', () => {
+    expect(expand('/msg $1-bot status', 'foo bar')).toEqual(['/msg foo-bot status']);
+    expect(expand('/topic $1-$2', 'a b')).toEqual(['/topic a-b']);
+    expect(expand('/x $1- .', 'a b')).toEqual(['/x a b .']);
+    expect(expand('/x ($2-)', 'a b c')).toEqual(['/x (b c)']);
   });
 
   it('leaves a word that was not typed empty', () => {
@@ -151,5 +159,46 @@ describe('aliasTarget', () => {
   it('is null when a typed word has no one slot', () => {
     expect(aliasTarget('/whois $1 $1')).toBeNull();
     expect(aliasTarget('/part; /join')).toBeNull();
+  });
+});
+
+describe('resolveAliases', () => {
+  const resolve = (line: string, aliases: { name: string; body: string }[]) =>
+    resolveAliases(line, aliases, ctx);
+
+  it('returns a line that names no alias as it is', () => {
+    expect(resolve('/join  #a', [{ name: 'j2', body: '/join' }])).toEqual({
+      lines: ['/join  #a'],
+      stoppedAt: null,
+    });
+  });
+
+  it('expands aliases inside aliases, in order', () => {
+    const aliases = [
+      { name: 'outer', body: '/inner $1; /quote LAST' },
+      { name: 'inner', body: '/quote A $1; /quote B' },
+    ];
+    expect(resolve('/OUTER x', aliases).lines).toEqual(['/quote A x', '/quote B', '/quote LAST']);
+  });
+
+  it('leaves a name that is already running alone', () => {
+    expect(resolve('/quit', [{ name: 'quit', body: '/quit gone fishing' }]).lines).toEqual([
+      '/quit gone fishing',
+    ]);
+    const loop = [
+      { name: 'a', body: '/b' },
+      { name: 'b', body: '/a again' },
+    ];
+    expect(resolve('/a', loop).lines).toEqual(['/a again']);
+  });
+
+  it('never runs a reserved name as an alias', () => {
+    expect(resolve('/alias -x', [{ name: 'alias', body: '/quit' }]).lines).toEqual(['/alias -x']);
+  });
+
+  it('stops a chain that is too deep, and names where', () => {
+    const chain = Array.from({ length: 12 }, (_, i) => ({ name: `a${i}`, body: `/a${i + 1}` }));
+    expect(resolve('/a0', chain)).toEqual({ lines: [], stoppedAt: 'a10' });
+    expect(resolve('/a2', chain).lines).toEqual(['/a12']);
   });
 });

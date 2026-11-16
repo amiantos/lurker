@@ -842,9 +842,7 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   // Command aliases (#276) aren't in the snapshot either, and the composer
   // needs them before the first line is typed. Every (re)connect, since an
   // aliases-changed frame sent while this device was away never arrived.
-  useAliasesStore()
-    .fetchAll()
-    .catch(() => {});
+  useAliasesStore().load();
   // Saved themes: the only live refresh is the themes-changed frame, which a
   // disconnected device never received. Refetch on every (re)connect so a
   // theme edited elsewhere while this device slept doesn't render stale.

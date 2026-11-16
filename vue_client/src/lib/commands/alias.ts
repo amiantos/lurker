@@ -5,7 +5,7 @@
 // lists the aliases that start with it, `-name` removes, a name and a body
 // defines or replaces. What an alias expands to is shared/aliases.ts.
 
-import { normalizeAliasName, type Alias } from '../../../../shared/aliases.js';
+import { aliasKey, normalizeAliasName, type Alias } from '../../../../shared/aliases.js';
 import { formatColumns } from './output.js';
 
 export type AliasCommand =
@@ -22,10 +22,11 @@ export function parseAliasArgs(argLine: string): AliasCommand {
   const body = space === -1 ? '' : line.slice(space).trim();
   if (first.startsWith('-')) {
     if (body) return { kind: 'error', error: 'removing an alias takes its name and nothing else' };
-    const name = normalizeAliasName(first.slice(1));
-    return name.ok ? { kind: 'remove', name: name.name } : { kind: 'error', error: name.error };
+    // By its key, not by the naming rules: a name that breaks one must still go.
+    const name = aliasKey(first.slice(1));
+    return name ? { kind: 'remove', name } : { kind: 'error', error: 'an alias needs a name' };
   }
-  if (!body) return { kind: 'list', prefix: first.replace(/^\/+/, '').toLowerCase() };
+  if (!body) return { kind: 'list', prefix: aliasKey(first) };
   const name = normalizeAliasName(first);
   return name.ok ? { kind: 'set', name: name.name, body } : { kind: 'error', error: name.error };
 }

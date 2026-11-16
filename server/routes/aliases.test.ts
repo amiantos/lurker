@@ -135,3 +135,30 @@ describe('DELETE /api/aliases/:name', () => {
     expect(await names(bobAgent)).toEqual(['j']);
   });
 });
+
+describe('a row that breaks the naming rules', () => {
+  // An archive import inserts rows as they are, and a name can become reserved
+  // after someone took it. Such a row must still be editable and removable.
+  const plant = async (name: string) => {
+    const db = (await import('../db/index.js')).default;
+    db.prepare('INSERT INTO user_aliases (user_id, name, body) VALUES (?, ?, ?)').run(
+      alice.id,
+      name,
+      '/quit',
+    );
+  };
+
+  it('can be removed', async () => {
+    await plant('alias');
+    await plant('Two Words');
+    expect((await aliceAgent.delete('/api/aliases/alias')).status).toBe(200);
+    expect((await aliceAgent.delete('/api/aliases/Two%20Words')).status).toBe(200);
+    expect(await names(aliceAgent)).toEqual(['msg']);
+  });
+
+  it('can be renamed to a name that keeps them', async () => {
+    await plant('unalias');
+    const res = await aliceAgent.patch('/api/aliases/unalias').send({ name: 'bye' });
+    expect(res.body.alias).toEqual({ name: 'bye', body: '/quit' });
+  });
+});

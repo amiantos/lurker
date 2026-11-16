@@ -11,7 +11,8 @@
 //
 //  - `;` separates commands, `\;` is a literal one.
 //  - `$1`..`$9` are the typed words, `$2-` the second to the end, `$2-3` a
-//    span, `$*` everything as typed. A word that wasn't typed is empty.
+//    span, `$*` everything as typed. A word that wasn't typed is empty. A dash
+//    with a letter or a `$` straight after it is a dash: `$1-bot`, `$1-$2`.
 //  - `$channel` (`$chan`) is the buffer the alias was run in, `$nick` (`$me`)
 //    your nick there, `$network` its network. `$$` is a literal dollar, and any
 //    other `$` is left alone.
@@ -44,9 +45,18 @@ export type AliasNameResult =
   | { readonly ok: true; readonly name: string }
   | { readonly ok: false; readonly error: string };
 
+/**
+ * A typed name as a stored one is looked up: no slash, lower case, and none of
+ * the rules below. Removing and editing go by this, so a row that breaks a rule
+ * (an import, a name reserved since) can still be reached.
+ */
+export function aliasKey(raw: string): string {
+  return raw.trim().replace(/^\/+/, '').toLowerCase();
+}
+
 /** A typed name as it is stored: no slash, lower case. */
 export function normalizeAliasName(raw: string): AliasNameResult {
-  const name = raw.trim().replace(/^\/+/, '').toLowerCase();
+  const name = aliasKey(raw);
   if (!name) return { ok: false, error: 'an alias needs a name' };
   if (/[\s/]/.test(name))
     return { ok: false, error: "an alias name can't hold a space or a slash" };
@@ -149,7 +159,9 @@ function substitute(
     if (isDigit(next)) {
       const from = Number(next);
       i++;
-      if (template[i + 1] === '-') {
+      // `$1-bot` and `$1-$2` are a word and a dash; `$1-` anywhere else is a range.
+      const after = template[i + 2];
+      if (template[i + 1] === '-' && !(after === '$' || /[A-Za-z0_]/.test(after ?? ''))) {
         i++;
         const to = isDigit(template[i + 1]) ? Number(template[++i]) : words.length;
         text += words.slice(from - 1, to).join(' ');
@@ -190,6 +202,48 @@ export function expandAlias(body: string, argLine: string, ctx: AliasContext): s
     lines[lines.length - 1] = `${lines[lines.length - 1]} ${args}`;
   }
   return lines.filter(Boolean).map((line) => (line.startsWith('/') ? line : `/${line}`));
+}
+
+/** What a typed line comes to once every alias in it has been expanded. */
+export interface ResolvedAliases {
+  /** The commands to run, in order. None of them is to be expanded again. */
+  readonly lines: string[];
+  /** The alias that was not expanded because the chain was already too deep. */
+  readonly stoppedAt: string | null;
+}
+
+/**
+ * Expand a typed command line all the way down: the alias it names, the aliases
+ * that one's commands name, and so on. A line that names no alias comes back as
+ * it is.
+ *
+ * A name already running in the chain is not expanded again, so an alias's own
+ * name in its body is the command it replaced (`/alias quit /quit gone
+ * fishing`), and no alias can run forever.
+ */
+export function resolveAliases(
+  line: string,
+  aliases: readonly Alias[],
+  ctx: AliasContext,
+  running: readonly string[] = [],
+): ResolvedAliases {
+  const space = line.search(/\s/);
+  const verb = aliasKey(space === -1 ? line : line.slice(0, space));
+  const alias = aliases.find((a) => a.name === verb);
+  // A reserved name is never run as an alias, however it got into the list.
+  if (!alias || running.includes(verb) || RESERVED_ALIAS_NAMES.includes(verb)) {
+    return { lines: [line], stoppedAt: null };
+  }
+  if (running.length >= MAX_ALIAS_DEPTH) return { lines: [], stoppedAt: verb };
+  const lines: string[] = [];
+  let stoppedAt: string | null = null;
+  const args = space === -1 ? '' : line.slice(space);
+  for (const expanded of expandAlias(alias.body, args, ctx)) {
+    const inner = resolveAliases(expanded, aliases, ctx, [...running, verb]);
+    lines.push(...inner.lines);
+    stoppedAt ??= inner.stoppedAt;
+  }
+  return { lines, stoppedAt };
 }
 
 /**

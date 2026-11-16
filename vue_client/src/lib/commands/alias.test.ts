@@ -32,6 +32,10 @@ describe('parseAliasArgs', () => {
     expect(parseAliasArgs('-wii /whois').kind).toBe('error');
     expect(parseAliasArgs('-').kind).toBe('error');
     expect(parseAliasArgs('alias /quit').kind).toBe('error');
+  });
+
+  it('removes a name it would not let you take', () => {
+    expect(parseAliasArgs('-alias')).toEqual({ kind: 'remove', name: 'alias' });
     expect(parseAliasArgs('a/b /quit').kind).toBe('error');
   });
 });

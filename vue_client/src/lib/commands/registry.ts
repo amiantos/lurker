@@ -556,7 +556,9 @@ export const COMMANDS = [
     networkAgnostic: true,
   }),
   cmd(['alias'], 'App', 'list your aliases, or name a command of your own', {
-    args: [opt('name', 'alias'), optText('command')],
+    // A word, not a list of the aliases: `/alias wi` + Enter lists by prefix,
+    // and a picker row there would turn it into `/alias wii`.
+    args: [opt('name', 'word'), optText('command')],
     notes: [
       'e.g. /alias wii /whois $1 $1   ·   /alias cycle /part; /join $channel',
       '$1..$9 are the words typed after it, $2- the second to the end, $* all of them',

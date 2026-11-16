@@ -1533,6 +1533,8 @@ same way, so an alias means one thing on every device. The reference is
   N to the end, `$N-M` a span, `$*` the arguments as typed, `$channel` / `$chan`
   the buffer it was run in, `$nick` / `$me` the user's nick there, `$network`
   the network's name, `$$` a literal `$`. A word that wasn't typed is empty. A
+  `-` after `$N` with a letter, `_`, `0` or `$` straight after it is a literal
+  dash, not a range (`$1-bot`, `$1-$2`). A
   named variable must end at a non-word character (`$channels` is literal), and
   any other `$` is literal.
 - **Appended arguments**: when no command in the body uses `$N`, a range or `$*`,

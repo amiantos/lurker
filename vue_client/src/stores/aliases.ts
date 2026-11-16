@@ -13,6 +13,17 @@ import type { Alias } from '../../../shared/aliases.js';
 const path = (name: string): string => `/api/aliases/${encodeURIComponent(name)}`;
 const byName = (a: Alias, b: Alias): number => a.name.localeCompare(b.name);
 
+// The fetch in flight, and whether the list moved again while it was out. A
+// change that lands mid-fetch must not be dropped: the answer on its way may
+// predate it, and would put a removed alias back.
+let inflight: Promise<void> | null = null;
+let stale = false;
+
+// The first load is retried, because nothing else would: until it succeeds the
+// composer has no aliases, and `/wii bob` goes to the server as `wii bob`.
+const RETRY_AFTER_MS = [2_000, 10_000, 30_000];
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
 export const useAliasesStore = defineStore('aliases', {
   state: () => ({
     aliases: [] as Alias[],
@@ -30,20 +41,40 @@ export const useAliasesStore = defineStore('aliases', {
       },
   },
   actions: {
-    async fetchAll() {
-      if (this.loading) return;
+    fetchAll(): Promise<void> {
+      if (inflight) {
+        stale = true;
+        return inflight;
+      }
       this.loading = true;
       this.error = '';
-      try {
-        const { aliases } = await api('/api/aliases');
-        this.aliases = aliases || [];
-        this.loaded = true;
-      } catch (e: any) {
-        this.error = e.message || 'failed to load aliases';
-        throw e;
-      } finally {
-        this.loading = false;
-      }
+      inflight = (async () => {
+        try {
+          do {
+            stale = false;
+            const { aliases } = await api('/api/aliases');
+            this.aliases = aliases || [];
+            this.loaded = true;
+          } while (stale);
+        } catch (e: any) {
+          this.error = e.message || 'failed to load aliases';
+          throw e;
+        } finally {
+          this.loading = false;
+          inflight = null;
+        }
+      })();
+      return inflight;
+    },
+    /** Load on (re)connect, trying again a few times if the first load fails. */
+    load(attempt = 0) {
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
+      this.fetchAll().catch(() => {
+        const wait = RETRY_AFTER_MS[attempt];
+        if (this.loaded || wait === undefined) return;
+        retryTimer = setTimeout(() => this.load(attempt + 1), wait);
+      });
     },
     /** Define an alias, or replace the one of that name. */
     async set(name: string, body: string): Promise<{ alias: Alias; created: boolean }> {

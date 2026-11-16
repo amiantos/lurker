@@ -3,7 +3,12 @@
 
 import { EventEmitter } from 'events';
 import { deleteAlias, getAlias, listAliases, setAlias, updateAlias } from '../db/aliases.js';
-import { normalizeAliasBody, normalizeAliasName, type Alias } from '../../shared/aliases.js';
+import {
+  aliasKey,
+  normalizeAliasBody,
+  normalizeAliasName,
+  type Alias,
+} from '../../shared/aliases.js';
 
 // Command aliases (#276). The server stores and validates them; expanding one
 // is the client's job, where the commands themselves run. emit('change') drives
@@ -13,6 +18,13 @@ type Failure = { ok: false; error: string; status: number };
 type Result = { ok: true; alias: Alias } | Failure;
 
 const bad = (error: string, status = 400): Failure => ({ ok: false, error, status });
+
+// The stored row a name in a URL means. By key first, then exactly as given:
+// the naming rules are for new names, and a row that breaks one (an import, a
+// name reserved since) has to stay reachable or it could never be removed.
+function stored(userId: number, rawName: string): Alias | null {
+  return getAlias(userId, aliasKey(rawName)) ?? getAlias(userId, rawName);
+}
 
 class AliasesService extends EventEmitter {
   list(userId: number): Alias[] {
@@ -33,8 +45,7 @@ class AliasesService extends EventEmitter {
 
   /** Edit one in place: a new name, a new body, or both. */
   update(userId: number, rawName: string, fields: { name?: unknown; body?: unknown }): Result {
-    const current = normalizeAliasName(rawName);
-    const existing = current.ok ? getAlias(userId, current.name) : null;
+    const existing = stored(userId, rawName);
     if (!existing) return bad('no such alias', 404);
     let name = existing.name;
     let body = existing.body;
@@ -56,8 +67,8 @@ class AliasesService extends EventEmitter {
   }
 
   remove(userId: number, rawName: string): { ok: true } | Failure {
-    const name = normalizeAliasName(rawName);
-    if (!name.ok || !deleteAlias(userId, name.name)) return bad('no such alias', 404);
+    const existing = stored(userId, rawName);
+    if (!existing || !deleteAlias(userId, existing.name)) return bad('no such alias', 404);
     this.emit('change', { userId });
     return { ok: true };
   }
