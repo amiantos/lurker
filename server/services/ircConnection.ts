@@ -2485,6 +2485,22 @@ export class IrcConnection {
           this.publishEphemeral({ type: 'motd', target: topicChannel.name, text: topicReply.text });
         }
       }
+      // The same for a ban, exception, invite-exception or quiet list the
+      // user asked for (`/mode #chan +b`, #315): each entry in the channel,
+      // with who set it and when, where the server buffer has the raw line.
+      // An empty list is said too, since its only line is the end. Empty is
+      // the router's word for it: an end that follows a refusal (a non-op's
+      // 482, then the 349 some servers still send) is the user's line too,
+      // and is not a list with nothing in it.
+      if (this.replyOwner === 'user') {
+        const listReply = modeListReplyLine(rawCommand, msg?.params ?? [], (at) =>
+          wallClockStamp(at, cachedSetting(this.network.user_id, 'system.timezone')),
+        );
+        const listChannel = listReply ? this.channelState(listReply.channel) : undefined;
+        if (listReply && listChannel && (!listReply.end || this.replies.endedEmpty)) {
+          this.publishEphemeral({ type: 'motd', target: listChannel.name, text: listReply.text });
+        }
+      }
       // A reply to the restore step in flight is what releases the next
       // channel's requests. Before the denylist: 366 is exactly the kind of
       // line the server buffer never shows. Only the restore's own: a bouncer
@@ -14777,6 +14793,52 @@ export function topicReplyLine(
   if (!setter && !iso) return null;
   const parts = [setter ? `Set by ${setter}` : 'Set', iso ? stamp(new Date(iso)) : ''];
   return { channel, text: parts.filter(Boolean).join(' · ') };
+}
+
+// A line of a channel's ban, exception, invite-exception or quiet list as the
+// line to show in that channel, or null for any other numeric (#315). Callers
+// check we're in the channel and that the user asked, as for a topic.
+//   367 <client> <channel> <mask> [<setter> [<ts>]]            end 368
+//   348 <client> <channel> <mask> [<setter> [<ts>]]            end 349
+//   346 <client> <channel> <mask> [<setter> [<ts>]]            end 347
+//   728 <client> <channel> <letter> <mask> [<setter> [<ts>]]   end 729
+// The shapes modeList.ts reads for the channel modal; a 367 can come with the
+// mask alone. Which numerics are a list's is the router's table
+// (listModeNumerics): a list it cannot track has no asker, and is not said.
+// An end's text is what to say when the list had nothing in it.
+const MODE_LIST_WORDS: Record<string, { one: string; none: string }> = {
+  b: { one: 'Ban', none: 'No bans are set' },
+  e: { one: 'Ban exception', none: 'No ban exceptions are set' },
+  I: { one: 'Invite exception', none: 'No invite exceptions are set' },
+  q: { one: 'Quiet', none: 'No quiets are set' },
+};
+
+export function modeListReplyLine(
+  numeric: string,
+  params: WireParams,
+  stamp: (at: Date) => string,
+): { channel: string; end: boolean; text: string } | null {
+  for (const [letter, words] of Object.entries(MODE_LIST_WORDS)) {
+    const numerics = listModeNumerics(letter);
+    if (!numerics || (numeric !== numerics.item && numeric !== numerics.end)) continue;
+    const channel = params[1];
+    if (typeof channel !== 'string' || !isChannelTarget(channel)) return null;
+    if (numeric === numerics.end) {
+      return { channel, end: true, text: `${words.none} on ${channel}.` };
+    }
+    const at = numeric === '728' ? 3 : 2;
+    const mask = params[at];
+    if (typeof mask !== 'string' || !mask) return null;
+    const setter = params[at + 1];
+    const iso = unixSecondsToIso(params[at + 2]);
+    const parts = [
+      `${words.one}: ${mask}`,
+      typeof setter === 'string' && setter ? `set by ${setter.split('!')[0]}` : '',
+      iso ? stamp(new Date(iso)) : '',
+    ];
+    return { channel, end: false, text: parts.filter(Boolean).join(' · ') };
+  }
+  return null;
 }
 
 // ERR_NOSUCHNICK (401) is the failure you actually hit first — you kick or

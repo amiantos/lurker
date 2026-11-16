@@ -347,6 +347,14 @@ export class ReplyRouter {
   private readonly modes = new Map<string, { mode: string; created: string | null }>();
   // The `batch=` tag of the line being noted (see noteServerLine).
   private lineBatch: string | undefined;
+  /**
+   * Whether the line just noted ended a query that had no line before it: a
+   * list's end numeric with no entries ahead of it. False for an end that
+   * follows an error (a 482, then the 349 some servers still send), which ends
+   * a refusal and not an empty list. Read beside the owner noteServerLine
+   * returned, by a caller that says "the list is empty" (#315).
+   */
+  endedEmpty = false;
   // Batches whose query timed out before they closed, by reference, with the
   // asker: a late line inside one is still that asker's (a history page's
   // lines must never become someone's live traffic), until its BATCH -.
@@ -397,6 +405,7 @@ export class ReplyRouter {
     // The batch this line is inside, if any: a metadata query's replies are
     // the lines tagged with ITS batch, not whatever arrives while it's open.
     this.lineBatch = batchTagOf(line);
+    this.endedEmpty = false;
     let owner: ReplyOwner | undefined;
     // This is the line the last query's end was waiting on, or the wait is over.
     const settle = this.settle;
@@ -620,6 +629,7 @@ export class ReplyRouter {
       const role = this.roleOf(query, command, params);
       if (!role) continue;
       query.heardAt = Date.now();
+      if (role === 'end' && !query.started) this.endedEmpty = true;
       query.started = true;
       if (role === 'end') {
         this.finish(
