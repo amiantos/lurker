@@ -151,7 +151,7 @@ function onSubmit() {
 .fields {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-7);
 }
 /* In a card the fields are what scrolls, so a seven-field S3 form on a short
    screen keeps its footer in reach. */
@@ -165,7 +165,7 @@ function onSubmit() {
 .fields label {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
 }
 
 /* Hierarchy by color/weight only — no font-size anywhere (one-font-size rule). */
@@ -178,7 +178,10 @@ function onSubmit() {
   font-style: normal;
 }
 
+/* A little further from its box than the label above is, so it reads as a note
+   on the field and not as the next field's label. */
 .field-desc {
+  margin-top: var(--space-2);
   color: var(--fg-muted);
 }
 

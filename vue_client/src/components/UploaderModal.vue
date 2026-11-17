@@ -75,8 +75,8 @@ const driver = computed(() => props.drivers.find((d) => d.driver === driverId.va
 .driver-pick {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  margin-bottom: var(--space-3);
+  gap: var(--space-2);
+  margin-bottom: var(--space-7);
 }
 .driver-pick > span {
   color: var(--fg);
