@@ -29,19 +29,10 @@
         <span v-if="s.builtin" class="tag">built-in</span>
         <span v-if="s.id === avatarSets.activeSetId" class="tag active">active</span>
       </span>
-      <div class="row-actions">
-        <button
-          v-if="s.id !== avatarSets.activeSetId"
-          class="link"
-          :disabled="busy"
-          @click="use(s)"
-        >
-          Use
-        </button>
-        <button v-if="!s.builtin" class="link danger" :disabled="busy" @click="remove(s)">
-          Delete
-        </button>
-      </div>
+      <span class="btn-bar">
+        <button v-if="s.id !== avatarSets.activeSetId" :disabled="busy" @click="use(s)">Use</button>
+        <button v-if="!s.builtin" class="bad" :disabled="busy" @click="remove(s)">Delete</button>
+      </span>
     </li>
   </ul>
 
@@ -61,7 +52,7 @@
       :disabled="busy"
       @change="onFile"
     />
-    <button class="link" :disabled="busy || !newName.trim() || !file" @click="upload">
+    <button :disabled="busy || !newName.trim() || !file" @click="upload">
       {{ busy && progress > 0 ? `Uploading ${progress}%` : 'Upload set' }}
     </button>
   </div>

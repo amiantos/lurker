@@ -30,10 +30,10 @@
             replaces the /{{ alias.name }} command
           </span>
         </span>
-        <div class="row-actions">
+        <span class="btn-bar">
           <IconButton :icon="PenIcon" label="edit" @click="startEdit(alias)" />
           <IconButton :icon="TrashIcon" label="remove" danger @click="onRemove(alias)" />
-        </div>
+        </span>
       </li>
     </ul>
 
@@ -75,8 +75,10 @@
         </span>
       </label>
       <div class="actions">
-        <button v-if="editing" class="link" type="button" @click="cancelEdit">cancel</button>
-        <button class="link" type="submit" :disabled="!canSubmit || busy">
+        <button v-if="editing" class="btn-secondary" type="button" @click="cancelEdit">
+          cancel
+        </button>
+        <button class="btn-primary" type="submit" :disabled="!canSubmit || busy">
           {{ editing ? 'save' : 'add alias' }}
         </button>
       </div>

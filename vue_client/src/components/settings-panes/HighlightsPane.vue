@@ -30,11 +30,10 @@
             {{ entry.mask ?? entry.pattern ?? '*' }}
             <span class="muted small hl-detail">{{ describe(entry) }}</span>
           </span>
-          <div class="row-actions">
-            <button
-              type="button"
-              class="toggle"
-              :class="{ on: entry.enabled }"
+          <span class="btn-bar">
+            <IconButton
+              :icon="entry.enabled ? ToggleRightIcon : ToggleLeftIcon"
+              label="toggle highlight rule"
               :disabled="entry.auto_managed"
               :aria-pressed="entry.enabled"
               :title="
@@ -44,12 +43,8 @@
                     ? 'enabled — click to disable'
                     : 'disabled — click to enable'
               "
-              aria-label="toggle highlight rule"
               @click="toggleEnabled(entry, !entry.enabled)"
-            >
-              <ToggleRightIcon v-if="entry.enabled" />
-              <ToggleLeftIcon v-else />
-            </button>
+            />
             <!-- Auto-managed (network nick) rules are fully system-managed, so the
                  toggle (above) and edit/remove are all disabled. -->
             <IconButton
@@ -65,7 +60,7 @@
               :disabled="entry.auto_managed"
               @click="onRemove(entry)"
             />
-          </div>
+          </span>
         </li>
       </ul>
     </template>
@@ -173,8 +168,8 @@
       </div>
 
       <div class="actions">
-        <button v-if="editing" class="link" @click="cancelEdit">cancel</button>
-        <button class="link" :disabled="!canSubmit" @click="submit">
+        <button v-if="editing" class="btn-secondary" @click="cancelEdit">cancel</button>
+        <button class="btn-primary" :disabled="!canSubmit" @click="submit">
           {{ editing ? 'save' : 'add highlight' }}
         </button>
       </div>
@@ -439,22 +434,6 @@ async function onRemove(entry: HighlightRule) {
 }
 /* Enabled toggle: muted when off, accent when on; the glyph (toggle-on/off)
    plus aria-pressed carry the state. */
-.toggle {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font: inherit;
-  line-height: 1;
-  padding: var(--space-1) var(--space-2);
-  color: var(--fg-muted);
-}
-.toggle.on {
-  color: var(--accent);
-}
-.toggle:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
 .rule-form {
   display: flex;
   flex-direction: column;

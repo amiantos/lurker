@@ -37,19 +37,31 @@ defineProps<{
 </script>
 
 <style scoped>
+/* An outlined square like every other button, sized to stand in a .btn-bar
+   beside text buttons: the glyph is shorter than a text line, so the height is
+   stated. */
 .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: calc(1lh + 2 * var(--space-2) + 2px);
   background: none;
-  border: none;
+  border: 1px solid var(--border);
   color: var(--accent);
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-4);
   cursor: pointer;
   font: inherit;
-  line-height: 1;
 }
 .icon-btn:hover:not(:disabled) {
+  border-color: var(--accent);
   color: var(--fg);
 }
 .icon-btn.danger {
+  color: var(--bad);
+}
+.icon-btn.danger:hover:not(:disabled) {
+  border-color: var(--bad);
   color: var(--bad);
 }
 .icon-btn:disabled {

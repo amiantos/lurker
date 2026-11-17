@@ -28,7 +28,9 @@
             {{ a.lastUsedAt ? `last used ${formatRelative(a.lastUsedAt)}` : 'never used' }}
           </span>
         </span>
-        <button class="link danger" :disabled="busy" @click="onRevoke(a)">revoke</button>
+        <span class="btn-bar">
+          <button class="bad" :disabled="busy" @click="onRevoke(a)">revoke</button>
+        </span>
       </li>
     </ul>
     <p v-else-if="loaded && !error" class="muted small">No authorized apps.</p>

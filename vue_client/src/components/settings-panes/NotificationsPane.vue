@@ -14,18 +14,18 @@
 
     <div class="this-client">
       <span class="this-label">this client</span>
-      <button v-if="!pushSupported" class="link" disabled>
+      <button v-if="!pushSupported" class="btn-secondary" disabled>
         push not supported in this browser
       </button>
       <button
         v-else-if="thisClientEnabled"
-        class="link danger"
+        class="btn-secondary danger"
         :disabled="pushBusy"
         @click="onDisableThisClient"
       >
         disable for this client
       </button>
-      <button v-else class="link" :disabled="pushBusy" @click="onEnableThisClient">
+      <button v-else class="btn-secondary" :disabled="pushBusy" @click="onEnableThisClient">
         enable for this client
       </button>
     </div>
@@ -136,7 +136,7 @@
         >
           <option v-for="c in soundChoices" :key="c" :value="c">{{ c }}</option>
         </select>
-        <button class="link" :disabled="!signal.soundEnabled" @click="onPreviewSound(signal.key)">
+        <button :disabled="!signal.soundEnabled" @click="onPreviewSound(signal.key)">
           preview
         </button>
       </div>
@@ -180,14 +180,14 @@
     <ul v-else class="device-list">
       <li v-for="entry in alwaysNotifyChannelList" :key="entry.key" class="device">
         <span class="ua">{{ entry.networkName }} · {{ entry.target }}</span>
-        <div class="row-actions">
+        <span class="btn-bar">
           <IconButton
             :icon="TrashIcon"
             label="stop"
             danger
             @click="removeAlwaysNotify(entry.networkId, entry.target)"
           />
-        </div>
+        </span>
       </li>
     </ul>
 

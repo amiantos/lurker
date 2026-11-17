@@ -161,7 +161,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   it('round-trips a NOHIGHLIGHT-only rule through edit without adding ALL', async () => {
     seedEntry({ levels: ['NOHIGHLIGHT'] });
     await wrapper.vm.$nextTick();
-    await wrapper.find('.row-actions button').trigger('click');
+    await wrapper.find('.device .btn-bar button').trigger('click');
     expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('false');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['NOHIGHLIGHT']);
@@ -170,7 +170,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   it('round-trips a mixed rule through edit', async () => {
     seedEntry({ levels: ['JOINS', 'NOHIGHLIGHT'] });
     await wrapper.vm.$nextTick();
-    await wrapper.find('.row-actions button').trigger('click');
+    await wrapper.find('.device .btn-bar button').trigger('click');
     expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('false');
     expect(chip(wrapper, 'JOINS').attributes('aria-pressed')).toBe('true');
     await submit(wrapper);
@@ -180,7 +180,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   it('round-trips an ALL rule through edit', async () => {
     seedEntry({ levels: ['ALL'] });
     await wrapper.vm.$nextTick();
-    await wrapper.find('.row-actions button').trigger('click');
+    await wrapper.find('.device .btn-bar button').trigger('click');
     expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('true');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['ALL']);

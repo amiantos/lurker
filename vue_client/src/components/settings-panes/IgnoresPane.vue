@@ -29,10 +29,10 @@
             {{ entry.mask ?? '*' }}
             <span class="muted small ignore-detail">{{ describe(entry) }}</span>
           </span>
-          <div class="row-actions">
+          <span class="btn-bar">
             <IconButton :icon="PenIcon" label="edit" @click="startEdit(entry)" />
             <IconButton :icon="TrashIcon" label="remove" danger @click="onRemove(entry)" />
-          </div>
+          </span>
         </li>
       </ul>
     </template>
@@ -184,8 +184,8 @@
       <p v-if="formError" class="error inline">{{ formError }}</p>
 
       <div class="actions">
-        <button v-if="editing" class="link" @click="cancelEdit">cancel</button>
-        <button class="link" :disabled="!canSubmit" @click="submit">
+        <button v-if="editing" class="btn-secondary" @click="cancelEdit">cancel</button>
+        <button class="btn-primary" :disabled="!canSubmit" @click="submit">
           {{ editing ? 'save' : 'add ignore' }}
         </button>
       </div>

@@ -130,9 +130,13 @@
 
 /* A row's actions as a button bar (main.css .btn-bar): placed as .row-actions
    is, but the bar keeps its own layout, since its buttons share their borders. */
+/* Straight after the identity, the bar takes both trailing columns; after a
+   meta cell (last seen, last used) it is simply the third. */
 .settings-pane .device > .btn-bar {
-  grid-column: 2 / -1;
   justify-self: end;
+}
+.settings-pane .device > .btn-bar:nth-child(2) {
+  grid-column: 2 / -1;
 }
 
 /* STACKED rows: identity on the first line, actions on the second.

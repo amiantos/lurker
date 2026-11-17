@@ -35,7 +35,9 @@
         <span>Allow this token to send messages and write notes</span>
       </label>
       <div class="create-actions">
-        <button class="link" type="submit" :disabled="busy || !newName.trim()">create token</button>
+        <button class="btn-primary" type="submit" :disabled="busy || !newName.trim()">
+          create token
+        </button>
       </div>
     </form>
 
@@ -45,10 +47,10 @@
       </p>
       <div class="reveal-row">
         <code class="token">{{ revealed.token }}</code>
-        <button class="link" type="button" @click="onCopy">
+        <button type="button" @click="onCopy">
           {{ copied ? 'copied' : 'copy' }}
         </button>
-        <button class="link" type="button" @click="revealed = null">dismiss</button>
+        <button type="button" @click="revealed = null">dismiss</button>
       </div>
     </div>
 
@@ -67,9 +69,9 @@
               : `created ${formatRelative(t.createdAt)}`
           }}
         </span>
-        <button v-if="!t.revokedAt" class="link danger" :disabled="busy" @click="onRevoke(t)">
-          revoke
-        </button>
+        <span v-if="!t.revokedAt" class="btn-bar">
+          <button class="bad" :disabled="busy" @click="onRevoke(t)">revoke</button>
+        </span>
         <span v-else class="placeholder" />
       </li>
     </ul>

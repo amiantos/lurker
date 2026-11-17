@@ -13,7 +13,7 @@
     <div class="head">
       <span class="headline">{{ opt.label || opt.key }}</span>
       <span class="type">{{ opt.type }}</span>
-      <button v-if="modified" class="link reset" @click="$emit('reset')" title="reset to default">
+      <button v-if="modified" class="reset" @click="$emit('reset')" title="reset to default">
         reset
       </button>
     </div>
@@ -111,7 +111,7 @@
           :disabled="!!hint"
           @change="$emit('commit', ($event.target as HTMLInputElement).value)"
         />
-        <button type="button" class="link reveal" @click="revealed = !revealed">
+        <button type="button" class="reveal" @click="revealed = !revealed">
           {{ revealed ? 'hide' : 'show' }}
         </button>
       </span>
@@ -338,27 +338,10 @@ function formatDefault(opt: SettingOption, v: SettingValue): string {
   padding: 0 var(--space-2);
 }
 
-.link {
-  background: none;
-  border: 0;
-  color: var(--accent);
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-decoration: underline;
-}
-.link:hover {
-  color: var(--fg);
-}
-.link:disabled {
-  color: var(--fg-muted);
-  text-decoration: none;
-  cursor: default;
-}
-.link.danger {
-  color: var(--bad);
-}
-.link.reset {
+/* Reset sits on the headline beside the type tag, and is boxed as it is: an
+   outlined button at the tag's size, muted until hovered. */
+.reset {
+  padding: 0 var(--space-2);
   color: var(--fg-muted);
 }
 </style>

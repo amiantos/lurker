@@ -33,28 +33,19 @@
           {{ drifted ? 'active · modified' : 'active' }}
         </span>
       </span>
-      <div class="row-actions">
-        <button
-          v-if="t.id !== themes.activeThemeId"
-          class="link"
-          :disabled="busy"
-          @click="apply(t)"
-        >
+      <span class="btn-bar">
+        <button v-if="t.id !== themes.activeThemeId" :disabled="busy" @click="apply(t)">
           Apply
         </button>
         <template v-else-if="drifted">
-          <button v-if="!t.builtin" class="link" :disabled="busy" @click="updateActive(t)">
-            Save changes
-          </button>
+          <button v-if="!t.builtin" :disabled="busy" @click="updateActive(t)">Save changes</button>
           <!-- Re-applying the active theme IS the discard-drift operation; without
                this, a drifted built-in row would render zero actions and the only
                ways back would be /theme apply or resetting keys one by one. -->
-          <button class="link" :disabled="busy" @click="apply(t)">Discard changes</button>
+          <button :disabled="busy" @click="apply(t)">Discard changes</button>
         </template>
-        <button v-if="!t.builtin" class="link danger" :disabled="busy" @click="remove(t)">
-          Delete
-        </button>
-      </div>
+        <button v-if="!t.builtin" class="bad" :disabled="busy" @click="remove(t)">Delete</button>
+      </span>
     </li>
   </ul>
 
@@ -68,7 +59,7 @@
       placeholder="Save current look as…"
       @keydown.enter.prevent="onNameEnter"
     />
-    <button class="link" :disabled="busy || !newName.trim()" @click="saveNew">Save theme</button>
+    <button :disabled="busy || !newName.trim()" @click="saveNew">Save theme</button>
   </div>
 
   <div class="theme-mode">
