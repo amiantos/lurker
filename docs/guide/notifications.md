@@ -29,6 +29,7 @@ A notification that never arrived has a trail. Under **Settings → Notification
 - **send a test push** goes to every device you have registered, skipping quiet
   hours, the visible-client rule and every other gate. If the test arrives and a
   real one didn't, a rule held the real one.
+- **push log** opens the trail itself, in two parts.
 - **current clients** lists what is connected to your account right now and
   whether it reports itself visible. Push fires only while nothing is visible,
   so a tab left in front, or the app open on your phone, is the usual reason.

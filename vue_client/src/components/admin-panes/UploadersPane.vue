@@ -88,77 +88,57 @@
           <span v-if="u.locked" class="badge off">managed</span>
         </span>
         <!-- Five actions is more than the default .device grid holds — hence the
-             `stacked` row + the shared .row-actions cluster underneath. -->
-        <div v-if="!store.uploadersManaged && !u.locked" class="row-actions">
+             `stacked` row, with the button bar underneath. -->
+        <span v-if="!store.uploadersManaged && !u.locked" class="btn-bar">
           <button
             v-if="!u.isDefault"
-            class="link"
             :disabled="busy || !u.enabled"
             :title="u.enabled ? '' : 'enable this uploader first'"
             @click="onSetDefault(u)"
           >
             make default
           </button>
-          <button class="link" :disabled="busy" @click="onToggleEnabled(u)">
+          <button :disabled="busy" @click="onToggleEnabled(u)">
             {{ u.enabled ? 'disable' : 'enable' }}
           </button>
-          <button class="link" :disabled="busy" @click="onToggleOffered(u)">
+          <button :disabled="busy" @click="onToggleOffered(u)">
             {{ u.offeredToUsers ? 'hide from users' : 'offer to users' }}
           </button>
-          <button v-if="u.config && hasFields(u)" class="link" :disabled="busy" @click="onEdit(u)">
-            edit
-          </button>
-          <button v-if="isDeletable(u)" class="link danger" :disabled="busy" @click="onDelete(u)">
+          <button v-if="u.config && hasFields(u)" :disabled="busy" @click="onEdit(u)">edit</button>
+          <button v-if="isDeletable(u)" class="bad" :disabled="busy" @click="onDelete(u)">
             delete
           </button>
-        </div>
+        </span>
       </li>
     </ul>
 
     <template v-if="!store.uploadersManaged">
-      <template v-if="editing && editingDriver">
-        <h3 class="subhead">edit {{ editing.label }}</h3>
-        <UploaderConfigForm
-          :key="`edit-${editing.id}`"
-          :driver="editingDriver"
-          :existing="{
-            label: editing.label,
-            config: editing.config,
-            secretsSet: editing.secretsSet,
-          }"
-          :busy="busy"
-          :error="formError"
-          @save="onSaveEdit"
-          @cancel="closeForms"
-        />
-      </template>
+      <p v-if="addableDrivers.length" class="add-row">
+        <button class="btn-secondary" :disabled="busy" @click="onAdd">add uploader</button>
+      </p>
 
-      <template v-else-if="addableDrivers.length">
-        <h3 class="subhead">add an uploader</h3>
-        <template v-if="addingDriver">
-          <label class="driver-pick">
-            <span>Type</span>
-            <select v-model="adding" :disabled="busy">
-              <option v-for="d in addableDrivers" :key="d.driver" :value="d.driver">
-                {{ d.label }}
-              </option>
-            </select>
-          </label>
-          <UploaderConfigForm
-            :key="`add-${addingDriver.driver}`"
-            :driver="addingDriver"
-            :busy="busy"
-            :error="formError"
-            @save="onSaveNew"
-            @cancel="closeForms"
-          />
-        </template>
-        <p v-else class="add-row">
-          <button class="link" :disabled="busy" @click="adding = addableDrivers[0].driver">
-            add an uploader
-          </button>
-        </p>
-      </template>
+      <UploaderModal
+        v-if="adding"
+        :drivers="addableDrivers"
+        :busy="busy"
+        :error="formError"
+        @save="onSaveNew"
+        @close="closeForms"
+      />
+      <UploaderModal
+        v-else-if="editing && editingDriver"
+        :key="editing.id"
+        :drivers="[editingDriver]"
+        :existing="{
+          label: editing.label,
+          config: editing.config,
+          secretsSet: editing.secretsSet,
+        }"
+        :busy="busy"
+        :error="formError"
+        @save="onSaveEdit"
+        @close="closeForms"
+      />
     </template>
   </section>
 </template>
@@ -166,7 +146,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
-import UploaderConfigForm from '../UploaderConfigForm.vue';
+import UploaderModal from '../UploaderModal.vue';
 import type { AdminUploader, UploaderDriver } from '../../utils/uploaders.js';
 
 const store = useAdminStore();
@@ -174,7 +154,7 @@ const store = useAdminStore();
 const busy = ref(false);
 const error = ref('');
 const formError = ref('');
-const adding = ref<string | null>(null);
+const adding = ref(false);
 const editing = ref<AdminUploader | null>(null);
 
 function driverFor(id: string): UploaderDriver | undefined {
@@ -185,7 +165,6 @@ function driverFor(id: string): UploaderDriver | undefined {
 // that already exist, not just ones you may add); the add menu is the creatable
 // subset.
 const addableDrivers = computed(() => store.uploaderDrivers.filter((d) => d.creatable));
-const addingDriver = computed(() => (adding.value ? driverFor(adding.value) : undefined));
 const editingDriver = computed(() => (editing.value ? driverFor(editing.value.driver) : undefined));
 
 /** A zero-config driver (x0) has nothing to edit. */
@@ -201,7 +180,7 @@ function isDeletable(u: AdminUploader): boolean {
 }
 
 function closeForms() {
-  adding.value = null;
+  adding.value = false;
   editing.value = null;
   formError.value = '';
 }
@@ -216,6 +195,11 @@ async function run(fn: () => Promise<unknown>, fallback: string) {
   } finally {
     busy.value = false;
   }
+}
+
+function onAdd() {
+  closeForms();
+  adding.value = true;
 }
 
 function onEdit(u: AdminUploader) {
@@ -265,12 +249,18 @@ async function onCeilingChange(e: Event) {
   input.value = String(store.uploadCeilingMb ?? '');
 }
 
-async function onSaveNew({ label, values }: { label: string; values: Record<string, string> }) {
+interface UploaderDraft {
+  driver: string;
+  label: string;
+  values: Record<string, string>;
+}
+
+async function onSaveNew({ driver, label, values }: UploaderDraft) {
   if (!adding.value) return;
   formError.value = '';
   busy.value = true;
   try {
-    await store.createUploader({ driver: adding.value, label, values });
+    await store.createUploader({ driver, label, values });
     closeForms();
   } catch (e: any) {
     formError.value = e.message || 'failed to add the uploader';
@@ -279,7 +269,7 @@ async function onSaveNew({ label, values }: { label: string; values: Record<stri
   }
 }
 
-async function onSaveEdit({ label, values }: { label: string; values: Record<string, string> }) {
+async function onSaveEdit({ label, values }: UploaderDraft) {
   if (!editing.value) return;
   formError.value = '';
   busy.value = true;
@@ -352,13 +342,6 @@ onMounted(() => {
 }
 .ceiling-edit input {
   width: 6em;
-}
-
-.driver-pick {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin-bottom: var(--space-3);
 }
 
 .add-row {

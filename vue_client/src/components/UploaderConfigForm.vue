@@ -12,47 +12,55 @@
 
   Secrets: an existing secret is shown as a "stored" placeholder, never a value.
   Leaving it blank on save keeps what's stored; typing replaces it.
+
+  `modal` lays it out for an AppModal card (UploaderModal): the fields scroll and
+  the actions become the card's pinned footer. The footer stays inside the
+  <form> either way, so Enter still submits.
 -->
 
 <template>
-  <form class="uploader-form" @submit.prevent="onSubmit">
-    <label>
-      <span>Name</span>
-      <input
-        v-model="label"
-        type="text"
-        maxlength="64"
-        :placeholder="driver.label"
-        :disabled="busy"
-        @keydown.enter="blockImeEnter"
-      />
-    </label>
+  <form :class="modal ? 'modal-form' : 'uploader-form'" @submit.prevent="onSubmit">
+    <div class="fields">
+      <label>
+        <span>Name</span>
+        <input
+          v-model="label"
+          type="text"
+          maxlength="64"
+          :placeholder="driver.label"
+          :disabled="busy"
+          @keydown.enter="blockImeEnter"
+        />
+      </label>
 
-    <label v-for="field in driver.configSchema" :key="field.key">
-      <span>
-        {{ field.label }}
-        <em v-if="!field.required" class="optional">optional</em>
-      </span>
-      <input
-        :value="values[field.key]"
-        @input="onFieldInput(field.key, $event)"
-        @keydown.enter="blockImeEnter"
-        :type="field.type === 'secret' ? 'password' : 'text'"
-        :placeholder="placeholderFor(field)"
-        :autocomplete="field.type === 'secret' ? 'new-password' : 'off'"
-        :disabled="busy"
-      />
-      <span class="field-desc">{{ field.description }}</span>
-    </label>
+      <label v-for="field in driver.configSchema" :key="field.key">
+        <span>
+          {{ field.label }}
+          <em v-if="!field.required" class="optional">optional</em>
+        </span>
+        <input
+          :value="values[field.key]"
+          @input="onFieldInput(field.key, $event)"
+          @keydown.enter="blockImeEnter"
+          :type="field.type === 'secret' ? 'password' : 'text'"
+          :placeholder="placeholderFor(field)"
+          :autocomplete="field.type === 'secret' ? 'new-password' : 'off'"
+          :disabled="busy"
+        />
+        <span class="field-desc">{{ field.description }}</span>
+      </label>
 
-    <p v-if="error" class="error inline">{{ error }}</p>
-
-    <div class="form-actions">
-      <button class="link" type="submit" :disabled="busy || incomplete">
-        {{ existing ? 'save' : 'add uploader' }}
-      </button>
-      <button class="link" type="button" :disabled="busy" @click="emit('cancel')">cancel</button>
+      <p v-if="error" class="error inline">{{ error }}</p>
     </div>
+
+    <footer :class="modal ? 'modal-footer' : 'form-actions'">
+      <button class="btn-secondary" type="button" :disabled="busy" @click="emit('cancel')">
+        Cancel
+      </button>
+      <button class="btn-primary" type="submit" :disabled="busy || incomplete">
+        {{ existing ? 'Save' : 'Add uploader' }}
+      </button>
+    </footer>
   </form>
 </template>
 
@@ -73,6 +81,8 @@ const props = defineProps<{
   existing?: { label: string; config: Record<string, string>; secretsSet: Record<string, boolean> };
   busy?: boolean;
   error?: string;
+  /** Laid out for a modal card: scrolling fields over a pinned footer. */
+  modal?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -135,20 +145,31 @@ function onSubmit() {
 
 <style scoped>
 .uploader-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
   margin-bottom: var(--space-4);
 }
 
-.uploader-form label {
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+/* In a card the fields are what scrolls, so a seven-field S3 form on a short
+   screen keeps its footer in reach. */
+.modal-form .fields {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: var(--space-6);
+}
+
+.fields label {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
 }
 
 /* Hierarchy by color/weight only — no font-size anywhere (one-font-size rule). */
-.uploader-form label > span:first-child {
+.fields label > span:first-child {
   color: var(--fg);
 }
 
@@ -163,6 +184,7 @@ function onSubmit() {
 
 .form-actions {
   display: flex;
-  gap: var(--space-3);
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
 </style>

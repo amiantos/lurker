@@ -45,110 +45,95 @@
     <template v-if="canChoose">
       <h3 class="subhead">destination</h3>
       <p v-if="loading && !loaded" class="muted small">Loading…</p>
-      <ul v-else class="device-list">
-        <li v-for="u in uploaders" :key="u.id" class="device stacked">
-          <span class="ua">
-            <span class="name">{{ u.label }}</span>
-            <span class="driver">{{ u.driver }}</span>
-            <span v-if="u.scope === 'user'" class="badge">yours</span>
-            <span v-if="u.id === selectedId" class="badge in-use">in use</span>
-          </span>
-          <div class="row-actions">
-            <button
-              v-if="u.id !== selectedId"
-              class="link"
+      <!-- One of these is where files go, so the list IS the control: a radio
+           per row. It used to be a "use this one" text button per row and an
+           "in use" badge on whichever had been pressed last. Keyed on a tick so
+           a refused selection re-renders the radios: the browser has already
+           moved the dot by the time the request fails. -->
+      <ul
+        v-else
+        :key="pickTick"
+        class="device-list"
+        role="radiogroup"
+        aria-label="upload destination"
+      >
+        <li v-for="u in uploaders" :key="u.id" class="device">
+          <label class="pick">
+            <input
+              type="radio"
+              name="upload-destination"
+              :checked="u.id === selectedId"
               :disabled="busy"
-              @click="onSelect(u.id)"
-            >
-              use this one
-            </button>
-            <!-- Editable AND describable: a row whose driver we have no schema for
+              @change="onSelect(u.id)"
+            />
+            <span class="ua">
+              <span class="name">{{ u.label }}</span>
+              <span class="driver">{{ u.driver }}</span>
+              <span v-if="u.scope === 'user'" class="badge">yours</span>
+            </span>
+          </label>
+          <!-- Editable AND describable: a row whose driver we have no schema for
                can't be rendered as a form, so offer removal but not editing. -->
-            <button
-              v-if="u.editable && driverFor(u.driver)"
-              class="link"
-              :disabled="busy"
-              @click="onEdit(u)"
-            >
-              edit
-            </button>
-            <button v-if="u.editable" class="link danger" :disabled="busy" @click="onDelete(u)">
-              remove
-            </button>
-          </div>
-        </li>
-        <li class="device stacked">
-          <span class="ua">
-            <span class="name">Server default</span>
-            <span class="driver">follow whatever the admin has set</span>
-            <span v-if="selectedId === null" class="badge in-use">in use</span>
+          <span v-if="u.editable" class="btn-bar">
+            <button v-if="driverFor(u.driver)" :disabled="busy" @click="onEdit(u)">edit</button>
+            <button class="bad" :disabled="busy" @click="onDelete(u)">remove</button>
           </span>
-          <div class="row-actions">
-            <button
-              v-if="selectedId !== null"
-              class="link"
+        </li>
+        <li class="device">
+          <label class="pick">
+            <input
+              type="radio"
+              name="upload-destination"
+              :checked="selectedId === null"
               :disabled="busy"
-              @click="onSelect(null)"
-            >
-              use this one
-            </button>
-          </div>
+              @change="onSelect(null)"
+            />
+            <span class="ua">
+              <span class="name">Server default</span>
+              <span class="driver">follow whatever the admin has set</span>
+            </span>
+          </label>
         </li>
       </ul>
     </template>
 
-    <template v-if="editing && editingDriver">
-      <h3 class="subhead">edit {{ editing.label }}</h3>
-      <UploaderConfigForm
-        :key="`edit-${editing.id}`"
-        :driver="editingDriver"
-        :existing="{
-          label: editing.label,
-          config: editing.config ?? {},
-          secretsSet: editing.secretsSet ?? {},
-        }"
-        :busy="busy"
-        :error="formError"
-        @save="onSaveEdit"
-        @cancel="closeForms"
-      />
-    </template>
-
-    <template v-else-if="allowUserDefined && addableDrivers.length">
-      <h3 class="subhead">add your own uploader</h3>
+    <template v-if="allowUserDefined && addableDrivers.length">
       <!-- #919: the server's catbox row has no edit, and nothing said where a
            userhash goes instead. -->
       <p class="muted small">
         To upload to your own account (a catbox userhash, a Zipline token), add it here. The
         server’s uploaders can’t be edited.
       </p>
-      <template v-if="addingDriver">
-        <label class="driver-pick">
-          <span>Type</span>
-          <select v-model="adding" :disabled="busy">
-            <option v-for="d in addableDrivers" :key="d.driver" :value="d.driver">
-              {{ d.label }}
-            </option>
-          </select>
-        </label>
-        <UploaderConfigForm
-          :key="`add-${addingDriver.driver}`"
-          :driver="addingDriver"
-          :busy="busy"
-          :error="formError"
-          @save="onSaveNew"
-          @cancel="closeForms"
-        />
-      </template>
-      <p v-else class="add-row">
-        <button class="link" :disabled="busy" @click="adding = addableDrivers[0].driver">
-          add an uploader
-        </button>
+      <p class="add-row">
+        <button class="btn-secondary" :disabled="busy" @click="onAdd">add uploader</button>
       </p>
     </template>
     <p v-else-if="!allowUserDefined && canChoose" class="muted small">
       This server doesn’t allow personal uploaders — you can pick from the ones above.
     </p>
+
+    <UploaderModal
+      v-if="adding"
+      :drivers="addableDrivers"
+      :busy="busy"
+      :error="formError"
+      @save="onSaveNew"
+      @close="closeForms"
+    />
+    <UploaderModal
+      v-else-if="editing && editingDriver"
+      :key="editing.id"
+      :drivers="[editingDriver]"
+      :existing="{
+        label: editing.label,
+        config: editing.config ?? {},
+        secretsSet: editing.secretsSet ?? {},
+      }"
+      :busy="busy"
+      :error="formError"
+      @save="onSaveEdit"
+      @close="closeForms"
+    />
 
     <!-- The rest of the category is still plain registry settings. -->
     <RegistryPane category-id="uploads" embedded :only="['pipeline']" />
@@ -159,7 +144,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { api } from '../../api.js';
 import RegistryPane from './RegistryPane.vue';
-import UploaderConfigForm from '../UploaderConfigForm.vue';
+import UploaderModal from '../UploaderModal.vue';
 import { hasUploaderChoice } from '../../utils/uploaders.js';
 import type { Uploader, UploaderDriver } from '../../utils/uploaders.js';
 
@@ -179,9 +164,12 @@ const busy = ref(false);
 const error = ref('');
 const formError = ref('');
 
-/** Driver id currently being added (null = the add form is closed). */
-const adding = ref<string | null>(null);
+/** The add modal is open. */
+const adding = ref(false);
+/** The uploader the edit modal is open on. */
 const editing = ref<Uploader | null>(null);
+/** Bumped when a selection is refused, to redraw the radios (see the template). */
+const pickTick = ref(0);
 
 function driverFor(id: string): UploaderDriver | undefined {
   return drivers.value.find((d) => d.driver === id);
@@ -192,9 +180,8 @@ function driverFor(id: string): UploaderDriver | undefined {
 // migrated off the legacy settings is editable but not creatable).
 const addableDrivers = computed(() => drivers.value.filter((d) => d.creatable));
 
-// Resolved driver objects, so the template never hands the form an undefined
-// driver (which would blow up on `.configSchema`).
-const addingDriver = computed(() => (adding.value ? driverFor(adding.value) : undefined));
+// Resolved, so the template never hands the form an undefined driver (which
+// would blow up on `.configSchema`).
 const editingDriver = computed(() => (editing.value ? driverFor(editing.value.driver) : undefined));
 
 async function refresh() {
@@ -214,7 +201,7 @@ async function refresh() {
 }
 
 function closeForms() {
-  adding.value = null;
+  adding.value = false;
   editing.value = null;
   formError.value = '';
 }
@@ -227,9 +214,15 @@ async function onSelect(id: number | null) {
     selectedId.value = id;
   } catch (e: any) {
     error.value = e.message || 'failed to select uploader';
+    pickTick.value++;
   } finally {
     busy.value = false;
   }
+}
+
+function onAdd() {
+  closeForms();
+  adding.value = true;
 }
 
 function onEdit(u: Uploader) {
@@ -237,14 +230,20 @@ function onEdit(u: Uploader) {
   editing.value = u;
 }
 
-async function onSaveNew({ label, values }: { label: string; values: Record<string, string> }) {
+interface UploaderDraft {
+  driver: string;
+  label: string;
+  values: Record<string, string>;
+}
+
+async function onSaveNew({ driver, label, values }: UploaderDraft) {
   if (!adding.value) return;
   formError.value = '';
   busy.value = true;
   try {
     await api('/api/uploaders', {
       method: 'POST',
-      body: { driver: adding.value, label, values },
+      body: { driver, label, values },
     });
     closeForms();
     await refresh();
@@ -255,7 +254,7 @@ async function onSaveNew({ label, values }: { label: string; values: Record<stri
   }
 }
 
-async function onSaveEdit({ label, values }: { label: string; values: Record<string, string> }) {
+async function onSaveEdit({ label, values }: UploaderDraft) {
   if (!editing.value) return;
   formError.value = '';
   busy.value = true;
@@ -297,9 +296,20 @@ onMounted(refresh);
 
 <style src="./panes.css"></style>
 <style scoped>
-/* Which uploader is live is carried by the "in use" badge on the identity line,
-   not by tinting the row: .device only has a border-TOP, so an accent border on
-   the selected row reads as a stray rule above it rather than as selection. */
+/* The whole identity is the radio's label, so the row is the click target. */
+.pick {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  min-width: 0;
+  cursor: pointer;
+}
+.pick input {
+  flex: none;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .device .name {
   color: var(--fg);
 }
@@ -310,17 +320,6 @@ onMounted(refresh);
 
 .badge {
   color: var(--fg-muted);
-}
-
-.badge.in-use {
-  color: var(--accent);
-}
-
-.driver-pick {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin-bottom: var(--space-3);
 }
 
 .add-row {

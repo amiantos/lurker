@@ -124,6 +124,13 @@
   justify-self: end;
 }
 
+/* A row's actions as a button bar (main.css .btn-bar): placed as .row-actions
+   is, but the bar keeps its own layout, since its buttons share their borders. */
+.settings-pane .device > .btn-bar {
+  grid-column: 2 / -1;
+  justify-self: end;
+}
+
 /* STACKED rows: identity on the first line, actions on the second.
 
    The default .device is a three-column grid sized for [identity][meta][one
@@ -136,6 +143,13 @@
 .settings-pane .device.stacked {
   grid-template-columns: 1fr;
   gap: var(--space-2);
+}
+/* A stacked row's bar sits under the identity and may wrap on a phone. */
+.settings-pane .device.stacked > .btn-bar {
+  grid-column: auto;
+  justify-self: start;
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
 }
 .settings-pane .device.stacked .row-actions {
   grid-column: 1 / -1;
