@@ -51,12 +51,16 @@
     </draggable>
 
     <p v-if="error" class="error inline">{{ error }}</p>
+
+    <!-- The category's registry rows (the quit message), as Uploads embeds its own. -->
+    <RegistryPane category-id="networks" embedded />
   </section>
 </template>
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import draggable from 'vuedraggable';
+import RegistryPane from './RegistryPane.vue';
 import { useNetworksStore } from '../../stores/networks.js';
 import type { Network } from '../../stores/networks.js';
 import { GripVerticalIcon } from '@lucide/vue';

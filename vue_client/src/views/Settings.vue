@@ -123,14 +123,9 @@ const visibleCategories = computed(() =>
 
 const firstCategoryId = computed(() => visibleCategories.value[0]?.id || 'appearance');
 
-// Categories that were folded into another. A bookmark or an open tab on the
-// old URL lands on the pane that holds those rows now, not on the first one.
-const RENAMED_CATEGORIES: Record<string, string> = { away: 'irc' };
-
 const activeCategoryId = computed((): string => {
   const param = route.params.category;
-  const raw = Array.isArray(param) ? param[0] : param;
-  const id = raw && (RENAMED_CATEGORIES[raw] ?? raw);
+  const id = Array.isArray(param) ? param[0] : param;
   if (id && visibleCategories.value.some((c) => c.id === id)) return id;
   return firstCategoryId.value;
 });
@@ -186,7 +181,7 @@ watch(
     // /api/config resolves still hides nothing).
     if (!auth.checked || !config.checked) return;
     if (param !== active) {
-      // The hash rides along: /settings/away#away.auto.enabled still finds its row.
+      // The hash rides along, so a link to a row survives the canonical redirect.
       router.replace({ name: 'settings', params: { category: active }, hash: route.hash });
     }
     onCleanup(() => {});

@@ -345,15 +345,17 @@ describe('pane structure', () => {
     ]);
   });
 
-  it('gathers away, the quit message and the CTCP replies under IRC', () => {
-    const moved = REGISTRY.filter(
-      (o) => /^(away|ctcp)\./.test(o.key) || o.key === 'chat.quit_message',
-    );
-    expect(moved.length).toBeGreaterThan(0);
-    expect(moved.filter((o) => o.category !== 'irc')).toEqual([]);
-    // The category has to exist in the sidebar, or the pane is unreachable.
-    expect(cat('irc')?.kind).toBe('registry');
-    expect(CATEGORIES.some((c) => c.id === 'away')).toBe(false);
-    expect(inPane('chat').some((o) => o.group === 'connection')).toBe(false);
+  // Away and CTCP are each a pane of their own; the quit message is the one
+  // registry row in Networks, under the network list.
+  it('gives away and CTCP a pane each, and Networks the quit message', () => {
+    const paneOf = (re: RegExp) => [
+      ...new Set(REGISTRY.filter((o) => re.test(o.key)).map((o) => o.category)),
+    ];
+    expect(paneOf(/^away\./)).toEqual(['away']);
+    expect(paneOf(/^ctcp\./)).toEqual(['ctcp']);
+    expect(inPane('networks').map((o) => o.key)).toEqual(['chat.quit_message']);
+    // Each has to exist in the sidebar, or its rows are unreachable.
+    for (const id of ['away', 'ctcp', 'networks']) expect(cat(id)).toBeTruthy();
+    expect([...new Set(inPane('chat').map((o) => o.group))]).toEqual(['composing', 'viewing']);
   });
 });

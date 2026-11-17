@@ -1318,24 +1318,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'the video host until you press it.',
   },
 
-  // ─── Away and quit ───────────────────────────────────────────────────────
-  {
-    key: 'away.all_networks',
-    label: 'Scope away to all networks by default',
-    category: 'irc',
-    group: 'presence',
-    type: 'bool',
-    default: false,
-    description:
-      'Make /away and /back apply to every network, as irssi does. Off, they apply ' +
-      'to the network you type them on, and -all reaches every network. On, -one ' +
-      'limits them to the current network.',
-  },
+  // ─── Connection (drawn under the list in Settings → Networks) ────────────
   {
     key: 'chat.quit_message',
     label: 'Quit message',
-    category: 'irc',
-    group: 'presence',
+    category: 'networks',
+    group: 'connection',
     type: 'string',
     default: '',
     description:
@@ -1344,11 +1332,25 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       '(the version and project URL).',
   },
 
+  // ─── Away ────────────────────────────────────────────────────────────────
+  {
+    key: 'away.all_networks',
+    label: 'Scope away to all networks by default',
+    category: 'away',
+    group: 'away',
+    type: 'bool',
+    default: false,
+    description:
+      'Make /away and /back apply to every network, as irssi does. Off, they apply ' +
+      'to the network you type them on, and -all reaches every network. On, -one ' +
+      'limits them to the current network.',
+  },
+
   // ─── Auto-away (sets you AWAY when no client is connected) ────────────
   {
     key: 'away.auto.enabled',
     label: 'Auto-set away when no client connected',
-    category: 'irc',
+    category: 'away',
     group: 'auto-away',
     type: 'bool',
     default: true,
@@ -1361,7 +1363,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'away.auto.delay_seconds',
     label: 'Auto-away delay (seconds)',
-    category: 'irc',
+    category: 'away',
     group: 'auto-away',
     type: 'int',
     min: 5,
@@ -1374,7 +1376,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'away.auto.message',
     label: 'Auto-away message',
-    category: 'irc',
+    category: 'away',
     group: 'auto-away',
     type: 'string',
     default: 'afk',
@@ -1397,7 +1399,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.replies',
     label: 'Answer CTCP queries',
-    category: 'irc',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'bool',
     default: true,
@@ -1412,7 +1414,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.msgbuffer',
     label: 'Where CTCP notices appear',
-    category: 'irc',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'enum',
     choices: ['server', 'system', 'private'],
@@ -1429,7 +1431,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.version',
     label: 'CTCP VERSION reply',
-    category: 'irc',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${name} ${version}',
@@ -1443,7 +1445,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.time',
     label: 'CTCP TIME reply',
-    category: 'irc',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${time}',
@@ -1455,7 +1457,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.source',
     label: 'CTCP SOURCE reply',
-    category: 'irc',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${source}',
@@ -1466,7 +1468,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.clientinfo',
     label: 'CTCP CLIENTINFO reply',
-    category: 'irc',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${clientinfo}',
@@ -2285,10 +2287,12 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'ignores', label: 'Ignores', kind: 'bespoke' },
   // Command aliases (#276): table-backed, like the two above.
   { id: 'aliases', label: 'Aliases', kind: 'bespoke' },
-  // What the network sees of you when you are not typing: away state, the quit
-  // reason, and the CTCP replies. Away was a category of four rows and the quit
-  // message a group of one in Chat; neither is about reading or composing.
-  { id: 'irc', label: 'IRC', kind: 'registry' },
+  { id: 'away', label: 'Away', kind: 'registry' },
+  // What Lurker answers when someone queries your client. Out of Chat, where
+  // it was six rows about neither reading nor composing.
+  { id: 'ctcp', label: 'CTCP', kind: 'registry' },
+  // Bespoke for the network order; the quit message is a registry row embedded
+  // beneath it (the Uploads pattern).
   { id: 'networks', label: 'Networks', kind: 'bespoke' },
   // How to attach an IRC client to this instance's bouncer. Self-hosted only
   // (a hosted cell runs no bouncer), and only where the operator enabled it.
@@ -2348,7 +2352,8 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   composing: 'Composing',
   'input-bar': 'Input bar',
   'smart-filter': 'Smart filter tuning',
-  presence: 'Away and quit',
+  connection: 'Connection',
+  away: 'Away',
   ctcp: 'CTCP replies',
   'auto-away': 'Auto-away',
   pipeline: 'Image pipeline',
