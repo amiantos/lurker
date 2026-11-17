@@ -107,9 +107,9 @@ describe('NetworkPicker recommended network card', () => {
     isInstance: true,
     ...over,
   });
-  // Locked down, so the instance presets are the whole list.
-  function card(over: Partial<NetworkPreset> = {}) {
-    setUp({ allowUserDefined: false });
+  // Instance presets lead the list, so the first card is the preset's.
+  function card(over: Partial<NetworkPreset> = {}, allowUserDefined = true) {
+    setUp({ allowUserDefined });
     useNetworkPresetsStore().presets = [preset(over)];
     return mount(NetworkPicker).find('.net-card');
   }
@@ -125,7 +125,14 @@ describe('NetworkPicker recommended network card', () => {
     const c = card({ tags: ['gaming', 'linux'] });
     expect(c.find('.net-head .net-tags').text()).toBe('gaming, linux');
     expect(c.find('.net-head .net-instance').exists()).toBe(false);
-    expect(c.find('.net-statsrow .net-instance').text()).toBe('recommended here');
+    expect(c.find('.net-statsrow .net-instance').text()).toBe('recommended');
+  });
+
+  it('drops the badge when the listed networks are the only ones allowed', () => {
+    expect(card({}, false).find('.net-instance').exists()).toBe(false);
+    const tagged = card({ tags: ['gaming'] }, false);
+    expect(tagged.find('.net-instance').exists()).toBe(false);
+    expect(tagged.find('.net-tags').text()).toBe('gaming');
   });
 
   it('shows each count only when given', () => {

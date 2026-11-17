@@ -65,7 +65,7 @@
             <span v-if="displayTags(net).length" class="net-tags">
               {{ displayTags(net).join(', ') }}
             </span>
-            <span v-else-if="net.isInstance" class="net-instance">recommended here</span>
+            <span v-else-if="isRecommended(net)" class="net-instance">recommended</span>
           </span>
           <span class="net-statsrow">
             <span class="net-stats">
@@ -86,8 +86,8 @@
             </span>
             <!-- An instance preset's badge sits by the name until the admin's
                  tags take that place, then here, where a builtin's does. -->
-            <span v-if="net.isInstance && displayTags(net).length" class="net-instance">
-              recommended here
+            <span v-if="isRecommended(net) && displayTags(net).length" class="net-instance">
+              recommended
             </span>
             <span v-else-if="!net.isInstance && hasLurker(net)" class="net-lurker">
               #lurker available
@@ -166,6 +166,12 @@ function displayTags(net: NetworkPreset): string[] {
 }
 function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
+}
+
+// The badge sets the admin's networks apart from the catalogue under them. On
+// a locked-down instance they are the whole list, so it says nothing.
+function isRecommended(net: NetworkPreset): boolean {
+  return !!net.isInstance && presets.allowUserDefined;
 }
 
 // A builtin's counts are netsplit.de's averages; an instance preset's are what
