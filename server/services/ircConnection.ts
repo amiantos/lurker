@@ -2569,6 +2569,17 @@ export class IrcConnection {
         });
         return;
       }
+      // A /nick the server refused, once registered: the 'nick in use' and
+      // 'nick invalid' handlers say it, and where it was typed too (#816).
+      if ((rawCommand === '432' || rawCommand === '433') && !this.preRegistered) {
+        const refused = String(msg?.params?.[1] ?? '');
+        const why = String(msg?.params?.[msg.params.length - 1] ?? '');
+        this.lineServerError = {
+          command: rawCommand,
+          params: msg?.params ?? [],
+          text: nickRefusalText(rawCommand, refused, why),
+        };
+      }
       if (isServerBufferDeniedNumeric(rawCommand) && !namesElsewhere) return;
       if (
         RESTORE_QUIET_NUMERICS.has(rawCommand) &&
@@ -2694,6 +2705,21 @@ export class IrcConnection {
         return;
       }
       // Nothing above placed it, so the server buffer has its only copy.
+      this.sayWhereAsked();
+    });
+
+    // ERR_ERRONEUSNICKNAME for a /nick, once registered: the server refused
+    // the nick itself. Said like the one above, and where it was typed (#816).
+    // Before registration this changes nothing.
+    on('nick invalid', (event: Record<string, unknown>) => {
+      if (this.preRegistered) return;
+      this.publish({
+        type: 'notice',
+        target: this.serverTarget(),
+        nick: 'lurker',
+        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
+        text: nickRefusalText('432', String(event?.nick ?? ''), String(event?.reason ?? '')),
+      });
       this.sayWhereAsked();
     });
 
@@ -3047,8 +3073,9 @@ export class IrcConnection {
           target: this.serverTarget(),
           nick: 'lurker',
           notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
-          text: `Nick ${requested} is already in use.`,
+          text: nickRefusalText('433', requested, ''),
         });
+        this.sayWhereAsked();
         return;
       }
       const next = computeFallbackNick(this.network.nick, this.nickAttempt);
@@ -14587,6 +14614,13 @@ const SERVER_BUFFER_DENIED_NUMERICS = new Set<string>([
   // rest acknowledges a SUB. A user's own GET/LIST is echoed by onMetadataLine.
   ...METADATA_NUMERICS,
 ]);
+
+// What a refused /nick is told: 433 (taken) or 432 (not a nick this server
+// allows, with its reason).
+export function nickRefusalText(command: string, nick: string, reason: string): string {
+  if (command === '433') return `Nick ${nick} is already in use.`;
+  return reason ? `Nick ${nick} was refused: ${reason}` : `Nick ${nick} was refused.`;
+}
 
 // True for numerics another handler already surfaces (or that would flood), so
 // the 'raw' handler skips them. See SERVER_BUFFER_DENIED_NUMERICS.

@@ -286,6 +286,39 @@ describe('an error is said where its command was typed (#816)', () => {
     expect(stored()).toHaveLength(1);
   });
 
+  it('says a refused /nick where it was typed: taken (433) and not allowed (432)', () => {
+    const { conn, receive, said, serverBuffer } = harness();
+    conn.preRegistered = false;
+    conn.raw('NICK bob', 'user', { issuingTarget: '#anime' });
+    receive(':irc.example.test 433 alice bob :Nickname is already in use');
+    conn.raw('NICK !!bad', 'user', { issuingTarget: '#anime' });
+    receive(':irc.example.test 432 alice !!bad :Erroneous nickname');
+
+    const lines = ['Nick bob is already in use.', 'Nick !!bad was refused: Erroneous nickname'];
+    expect(said()).toEqual(lines.map((text) => ({ target: '#anime', text })));
+    expect(serverBuffer()).toEqual(lines);
+  });
+
+  it('leaves a nick refused while registering to the fallback ladder', () => {
+    const { conn, receive, said, serverBuffer } = harness();
+    conn.preRegistered = true;
+    conn.client.changeNick = vi.fn<(nick: string) => void>();
+    conn.raw('NICK bob', 'user', { issuingTarget: '#anime' });
+    receive(':irc.example.test 433 * bob :Nickname is already in use');
+    receive(':irc.example.test 432 * !!bad :Erroneous nickname');
+    expect(said()).toEqual([]);
+    expect(serverBuffer()).toEqual([]);
+  });
+
+  it('does not say a nick refusal that answers a line with no buffer', () => {
+    const { conn, receive, said } = harness();
+    conn.preRegistered = false;
+    conn.raw('FROB', 'user', { issuingTarget: '#anime' });
+    conn.raw('NICK bob', 'lurker');
+    receive(':irc.example.test 433 alice bob :Nickname is already in use');
+    expect(said()).toEqual([]);
+  });
+
   it('does not carry an error that was placed over to the next line of the same read', () => {
     // A socket read's lines run back to back, with no microtask between.
     const { conn, receive, said } = harness();
