@@ -18,6 +18,10 @@
     <p v-if="formError" class="error inline">{{ formError }}</p>
     <p v-if="rulesError" class="error inline">{{ rulesError }}</p>
 
+    <!-- The automatic rule for your nick on each network is not listed: it can't
+         be edited, disabled or removed, so a row for it was three dead buttons
+         per network. This line is what says it exists. -->
+    <p class="muted small">Your nick on each network always highlights.</p>
     <p v-if="!highlightGroups.length" class="muted small">
       No highlights yet. Add one below, or type <code>/highlight &lt;word&gt;</code> in any buffer.
     </p>
@@ -34,32 +38,12 @@
             <IconButton
               :icon="entry.enabled ? ToggleRightIcon : ToggleLeftIcon"
               label="toggle highlight rule"
-              :disabled="entry.auto_managed"
               :aria-pressed="entry.enabled"
-              :title="
-                entry.auto_managed
-                  ? 'auto-managed (network nick) — always on'
-                  : entry.enabled
-                    ? 'enabled — click to disable'
-                    : 'disabled — click to enable'
-              "
+              :title="entry.enabled ? 'enabled — click to disable' : 'disabled — click to enable'"
               @click="toggleEnabled(entry, !entry.enabled)"
             />
-            <!-- Auto-managed (network nick) rules are fully system-managed, so the
-                 toggle (above) and edit/remove are all disabled. -->
-            <IconButton
-              :icon="PenIcon"
-              label="edit"
-              :disabled="entry.auto_managed"
-              @click="startEdit(entry)"
-            />
-            <IconButton
-              :icon="TrashIcon"
-              label="remove"
-              danger
-              :disabled="entry.auto_managed"
-              @click="onRemove(entry)"
-            />
+            <IconButton :icon="PenIcon" label="edit" @click="startEdit(entry)" />
+            <IconButton :icon="TrashIcon" label="remove" danger @click="onRemove(entry)" />
           </span>
         </li>
       </ul>
@@ -221,12 +205,12 @@ function describe(entry: HighlightRule): string {
 }
 
 // Global group first (no network scope), then per-network groups sorted by name.
-// A multi-network rule (an auto-nick rule spanning networks that share your nick)
-// appears under each of its networks — it genuinely applies to all of them.
+// Only the rules the user wrote: the auto-managed nick rules are left out (see
+// the template). /highlight still lists them.
 const highlightGroups = computed<HighlightGroup[]>(() => {
   const globals: HighlightRule[] = [];
   const byNet = new Map<number, HighlightRule[]>();
-  for (const entry of rulesStore.rules) {
+  for (const entry of rulesStore.userRules) {
     if (entry.networkIds.length === 0) {
       globals.push(entry);
     } else {
