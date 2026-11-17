@@ -91,7 +91,11 @@ function syncFromStore() {
   localOrder.value = [...networks.networks];
 }
 
-watch(() => networks.networks, syncFromStore, { immediate: true, deep: false });
+// The getter copies the array so the watch tracks its length and every slot:
+// the store adds and removes networks IN PLACE (push / splice), which a watch
+// on the array's identity never saw, so a network added from this pane's own
+// button did not appear in the list above it.
+watch(() => [...networks.networks], syncFromStore, { immediate: true });
 
 const error = ref('');
 
