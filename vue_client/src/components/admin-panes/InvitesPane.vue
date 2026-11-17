@@ -23,7 +23,7 @@
       <!-- Configure first, then create: the link's expiry and what its account
            is born with are decided in the modal, so nothing about a link can
            be changed after it exists. -->
-      <button class="link" :disabled="adminBusy" @click="composing = true">
+      <button class="btn-secondary" :disabled="adminBusy" @click="composing = true">
         generate invite link
       </button>
     </div>
@@ -50,18 +50,20 @@
         </span>
         <!-- Two words for two different acts: revoking kills a link someone could
              still redeem, removing only clears the record of one already spent. -->
-        <button
-          class="link danger"
-          :disabled="adminBusy"
-          :title="
-            inv.status === 'consumed'
-              ? 'remove this record — the link is already spent'
-              : 'revoke this link so it can no longer be redeemed'
-          "
-          @click="onDeleteInvite(inv)"
-        >
-          {{ inv.status === 'consumed' ? 'remove' : 'revoke' }}
-        </button>
+        <span class="btn-bar">
+          <button
+            class="bad"
+            :disabled="adminBusy"
+            :title="
+              inv.status === 'consumed'
+                ? 'remove this record — the link is already spent'
+                : 'revoke this link so it can no longer be redeemed'
+            "
+            @click="onDeleteInvite(inv)"
+          >
+            {{ inv.status === 'consumed' ? 'remove' : 'revoke' }}
+          </button>
+        </span>
       </li>
     </ul>
     <p v-else-if="adminStore.invitesLoaded" class="muted small">No invites yet.</p>

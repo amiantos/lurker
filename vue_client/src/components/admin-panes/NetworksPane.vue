@@ -43,10 +43,12 @@
             />
             <span>Offered</span>
           </label>
-          <button type="button" class="link" :disabled="busy" @click="edit(preset)">Edit</button>
-          <button type="button" class="link danger" :disabled="busy" @click="remove(preset)">
-            Delete
-          </button>
+          <span class="btn-bar">
+            <button type="button" :disabled="busy" @click="edit(preset)">Edit</button>
+            <button type="button" class="bad" :disabled="busy" @click="remove(preset)">
+              Delete
+            </button>
+          </span>
         </div>
       </li>
     </ul>
@@ -102,7 +104,7 @@
         <button type="submit" class="btn-primary" :disabled="busy">
           {{ editing ? 'Save changes' : 'Add network' }}
         </button>
-        <button v-if="editing" type="button" class="link" :disabled="busy" @click="reset">
+        <button v-if="editing" type="button" class="btn-secondary" :disabled="busy" @click="reset">
           Cancel
         </button>
       </div>
@@ -339,19 +341,6 @@ label small {
 .policy {
   align-items: flex-start;
   gap: var(--space-4);
-}
-.link {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-}
-.link.danger {
-  color: var(--bad);
-}
-.link:hover {
-  text-decoration: underline;
 }
 .form-actions {
   display: flex;

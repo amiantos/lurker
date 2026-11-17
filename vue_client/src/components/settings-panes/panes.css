@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: MPL-2.0
  *
  * Shared chrome for every Settings pane: section header, sub-headings, helper
- * text, link-style buttons, device-list rows, errors. Imported unscoped from
+ * text, device-list rows, errors. Buttons are the outlined ones in main.css. Imported unscoped from
  * each pane so the rules apply across all of them with no duplication.
  */
 
@@ -37,25 +37,6 @@
 }
 .settings-pane > .subhead:first-of-type {
   margin-top: var(--space-2);
-}
-
-.settings-pane .link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  padding: var(--space-1) var(--space-3);
-  cursor: pointer;
-  font: inherit;
-}
-.settings-pane .link:hover:not(:disabled) {
-  color: var(--fg);
-}
-.settings-pane .link:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.settings-pane .link.danger {
-  color: var(--bad);
 }
 
 .settings-pane .error.inline {

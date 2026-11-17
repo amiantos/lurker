@@ -107,7 +107,7 @@
       <button
         v-if="referenceSwap"
         type="button"
-        class="link refswap"
+        class="refswap"
         :title="referenceSwap.title"
         @click="emit('update:modelValue', referenceSwap.value)"
       >
@@ -132,7 +132,7 @@
       favorites
       <button
         type="button"
-        class="link star"
+        class="star"
         :disabled="!currentHex"
         :title="isFavorite ? 'remove from favorites' : 'save to favorites'"
         :aria-pressed="isFavorite"
@@ -539,9 +539,7 @@ function toggleFavorite(): void {
   text-transform: lowercase;
 }
 .refswap {
-  background: none;
-  border: none;
-  padding: 0;
+  padding: 0 var(--space-2);
   color: var(--accent);
   cursor: pointer;
   font: inherit;
@@ -552,8 +550,8 @@ function toggleFavorite(): void {
 }
 .star {
   background: none;
-  border: none;
-  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  padding: var(--space-1) var(--space-2);
   color: var(--fg-muted);
   cursor: pointer;
   font-size: var(--icon-md);
@@ -561,6 +559,7 @@ function toggleFavorite(): void {
 }
 .star:hover:not(:disabled),
 .star[aria-pressed='true'] {
+  border-color: var(--accent);
   color: var(--accent);
 }
 .swatches {

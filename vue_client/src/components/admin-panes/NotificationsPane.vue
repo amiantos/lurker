@@ -36,13 +36,13 @@
         <p class="muted small">Register this key at {{ relayHost }}.</p>
         <div class="key-row">
           <code class="key">{{ push.publicKey }}</code>
-          <button class="link" type="button" @click="copy(push.publicKey)">
+          <button type="button" @click="copy(push.publicKey)">
             {{ copied ? 'copied' : 'copy' }}
           </button>
         </div>
         <p class="relay-status small">
           <span v-if="status" :class="status.ok ? 'muted' : 'error'">{{ status.text }}</span>
-          <button class="link" type="button" :disabled="checking || busy" @click="check">
+          <button type="button" :disabled="checking || busy" @click="check">
             {{ checking ? 'checking…' : 'check' }}
           </button>
         </p>
@@ -93,10 +93,12 @@
       bug report.
     </p>
     <p class="log-actions">
-      <button class="link" type="button" :disabled="!store.pushLog.length" @click="copyLog">
-        {{ logCopied ? 'copied' : 'copy as text' }}
-      </button>
-      <button class="link" type="button" @click="reloadLog">refresh</button>
+      <span class="btn-bar">
+        <button type="button" :disabled="!store.pushLog.length" @click="copyLog">
+          {{ logCopied ? 'copied' : 'copy as text' }}
+        </button>
+        <button type="button" @click="reloadLog">refresh</button>
+      </span>
     </p>
     <ul v-if="store.pushLog.length" class="push-log">
       <li v-for="row in store.pushLog" :key="row.id" class="push-row" :class="row.outcome">
@@ -110,7 +112,7 @@
     </ul>
     <p v-else-if="store.pushLogLoaded" class="muted small">Nothing in the last week.</p>
     <p v-if="store.pushLogHasMore">
-      <button class="link" type="button" :disabled="olderBusy" @click="olderLog">
+      <button class="btn-secondary" type="button" :disabled="olderBusy" @click="olderLog">
         {{ olderBusy ? 'loading…' : 'show older' }}
       </button>
     </p>

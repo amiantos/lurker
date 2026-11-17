@@ -37,7 +37,7 @@
             >
               <Undo2Icon />
             </button>
-            <button class="link done" type="button" @click="finish">done</button>
+            <button class="btn-primary done" type="button" @click="finish">done</button>
           </div>
         </header>
       </template>
@@ -70,7 +70,7 @@
         >
           <Undo2Icon />
         </button>
-        <button class="link done" type="button" @click="finish">done</button>
+        <button class="btn-primary done" type="button" @click="finish">done</button>
       </footer>
     </div>
   </Teleport>
@@ -298,34 +298,28 @@ onBeforeUnmount(detachDesktop);
   align-items: center;
   gap: var(--space-4);
 }
-/* Both shells' "done" and undo: scoped styles reach slot content this
-   component renders, so one set of rules serves the footer and the header. */
-.link {
-  background: none;
-  border: none;
-  padding: var(--space-2) 0;
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-}
-.link:hover:not(:disabled),
+/* Both shells' undo: scoped styles reach slot content this component renders,
+   so one set of rules serves the footer and the header. "done" beside it is the
+   global .btn-primary; undo is the same outlined square at its height. */
 .done {
-  color: var(--accent);
+  padding-block: var(--space-2);
 }
 .icon-btn {
   background: none;
-  border: none;
+  border: 1px solid var(--border);
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
   font-size: var(--icon-lg);
   padding: var(--space-2) var(--space-4);
   display: inline-flex;
+  align-self: stretch;
+  align-items: center;
 }
 .icon-btn:hover:not(:disabled) {
+  border-color: var(--accent);
   color: var(--accent);
 }
-.link:disabled,
 .icon-btn:disabled {
   opacity: 0.5;
   cursor: default;

@@ -70,7 +70,7 @@ describe('Admin → Networks: card details', () => {
 
   it('edits a listed preset through the form, and can clear a count', async () => {
     const wrapper = await mountPane();
-    await wrapper.find('.row-actions button.link:not(.danger)').trigger('click');
+    await wrapper.find('.row-actions .btn-bar button:not(.bad)').trigger('click');
     expect(wrapper.find('form h3').text()).toBe('Edit Corp');
     expect(field(wrapper, 'Tags').element.value).toBe('gaming');
     expect(field(wrapper, 'Users').element.value).toBe('120');

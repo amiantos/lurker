@@ -118,8 +118,8 @@
               autocapitalize="off"
             />
           </label>
-          <button type="submit" class="link" :disabled="adminBusy">save</button>
-          <button type="button" class="link" :disabled="adminBusy" @click="editingIdentFor = null">
+          <button type="submit" :disabled="adminBusy">save</button>
+          <button type="button" :disabled="adminBusy" @click="editingIdentFor = null">
             cancel
           </button>
           <small class="muted">
@@ -136,8 +136,8 @@
           @submit.prevent="onSaveLimits(u)"
         >
           <RestrictionsFields v-model="limitsDraft" :disabled="adminBusy" />
-          <button type="submit" class="link" :disabled="adminBusy">save</button>
-          <button type="button" class="link" :disabled="adminBusy" @click="editingLimitsFor = null">
+          <button type="submit" :disabled="adminBusy">save</button>
+          <button type="button" :disabled="adminBusy" @click="editingLimitsFor = null">
             cancel
           </button>
           <small class="muted">
@@ -151,7 +151,7 @@
              loses it issues another, which kills this one. -->
         <div v-if="freshRecovery && freshRecovery.userId === u.id" class="recovery-fresh">
           <code>{{ freshRecovery.url }}</code>
-          <button class="link" @click="onCopyRecovery(freshRecovery.url)">
+          <button @click="onCopyRecovery(freshRecovery.url)">
             {{ freshRecovery.copied ? 'copied' : 'copy' }}
           </button>
           <small class="muted">
@@ -167,10 +167,9 @@
           </small>
         </div>
 
-        <div class="row-actions">
+        <span class="btn-bar">
           <button
             v-if="canAssignIdents"
-            class="link"
             :disabled="adminBusy"
             title="set the ident networks see for this account"
             @click="onEditIdent(u)"
@@ -179,7 +178,6 @@
           </button>
           <button
             v-if="!config.isNode"
-            class="link"
             :disabled="(u.role === 'admin' && !isLimited(u)) || adminBusy"
             :title="
               u.role === 'admin'
@@ -196,7 +194,6 @@
           </button>
           <button
             v-if="!config.isNode"
-            class="link"
             :disabled="u.id === auth.user?.id || adminBusy"
             :title="
               u.id === auth.user?.id
@@ -211,7 +208,6 @@
           </button>
           <button
             v-if="!config.isNode"
-            class="link"
             :disabled="adminBusy"
             title="issue a single-use link that lets this member set a password or add a passkey"
             @click="onIssueRecovery(u)"
@@ -220,7 +216,6 @@
           </button>
           <button
             v-if="!config.isNode && u.recoveryExpiresAt"
-            class="link"
             :disabled="adminBusy"
             title="revoke the outstanding recovery link"
             @click="onRevokeRecovery(u)"
@@ -228,14 +223,14 @@
             revoke recovery
           </button>
           <button
-            class="link danger"
+            class="bad"
             :disabled="u.id === auth.user?.id || adminBusy"
             :title="u.id === auth.user?.id ? 'cannot delete yourself' : 'delete user'"
             @click="onDeleteUser(u)"
           >
             delete
           </button>
-        </div>
+        </span>
       </li>
     </ul>
     <p v-else-if="adminStore.usersLoaded" class="muted small">No users.</p>

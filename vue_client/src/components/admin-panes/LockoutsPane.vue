@@ -37,10 +37,12 @@
     <p v-else-if="loaded" class="muted small">No addresses are locked out.</p>
 
     <div class="actions">
-      <button class="link" :disabled="busy" @click="load">refresh</button>
-      <button v-if="adminStore.loginLockouts.length" class="link" :disabled="busy" @click="onClear">
-        clear all
-      </button>
+      <span class="btn-bar">
+        <button :disabled="busy" @click="load">refresh</button>
+        <button v-if="adminStore.loginLockouts.length" :disabled="busy" @click="onClear">
+          clear all
+        </button>
+      </span>
     </div>
   </section>
 </template>

@@ -124,9 +124,10 @@
               </td>
               <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
               <td class="act">
-                <button class="link" :disabled="busy" @click="save(u)">save</button>
-                ·
-                <button class="link" :disabled="busy" @click="cancelEdit">cancel</button>
+                <span class="btn-bar">
+                  <button :disabled="busy" @click="save(u)">save</button>
+                  <button :disabled="busy" @click="cancelEdit">cancel</button>
+                </span>
               </td>
             </template>
             <template v-else>
@@ -137,7 +138,9 @@
               <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
               <td class="act">
                 <span v-if="savedFor === u.id" class="muted" role="status">saved</span>
-                <button v-else class="link" :disabled="busy" @click="startEdit(u)">edit</button>
+                <span v-else class="btn-bar">
+                  <button :disabled="busy" @click="startEdit(u)">edit</button>
+                </span>
               </td>
             </template>
           </tr>
@@ -348,13 +351,10 @@ code {
   white-space: nowrap;
 }
 .users .act {
-  width: 8em;
+  width: 10em;
   padding-right: 0;
   text-align: right;
   white-space: nowrap;
-}
-.users .act .link {
-  padding: 0;
 }
 .users input[type='checkbox'] {
   margin: 0;
