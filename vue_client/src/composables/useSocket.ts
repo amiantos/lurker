@@ -663,9 +663,11 @@ function applyEvent(event: any): boolean {
       const { news } = take(decorated);
       // An unrecognized slash command (forwarded as raw IRC) only fails once
       // the server 421s, and that lands in the server buffer — invisible if
-      // you typed in a channel. Mirror it as a toast so the feedback shows up
-      // where you're looking. Gated on `news` so a resume-gap replay of the
-      // same error can't re-fire it (same guard the message path uses).
+      // you typed in a channel. When the server knows which buffer that was
+      // it says the error there and sends no line here (#816); this toast is
+      // for when it doesn't: a DCC chat, a connect command, a buffer since
+      // closed. Gated on `news` so a resume-gap replay of the same error
+      // can't re-fire it (same guard the message path uses).
       if (news && event.unknownCommand) {
         useToastsStore().push({
           kind: 'warn',

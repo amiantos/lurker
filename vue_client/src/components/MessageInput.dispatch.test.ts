@@ -73,11 +73,13 @@ describe('command dispatch', () => {
 
   it('sends a verb Lurker has no command for as a raw line', async () => {
     await run('/frobnicate one two');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'frobnicate one two' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'frobnicate one two' },
+    ]);
   });
 
   it('runs a known verb however it is capitalised, aliases too', async () => {
     await run('/QUOTE PING x');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'PING x' }]);
+    expect(sent()).toEqual([{ type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'PING x' }]);
   });
 });

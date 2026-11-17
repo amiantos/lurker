@@ -143,7 +143,9 @@ describe('slash-command completion', () => {
     await type(el, '/kick al');
     expect(rows()).toEqual(['alexis', 'alice']);
     await key(el, 'Enter');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 1, line: 'KICK #mango al' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 1, issuingTarget: '#mango', line: 'KICK #mango al' },
+    ]);
   });
 
   it('Enter takes the row the arrows chose, whatever was typed', async () => {
@@ -180,7 +182,9 @@ describe('slash-command completion', () => {
     await key(el, 'Tab');
     expect(el.value).toBe('/op alexis ');
     await key(el, 'Enter');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 1, line: 'MODE #mango +o alexis' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 1, issuingTarget: '#mango', line: 'MODE #mango +o alexis' },
+    ]);
   });
 
   it('a channel typed where a nick or a channel goes opens the channel picker', async () => {
@@ -266,7 +270,9 @@ describe('slash-command completion', () => {
     await type(el, '/kick bob');
     expect(rows()).toEqual(['bob']);
     await key(el, 'Enter');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 1, line: 'KICK #mango bob' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 1, issuingTarget: '#mango', line: 'KICK #mango bob' },
+    ]);
 
     vi.mocked(socketSend).mockClear();
     await type(el, '/part ');

@@ -54,16 +54,20 @@ type Frame = Record<string, unknown>;
 /** A connection with no socket: what the hub hands the line to is all that matters. */
 function stubConnection() {
   const sent: string[] = [];
+  const issuing: unknown[] = [];
   const published: Frame[] = [];
   const conn = {
     state: 'connected',
     network: { id: networkId },
-    raw: (line: string) => sent.push(line),
+    raw: (line: string, _asker?: unknown, opts?: { issuingTarget?: string }) => {
+      issuing.push(opts?.issuingTarget);
+      sent.push(line);
+    },
     publishEphemeral: (event: Frame) => published.push(event),
   };
   type Conn = ReturnType<typeof ircManager.listConnections>[number];
   ircManager.connectionsForUser(alice).set(networkId, conn as unknown as Conn);
-  return { sent, published };
+  return { sent, issuing, published };
 }
 
 async function attach(): Promise<{ ws: WebSocket; heard: Frame[] }> {
@@ -129,5 +133,19 @@ describe("the web client's raw line on an E2E channel", () => {
     }
     expect(sent).toEqual(['MODE #secret +o bob', 'PRIVMSG #open :plain']);
     expect(published).toEqual([]);
+  });
+
+  it('hands on the buffer a line was typed in, when it is a string (#816)', async () => {
+    const { ws } = await attach();
+    const { sent, issuing } = stubConnection();
+    try {
+      ws.send(JSON.stringify({ type: 'raw', networkId, line: 'OPER a b', issuingTarget: '#open' }));
+      ws.send(JSON.stringify({ type: 'raw', networkId, line: 'OPER a b', issuingTarget: 7 }));
+      ws.send(JSON.stringify({ type: 'raw', networkId, line: 'OPER a b' }));
+      await until(() => sent.length === 3);
+    } finally {
+      ws.close();
+    }
+    expect(issuing).toEqual(['#open', undefined, undefined]);
   });
 });

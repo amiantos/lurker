@@ -72,11 +72,15 @@ describe('/accept', () => {
 
   it('sends one comma list, however the nicks were separated', async () => {
     await run('/accept alice, bob -carol');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'ACCEPT alice,bob,-carol' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'ACCEPT alice,bob,-carol' },
+    ]);
   });
 
   it('lists with no argument', async () => {
     await run('/accept');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'ACCEPT *' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'ACCEPT *' },
+    ]);
   });
 });

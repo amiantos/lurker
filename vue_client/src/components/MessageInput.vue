@@ -3157,7 +3157,7 @@ function modeShortcut(
     spec ? spec.maxModes : DEFAULT_MAX_MODES,
   );
   // Stop at the first line the socket refuses; its toast covers the rest.
-  return lines.every((l) => sendOrToast({ type: 'raw', networkId, line: l }, line));
+  return lines.every((l) => sendRaw(networkId, target, l, line));
 }
 
 // /quiet and /unquiet speak solanum's +q quiet LIST. On InspIRCd and Unreal +q
@@ -3310,6 +3310,12 @@ function sendOrToast(payload: Record<string, unknown>, body: string): boolean {
   const ok = socketSend(payload);
   if (!ok) toastSendFailure('disconnected', body);
   return ok;
+}
+
+// A raw IRC line, with the buffer it was typed in: the server says an error
+// that names no channel or nick there, where the user is looking (#816).
+function sendRaw(networkId: number, target: string, ircLine: string, typed: string): boolean {
+  return sendOrToast({ type: 'raw', networkId, issuingTarget: target, line: ircLine }, typed);
 }
 
 // ACK-tracked send used by anything that puts a visible message into a
@@ -4592,7 +4598,7 @@ function handleCommand(
   }
 
   // Anything Lurker has no command for goes to the server as typed.
-  if (verb === null) return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
+  if (verb === null) return sendRaw(networkId, target, line.slice(1), line);
 
   switch (verb) {
     case 'e2e': {
@@ -4707,7 +4713,7 @@ function handleCommand(
         localInfo(networkId, target, `usage: /${cmd.toLowerCase()} <text> — message ${service}`);
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: `PRIVMSG ${service} :${argLine}` }, line);
+      return sendRaw(networkId, target, `PRIVMSG ${service} :${argLine}`, line);
     }
     case 'join':
     case 'j':
@@ -4864,16 +4870,13 @@ function handleCommand(
     }
     case 'raw':
     case 'quote':
-      return sendOrToast({ type: 'raw', networkId, line: argLine }, line);
+      return sendRaw(networkId, target, argLine, line);
     case 'accept': {
       // Caller ID (#206): /accept alice bob -carol → ACCEPT alice,bob,-carol.
       // The wire wants one comma list (a second word is ignored), and no
       // argument asks for the list, as irssi's /accept does.
       const nicks = rest.join(',').split(',').filter(Boolean).join(',');
-      return sendOrToast(
-        { type: 'raw', networkId, line: nicks ? `ACCEPT ${nicks}` : 'ACCEPT *' },
-        line,
-      );
+      return sendRaw(networkId, target, nicks ? `ACCEPT ${nicks}` : 'ACCEPT *', line);
     }
     // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
     // echoed by the server where a /command's reply goes. A change is saved
@@ -4907,7 +4910,7 @@ function handleCommand(
         localInfo(networkId, target, `/${verb}: ${refusal}.`);
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
+      return sendRaw(networkId, target, parsed.line, line);
     }
     case 'flushq': {
       // HexChat's name for it (#1322). The server marks each dropped message
@@ -4970,10 +4973,7 @@ function handleCommand(
         return true;
       }
       const trailer = reason ? ` :${reason}` : '';
-      return sendOrToast(
-        { type: 'raw', networkId, line: `KICK ${channel} ${nick}${trailer}` },
-        line,
-      );
+      return sendRaw(networkId, target, `KICK ${channel} ${nick}${trailer}`, line);
     }
     case 'rename': {
       // /rename <#newname> [reason]          (in a channel buffer)
@@ -4986,7 +4986,7 @@ function handleCommand(
         localInfo(networkId, target, parsed.error);
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
+      return sendRaw(networkId, target, parsed.line, line);
     }
     case 'invite': {
       // /invite <nick>             (in a channel buffer → invite to it)
@@ -5011,7 +5011,7 @@ function handleCommand(
       }
       // Wire order is INVITE <nick> <channel> (note: irc-framework's own
       // .invite() flips the args — we build the raw line directly so it can't).
-      return sendOrToast({ type: 'raw', networkId, line: `INVITE ${nick} ${channel}` }, line);
+      return sendRaw(networkId, target, `INVITE ${nick} ${channel}`, line);
     }
     case 'topic': {
       // /topic                        — ask for the current channel's topic; the
@@ -5036,7 +5036,7 @@ function handleCommand(
         return true;
       }
       const trailer = body ? ` :${body}` : '';
-      return sendOrToast({ type: 'raw', networkId, line: `TOPIC ${channel}${trailer}` }, line);
+      return sendRaw(networkId, target, `TOPIC ${channel}${trailer}`, line);
     }
     case 'channel':
     case 'chan': {
@@ -5070,7 +5070,7 @@ function handleCommand(
         localInfo(networkId, target, 'usage: /nick <newnick>');
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: `NICK ${newNick}` }, line);
+      return sendRaw(networkId, target, `NICK ${newNick}`, line);
     }
     case 'mode': {
       // /mode <flags>                  — apply to current channel
@@ -5086,12 +5086,9 @@ function handleCommand(
       const looksLikeFlagsOnly =
         /^[+-]/.test(rest[0]) && !isChannelArgAmbiguous(rest[0], networkId);
       if (looksLikeFlagsOnly && isChannelTarget(target)) {
-        return sendOrToast(
-          { type: 'raw', networkId, line: `MODE ${target} ${rest.join(' ')}` },
-          line,
-        );
+        return sendRaw(networkId, target, `MODE ${target} ${rest.join(' ')}`, line);
       }
-      return sendOrToast({ type: 'raw', networkId, line: `MODE ${argLine}` }, line);
+      return sendRaw(networkId, target, `MODE ${argLine}`, line);
     }
     // `/disconnect` is the word people reach for when a network is stuck in a
     // reconnect loop, and until #785 it fell through to the raw-line default —
@@ -5238,13 +5235,10 @@ function handleCommand(
       const trailer = reason ? ` :${reason}` : '';
       // The ban send returns false only if the socket is closed — skip the KICK
       // so we don't half-apply against a dead connection.
-      if (!sendOrToast({ type: 'raw', networkId, line: `MODE ${channel} +b ${nick}` }, line)) {
+      if (!sendRaw(networkId, target, `MODE ${channel} +b ${nick}`, line)) {
         return false;
       }
-      return sendOrToast(
-        { type: 'raw', networkId, line: `KICK ${channel} ${nick}${trailer}` },
-        line,
-      );
+      return sendRaw(networkId, target, `KICK ${channel} ${nick}${trailer}`, line);
     }
     case 'cycle':
     case 'hop': {
@@ -5361,10 +5355,7 @@ function handleCommand(
     // cheatsheet lives under `/commands` below (#316).
     case 'help': {
       const rawVerb = cmd.toUpperCase();
-      return sendOrToast(
-        { type: 'raw', networkId, line: argLine ? `${rawVerb} ${argLine}` : rawVerb },
-        line,
-      );
+      return sendRaw(networkId, target, argLine ? `${rawVerb} ${argLine}` : rawVerb, line);
     }
     default: {
       // Unreachable while the switches and the table agree.

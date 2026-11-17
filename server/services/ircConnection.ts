@@ -51,6 +51,7 @@ import type { Network } from '../db/networks.js';
 import {
   isClosed as isBufferClosed,
   getBuffer,
+  getState as getBufferState,
   ensureExists as ensureBufferExists,
   setAutojoin as setBufferAutojoin,
   isAutojoin as isBufferAutojoin,
@@ -114,6 +115,7 @@ import { ProxyTransport } from './proxyTransport.js';
 import { MonitorList } from './monitorList.js';
 import type { MonitorHolder, MonitorSync } from './monitorList.js';
 import { ReplyRouter, listModeNumerics } from './replyRouter.js';
+import { CommandIssuers, isErrorNumeric } from './commandIssuers.js';
 import { ChathistoryBackfill } from './chathistoryBackfill.js';
 import type { Asker, QueryEnd, ReplyOwner } from './replyRouter.js';
 import { ModeListCollector } from './modeList.js';
@@ -1329,6 +1331,9 @@ export class IrcConnection {
   // notice / ctcp verbs never pass through raw(). `seq` orders the command
   // against outstanding CTCP requests, see takeCtcpIssuer.
   lastNickIntent = new Map<string, { channel: string | null; at: number; seq: number }>();
+  // The buffer each raw command was typed in, for an error that names no
+  // channel or nick to place it by (#816, commandIssuers.ts).
+  readonly commandIssuers = new CommandIssuers(SEND_REJECTION_ATTRIBUTION_MS);
   // Who asked for each reply: Lurker, the user, or a bouncer client. Every query
   // goes out through it, one of each kind on the wire at a time (replyRouter.ts).
   readonly replies: ReplyRouter;
@@ -1348,6 +1353,10 @@ export class IrcConnection {
   // replyOwner; null outside a line's handlers. A batch's lines run when the
   // batch ends, so their handlers read the closing BATCH line's.
   lineCommand: string | null;
+  // The error numeric being handled, once the raw listener has put it in the
+  // server buffer and nowhere else, with the text it has there. Read by
+  // sayWhereAsked; cleared with replyOwner.
+  lineServerError: { command: string; params: string[]; text: string } | null = null;
   // The raw listener's decisions for CTCP requests inside a batch, in arrival
   // order per batch reference. irc-framework runs a batch's lines only when it
   // ends, after ctcpAnswerer is cleared, so each request's handler takes its
@@ -1656,6 +1665,9 @@ export class IrcConnection {
         } finally {
           this.sendingNow = false;
         }
+        // Every line, here where they all pass, so an error is matched against
+        // what really went last (#816).
+        this.commandIssuers.sent(line);
         return true;
       },
       // Registered by the framework's flag, or by our own: our 'registered'
@@ -2237,6 +2249,7 @@ export class IrcConnection {
         this.replyOwner = null;
         this.ctcpAnswerer = null;
         this.lineCommand = null;
+        this.lineServerError = null;
       });
       // A ban-classified ERROR is only believed if it's the link's LAST line
       // (#651). Every server line passes through here, and for the ban line
@@ -2254,6 +2267,8 @@ export class IrcConnection {
       }
       const rawCommand = (msg?.command || '').toString();
       this.lineCommand = rawCommand;
+      // Lines of one read run back to back, with no microtask between them.
+      this.lineServerError = null;
       // Who this line is for, before anything reads it (see replyOwner).
       this.replyOwner = this.replies.noteServerLine(
         event.line.replace(/[\r\n]+$/, ''),
@@ -2554,6 +2569,17 @@ export class IrcConnection {
         });
         return;
       }
+      // A /nick the server refused, once registered: the 'nick in use' and
+      // 'nick invalid' handlers say it, and where it was typed too (#816).
+      if ((rawCommand === '432' || rawCommand === '433') && !this.preRegistered) {
+        const refused = String(msg?.params?.[1] ?? '');
+        const why = String(msg?.params?.[msg.params.length - 1] ?? '');
+        this.lineServerError = {
+          command: rawCommand,
+          params: msg?.params ?? [],
+          text: nickRefusalText(rawCommand, refused, why),
+        };
+      }
       if (isServerBufferDeniedNumeric(rawCommand) && !namesElsewhere) return;
       if (
         RESTORE_QUIET_NUMERICS.has(rawCommand) &&
@@ -2567,6 +2593,12 @@ export class IrcConnection {
       const text = formatUnknownNumeric(msg);
       if (!text) return;
       this.publish({ type: 'motd', target: this.serverTarget(), text });
+      // An error this line is the only word of, so far: the handlers that run
+      // next either place it (a channel, a DM, a toast) or leave it for
+      // sayWhereAsked.
+      if (isErrorNumeric(rawCommand) && !(cmdError && cmdErrorChannel)) {
+        this.lineServerError = { command: rawCommand, params: msg?.params ?? [], text };
+      }
     });
 
     // Special-case routing for two overloaded rejection numerics. The generic
@@ -2672,6 +2704,23 @@ export class IrcConnection {
         });
         return;
       }
+      // Nothing above placed it, so the server buffer has its only copy.
+      this.sayWhereAsked();
+    });
+
+    // ERR_ERRONEUSNICKNAME for a /nick, once registered: the server refused
+    // the nick itself. Said like the one above, and where it was typed (#816).
+    // Before registration this changes nothing.
+    on('nick invalid', (event: Record<string, unknown>) => {
+      if (this.preRegistered) return;
+      this.publish({
+        type: 'notice',
+        target: this.serverTarget(),
+        nick: 'lurker',
+        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
+        text: nickRefusalText('432', String(event?.nick ?? ''), String(event?.reason ?? '')),
+      });
+      this.sayWhereAsked();
     });
 
     // RPL_LOGGEDIN (900): the user identified to services mid-session (NickServ
@@ -3024,8 +3073,9 @@ export class IrcConnection {
           target: this.serverTarget(),
           nick: 'lurker',
           notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
-          text: `Nick ${requested} is already in use.`,
+          text: nickRefusalText('433', requested, ''),
         });
+        this.sayWhereAsked();
         return;
       }
       const next = computeFallbackNick(this.network.nick, this.nickAttempt);
@@ -5242,7 +5292,13 @@ export class IrcConnection {
       // the 'raw' handler). The generic line below would be a second copy in the
       // server buffer of what the raw handler already logged verbatim there, so
       // it goes — whether or not the routing found a buffer to use (#434).
-      if (isCommandResultErrorTag(tag)) return;
+      //
+      // One that named a channel we aren't in found no buffer there, and is
+      // said where its command was typed instead (#816).
+      if (isCommandResultErrorTag(tag)) {
+        this.sayWhereAsked();
+        return;
+      }
       // ERR_MONLISTFULL is handled off the raw line, which says which nicks.
       if (tag === 'monitor_list_full') return;
       // ERR_UNKNOWNCOMMAND (421) carries the rejected command name in
@@ -5257,6 +5313,10 @@ export class IrcConnection {
       if (reason) parts.push(`— ${reason}`);
       const text = parts.join(' ');
       console.warn(`[irc:${this.network.id}] ${text}`);
+      // Said where its command was typed (#816): they have seen it, and the
+      // raw handler's verbatim line is the server buffer's record. This row
+      // would be a second copy there, and the one that badges the buffer.
+      if (this.sayWhereAsked()) return;
       this.publish({
         type: 'error',
         target: this.serverTarget(),
@@ -13592,8 +13652,40 @@ export class IrcConnection {
     // old socket describes a command that died with it, and letting it survive
     // would let a kick nobody ever saw place an unrelated 401 on the new one.
     this.lastNickIntent.clear();
+    // And for the commands' buffers (#816).
+    this.commandIssuers.clear();
   }
-  raw(line: string, asker: Asker = 'user'): void {
+
+  // An error the server buffer has the only copy of is also said in the buffer
+  // its command was typed in (#816): `/oper` in a channel, refused, used to
+  // look like nothing happened. Called by the handlers that place errors, once
+  // they have declined this one; a line they placed, or one the server buffer
+  // never showed (a reply to Lurker's own query, a bouncer client's), isn't
+  // offered. Not kept: the server buffer's line is the record, and this one
+  // only points at it for whoever is looking elsewhere right now.
+  //
+  // Returns the buffer it was said in, or null.
+  private sayWhereAsked(): string | null {
+    const error = this.lineServerError;
+    if (!error) return null;
+    // Once per line, whichever handler gets here first.
+    this.lineServerError = null;
+    const issuing = this.commandIssuers.take(error.command, error.params);
+    if (!issuing) return null;
+    const userId = this.network.user_id;
+    const id = this.network.id;
+    // Typed in the server buffer, it is already where they are looking.
+    if (foldTargetFor(id, issuing) === foldTargetFor(id, this.serverTarget())) return null;
+    // Only into a buffer that is there and open: the client makes a buffer
+    // for any target it is sent a line for.
+    if (getBufferState(userId, id, issuing) !== 'open') return null;
+    this.publishEphemeral({ type: 'error', target: issuing, text: error.text });
+    return issuing;
+  }
+
+  // `opts.issuingTarget`: the buffer the user typed this in, when the client
+  // said (the `raw` frame's `issuingTarget`), for sayWhereAsked.
+  raw(line: string, asker: Asker = 'user', opts: { issuingTarget?: string } = {}): void {
     // Strip CR/LF/NUL before the line hits the socket. irc-framework's
     // writeLine appends its own \r\n and writes verbatim, so any embedded
     // newline in a caller-built line (a kick reason, topic, ban host, etc.)
@@ -13619,6 +13711,9 @@ export class IrcConnection {
     this.replies.send(asker, clean, undefined, {
       onSent: () => {
         this.noteOutgoingCommand(clean);
+        if (asker === 'user' && opts.issuingTarget) {
+          this.commandIssuers.typedIn(clean, opts.issuingTarget);
+        }
         onMetadataSent?.();
       },
       onDropped:
@@ -14519,6 +14614,13 @@ const SERVER_BUFFER_DENIED_NUMERICS = new Set<string>([
   // rest acknowledges a SUB. A user's own GET/LIST is echoed by onMetadataLine.
   ...METADATA_NUMERICS,
 ]);
+
+// What a refused /nick is told: 433 (taken) or 432 (not a nick this server
+// allows, with its reason).
+export function nickRefusalText(command: string, nick: string, reason: string): string {
+  if (command === '433') return `Nick ${nick} is already in use.`;
+  return reason ? `Nick ${nick} was refused: ${reason}` : `Nick ${nick} was refused.`;
+}
 
 // True for numerics another handler already surfaces (or that would flood), so
 // the 'raw' handler skips them. See SERVER_BUFFER_DENIED_NUMERICS.
