@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: MPL-2.0
  *
  * Shared chrome for every Settings pane: section header, sub-headings, helper
- * text, device-list rows, errors. Buttons are the outlined ones in main.css. Imported unscoped from
- * each pane so the rules apply across all of them with no duplication.
+ * text, device-list rows, errors. Buttons are the outlined ones in main.css.
+ * Imported unscoped from each pane so the rules apply across all of them with
+ * no duplication.
  */
 
 .settings-pane {

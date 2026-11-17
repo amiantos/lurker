@@ -262,10 +262,10 @@ function formatDefault(opt: SettingOption, v: SettingValue): string {
 .headline {
   font-weight: 600;
 }
+/* A footnote, not a control: no box (a box reads as a button now that every
+   button has one), and fainter than helper text, at the placeholder's weight. */
 .type {
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  padding: 0 var(--space-2);
+  color: color-mix(in srgb, var(--fg-muted) 55%, var(--bg));
   text-transform: lowercase;
 }
 .key-sub code {
@@ -338,8 +338,8 @@ function formatDefault(opt: SettingOption, v: SettingValue): string {
   padding: 0 var(--space-2);
 }
 
-/* Reset sits on the headline beside the type tag, and is boxed as it is: an
-   outlined button at the tag's size, muted until hovered. */
+/* Reset sits on the headline: an outlined button with no block padding, so it
+   does not make that line taller, muted until hovered. */
 .reset {
   padding: 0 var(--space-2);
   color: var(--fg-muted);
