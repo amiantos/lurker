@@ -43,6 +43,7 @@ import NetworksPane from '../components/admin-panes/NetworksPane.vue';
 import StoragePane from '../components/admin-panes/StoragePane.vue';
 import LockoutsPane from '../components/admin-panes/LockoutsPane.vue';
 import DccPane from '../components/admin-panes/DccPane.vue';
+import GeneralPane from '../components/admin-panes/GeneralPane.vue';
 import { useConfigStore } from '../stores/config.js';
 import NotificationsPane from '../components/admin-panes/NotificationsPane.vue';
 
@@ -60,6 +61,7 @@ const PANES: Record<string, Component> = {
   notifications: NotificationsPane,
   storage: StoragePane,
   lockouts: LockoutsPane,
+  general: GeneralPane,
   dcc: DccPane,
 };
 

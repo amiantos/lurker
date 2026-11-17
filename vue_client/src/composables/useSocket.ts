@@ -937,6 +937,8 @@ function handleMessage(raw: string): void {
     // #1131: the instance ceiling, the bound on the user's own cap setting.
     useUploadsStore().ceilingBytes =
       typeof payload.uploadCeilingBytes === 'number' ? payload.uploadCeilingBytes : null;
+    // #527: the instance's Jitsi server for /jitsi. Absent on an older server.
+    useConfigStore().jitsiUrl = typeof payload.jitsiUrl === 'string' ? payload.jitsiUrl : null;
     // DCC: whether the account has transfers or files to show the button for,
     // and what changed while the socket was down.
     void useDccStore().resync();
@@ -1058,6 +1060,11 @@ function handleMessage(raw: string): void {
     // settings frame carries no limits, and absence is not "no ceiling".
     if (typeof payload.uploadCeilingBytes === 'number') {
       useUploadsStore().ceilingBytes = payload.uploadCeilingBytes;
+    }
+    // #527: the admin changed the instance's Jitsi server. Only when present,
+    // as above; null here is "none now".
+    if ('jitsiUrl' in payload) {
+      useConfigStore().jitsiUrl = typeof payload.jitsiUrl === 'string' ? payload.jitsiUrl : null;
     }
     // A cross-device theme APPLY lands here (pointer write + themed resets) and
     // races the themes-changed refetch, which is an async GET — a pointer at a

@@ -203,6 +203,22 @@ describe('connect burst terminator (#635)', () => {
     }
   });
 
+  // #527: the admin's Jitsi server rides the snapshot, which only a signed-in
+  // client gets. Null when none is named, never absent.
+  it("carries the instance's Jitsi server on the snapshot frame", async () => {
+    const { setInstanceJitsiUrl } = await import('../db/instanceSettings.js');
+    try {
+      expect((await collectBurst())[0]).toMatchObject({ kind: 'snapshot', jitsiUrl: null });
+      setInstanceJitsiUrl('https://meet.example.org');
+      expect((await collectBurst())[0]).toMatchObject({
+        kind: 'snapshot',
+        jitsiUrl: 'https://meet.example.org',
+      });
+    } finally {
+      setInstanceJitsiUrl(null);
+    }
+  });
+
   // #872: the image dimension rides beside the cap, for the same reason.
   it('carries the effective static-image dimension on the snapshot frame', async () => {
     const { setUserSetting } = await import('../db/settings.js');

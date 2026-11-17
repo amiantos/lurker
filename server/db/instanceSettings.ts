@@ -8,6 +8,7 @@
 import db from './index.js';
 import { isNodeMode } from '../utils/edition.js';
 import { DEFAULT_UPLOAD_CEILING_MB } from '../../shared/settingsRegistry.js';
+import { normalizeJitsiBase } from '../../shared/jitsi.js';
 
 export function getInstanceSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM instance_settings WHERE key = ?').get(key) as
@@ -101,4 +102,20 @@ export function uploadCeilingMbStandalone(): number {
 
 export function setUploadCeilingMb(mb: number): void {
   setInstanceSetting(UPLOAD_CEILING_MB_KEY, String(mb));
+}
+
+export const JITSI_URL_KEY = 'jitsi.url';
+
+/**
+ * The Jitsi Meet server the admin named for /jitsi (#527), or null: clients
+ * then use the public one. A user's own chat.jitsi_url setting goes ahead of
+ * this. A stored value that isn't a usable base reads as unset.
+ */
+export function instanceJitsiUrl(): string | null {
+  return normalizeJitsiBase(getInstanceSetting(JITSI_URL_KEY));
+}
+
+/** Null clears it. The caller has normalized the value. */
+export function setInstanceJitsiUrl(url: string | null): void {
+  setInstanceSetting(JITSI_URL_KEY, url ?? '');
 }

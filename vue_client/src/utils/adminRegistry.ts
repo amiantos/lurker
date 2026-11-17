@@ -38,6 +38,8 @@ export const ADMIN_TABS: readonly AdminTab[] = Object.freeze([
   { id: 'notifications', label: 'Notifications' },
   { id: 'storage', label: 'Storage' },
   { id: 'lockouts', label: 'Lockouts' },
+  // Instance-wide settings with no pane of their own (#527).
+  { id: 'general', label: 'General' },
   // Who gets DCC chat and receiving, and the instance's DCC settings (#1080).
   { id: 'dcc', label: 'DCC', selfHostedOnly: true },
   // { id: 'moderation', label: 'Moderation' },

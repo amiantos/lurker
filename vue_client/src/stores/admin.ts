@@ -140,6 +140,9 @@ export const useAdminStore = defineStore('admin', {
     ident: { status: 'off', host: 'server' } as AdminIdent,
     invites: [] as AdminInvite[],
     loginLockouts: [] as AdminLoginLockout[],
+    /** The instance's Jitsi Meet server (Admin → General); null = the public
+     *  one. `undefined` until fetched. */
+    jitsiUrl: undefined as string | null | undefined,
     loginLockoutPolicy: null as AdminLoginLockoutPolicy | null,
     uploaders: [] as AdminUploader[],
     uploaderDrivers: [] as UploaderDriver[],
@@ -280,6 +283,15 @@ export const useAdminStore = defineStore('admin', {
       this.usersFetchSeq++;
       const u = this.users.find((x) => x.id === id);
       if (u) u.recoveryExpiresAt = null;
+    },
+    async fetchGeneral() {
+      const data = await api('/api/admin/general');
+      this.jitsiUrl = typeof data.jitsiUrl === 'string' ? data.jitsiUrl : null;
+    },
+    /** '' goes back to the public server. */
+    async setJitsiUrl(url: string) {
+      const data = await api('/api/admin/general/jitsi', { method: 'PUT', body: { url } });
+      this.jitsiUrl = typeof data.jitsiUrl === 'string' ? data.jitsiUrl : null;
     },
     async fetchLoginLockouts() {
       const seq = ++this.lockoutsFetchSeq;

@@ -190,6 +190,7 @@ import { parseRelayCommand } from '../lib/commands/relay.js';
 import { parseDccCommand } from '../lib/commands/dcc.js';
 import { parseXdccCommand } from '../lib/commands/xdcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
+import { jitsiRoomUrl } from '../../../shared/jitsi.js';
 import { bufferPeer } from '../lib/commands/ping.js';
 import { parseRename } from '../lib/commands/rename.js';
 import {
@@ -5132,7 +5133,12 @@ function handleCommand(
         localInfo(networkId, target, 'usage: /jitsi — run inside a channel or DM');
         return true;
       }
-      const url = `https://meet.jit.si/lurker-${randomRoomId()}`;
+      const own = settings.effective('chat.jitsi_url');
+      const url = jitsiRoomUrl(randomRoomId(), own, config.jitsiUrl);
+      if (!url) {
+        localInfo(networkId, target, `your Jitsi server setting is not a URL: ${String(own)}`);
+        return true;
+      }
       return ackedSend({ type: 'send', networkId, target, text: url }, url, {
         networkId,
         target,
