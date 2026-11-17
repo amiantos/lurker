@@ -15,6 +15,7 @@ import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useConfigStore } from '../stores/config.js';
 import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
+import type { NetworkPreset } from '../utils/builtinNetworks.js';
 
 function setUp(opts: { allowUserDefined: boolean; restrictions?: AccountRestrictions }) {
   const presets = useNetworkPresetsStore();
@@ -86,5 +87,114 @@ describe('NetworkPicker held account', () => {
     const wrapper = mount(NetworkPicker);
     expect(wrapper.find('.locked').exists()).toBe(true);
     expect(wrapper.find('.locked a').exists()).toBe(false);
+  });
+});
+
+// What an admin says about a recommended network shows where a builtin's does,
+// and only what was said.
+describe('NetworkPicker recommended network card', () => {
+  const preset = (over: Partial<NetworkPreset> = {}): NetworkPreset => ({
+    instanceId: 1,
+    name: 'Corp',
+    host: 'irc.corp.example',
+    port: 6697,
+    tls: true,
+    website: '',
+    users: null,
+    channels: null,
+    saslLikelyRequired: false,
+    tags: [],
+    isInstance: true,
+    ...over,
+  });
+  // Instance presets lead the list, so the first card is the preset's.
+  function card(over: Partial<NetworkPreset> = {}, allowUserDefined = true) {
+    setUp({ allowUserDefined });
+    useNetworkPresetsStore().presets = [preset(over)];
+    return mount(NetworkPicker).find('.net-card');
+  }
+
+  it('keeps the badge by the name when no tags were given', () => {
+    const c = card();
+    expect(c.find('.net-head .net-instance').exists()).toBe(true);
+    expect(c.find('.net-tags').exists()).toBe(false);
+    expect(c.findAll('.stat')).toHaveLength(0);
+  });
+
+  it('shows tags by the name and moves the badge under them', () => {
+    const c = card({ tags: ['gaming', 'linux'] });
+    expect(c.find('.net-head .net-tags').text()).toBe('gaming, linux');
+    expect(c.find('.net-head .net-instance').exists()).toBe(false);
+    expect(c.find('.net-statsrow .net-instance').text()).toBe('recommended');
+  });
+
+  it('drops the badge when the listed networks are the only ones allowed', () => {
+    expect(card({}, false).find('.net-instance').exists()).toBe(false);
+    const tagged = card({ tags: ['gaming'] }, false);
+    expect(tagged.find('.net-instance').exists()).toBe(false);
+    expect(tagged.find('.net-tags').text()).toBe('gaming');
+  });
+
+  it('shows each count only when given', () => {
+    const c = card({ users: 120 });
+    expect(c.findAll('.stat')).toHaveLength(1);
+    expect(c.find('.stat').text()).toBe('120');
+    expect(c.find('.stat').attributes('title')).toBe('120 users');
+    expect(card({ users: 0, channels: 14 }).findAll('.stat')).toHaveLength(2);
+  });
+
+  it('never calls an instance preset a #lurker network', () => {
+    const c = card({ tags: ['lurker'] });
+    expect(c.find('.net-lurker').exists()).toBe(false);
+    expect(c.find('.net-head .net-instance').exists()).toBe(true);
+  });
+});
+
+describe('NetworkPicker tag filter and recommended networks', () => {
+  it('keeps a recommended network through a tag filter, tagged or not', async () => {
+    setUp({ allowUserDefined: true });
+    const base = {
+      host: 'irc.corp.example',
+      port: 6697,
+      tls: true,
+      website: '',
+      users: null,
+      channels: null,
+      saslLikelyRequired: false,
+      isInstance: true,
+    };
+    useNetworkPresetsStore().presets = [
+      { ...base, instanceId: 1, name: 'Untagged Corp', tags: [] },
+      { ...base, instanceId: 2, name: 'Tagged Corp', tags: ['zz-own-tag'] },
+    ];
+    const wrapper = mount(NetworkPicker);
+    await wrapper.find('.filter-toggle').trigger('click');
+    await wrapper.find('.tag-chip').trigger('click');
+    const names = wrapper.findAll('.net-name').map((n) => n.text());
+    expect(names.slice(0, 2)).toEqual(['Untagged Corp', 'Tagged Corp']);
+  });
+
+  it('finds a recommended network by its tag in search', async () => {
+    setUp({ allowUserDefined: false });
+    useNetworkPresetsStore().presets = [
+      {
+        instanceId: 2,
+        name: 'Corp',
+        host: 'irc.corp.example',
+        port: 6697,
+        tls: true,
+        website: '',
+        users: null,
+        channels: null,
+        saslLikelyRequired: false,
+        isInstance: true,
+        tags: ['zz-own-tag'],
+      },
+    ];
+    const wrapper = mount(NetworkPicker);
+    await wrapper.find('.search').setValue('zz-own');
+    expect(wrapper.findAll('.net-name').map((n) => n.text())).toEqual(['Corp']);
+    await wrapper.find('.search').setValue('nothing-like-it');
+    expect(wrapper.findAll('.net-name')).toHaveLength(0);
   });
 });

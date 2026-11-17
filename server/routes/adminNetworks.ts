@@ -52,6 +52,39 @@ function parseChannels(raw: unknown): string[] | undefined {
   return parseChannelNames(raw);
 }
 
+// Tags, as an array or a comma-separated string. Lowercased, as the builtin
+// catalogue's are. `lurker` is dropped: in the catalogue it is a marker for the
+// "#lurker available" badge, never a tag a card shows.
+const RESERVED_TAG = 'lurker';
+function parseTags(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw) && typeof raw !== 'string') return undefined;
+  const parts = Array.isArray(raw) ? raw : raw.split(',');
+  const out: string[] = [];
+  for (const part of parts) {
+    if (typeof part !== 'string') continue;
+    const tag = part.trim().toLowerCase();
+    if (tag && tag !== RESERVED_TAG && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+
+// A user or channel count: a whole number, or null (or '') for "not given",
+// which is how a PATCH clears one. `undefined` is absent; a string is an error.
+function parseCount(raw: unknown, label: string): number | null | undefined | string {
+  if (raw === undefined) return undefined;
+  const given = typeof raw === 'string' ? raw.trim() : raw;
+  if (given === null || given === '') return null;
+  // Digits only for a string: Number() would take '0x10' and '1e3'.
+  const n =
+    typeof given === 'number'
+      ? given
+      : typeof given === 'string' && /^\d+$/.test(given)
+        ? Number(given)
+        : NaN;
+  if (!Number.isSafeInteger(n) || n < 0) return `invalid ${label}: ${String(raw)}`;
+  return n;
+}
+
 // How many presets users could actually connect to. The lockdown is only
 // meaningful relative to this count: drop it to zero while locked down and the
 // instance has no reachable networks at all — for anyone, admin included. Three
@@ -99,6 +132,14 @@ function readInput(body: unknown, partial: boolean): InstanceNetworkInput | { er
   if (enabled !== undefined) input.enabled = enabled;
   const channels = parseChannels(b.channels);
   if (channels !== undefined) input.channels = channels;
+  const tags = parseTags(b.tags);
+  if (tags !== undefined) input.tags = tags;
+  const users = parseCount(b.users, 'user count');
+  if (typeof users === 'string') return { error: users };
+  if (users !== undefined) input.users = users;
+  const channelCount = parseCount(b.channelCount, 'channel count');
+  if (typeof channelCount === 'string') return { error: channelCount };
+  if (channelCount !== undefined) input.channelCount = channelCount;
   return input;
 }
 

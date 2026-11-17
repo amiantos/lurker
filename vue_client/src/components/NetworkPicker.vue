@@ -62,29 +62,36 @@
         <button type="button" class="net-card" @click="$emit('select', net)">
           <span class="net-head">
             <span class="net-name">{{ net.name }}</span>
-            <span v-if="net.isInstance" class="net-instance">recommended here</span>
-            <span v-else-if="displayTags(net).length" class="net-tags">
+            <span v-if="displayTags(net).length" class="net-tags">
               {{ displayTags(net).join(', ') }}
             </span>
+            <span v-else-if="isRecommended(net)" class="net-instance">recommended</span>
           </span>
           <span class="net-statsrow">
             <span class="net-stats">
               <span
                 v-if="net.users != null"
                 class="stat"
-                :title="`~${net.users.toLocaleString()} users (netsplit.de average)`"
+                :title="countTitle(net, net.users, 'users')"
               >
                 <UsersIcon /> {{ formatCount(net.users) }}
               </span>
               <span
                 v-if="net.channels != null"
                 class="stat"
-                :title="`~${net.channels.toLocaleString()} channels (netsplit.de average)`"
+                :title="countTitle(net, net.channels, 'channels')"
               >
                 <HashIcon /> {{ formatCount(net.channels) }}
               </span>
             </span>
-            <span v-if="hasLurker(net)" class="net-lurker">#lurker available</span>
+            <!-- An instance preset's badge sits by the name until the admin's
+                 tags take that place, then here, where a builtin's does. -->
+            <span v-if="isRecommended(net) && displayTags(net).length" class="net-instance">
+              recommended
+            </span>
+            <span v-else-if="!net.isInstance && hasLurker(net)" class="net-lurker">
+              #lurker available
+            </span>
           </span>
         </button>
       </li>
@@ -159,6 +166,19 @@ function displayTags(net: NetworkPreset): string[] {
 }
 function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
+}
+
+// The badge sets the admin's networks apart from the catalogue under them. On
+// a locked-down instance they are the whole list, so it says nothing.
+function isRecommended(net: NetworkPreset): boolean {
+  return !!net.isInstance && presets.allowUserDefined;
+}
+
+// A builtin's counts are netsplit.de's averages; an instance preset's are what
+// its admin typed.
+function countTitle(net: NetworkPreset, n: number, what: string): string {
+  const count = `${n.toLocaleString()} ${what}`;
+  return net.isInstance ? count : `~${count} (netsplit.de average)`;
 }
 
 const showTagFilter = computed(
@@ -248,9 +268,9 @@ const filtered = computed<NetworkPreset[]>(() => {
   return offered.value.filter((n) => {
     if (q && !n.name.toLowerCase().includes(q) && !n.tags.some((t) => t.toLowerCase().includes(q)))
       return false;
-    // Tag chips are a facet over the builtin catalogue's metadata; instance
-    // presets carry no tags, so a tag filter would silently hide the admin's own
-    // networks. Keep them pinned through it.
+    // Tag chips are a facet over the builtin catalogue. An instance preset
+    // stays pinned through them whatever tags its admin gave it: a filter must
+    // not hide the admin's own networks.
     if (tag && !n.isInstance && !n.tags.includes(tag)) return false;
     return true;
   });
@@ -394,7 +414,8 @@ const filtered = computed<NetworkPreset[]>(() => {
   white-space: nowrap;
 }
 /* Marks a network the instance's admin defined, distinguishing it from the
-   bundled catalogue it's pinned above. */
+   bundled catalogue it's pinned above. Opposite the name, or opposite the
+   counts when the preset has tags. */
 .net-instance {
   flex: 1;
   min-width: 0;

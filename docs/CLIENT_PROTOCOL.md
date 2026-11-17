@@ -1638,7 +1638,11 @@ payload. A change takes effect on the next connect — a certificate is presente
 during the TLS handshake, so there is nothing to renegotiate on a live socket.
 
 `GET /api/network-presets` → `{presets, allowUserDefined}` for the add-network
-form.
+form. A preset is `{id, name, host, port, tls, saslLikelyRequired, channels,
+tags, users, channelCount, enabled, position}`: `channels` is the recommended
+channel names, and `tags` (`string[]`, may be empty), `users` and `channelCount`
+(a number or `null`) are what the admin chose to say about the network. Show
+each only when given; a server before 2.7 sends none of the three.
 
 `GET /api/about` → `{engine}` for an About screen: `null` when this instance
 dials IRC itself, otherwise `{connected, version}` for the IRC engine holding its

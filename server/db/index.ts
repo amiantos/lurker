@@ -1230,6 +1230,12 @@ function migrate() {
       tls INTEGER NOT NULL DEFAULT 1,
       sasl_likely_required INTEGER NOT NULL DEFAULT 0,
       channels_json TEXT NOT NULL DEFAULT '[]',
+      -- What the picker shows on a builtin's card, for the admin to fill in
+      -- about their own network: tags (a JSON string[]) and the two counts.
+      -- All optional; a card shows only what it was given.
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      users INTEGER,
+      channel_count INTEGER,
       enabled INTEGER NOT NULL DEFAULT 1,
       position INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -1457,6 +1463,9 @@ if (columnExists('channel_notify_settings', 'target')) {
 // Poster frames for video/audio link previews arrived with the lurker-previews
 // decoder split; rows from before it simply have no poster until they re-resolve.
 ensureColumn('link_previews', 'poster_key', 'TEXT');
+ensureColumn('instance_network', 'tags_json', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('instance_network', 'users', 'INTEGER');
+ensureColumn('instance_network', 'channel_count', 'INTEGER');
 ensureColumn('messages', 'extra', 'TEXT');
 // nick!user@host of the sender, captured at ingest so client-side hostmask
 // ignore filters can match incoming and persisted messages. NULL for system

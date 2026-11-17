@@ -86,6 +86,10 @@ export interface AdminNetworkPreset {
   saslLikelyRequired: boolean;
   /** Recommended channels, pre-checked for users in the first-run flow. */
   channels: string[];
+  /** Shown on the network's card in the picker, each only when given. */
+  tags: string[];
+  users: number | null;
+  channelCount: number | null;
   enabled: boolean;
   position: number;
 }

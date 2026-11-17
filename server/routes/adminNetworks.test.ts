@@ -104,6 +104,38 @@ describe('presets', () => {
     expect(bare.body.preset.channels).toStrictEqual(['#general', '#random', '#ops']);
   });
 
+  it('takes tags and counts, each optional', async () => {
+    const bare = (await add()).body.preset;
+    expect(bare).toMatchObject({ tags: [], users: null, channelCount: null });
+
+    const full = await add({ tags: ' Gaming, linux,gaming ,', users: 120, channelCount: '14' });
+    expect(full.status).toBe(201);
+    expect(full.body.preset).toMatchObject({
+      tags: ['gaming', 'linux'],
+      users: 120,
+      channelCount: 14,
+    });
+    expect((await add({ tags: ['Tech', 7, '', 'lurker'] })).body.preset.tags).toEqual(['tech']);
+  });
+
+  it('rejects a count that is not a whole number', async () => {
+    for (const users of [-1, 1.5, 'many', true, '0x10', '1e3']) {
+      expect((await add({ users })).status).toBe(400);
+    }
+    expect((await add({ channelCount: 'x' })).status).toBe(400);
+  });
+
+  it('leaves tags and counts alone on a patch that does not name them, and clears on null', async () => {
+    const { id } = (await add({ tags: ['gaming'], users: 120, channelCount: 14 })).body.preset;
+    const renamed = await adminAgent.patch(`/api/admin/networks/${id}`).send({ name: 'Renamed' });
+    expect(renamed.body.preset).toMatchObject({ tags: ['gaming'], users: 120, channelCount: 14 });
+
+    const cleared = await adminAgent
+      .patch(`/api/admin/networks/${id}`)
+      .send({ tags: [], users: null, channelCount: ' ' });
+    expect(cleared.body.preset).toMatchObject({ tags: [], users: null, channelCount: null });
+  });
+
   it('updates and deletes', async () => {
     const created = await add();
     const id = created.body.preset.id;
