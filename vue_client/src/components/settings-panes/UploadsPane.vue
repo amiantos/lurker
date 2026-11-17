@@ -296,6 +296,13 @@ onMounted(refresh);
 
 <style src="./panes.css"></style>
 <style scoped>
+/* Inset from the row's edges, as a registry row is: the hover background runs
+   the row's full width, and a radio or a button bar flush against its edge
+   looks clipped. */
+.device {
+  padding-inline: var(--space-4);
+}
+
 /* The whole identity is the radio's label, so the row is the click target. */
 .pick {
   display: flex;
