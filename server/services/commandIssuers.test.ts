@@ -272,19 +272,18 @@ describe('an error is said where its command was typed (#816)', () => {
     expect(said()).toEqual([]);
   });
 
-  it('tells the stored 421 that the line was said elsewhere, and only then', () => {
+  it('stores no second 421 line in the server buffer when it was said elsewhere', () => {
     const { conn, receive, publish } = harness();
     const stored = () =>
       publish.mock.calls.map((c) => c[0]).filter((e) => e.unknownCommand === 'FROB');
     conn.raw('FROB', 'user', { issuingTarget: '#anime' });
     receive(':irc.example.test 421 alice FROB :Unknown command');
-    expect(stored()).toEqual([expect.objectContaining({ saidIn: '#anime' })]);
+    expect(stored()).toEqual([]);
 
     publish.mockClear();
     conn.raw('FROB', 'user', { issuingTarget: '#never-was' });
     receive(':irc.example.test 421 alice FROB :Unknown command');
     expect(stored()).toHaveLength(1);
-    expect(stored()[0]).not.toHaveProperty('saidIn');
   });
 
   it('does not carry an error that was placed over to the next line of the same read', () => {

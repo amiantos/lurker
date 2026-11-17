@@ -5286,7 +5286,10 @@ export class IrcConnection {
       if (reason) parts.push(`— ${reason}`);
       const text = parts.join(' ');
       console.warn(`[irc:${this.network.id}] ${text}`);
-      const saidIn = this.sayWhereAsked();
+      // Said where its command was typed (#816): they have seen it, and the
+      // raw handler's verbatim line is the server buffer's record. This row
+      // would be a second copy there, and the one that badges the buffer.
+      if (this.sayWhereAsked()) return;
       this.publish({
         type: 'error',
         target: this.serverTarget(),
@@ -5302,9 +5305,6 @@ export class IrcConnection {
         ...(tag === 'unknown_command' && event?.command
           ? { unknownCommand: event.command as string }
           : {}),
-        // Said in the buffer it was typed in as well (#816): a client that
-        // shows that line has no need of the toast.
-        ...(saidIn ? { saidIn } : {}),
       });
     });
 

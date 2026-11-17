@@ -3,9 +3,9 @@
 
 // @vitest-environment happy-dom
 
-// An unknown command's 421 raises a toast only when the server didn't also say
-// it in the buffer the command was typed in (`saidIn`, #816), and that line
-// lands in its buffer. Driven through the socket's message listener.
+// An unknown command's stored 421 raises a toast. When the server said it in
+// the buffer the command was typed in instead (#816), that line lands in its
+// buffer and raises none. Driven through the socket's message listener.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { defineComponent, nextTick } from 'vue';
@@ -71,7 +71,7 @@ describe('an unknown command', () => {
     resetPreviewToggleWiring();
   });
 
-  const stored = (id: number, extra: Record<string, unknown> = {}) => ({
+  const stored = (id: number) => ({
     kind: 'irc',
     type: 'error',
     id,
@@ -79,7 +79,6 @@ describe('an unknown command', () => {
     target: ':server:1',
     text: 'unknown_command FROB — Unknown command',
     unknownCommand: 'FROB',
-    ...extra,
   });
   const toasts = () => useToastsStore().items.filter((t) => t.title === 'Unknown command');
 
@@ -101,7 +100,6 @@ describe('an unknown command', () => {
       target: '#chan',
       text: 'FROB Unknown command',
     });
-    ws.deliver(stored(11, { saidIn: '#chan' }));
 
     expect(toasts()).toEqual([]);
     const lines = useBuffersStore().buffers['1::#chan']?.messages ?? [];
