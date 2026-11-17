@@ -24,10 +24,10 @@ page is the diff.
 | `{type:'search', …}` (client verb) | `GET /api/search` |
 | `{kind:'search-result'}` (frame)   | the HTTP response |
 
-**The failure mode to check for first:** a client that still sends `search`
-gets the generic `{kind:'error', text:'unknown message type: search'}` frame,
-with no `token`. If you wait on a `search-result` matched by token, that wait
-never ends. The socket stays open and everything else keeps working.
+**What a client that still sends `search` gets:**
+`{kind:'error', code:'search_removed', text, token}`, with the request's
+`token`. No `search-result` follows. The socket stays open and everything else
+keeps working.
 
 To tell which server you are talking to, read `protocolVersion` from
 `GET /api/config` or the `snapshot` frame: 2 or higher has no WS search. The
@@ -37,16 +37,17 @@ REST route works on both.
 
 Use the same credentials you already hold (session cookie or bearer token).
 
-| WS `search` field | REST query param                               |
-| ----------------- | ---------------------------------------------- |
-| `query`           | `q`                                            |
-| `nick`            | `nick`                                         |
-| `nicks: [a, b]`   | `nick=a&nick=b` (repeat the param; OR-matched) |
-| `target`          | `target` (URL-encode: `#dev` → `%23dev`)       |
-| `networkId`       | `networkId`                                    |
-| `before`          | `before`                                       |
-| `limit`           | `limit` (clamped to 1–100)                     |
-| `token`           | — gone; cancel the previous request instead    |
+| WS `search` field | REST query param                                          |
+| ----------------- | --------------------------------------------------------- |
+| `query`           | `q`                                                       |
+| `nick`            | `nick`                                                    |
+| `nicks: [a, b]`   | `nick=a&nick=b` (repeat the param; OR-matched)            |
+| `target`          | `target` (URL-encode: `#dev` → `%23dev`)                  |
+| `bufferId`        | — no id form; send that buffer's `networkId` and `target` |
+| `networkId`       | `networkId`                                               |
+| `before`          | `before`                                                  |
+| `limit`           | `limit` (clamped to 1–100)                                |
+| `token`           | — gone; cancel the previous request instead               |
 
 At least one of `q` / `nick` / `target` / `networkId` is required. With none,
 the response is the empty page `{items: [], nextBefore: null}`, not an error.

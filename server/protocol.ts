@@ -42,5 +42,5 @@ export const PROTOCOL_VERSION = 2;
 // Oldest client protocol version this server will accept on the WS upgrade.
 // Raise it only when an old client genuinely can no longer be served correctly.
 // Version 2 took away one request: a version 1 client that still sends `search`
-// gets the non-fatal unknown-type error, and everything else it does works.
+// gets a non-fatal `search_removed` error, and everything else it does works.
 export const MIN_PROTOCOL_VERSION = 1;

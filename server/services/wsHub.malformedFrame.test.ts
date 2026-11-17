@@ -179,17 +179,20 @@ describe('malformed frames', () => {
   }
 
   // The WS `search` command is gone as of protocol version 2 (#799). A version 1
-  // client that still sends it is served, and told so like any unknown type.
-  it('a version 1 client sending the removed search command is told it is unknown', async () => {
+  // client that still sends it is served, and told so with its own token, so a
+  // wait matched on that token ends.
+  it('answers the removed search command with an error carrying its token', async () => {
+    const { PROTOCOL_VERSION } = await import('../protocol.js');
     const { ws, heard } = await attach(alice, '?v=1', true);
     try {
-      expect(heard.find((f) => f.kind === 'snapshot')?.protocolVersion).toBe(2);
+      expect(heard.find((f) => f.kind === 'snapshot')?.protocolVersion).toBe(PROTOCOL_VERSION);
       heard.length = 0;
       ws.send(JSON.stringify({ type: 'search', query: 'hello', token: 7 }));
       const err = await waitFor(heard, (f) => f.kind === 'error');
-      expect(err.text).toBe('unknown message type: search');
+      expect(err).toMatchObject({ code: 'search_removed', token: 7 });
+      const seen = [...heard];
       await stillServes(ws, heard);
-      expect(heard.some((f) => f.kind === 'search-result')).toBe(false);
+      expect([...seen, ...heard].some((f) => f.kind === 'search-result')).toBe(false);
     } finally {
       ws.close();
     }

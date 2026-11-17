@@ -77,7 +77,7 @@ describe('GET /api/search', () => {
     const ids = res.body.items.map((r: { id: number }) => r.id);
     expect(ids).toEqual([hit2, hit1]);
     expect(ids).not.toContain(miss);
-    // Decorated event shape — the same rows the WS search verb returns.
+    // Decorated event shape, `networkName` included.
     expect(res.body.items[0].networkName).toBe('libera');
     expect(res.body.items[0].text).toBe('quokka spotted again');
     expect(res.body.nextBefore).toBeNull();

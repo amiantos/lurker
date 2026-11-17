@@ -4665,6 +4665,17 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         });
         break;
       }
+      case 'search':
+        // Removed in protocol version 2 (#799); search is GET /api/search. What
+        // stays is the answer: with the request's `token`, so a client that
+        // still sends this and waits on a token-matched reply stops waiting.
+        send(ws, {
+          kind: 'error',
+          text: 'search moved to GET /api/search',
+          code: 'search_removed',
+          token: msg.token ?? null,
+        });
+        break;
       default:
         send(ws, { kind: 'error', text: `unknown message type: ${frameType(msg)}` });
     }

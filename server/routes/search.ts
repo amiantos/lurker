@@ -43,8 +43,7 @@ function strArray(v: unknown): string[] | undefined {
 
 router.get('/', async (req: Request, res: Response) => {
   // A search-as-you-type client aborts superseded requests; if this one is
-  // already gone, don't spend the query on it. This check is the cancellation
-  // half of the REST argument — it has no WS equivalent.
+  // already gone, don't spend the query on it.
   if (req.destroyed) return;
   // And if it goes while the search waits or runs, the search stops with it.
   const gone = goneSignal(res);

@@ -261,7 +261,7 @@ These are the non-obvious constraints that have bitten changes before:
   or a frame kind and deprecate the old one, never repurpose an existing field's
   meaning or type, and never treat an unknown frame or field as fatal on either
   side. `PROTOCOL_VERSION` bumps only for a change that rule cannot express,
-  which is effectively never. The doc moves with every addition.
+  which is almost never: version 2 removed the WS `search` command. The doc moves with every addition.
 
 ## UI / design conventions
 
