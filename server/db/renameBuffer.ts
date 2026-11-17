@@ -6,6 +6,13 @@ import { foldTargetFor } from './buffers.js';
 import { resolveBuffer } from './bufferResolve.js';
 import { renumberFavorites } from './favoriteBuffers.js';
 import { moveRuleScopes, NO_RULE_SCOPE_MOVES, type RuleScopeMoves } from './ruleScopeRename.js';
+import {
+  bufferHasMessages,
+  leaveDraining,
+  mergeChunkRows,
+  moveMessageChunk,
+  repointDraining,
+} from './bufferMergeDrain.js';
 
 // Rename a buffer — the primitive behind DM nick-follows and channel renames
 // (draft/channel-rename, #858). Under the normalized
@@ -26,8 +33,10 @@ import { moveRuleScopes, NO_RULE_SCOPE_MOVES, type RuleScopeMoves } from './rule
 // Merge policies for the absorbed row's satellite state mirror the v18
 // case-twin rebuild: furthest read pointer + max clear marker, survivor's
 // pin slot (or adopt the absorbed one), survivor's view-state rows win,
-// survivor's draft wins when present. Messages repoint wholesale — the
-// merged history interleaves by id, which is already global order.
+// survivor's draft wins when present. Messages repoint to the survivor — the
+// merged history interleaves by id, which is already global order — the
+// newest chunk with the merge and the rest behind it (#1307,
+// bufferMergeDrain.ts).
 
 export interface RenameResult {
   /** False when nothing happened (unknown source, or a true no-op). */
@@ -56,13 +65,23 @@ export interface RenameResult {
   rulesMoved: RuleScopeMoves;
 }
 
-const setNameStmt = db.prepare(`UPDATE buffers SET target = ?, target_folded = ? WHERE id = ?`);
+const setOwnNameStmt = db.prepare(`UPDATE buffers SET target = ?, target_folded = ? WHERE id = ?`);
+// A row still draining into the buffer (bufferMergeDrain.ts) is shown under
+// the buffer's name wherever a line of it is joined to its row for one (the
+// target a reaction or a REDACT on that line is sent to), so it takes the new
+// name too. Not the fold: it has none.
+const setDrainingNameStmt = db.prepare(`UPDATE buffers SET target = ? WHERE merged_into = ?`);
+const setName = {
+  run(target: string, folded: string, id: number): void {
+    setOwnNameStmt.run(target, folded, id);
+    setDrainingNameStmt.run(target, id);
+  },
+};
 const setOpenStmt = db.prepare(`UPDATE buffers SET state = 'open', closed_at = NULL WHERE id = ?`);
 const deleteRowStmt = db.prepare(`DELETE FROM buffers WHERE id = ?`);
 
 // --- merge helpers (absorbed → survivor) -----------------------------------
 
-const repointMessages = db.prepare(`UPDATE messages SET buffer_id = ? WHERE buffer_id = ?`);
 const repointInputHistory = db.prepare(
   `UPDATE input_history SET buffer_id = ? WHERE buffer_id = ?`,
 );
@@ -154,23 +173,32 @@ const renumberPinsStmt = db.prepare(`
  * Absorb one buffer row into another — the merge half of a rename, shared
  * with the CASEMAPPING re-fold pass (#707), where two rows folded apart under
  * the old rule collide under the declared one. Same policies as the rename
- * merge (they ARE the rename merge): repoint history wholesale, furthest read
+ * merge (they ARE the rename merge): repoint history, furthest read
  * pointer + max clear marker, survivor's pin slot (or adopt), survivor's
  * view-state and draft win (with the absorbed draft adopted when the survivor
  * has none — reported via `draftChanged` so callers can announce it),
  * autojoin/+k union per importRow's channel semantics, visibility is the
  * union, absorbed row deleted, pin positions re-densified. Runs inside the
  * caller's transaction; the caller announces.
+ *
+ * History moves a chunk at a time (#1307). The newest `chunkRows` messages
+ * move here; when that is all of them the absorbed row is deleted as ever.
+ * When more are left the row stays behind, out of every lookup and listing,
+ * and the rest follow in the background once the caller's transaction has
+ * committed.
  */
 export function absorbBufferRow(
   userId: number,
   networkId: number,
   survivor: { id: number; state: string },
   absorbed: { id: number; state: string },
+  chunkRows?: number,
 ): { draftChanged: boolean } {
   const draftBefore = (draftBodyStmt.get(userId, survivor.id) as { body: string } | undefined)
     ?.body;
-  repointMessages.run(survivor.id, absorbed.id);
+  const chunk = mergeChunkRows(chunkRows);
+  repointDraining(survivor.id, absorbed.id);
+  const moved = moveMessageChunk(survivor.id, absorbed.id, chunk);
   repointInputHistory.run(survivor.id, absorbed.id);
   mergeReadsStmt.run({ survivor: survivor.id, absorbed: absorbed.id });
   adoptReadsStmt.run(survivor.id, absorbed.id);
@@ -184,8 +212,14 @@ export function absorbBufferRow(
   // Visibility is the union: if either side was open, the merged buffer is.
   if (absorbed.state === 'open' && survivor.state !== 'open') setOpenStmt.run(survivor.id);
   // The absorbed row dies; its remaining satellites cascade with it (any
-  // UPDATE OR IGNORE above that lost to the survivor left rows behind).
-  deleteRowStmt.run(absorbed.id);
+  // UPDATE OR IGNORE above that lost to the survivor left rows behind). With
+  // history still to move it stays, as a draining row, and they are deleted
+  // by hand.
+  if (moved === chunk && bufferHasMessages(absorbed.id)) {
+    leaveDraining(survivor.id, absorbed.id, chunk);
+  } else {
+    deleteRowStmt.run(absorbed.id);
+  }
   renumberPinsStmt.run(userId, networkId);
   // Favorites density is per user alone (global order). Unlike the pins twin
   // above, the module's renumber is exported (the network-delete route needs
@@ -197,7 +231,13 @@ export function absorbBufferRow(
 }
 
 const work = db.transaction(
-  (userId: number, networkId: number, from: string, to: string): RenameResult | undefined => {
+  (
+    userId: number,
+    networkId: number,
+    from: string,
+    to: string,
+    chunkRows: number | undefined,
+  ): RenameResult | undefined => {
     const src = resolveBuffer(userId, networkId, from);
     if (!src) return undefined;
     const noop: RenameResult = {
@@ -218,7 +258,7 @@ const work = db.transaction(
     // casing. Announced (the display changed) but never a merge.
     if (toFolded === src.targetFolded) {
       if (src.target === to) return noop;
-      setNameStmt.run(to, toFolded, src.id);
+      setName.run(to, toFolded, src.id);
       return {
         renamed: true,
         bufferId: src.id,
@@ -245,7 +285,7 @@ const work = db.transaction(
     );
     const dest = resolveBuffer(userId, networkId, to);
     if (!dest) {
-      setNameStmt.run(to, toFolded, src.id);
+      setName.run(to, toFolded, src.id);
       return {
         renamed: true,
         bufferId: src.id,
@@ -259,8 +299,8 @@ const work = db.transaction(
     }
 
     // Merge: the destination row is absorbed into the (surviving) source.
-    const { draftChanged } = absorbBufferRow(userId, networkId, src, dest);
-    setNameStmt.run(to, toFolded, src.id);
+    const { draftChanged } = absorbBufferRow(userId, networkId, src, dest, chunkRows);
+    setName.run(to, toFolded, src.id);
     return {
       renamed: true,
       bufferId: src.id,
@@ -282,13 +322,18 @@ const work = db.transaction(
  * before it writes, and on a hosted cell a deferred BEGIN in that shape is
  * the Litestream SQLITE_BUSY_SNAPSHOT crash class (db/index.ts:~2022).
  * Returns undefined when the source doesn't exist.
+ *
+ * A merge of a buffer with more than `chunkRows` messages (production never
+ * passes it) is whole in every respect but its older history, which the
+ * background drain moves in after the commit.
  */
 export function renameBuffer(
   userId: number,
   networkId: number,
   from: string,
   to: string,
+  chunkRows?: number,
 ): RenameResult | undefined {
   if (!to || !from) return undefined;
-  return work.immediate(userId, networkId, from, to);
+  return work.immediate(userId, networkId, from, to, chunkRows);
 }

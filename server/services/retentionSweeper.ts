@@ -359,6 +359,14 @@ export async function runRetentionTick(
         // budget — without this the two are one unbroken block, and maxTickMs
         // cannot help because it is only consulted between statements.
         await yieldToLoop();
+        // The loop was given back, and a merge may have taken this buffer in
+        // the meantime (#1307): what is left under its id is the survivor's
+        // history now, and the survivor's cap to count.
+        if (bufferOwnerId(bufferId) === undefined) {
+          dropBandWalk(bufferId);
+          tailDone = true;
+          break;
+        }
         const rows = pacedBatchRows(opts);
         const batch = chargeFull(() =>
           deleteRetentionBatch(bufferId, boundaryId, ownerId, rows, visit),

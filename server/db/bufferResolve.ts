@@ -74,7 +74,11 @@ const byNetworkStmt = db.prepare(`
     AND target_folded = ?
 `);
 
-const byIdStmt = db.prepare(`SELECT ${IDENTITY_COLS} FROM buffers WHERE id = ?`);
+// Not a row a merge is still draining (#1307, bufferMergeDrain.ts): to a
+// client that id is the absorbed buffer, which the merge told it is gone.
+const byIdStmt = db.prepare(
+  `SELECT ${IDENTITY_COLS} FROM buffers WHERE id = ? AND merged_into IS NULL`,
+);
 
 /** Resolve (user, network, name) → identity, or undefined when no row exists. */
 export function resolveBuffer(
@@ -94,6 +98,38 @@ export function resolveBufferIdByNetwork(networkId: number, target: string): num
       | IdentityRow
       | undefined
   )?.id;
+}
+
+const drainingIntoStmt = db.prepare(
+  `SELECT id FROM buffers WHERE merged_into = ? ORDER BY id DESC`,
+);
+
+/** The ids of rows a merge is still draining into `bufferId` (#1307,
+ *  bufferMergeDrain.ts): empty but for the seconds after a large merge, and
+ *  one probe of a partial index that is nearly always empty. Their messages
+ *  are this buffer's older history that has not arrived. */
+export function drainingInto(bufferId: number): number[] {
+  return (drainingIntoStmt.all(bufferId) as Array<{ id: number }>).map((r) => r.id);
+}
+
+/**
+ * Look a line up in `bufferId`, and where it is not found, in the history
+ * still draining into it. For the lookups a WRITE hangs on (the line a REDACT,
+ * a reaction or a reply names): a miss there is acted on for good, where a
+ * short page is only short until the drain is done. The survivor is tried
+ * first: it holds the newer rows, and the newest copy of a msgid wins.
+ */
+export function findAcrossDrain<T>(
+  bufferId: number,
+  find: (id: number) => T | null | undefined,
+): T | null {
+  const found = find(bufferId);
+  if (found != null) return found;
+  for (const id of drainingInto(bufferId)) {
+    const older = find(id);
+    if (older != null) return older;
+  }
+  return null;
 }
 
 /** Identity by primary key — the wire-facing lookup for frames carrying

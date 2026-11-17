@@ -199,29 +199,34 @@ const setClosedAtStmt = db.prepare(`
   WHERE user_id = ? AND IFNULL(network_id, 0) = IFNULL(?, 0) AND target_folded = ?
 `);
 
+// Every listing leaves out a row a merge is still draining (merged_into set,
+// #1307): it is the rest of another buffer's history on its way there, not a
+// buffer, and it holds a name no lookup above can match. See
+// bufferMergeDrain.ts.
 const listForUserStmt = db.prepare(`
-  SELECT * FROM buffers WHERE user_id = ? ORDER BY network_id, target_folded
+  SELECT * FROM buffers WHERE user_id = ? AND merged_into IS NULL
+  ORDER BY network_id, target_folded
 `);
 
 const listForNetworkStmt = db.prepare(`
-  SELECT * FROM buffers WHERE network_id = ? ORDER BY target_folded
+  SELECT * FROM buffers WHERE network_id = ? AND merged_into IS NULL ORDER BY target_folded
 `);
 
 const listChannelBuffersStmt = db.prepare(`
   SELECT * FROM buffers
-  WHERE network_id = ? AND kind = 'channel'
+  WHERE network_id = ? AND kind = 'channel' AND merged_into IS NULL
   ORDER BY target_folded
 `);
 
 const listAutojoinStmt = db.prepare(`
   SELECT * FROM buffers
-  WHERE network_id = ? AND kind = 'channel' AND autojoin = 1
+  WHERE network_id = ? AND kind = 'channel' AND autojoin = 1 AND merged_into IS NULL
   ORDER BY target_folded
 `);
 
 const listOpenDmsStmt = db.prepare(`
   SELECT * FROM buffers
-  WHERE network_id = ? AND kind = 'dm' AND state = 'open'
+  WHERE network_id = ? AND kind = 'dm' AND state = 'open' AND merged_into IS NULL
   ORDER BY target_folded
 `);
 
@@ -250,11 +255,12 @@ const stateStmt = db.prepare(`
 
 const listStatesForUserStmt = db.prepare(`
   SELECT id, network_id, target, target_folded, state FROM buffers
-  WHERE user_id = ? ORDER BY network_id, target_folded
+  WHERE user_id = ? AND merged_into IS NULL ORDER BY network_id, target_folded
 `);
 
 const closedFoldedForNetworkStmt = db.prepare(`
-  SELECT target_folded FROM buffers WHERE network_id = ? AND state = 'closed'
+  SELECT target_folded FROM buffers
+  WHERE network_id = ? AND state = 'closed' AND merged_into IS NULL
 `);
 
 const autojoinFlagStmt = db.prepare(`

@@ -113,6 +113,46 @@ function ftsHits(word: string): number {
     .get(word) as number;
 }
 
+describe('a merge that takes the buffer mid-visit (#1307)', () => {
+  it('stops pruning it: what is left under its id is the survivor\u2019s history now', async () => {
+    const { renameBuffer } = await import('../db/renameBuffer.js');
+    const { drainMergesNow } = await import('../db/bufferMergeDrain.js');
+    const { userId, bufferId } = seedBuffer('ret-merge-race', 40);
+    const networkId = (
+      db.prepare(`SELECT network_id FROM buffers WHERE id = ?`).get(bufferId) as {
+        network_id: number;
+      }
+    ).network_id;
+    insertMessage({
+      networkId,
+      target: '#live',
+      time: new Date(BASE).toISOString(),
+      type: 'message',
+      nick: 'someone',
+      text: 'the live one',
+      self: false,
+    });
+    setUserSetting(userId, 'data.retention.lines', 10);
+    takeDirtyBuffers();
+    retentionDb.markBufferDirty(bufferId);
+
+    // The visit gives the loop back before its owner lookup, before its
+    // ceiling walk, and before each delete. The merge goes in ahead of the
+    // first delete: two turns of the loop after the tick began.
+    const tick = runRetentionTick(OPTS);
+    await new Promise<void>((r) => setImmediate(r));
+    await new Promise<void>((r) => setImmediate(r));
+    renameBuffer(userId, networkId, '#live', '#chan', 5);
+    expect(rowIds(bufferId)).toHaveLength(35);
+    const result = await tick;
+
+    // Over its cap by 30 when the visit began, and none of them deleted.
+    expect(result.rowsDeleted).toBe(0);
+    expect(rowIds(bufferId)).toHaveLength(35);
+    drainMergesNow(5);
+  });
+});
+
 describe('runRetentionTick', () => {
   it('leaves an uncapped buffer alone', async () => {
     const { bufferId } = seedBuffer('ret-uncapped', 8);

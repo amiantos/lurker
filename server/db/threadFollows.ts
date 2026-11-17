@@ -15,6 +15,7 @@
 
 import db from './index.js';
 import { HIGHLIGHTED_SQL } from './messages.js';
+import { drainingInto, findAcrossDrain } from './bufferResolve.js';
 import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
 import type { FollowedThread } from '../../shared/replies.js';
 
@@ -95,7 +96,9 @@ export function noteThreadReply(
     followThread(userId, bufferId, rootMsgid, reply.id);
     return true;
   }
-  const joins = reply.highlighted || !!rootIsTheirsStmt.get(bufferId, rootMsgid, bufferId);
+  const joins =
+    reply.highlighted ||
+    !!findAcrossDrain(bufferId, (id) => rootIsTheirsStmt.get(bufferId, rootMsgid, id));
   if (joins && followThreadIfAbsent(userId, bufferId, rootMsgid, reply.id - 1)) return true;
   // Someone else's reply in a thread already listed: its count moved.
   return isThreadFollowed(userId, bufferId, rootMsgid);
@@ -201,6 +204,10 @@ export function listFollowedThreads(userId: number, now = Date.now()): FollowedT
       | { id: number; time: string }
       | undefined;
     if (!last) {
+      // Not while a merge is still moving history into the buffer (#1307):
+      // the follow came over with the merge and its replies are on their way.
+      // The list goes out again when they have arrived.
+      if (drainingInto(f.bufferId).length > 0) continue;
       forgetStmt.run(userId, f.bufferId, f.rootMsgid); // retention took the thread
       continue;
     }

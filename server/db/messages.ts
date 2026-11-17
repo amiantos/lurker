@@ -4,6 +4,7 @@
 import db from './index.js';
 import { idInHalves } from './idInHalves.js';
 import {
+  findAcrossDrain,
   resolveBuffer,
   resolveBufferIdByNetwork,
   resolveOrMintForInsert,
@@ -535,7 +536,10 @@ export function findReplyParent(
   bufferId: number,
   msgid: string,
 ): ReplyParent | null {
-  const row = replyParentStmt.get(networkId, msgid, bufferId) as { parent: string } | undefined;
+  const row = findAcrossDrain(
+    bufferId,
+    (id) => replyParentStmt.get(networkId, msgid, id) as { parent: string } | undefined,
+  );
   return row ? parseReplyParent(row.parent) : null;
 }
 
@@ -560,9 +564,10 @@ export function replyRootFor(
   parentMsgid: string,
 ): string {
   if (bufferId === undefined) return parentMsgid;
-  const row = replyRootStmt.get(networkId, parentMsgid, bufferId) as
-    | { root: string | null }
-    | undefined;
+  const row = findAcrossDrain(
+    bufferId,
+    (id) => replyRootStmt.get(networkId, parentMsgid, id) as { root: string | null } | undefined,
+  );
   return row?.root || parentMsgid;
 }
 
@@ -586,9 +591,10 @@ export function replySendMsgid(
 ): string | null {
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return null;
-  const row = replySendStmt.get(messageId, userId, networkId, bufferId) as
-    | { msgid: string }
-    | undefined;
+  const row = findAcrossDrain(
+    bufferId,
+    (id) => replySendStmt.get(messageId, userId, networkId, id) as { msgid: string } | undefined,
+  );
   return row?.msgid ?? null;
 }
 
@@ -709,16 +715,22 @@ export interface RedactedLine {
 // second REDACT for the same line — two sessions, a replay — changes nothing
 // and publishes nothing).
 export const redactMessage = db.transaction((r: RedactInput): RedactedLine | null => {
-  const row = redactTargetStmt.get(r.networkId, r.msgid, r.bufferId) as
-    | {
-        id: number;
-        buffer_id: number;
-        nick: string | null;
-        self: number;
-        time: string;
-        text: string | null;
-      }
-    | undefined;
+  // In the buffer, or in the part of its history a merge has yet to move in
+  // (#1307): a REDACT that found nothing there would leave the words for good.
+  const row = findAcrossDrain(
+    r.bufferId,
+    (id) =>
+      redactTargetStmt.get(r.networkId, r.msgid, id) as
+        | {
+            id: number;
+            buffer_id: number;
+            nick: string | null;
+            self: number;
+            time: string;
+            text: string | null;
+          }
+        | undefined,
+  );
   if (!row) return null;
   const stamp = { time: r.time, by: r.by, reason: r.reason ?? null };
   const info = redactStmt.run({ id: row.id, ...stamp });
@@ -736,7 +748,9 @@ export const redactMessage = db.transaction((r: RedactInput): RedactedLine | nul
       }
     }
   }
-  return { id: row.id, bufferId: row.buffer_id, nick: row.nick, self: row.self === 1, mirrors };
+  // The buffer asked about, not the row's: a line still draining sits under
+  // an id clients have dropped.
+  return { id: row.id, bufferId: r.bufferId, nick: row.nick, self: row.self === 1, mirrors };
 });
 
 // The deletions among a set of the user's lines, for a client re-syncing after
@@ -1571,8 +1585,11 @@ export function listActiveTargetsInWindow(
   // one an attached client will happily open a query on and then PRIVMSG — a
   // name that must never reach the wire. A DCC chat is a live socket this
   // process owns, not account state to mirror to other clients.
+  // And not a row a merge is still draining (#1307): it keeps the name its
+  // survivor now holds, and would list that conversation twice.
   const buffersOnly = `b.kind NOT IN ('server', 'system', 'dcc')
-          AND substr(b.target, 1, 1) <> '='`;
+          AND substr(b.target, 1, 1) <> '='
+          AND b.merged_into IS NULL`;
   // Our own lines where the bouncer never replays them — a DM, to a client that
   // takes no self-messages, or a services buffer, to anyone — are no one's news
   // either: TARGETS mustn't list a buffer, or a time, its window won't deliver.
@@ -1678,7 +1695,7 @@ export function listRecentForBuffers(
 // because "which buffers exist" had to be derived from the messages table.
 const listBufferTargetsStmt = db.prepare(`
   SELECT target FROM buffers b
-  WHERE b.network_id = ?
+  WHERE b.network_id = ? AND b.merged_into IS NULL
     AND EXISTS (SELECT 1 FROM messages m WHERE m.buffer_id = b.id)
   ORDER BY target
 `);
@@ -1698,7 +1715,7 @@ export function listBuffersForNetwork(networkId: number): BufferSummary[] {
       `SELECT b.target AS target, MAX(m.time) AS lastMessageAt
          FROM buffers b
          JOIN messages m ON m.buffer_id = b.id
-        WHERE b.network_id = ?
+        WHERE b.network_id = ? AND b.merged_into IS NULL
           AND b.kind NOT IN ('server', 'system', 'dcc')
           AND substr(b.target, 1, 1) <> '='
         GROUP BY b.id
@@ -1719,7 +1736,7 @@ export function maxIdByBuffer(networkId: number): MaxIdByBufferRow[] {
          SELECT b.target AS target,
                 (SELECT MAX(m.id) FROM messages m WHERE m.buffer_id = b.id) AS maxId
          FROM buffers b
-         WHERE b.network_id = ?
+         WHERE b.network_id = ? AND b.merged_into IS NULL
        ) WHERE maxId IS NOT NULL`,
     )
     .all(networkId) as MaxIdByBufferRow[];
@@ -1968,7 +1985,7 @@ export function newestConversationTime(
 // rows (idx_messages_net is by id, and MAX(time) over it would read them all).
 const networkBuffersStmt = db.prepare(
   `SELECT id, target_folded AS target FROM buffers
-   WHERE network_id = ? AND kind IN ('channel', 'dm')`,
+   WHERE network_id = ? AND kind IN ('channel', 'dm') AND merged_into IS NULL`,
 );
 export function newestConversationTimes(
   networkId: number,

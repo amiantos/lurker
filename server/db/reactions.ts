@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
-import { resolveBuffer } from './bufferResolve.js';
+import { findAcrossDrain, resolveBuffer } from './bufferResolve.js';
 import { idInHalves } from './idInHalves.js';
 import type { MessageReaction } from '../../shared/reactions.js';
 
@@ -37,11 +37,19 @@ export function findReactionParent(
   bufferId: number,
   msgid: string,
 ): ReactionParent | null {
-  const row = parentStmt.get(networkId, msgid, bufferId) as
-    | { id: number; buffer_id: number; self: number }
-    | undefined;
+  // In the buffer, or in the history a merge is still moving into it (#1307):
+  // a reaction that found no line there would be dropped for good.
+  const row = findAcrossDrain(
+    bufferId,
+    (id) =>
+      parentStmt.get(networkId, msgid, id) as
+        | { id: number; buffer_id: number; self: number }
+        | undefined,
+  );
   if (!row) return null;
-  return { id: row.id, bufferId: row.buffer_id, self: row.self === 1 };
+  // The buffer asked about: a line still draining sits under an id clients
+  // have dropped.
+  return { id: row.id, bufferId, self: row.self === 1 };
 }
 
 const insertStmt = db.prepare(`
