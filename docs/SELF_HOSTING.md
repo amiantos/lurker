@@ -288,7 +288,8 @@ renders a poster frame that plays in place when clicked.
 below — without it, video links get a card with no frame on it.
 
 With previews enabled, a video or audio file you **upload** also gets a poster
-thumbnail in your shares, a few seconds after the upload. This needs no byte
+thumbnail in your shares, a few seconds after the upload. Older uploads get
+theirs as you browse to them. This needs no byte
 cache (the thumbnail is stored with the upload), but the decoder fetches the
 uploaded file by its public URL, so an instance served only on a private
 address gets none.

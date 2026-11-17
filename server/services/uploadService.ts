@@ -21,7 +21,7 @@ import {
   staticImageMaxDimension,
 } from './uploadLimits.js';
 import * as imagePipeline from './imagePipeline.js';
-import { thumbnailFormat } from './thumbnailFormat.js';
+import { absolutizeUrl, remoteThumbStore } from './uploadThumbStore.js';
 import { makeUploadProgress } from './uploadProgress.js';
 import { classifyUpload, UnsupportedTypeError, type Classification } from './contentClass.js';
 import { scrubMediaFile, MediaScrubError } from './mediaScrub.js';
@@ -107,15 +107,6 @@ export interface UploadOutput {
 // kind are 502; only a config the user can fix themselves is a 400.
 export function providerErrorStatus(e: { code?: string }): number {
   return e.code === 'PROVIDER_CONFIG' ? 400 : 502;
-}
-
-/** Absolutize a driver result URL. Drivers that store remotely already return an
- *  absolute URL; the local driver returns a root-relative path we prefix with the
- *  instance's public base, unless its own public_base_url made it absolute. */
-function absolutizeUrl(url: string, storesRemotely: boolean, baseUrl: () => string): string {
-  if (storesRemotely || !url.startsWith('/')) return url;
-  const base = baseUrl();
-  return base ? base + url : url;
 }
 
 export async function processUpload(input: UploadInput): Promise<UploadOutput> {
@@ -320,25 +311,11 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // remote object under a `thumbs/` prefix so it doesn't bloat the cell DB /
   // R2 backups; everyone else keeps the inline BLOB. Best-effort: a thumb
   // upload failure falls back to the BLOB so a hiccup never blocks the user.
-  const storeThumbRemotely = async (bytes: Buffer): Promise<string | null> => {
-    // Describe the bytes we actually produced, not the format thumbnails
-    // used to be: the dropper verifies the claimed mime against the magic
-    // bytes and 415s a webp announced as image/jpeg.
-    const thumbFmt = thumbnailFormat(bytes);
-    const tRes = await resolved.driver.upload(
-      bufferSource(bytes),
-      {
-        filename: `thumb.${thumbFmt.ext}`,
-        mime: thumbFmt.mime,
-        contentClass: 'image',
-        kind: 'thumb',
-      },
-      resolved.driverConfig,
-    );
-    return tRes && typeof tRes.url === 'string'
-      ? absolutizeUrl(tRes.url, storesRemotely, input.baseUrl)
-      : null;
-  };
+  const storeThumbRemotely = remoteThumbStore(
+    resolved.driver,
+    resolved.driverConfig,
+    input.baseUrl,
+  );
   let thumbnailBlob: Buffer | null = thumb;
   let thumbnailUrl: string | null = null;
   if (resolved.policy.hostsThumbnails && thumb) {
@@ -367,7 +344,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // Report the upload to the control plane's moderation index. Self-gates to
   // a no-op in standalone (no control plane configured), so it's called
   // unconditionally; fire-and-forget, never blocks the response.
-  const reported = reportUploadSoon({
+  reportUploadSoon({
     cell_upload_id: id,
     cell_user_id: input.userId,
     url: mainUrl,
@@ -387,7 +364,6 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
       url: mainUrl,
       format: userImageFormat,
       storeRemotely: resolved.policy.hostsThumbnails ? storeThumbRemotely : null,
-      reported,
     });
   }
 

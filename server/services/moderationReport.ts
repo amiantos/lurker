@@ -18,6 +18,7 @@
 import { isNodeMode } from '../utils/edition.js';
 import { USER_AGENT } from '../utils/userAgent.js';
 import {
+  getUploadForReport,
   listUnsyncedUploads,
   markUploadSynced,
   type UnsyncedUploadRow,
@@ -80,32 +81,60 @@ export async function reportUpload(rec: UploadReport): Promise<boolean> {
   }
 }
 
+// ⚠⚠ A row's reports reach the control plane ONE AT A TIME, IN ORDER, and each
+// says what the row holds as it is sent. The control plane's upsert takes the
+// last report's thumb_url, and deletes only the objects it has indexed, so a
+// stale "no thumbnail" landing after the report that named one would leave
+// that object in the bucket for good. A row's thumbnail can arrive after its
+// first report (a media poster, #778), which is what makes the order matter.
+// Three rules keep it: reports for one upload queue behind each other; a
+// queued report reads the row when its turn comes, not when it was asked for;
+// and a report marks the row synced only if the row still holds the thumbnail
+// it reported.
+const reporting = new Map<number, Promise<unknown>>();
+
+function inTurn(uploadId: number, send: () => Promise<boolean>): Promise<boolean> {
+  const prior = reporting.get(uploadId) ?? Promise.resolve();
+  const run = prior.then(send, send).catch(() => false);
+  reporting.set(uploadId, run);
+  void run.then(() => {
+    if (reporting.get(uploadId) === run) reporting.delete(uploadId);
+  });
+  return run;
+}
+
+async function sendReport(rec: UploadReport): Promise<boolean> {
+  const ok = await reportUpload(rec);
+  if (ok) markUploadSynced(rec.cell_upload_id, rec.thumb_url);
+  return ok;
+}
+
 // Fire-and-forget report immediately after an upload; marks the row synced on
 // success so the flush skips it. Safe to call in any edition (no-op when not a
-// configured node). The promise is for a caller that must not write the row
-// until this report has settled; it never rejects.
-export function reportUploadSoon(rec: UploadReport): Promise<boolean> {
-  if (!readConfig()) return Promise.resolve(false);
-  return reportUpload(rec).then((ok) => {
-    if (ok) markUploadSynced(rec.cell_upload_id);
-    return ok;
-  });
+// configured node).
+export function reportUploadSoon(rec: UploadReport): void {
+  if (!readConfig()) return;
+  void inTurn(rec.cell_upload_id, () => sendReport(rec));
 }
 
 // Report one history row and mark it synced once the control plane has it.
-export async function reportRow(r: UnsyncedUploadRow): Promise<boolean> {
-  const ok = await reportUpload({
-    cell_upload_id: r.id,
-    cell_user_id: r.user_id,
-    url: r.url,
-    thumb_url: r.thumbnail_url,
-    mime: r.mime,
-    byte_size: r.byte_size,
-    width: r.width,
-    height: r.height,
+// `r` says which row; what is sent is the row as it stands when this report's
+// turn comes. A row deleted meanwhile has nothing to report.
+export function reportRow(r: { id: number; user_id: number }): Promise<boolean> {
+  return inTurn(r.id, async () => {
+    const row: UnsyncedUploadRow | undefined = getUploadForReport(r.user_id, r.id);
+    if (!row) return false;
+    return sendReport({
+      cell_upload_id: row.id,
+      cell_user_id: row.user_id,
+      url: row.url,
+      thumb_url: row.thumbnail_url,
+      mime: row.mime,
+      byte_size: row.byte_size,
+      width: row.width,
+      height: row.height,
+    });
   });
-  if (ok) markUploadSynced(r.id);
-  return ok;
 }
 
 // Drain rows the CP hasn't acknowledged (it was down at upload time). One batch

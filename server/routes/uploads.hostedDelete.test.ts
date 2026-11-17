@@ -122,6 +122,9 @@ function hostedUpload(
 }
 
 const exists = (id: number) => history.getUploadForReap(userId, id) !== undefined;
+/** The control plane has acknowledged the latest hostedUpload() row as it stands. */
+const acknowledged = (id: number): void =>
+  history.markUploadSynced(id, `https://cdn.test/thumbs/f${n}.png`);
 
 describe('hosted upload delete (node edition, control-plane #55)', () => {
   it('offers delete on hosted rows, though the dropper captured no delete handle', async () => {
@@ -144,8 +147,36 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
     expect(exists(id)).toBe(false);
   });
 
+  // The control plane deletes the objects it has indexed. A row it hasn't
+  // acknowledged can hold one it hasn't heard of (a poster thumbnail stored
+  // after the first report, #778), so the report lands before the delete.
+  it('reports a row the control plane has not acknowledged before asking', async () => {
+    const id = hostedUpload();
+    const res = await agent.delete(`/api/uploads/${id}`);
+    expect(res.status).toBe(200);
+    expect(reports).toEqual([
+      expect.objectContaining({
+        cell_upload_id: id,
+        thumb_url: `https://cdn.test/thumbs/f${n}.png`,
+      }),
+    ]);
+    expect(deleteCalls).toHaveLength(1);
+    expect(exists(id)).toBe(false);
+  });
+
+  it('asks for no delete while that report cannot land', async () => {
+    const id = hostedUpload();
+    reportsDown = true;
+    const res = await agent.delete(`/api/uploads/${id}`);
+    expect(res.status).toBe(503);
+    expect(res.body.error).toMatch(/still being recorded/);
+    expect(deleteCalls).toEqual([]);
+    expect(exists(id)).toBe(true);
+  });
+
   it('reports an upload the control plane has not indexed yet, then asks again', async () => {
     const id = hostedUpload();
+    acknowledged(id);
     deleteAnswers = [
       { status: 404, body: { code: 'not_indexed', error: 'upload not indexed yet' } },
     ];
@@ -194,6 +225,7 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
 
   it('keeps the row when the control plane cannot be reached', async () => {
     const id = hostedUpload();
+    acknowledged(id);
     const saved = process.env.LURKER_ORCHESTRATOR_URL;
     process.env.LURKER_ORCHESTRATOR_URL = 'http://127.0.0.1:9'; // nothing listens on discard
     try {
@@ -250,7 +282,7 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
   // is not reachable.
   it('drops a hosted record without a delete request, and only its owner can', async () => {
     const id = hostedUpload();
-    history.markUploadSynced(id);
+    acknowledged(id);
     expect((await adminAgent.delete(`/api/uploads/${id}/record`)).status).toBe(404);
     expect(exists(id)).toBe(true);
     expect((await agent.delete(`/api/uploads/${id}/record`)).status).toBe(200);

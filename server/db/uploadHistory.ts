@@ -57,6 +57,9 @@ export interface UploadListRow {
   // boolean derived from this — the timestamp itself only drives server-side
   // ordering.
   favorited_at: string | null;
+  // 1 while the decoder's last answer about this row's poster still stands
+  // (#778). Server-side only: the list route reads it to pick rows to ask about.
+  poster_tried: number;
 }
 
 /** Fields passed to insertUpload. */
@@ -196,7 +199,9 @@ export function listUploads(
       `
     SELECT id, provider, url, filename, mime, byte_size, width, height, created_at,
            thumbnail_url, removed, uploader_config_id, favorited_at,
-           (thumbnail IS NOT NULL) AS has_thumbnail, (ref IS NOT NULL) AS has_ref
+           (thumbnail IS NOT NULL) AS has_thumbnail, (ref IS NOT NULL) AS has_ref,
+           (poster_tried_at IS NOT NULL AND poster_tried_at >
+              strftime('%Y-%m-%dT%H:%M:%fZ','now','-${POSTER_RETRY_DAYS} days')) AS poster_tried
     FROM upload_history
     WHERE ${where.join(' AND ')}
     ORDER BY ${orderBy}
@@ -330,6 +335,21 @@ export function getUnsyncedUploadForReport(
     .get(userId, Number(id)) as UnsyncedUploadRow | undefined;
 }
 
+/**
+ * How long "no poster" stands before a list asks again. The decoder's answer
+ * can't tell a file that will never have a frame from one it couldn't reach or
+ * decode that day, so it is remembered the way a posterless link card is: for
+ * a week.
+ */
+export const POSTER_RETRY_DAYS = 7;
+
+/** The decoder answered about this row's poster; don't ask again for a while. */
+export function markPosterTried(id: number): void {
+  db.prepare(
+    `UPDATE upload_history SET poster_tried_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?`,
+  ).run(Number(id));
+}
+
 /** Is this row still there, not taken down, and without a thumbnail? */
 export function uploadAwaitsThumbnail(id: number): boolean {
   return !!db
@@ -358,6 +378,7 @@ export function setUploadThumbnail(
       .prepare(
         `UPDATE upload_history
          SET thumbnail = ?, thumbnail_url = ?,
+             poster_tried_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
              synced_to_cp = CASE WHEN ? IS NULL THEN synced_to_cp ELSE 0 END
          WHERE id = ? AND removed = 0 AND thumbnail IS NULL AND thumbnail_url IS NULL`,
       )
@@ -365,8 +386,15 @@ export function setUploadThumbnail(
   );
 }
 
-export function markUploadSynced(id: number): void {
-  db.prepare('UPDATE upload_history SET synced_to_cp = 1 WHERE id = ?').run(Number(id));
+// The control plane acknowledged a report that named `reportedThumbUrl`. Only
+// a row still holding that thumbnail is synced by it: one that gained a
+// thumbnail while the report was in flight has something the control plane
+// hasn't heard of (see services/moderationReport.ts).
+export function markUploadSynced(id: number, reportedThumbUrl: string | null): void {
+  db.prepare('UPDATE upload_history SET synced_to_cp = 1 WHERE id = ? AND thumbnail_url IS ?').run(
+    Number(id),
+    reportedThumbUrl,
+  );
 }
 
 // Control-plane-driven moderation takedown, addressed by the cell's own upload

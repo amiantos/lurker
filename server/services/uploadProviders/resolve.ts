@@ -138,13 +138,13 @@ function lockedButUnconfigured(
  */
 export function loadDriverForRef(
   configId: number,
-): { driver: UploadDriver; driverConfig: Record<string, string> } | null {
+): { driver: UploadDriver; driverConfig: Record<string, string>; policy: UploaderPolicy } | null {
   const row = getUploaderConfig(configId);
   if (!row) return null;
   const driver = getDriver(row.driver);
   if (!driver) return null;
-  const { driverConfig } = splitPolicy(resolvedConfig(row));
-  return { driver, driverConfig };
+  const { driverConfig, policy } = splitPolicy(resolvedConfig(row));
+  return { driver, driverConfig, policy };
 }
 
 /**
