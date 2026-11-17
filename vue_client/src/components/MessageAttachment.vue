@@ -246,11 +246,12 @@
         @click.stop="play"
       >
         <img
-          v-if="preview.thumb"
+          v-if="preview.thumb && !thumbFailed"
           class="card-thumb-wide"
           :src="preview.thumb"
           alt=""
           loading="lazy"
+          @error="onThumbError"
         />
         <span class="play-badge" aria-hidden="true">▶</span>
       </button>
@@ -268,7 +269,14 @@
          portrait share image cropped to a 1.9:1 band loses its subject. Letterboxed against the
          card's own panel it merely sits in a wider frame. -->
     <div v-else-if="cardShape === 'hero'" class="card-hero">
-      <img class="card-hero-img" :src="preview.thumb" alt="" loading="lazy" decoding="async" />
+      <img
+        class="card-hero-img"
+        :src="preview.thumb"
+        alt=""
+        loading="lazy"
+        decoding="async"
+        @error="onThumbError"
+      />
     </div>
     <!-- ⚠ NO block at all without an image, rather than an empty square. A card is `ok` on a
          title OR an image, so a title-only card is an ordinary answer — and a reserved box with
@@ -280,12 +288,13 @@
       alt=""
       loading="lazy"
       decoding="async"
+      @error="onThumbError"
     />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, useTemplateRef } from 'vue';
+import { computed, nextTick, ref, useTemplateRef, watch } from 'vue';
 import type { LinkPreview } from '../composables/useLinkPreview.js';
 import { useSettingsStore } from '../stores/settings.js';
 
@@ -448,7 +457,8 @@ const SQUARE_MAX_RATIO = 1.3;
 
 const cardShape = computed<'hero' | 'square' | 'none'>(() => {
   // A card is `ok` on a title OR an image, so having no picture at all is an ordinary answer.
-  if (!props.preview.thumb) return 'none';
+  // One whose picture failed to load is that same card (see `thumbFailed`).
+  if (!props.preview.thumb || thumbFailed.value) return 'none';
   const w = props.preview.thumbWidth;
   const h = props.preview.thumbHeight;
   // ⚠ Square AND portrait both take the chip. The threshold sits just under 4:3 (1.333), so a
@@ -522,7 +532,38 @@ const reserveStyle = computed(() => {
 });
 
 /**
- * ⚠⚠ THERE IS DELIBERATELY NO `@error` HANDLING, and that is a decision rather than an omission.
+ * A CARD's picture that failed to load is dropped, and the card becomes the text-only card it
+ * would have been with no picture at all (lurker#1240). The image host answers "not now" often
+ * enough — GitHub's og:image service refuses a share of requests at random — and an `<img>` never
+ * asks again, so the alternative is a broken-image glyph in a 240px band for the life of the row.
+ *
+ * ⚠ CARDS ONLY. An inline image is not touched: see the note below, and a failed inline image
+ * with the URL text hidden would leave a message showing nothing at all.
+ *
+ * ⚠ None of the note below's objections reach a card picture. It has no role, tabindex or focus
+ * to lose, its `alt` never changes, and the box that goes is one the text-only card never had.
+ * The flag is for the life of this row, as that note says it must be (the `src` is an HMAC of
+ * the URL, so a re-delivered answer is the same string): the picture is back on the next mount.
+ *
+ * ⚠ The row gets SHORTER when the band goes, after first paint. `measured` tells the scroller,
+ * as a late-loading image's growth does.
+ */
+const thumbFailed = ref(false);
+function onThumbError(): void {
+  if (thumbFailed.value) return;
+  thumbFailed.value = true;
+  void nextTick(() => emit('measured'));
+}
+watch(
+  () => props.preview.thumb,
+  () => {
+    thumbFailed.value = false;
+  },
+);
+
+/**
+ * ⚠⚠ THERE IS DELIBERATELY NO `@error` HANDLING ON AN INLINE IMAGE, and that is a decision
+ * rather than an omission.
  *
  * A version of this component tracked a `failed` flag to paint a panel fill instead of the UA's
  * broken-image glyph. Measured in three engines, it made things worse rather than better:

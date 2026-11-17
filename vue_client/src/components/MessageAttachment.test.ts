@@ -190,6 +190,13 @@ describe('MessageAttachment — video embed', () => {
     expect(wrapper.find('.card-thumb-wide').attributes('src')).toBe('/api/link-preview/media/tok');
   });
 
+  it('keeps the play control when the video thumbnail fails to load', async () => {
+    const wrapper = mount(MessageAttachment, { props: { preview: YOUTUBE } });
+    await wrapper.find('.card-thumb-wide').trigger('error');
+    expect(wrapper.find('.card-thumb-wide').exists()).toBe(false);
+    expect(wrapper.find('.card-play').exists()).toBe(true);
+  });
+
   it('falls back to a plain card when the kind says video but no embedUrl came with it', () => {
     // ⚠ `kind: 'video-embed'` and `embedUrl` are NOT a guaranteed pair on the wire. The origin
     // allowlist can recognise a page as a video and still withhold the embed URL, and while the
@@ -299,6 +306,41 @@ describe('MessageAttachment — the two card shapes', () => {
       const kids = [...wrapper.find('.card').element.children].map((el) => el.className);
       expect(kids).toEqual(['card-text', 'card-hero']);
     }
+  });
+
+  // lurker#1240: an image host that answers "not now" left a broken-image glyph in the band for
+  // the life of the row. A card whose picture fails is the text-only card.
+  it('drops a hero that fails to load, and tells the scroller the row changed', async () => {
+    const wrapper = mount(MessageAttachment, {
+      props: { preview: page({ thumbWidth: 1200, thumbHeight: 600 }) },
+    });
+    await wrapper.find('.card-hero-img').trigger('error');
+    await nextTick();
+    expect(wrapper.find('.card-hero').exists()).toBe(false);
+    expect(wrapper.find('.card').classes()).not.toContain('card-column');
+    expect(wrapper.find('.card-title').exists()).toBe(true);
+    expect(wrapper.emitted('measured')).toHaveLength(1);
+  });
+
+  it('drops a square thumbnail that fails to load', async () => {
+    const wrapper = mount(MessageAttachment, {
+      props: { preview: page({ thumbWidth: 256, thumbHeight: 256 }) },
+    });
+    await wrapper.find('.card-thumb').trigger('error');
+    await nextTick();
+    expect(wrapper.find('.card-thumb').exists()).toBe(false);
+    expect(wrapper.find('.card-title').exists()).toBe(true);
+  });
+
+  it('shows the picture again when the preview brings a different one', async () => {
+    const wrapper = mount(MessageAttachment, {
+      props: { preview: page({ thumbWidth: 1200, thumbHeight: 600 }) },
+    });
+    await wrapper.find('.card-hero-img').trigger('error');
+    await wrapper.setProps({
+      preview: page({ thumbWidth: 1200, thumbHeight: 600, thumb: '/api/link-preview/media/tokQ' }),
+    });
+    expect(wrapper.find('.card-hero-img').attributes('src')).toBe('/api/link-preview/media/tokQ');
   });
 
   it('keeps the small square for a logo, which is what reddit ships', () => {
