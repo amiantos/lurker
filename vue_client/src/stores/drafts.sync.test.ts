@@ -108,6 +108,52 @@ describe('a draft the server may not have', () => {
   });
 });
 
+describe('a draft the server would not keep', () => {
+  it('survives the snapshot, which cannot have it', async () => {
+    const drafts = useDraftStore();
+    send.mockImplementation(() => Promise.resolve({ ok: false, error: 'unknown-buffer' }));
+    drafts.setLocal(1, '#chan', 'to a buffer the server has no row for');
+    vi.advanceTimersByTime(600);
+    await settle();
+    drafts.seed([]);
+    expect(drafts.forBuffer(1, '#chan')).toBe('to a buffer the server has no row for');
+  });
+});
+
+describe('the unload beacon', () => {
+  it('marks nothing saved: a page that was only hidden still holds its text', () => {
+    const drafts = useDraftStore();
+    const beacon = vi.fn<(url: string, data: Blob) => boolean>(() => true);
+    vi.stubGlobal('navigator', { sendBeacon: beacon });
+    try {
+      send.mockReturnValue(null);
+      drafts.setLocal(1, '#chan', 'typed, then the app was switched away');
+      expect(drafts.flushAllForBeacon()).toBe(true);
+      expect(beacon).toHaveBeenCalledTimes(1);
+      drafts.seed(serverHas('typed'));
+      expect(drafts.forBuffer(1, '#chan')).toBe('typed, then the app was switched away');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('a renamed buffer', () => {
+  it('sends its unsaved draft again under the new name', async () => {
+    const drafts = useDraftStore();
+    const answer = held();
+    drafts.setLocal(1, 'bob', 'hey bob');
+    vi.advanceTimersByTime(600);
+    drafts.rekeyBuffer(1, 'bob', 'bobby');
+    await answer({ ok: true }); // about the old name: settles nothing
+    vi.advanceTimersByTime(600);
+    expect(frames().at(-1)).toMatchObject({ type: 'draft-set', target: 'bobby', body: 'hey bob' });
+    await settle();
+    drafts.applyRemoteUpdate(1, 'bobby', 'from the phone');
+    expect(drafts.forBuffer(1, 'bobby')).toBe('from the phone');
+  });
+});
+
 describe('a draft the server has', () => {
   it('takes the snapshot and another device’s update once the flush is answered', async () => {
     const drafts = useDraftStore();

@@ -23,6 +23,9 @@ import type { DraftReplyRef } from '../../shared/replies.js';
 // change announces the reply as it was stored and resolved, which is not always
 // what was sent: one that doesn't resolve is dropped, and then the sender is
 // told as well, or it would go on showing a reply the draft no longer has.
+//
+// `set` and `clear` answer whether the write named a buffer the user has. False
+// is nothing stored and nothing announced.
 class DraftsService extends EventEmitter {
   set(
     userId: number,
@@ -31,14 +34,11 @@ class DraftsService extends EventEmitter {
     body: unknown,
     reply: DraftReplyRef | null | undefined,
     originWs: unknown = null,
-  ): void {
+  ): boolean {
     const text = typeof body === 'string' ? body : '';
-    if (text.length === 0 && !reply) {
-      this.clear(userId, networkId, target, originWs);
-      return;
-    }
+    if (text.length === 0 && !reply) return this.clear(userId, networkId, target, originWs);
     const bufferId = upsertDraft(userId, networkId, target, text, reply);
-    if (bufferId === undefined) return; // unknown buffer — nothing stored, nothing to announce
+    if (bufferId === undefined) return false; // unknown buffer — nothing stored, nothing to announce
     if (reply === null) {
       // Nothing to read back: the text as sent, no reply.
       this.emit('change', {
@@ -50,7 +50,7 @@ class DraftsService extends EventEmitter {
         reply: null,
         originWs,
       });
-      return;
+      return true;
     }
     const stored = getDraftForBuffer(userId, bufferId);
     // A reply sent and not kept: the sender still shows it, so it's told too.
@@ -58,7 +58,7 @@ class DraftsService extends EventEmitter {
     if (!stored?.body && !stored?.reply) {
       // Only a reply, and it didn't hold.
       this.clear(userId, networkId, target, dropped ? null : originWs);
-      return;
+      return true;
     }
     this.emit('change', {
       userId,
@@ -69,12 +69,14 @@ class DraftsService extends EventEmitter {
       reply: stored.reply,
       originWs: dropped ? null : originWs,
     });
+    return true;
   }
 
-  clear(userId: number, networkId: number, target: string, originWs: unknown = null): void {
+  clear(userId: number, networkId: number, target: string, originWs: unknown = null): boolean {
     const bufferId = clearDraft(userId, networkId, target);
-    if (bufferId === undefined) return;
+    if (bufferId === undefined) return false;
     this.emit('change', { userId, networkId, target, bufferId, body: '', reply: null, originWs });
+    return true;
   }
 
   snapshotForUser(userId: number): unknown[] {

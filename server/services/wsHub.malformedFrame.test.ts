@@ -203,6 +203,7 @@ describe('malformed frames', () => {
 // sent into a socket that was already dead is never answered, and is sent again.
 describe('draft writes are answered', () => {
   it('answers a draft-set and a draft-clear that carry a clientId', async () => {
+    (await import('../db/buffers.js')).ensureOpen(alice, networkId, '#chan');
     const { ws, heard } = await attach(alice);
     try {
       ws.send(
@@ -220,6 +221,17 @@ describe('draft writes are answered', () => {
       });
       ws.send(JSON.stringify({ type: 'draft-clear', networkId, target: '#chan', clientId: 'b' }));
       expect(await waitFor(heard, (f) => f.clientId === 'b')).toMatchObject({ ok: true });
+      // Nothing is stored for a name with no buffer, and the answer says so.
+      ws.send(
+        JSON.stringify({
+          type: 'draft-set',
+          networkId,
+          target: '#nowhere',
+          body: 'x',
+          clientId: 'n',
+        }),
+      );
+      expect(await waitFor(heard, (f) => f.clientId === 'n')).toMatchObject({ ok: false });
     } finally {
       ws.close();
     }

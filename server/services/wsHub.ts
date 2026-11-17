@@ -3432,7 +3432,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // answered, and the client sends it again after it reconnects.
   // `ok: false` is a write that names no buffer of theirs: heard, and nothing
   // to send again.
-  function ackDraft(ws: LurkerWebSocket, msg: WsPayload, ok = true): void {
+  function ackDraft(ws: LurkerWebSocket, msg: WsPayload, ok: boolean): void {
     if (!msg.clientId) return;
     send(ws, {
       kind: 'send-result',
@@ -4050,8 +4050,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           ackDraft(ws, msg, false);
           break;
         }
-        draftsService.set(userId, networkId, target, body, parseDraftReplyRef(msg.reply), ws);
-        ackDraft(ws, msg);
+        ackDraft(
+          ws,
+          msg,
+          draftsService.set(userId, networkId, target, body, parseDraftReplyRef(msg.reply), ws),
+        );
         break;
       }
       case 'draft-clear': {
@@ -4066,8 +4069,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           ackDraft(ws, msg, false);
           break;
         }
-        draftsService.clear(userId, networkId, target, ws);
-        ackDraft(ws, msg);
+        ackDraft(ws, msg, draftsService.clear(userId, networkId, target, ws));
         break;
       }
       case 'pin-buffer': {

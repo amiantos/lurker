@@ -82,8 +82,9 @@ const version = new Map<string, number>();
 // The version a flush still waiting on its ACK carried.
 const inFlight = new Map<string, number>();
 // Flushed, and the server never answered (it may be one that doesn't ACK a
-// draft). Not held against another device's update, as `pending` is, but a
-// snapshot still doesn't overwrite it, and it is sent again behind one.
+// draft) or said it kept nothing. Not held against another device's update, as
+// `pending` is, but a snapshot still doesn't overwrite it, and it is sent
+// again behind one.
 const unconfirmed = new Map<string, BufferRef>();
 
 function touch(k: string): void {
@@ -288,6 +289,7 @@ export const useDraftStore = defineStore('drafts', {
         this.drafts[toKey] != null ||
         this.replies[toKey] != null ||
         pending.has(toKey) ||
+        unconfirmed.has(toKey) ||
         flushTimers.has(toKey);
       const fromTimer = flushTimers.get(fromKey);
       if (fromTimer) {
@@ -313,27 +315,29 @@ export const useDraftStore = defineStore('drafts', {
         this.replies[toKey] = this.replies[fromKey];
         delete this.replies[fromKey];
       }
+      // The server may hold the text under neither name (a flush in flight
+      // named the old one), so the moved draft goes again under the new.
       if (pending.has(fromKey) || fromUnconfirmed) {
         pending.delete(fromKey);
         touch(toKey);
         pending.set(toKey, { networkId, target: to });
+        this.scheduleFlush(networkId, to);
       }
-      if (fromTimer) this.scheduleFlush(networkId, to);
     },
     // Beacon path used on tab close: ship every un-flushed buffer in one POST
     // since a WS send may already be in teardown. Returns whether anything
     // was actually queued — the sendBeacon return is best-effort either way.
+    // Nothing is marked saved here: a beacon isn't answered, and a page that
+    // was only hidden comes back still holding these buffers as its own.
     flushAllForBeacon() {
-      for (const [k, ref] of unconfirmed) pending.set(k, ref);
-      unconfirmed.clear();
-      if (!pending.size) return false;
+      if (!pending.size && !unconfirmed.size) return false;
       const drafts: {
         networkId: number | string;
         target: string;
         body: string;
         reply: { messageId: number; addressed: boolean } | null;
       }[] = [];
-      for (const [k, ref] of pending) {
+      for (const [k, ref] of [...pending, ...unconfirmed]) {
         const body = this.drafts[k] || '';
         drafts.push({
           networkId: ref.networkId,
@@ -341,10 +345,7 @@ export const useDraftStore = defineStore('drafts', {
           body,
           reply: replyRef(this.replies[k]),
         });
-        this.clearTimer(k);
       }
-      pending.clear();
-      inFlight.clear();
       try {
         // sendBeacon rejects application/json (CORS preflight is not allowed
         // on a beacon), so we ship a text/plain Blob carrying the JSON string
@@ -364,7 +365,8 @@ export const useDraftStore = defineStore('drafts', {
       pending.clear();
       unconfirmed.clear();
       inFlight.clear();
-      version.clear();
+      // `version` stays: an ACK still on its way must not match a later draft.
+      for (const k of version.keys()) touch(k);
       composingKey = null;
     },
     // The composer's composition handlers. beginComposition marks the buffer;
@@ -423,9 +425,9 @@ export const useDraftStore = defineStore('drafts', {
         // The socket closed under it: stays pending, as with no socket.
         if (!result.ok && result.error === 'disconnected') return;
         pending.delete(k);
-        // No answer at all. Stop holding off other devices, but keep it from
-        // the next snapshot.
-        if (!result.ok && result.error === 'timeout') unconfirmed.set(k, { networkId, target });
+        // No answer, or the server kept nothing. Stop holding off other
+        // devices, but the next snapshot won't have this text either.
+        if (!result.ok) unconfirmed.set(k, { networkId, target });
       });
     },
   },
