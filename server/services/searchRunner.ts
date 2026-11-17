@@ -22,9 +22,9 @@
 // search; idle for SEARCH_IDLE_EXIT_MS it is let go.
 //
 // When a search is stopped:
-//   - its asker went away (a request the client aborted, a socket that
-//     closed): dropped if it still waited, killed if it ran — the old
-//     in-process search ran every superseded request to completion;
+//   - its asker went away (a request the client aborted): dropped if it still
+//     waited, killed if it ran — the old in-process search ran every
+//     superseded request to completion;
 //   - SEARCH_TIME_LIMIT_MS after it was ASKED, waiting included: a read that
 //     long holds back WAL checkpoints for as long as it runs, and nobody
 //     should wait longer than that for a turn either.

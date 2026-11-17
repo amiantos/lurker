@@ -28,11 +28,10 @@ export interface SearchResult {
 // because an AbortController doesn't belong in reactive store state.
 let inflight: AbortController | null = null;
 
-// Full-text message search over GET /api/search (#676) — the same
-// search_messages verb the deprecated WS `search` command wraps, behind the
-// same `{items, nextBefore}` feed contract as highlights and bookmarks. This
-// store is the reference REST implementation for clients migrating off the WS
-// command (docs/MIGRATION_SEARCH_REST.md). The store is a thin view of the
+// Full-text message search over GET /api/search (#676) — the search_messages
+// verb behind the same `{items, nextBefore}` feed contract as highlights and
+// bookmarks. This store is the reference implementation for clients that
+// used the removed WS `search` command (docs/MIGRATION_2_7.md). It is a thin view of the
 // most recent query's results plus its pagination cursor.
 export const useSearchStore = defineStore('search', {
   state: () => ({
