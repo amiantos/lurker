@@ -659,23 +659,11 @@ function applyEvent(event: any): boolean {
     case 'ctcp': // CTCP request/reply/echo status line (#263) — same routing.
     case 'motd':
     case 'error': {
-      const decorated = { ...event, target: event.target || `:server:${event.networkId}` };
-      const { news } = take(decorated);
-      // An unrecognized slash command (forwarded as raw IRC) only fails once
-      // the server 421s, and that lands in the server buffer — invisible if
-      // you typed in a channel. Mirror it as a toast so the feedback shows up
-      // where you're looking. Gated on `news` so a resume-gap replay of the
-      // same error can't re-fire it (same guard the message path uses).
-      if (news && event.unknownCommand) {
-        useToastsStore().push({
-          kind: 'warn',
-          title: 'Unknown command',
-          body: event.unknownCommand,
-          networkId: event.networkId,
-          target: decorated.target,
-          ttlMs: 6000,
-        });
-      }
+      // An error a command drew arrives twice when it names no channel or nick:
+      // in the server buffer, and as a line with no id in the buffer the command
+      // was typed in (#816). That second line is what the "Unknown command"
+      // toast used to stand in for.
+      take({ ...event, target: event.target || `:server:${event.networkId}` });
       break;
     }
     case 'whois_result': {

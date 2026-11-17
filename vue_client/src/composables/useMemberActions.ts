@@ -222,8 +222,11 @@ export function useMemberActions(): MemberActionsAPI {
     if (!isSelf && channel && hasRankAtLeast(selfModes, prefix, 'h')) {
       const networkId = ctx.networkId;
       const targetModes = modesOf(member);
-      const send = (l: string) => socketSend({ type: 'raw', networkId, line: l });
       const ch = channel;
+      // The menu is opened in the channel it acts on, so a refusal that names
+      // nothing is said there (#816).
+      const send = (l: string) =>
+        socketSend({ type: 'raw', networkId, issuingTarget: ch, line: l });
 
       items.push({ divider: true });
 

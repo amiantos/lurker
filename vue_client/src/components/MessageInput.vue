@@ -3157,7 +3157,9 @@ function modeShortcut(
     spec ? spec.maxModes : DEFAULT_MAX_MODES,
   );
   // Stop at the first line the socket refuses; its toast covers the rest.
-  return lines.every((l) => sendOrToast({ type: 'raw', networkId, line: l }, line));
+  return lines.every((l) =>
+    sendOrToast({ type: 'raw', networkId, issuingTarget: target, line: l }, line),
+  );
 }
 
 // /quiet and /unquiet speak solanum's +q quiet LIST. On InspIRCd and Unreal +q
@@ -4592,7 +4594,11 @@ function handleCommand(
   }
 
   // Anything Lurker has no command for goes to the server as typed.
-  if (verb === null) return sendOrToast({ type: 'raw', networkId, line: line.slice(1) }, line);
+  if (verb === null)
+    return sendOrToast(
+      { type: 'raw', networkId, issuingTarget: target, line: line.slice(1) },
+      line,
+    );
 
   switch (verb) {
     case 'e2e': {
@@ -4707,7 +4713,10 @@ function handleCommand(
         localInfo(networkId, target, `usage: /${cmd.toLowerCase()} <text> — message ${service}`);
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: `PRIVMSG ${service} :${argLine}` }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: `PRIVMSG ${service} :${argLine}` },
+        line,
+      );
     }
     case 'join':
     case 'j':
@@ -4864,14 +4873,19 @@ function handleCommand(
     }
     case 'raw':
     case 'quote':
-      return sendOrToast({ type: 'raw', networkId, line: argLine }, line);
+      return sendOrToast({ type: 'raw', networkId, issuingTarget: target, line: argLine }, line);
     case 'accept': {
       // Caller ID (#206): /accept alice bob -carol → ACCEPT alice,bob,-carol.
       // The wire wants one comma list (a second word is ignored), and no
       // argument asks for the list, as irssi's /accept does.
       const nicks = rest.join(',').split(',').filter(Boolean).join(',');
       return sendOrToast(
-        { type: 'raw', networkId, line: nicks ? `ACCEPT ${nicks}` : 'ACCEPT *' },
+        {
+          type: 'raw',
+          networkId,
+          issuingTarget: target,
+          line: nicks ? `ACCEPT ${nicks}` : 'ACCEPT *',
+        },
         line,
       );
     }
@@ -4907,7 +4921,10 @@ function handleCommand(
         localInfo(networkId, target, `/${verb}: ${refusal}.`);
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: parsed.line },
+        line,
+      );
     }
     case 'flushq': {
       // HexChat's name for it (#1322). The server marks each dropped message
@@ -4971,7 +4988,12 @@ function handleCommand(
       }
       const trailer = reason ? ` :${reason}` : '';
       return sendOrToast(
-        { type: 'raw', networkId, line: `KICK ${channel} ${nick}${trailer}` },
+        {
+          type: 'raw',
+          networkId,
+          issuingTarget: target,
+          line: `KICK ${channel} ${nick}${trailer}`,
+        },
         line,
       );
     }
@@ -4986,7 +5008,10 @@ function handleCommand(
         localInfo(networkId, target, parsed.error);
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: parsed.line },
+        line,
+      );
     }
     case 'invite': {
       // /invite <nick>             (in a channel buffer → invite to it)
@@ -5011,7 +5036,10 @@ function handleCommand(
       }
       // Wire order is INVITE <nick> <channel> (note: irc-framework's own
       // .invite() flips the args — we build the raw line directly so it can't).
-      return sendOrToast({ type: 'raw', networkId, line: `INVITE ${nick} ${channel}` }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: `INVITE ${nick} ${channel}` },
+        line,
+      );
     }
     case 'topic': {
       // /topic                        — ask for the current channel's topic; the
@@ -5036,7 +5064,10 @@ function handleCommand(
         return true;
       }
       const trailer = body ? ` :${body}` : '';
-      return sendOrToast({ type: 'raw', networkId, line: `TOPIC ${channel}${trailer}` }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: `TOPIC ${channel}${trailer}` },
+        line,
+      );
     }
     case 'channel':
     case 'chan': {
@@ -5070,7 +5101,10 @@ function handleCommand(
         localInfo(networkId, target, 'usage: /nick <newnick>');
         return true;
       }
-      return sendOrToast({ type: 'raw', networkId, line: `NICK ${newNick}` }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: `NICK ${newNick}` },
+        line,
+      );
     }
     case 'mode': {
       // /mode <flags>                  — apply to current channel
@@ -5087,11 +5121,19 @@ function handleCommand(
         /^[+-]/.test(rest[0]) && !isChannelArgAmbiguous(rest[0], networkId);
       if (looksLikeFlagsOnly && isChannelTarget(target)) {
         return sendOrToast(
-          { type: 'raw', networkId, line: `MODE ${target} ${rest.join(' ')}` },
+          {
+            type: 'raw',
+            networkId,
+            issuingTarget: target,
+            line: `MODE ${target} ${rest.join(' ')}`,
+          },
           line,
         );
       }
-      return sendOrToast({ type: 'raw', networkId, line: `MODE ${argLine}` }, line);
+      return sendOrToast(
+        { type: 'raw', networkId, issuingTarget: target, line: `MODE ${argLine}` },
+        line,
+      );
     }
     // `/disconnect` is the word people reach for when a network is stuck in a
     // reconnect loop, and until #785 it fell through to the raw-line default —
@@ -5238,11 +5280,21 @@ function handleCommand(
       const trailer = reason ? ` :${reason}` : '';
       // The ban send returns false only if the socket is closed — skip the KICK
       // so we don't half-apply against a dead connection.
-      if (!sendOrToast({ type: 'raw', networkId, line: `MODE ${channel} +b ${nick}` }, line)) {
+      if (
+        !sendOrToast(
+          { type: 'raw', networkId, issuingTarget: target, line: `MODE ${channel} +b ${nick}` },
+          line,
+        )
+      ) {
         return false;
       }
       return sendOrToast(
-        { type: 'raw', networkId, line: `KICK ${channel} ${nick}${trailer}` },
+        {
+          type: 'raw',
+          networkId,
+          issuingTarget: target,
+          line: `KICK ${channel} ${nick}${trailer}`,
+        },
         line,
       );
     }
@@ -5362,7 +5414,12 @@ function handleCommand(
     case 'help': {
       const rawVerb = cmd.toUpperCase();
       return sendOrToast(
-        { type: 'raw', networkId, line: argLine ? `${rawVerb} ${argLine}` : rawVerb },
+        {
+          type: 'raw',
+          networkId,
+          issuingTarget: target,
+          line: argLine ? `${rawVerb} ${argLine}` : rawVerb,
+        },
         line,
       );
     }

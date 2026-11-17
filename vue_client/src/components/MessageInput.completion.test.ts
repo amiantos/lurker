@@ -977,6 +977,7 @@ describe('MessageInput command dispatch', () => {
       expect(socketSend).toHaveBeenCalledWith({
         type: 'raw',
         networkId: 1,
+        issuingTarget: '#zebra',
         line: 'PRIVMSG NickServ :identify hunter||2||',
       });
 
@@ -985,6 +986,7 @@ describe('MessageInput command dispatch', () => {
       expect(socketSend).toHaveBeenCalledWith({
         type: 'raw',
         networkId: 1,
+        issuingTarget: '#zebra',
         line: 'PRIVMSG ChanServ :op #zebra ||x||',
       });
     });

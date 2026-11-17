@@ -3779,7 +3779,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             });
             break;
           }
-          conn.raw(msg.line);
+          // Where it was typed, so an error that names no channel or nick can
+          // be said there (#816).
+          conn.raw(msg.line, 'user', {
+            issuingTarget: typeof msg.issuingTarget === 'string' ? msg.issuingTarget : undefined,
+          });
         }
         break;
       case 'probe-presence': {

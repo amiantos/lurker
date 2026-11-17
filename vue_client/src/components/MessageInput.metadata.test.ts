@@ -88,7 +88,12 @@ describe('our own metadata commands', () => {
     seed({ state: 'connected', metadataLimits: LIMITS });
     await run('/displayname Me Myself');
     expect(sent()).toEqual([
-      { type: 'raw', networkId: 7, line: 'METADATA * SET display-name :Me Myself' },
+      {
+        type: 'raw',
+        networkId: 7,
+        issuingTarget: '#chan',
+        line: 'METADATA * SET display-name :Me Myself',
+      },
     ]);
     expect(apiCalls).toEqual([]);
   });
@@ -104,7 +109,9 @@ describe('our own metadata commands', () => {
   it("reads someone's metadata on a network with no room for ours (soju)", async () => {
     seed({ state: 'connected', metadataLimits: { ...LIMITS, maxKeys: 0 } });
     await run('/metadata list alice');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'METADATA alice LIST' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'METADATA alice LIST' },
+    ]);
   });
 
   it("refuses on a connected network that can't carry it", async () => {

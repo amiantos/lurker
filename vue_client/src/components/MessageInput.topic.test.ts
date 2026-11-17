@@ -81,7 +81,9 @@ describe('/topic', () => {
   it('asks the server, which answers in the channel, and prints nothing itself', async () => {
     seed();
     await run('/topic');
-    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'TOPIC #chan' }]);
+    expect(sent()).toEqual([
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'TOPIC #chan' },
+    ]);
     expect(said('7::#chan')).toEqual([]);
   });
 
@@ -90,8 +92,8 @@ describe('/topic', () => {
     await run('/topic #CHAN ');
     await run('/topic #elsewhere');
     expect(sent()).toEqual([
-      { type: 'raw', networkId: 7, line: 'TOPIC #CHAN' },
-      { type: 'raw', networkId: 7, line: 'TOPIC #elsewhere' },
+      { type: 'raw', networkId: 7, issuingTarget: 'bob', line: 'TOPIC #CHAN' },
+      { type: 'raw', networkId: 7, issuingTarget: 'bob', line: 'TOPIC #elsewhere' },
     ]);
   });
 
@@ -107,8 +109,8 @@ describe('/topic', () => {
     await run('/topic new words here');
     await run('/topic &local over there');
     expect(sent()).toEqual([
-      { type: 'raw', networkId: 7, line: 'TOPIC #chan :new words here' },
-      { type: 'raw', networkId: 7, line: 'TOPIC &local :over there' },
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'TOPIC #chan :new words here' },
+      { type: 'raw', networkId: 7, issuingTarget: '#chan', line: 'TOPIC &local :over there' },
     ]);
   });
 });
