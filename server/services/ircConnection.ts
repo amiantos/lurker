@@ -1333,7 +1333,7 @@ export class IrcConnection {
   lastNickIntent = new Map<string, { channel: string | null; at: number; seq: number }>();
   // The buffer each raw command was typed in, for an error that names no
   // channel or nick to place it by (#816, commandIssuers.ts).
-  readonly commandIssuers = new CommandIssuers();
+  readonly commandIssuers = new CommandIssuers(SEND_REJECTION_ATTRIBUTION_MS);
   // Who asked for each reply: Lurker, the user, or a bouncer client. Every query
   // goes out through it, one of each kind on the wire at a time (replyRouter.ts).
   readonly replies: ReplyRouter;
@@ -1665,6 +1665,9 @@ export class IrcConnection {
         } finally {
           this.sendingNow = false;
         }
+        // Every line, here where they all pass, so an error is matched against
+        // what really went last (#816).
+        this.commandIssuers.sent(line);
         return true;
       },
       // Registered by the framework's flag, or by our own: our 'registered'
@@ -2264,6 +2267,8 @@ export class IrcConnection {
       }
       const rawCommand = (msg?.command || '').toString();
       this.lineCommand = rawCommand;
+      // Lines of one read run back to back, with no microtask between them.
+      this.lineServerError = null;
       // Who this line is for, before anything reads it (see replyOwner).
       this.replyOwner = this.replies.noteServerLine(
         event.line.replace(/[\r\n]+$/, ''),
@@ -5281,6 +5286,7 @@ export class IrcConnection {
       if (reason) parts.push(`— ${reason}`);
       const text = parts.join(' ');
       console.warn(`[irc:${this.network.id}] ${text}`);
+      const saidIn = this.sayWhereAsked();
       this.publish({
         type: 'error',
         target: this.serverTarget(),
@@ -5296,8 +5302,10 @@ export class IrcConnection {
         ...(tag === 'unknown_command' && event?.command
           ? { unknownCommand: event.command as string }
           : {}),
+        // Said in the buffer it was typed in as well (#816): a client that
+        // shows that line has no need of the toast.
+        ...(saidIn ? { saidIn } : {}),
       });
-      this.sayWhereAsked();
     });
 
     on('tagmsg', (event: Record<string, unknown>) => {
@@ -13628,21 +13636,24 @@ export class IrcConnection {
   // never showed (a reply to Lurker's own query, a bouncer client's), isn't
   // offered. Not kept: the server buffer's line is the record, and this one
   // only points at it for whoever is looking elsewhere right now.
-  private sayWhereAsked(): void {
+  //
+  // Returns the buffer it was said in, or null.
+  private sayWhereAsked(): string | null {
     const error = this.lineServerError;
-    if (!error) return;
+    if (!error) return null;
     // Once per line, whichever handler gets here first.
     this.lineServerError = null;
     const issuing = this.commandIssuers.take(error.command, error.params);
-    if (!issuing) return;
+    if (!issuing) return null;
     const userId = this.network.user_id;
     const id = this.network.id;
     // Typed in the server buffer, it is already where they are looking.
-    if (foldTargetFor(id, issuing) === foldTargetFor(id, this.serverTarget())) return;
+    if (foldTargetFor(id, issuing) === foldTargetFor(id, this.serverTarget())) return null;
     // Only into a buffer that is there and open: the client makes a buffer
     // for any target it is sent a line for.
-    if (getBufferState(userId, id, issuing) !== 'open') return;
+    if (getBufferState(userId, id, issuing) !== 'open') return null;
     this.publishEphemeral({ type: 'error', target: issuing, text: error.text });
+    return issuing;
   }
 
   // `opts.issuingTarget`: the buffer the user typed this in, when the client
@@ -13673,7 +13684,9 @@ export class IrcConnection {
     this.replies.send(asker, clean, undefined, {
       onSent: () => {
         this.noteOutgoingCommand(clean);
-        this.commandIssuers.note(clean, opts.issuingTarget || null, asker === 'user');
+        if (asker === 'user' && opts.issuingTarget) {
+          this.commandIssuers.typedIn(clean, opts.issuingTarget);
+        }
         onMetadataSent?.();
       },
       onDropped:

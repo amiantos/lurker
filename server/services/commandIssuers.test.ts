@@ -9,16 +9,19 @@
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
-import {
-  COMMAND_ISSUER_WINDOW_MS,
-  CommandIssuers,
-  isErrorNumeric,
-  refusedCommand,
-} from './commandIssuers.js';
+import { CommandIssuers, isErrorNumeric, refusedCommand } from './commandIssuers.js';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import * as buffers from '../db/buffers.js';
+
+const WINDOW = 15_000;
+
+// A line the user typed in `buffer`, as raw() notes one: sent, then given its buffer.
+function typed(issuers: CommandIssuers, line: string, buffer: string, at: number) {
+  issuers.sent(line, at);
+  issuers.typedIn(line, buffer);
+}
 
 describe('CommandIssuers', () => {
   it('reads the command an error names, and only where one is named', () => {
@@ -31,16 +34,19 @@ describe('CommandIssuers', () => {
     expect(refusedCommand('461', ['me', 'Not enough parameters'])).toBe(null);
   });
 
-  it('counts 4xx, 5xx and the stray error numerics, and nothing else', () => {
-    for (const n of ['401', '481', '502', '263', '723', '972'])
+  it('counts 4xx, 5xx and the error numerics outside them, and nothing else', () => {
+    for (const n of ['401', '481', '502', '263', '696', '723', '742', '972']) {
       expect(isErrorNumeric(n)).toBe(true);
-    for (const n of ['001', '324', '367', 'FAIL', 'PRIVMSG']) expect(isErrorNumeric(n)).toBe(false);
+    }
+    for (const n of ['001', '324', '367', '718', 'FAIL', 'PRIVMSG']) {
+      expect(isErrorNumeric(n)).toBe(false);
+    }
   });
 
-  it('gives a named error to the last command of that name, once', () => {
-    const issuers = new CommandIssuers();
-    issuers.note('FROB a', '#one', true, 1000);
-    issuers.note('KICK #two bob', '#two', true, 1001);
+  it('gives a named error to the last line of that command, once', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'FROB a', '#one', 1000);
+    typed(issuers, 'KICK #two bob', '#two', 1001);
     expect(issuers.take('421', ['me', 'FROB', 'Unknown command'], 1002)).toBe('#one');
     // Spent: a second 421 for it is nobody's.
     expect(issuers.take('421', ['me', 'FROB', 'Unknown command'], 1003)).toBe(null);
@@ -48,50 +54,71 @@ describe('CommandIssuers', () => {
     expect(issuers.take('461', ['me', 'KICK', 'Not enough parameters'], 1004)).toBe('#two');
   });
 
-  it('never gives a named error to a command of another name', () => {
-    const issuers = new CommandIssuers();
-    issuers.note('KICK #chan bob', '#chan', true, 1000);
+  it('never gives a named error to a line of another command', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'KICK #chan bob', '#chan', 1000);
     // Lurker's own TAGMSG on a server without message-tags.
     expect(issuers.take('421', ['me', 'TAGMSG', 'Unknown command'], 1001)).toBe(null);
     expect(issuers.take('461', ['me', 'KICK', 'Not enough parameters'], 1002)).toBe('#chan');
   });
 
-  it('gives an error that names nothing to the last command sent', () => {
-    const issuers = new CommandIssuers();
-    issuers.note('MODE #one +m', '#one', true, 1000);
-    issuers.note('OPER me pw', '#two', true, 1001);
+  it('gives an error that names a channel or nick to the last line that named it', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'MODE #Elsewhere +m', '#one', 1000);
+    typed(issuers, 'NAMES #one', '#one', 1001);
+    // Lurker's own JOIN, by a path that is not raw(): noted, with no buffer.
+    issuers.sent('JOIN #a,#bad*name', 1002);
+    expect(issuers.take('479', ['me', '#bad*name', 'Illegal channel name'], 1003)).toBe(null);
+    // A refusal naming something no line here named is nobody's.
+    expect(issuers.take('442', ['me', '#other', "You're not on that channel"], 1004)).toBe(null);
+    expect(issuers.take('403', ['me', '#elsewhere', 'No such channel'], 1005)).toBe('#one');
+  });
+
+  it('gives an error that names nothing to the last line sent, whoever sent it', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'MODE #one +m', '#one', 1000);
+    typed(issuers, 'OPER me pw', '#two', 1001);
     expect(issuers.take('481', ['me', 'Permission Denied'], 1002)).toBe('#two');
+    // Something else went out after the user's command: the error is its.
+    typed(issuers, 'OPER me pw', '#two', 1003);
+    issuers.sent('ACCEPT bob', 1004);
+    expect(issuers.take('456', ['me', 'Accept list is full'], 1005)).toBe(null);
   });
 
-  it("keeps a bouncer client's error out of the user's buffer", () => {
-    const issuers = new CommandIssuers();
-    issuers.note('FROB', '#chan', true, 1000);
-    // A client's line: its buffer, if a caller passed one, is not kept.
-    issuers.note('FROB', '#ignored', false, 1001);
+  it('does not count a keepalive as the last line sent', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'OPER me pw', '#chan', 1000);
+    issuers.sent('PONG :irc.test', 1001);
+    issuers.sent('PING 123', 1002);
+    expect(issuers.take('481', ['me', 'Permission Denied'], 1003)).toBe('#chan');
+  });
+
+  it("keeps a bouncer client's error out of the user's buffer, tagged or not", () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'FROB', '#chan', 1000);
+    issuers.sent('@label=x;+draft/a=b FROB', 1001);
     expect(issuers.take('421', ['me', 'FROB', 'Unknown command'], 1002)).toBe(null);
-    // And the last command sent being the client's, a nameless error is its too.
-    issuers.note('OPER a b', '#chan', true, 1003);
-    issuers.note('STATS o', null, false, 1004);
-    expect(issuers.take('481', ['me', 'Permission Denied'], 1005)).toBe(null);
+    // typedIn is for the line that just went, and no other.
+    issuers.sent('FROB', 1003);
+    issuers.typedIn('KICK', '#chan');
+    expect(issuers.take('421', ['me', 'FROB', 'Unknown command'], 1004)).toBe(null);
   });
 
-  it('forgets a command past the window, and all of them with the socket', () => {
-    const issuers = new CommandIssuers();
-    issuers.note('FROB', '#chan', true, 1000);
-    expect(
-      issuers.take('421', ['me', 'FROB', 'Unknown command'], 1001 + COMMAND_ISSUER_WINDOW_MS),
-    ).toBe(null);
-    issuers.note('FROB', '#chan', true, 50_000);
+  it('forgets a line past the window, and all of them with the socket', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'FROB', '#chan', 1000);
+    expect(issuers.take('421', ['me', 'FROB', 'Unknown command'], 1001 + WINDOW)).toBe(null);
+    typed(issuers, 'FROB', '#chan', 50_000);
     issuers.clear();
     expect(issuers.take('421', ['me', 'FROB', 'Unknown command'], 50_001)).toBe(null);
   });
 
-  it('holds a bounded number of commands', () => {
-    const issuers = new CommandIssuers();
-    issuers.note('FIRST', '#first', true, 1000);
-    for (let i = 0; i < 64; i++) issuers.note(`CMD${i}`, '#chan', true, 1000);
+  it('holds a bounded number of lines', () => {
+    const issuers = new CommandIssuers(WINDOW);
+    typed(issuers, 'FIRST', '#first', 1000);
+    for (let i = 0; i < 128; i++) typed(issuers, `CMD${i}`, '#chan', 1000);
     expect(issuers.take('421', ['me', 'FIRST', 'Unknown command'], 1001)).toBe(null);
-    expect(issuers.take('421', ['me', 'CMD63', 'Unknown command'], 1001)).toBe('#chan');
+    expect(issuers.take('421', ['me', 'CMD127', 'Unknown command'], 1001)).toBe('#chan');
   });
 });
 
@@ -242,6 +269,42 @@ describe('an error is said where its command was typed (#816)', () => {
     const { conn, receive, said } = harness();
     conn.raw('WHOIS ghost', 'user', { issuingTarget: '#anime' });
     receive(':irc.example.test 401 alice ghost :No such nick/channel');
+    expect(said()).toEqual([]);
+  });
+
+  it('tells the stored 421 that the line was said elsewhere, and only then', () => {
+    const { conn, receive, publish } = harness();
+    const stored = () =>
+      publish.mock.calls.map((c) => c[0]).filter((e) => e.unknownCommand === 'FROB');
+    conn.raw('FROB', 'user', { issuingTarget: '#anime' });
+    receive(':irc.example.test 421 alice FROB :Unknown command');
+    expect(stored()).toEqual([expect.objectContaining({ saidIn: '#anime' })]);
+
+    publish.mockClear();
+    conn.raw('FROB', 'user', { issuingTarget: '#never-was' });
+    receive(':irc.example.test 421 alice FROB :Unknown command');
+    expect(stored()).toHaveLength(1);
+    expect(stored()[0]).not.toHaveProperty('saidIn');
+  });
+
+  it('does not carry an error that was placed over to the next line of the same read', () => {
+    // A socket read's lines run back to back, with no microtask between.
+    const { conn, receive, said } = harness();
+    // The refused JOIN is placed as a toast on the channel it names.
+    conn.raw('JOIN #full', 'user', { issuingTarget: '#anime' });
+    receive(':irc.example.test 471 alice #full :Cannot join channel (+l)');
+    receive(':irc.example.test 300 alice :nothing');
+    expect(said()).toEqual([]);
+  });
+
+  it("gives a refusal of Lurker's own JOIN to nobody's buffer", () => {
+    const { conn, receive, said } = harness();
+    conn.raw('NAMES #anime', 'user', { issuingTarget: '#anime' });
+    // By a path that is not raw(), as client.join() goes.
+    (conn as unknown as { sendPacer: { write(line: string): void } }).sendPacer.write(
+      'JOIN #bad*name',
+    );
+    receive(':irc.example.test 479 alice #bad*name :Illegal channel name');
     expect(said()).toEqual([]);
   });
 

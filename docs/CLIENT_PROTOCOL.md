@@ -972,7 +972,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `callerid-blocked`            | E   | your caller ID (+g) discarded someone's message — `from`, `userhost?`; offer `ACCEPT <from>`, for their next one                                                                                                                                                                                                                                                                                                                                                       |
 | `state`                       | E   | network `state` + `nick` on connect — drive the connection indicator                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `motd`                        | P   | MOTD **and all otherwise-unclassified server text** (§7.3); E, in a channel, for a `/topic` or mode-list answer                                                                                                                                                                                                                                                                                                                                                        |
-| `error`                       | P   | server error text; `unknownCommand?` for 421s; E, in the buffer a command was typed in, for an error it drew (§7.3)                                                                                                                                                                                                                                                                                                                                                    |
+| `error`                       | P   | server error text; `unknownCommand?` for 421s, with `saidIn?`; E, in the buffer a command was typed in, for an error it drew (§7.3)                                                                                                                                                                                                                                                                                                                                    |
 | `system`                      | P\* | system-buffer line; severity in `level: info\|warn\|error`, not in `type`                                                                                                                                                                                                                                                                                                                                                                                              |
 | `away-state`                  | E   | your own away state per network                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `peer-presence`               | E   | `nick, state ∈ online\|offline\|away\|back, stateAt, awayMessage, cameOnline`                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -1012,13 +1012,15 @@ line in that buffer and keep nothing; the server buffer still gets the server's
 own lines, stored.
 
 An `error` can arrive **ephemeral** the same way, in any open buffer: no `id`,
-`target` the buffer a command was typed in (#816). It is a second copy of an
-error the server buffer already has, for a refusal that names no channel or nick
-to place it by: an unknown command (421), a malformed one (461), an oper-only
-one (481). The server sends it only for a `raw` frame that carried
-`issuingTarget`, so a client that never sends the field never gets one. Show it
-like any error line in that buffer and keep nothing. It replaces a toast for
-`unknownCommand`, which the server still sets on the stored 421.
+`target` the buffer a command was typed in (#816, 2.7.0). It is a second copy of
+an error the server buffer already has, for a refusal that names no channel or
+nick to place it by: an unknown command (421), a malformed one (461), an
+oper-only one (481). The server sends it only for a `raw` frame that carried
+`issuingTarget`, and to every socket the user has, so a client gets these for
+commands typed on another device whether or not it sends the field itself. Show
+it like any error line in that buffer and keep nothing. The stored 421 still
+carries `unknownCommand`, and now `saidIn` (the buffer) when this line went out
+too: skip a toast for one that has it.
 
 ⚠ `whois_result` also arrives with no `target` and is **not** one of these — it
 is not server text and does not belong in a buffer. See §7.5.
