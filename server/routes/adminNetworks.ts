@@ -53,7 +53,9 @@ function parseChannels(raw: unknown): string[] | undefined {
 }
 
 // Tags, as an array or a comma-separated string. Lowercased, as the builtin
-// catalogue's are, so one of the picker's chips can match them.
+// catalogue's are. `lurker` is dropped: in the catalogue it is a marker for the
+// "#lurker available" badge, never a tag a card shows.
+const RESERVED_TAG = 'lurker';
 function parseTags(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw) && typeof raw !== 'string') return undefined;
   const parts = Array.isArray(raw) ? raw : raw.split(',');
@@ -61,7 +63,7 @@ function parseTags(raw: unknown): string[] | undefined {
   for (const part of parts) {
     if (typeof part !== 'string') continue;
     const tag = part.trim().toLowerCase();
-    if (tag && !out.includes(tag)) out.push(tag);
+    if (tag && tag !== RESERVED_TAG && !out.includes(tag)) out.push(tag);
   }
   return out;
 }
@@ -70,8 +72,15 @@ function parseTags(raw: unknown): string[] | undefined {
 // which is how a PATCH clears one. `undefined` is absent; a string is an error.
 function parseCount(raw: unknown, label: string): number | null | undefined | string {
   if (raw === undefined) return undefined;
-  if (raw === null || raw === '') return null;
-  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
+  const given = typeof raw === 'string' ? raw.trim() : raw;
+  if (given === null || given === '') return null;
+  // Digits only for a string: Number() would take '0x10' and '1e3'.
+  const n =
+    typeof given === 'number'
+      ? given
+      : typeof given === 'string' && /^\d+$/.test(given)
+        ? Number(given)
+        : NaN;
   if (!Number.isSafeInteger(n) || n < 0) return `invalid ${label}: ${String(raw)}`;
   return n;
 }

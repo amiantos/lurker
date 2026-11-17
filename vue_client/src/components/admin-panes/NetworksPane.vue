@@ -43,6 +43,7 @@
             />
             <span>Offered</span>
           </label>
+          <button type="button" class="link" :disabled="busy" @click="edit(preset)">Edit</button>
           <button type="button" class="link danger" :disabled="busy" @click="remove(preset)">
             Delete
           </button>
@@ -53,8 +54,8 @@
       No networks listed — users see the built-in catalogue of public networks.
     </p>
 
-    <form class="add" @submit.prevent="add">
-      <h3>Add a network</h3>
+    <form ref="formEl" class="add" @submit.prevent="save">
+      <h3>{{ editing ? `Edit ${editing.name}` : 'Add a network' }}</h3>
       <div class="grid">
         <label>
           <span>Name</span>
@@ -97,7 +98,14 @@
         <input v-model="draft.saslLikelyRequired" type="checkbox" />
         <span>Requires an account (prompt users for SASL credentials)</span>
       </label>
-      <button type="submit" class="btn-primary" :disabled="busy">Add network</button>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" :disabled="busy">
+          {{ editing ? 'Save changes' : 'Add network' }}
+        </button>
+        <button v-if="editing" type="button" class="link" :disabled="busy" @click="reset">
+          Cancel
+        </button>
+      </div>
     </form>
 
     <label class="policy check">
@@ -171,9 +179,40 @@ async function run(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-async function add(): Promise<void> {
+// The preset the form is editing, or null when it is adding one.
+const editing = ref<AdminNetworkPreset | null>(null);
+const formEl = ref<HTMLFormElement | null>(null);
+
+function reset(): void {
+  editing.value = null;
+  draft.name = '';
+  draft.host = '';
+  draft.port = 6697;
+  draft.tls = true;
+  draft.saslLikelyRequired = false;
+  draft.channels = '';
+  draft.tags = '';
+  draft.users = '';
+  draft.channelCount = '';
+}
+
+function edit(preset: AdminNetworkPreset): void {
+  editing.value = preset;
+  draft.name = preset.name;
+  draft.host = preset.host;
+  draft.port = preset.port;
+  draft.tls = preset.tls;
+  draft.saslLikelyRequired = preset.saslLikelyRequired;
+  draft.channels = preset.channels.join(', ');
+  draft.tags = preset.tags.join(', ');
+  draft.users = preset.users ?? '';
+  draft.channelCount = preset.channelCount ?? '';
+  formEl.value?.scrollIntoView({ block: 'nearest' });
+}
+
+async function save(): Promise<void> {
   await run(async () => {
-    await store.createNetworkPreset({
+    const body = {
       name: draft.name.trim(),
       host: draft.host.trim(),
       port: draft.port,
@@ -189,17 +228,10 @@ async function add(): Promise<void> {
         .filter(Boolean),
       users: draft.users === '' ? null : draft.users,
       channelCount: draft.channelCount === '' ? null : draft.channelCount,
-      enabled: true,
-    });
-    draft.name = '';
-    draft.host = '';
-    draft.port = 6697;
-    draft.tls = true;
-    draft.saslLikelyRequired = false;
-    draft.channels = '';
-    draft.tags = '';
-    draft.users = '';
-    draft.channelCount = '';
+    };
+    if (editing.value) await store.updateNetworkPreset(editing.value.id, body);
+    else await store.createNetworkPreset({ ...body, enabled: true });
+    reset();
   });
 }
 
@@ -209,6 +241,7 @@ async function toggleEnabled(preset: AdminNetworkPreset): Promise<void> {
 
 async function remove(preset: AdminNetworkPreset): Promise<void> {
   if (!confirm(`Remove "${preset.name}" from the recommended networks?`)) return;
+  if (editing.value?.id === preset.id) reset();
   await run(() => store.deleteNetworkPreset(preset.id));
 }
 
@@ -307,15 +340,23 @@ label small {
   align-items: flex-start;
   gap: var(--space-4);
 }
-.link.danger {
+.link {
   background: transparent;
   border: 0;
   padding: 0;
-  color: var(--bad);
+  color: var(--accent);
   cursor: pointer;
 }
-.link.danger:hover {
+.link.danger {
+  color: var(--bad);
+}
+.link:hover {
   text-decoration: underline;
+}
+.form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
 }
 .error {
   color: var(--bad);

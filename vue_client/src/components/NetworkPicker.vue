@@ -41,7 +41,7 @@
 
     <div v-if="showFilters && showTagFilter" class="tags" role="group" aria-label="Filter by tag">
       <button
-        v-for="tag in tagChips"
+        v-for="tag in builtinNetworkTags"
         :key="tag"
         type="button"
         class="tag-chip"
@@ -72,14 +72,14 @@
               <span
                 v-if="net.users != null"
                 class="stat"
-                :title="`~${net.users.toLocaleString()} users${countSource(net)}`"
+                :title="countTitle(net, net.users, 'users')"
               >
                 <UsersIcon /> {{ formatCount(net.users) }}
               </span>
               <span
                 v-if="net.channels != null"
                 class="stat"
-                :title="`~${net.channels.toLocaleString()} channels${countSource(net)}`"
+                :title="countTitle(net, net.channels, 'channels')"
               >
                 <HashIcon /> {{ formatCount(net.channels) }}
               </span>
@@ -168,19 +168,15 @@ function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
 }
 
-// A builtin's counts are netsplit.de's; an instance preset's are its admin's.
-function countSource(net: NetworkPreset): string {
-  return net.isInstance ? '' : ' (netsplit.de average)';
+// A builtin's counts are netsplit.de's averages; an instance preset's are what
+// its admin typed.
+function countTitle(net: NetworkPreset, n: number, what: string): string {
+  const count = `${n.toLocaleString()} ${what}`;
+  return net.isInstance ? count : `~${count} (netsplit.de average)`;
 }
 
 const showTagFilter = computed(
   () => presets.allowUserDefined && !allowedHosts.value && builtinNetworkTags.length > 0,
-);
-// The catalogue's tags, plus any an admin gave a preset that it doesn't have.
-const tagChips = computed<string[]>(() =>
-  [
-    ...new Set([...builtinNetworkTags, ...presets.presets.flatMap((n) => displayTags(n))]),
-  ].toSorted(),
 );
 
 const query = ref('');
@@ -266,10 +262,10 @@ const filtered = computed<NetworkPreset[]>(() => {
   return offered.value.filter((n) => {
     if (q && !n.name.toLowerCase().includes(q) && !n.tags.some((t) => t.toLowerCase().includes(q)))
       return false;
-    // An instance preset the admin gave no tags stays pinned through a tag
-    // filter: it has no way to match one, and a filter would silently hide the
-    // admin's own network. One with tags is filtered like any other row.
-    if (tag && !(n.isInstance && !n.tags.length) && !n.tags.includes(tag)) return false;
+    // Tag chips are a facet over the builtin catalogue. An instance preset
+    // stays pinned through them whatever tags its admin gave it: a filter must
+    // not hide the admin's own networks.
+    if (tag && !n.isInstance && !n.tags.includes(tag)) return false;
     return true;
   });
 });

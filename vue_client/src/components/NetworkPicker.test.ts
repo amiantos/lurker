@@ -129,10 +129,10 @@ describe('NetworkPicker recommended network card', () => {
   });
 
   it('shows each count only when given', () => {
-    const c = card({ users: 1200 });
+    const c = card({ users: 120 });
     expect(c.findAll('.stat')).toHaveLength(1);
-    expect(c.find('.stat').text()).toBe('1.2k');
-    expect(c.find('.stat').attributes('title')).toBe('~1,200 users');
+    expect(c.find('.stat').text()).toBe('120');
+    expect(c.find('.stat').attributes('title')).toBe('120 users');
     expect(card({ users: 0, channels: 14 }).findAll('.stat')).toHaveLength(2);
   });
 
@@ -144,7 +144,7 @@ describe('NetworkPicker recommended network card', () => {
 });
 
 describe('NetworkPicker tag filter and recommended networks', () => {
-  it('filters a tagged preset by its tags and keeps an untagged one pinned', async () => {
+  it('keeps a recommended network through a tag filter, tagged or not', async () => {
     setUp({ allowUserDefined: true });
     const base = {
       host: 'irc.corp.example',
@@ -162,17 +162,32 @@ describe('NetworkPicker tag filter and recommended networks', () => {
     ];
     const wrapper = mount(NetworkPicker);
     await wrapper.find('.filter-toggle').trigger('click');
-    const chips = wrapper.findAll('.tag-chip');
-    const own = chips.find((c) => c.text() === 'zz-own-tag');
-    expect(own).toBeDefined();
-    const other = chips.find((c) => c.text() !== 'zz-own-tag')!;
+    await wrapper.find('.tag-chip').trigger('click');
+    const names = wrapper.findAll('.net-name').map((n) => n.text());
+    expect(names.slice(0, 2)).toEqual(['Untagged Corp', 'Tagged Corp']);
+  });
 
-    await other.trigger('click');
-    const names = () => wrapper.findAll('.net-name').map((n) => n.text());
-    expect(names()).toContain('Untagged Corp');
-    expect(names()).not.toContain('Tagged Corp');
-
-    await own!.trigger('click');
-    expect(names()).toEqual(['Untagged Corp', 'Tagged Corp']);
+  it('finds a recommended network by its tag in search', async () => {
+    setUp({ allowUserDefined: false });
+    useNetworkPresetsStore().presets = [
+      {
+        instanceId: 2,
+        name: 'Corp',
+        host: 'irc.corp.example',
+        port: 6697,
+        tls: true,
+        website: '',
+        users: null,
+        channels: null,
+        saslLikelyRequired: false,
+        isInstance: true,
+        tags: ['zz-own-tag'],
+      },
+    ];
+    const wrapper = mount(NetworkPicker);
+    await wrapper.find('.search').setValue('zz-own');
+    expect(wrapper.findAll('.net-name').map((n) => n.text())).toEqual(['Corp']);
+    await wrapper.find('.search').setValue('nothing-like-it');
+    expect(wrapper.findAll('.net-name')).toHaveLength(0);
   });
 });

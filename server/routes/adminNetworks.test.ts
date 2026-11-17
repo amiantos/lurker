@@ -115,11 +115,11 @@ describe('presets', () => {
       users: 120,
       channelCount: 14,
     });
-    expect((await add({ tags: ['Tech', 7, ''] })).body.preset.tags).toEqual(['tech']);
+    expect((await add({ tags: ['Tech', 7, '', 'lurker'] })).body.preset.tags).toEqual(['tech']);
   });
 
   it('rejects a count that is not a whole number', async () => {
-    for (const users of [-1, 1.5, 'many', true]) {
+    for (const users of [-1, 1.5, 'many', true, '0x10', '1e3']) {
       expect((await add({ users })).status).toBe(400);
     }
     expect((await add({ channelCount: 'x' })).status).toBe(400);
@@ -132,7 +132,7 @@ describe('presets', () => {
 
     const cleared = await adminAgent
       .patch(`/api/admin/networks/${id}`)
-      .send({ tags: [], users: null, channelCount: '' });
+      .send({ tags: [], users: null, channelCount: ' ' });
     expect(cleared.body.preset).toMatchObject({ tags: [], users: null, channelCount: null });
   });
 
