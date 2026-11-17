@@ -126,9 +126,14 @@
 
 /* A row's actions as a button bar (main.css .btn-bar): placed as .row-actions
    is, but the bar keeps its own layout, since its buttons share their borders. */
+/* The negative block margin takes the buttons' own padding and border back out
+   of the row's height: a bar is a text line plus that, and without it a row
+   with actions stands taller than its neighbours without. It still fits inside
+   the row's padding. */
 .settings-pane .device > .btn-bar {
   grid-column: 2 / -1;
   justify-self: end;
+  margin-block: calc(-1 * (var(--space-2) + 1px));
 }
 
 /* STACKED rows: identity on the first line, actions on the second.
@@ -148,6 +153,7 @@
 .settings-pane .device.stacked > .btn-bar {
   grid-column: auto;
   justify-self: start;
+  margin-block: 0;
   flex-wrap: wrap;
   row-gap: var(--space-2);
 }
