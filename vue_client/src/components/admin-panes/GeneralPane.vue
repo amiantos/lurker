@@ -10,14 +10,12 @@
 <template>
   <section id="admin-general" class="settings-pane">
     <h2>general</h2>
+    <p class="section-desc">Settings for the whole instance.</p>
     <p v-if="error" class="error inline">{{ error }}</p>
 
-    <label class="policy field">
-      <span>
-        <span class="name">Jitsi server</span>
-        Where /jitsi starts video calls, as a URL: https://meet.example.org. Empty uses the public
-        meet.jit.si. Anyone can choose a different server for themselves in Settings.
-      </span>
+    <h3 class="subhead">video calls</h3>
+    <label class="field">
+      <span>Jitsi server</span>
       <input
         type="url"
         inputmode="url"
@@ -26,9 +24,12 @@
         placeholder="https://meet.jit.si"
         v-model="draft"
         :disabled="busy || store.jitsiUrl === undefined"
-        aria-label="Jitsi server URL"
         @change="onJitsiChange"
       />
+      <small>
+        Where /jitsi starts video calls. Empty uses the public meet.jit.si. Anyone can choose a
+        different server for themselves in Settings.
+      </small>
     </label>
     <p v-if="jitsiError" class="error inline">{{ jitsiError }}</p>
   </section>
@@ -93,20 +94,18 @@ async function onJitsiChange() {
 
 <style src="../settings-panes/panes.css"></style>
 <style scoped>
-.policy {
+/* A labelled field as the Networks pane's form has them: muted label, the
+   input the full width under it, a hint below. */
+.field {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
   gap: var(--space-2);
-  margin: var(--space-3) 0;
-}
-.field .name {
-  display: block;
-  font-weight: 600;
+  color: var(--fg-muted);
+  margin-bottom: var(--space-3);
 }
 .field input {
-  flex: 1 1 20em;
-  min-width: 0;
+  color: var(--fg);
+  width: 100%;
+  box-sizing: border-box;
 }
 </style>
