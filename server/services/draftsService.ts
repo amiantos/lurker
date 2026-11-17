@@ -6,6 +6,7 @@ import { upsertDraft, clearDraft, listForUser, getDraftForBuffer } from '../db/d
 import type { DraftRow } from '../db/drafts.js';
 import { resolveBuffer } from '../db/bufferResolve.js';
 import type { DraftReplyRef } from '../../shared/replies.js';
+import { sqliteUtcToIso } from '../utils/sqliteDatetime.js';
 
 // Per-buffer drafts are last-write-wins — no merging, no CRDT. The conflict
 // surface is tiny in practice (you don't actively type into the same buffer on
@@ -71,10 +72,9 @@ const stateKey = (userId: number, bufferId: number): string => `${userId}:${buff
 function stateOf(userId: number, bufferId: number): DraftState {
   const known = states.get(stateKey(userId, bufferId));
   if (known) return known;
-  // SQLite's datetime('now'): UTC, to the second, no zone marker.
-  const stored = getDraftForBuffer(userId, bufferId)?.updatedAt;
-  const typedMs = stored ? Date.parse(`${stored.replace(' ', 'T')}Z`) : 0;
-  return { rev: bootRev, typedMs: Number.isFinite(typedMs) ? typedMs : 0 };
+  // Not written since boot: the row's own time, when it arrived, to the second.
+  const iso = sqliteUtcToIso(getDraftForBuffer(userId, bufferId)?.updatedAt);
+  return { rev: bootRev, typedMs: iso ? Date.parse(iso) : 0 };
 }
 
 function typedAt(guard: DraftGuard | undefined, now: number): number {
@@ -85,7 +85,7 @@ function typedAt(guard: DraftGuard | undefined, now: number): number {
 class DraftsService extends EventEmitter {
   /** The draft's current revision, for a frame that carries the draft. */
   revOf(userId: number, bufferId: number): number {
-    return stateOf(userId, bufferId).rev;
+    return states.get(stateKey(userId, bufferId))?.rev ?? bootRev;
   }
 
   /** A change made outside set/clear (a buffer merge): a new revision, as of now. */
@@ -201,7 +201,7 @@ class DraftsService extends EventEmitter {
   }
 
   snapshotForUser(userId: number): unknown[] {
-    return listForUser(userId).map((d) => ({ ...d, rev: stateOf(userId, d.bufferId).rev }));
+    return listForUser(userId).map((d) => ({ ...d, rev: this.revOf(userId, d.bufferId) }));
   }
 }
 

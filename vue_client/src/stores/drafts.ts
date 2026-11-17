@@ -238,9 +238,6 @@ export const useDraftStore = defineStore('drafts', {
       rev?: number,
     ) {
       const k = key(networkId, target);
-      // Seen, whether or not it is taken: what is typed here from now on is
-      // typed knowing of it.
-      if (revOf(rev) !== undefined && k !== composingKey) baseRev.set(k, rev!);
       // The composing check is load-bearing on its own: `pending` disarms when
       // the debounced flush fires, which a >500ms mid-word pause used to allow —
       // leaving a remote update free to repaint the focused, composing textarea
@@ -258,6 +255,10 @@ export const useDraftStore = defineStore('drafts', {
       }
       // The server is alive and this is its newer word on the buffer.
       unconfirmed.delete(k);
+      // Only a draft that is taken moves the revision: one held off leaves the
+      // text here to be weighed against it by when each was typed.
+      const taken = revOf(rev);
+      if (taken !== undefined) baseRev.set(k, taken);
       if (text.length > 0) this.drafts[k] = text;
       else delete this.drafts[k];
       if (reply === undefined) return;
@@ -340,11 +341,11 @@ export const useDraftStore = defineStore('drafts', {
         flushTimers.delete(fromKey);
       }
       const fromUnconfirmed = unconfirmed.has(fromKey);
+      const fromRev = baseRev.get(fromKey);
+      const fromTyped = typedAt.get(fromKey);
       unconfirmed.delete(fromKey);
       inFlight.delete(fromKey);
       touch(fromKey);
-      const fromRev = baseRev.get(fromKey);
-      const fromTyped = typedAt.get(fromKey);
       baseRev.delete(fromKey);
       typedAt.delete(fromKey);
       if (destHasState) {
@@ -478,7 +479,9 @@ export const useDraftStore = defineStore('drafts', {
       if (!ack) return;
       inFlight.set(k, sent);
       void ack.then((result) => {
-        if (inFlight.get(k) === sent) inFlight.delete(k);
+        // Not this buffer's flight any more: dropped or renamed away meanwhile.
+        if (inFlight.get(k) !== sent) return;
+        inFlight.delete(k);
         const rev = result.ok
           ? revOf((result.data as { rev?: unknown } | undefined)?.rev)
           : undefined;
@@ -501,7 +504,11 @@ export const useDraftStore = defineStore('drafts', {
         // replace this one. Otherwise no answer, or the server kept nothing:
         // stop holding off other devices, but the next snapshot won't have
         // this text either.
-        if (!result.ok && result.error !== 'stale') unconfirmed.set(k, { networkId, target });
+        // An emptied box has nothing to keep.
+        const holds = !!this.drafts[k] || !!this.replies[k];
+        if (!result.ok && result.error !== 'stale' && holds) {
+          unconfirmed.set(k, { networkId, target });
+        }
       });
     },
   },

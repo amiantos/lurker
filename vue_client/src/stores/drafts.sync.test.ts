@@ -292,6 +292,29 @@ describe('a draft another device changed meanwhile', () => {
     expect(drafts.hasDraft(1, '#chan')).toBe(false);
   });
 
+  it('weighs text held off another device’s draft against it, not past it', () => {
+    const drafts = useDraftStore();
+    drafts.seed(serverHasAt('hello', 7));
+    drafts.setLocal(1, '#chan', 'mine');
+    // Theirs arrives while this is unsaved: not taken, so not the base either.
+    drafts.applyRemoteUpdate(1, '#chan', 'theirs', null, 9);
+    vi.advanceTimersByTime(600);
+    expect(frames().at(-1)).toMatchObject({ body: 'mine', base: 7 });
+  });
+
+  it('keeps the typing time of a draft that moved with a rename', () => {
+    const drafts = useDraftStore();
+    send.mockReturnValue(null);
+    drafts.setLocal(1, 'bob', 'hey bob');
+    vi.advanceTimersByTime(60_000);
+    send.mockImplementation(() => Promise.resolve({ ok: true }));
+    drafts.rekeyBuffer(1, 'bob', 'bobby');
+    vi.advanceTimersByTime(600);
+    const sent = frames().at(-1) as { target: string; age: number };
+    expect(sent.target).toBe('bobby');
+    expect(sent.age).toBeGreaterThanOrEqual(60_000);
+  });
+
   it('waits for one flush’s answer before sending the next, with its revision', async () => {
     const drafts = useDraftStore();
     drafts.seed(serverHasAt('hello', 7));
