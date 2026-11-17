@@ -17,42 +17,53 @@
     </p>
     <p v-if="error" class="error inline">{{ error }}</p>
 
-    <h3 class="subhead">create new token</h3>
-    <form class="create-form" @submit.prevent="onCreate">
-      <label>
-        <span>Name</span>
-        <input
-          :value="newName"
-          @input="onNameInput"
-          @keydown.enter="blockImeEnter"
-          type="text"
-          maxlength="64"
-          placeholder="e.g. claude-desktop, autonotes"
-        />
-      </label>
-      <label class="check">
-        <input v-model="newAllowWrite" type="checkbox" />
-        <span>Allow this token to send messages and write notes</span>
-      </label>
-      <div class="create-actions">
-        <button class="btn-primary" type="submit" :disabled="busy || !newName.trim()">
-          create token
-        </button>
-      </div>
-    </form>
+    <p class="add-row">
+      <button class="btn-secondary" :disabled="busy" @click="openCreate">create token</button>
+    </p>
 
-    <div v-if="revealed" class="reveal">
-      <p class="reveal-warning">
-        <strong>{{ revealed.name }}</strong> — copy this token now. It will not be shown again.
-      </p>
-      <div class="reveal-row">
+    <!-- Two stages, as the invite modal: name the token, then the token itself,
+         shown this once. Closing the second stage is what dismisses it. -->
+    <FormModal
+      v-if="creating"
+      word="token"
+      size="sm"
+      :title="revealed ? 'api token' : 'create api token'"
+      submit-label="Create token"
+      :can-submit="!!newName.trim()"
+      :busy="busy"
+      :error="createError"
+      @submit="onCreate"
+      @close="closeCreate"
+    >
+      <div v-if="revealed" class="reveal">
+        <p class="reveal-warning">
+          <strong>{{ revealed.name }}</strong> — copy this token now. It will not be shown again.
+        </p>
         <code class="token">{{ revealed.token }}</code>
-        <button type="button" @click="onCopy">
-          {{ copied ? 'copied' : 'copy' }}
-        </button>
-        <button type="button" @click="revealed = null">dismiss</button>
       </div>
-    </div>
+      <div v-else class="create-form">
+        <label>
+          <span>Name</span>
+          <input
+            :value="newName"
+            @input="onNameInput"
+            type="text"
+            maxlength="64"
+            placeholder="e.g. claude-desktop, autonotes"
+          />
+        </label>
+        <label class="check">
+          <input v-model="newAllowWrite" type="checkbox" />
+          <span>Allow this token to send messages and write notes</span>
+        </label>
+      </div>
+      <template v-if="revealed" #footer>
+        <button type="button" class="btn-secondary" @click="onCopy">
+          {{ copied ? 'copied' : 'copy token' }}
+        </button>
+        <button type="button" class="btn-primary" @click="closeCreate">Done</button>
+      </template>
+    </FormModal>
 
     <h3 class="subhead">existing tokens</h3>
     <ul v-if="tokens.length" class="device-list">
@@ -84,7 +95,8 @@ import { ref, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { api } from '../../api.js';
 import { formatRelative } from '../../utils/timestamp.js';
-import { blockImeEnter, useImeSafeInput } from '../../composables/useImeSafeInput.js';
+import { useImeSafeInput } from '../../composables/useImeSafeInput.js';
+import FormModal from '../FormModal.vue';
 
 interface ApiToken {
   id: string;
@@ -107,7 +119,11 @@ const onNameInput = useImeSafeInput(newName);
 // the bouncer refuses a read-only one — so that link asks for the box to start
 // ticked (?scope=read-write) rather than sending people to a form whose default
 // makes a token that can't work.
-const newAllowWrite = ref(useRoute().query.scope === 'read-write');
+const wantsWrite = useRoute().query.scope === 'read-write';
+const newAllowWrite = ref(wantsWrite);
+// ...and opens the form, since making a token is what that link is for.
+const creating = ref(wantsWrite);
+const createError = ref('');
 const revealed = ref<RevealedToken | null>(null);
 const copied = ref(false);
 const busy = ref(false);
@@ -127,9 +143,23 @@ async function refresh() {
   }
 }
 
+function openCreate() {
+  createError.value = '';
+  revealed.value = null;
+  creating.value = true;
+}
+
+function closeCreate() {
+  creating.value = false;
+  revealed.value = null;
+  createError.value = '';
+  newName.value = '';
+  newAllowWrite.value = false;
+}
+
 async function onCreate() {
   if (!newName.value.trim()) return;
-  error.value = '';
+  createError.value = '';
   busy.value = true;
   try {
     const created = await api('/api/api-tokens', {
@@ -145,7 +175,7 @@ async function onCreate() {
     newAllowWrite.value = false;
     await refresh();
   } catch (e: any) {
-    error.value = e.message || 'failed to create token';
+    createError.value = e.message || 'failed to create token';
   } finally {
     busy.value = false;
   }
@@ -159,7 +189,7 @@ async function onCopy() {
   } catch (_) {
     // Clipboard permission denied (rare; mostly insecure-context). The user
     // can still select+copy from the rendered <code>.
-    error.value = 'clipboard unavailable — select and copy the token manually';
+    createError.value = 'clipboard unavailable — select and copy the token manually';
   }
 }
 
@@ -183,14 +213,12 @@ async function onRevoke(token: ApiToken) {
 .create-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  margin-top: var(--space-2);
-  max-width: 360px;
+  gap: var(--space-7);
 }
 .create-form label {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   color: var(--fg-muted);
 }
 .create-form label.check {
@@ -208,28 +236,18 @@ async function onRevoke(token: ApiToken) {
   letter-spacing: 0;
   font-size: inherit;
 }
-.create-actions {
-  display: flex;
-  gap: 1ch;
-  align-items: center;
-  margin-top: var(--space-1);
+.add-row {
+  margin: 0 0 var(--space-4);
 }
 
 .reveal {
-  margin: var(--space-6) 0;
-  padding: var(--space-5) var(--space-6);
-  border: 1px solid var(--accent);
-  background: var(--bg-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
 }
 .reveal-warning {
   margin: 0 0 var(--space-3);
   color: var(--fg);
-}
-.reveal-row {
-  display: flex;
-  align-items: center;
-  gap: 1ch;
-  flex-wrap: wrap;
 }
 .token {
   flex: 1 1 auto;

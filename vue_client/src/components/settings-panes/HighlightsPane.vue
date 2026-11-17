@@ -15,7 +15,7 @@
       <code>/highlight</code> command. Configure notification delivery in the Notifications pane.
     </p>
 
-    <p v-if="formError" class="error inline">{{ formError }}</p>
+    <p v-if="formError && !formOpen" class="error inline">{{ formError }}</p>
     <p v-if="rulesError" class="error inline">{{ rulesError }}</p>
 
     <!-- The automatic rule for your nick on each network is not listed: it can't
@@ -49,115 +49,122 @@
       </ul>
     </template>
 
-    <h3 class="subhead">{{ editing ? 'edit highlight' : 'add highlight' }}</h3>
-    <div class="rule-form">
-      <!-- Scope -->
-      <div class="field">
-        <span class="field-label">Scope</span>
-        <div class="row">
-          <div class="seg" role="group" aria-label="Scope">
-            <button
-              type="button"
-              :aria-pressed="scopeMode === 'global'"
-              :class="{ active: scopeMode === 'global' }"
-              @click="scopeMode = 'global'"
-            >
-              Global
-            </button>
-            <button
-              type="button"
-              :aria-pressed="scopeMode === 'network'"
-              :class="{ active: scopeMode === 'network' }"
-              :disabled="!networkOptions.length"
-              @click="selectNetworkScope"
-            >
-              One network
-            </button>
+    <p class="add-row">
+      <button class="btn-secondary" @click="startAdd">add highlight</button>
+    </p>
+
+    <FormModal
+      v-if="formOpen"
+      word="highlight"
+      :title="editing ? 'edit highlight' : 'add highlight'"
+      :submit-label="editing ? 'Save' : 'Add highlight'"
+      :can-submit="canSubmit"
+      :error="formError"
+      @submit="submit"
+      @close="closeForm"
+    >
+      <div class="rule-form">
+        <!-- Scope -->
+        <div class="field">
+          <span class="field-label">Scope</span>
+          <div class="row">
+            <div class="seg" role="group" aria-label="Scope">
+              <button
+                type="button"
+                :aria-pressed="scopeMode === 'global'"
+                :class="{ active: scopeMode === 'global' }"
+                @click="scopeMode = 'global'"
+              >
+                Global
+              </button>
+              <button
+                type="button"
+                :aria-pressed="scopeMode === 'network'"
+                :class="{ active: scopeMode === 'network' }"
+                :disabled="!networkOptions.length"
+                @click="selectNetworkScope"
+              >
+                One network
+              </button>
+            </div>
+            <select v-if="scopeMode === 'network'" v-model.number="scopeNetworkId">
+              <option v-for="opt in networkOptions" :key="opt.id" :value="opt.id">
+                {{ opt.name }}
+              </option>
+            </select>
           </div>
-          <select v-if="scopeMode === 'network'" v-model.number="scopeNetworkId">
-            <option v-for="opt in networkOptions" :key="opt.id" :value="opt.id">
-              {{ opt.name }}
-            </option>
-          </select>
         </div>
-      </div>
 
-      <!-- What (keyword) -->
-      <div class="field">
-        <span class="field-label"
-          >Highlight word
-          <span class="muted small">(what — blank to match by sender only)</span></span
-        >
-        <div class="row">
+        <!-- What (keyword) -->
+        <div class="field">
+          <span class="field-label"
+            >Highlight word
+            <span class="muted small">(what — blank to match by sender only)</span></span
+          >
+          <div class="row">
+            <input
+              :value="form.pattern"
+              @input="onPatternInput"
+              type="text"
+              class="grow"
+              placeholder="word or phrase to highlight"
+              spellcheck="false"
+            />
+            <select v-model="form.kind">
+              <option value="substr">contains</option>
+              <option value="full">whole word</option>
+              <option value="glob">glob</option>
+              <option value="regex">regex</option>
+            </select>
+          </div>
+          <label class="ck">
+            <input v-model="form.caseSensitive" type="checkbox" />
+            <span>Case-sensitive</span>
+          </label>
+        </div>
+
+        <!-- Who (mask) -->
+        <label class="field">
+          <span class="field-label"
+            >Sender mask <span class="muted small">(who — blank = anyone)</span></span
+          >
           <input
-            :value="form.pattern"
-            @input="onPatternInput"
+            :value="form.mask"
+            @input="onMaskInput"
             type="text"
-            class="grow"
-            placeholder="word or phrase to highlight"
+            placeholder="nick or nick!user@host — highlights everything they say"
             spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
           />
-          <select v-model="form.kind">
-            <option value="substr">contains</option>
-            <option value="full">whole word</option>
-            <option value="glob">glob</option>
-            <option value="regex">regex</option>
-          </select>
+        </label>
+
+        <!-- Where (channels) -->
+        <label class="field">
+          <span class="field-label"
+            >Channels <span class="muted small">(where — blank = all buffers)</span></span
+          >
+          <input
+            :value="form.channels"
+            @input="onChannelsInput"
+            type="text"
+            placeholder="#chan #other (space-separated)"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+        </label>
+
+        <!-- Options -->
+        <div class="field">
+          <span class="field-label">Options</span>
+          <label class="ck">
+            <input v-model="form.enabled" type="checkbox" />
+            <span>Enabled</span>
+          </label>
         </div>
-        <label class="ck">
-          <input v-model="form.caseSensitive" type="checkbox" />
-          <span>Case-sensitive</span>
-        </label>
       </div>
-
-      <!-- Who (mask) -->
-      <label class="field">
-        <span class="field-label"
-          >Sender mask <span class="muted small">(who — blank = anyone)</span></span
-        >
-        <input
-          :value="form.mask"
-          @input="onMaskInput"
-          type="text"
-          placeholder="nick or nick!user@host — highlights everything they say"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-        />
-      </label>
-
-      <!-- Where (channels) -->
-      <label class="field">
-        <span class="field-label"
-          >Channels <span class="muted small">(where — blank = all buffers)</span></span
-        >
-        <input
-          :value="form.channels"
-          @input="onChannelsInput"
-          type="text"
-          placeholder="#chan #other (space-separated)"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-        />
-      </label>
-
-      <!-- Options -->
-      <div class="field">
-        <span class="field-label">Options</span>
-        <label class="ck">
-          <input v-model="form.enabled" type="checkbox" />
-          <span>Enabled</span>
-        </label>
-      </div>
-
-      <div class="actions">
-        <button v-if="editing" class="btn-secondary" @click="cancelEdit">cancel</button>
-        <button class="btn-primary" :disabled="!canSubmit" @click="submit">
-          {{ editing ? 'save' : 'add highlight' }}
-        </button>
-      </div>
-    </div>
+    </FormModal>
   </section>
 </template>
 
@@ -167,6 +174,7 @@ import { useNetworksStore } from '../../stores/networks.js';
 import { useHighlightRulesStore } from '../../stores/highlightRules.js';
 import type { HighlightRule } from '../../stores/highlightRules.js';
 import IconButton from '../IconButton.vue';
+import FormModal from '../FormModal.vue';
 import { parseChannelList } from '../../../../shared/channels.js';
 import { highlightRuleDetailParts } from '../../utils/highlightFormat.js';
 import { joinMeta } from '../../utils/metaLine.js';
@@ -341,7 +349,23 @@ function resetForm() {
   editing.value = null;
 }
 
+/** The add/edit modal is open. */
+const formOpen = ref(false);
+
+function startAdd() {
+  resetForm();
+  formError.value = '';
+  formOpen.value = true;
+}
+
+function closeForm() {
+  formOpen.value = false;
+  resetForm();
+  formError.value = '';
+}
+
 function startEdit(entry: HighlightRule) {
+  formOpen.value = true;
   editing.value = { id: entry.id };
   form.mask = entry.mask ?? '';
   form.channels = (entry.channels || []).join(' ');
@@ -361,11 +385,6 @@ function startEdit(entry: HighlightRule) {
   formError.value = '';
 }
 
-function cancelEdit() {
-  resetForm();
-  formError.value = '';
-}
-
 // Add = create; edit = a single atomic update (the service re-scopes via the
 // junction), so the rule keeps its id and list position and there's no
 // create-then-delete window that could orphan a duplicate.
@@ -378,7 +397,7 @@ async function submit() {
     } else {
       await rulesStore.create(fields);
     }
-    resetForm();
+    closeForm();
   } catch (e: any) {
     formError.value = e.message || 'failed to save highlight';
   }
@@ -397,7 +416,7 @@ async function toggleEnabled(entry: HighlightRule, value: boolean) {
 }
 
 async function onRemove(entry: HighlightRule) {
-  if (editing.value?.id === entry.id) cancelEdit();
+  if (editing.value?.id === entry.id) closeForm();
   formError.value = '';
   try {
     await rulesStore.remove(entry.id);
@@ -421,8 +440,7 @@ async function onRemove(entry: HighlightRule) {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
-  padding-top: var(--space-3);
+  gap: var(--space-7);
 }
 .field {
   display: flex;
@@ -440,13 +458,6 @@ async function onRemove(entry: HighlightRule) {
 .grow {
   flex: 1;
   min-width: 0;
-}
-.rule-form input[type='text'] {
-  background: var(--bg-soft);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
 }
 .seg {
   display: flex;
@@ -476,10 +487,7 @@ async function onRemove(entry: HighlightRule) {
   color: var(--fg-muted);
   cursor: pointer;
 }
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-4);
-  padding-top: var(--space-2);
+.add-row {
+  margin: var(--space-4) 0 0;
 }
 </style>

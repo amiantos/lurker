@@ -32,12 +32,9 @@ function noHighlightBox(wrapper: VueWrapper) {
   return wrapper.find('.field .ck input[type="checkbox"]');
 }
 
+// The form lives in a modal: its footer button is the form's submit.
 function submit(wrapper: VueWrapper) {
-  const btn = wrapper
-    .findAll('.actions button')
-    .find((b) => b.text() === 'add ignore' || b.text() === 'save');
-  if (!btn) throw new Error('no submit button');
-  return btn.trigger('click');
+  return wrapper.find('.modal form').trigger('submit');
 }
 
 // The mask field is the first text input in the form.
@@ -74,10 +71,14 @@ function seedEntry(entry: Partial<IgnoreEntry> & { levels: string[] }) {
 describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', () => {
   let wrapper: VueWrapper;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     setActivePinia(createPinia());
     vi.mocked(socketSend).mockClear();
-    wrapper = mount(IgnoresPane);
+    // The modal teleports to body; stubbed, it renders in place. Opened on
+    // "add", as someone building a rule would; the edit tests open it again
+    // from a row's pen.
+    wrapper = mount(IgnoresPane, { global: { stubs: { Teleport: true } } });
+    await wrapper.find('.add-row button').trigger('click');
   });
 
   it('starts on ALL, which is what an unqualified /ignore means', async () => {
@@ -107,7 +108,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
-    expect(wrapper.find('p.error.inline').text()).toContain('Suppress highlights only');
+    expect(wrapper.find('.form-error').text()).toContain('Suppress highlights only');
   });
 
   it('keeps a granular selection selectable and clearable', async () => {
@@ -142,7 +143,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
-    expect(wrapper.find('p.error.inline').text()).toContain('silence every highlight');
+    expect(wrapper.find('.form-error').text()).toContain('silence every highlight');
   });
 
   it('combines hide levels with the modifier — the pairing the fix must not lose', async () => {
