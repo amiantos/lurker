@@ -697,6 +697,19 @@ until that arrives: a write sent into a socket that had already died is never
 answered, and the `draft-snapshot` after the reconnect still has the older
 text. Keep yours over the snapshot's for such a buffer, and send it again.
 
+**A draft delivered late.** Every draft has a revision: `rev` on each
+`draft-snapshot` entry, on `draft-updated`, and as `data.rev` on the answer to
+your own write. Send the one you last had as `base` on `draft-set` /
+`draft-clear` (and on each `POST /api/drafts/flush` entry), with `age`: how many
+milliseconds ago the text was typed, by your own clock. If `base` is current
+the write stands. If it is behind, someone else has written since, and the
+write is refused with `error: 'stale'` when theirs was typed later; a
+`draft-updated` with the draft that stands follows, to replace yours. That is
+what keeps a device that was offline from bringing back a draft another device
+changed or sent. Send one write per buffer at a time, so the next carries the
+`rev` the last was given. A write with neither field always stands. Revisions
+are only comparable for equality, and reset when the server restarts.
+
 **A draft's reply.** The reply a composer is writing is part of its draft, so it
 follows the user to another device and survives a reload. `draft-set` takes
 `reply: { messageId, addressed }` — the line it answers, and whether your Reply

@@ -49,18 +49,21 @@ describe('a draft’s reply', () => {
     useDraftStore().resetTimers();
   });
 
-  it('flushes with the draft, even with no text, and a cancel clears it', () => {
+  it('flushes with the draft, even with no text, and a cancel clears it', async () => {
+    // One flush at a time per buffer: each waits for the last one's answer.
+    const answered = () => Promise.resolve().then(() => Promise.resolve());
     const drafts = useDraftStore();
     useRepliesStore().start(KEY, REPLY);
     expect(drafts.hasDraft(1, '#chan')).toBe(true);
     drafts.flushBuffer(1, '#chan');
-    expect(frames().at(-1)).toEqual({
+    expect(frames().at(-1)).toMatchObject({
       type: 'draft-set',
       networkId: 1,
       target: '#chan',
       body: '',
       reply: { messageId: 42, addressed: false },
     });
+    await answered();
     drafts.setLocal(1, '#chan', 'alice: noon');
     useRepliesStore().markAddressed(KEY, 'alice');
     drafts.flushBuffer(1, '#chan');
@@ -68,10 +71,11 @@ describe('a draft’s reply', () => {
       body: 'alice: noon',
       reply: { messageId: 42, addressed: true },
     });
+    await answered();
     useRepliesStore().cancel(KEY);
     drafts.setLocal(1, '#chan', '');
     drafts.flushBuffer(1, '#chan');
-    expect(frames().at(-1)).toEqual({ type: 'draft-clear', networkId: 1, target: '#chan' });
+    expect(frames().at(-1)).toMatchObject({ type: 'draft-clear', networkId: 1, target: '#chan' });
   });
 
   it('comes back from the snapshot and another device’s update', () => {
@@ -106,7 +110,7 @@ describe('a draft’s reply', () => {
     expect(useDraftStore().flushAllForBeacon()).toBe(true);
     const blob = beacon.mock.calls[0][1];
     return blob.text().then((json) => {
-      expect(JSON.parse(json)).toEqual({
+      expect(JSON.parse(json)).toMatchObject({
         drafts: [
           { networkId: 1, target: '#chan', body: '', reply: { messageId: 42, addressed: false } },
         ],

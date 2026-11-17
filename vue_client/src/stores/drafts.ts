@@ -87,9 +87,23 @@ const inFlight = new Map<string, number>();
 // again behind one.
 const unconfirmed = new Map<string, BufferRef>();
 
+// The server's revision of each buffer's draft as this client last had it, and
+// when the text here was typed. They ride every flush (`base`, `age`) so the
+// server can tell a draft delivered late from a new one: with `base` current
+// nobody else has written and the flush stands; with it behind, the flush is
+// refused (`stale`) if the server's draft was typed later, and the server's
+// comes back to replace this one. That is what stops a device that was offline
+// from bringing back a draft another device has since changed or sent.
+const baseRev = new Map<string, number>();
+const typedAt = new Map<string, number>();
+
 function touch(k: string): void {
   version.set(k, (version.get(k) ?? 0) + 1);
+  typedAt.set(k, Date.now());
 }
+
+const revOf = (v: unknown): number | undefined =>
+  typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 
 // The buffer the composer is actively IME-composing into (compositionstart →
 // compositionend), or null. Dropping v-model gave the composer live text
@@ -114,6 +128,16 @@ let composingKey: string | null = null;
 // rate-limited; `pending` records which buffers the server hasn't confirmed
 // yet so a snapshot or a remote-update fan-out won't clobber what the user
 // typed.
+// What a flush tells the server about the text it carries (see baseRev).
+function guardFor(k: string): { base?: number; age: number } {
+  const base = baseRev.get(k);
+  const typed = typedAt.get(k);
+  return {
+    ...(base === undefined ? {} : { base }),
+    age: typed === undefined ? 0 : Math.max(0, Date.now() - typed),
+  };
+}
+
 export const useDraftStore = defineStore('drafts', {
   state: () => ({
     // `${networkId}::${target}` -> body string. Sparse: an empty/unused
@@ -146,6 +170,14 @@ export const useDraftStore = defineStore('drafts', {
     seed(list: any[]) {
       const next: Record<string, string> = {};
       const nextReplies: Record<string, PendingReply> = {};
+      // Revisions of the drafts taken from this snapshot. A held buffer keeps
+      // the one it had: its text was typed against that, and the server judges
+      // the flush below by it.
+      const nextRevs = new Map<string, number>();
+      const keepRev = (k: string) => {
+        const had = baseRev.get(k);
+        if (had !== undefined) nextRevs.set(k, had);
+      };
       // A buffer's local state, kept whole — text and reply are one draft.
       const keep = (k: string) => {
         const existing = this.drafts[k];
@@ -158,8 +190,11 @@ export const useDraftStore = defineStore('drafts', {
           const k = key(d.networkId, d.target);
           if (pending.has(k) || unconfirmed.has(k) || k === composingKey) {
             keep(k);
+            keepRev(k);
             continue;
           }
+          const rev = revOf(d.rev);
+          if (rev !== undefined) nextRevs.set(k, rev);
           if (typeof d.body === 'string' && d.body.length > 0) next[k] = d.body;
           const reply = pendingReplyFrom(d.reply, d.networkId, d.target);
           if (reply) nextReplies[k] = reply;
@@ -174,9 +209,12 @@ export const useDraftStore = defineStore('drafts', {
       for (const k of composingKey ? [...held, composingKey] : held) {
         if (next[k] != null || nextReplies[k]) continue;
         keep(k);
+        keepRev(k);
       }
       this.drafts = next;
       this.replies = nextReplies;
+      baseRev.clear();
+      for (const [k, rev] of nextRevs) baseRev.set(k, rev);
       // A snapshot is a socket that works. Whatever a flush could not deliver
       // (sent while disconnected, or never answered) goes now, so the server
       // has what the box has. A buffer with a debounce running is still being
@@ -197,8 +235,12 @@ export const useDraftStore = defineStore('drafts', {
       target: string,
       body: string,
       reply?: DraftReply | null,
+      rev?: number,
     ) {
       const k = key(networkId, target);
+      // Seen, whether or not it is taken: what is typed here from now on is
+      // typed knowing of it.
+      if (revOf(rev) !== undefined && k !== composingKey) baseRev.set(k, rev!);
       // The composing check is load-bearing on its own: `pending` disarms when
       // the debounced flush fires, which a >500ms mid-word pause used to allow —
       // leaving a remote update free to repaint the focused, composing textarea
@@ -251,8 +293,6 @@ export const useDraftStore = defineStore('drafts', {
     flushBuffer(networkId: number | string, target: string) {
       const k = key(networkId, target);
       if (!pending.has(k)) return;
-      // Already on its way as it stands; the ACK settles it.
-      if (inFlight.get(k) === (version.get(k) ?? 0)) return;
       this.sendForBuffer(networkId, target);
     },
     // Drop in-memory state for a closed buffer. The server-side row is also
@@ -265,8 +305,10 @@ export const useDraftStore = defineStore('drafts', {
       pending.delete(k);
       unconfirmed.delete(k);
       inFlight.delete(k);
+      baseRev.delete(k);
       // Bumped, not deleted: an ACK still on its way must not match.
       touch(k);
+      typedAt.delete(k);
       if (composingKey === k) composingKey = null;
     },
     // Lifecycle hooks (lib/bufferLifecycle.ts). rekey moves the body AND the
@@ -301,12 +343,18 @@ export const useDraftStore = defineStore('drafts', {
       unconfirmed.delete(fromKey);
       inFlight.delete(fromKey);
       touch(fromKey);
+      const fromRev = baseRev.get(fromKey);
+      const fromTyped = typedAt.get(fromKey);
+      baseRev.delete(fromKey);
+      typedAt.delete(fromKey);
       if (destHasState) {
         delete this.drafts[fromKey];
         delete this.replies[fromKey];
         pending.delete(fromKey);
         return;
       }
+      // Same buffer under a new name: same revision.
+      if (fromRev !== undefined) baseRev.set(toKey, fromRev);
       if (this.drafts[fromKey] != null) {
         this.drafts[toKey] = this.drafts[fromKey];
         delete this.drafts[fromKey];
@@ -321,6 +369,8 @@ export const useDraftStore = defineStore('drafts', {
         pending.delete(fromKey);
         touch(toKey);
         pending.set(toKey, { networkId, target: to });
+        // Moved, not retyped.
+        if (fromTyped !== undefined) typedAt.set(toKey, fromTyped);
         this.scheduleFlush(networkId, to);
       }
     },
@@ -336,6 +386,8 @@ export const useDraftStore = defineStore('drafts', {
         target: string;
         body: string;
         reply: { messageId: number; addressed: boolean } | null;
+        base?: number;
+        age: number;
       }[] = [];
       for (const [k, ref] of [...pending, ...unconfirmed]) {
         const body = this.drafts[k] || '';
@@ -344,6 +396,7 @@ export const useDraftStore = defineStore('drafts', {
           target: ref.target,
           body,
           reply: replyRef(this.replies[k]),
+          ...guardFor(k),
         });
       }
       try {
@@ -365,8 +418,10 @@ export const useDraftStore = defineStore('drafts', {
       pending.clear();
       unconfirmed.clear();
       inFlight.clear();
+      baseRev.clear();
       // `version` stays: an ACK still on its way must not match a later draft.
       for (const k of version.keys()) touch(k);
+      typedAt.clear();
       composingKey = null;
     },
     // The composer's composition handlers. beginComposition marks the buffer;
@@ -406,28 +461,47 @@ export const useDraftStore = defineStore('drafts', {
     sendForBuffer(networkId: number | string, target: string) {
       const k = key(networkId, target);
       this.clearTimer(k);
+      // One at a time per buffer. The next flush has to carry the revision this
+      // one's answer brings, or the server would weigh it against this one's
+      // text by typing time, as if another device had written it. The answer
+      // sends whatever was typed meanwhile.
+      if (inFlight.has(k)) return;
       const body = this.drafts[k] || '';
       const reply = replyRef(this.replies[k]);
       const sent = version.get(k) ?? 0;
       const ack = socketSendWithAck(
         body.length > 0 || reply
-          ? { type: 'draft-set', networkId, target, body, reply }
-          : { type: 'draft-clear', networkId, target },
+          ? { type: 'draft-set', networkId, target, body, reply, ...guardFor(k) }
+          : { type: 'draft-clear', networkId, target, ...guardFor(k) },
       );
       // No socket: the buffer stays pending, and goes behind the next snapshot.
       if (!ack) return;
       inFlight.set(k, sent);
       void ack.then((result) => {
         if (inFlight.get(k) === sent) inFlight.delete(k);
-        // Changed since: this answer is about older text, and the change has
-        // its own flush coming.
-        if ((version.get(k) ?? 0) !== sent || !pending.has(k)) return;
+        const rev = result.ok
+          ? revOf((result.data as { rev?: unknown } | undefined)?.rev)
+          : undefined;
+        if (rev !== undefined) baseRev.set(k, rev);
+        if (!pending.has(k)) return;
+        if ((version.get(k) ?? 0) !== sent) {
+          // Changed since: this answer is about older text. The change goes
+          // now, unless its own debounce is still running or the socket is gone
+          // (then behind the next snapshot).
+          const gone = !result.ok && result.error === 'disconnected';
+          if (!gone && !flushTimers.has(k) && k !== composingKey) {
+            this.sendForBuffer(networkId, target);
+          }
+          return;
+        }
         // The socket closed under it: stays pending, as with no socket.
         if (!result.ok && result.error === 'disconnected') return;
         pending.delete(k);
-        // No answer, or the server kept nothing. Stop holding off other
-        // devices, but the next snapshot won't have this text either.
-        if (!result.ok) unconfirmed.set(k, { networkId, target });
+        // Stale: the server's draft was typed later and is on its way here to
+        // replace this one. Otherwise no answer, or the server kept nothing:
+        // stop holding off other devices, but the next snapshot won't have
+        // this text either.
+        if (!result.ok && result.error !== 'stale') unconfirmed.set(k, { networkId, target });
       });
     },
   },

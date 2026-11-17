@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
-type Ack = { ok: boolean; error?: string };
+type Ack = { ok: boolean; error?: string; data?: unknown };
 vi.mock('../composables/useSocket.js', () => ({
   socketSendWithAck: vi.fn<(payload: Record<string, unknown>) => Promise<Ack> | null>(),
 }));
@@ -221,5 +221,88 @@ describe('a draft the server has', () => {
     drafts.seed(serverHas('sent already'));
     expect(drafts.forBuffer(1, '#chan')).toBe('');
     expect(frames().at(-1)).toMatchObject({ type: 'draft-clear' });
+  });
+});
+
+// A flush says which revision of the draft it was typed against and how long
+// ago, and the server refuses one that is older than what it holds.
+describe('a draft another device changed meanwhile', () => {
+  const serverHasAt = (body: string, rev: number) => [{ networkId: 1, target: '#chan', body, rev }];
+
+  it('sends the revision it had and the age of the text', () => {
+    const drafts = useDraftStore();
+    drafts.seed(serverHasAt('hello', 7));
+    drafts.setLocal(1, '#chan', 'hello there');
+    vi.advanceTimersByTime(600);
+    expect(frames().at(-1)).toMatchObject({ type: 'draft-set', base: 7, age: 500 });
+  });
+
+  it('moves on to the revision its own flush was given', async () => {
+    const drafts = useDraftStore();
+    drafts.seed(serverHasAt('hello', 7));
+    send.mockImplementation(() => Promise.resolve({ ok: true, data: { rev: 8 } }));
+    drafts.setLocal(1, '#chan', 'one');
+    vi.advanceTimersByTime(600);
+    await settle();
+    drafts.setLocal(1, '#chan', 'two');
+    vi.advanceTimersByTime(600);
+    expect(frames().at(-1)).toMatchObject({ body: 'two', base: 8 });
+  });
+
+  it('sends a draft held through a reconnect against the revision it was typed on', () => {
+    const drafts = useDraftStore();
+    drafts.seed(serverHasAt('hello', 7));
+    send.mockReturnValue(null);
+    drafts.setLocal(1, '#chan', 'typed offline');
+    vi.advanceTimersByTime(60_000);
+    send.mockImplementation(() => Promise.resolve({ ok: true }));
+    // The other device wrote meanwhile: the snapshot is at 9.
+    drafts.seed(serverHasAt('written elsewhere', 9));
+    expect(frames().at(-1)).toMatchObject({ body: 'typed offline', base: 7, age: 60_000 });
+  });
+
+  it('gives way when the server says its draft is the later one', async () => {
+    const drafts = useDraftStore();
+    drafts.seed(serverHasAt('hello', 7));
+    send.mockReturnValue(null);
+    drafts.setLocal(1, '#chan', 'typed offline, long ago');
+    vi.advanceTimersByTime(600);
+    send.mockImplementation(() => Promise.resolve({ ok: false, error: 'stale' }));
+    drafts.seed(serverHasAt('written elsewhere', 9));
+    expect(drafts.forBuffer(1, '#chan')).toBe('typed offline, long ago');
+    await settle();
+    // The server follows its refusal with the draft that stands.
+    drafts.applyRemoteUpdate(1, '#chan', 'written elsewhere', null, 9);
+    expect(drafts.forBuffer(1, '#chan')).toBe('written elsewhere');
+    // And nothing is held over the next snapshot.
+    drafts.seed(serverHasAt('written elsewhere', 9));
+    expect(drafts.forBuffer(1, '#chan')).toBe('written elsewhere');
+  });
+
+  it('gives way to a draft that was sent from the other device', async () => {
+    const drafts = useDraftStore();
+    send.mockReturnValue(null);
+    drafts.setLocal(1, '#chan', 'already sent from the phone');
+    vi.advanceTimersByTime(600);
+    send.mockImplementation(() => Promise.resolve({ ok: false, error: 'stale' }));
+    drafts.seed([]);
+    await settle();
+    drafts.applyRemoteUpdate(1, '#chan', '', null, 12);
+    expect(drafts.forBuffer(1, '#chan')).toBe('');
+    expect(drafts.hasDraft(1, '#chan')).toBe(false);
+  });
+
+  it('waits for one flush’s answer before sending the next, with its revision', async () => {
+    const drafts = useDraftStore();
+    drafts.seed(serverHasAt('hello', 7));
+    const answer = held();
+    drafts.setLocal(1, '#chan', 'first');
+    vi.advanceTimersByTime(600);
+    drafts.setLocal(1, '#chan', 'first and more');
+    vi.advanceTimersByTime(600);
+    expect(frames()).toHaveLength(1);
+    await answer({ ok: true, data: { rev: 8 } } as Ack);
+    expect(frames()).toHaveLength(2);
+    expect(frames().at(-1)).toMatchObject({ body: 'first and more', base: 8 });
   });
 });

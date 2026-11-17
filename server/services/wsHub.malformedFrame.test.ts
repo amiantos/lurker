@@ -237,6 +237,48 @@ describe('draft writes are answered', () => {
     }
   });
 
+  it('gives the revision, and refuses a late write with the draft that stands', async () => {
+    (await import('../db/buffers.js')).ensureOpen(alice, networkId, '#late');
+    const { ws, heard } = await attach(alice);
+    const other = await attach(alice);
+    const write = (frame: Frame) =>
+      ws.send(JSON.stringify({ networkId, target: '#late', ...frame }));
+    try {
+      write({ type: 'draft-set', body: 'first', clientId: 'r1' });
+      const first = await waitFor(heard, (f) => f.clientId === 'r1');
+      const rev = (first.data as { rev: number }).rev;
+      expect(first.ok).toBe(true);
+      expect(typeof rev).toBe('number');
+
+      // Another device writes, and this one hears of it with the new revision.
+      other.ws.send(
+        JSON.stringify({ type: 'draft-set', networkId, target: '#late', body: 'theirs' }),
+      );
+      const news = await waitFor(heard, (f) => f.kind === 'draft-updated' && f.body === 'theirs');
+      expect(news.rev).not.toBe(rev);
+
+      // Text typed five minutes ago against the old revision arrives now.
+      heard.length = 0;
+      write({ type: 'draft-set', body: 'typed offline', base: rev, age: 300_000, clientId: 'r2' });
+      expect(await waitFor(heard, (f) => f.clientId === 'r2')).toMatchObject({
+        ok: false,
+        error: 'stale',
+      });
+      expect(await waitFor(heard, (f) => f.kind === 'draft-updated')).toMatchObject({
+        target: '#late',
+        body: 'theirs',
+        rev: news.rev,
+      });
+
+      // Against the revision it now has, the same text stands.
+      write({ type: 'draft-set', body: 'typed now', base: news.rev, age: 300_000, clientId: 'r3' });
+      expect(await waitFor(heard, (f) => f.clientId === 'r3')).toMatchObject({ ok: true });
+    } finally {
+      ws.close();
+      other.ws.close();
+    }
+  });
+
   it('answers one that names no buffer, and says nothing without a clientId', async () => {
     const { ws, heard } = await attach(alice);
     try {

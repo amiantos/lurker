@@ -25,7 +25,7 @@ import themesService from './themesService.js';
 import avatarSetsService from './avatarSetsService.js';
 import highlightRulesService from './highlightRulesService.js';
 import aliasesService from './aliasesService.js';
-import draftsService from './draftsService.js';
+import draftsService, { parseDraftGuard, type DraftWrite } from './draftsService.js';
 import * as systemLog from './systemLog.js';
 import * as pushService from './pushService.js';
 import { channelMutesUnread, evaluateIgnores, type IgnoreVerdict } from './ignoreMatch.js';
@@ -2674,6 +2674,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             bufferId: ev.bufferId,
             body: draft?.body ?? '',
             reply: draft?.reply ?? null,
+            rev: draftsService.touch(eventUserId, ev.bufferId),
           });
         }
       }
@@ -2878,13 +2879,16 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // that triggered the change (if any) and gets excluded so the originator
   // doesn't clobber its own optimistic state with a stale echo. HTTP-driven
   // writes (sendBeacon on tab close) pass null and reach every tab.
-  draftsService.on('change', ({ userId, networkId, target, bufferId, body, reply, originWs }) => {
-    fanOut(
-      userId,
-      { kind: 'draft-updated', networkId, target, bufferId, body, reply },
-      originWs ? { exceptWs: originWs } : undefined,
-    );
-  });
+  draftsService.on(
+    'change',
+    ({ userId, networkId, target, bufferId, body, reply, rev, originWs }) => {
+      fanOut(
+        userId,
+        { kind: 'draft-updated', networkId, target, bufferId, body, reply, rev },
+        originWs ? { exceptWs: originWs } : undefined,
+      );
+    },
+  );
 
   // When a user is deleted, their WS connections are still authenticated
   // against a session that just got cascade-deleted. Stale handlers would
@@ -3430,15 +3434,33 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // A draft write is answered when it carries a clientId, so the client knows
   // the server has it: one sent into a socket that was already dead is never
   // answered, and the client sends it again after it reconnects.
-  // `ok: false` is a write that names no buffer of theirs: heard, and nothing
-  // to send again.
-  function ackDraft(ws: LurkerWebSocket, msg: WsPayload, ok: boolean): void {
-    if (!msg.clientId) return;
+  // A refusal is `unknown-buffer` (it named no buffer of theirs, nothing was
+  // stored) or `stale` (the draft here was typed later). A stale writer is
+  // then sent the draft that stands, which the fan-out skipped it for.
+  function ackDraft(
+    ws: LurkerWebSocket,
+    msg: WsPayload,
+    networkId?: number,
+    target?: string,
+    result: DraftWrite = { ok: false, error: 'unknown-buffer' },
+  ): void {
+    if (msg.clientId) {
+      send(ws, {
+        kind: 'send-result',
+        clientId: msg.clientId,
+        ok: result.ok,
+        ...(result.ok ? { data: { rev: result.rev } } : { error: result.error }),
+      });
+    }
+    if (result.ok || result.error !== 'stale') return;
     send(ws, {
-      kind: 'send-result',
-      clientId: msg.clientId,
-      ok,
-      ...(ok ? {} : { error: 'unknown-buffer' }),
+      kind: 'draft-updated',
+      networkId,
+      target,
+      bufferId: result.bufferId,
+      body: result.current?.body ?? '',
+      reply: result.current?.reply ?? null,
+      rev: result.rev,
     });
   }
 
@@ -4040,36 +4062,52 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       case 'draft-set': {
         const addr = verbBuffer(userId, msg);
         if (addr === null) {
-          ackDraft(ws, msg, false);
+          ackDraft(ws, msg);
           break;
         }
         const networkId = addr ? Number(addr.networkId) : Number(msg.networkId);
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
         const body = typeof msg.body === 'string' ? msg.body : '';
         if (!networkId || !target || target.startsWith(':server:')) {
-          ackDraft(ws, msg, false);
+          ackDraft(ws, msg);
           break;
         }
         ackDraft(
           ws,
           msg,
-          draftsService.set(userId, networkId, target, body, parseDraftReplyRef(msg.reply), ws),
+          networkId,
+          target,
+          draftsService.set(
+            userId,
+            networkId,
+            target,
+            body,
+            parseDraftReplyRef(msg.reply),
+            ws,
+            parseDraftGuard(msg),
+          ),
         );
         break;
       }
       case 'draft-clear': {
         const addr = verbBuffer(userId, msg);
         if (addr === null) {
-          ackDraft(ws, msg, false);
+          ackDraft(ws, msg);
           break;
         }
         const networkId = addr ? Number(addr.networkId) : Number(msg.networkId);
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
         if (!networkId || !target) {
-          ackDraft(ws, msg, false);
+          ackDraft(ws, msg);
           break;
         }
-        ackDraft(ws, msg, draftsService.clear(userId, networkId, target, ws));
+        ackDraft(
+          ws,
+          msg,
+          networkId,
+          target,
+          draftsService.clear(userId, networkId, target, ws, parseDraftGuard(msg)),
+        );
         break;
       }
       case 'pin-buffer': {
