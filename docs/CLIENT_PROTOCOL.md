@@ -690,6 +690,13 @@ it as deleted, not as unavailable. A line deleted while you hold it arrives as a
 `message-redacted` frame (§7.1); patch the row from that rather than refetching.
 Absent — not `null` — on every other line, like `bookmarked`.
 
+**Knowing a draft was saved.** A `draft-set` or `draft-clear` that carries a
+`clientId` is answered with `{kind:'send-result', clientId, ok}` (since 2.7;
+`ok: false` when it names no buffer of yours). Hold your local text as unsaved
+until that arrives: a write sent into a socket that had already died is never
+answered, and the `draft-snapshot` after the reconnect still has the older
+text. Keep yours over the snapshot's for such a buffer, and send it again.
+
 **A draft's reply.** The reply a composer is writing is part of its draft, so it
 follows the user to another device and survives a reload. `draft-set` takes
 `reply: { messageId, addressed }` — the line it answers, and whether your Reply

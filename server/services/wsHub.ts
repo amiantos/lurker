@@ -3427,6 +3427,21 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     }
   }
 
+  // A draft write is answered when it carries a clientId, so the client knows
+  // the server has it: one sent into a socket that was already dead is never
+  // answered, and the client sends it again after it reconnects.
+  // `ok: false` is a write that names no buffer of theirs: heard, and nothing
+  // to send again.
+  function ackDraft(ws: LurkerWebSocket, msg: WsPayload, ok = true): void {
+    if (!msg.clientId) return;
+    send(ws, {
+      kind: 'send-result',
+      clientId: msg.clientId,
+      ok,
+      ...(ok ? {} : { error: 'unknown-buffer' }),
+    });
+  }
+
   function handleClientMessage(ws: LurkerWebSocket, user: User, msg: WsPayload): void {
     const userId = user.id;
     // Any message that carries a networkId must reference a network the caller
@@ -4024,21 +4039,35 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       }
       case 'draft-set': {
         const addr = verbBuffer(userId, msg);
-        if (addr === null) break;
+        if (addr === null) {
+          ackDraft(ws, msg, false);
+          break;
+        }
         const networkId = addr ? Number(addr.networkId) : Number(msg.networkId);
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
         const body = typeof msg.body === 'string' ? msg.body : '';
-        if (!networkId || !target || target.startsWith(':server:')) break;
+        if (!networkId || !target || target.startsWith(':server:')) {
+          ackDraft(ws, msg, false);
+          break;
+        }
         draftsService.set(userId, networkId, target, body, parseDraftReplyRef(msg.reply), ws);
+        ackDraft(ws, msg);
         break;
       }
       case 'draft-clear': {
         const addr = verbBuffer(userId, msg);
-        if (addr === null) break;
+        if (addr === null) {
+          ackDraft(ws, msg, false);
+          break;
+        }
         const networkId = addr ? Number(addr.networkId) : Number(msg.networkId);
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
-        if (!networkId || !target) break;
+        if (!networkId || !target) {
+          ackDraft(ws, msg, false);
+          break;
+        }
         draftsService.clear(userId, networkId, target, ws);
+        ackDraft(ws, msg);
         break;
       }
       case 'pin-buffer': {

@@ -12,6 +12,7 @@ import { setActivePinia, createPinia } from 'pinia';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
+  socketSendWithAck: vi.fn<() => null>(() => null),
 }));
 
 import { bufferClosed, bufferRenamed, applyBufferRenamed } from './bufferLifecycle.js';

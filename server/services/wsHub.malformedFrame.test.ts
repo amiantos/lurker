@@ -198,3 +198,45 @@ describe('malformed frames', () => {
     }
   });
 });
+
+// A client only stops holding a draft as unsaved when it hears this: a write
+// sent into a socket that was already dead is never answered, and is sent again.
+describe('draft writes are answered', () => {
+  it('answers a draft-set and a draft-clear that carry a clientId', async () => {
+    const { ws, heard } = await attach(alice);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'draft-set',
+          networkId,
+          target: '#chan',
+          body: 'hi',
+          clientId: 'a',
+        }),
+      );
+      expect(await waitFor(heard, (f) => f.clientId === 'a')).toMatchObject({
+        kind: 'send-result',
+        ok: true,
+      });
+      ws.send(JSON.stringify({ type: 'draft-clear', networkId, target: '#chan', clientId: 'b' }));
+      expect(await waitFor(heard, (f) => f.clientId === 'b')).toMatchObject({ ok: true });
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('answers one that names no buffer, and says nothing without a clientId', async () => {
+    const { ws, heard } = await attach(alice);
+    try {
+      ws.send(JSON.stringify({ type: 'draft-set', networkId, target: '#chan', body: 'quiet' }));
+      ws.send(JSON.stringify({ type: 'draft-set', bufferId: 999999, body: 'x', clientId: 'c' }));
+      expect(await waitFor(heard, (f) => f.clientId === 'c')).toMatchObject({
+        kind: 'send-result',
+        ok: false,
+      });
+      expect(heard.filter((f) => f.kind === 'send-result')).toHaveLength(1);
+    } finally {
+      ws.close();
+    }
+  });
+});

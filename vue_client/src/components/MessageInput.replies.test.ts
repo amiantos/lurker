@@ -75,7 +75,11 @@ async function press(el: HTMLTextAreaElement, key: string) {
 }
 
 const sent = () =>
-  vi.mocked(socketSendWithAck).mock.calls.map((c) => c[0] as Record<string, unknown>);
+  vi
+    .mocked(socketSendWithAck)
+    .mock.calls.map((c) => c[0] as Record<string, unknown>)
+    // A draft's saves ride the same path; these are the lines sent.
+    .filter((f) => !String(f.type).startsWith('draft-'));
 
 // What a line's Reply action does (MessageList's onReply): start the pending
 // reply, then have the composer address them.

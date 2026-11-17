@@ -10,11 +10,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 
+// Every flush is answered at once, as a live server does.
 vi.mock('../composables/useSocket.js', () => ({
-  socketSend: vi.fn<(payload: Record<string, unknown>) => boolean>(() => true),
+  socketSendWithAck: vi.fn<(payload: Record<string, unknown>) => Promise<{ ok: boolean }>>(() =>
+    Promise.resolve({ ok: true }),
+  ),
 }));
 
-import { socketSend } from '../composables/useSocket.js';
+import { socketSendWithAck } from '../composables/useSocket.js';
 import { useDraftStore } from './drafts.js';
 import { useRepliesStore } from './replies.js';
 import { useRelayBotsStore } from './relayBots.js';
@@ -36,12 +39,13 @@ const fromServer = (over: Partial<DraftReply> = {}): DraftReply => ({
   },
   ...over,
 });
-const frames = () => vi.mocked(socketSend).mock.calls.map((c) => c[0] as Record<string, unknown>);
+const frames = () =>
+  vi.mocked(socketSendWithAck).mock.calls.map((c) => c[0] as Record<string, unknown>);
 
 describe('a draft’s reply', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    vi.mocked(socketSend).mockClear();
+    vi.mocked(socketSendWithAck).mockClear();
     useDraftStore().resetTimers();
   });
 
