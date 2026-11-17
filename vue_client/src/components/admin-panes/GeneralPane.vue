@@ -24,7 +24,7 @@
         autocomplete="off"
         spellcheck="false"
         placeholder="https://meet.jit.si"
-        :value="store.jitsiUrl ?? ''"
+        v-model="draft"
         :disabled="busy || store.jitsiUrl === undefined"
         aria-label="Jitsi server URL"
         @change="onJitsiChange"
@@ -35,8 +35,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, watch, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
+import { useConfigStore } from '../../stores/config.js';
 import { normalizeJitsiBase } from '../../../../shared/jitsi.js';
 
 const store = useAdminStore();
@@ -51,12 +52,28 @@ onMounted(async () => {
   }
 });
 
-// Committed on change, like the upload ceiling: one value, no form. A refusal
-// leaves what was typed in the box, beside the reason, so it can be fixed.
+// What is in the box. Its own ref, not the stored value: a refusal has to
+// leave what was typed there, beside the reason, so it can be fixed.
+const draft = ref('');
+watch(
+  () => store.jitsiUrl,
+  (url) => {
+    draft.value = url ?? '';
+  },
+);
+// Another admin (or this one, elsewhere) changed it: the frame that tells every
+// client reaches this pane too.
+watch(
+  () => useConfigStore().jitsiUrl,
+  (url) => {
+    if (store.jitsiUrl !== undefined) store.jitsiUrl = url;
+  },
+);
+
+// Committed on change, like the upload ceiling: one value, no form.
 const jitsiError = ref('');
-async function onJitsiChange(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const typed = input.value.trim();
+async function onJitsiChange() {
+  const typed = draft.value.trim();
   jitsiError.value = '';
   if (typed && !normalizeJitsiBase(typed)) {
     jitsiError.value = 'not a Jitsi address: expected https://host';
@@ -65,7 +82,7 @@ async function onJitsiChange(e: Event) {
   busy.value = true;
   try {
     await store.setJitsiUrl(typed);
-    input.value = store.jitsiUrl ?? '';
+    draft.value = store.jitsiUrl ?? '';
   } catch (err: any) {
     jitsiError.value = err.message || 'failed to update the Jitsi server';
   } finally {

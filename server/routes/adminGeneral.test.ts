@@ -48,6 +48,14 @@ describe('admin general: Jitsi server', () => {
     expect(fanOutJitsiUrlToAll).toHaveBeenCalledTimes(1);
   });
 
+  it('announces nothing when the same server is entered again', async () => {
+    const res = await adminAgent
+      .put('/api/admin/general/jitsi')
+      .send({ url: 'https://meet.example.org/' });
+    expect(res.body).toEqual({ jitsiUrl: 'https://meet.example.org' });
+    expect(fanOutJitsiUrlToAll).not.toHaveBeenCalled();
+  });
+
   it.each(['meet.example.org', 'ftp://meet.example.org', 'https://meet.example.org/?jwt=x'])(
     'refuses %s and keeps what was set',
     async (url) => {

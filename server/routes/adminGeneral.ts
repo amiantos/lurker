@@ -32,8 +32,11 @@ router.put('/jitsi', (req: Request, res: Response) => {
     res.status(400).json({ error: 'not a Jitsi address: expected https://host' });
     return;
   }
-  setInstanceJitsiUrl(url);
-  fanOutJitsiUrlToAll();
+  // Unchanged (the same address retyped): nothing to store or announce.
+  if (url !== instanceJitsiUrl()) {
+    setInstanceJitsiUrl(url);
+    fanOutJitsiUrlToAll();
+  }
   res.json({ jitsiUrl: instanceJitsiUrl() });
 });
 

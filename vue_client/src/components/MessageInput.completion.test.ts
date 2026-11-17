@@ -1541,14 +1541,21 @@ describe('scroll position on send (#628)', () => {
     // A link can't be unsent: a setting that isn't a URL sends nothing, where
     // falling back would post a room on a server the user didn't choose.
     it("sends nothing when the user's server is not a URL", async () => {
-      seedStores('#zebra');
+      const { buffers } = seedStores('#zebra');
       useConfigStore().jitsiUrl = 'https://meet.example.org';
       useSettingsStore().values['chat.jitsi_url'] = 'meet.example.org';
       allowSend();
+      const said = vi.spyOn(buffers, 'pushMessage');
       const { el } = await mountComposer();
       await type(el, '/jitsi');
       await enter(el);
       expect(socketSendWithAck).not.toHaveBeenCalled();
+      // Positive control: the command ran and refused, not fell out earlier.
+      expect(said).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'your Jitsi server setting is not a URL: meet.example.org',
+        }),
+      );
     });
   });
 });
