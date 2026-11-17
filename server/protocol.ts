@@ -24,7 +24,7 @@
 //      socket (see handleClientMessage's default case). Either way an old client
 //      can talk to a newer server and vice-versa.
 //   3. PROTOCOL_VERSION only bumps on a change rule (1) cannot express — i.e.
-//      effectively never. MIN_PROTOCOL_VERSION is the oldest client this server
+//      almost never. MIN_PROTOCOL_VERSION is the oldest client this server
 //      still serves; a client that announces an older version on the upgrade is
 //      told to update (HTTP 426) instead of being handed a snapshot it would
 //      mis-render.
@@ -33,9 +33,14 @@
 // check before opening the socket) and in the `snapshot` frame. A client
 // announces the version it speaks with `?v=<n>` on the /ws upgrade.
 
-export const PROTOCOL_VERSION = 1;
+// History:
+//   2 (Lurker 2.7.0): the WS `search` command and its `search-result` frame are
+//      gone (#799); search is GET /api/search. See docs/MIGRATION_2_7.md.
+//   1: the first versioned protocol.
+export const PROTOCOL_VERSION = 2;
 
 // Oldest client protocol version this server will accept on the WS upgrade.
-// Equal to PROTOCOL_VERSION today (nothing to deprecate yet); raise it only when
-// an old client genuinely can no longer be served correctly.
+// Raise it only when an old client genuinely can no longer be served correctly.
+// Version 2 took away one request: a version 1 client that still sends `search`
+// gets the non-fatal unknown-type error, and everything else it does works.
 export const MIN_PROTOCOL_VERSION = 1;

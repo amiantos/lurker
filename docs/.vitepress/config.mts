@@ -66,7 +66,7 @@ export default defineConfig({
             { text: 'Client Protocol & API', link: '/CLIENT_PROTOCOL' },
             { text: 'OAuth', link: '/OAUTH' },
             { text: 'Client Migration: 1.1.x → 2.0', link: '/MIGRATION_2_0' },
-            { text: 'Client Migration: Search → REST', link: '/MIGRATION_SEARCH_REST' },
+            { text: 'Client Migration: 2.6 → 2.7', link: '/MIGRATION_2_7' },
             { text: 'MCP & HTTP API', link: '/MCP' },
             { text: 'IRCv3 Support', link: '/IRCV3' },
           ],

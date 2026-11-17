@@ -135,9 +135,6 @@ import { timeSyncWork } from './syncWork.js';
 // WebSocket extended with per-socket bookkeeping fields.
 interface LurkerWebSocket extends WebSocket {
   userId?: number;
-  // Aborted when the socket closes: what a search asked over it stops on.
-  // Made by the first search (the deprecated `search` command).
-  gone?: AbortController;
   sinceId?: number;
   // Channels (`networkId:folded target`) this socket has been handed a `names`
   // for on hydration (lurker#1292) — see sendNames.
@@ -372,7 +369,7 @@ const CHANNEL_MODAL_VERBS: Record<
 
 // Inbound message types that mutate IRC state or produce outbound IRC traffic.
 // A paused account is read-only, so these are rejected while reads (snapshot,
-// history, search, chanlist-search) and local view state (read markers, pins,
+// history, chanlist-search) and local view state (read markers, pins,
 // drafts, bookmarks, nicklist collapse) still work. open-buffer can resolve to
 // a JOIN, so it's blocked; close-buffer is blocked because its disconnected
 // fallback flips channels.joined=0 — a network-state mutation a read-only
@@ -3057,11 +3054,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     ws.on('pong', () => noteHeartbeatPong(ws, user.id));
 
     ws.on('close', () => {
-      ws.gone?.abort();
       removeSocket(user.id, ws);
     });
     ws.on('error', () => {
-      ws.gone?.abort();
       removeSocket(user.id, ws);
     });
   }
@@ -4668,70 +4663,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           hasMoreNewer: false,
           hasMore: result.hasOlder,
         });
-        break;
-      }
-      case 'search': {
-        // DEPRECATED (#676): superseded by GET /api/search, which calls the
-        // same verb — see docs/MIGRATION_SEARCH_REST.md. Kept for third-party
-        // clients; removal is tracked separately and will be a protocol
-        // version bump. Don't add features here — new search capability lands
-        // in the verb, and this shim just keeps forwarding.
-        //
-        // Delegates to the search_messages verb. The boundary check above
-        // already validated networkId ownership when a network filter was
-        // present; searchMessages itself self-scopes the global case to the
-        // caller's networks via its SQL join. The verb is async: the statement
-        // runs in the search process (searchRunner.ts), and the reply follows.
-        const search = (): Promise<{ messages: WsPayload[]; hasMore: boolean }> =>
-          callVerb(
-            'search_messages',
-            {
-              userId,
-              scope: 'read-write',
-              transport: 'ws',
-              signal: (ws.gone ??= new AbortController()).signal,
-            },
-            {
-              query: msg.query,
-              networkId: msg.networkId || undefined,
-              // `bufferId` narrows the in:-scope by id; resolved to the
-              // canonical name since search's scope filter is name-shaped.
-              target:
-                (typeof msg.bufferId === 'number'
-                  ? requireBufferForUser(userId, msg.bufferId)?.target
-                  : undefined) ??
-                (typeof msg.target === 'string' && msg.target ? msg.target : undefined),
-              nick: typeof msg.nick === 'string' && msg.nick ? msg.nick : undefined,
-              nicks: Array.isArray(msg.nicks) ? msg.nicks : undefined,
-              before: msg.before ? Number(msg.before) : undefined,
-              limit: msg.limit,
-            },
-          ) as Promise<{ messages: WsPayload[]; hasMore: boolean }>;
-        void (async () => {
-          let result: { messages: WsPayload[]; hasMore: boolean };
-          try {
-            result = await search();
-          } catch (err) {
-            // The socket closed under it: nobody to tell.
-            if (ws.gone?.signal.aborted) return;
-            // `token` and `code` are additive: which search, and why.
-            const code = (err as { code?: string } | null)?.code;
-            send(ws, {
-              kind: 'error',
-              text: code === 'search_timeout' ? 'search took too long' : 'search failed',
-              code: typeof code === 'string' && code.startsWith('search_') ? code : 'search_failed',
-              token: msg.token ?? null,
-            });
-            return;
-          }
-          send(ws, {
-            kind: 'search-result',
-            token: msg.token ?? null,
-            results: result.messages,
-            hasMore: result.hasMore,
-            before: msg.before || null,
-          });
-        })();
         break;
       }
       default:

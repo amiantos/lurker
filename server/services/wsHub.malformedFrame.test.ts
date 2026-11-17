@@ -48,9 +48,13 @@ afterAll(() => {
 
 type Frame = Record<string, unknown>;
 
-async function attach(userId: number): Promise<{ ws: WebSocket; heard: Frame[] }> {
+async function attach(
+  userId: number,
+  query = '',
+  keepBurst = false,
+): Promise<{ ws: WebSocket; heard: Frame[] }> {
   const { token } = createSession(userId);
-  const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+  const ws = new WebSocket(url + query, { headers: { Authorization: `Bearer ${token}` } });
   const heard: Frame[] = [];
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('no backlog-complete')), 3000);
@@ -63,7 +67,7 @@ async function attach(userId: number): Promise<{ ws: WebSocket; heard: Frame[] }
       }
     });
   });
-  heard.length = 0;
+  if (!keepBurst) heard.length = 0;
   return { ws, heard };
 }
 
@@ -173,4 +177,21 @@ describe('malformed frames', () => {
       expect(uncaught).toBeNull();
     });
   }
+
+  // The WS `search` command is gone as of protocol version 2 (#799). A version 1
+  // client that still sends it is served, and told so like any unknown type.
+  it('a version 1 client sending the removed search command is told it is unknown', async () => {
+    const { ws, heard } = await attach(alice, '?v=1', true);
+    try {
+      expect(heard.find((f) => f.kind === 'snapshot')?.protocolVersion).toBe(2);
+      heard.length = 0;
+      ws.send(JSON.stringify({ type: 'search', query: 'hello', token: 7 }));
+      const err = await waitFor(heard, (f) => f.kind === 'error');
+      expect(err.text).toBe('unknown message type: search');
+      await stillServes(ws, heard);
+      expect(heard.some((f) => f.kind === 'search-result')).toBe(false);
+    } finally {
+      ws.close();
+    }
+  });
 });

@@ -12,21 +12,18 @@ import '../services/verbs/index.js';
 
 // GET /api/search — message search as a stateless REST read (#676).
 //
-// This is the same search_messages verb the WS `search` command and the MCP
-// server call; the route adds nothing but transport. It exists because a WS
-// verb is welded to the socket hub, while a URL is a request that can be
-// abandoned: the statement runs off the event loop, in the search process
+// This is the same search_messages verb the MCP server calls; the route adds
+// nothing but transport. Search used to be a WS command, welded to the socket
+// hub, with no way to cancel one. A URL is a request that can be abandoned: the
+// statement runs off the event loop, in the search process
 // (services/searchRunner.ts), and a superseded search-as-you-type request is
-// dropped from its queue, or stopped mid-walk, the moment the client aborts it
-// (there is no WS cancel frame — a stale WS search runs until the time limit
-// and the reply is discarded). Also over the socket: result pages stop
-// competing with the live IRC event stream for the socket's backpressure
-// budget, and the response contract matches the highlights/bookmarks feeds
-// (`{items, nextBefore}`) instead of making clients synthesize a cursor from
-// `hasMore` plus the last row's id.
+// dropped from its queue, or stopped mid-walk, the moment the client aborts it.
+// Result pages also stopped competing with the live IRC event stream for the
+// socket's backpressure budget, and the response contract matches the
+// highlights/bookmarks feeds (`{items, nextBefore}`).
 //
-// The WS `search` command remains for compatibility but is deprecated — see
-// docs/MIGRATION_SEARCH_REST.md.
+// The WS `search` command this replaced was removed in protocol version 2
+// (#799) — see docs/MIGRATION_2_7.md.
 
 const router = Router();
 router.use(requireAuth);
