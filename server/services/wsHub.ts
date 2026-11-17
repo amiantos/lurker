@@ -128,6 +128,7 @@ import { setBufferRetentionById } from '../db/bufferRetention.js';
 import { markBufferDirty } from '../db/retention.js';
 import { SESSION_COOKIE, loadBearerCredential } from '../middleware/auth.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
+import { instanceJitsiUrl } from '../utils/jitsi.js';
 import { isAllowedBrowserOrigin } from '../utils/corsOrigins.js';
 import { callVerb } from './verbRegistry.js';
 import { timeSyncWork } from './syncWork.js';
@@ -3171,6 +3172,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       uploadChunkBytes,
       // #1131: the instance ceiling, the bound on the user's own cap setting.
       uploadCeilingBytes,
+      // #527: the operator's Jitsi Meet server for /jitsi, or null.
+      jitsiUrl: instanceJitsiUrl(),
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),

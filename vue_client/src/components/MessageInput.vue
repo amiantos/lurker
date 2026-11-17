@@ -5133,11 +5133,12 @@ function handleCommand(
         localInfo(networkId, target, 'usage: /jitsi — run inside a channel or DM');
         return true;
       }
-      const url = jitsiRoomUrl(
-        randomRoomId(),
-        settings.effective('chat.jitsi_url'),
-        config.jitsiUrl,
-      );
+      const own = settings.effective('chat.jitsi_url');
+      const url = jitsiRoomUrl(randomRoomId(), own, config.jitsiUrl);
+      if (!url) {
+        localInfo(networkId, target, `your Jitsi server setting is not a URL: ${String(own)}`);
+        return true;
+      }
       return ackedSend({ type: 'send', networkId, target, text: url }, url, {
         networkId,
         target,

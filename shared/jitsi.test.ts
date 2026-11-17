@@ -10,7 +10,6 @@ describe('normalizeJitsiBase', () => {
     ['  https://meet.example.org/  ', 'https://meet.example.org'],
     ['https://example.org/jitsi//', 'https://example.org/jitsi'],
     ['http://jitsi.lan:8443', 'http://jitsi.lan:8443'],
-    ['https://meet.example.org/?lang=en#config', 'https://meet.example.org'],
   ])('%s → %s', (raw, want) => {
     expect(normalizeJitsiBase(raw)).toBe(want);
   });
@@ -22,6 +21,8 @@ describe('normalizeJitsiBase', () => {
     'javascript:alert(1)',
     'ftp://meet.example.org',
     'https://user:pw@meet.example.org',
+    'https://meet.example.org/?jwt=abc',
+    'https://meet.example.org/#config.x=1',
     null,
     undefined,
     42,
@@ -47,10 +48,11 @@ describe('jitsiRoomUrl', () => {
     );
   });
 
-  it('falls through a value that is not a URL', () => {
-    expect(jitsiRoomUrl('abc', 'nope', 'https://meet.example.org')).toBe(
-      'https://meet.example.org/lurker-abc',
-    );
-    expect(jitsiRoomUrl('abc', 'nope', 'also nope')).toBe(`${DEFAULT_JITSI_URL}/lurker-abc`);
+  it("answers nothing for a user's server that is not a URL", () => {
+    expect(jitsiRoomUrl('abc', 'meet.example.org', 'https://meet.example.org')).toBeNull();
+  });
+
+  it("falls through an instance's server that is not a URL", () => {
+    expect(jitsiRoomUrl('abc', ' ', 'also nope')).toBe(`${DEFAULT_JITSI_URL}/lurker-abc`);
   });
 });

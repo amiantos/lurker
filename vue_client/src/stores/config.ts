@@ -35,7 +35,8 @@ export const useConfigStore = defineStore('config', {
     // failure must not conjure a feature the server may not have: guessing "on" here would show
     // the two settings and then have every resolve 404.
     features: { linkPreviews: false, bouncer: false, dcc: false } as Features,
-    /** The instance's Jitsi Meet server for /jitsi, when the operator named one. */
+    /** The instance's Jitsi Meet server for /jitsi, when the operator named one.
+     *  From the `snapshot` frame, not /api/config: it is for signed-in users. */
     jitsiUrl: null as string | null,
     checked: false,
   }),
@@ -53,18 +54,13 @@ export const useConfigStore = defineStore('config', {
       if (inflight) return inflight; // a fetch is in flight — share its result
       inflight = (async () => {
         try {
-          const data = await api<{
-            edition?: string;
-            features?: Partial<Features>;
-            jitsiUrl?: string | null;
-          }>('/api/config');
+          const data = await api<{ edition?: string; features?: Partial<Features> }>('/api/config');
           this.edition = data.edition === 'node' ? 'node' : 'standalone';
           this.features = {
             linkPreviews: data.features?.linkPreviews === true,
             bouncer: data.features?.bouncer === true,
             dcc: data.features?.dcc === true,
           };
-          this.jitsiUrl = typeof data.jitsiUrl === 'string' ? data.jitsiUrl : null;
           // Latch `checked` ONLY on success. A transient failure must not wedge
           // the session on the safe defaults — leaving it false lets the next
           // caller retry and self-heal. That second caller is the router guard,

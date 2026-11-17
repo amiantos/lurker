@@ -8,7 +8,6 @@ import { isBouncerEnabled } from '../utils/bouncerConfig.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
 import { previewsEnabled } from '../utils/previews.js';
 import { dccMasterEnabled } from '../services/dccConfig.js';
-import { normalizeJitsiBase } from '../../shared/jitsi.js';
 
 const router = Router();
 
@@ -26,10 +25,6 @@ router.get('/', (_req: Request, res: Response) => {
     edition: getEdition(),
     protocolVersion: PROTOCOL_VERSION,
     minProtocolVersion: MIN_PROTOCOL_VERSION,
-    // The operator's Jitsi Meet server for /jitsi (LURKER_JITSI_URL, #527), or
-    // null: the client then uses the public one. A user's own chat.jitsi_url
-    // setting goes ahead of this.
-    jitsiUrl: normalizeJitsiBase(process.env.LURKER_JITSI_URL),
     // Feature flags. `linkPreviews` is off unless the operator pointed the instance at a
     // lurker-previews decoder (LURKER_PREVIEWS_URL, which is the whole gate — see
     // previewsEnabled); clients use it to hide the two user settings entirely rather than

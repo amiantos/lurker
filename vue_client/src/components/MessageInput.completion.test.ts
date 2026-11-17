@@ -1537,5 +1537,18 @@ describe('scroll position on send (#628)', () => {
       useSettingsStore().values['chat.jitsi_url'] = 'https://mine.example/';
       expect(await room()).toMatch(/^https:\/\/mine\.example\/lurker-[0-9a-f]{12}$/);
     });
+
+    // A link can't be unsent: a setting that isn't a URL sends nothing, where
+    // falling back would post a room on a server the user didn't choose.
+    it("sends nothing when the user's server is not a URL", async () => {
+      seedStores('#zebra');
+      useConfigStore().jitsiUrl = 'https://meet.example.org';
+      useSettingsStore().values['chat.jitsi_url'] = 'meet.example.org';
+      allowSend();
+      const { el } = await mountComposer();
+      await type(el, '/jitsi');
+      await enter(el);
+      expect(socketSendWithAck).not.toHaveBeenCalled();
+    });
   });
 });

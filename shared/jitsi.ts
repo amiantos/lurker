@@ -6,15 +6,15 @@
 // tells them apart.
 //
 // Three places can name one, most specific first: the user's own setting
-// (`chat.jitsi_url`), the instance's (LURKER_JITSI_URL, advertised as
-// `jitsiUrl` in GET /api/config), and the public server.
+// (`chat.jitsi_url`), the instance's (LURKER_JITSI_URL, sent as `jitsiUrl` in
+// the `snapshot` frame), and the public server.
 
 export const DEFAULT_JITSI_URL = 'https://meet.jit.si';
 
 /**
  * A Jitsi base URL in the one form a room name is appended to: http(s), no
- * query or fragment, no trailing slash. Null for anything else, an empty
- * value included, so the caller falls through to the next source.
+ * trailing slash. Null for anything else: an empty value, credentials, or a
+ * query or fragment, which a room name can't be appended to.
  */
 export function normalizeJitsiBase(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -27,13 +27,22 @@ export function normalizeJitsiBase(raw: unknown): string | null {
     return null;
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-  if (url.username || url.password) return null;
+  if (url.username || url.password || url.search || url.hash) return null;
   return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
 }
 
-/** The room URL `/jitsi` posts. */
-export function jitsiRoomUrl(roomId: string, userBase: unknown, instanceBase: unknown): string {
-  const base =
-    normalizeJitsiBase(userBase) ?? normalizeJitsiBase(instanceBase) ?? DEFAULT_JITSI_URL;
+/**
+ * The room URL `/jitsi` posts. Null when the user named a server that isn't a
+ * usable URL: a link can't be unsent, so that is said, not guessed around.
+ */
+export function jitsiRoomUrl(
+  roomId: string,
+  userBase: unknown,
+  instanceBase: string | null,
+): string | null {
+  const named = typeof userBase === 'string' && userBase.trim() !== '';
+  const own = normalizeJitsiBase(userBase);
+  if (named && !own) return null;
+  const base = own ?? normalizeJitsiBase(instanceBase) ?? DEFAULT_JITSI_URL;
   return `${base}/lurker-${roomId}`;
 }

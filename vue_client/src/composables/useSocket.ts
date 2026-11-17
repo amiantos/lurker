@@ -937,6 +937,8 @@ function handleMessage(raw: string): void {
     // #1131: the instance ceiling, the bound on the user's own cap setting.
     useUploadsStore().ceilingBytes =
       typeof payload.uploadCeilingBytes === 'number' ? payload.uploadCeilingBytes : null;
+    // #527: the operator's Jitsi server for /jitsi. Absent on an older server.
+    useConfigStore().jitsiUrl = typeof payload.jitsiUrl === 'string' ? payload.jitsiUrl : null;
     // DCC: whether the account has transfers or files to show the button for,
     // and what changed while the socket was down.
     void useDccStore().resync();
