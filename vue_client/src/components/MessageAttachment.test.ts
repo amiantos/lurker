@@ -49,6 +49,7 @@ function entryRef(url: string): Ref<LinkPreview | null> {
 // URLs the real module would say an answer is still expected for. Kept separate from `resolved`
 // because the whole point of the reveal gate is that "no value yet" and "no answer coming" are
 // DIFFERENT states — a stub that conflated them could not observe the distinction it exists for.
+const layoutChanging = vi.fn<() => void>();
 const inFlight = new Set<string>();
 const flightBump = ref(0);
 
@@ -57,6 +58,7 @@ const flightBump = ref(0);
 // (`previewRevision: ref(0)`) dies at collection and these do not.
 vi.mock('../composables/useLinkPreview.js', () => ({
   useLinkPreview: (url: string) => entryRef(url),
+  previewLayoutChanging: () => layoutChanging(),
   usePreviewsSettled: (urls: Ref<readonly string[]>) =>
     computed(() => {
       void flightBump.value;
@@ -192,9 +194,12 @@ describe('MessageAttachment — video embed', () => {
 
   it('keeps the play control when the video thumbnail fails to load', async () => {
     const wrapper = mount(MessageAttachment, { props: { preview: YOUTUBE } });
+    layoutChanging.mockClear();
     await wrapper.find('.card-thumb-wide').trigger('error');
     expect(wrapper.find('.card-thumb-wide').exists()).toBe(false);
     expect(wrapper.find('.card-play').exists()).toBe(true);
+    // The player's box stays, so no height changes and nothing is announced.
+    expect(layoutChanging).not.toHaveBeenCalled();
   });
 
   it('falls back to a plain card when the kind says video but no embedUrl came with it', () => {
@@ -310,7 +315,8 @@ describe('MessageAttachment — the two card shapes', () => {
 
   // lurker#1240: an image host that answers "not now" left a broken-image glyph in the band for
   // the life of the row. A card whose picture fails is the text-only card.
-  it('drops a hero that fails to load, and tells the scroller the row changed', async () => {
+  it('drops a hero that fails to load, and says so before the row changes', async () => {
+    layoutChanging.mockClear();
     const wrapper = mount(MessageAttachment, {
       props: { preview: page({ thumbWidth: 1200, thumbHeight: 600 }) },
     });
@@ -319,7 +325,7 @@ describe('MessageAttachment — the two card shapes', () => {
     expect(wrapper.find('.card-hero').exists()).toBe(false);
     expect(wrapper.find('.card').classes()).not.toContain('card-column');
     expect(wrapper.find('.card-title').exists()).toBe(true);
-    expect(wrapper.emitted('measured')).toHaveLength(1);
+    expect(layoutChanging).toHaveBeenCalledTimes(1);
   });
 
   it('drops a square thumbnail that fails to load', async () => {
@@ -341,6 +347,27 @@ describe('MessageAttachment — the two card shapes', () => {
       preview: page({ thumbWidth: 1200, thumbHeight: 600, thumb: '/api/link-preview/media/tokQ' }),
     });
     expect(wrapper.find('.card-hero-img').attributes('src')).toBe('/api/link-preview/media/tokQ');
+  });
+
+  // A clip's poster can be gone from the byte cache: the file card is what it has without one.
+  it('falls back to the file card when a clip poster fails to load', async () => {
+    const wrapper = mount(MessageAttachment, {
+      props: {
+        preview: preview({
+          url: 'https://cdn.e.test/holiday.mp4',
+          kind: 'video',
+          mime: 'video/mp4',
+          thumb: '/api/link-preview/poster/abc123',
+          thumbWidth: 640,
+          thumbHeight: 360,
+        }),
+      },
+    });
+    await wrapper.find('.media-reserve img').trigger('error');
+    expect(wrapper.find('.media-reserve').exists()).toBe(false);
+    expect(wrapper.find('.card-file .card-title').attributes('href')).toBe(
+      'https://cdn.e.test/holiday.mp4',
+    );
   });
 
   it('keeps the small square for a logo, which is what reddit ships', () => {

@@ -67,7 +67,7 @@
        hides the URL text for inline-rendered media (MessageBody.rendersInline), this element
        is the only remaining path to the clip and MUST navigate somewhere. -->
   <span
-    v-else-if="isMediaFile && preview.thumb"
+    v-else-if="isMediaFile && preview.thumb && !thumbFailed"
     class="media-reserve"
     :class="hasDimensions ? 'dim-reserve' : 'dim-reserve dim-fallback'"
     :style="reserveStyle"
@@ -85,6 +85,7 @@
       tabindex="0"
       :aria-label="`Play ${mediaName}`"
       @load="$emit('measured')"
+      @error="onThumbError"
       @click="onImageClick"
       @keydown.enter.prevent="activate"
       @keydown.space.prevent="activate"
@@ -107,6 +108,7 @@
         loading="lazy"
         decoding="async"
         @load="$emit('measured')"
+        @error="onThumbError"
       />
     </a>
     <span class="media-badge" aria-hidden="true">{{ preview.kind === 'video' ? '▶' : '♪' }}</span>
@@ -295,7 +297,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, useTemplateRef, watch } from 'vue';
-import type { LinkPreview } from '../composables/useLinkPreview.js';
+import { previewLayoutChanging, type LinkPreview } from '../composables/useLinkPreview.js';
 import { useSettingsStore } from '../stores/settings.js';
 
 // Purely presentational: it renders ONE already-resolved, already-permitted preview.
@@ -368,6 +370,40 @@ const heading = computed(() => {
     return p.url;
   }
 });
+
+/**
+ * A CARD's picture that failed to load is dropped, and the card becomes the one it would have
+ * been with no picture at all (lurker#1240): text only for a page, the file card for a clip
+ * whose poster is gone. The image host answers "not now" often enough — GitHub's og:image
+ * service refuses a share of requests at random — and an `<img>` never asks again, so the
+ * alternative is a broken-image glyph in a 240px band for the life of the row.
+ *
+ * ⚠ CARDS AND POSTERS ONLY. An inline image is not touched: see the note on `@error` below, and
+ * a failed inline image with the URL text hidden would leave a message showing nothing at all.
+ *
+ * ⚠ None of that note's objections reach these. A card picture has no role, tabindex or focus
+ * to lose and its `alt` never changes; the poster's replacement, the file card, keeps a link.
+ *
+ * ⚠ For the life of this mount, or until the preview names a different picture. The same row
+ * mounted again asks again, which is the only retry there is.
+ *
+ * ⚠ The row gets SHORTER, after first paint. `previewLayoutChanging` is called before that
+ * renders, which is what lets the list hold a scrolled-up reader's place; `measured` fires
+ * after and could only follow the bottom. A video card's thumbnail changes no height (the
+ * player's box stays) and announces nothing.
+ */
+const thumbFailed = ref(false);
+function onThumbError(): void {
+  if (thumbFailed.value) return;
+  if (!isVideo.value) previewLayoutChanging();
+  thumbFailed.value = true;
+}
+watch(
+  () => props.preview.thumb,
+  () => {
+    thumbFailed.value = false;
+  },
+);
 
 /** A bare media FILE — a link that resolved to video or audio bytes rather than to a page.
  *
@@ -530,36 +566,6 @@ const reserveStyle = computed(() => {
     aspectRatio: `${w} / ${h}`,
   };
 });
-
-/**
- * A CARD's picture that failed to load is dropped, and the card becomes the text-only card it
- * would have been with no picture at all (lurker#1240). The image host answers "not now" often
- * enough — GitHub's og:image service refuses a share of requests at random — and an `<img>` never
- * asks again, so the alternative is a broken-image glyph in a 240px band for the life of the row.
- *
- * ⚠ CARDS ONLY. An inline image is not touched: see the note below, and a failed inline image
- * with the URL text hidden would leave a message showing nothing at all.
- *
- * ⚠ None of the note below's objections reach a card picture. It has no role, tabindex or focus
- * to lose, its `alt` never changes, and the box that goes is one the text-only card never had.
- * The flag is for the life of this row, as that note says it must be (the `src` is an HMAC of
- * the URL, so a re-delivered answer is the same string): the picture is back on the next mount.
- *
- * ⚠ The row gets SHORTER when the band goes, after first paint. `measured` tells the scroller,
- * as a late-loading image's growth does.
- */
-const thumbFailed = ref(false);
-function onThumbError(): void {
-  if (thumbFailed.value) return;
-  thumbFailed.value = true;
-  void nextTick(() => emit('measured'));
-}
-watch(
-  () => props.preview.thumb,
-  () => {
-    thumbFailed.value = false;
-  },
-);
 
 /**
  * ⚠⚠ THERE IS DELIBERATELY NO `@error` HANDLING ON AN INLINE IMAGE, and that is a decision

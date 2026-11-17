@@ -78,6 +78,15 @@ const asked = new Set<string>();
  */
 export const previewRevision = ref(0);
 
+/**
+ * A rendered preview is about to change height for a reason other than an answer landing: a
+ * card dropping a picture that failed to load. Called BEFORE the change renders, so the lists
+ * watching `previewRevision` can hold a scrolled-up reader's place across it.
+ */
+export function previewLayoutChanging(): void {
+  previewRevision.value++;
+}
+
 let queue = new Set<string>();
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
