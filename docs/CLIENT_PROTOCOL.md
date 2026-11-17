@@ -690,6 +690,26 @@ it as deleted, not as unavailable. A line deleted while you hold it arrives as a
 `message-redacted` frame (§7.1); patch the row from that rather than refetching.
 Absent — not `null` — on every other line, like `bookmarked`.
 
+**Knowing a draft was saved.** A `draft-set` or `draft-clear` that carries a
+`clientId` is answered with `{kind:'send-result', clientId, ok}` (since 2.7;
+`ok: false` when it names no buffer of yours). Hold your local text as unsaved
+until that arrives: a write sent into a socket that had already died is never
+answered, and the `draft-snapshot` after the reconnect still has the older
+text. Keep yours over the snapshot's for such a buffer, and send it again.
+
+**A draft delivered late.** Every draft has a revision: `rev` on each
+`draft-snapshot` entry, on `draft-updated`, and as `data.rev` on the answer to
+your own write. Send the one you last had as `base` on `draft-set` /
+`draft-clear` (and on each `POST /api/drafts/flush` entry), with `age`: how many
+milliseconds ago the text was typed, by your own clock. If `base` is current
+the write stands. If it is behind, someone else has written since, and the
+write is refused with `error: 'stale'` when theirs was typed later; a
+`draft-updated` with the draft that stands follows, to replace yours. That is
+what keeps a device that was offline from bringing back a draft another device
+changed or sent. Send one write per buffer at a time, so the next carries the
+`rev` the last was given. A write with neither field always stands. Revisions
+are only comparable for equality, and reset when the server restarts.
+
 **A draft's reply.** The reply a composer is writing is part of its draft, so it
 follows the user to another device and survives a reload. `draft-set` takes
 `reply: { messageId, addressed }` — the line it answers, and whether your Reply

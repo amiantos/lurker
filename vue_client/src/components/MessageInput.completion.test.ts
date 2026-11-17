@@ -50,6 +50,14 @@ vi.mock('../composables/useSocket.js', () => ({
 // so every message-shaped command) goes through socketSendWithAck.
 import { socketSend, socketSendWithAck, type AckResult } from '../composables/useSocket.js';
 
+// What went out for the server to act on. A draft's saves ride the same
+// acknowledged path and are not what these tests are about.
+const ackedSends = () =>
+  vi
+    .mocked(socketSendWithAck)
+    .mock.calls.map((c) => (c as unknown[])[0] as Record<string, unknown>)
+    .filter((f) => !String(f.type).startsWith('draft-'));
+
 const CHANNELS = ['#apple', '#mango', '#zebra'];
 // `mallory` exists so the self-exclusion test has a positive control: without a
 // second m-nick, "your own nick isn't offered" and "completion did nothing at
@@ -647,7 +655,9 @@ describe('MessageInput Tab-completion', () => {
       // Commit + flush, and remote updates land again — the guard is scoped to
       // the composition, not sticky.
       await commitComposition(el);
+      vi.mocked(socketSendWithAck).mockReturnValueOnce(Promise.resolve({ ok: true }) as never);
       drafts.flushBuffer(1, '#zebra');
+      await flush(); // the server's answer: the buffer is no longer held
       drafts.applyRemoteUpdate(1, '#zebra', 'now it lands');
       expect(drafts.forBuffer(1, '#zebra')).toBe('now it lands');
     });
@@ -665,7 +675,7 @@ describe('MessageInput Tab-completion', () => {
       const { el } = await mountComposer();
       const drafts = useDraftStore();
       drafts.resetTimers();
-      vi.mocked(socketSend).mockClear();
+      vi.mocked(socketSendWithAck).mockClear();
       vi.useFakeTimers();
       try {
         el.dispatchEvent(new Event('compositionstart', { bubbles: true }));
@@ -674,7 +684,9 @@ describe('MessageInput Tab-completion', () => {
         el.dispatchEvent(new Event('input', { bubbles: true }));
         vi.advanceTimersByTime(5000);
         const draftSets = () =>
-          vi.mocked(socketSend).mock.calls.filter(([m]) => (m as any)?.type === 'draft-set');
+          vi
+            .mocked(socketSendWithAck)
+            .mock.calls.filter((c) => ((c as unknown[])[0] as any)?.type === 'draft-set');
         expect(draftSets()).toHaveLength(0);
 
         el.dispatchEvent(new Event('compositionend', { bubbles: true }));
@@ -1328,11 +1340,11 @@ describe('MessageInput command dispatch', () => {
 
     await type(el, `/shrug ${'x'.repeat(900)}`);
     await enter(el);
-    expect(socketSendWithAck).not.toHaveBeenCalled();
+    expect(ackedSends()).toHaveLength(0);
 
     // Send again to confirm — the gate is a confirmation, not a refusal.
     await enter(el);
-    expect(socketSendWithAck).toHaveBeenCalledTimes(1);
+    expect(ackedSends()).toHaveLength(1);
   });
 
   it('a bare /shrug sends the kaomoji alone, with no leading space', async () => {
@@ -1516,8 +1528,7 @@ describe('scroll position on send (#628)', () => {
       const { el } = await mountComposer();
       await type(el, '/jitsi');
       await enter(el);
-      const sent = vi.mocked(socketSendWithAck).mock.calls.at(-1)?.[0] as { text: string };
-      return sent.text;
+      return ackedSends().at(-1)?.text as string;
     }
 
     it('uses meet.jit.si when nothing is set', async () => {
@@ -1549,7 +1560,7 @@ describe('scroll position on send (#628)', () => {
       const { el } = await mountComposer();
       await type(el, '/jitsi');
       await enter(el);
-      expect(socketSendWithAck).not.toHaveBeenCalled();
+      expect(ackedSends()).toHaveLength(0);
       // Positive control: the command ran and refused, not fell out earlier.
       expect(said).toHaveBeenCalledWith(
         expect.objectContaining({

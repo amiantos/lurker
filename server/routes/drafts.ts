@@ -6,7 +6,7 @@ import express from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { ownsNetwork } from '../db/networks.js';
-import draftsService from '../services/draftsService.js';
+import draftsService, { parseDraftGuard } from '../services/draftsService.js';
 import { parseDraftReplyRef } from '../../shared/replies.js';
 
 const router = Router();
@@ -41,7 +41,17 @@ router.post('/flush', requireAuth, beaconBody, (req: Request, res: Response) => 
     if (!Number.isInteger(networkId) || networkId <= 0) continue;
     if (!target || target.startsWith(':server:')) continue;
     if (!ownsNetwork(req.user!.id, networkId)) continue;
-    draftsService.set(req.user!.id, networkId, target, body, parseDraftReplyRef(entry.reply), null);
+    // `base` / `age` as on `draft-set`: a beacon from a page that was long
+    // offline must not put its text over a newer draft. A refusal is silent.
+    draftsService.set(
+      req.user!.id,
+      networkId,
+      target,
+      body,
+      parseDraftReplyRef(entry.reply),
+      null,
+      parseDraftGuard(entry),
+    );
   }
   res.status(204).end();
 });

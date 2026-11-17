@@ -1174,6 +1174,7 @@ function handleMessage(raw: string): void {
       payload.target,
       payload.body,
       'reply' in payload ? payload.reply : undefined,
+      payload.rev,
     );
     return;
   }

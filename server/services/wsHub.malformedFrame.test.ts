@@ -198,3 +198,99 @@ describe('malformed frames', () => {
     }
   });
 });
+
+// A client only stops holding a draft as unsaved when it hears this: a write
+// sent into a socket that was already dead is never answered, and is sent again.
+describe('draft writes are answered', () => {
+  it('answers a draft-set and a draft-clear that carry a clientId', async () => {
+    (await import('../db/buffers.js')).ensureOpen(alice, networkId, '#chan');
+    const { ws, heard } = await attach(alice);
+    try {
+      ws.send(
+        JSON.stringify({
+          type: 'draft-set',
+          networkId,
+          target: '#chan',
+          body: 'hi',
+          clientId: 'a',
+        }),
+      );
+      expect(await waitFor(heard, (f) => f.clientId === 'a')).toMatchObject({
+        kind: 'send-result',
+        ok: true,
+      });
+      ws.send(JSON.stringify({ type: 'draft-clear', networkId, target: '#chan', clientId: 'b' }));
+      expect(await waitFor(heard, (f) => f.clientId === 'b')).toMatchObject({ ok: true });
+      // Nothing is stored for a name with no buffer, and the answer says so.
+      ws.send(
+        JSON.stringify({
+          type: 'draft-set',
+          networkId,
+          target: '#nowhere',
+          body: 'x',
+          clientId: 'n',
+        }),
+      );
+      expect(await waitFor(heard, (f) => f.clientId === 'n')).toMatchObject({ ok: false });
+    } finally {
+      ws.close();
+    }
+  });
+
+  it('gives the revision, and refuses a late write with the draft that stands', async () => {
+    (await import('../db/buffers.js')).ensureOpen(alice, networkId, '#late');
+    const { ws, heard } = await attach(alice);
+    const other = await attach(alice);
+    const write = (frame: Frame) =>
+      ws.send(JSON.stringify({ networkId, target: '#late', ...frame }));
+    try {
+      write({ type: 'draft-set', body: 'first', clientId: 'r1' });
+      const first = await waitFor(heard, (f) => f.clientId === 'r1');
+      const rev = (first.data as { rev: number }).rev;
+      expect(first.ok).toBe(true);
+      expect(typeof rev).toBe('number');
+
+      // Another device writes, and this one hears of it with the new revision.
+      other.ws.send(
+        JSON.stringify({ type: 'draft-set', networkId, target: '#late', body: 'theirs' }),
+      );
+      const news = await waitFor(heard, (f) => f.kind === 'draft-updated' && f.body === 'theirs');
+      expect(news.rev).not.toBe(rev);
+
+      // Text typed five minutes ago against the old revision arrives now.
+      heard.length = 0;
+      write({ type: 'draft-set', body: 'typed offline', base: rev, age: 300_000, clientId: 'r2' });
+      expect(await waitFor(heard, (f) => f.clientId === 'r2')).toMatchObject({
+        ok: false,
+        error: 'stale',
+      });
+      expect(await waitFor(heard, (f) => f.kind === 'draft-updated')).toMatchObject({
+        target: '#late',
+        body: 'theirs',
+        rev: news.rev,
+      });
+
+      // Against the revision it now has, the same text stands.
+      write({ type: 'draft-set', body: 'typed now', base: news.rev, age: 300_000, clientId: 'r3' });
+      expect(await waitFor(heard, (f) => f.clientId === 'r3')).toMatchObject({ ok: true });
+    } finally {
+      ws.close();
+      other.ws.close();
+    }
+  });
+
+  it('answers one that names no buffer, and says nothing without a clientId', async () => {
+    const { ws, heard } = await attach(alice);
+    try {
+      ws.send(JSON.stringify({ type: 'draft-set', networkId, target: '#chan', body: 'quiet' }));
+      ws.send(JSON.stringify({ type: 'draft-set', bufferId: 999999, body: 'x', clientId: 'c' }));
+      expect(await waitFor(heard, (f) => f.clientId === 'c')).toMatchObject({
+        kind: 'send-result',
+        ok: false,
+      });
+      expect(heard.filter((f) => f.kind === 'send-result')).toHaveLength(1);
+    } finally {
+      ws.close();
+    }
+  });
+});
