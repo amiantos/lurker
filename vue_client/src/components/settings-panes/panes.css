@@ -36,6 +36,11 @@
   letter-spacing: 0.04em;
   font-weight: 600;
 }
+/* Headings that divide ONE list (a rule list by network), not sections of the
+   pane: they sit as close as the old headings did, and keep the rule. */
+.settings-pane .subhead.sibling {
+  margin-top: var(--space-7);
+}
 .settings-pane > .subhead:first-of-type {
   margin-top: var(--space-2);
 }

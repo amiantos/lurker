@@ -22,7 +22,7 @@
     </p>
 
     <template v-for="group in ignoreGroups" :key="group.key">
-      <h3 class="subhead">{{ group.name }}</h3>
+      <h3 class="subhead sibling">{{ group.name }}</h3>
       <ul class="device-list">
         <li v-for="entry in group.entries" :key="entry.id" class="device">
           <span class="ua">
