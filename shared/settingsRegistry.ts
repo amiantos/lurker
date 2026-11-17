@@ -477,7 +477,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Any CSS color value; leave empty to match everyone else.',
   },
 
-  // ─── Per-line display collapsing (nick / timestamp dedupe) ────────────
+  // ─── Message layout, and collapsing repeated authors ──────────────────
   {
     key: 'look.message.layout',
     label: 'Message layout',
@@ -503,7 +503,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'collapse (notices, status lines and the ' +
       "server's own text too, each in runs of its own), and only the head " +
       'line of each run shows a time, so the timestamp collapse setting ' +
-      'below does not apply.',
+      'does not apply.',
   },
   {
     key: 'look.message.collapse_authors',
@@ -536,20 +536,29 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'pauses.',
   },
   {
-    key: 'look.message.collapse_timestamps',
-    label: 'Collapse repeated timestamps',
+    key: 'look.action.italic',
+    label: 'Italicize /me actions',
+    category: 'appearance',
+    group: 'messages',
+    type: 'bool',
+    default: true,
+    description: 'Render /me action messages in italics.',
+  },
+  {
+    key: 'look.message.hover_actions',
+    label: 'Show hover action bar on messages',
     category: 'appearance',
     group: 'messages',
     type: 'bool',
     default: true,
     description:
-      'Hide the timestamp on consecutive rows that would display the exact ' +
-      'same time string (driven by look.buffer.time_format). Reduces visual ' +
-      'noise in fast bursts without losing any information. Not used by ' +
-      'the modern message layout.',
+      'Show the floating action toolbar (reply, quote, copy, bookmark, ignore) when ' +
+      'hovering a message on desktop. When off, click a message to open the same ' +
+      'actions as a menu instead. No effect on touch devices, where the bar is ' +
+      'never shown and tapping a message always opens the menu.',
   },
 
-  // ─── Compact layout density (#1186) ──────────────────────────────────
+  // ─── Modern layout density (#1186) ───────────────────────────────────
   // Themed like the fonts: how tight the rows sit is part of a look. The
   // phone apps, where compact is the default, are meant to read the same
   // three values (a Mobile: follow-up), so the units are ones a native
@@ -560,7 +569,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.message.modern.group_gap',
     label: 'Modern group gap (px)',
     category: 'appearance',
-    group: 'messages',
+    group: 'modern-layout',
     themed: true,
     type: 'int',
     min: 0,
@@ -575,7 +584,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.message.modern.line_height',
     label: 'Modern line height (%)',
     category: 'appearance',
-    group: 'messages',
+    group: 'modern-layout',
     themed: true,
     type: 'int',
     min: 100,
@@ -590,7 +599,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.message.modern.indent',
     label: 'Modern body indent (chars)',
     category: 'appearance',
-    group: 'messages',
+    group: 'modern-layout',
     themed: true,
     type: 'int',
     min: 0,
@@ -602,6 +611,59 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'How many characters the text of a message sits in from the nick ' +
       'above it in the modern layout. 0 puts the text flush under the ' +
       'nick. Ignored while avatars are on: the avatar gutter is the indent.',
+  },
+
+  // ─── Timestamps ──────────────────────────────────────────────────────────
+  {
+    key: 'look.buffer.time_format',
+    label: 'Message timestamp format',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'string',
+    default: 'HH:mm:ss',
+    description:
+      'Time format for the per-message timestamp column in chat buffers. ' +
+      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
+      'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
+  },
+  {
+    key: 'look.buffer.time_format_modern',
+    label: 'Modern-layout timestamp format',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'string',
+    default: 'HH:mm',
+    description:
+      'Time format used in chat buffers when the modern message layout is ' +
+      'active (look.message.layout = modern, or any layout on a phone). ' +
+      "Defaults to HH:mm — the modern layout's timestamp sits by the nick, and " +
+      'seconds are rarely useful at a glance. ' +
+      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
+      'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
+  },
+  {
+    key: 'look.buffer.date_format_modern',
+    label: 'Modern-layout date format',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'string',
+    default: 'YYYY-MM-DD',
+    description:
+      'In the modern layout, the date shown before the time on lines from a day other than ' +
+      'today. Same tokens as the time formats. Empty string never shows a date.',
+  },
+  {
+    key: 'look.message.collapse_timestamps',
+    label: 'Collapse repeated timestamps',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'bool',
+    default: true,
+    description:
+      'Hide the timestamp on consecutive rows that would display the exact ' +
+      'same time string (driven by look.buffer.time_format). Reduces visual ' +
+      'noise in fast bursts without losing any information. Not used by ' +
+      'the modern message layout.',
   },
 
   // ─── Member-list mode prefixes ────────────────────────────────────────
@@ -808,88 +870,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'keyed on it, and mentions still match it. Off = nicks everywhere.',
   },
 
-  // ─── Misc look ────────────────────────────────────────────────────────
-  {
-    key: 'look.modal.overlay',
-    label: 'Modal backdrop (desktop)',
-    category: 'appearance',
-    group: 'misc',
-    type: 'enum',
-    choices: ['wordmark', 'dimmed', 'clear'],
-    default: 'wordmark',
-    description:
-      'Backdrop shown behind centered modals on desktop. "wordmark" (default) ' +
-      'is the opaque tiled-word wallpaper. "dimmed" replaces it with a ' +
-      'translucent scrim so the chat stays visible (just darkened) behind the ' +
-      'modal. "clear" shows the app behind with no tint at all — the card ' +
-      'floats on its border and shadow. Has no effect on mobile, where every ' +
-      'modal is a full-frame opaque sheet regardless of this setting.',
-  },
-  {
-    key: 'look.action.italic',
-    label: 'Italicize /me actions',
-    category: 'appearance',
-    group: 'misc',
-    type: 'bool',
-    default: true,
-    description: 'Render /me action messages in italics.',
-  },
-  {
-    key: 'look.message.hover_actions',
-    label: 'Show hover action bar on messages',
-    category: 'appearance',
-    group: 'misc',
-    type: 'bool',
-    default: true,
-    description:
-      'Show the floating action toolbar (reply, quote, copy, bookmark, ignore) when ' +
-      'hovering a message on desktop. When off, click a message to open the same ' +
-      'actions as a menu instead. No effect on touch devices, where the bar is ' +
-      'never shown and tapping a message always opens the menu.',
-  },
-  {
-    key: 'look.buffer.time_format',
-    label: 'Message timestamp format',
-    category: 'appearance',
-    group: 'misc',
-    type: 'string',
-    default: 'HH:mm:ss',
-    description:
-      'Time format for the per-message timestamp column in chat buffers. ' +
-      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
-  },
-  {
-    key: 'look.buffer.time_format_modern',
-    label: 'Modern-layout timestamp format',
-    category: 'appearance',
-    group: 'misc',
-    type: 'string',
-    default: 'HH:mm',
-    description:
-      'Time format used in chat buffers when the modern message layout is ' +
-      'active (look.message.layout = modern, or any layout on a phone). ' +
-      "Defaults to HH:mm — the modern layout's timestamp sits by the nick, and " +
-      'seconds are rarely useful at a glance. ' +
-      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
-  },
-  {
-    key: 'look.buffer.date_format_modern',
-    label: 'Modern-layout date format',
-    category: 'appearance',
-    group: 'misc',
-    type: 'string',
-    default: 'YYYY-MM-DD',
-    description:
-      'In the modern layout, the date shown before the time on lines from a day other than ' +
-      'today. Same tokens as the time formats. Empty string never shows a date.',
-  },
+  // ─── Status bar ──────────────────────────────────────────────────────────
   {
     key: 'look.bar.time_format',
     label: 'Status-bar clock format',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'string',
     default: 'HH:mm:ss',
     description:
@@ -901,7 +887,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.bar.lag_min_show_ms',
     label: 'Lag indicator threshold (ms)',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'int',
     min: 0,
     max: 60000,
@@ -915,7 +901,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.bar.lag_alarm_ms',
     label: 'Lag alarm threshold (ms)',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'int',
     min: 0,
     max: 60000,
@@ -929,7 +915,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.bar.lag_always_show',
     label: 'Always show lag value',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'bool',
     default: false,
     description:
@@ -937,12 +923,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'show threshold. Useful if you want to keep an eye on round-trip latency.',
   },
 
-  // ─── Layout (collapsible side panels on desktop) ───────────────────────
+  // ─── Panels (side panels and the modal backdrop, desktop) ────────────────
   {
     key: 'look.layout.show_channel_list',
     label: 'Show channel list (desktop)',
     category: 'appearance',
-    group: 'layout',
+    group: 'panels',
     type: 'bool',
     default: true,
     description:
@@ -954,13 +940,29 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.layout.show_member_list',
     label: 'Show member list (desktop)',
     category: 'appearance',
-    group: 'layout',
+    group: 'panels',
     type: 'bool',
     default: true,
     description:
       'Default for whether the channel members list shows on the right of the ' +
       'desktop layout. The members toggle in each channel’s topic bar ' +
       'overrides this per channel and is remembered. Has no effect on mobile.',
+  },
+  {
+    key: 'look.modal.overlay',
+    label: 'Modal backdrop (desktop)',
+    category: 'appearance',
+    group: 'panels',
+    type: 'enum',
+    choices: ['wordmark', 'dimmed', 'clear'],
+    default: 'wordmark',
+    description:
+      'Backdrop shown behind centered modals on desktop. "wordmark" (default) ' +
+      'is the opaque tiled-word wallpaper. "dimmed" replaces it with a ' +
+      'translucent scrim so the chat stays visible (just darkened) behind the ' +
+      'modal. "clear" shows the app behind with no tint at all — the card ' +
+      'floats on its border and shadow. Has no effect on mobile, where every ' +
+      'modal is a full-frame opaque sheet regardless of this setting.',
   },
 
   // ─── Events: the filter (#666) ────────────────────────────────────────
@@ -1316,18 +1318,70 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'the video host until you press it.',
   },
 
-  // ─── Connection ───────────────────────────────────────────────────────
+  // ─── Away and quit ───────────────────────────────────────────────────────
+  {
+    key: 'away.all_networks',
+    label: 'Scope away to all networks by default',
+    category: 'irc',
+    group: 'presence',
+    type: 'bool',
+    default: false,
+    description:
+      'Make /away and /back apply to every network, as irssi does. Off, they apply ' +
+      'to the network you type them on, and -all reaches every network. On, -one ' +
+      'limits them to the current network.',
+  },
   {
     key: 'chat.quit_message',
     label: 'Quit message',
-    category: 'chat',
-    group: 'connection',
+    category: 'irc',
+    group: 'presence',
     type: 'string',
     default: '',
     description:
       'The QUIT reason others see when you disconnect from a network and no ' +
       'explicit /quit message is given. Leave blank to use the Lurker default ' +
       '(the version and project URL).',
+  },
+
+  // ─── Auto-away (sets you AWAY when no client is connected) ────────────
+  {
+    key: 'away.auto.enabled',
+    label: 'Auto-set away when no client connected',
+    category: 'irc',
+    group: 'auto-away',
+    type: 'bool',
+    default: true,
+    description:
+      'Automatically set you AWAY on every connected network when no Lurker client ' +
+      'is in front of you and no IRC client is attached through the bouncer (a ' +
+      'background connection that sent AWAY * does not count), and clear AWAY when ' +
+      'one comes back. Modeled on the WeeChat screen_away.py script.',
+  },
+  {
+    key: 'away.auto.delay_seconds',
+    label: 'Auto-away delay (seconds)',
+    category: 'irc',
+    group: 'auto-away',
+    type: 'int',
+    min: 5,
+    max: 3600,
+    default: 900,
+    description:
+      'How long to wait after the last client goes before setting AWAY. ' +
+      'Avoids flapping on browser refreshes or brief network blips.',
+  },
+  {
+    key: 'away.auto.message',
+    label: 'Auto-away message',
+    category: 'irc',
+    group: 'auto-away',
+    type: 'string',
+    default: 'afk',
+    description:
+      'Auto-away message body. The current local timestamp is appended as ' +
+      '" since YYYY-MM-DD HH:MM:SS±ZZZZ", so the default produces ' +
+      '"afk since 2026-05-09 15:30:00-0500".',
   },
 
   // ─── CTCP auto-replies (what we disclose to the network on a CTCP query) ──
@@ -1343,7 +1397,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.replies',
     label: 'Answer CTCP queries',
-    category: 'chat',
+    category: 'irc',
     group: 'ctcp',
     type: 'bool',
     default: true,
@@ -1358,7 +1412,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.msgbuffer',
     label: 'Where CTCP notices appear',
-    category: 'chat',
+    category: 'irc',
     group: 'ctcp',
     type: 'enum',
     choices: ['server', 'system', 'private'],
@@ -1375,7 +1429,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.version',
     label: 'CTCP VERSION reply',
-    category: 'chat',
+    category: 'irc',
     group: 'ctcp',
     type: 'string',
     default: '${name} ${version}',
@@ -1389,7 +1443,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.time',
     label: 'CTCP TIME reply',
-    category: 'chat',
+    category: 'irc',
     group: 'ctcp',
     type: 'string',
     default: '${time}',
@@ -1401,7 +1455,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.source',
     label: 'CTCP SOURCE reply',
-    category: 'chat',
+    category: 'irc',
     group: 'ctcp',
     type: 'string',
     default: '${source}',
@@ -1412,7 +1466,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.clientinfo',
     label: 'CTCP CLIENTINFO reply',
-    category: 'chat',
+    category: 'irc',
     group: 'ctcp',
     type: 'string',
     default: '${clientinfo}',
@@ -1420,60 +1474,6 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Reply sent for a CTCP CLIENTINFO query. The default ${clientinfo} ' +
       'expands to the list of CTCP types you currently answer. Same ' +
       'placeholders as the VERSION reply. Leave EMPTY to not answer.',
-  },
-
-  // ─── Away ─────────────────────────────────────────────────────────────
-  {
-    key: 'away.all_networks',
-    label: 'Scope away to all networks by default',
-    category: 'away',
-    group: 'away',
-    type: 'bool',
-    default: false,
-    description:
-      'Make /away and /back apply to every network, as irssi does. Off, they apply ' +
-      'to the network you type them on, and -all reaches every network. On, -one ' +
-      'limits them to the current network.',
-  },
-
-  // ─── Auto-away (sets you AWAY when no client is connected) ────────────
-  {
-    key: 'away.auto.enabled',
-    label: 'Auto-set away when no client connected',
-    category: 'away',
-    group: 'auto-away',
-    type: 'bool',
-    default: true,
-    description:
-      'Automatically set you AWAY on every connected network when no Lurker client ' +
-      'is in front of you and no IRC client is attached through the bouncer (a ' +
-      'background connection that sent AWAY * does not count), and clear AWAY when ' +
-      'one comes back. Modeled on the WeeChat screen_away.py script.',
-  },
-  {
-    key: 'away.auto.delay_seconds',
-    label: 'Auto-away delay (seconds)',
-    category: 'away',
-    group: 'auto-away',
-    type: 'int',
-    min: 5,
-    max: 3600,
-    default: 900,
-    description:
-      'How long to wait after the last client goes before setting AWAY. ' +
-      'Avoids flapping on browser refreshes or brief network blips.',
-  },
-  {
-    key: 'away.auto.message',
-    label: 'Auto-away message',
-    category: 'away',
-    group: 'auto-away',
-    type: 'string',
-    default: 'afk',
-    description:
-      'Auto-away message body. The current local timestamp is appended as ' +
-      '" since YYYY-MM-DD HH:MM:SS±ZZZZ", so the default produces ' +
-      '"afk since 2026-05-09 15:30:00-0500".',
   },
 
   // ─── Uploads ────────────────────────────────────────────────────
@@ -1862,7 +1862,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'End of the quiet-hours window in HH:MM (24h), interpreted in your system.timezone.',
   },
 
-  // ─── Input bar (system text features) ─────────────────────────────────
+  // ─── Input bar ────────────────────────────────────────────────────────
+  // One flat list: six rows do not need three headings.
+  //
+  // System text features:
   // Each setting maps directly to an HTML attribute on the chat input
   // element. Defaults are all true so the input behaves like a normal text
   // field out of the box; users can disable any one independently (the most
@@ -1871,7 +1874,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.spellcheck',
     label: 'Spellcheck input',
     category: 'input',
-    group: 'system_features',
+    group: 'input',
     type: 'bool',
     default: true,
     description:
@@ -1883,7 +1886,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.autocorrect',
     label: 'Autocorrect input',
     category: 'input',
-    group: 'system_features',
+    group: 'input',
     type: 'bool',
     default: true,
     description:
@@ -1897,7 +1900,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.autocorrect_force_mobile',
     label: 'Force autocorrect on mobile',
     category: 'input',
-    group: 'system_features',
+    group: 'input',
     type: 'bool',
     default: false,
     description:
@@ -1908,12 +1911,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'they ride together.',
   },
 
-  // ─── Input bar (autocomplete UI) ──────────────────────────────────────
+  // Autocomplete UI.
   {
     key: 'input.suggestion_strip_on_desktop',
     label: 'Use suggestion strip on desktop',
     category: 'input',
-    group: 'autocomplete',
+    group: 'input',
     type: 'bool',
     default: false,
     description:
@@ -1935,7 +1938,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.completion.nick_suffix',
     label: 'Nick completion suffix',
     category: 'input',
-    group: 'autocomplete',
+    group: 'input',
     type: 'string',
     default: ':',
     description:
@@ -1945,7 +1948,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'suggestion strip, and Reply; mid-line completions are unaffected.',
   },
 
-  // ─── Input bar (formatting) ──────────────────────────────────────────
+  // Formatting.
   // Surfaces the mIRC palette popover for users who want to insert colour /
   // bold / italic / underline codes via mouse. The Cmd/Ctrl+B/I/U keyboard
   // shortcuts always work regardless of this toggle — this only controls the
@@ -1954,7 +1957,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.show_format_button',
     label: 'Show formatting button',
     category: 'input',
-    group: 'formatting',
+    group: 'input',
     type: 'bool',
     default: false,
     description:
@@ -2281,7 +2284,10 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   { id: 'ignores', label: 'Ignores', kind: 'bespoke' },
   // Command aliases (#276): table-backed, like the two above.
   { id: 'aliases', label: 'Aliases', kind: 'bespoke' },
-  { id: 'away', label: 'Away', kind: 'registry' },
+  // What the network sees of you when you are not typing: away state, the quit
+  // reason, and the CTCP replies. Away was a category of four rows and the quit
+  // message a group of one in Chat; neither is about reading or composing.
+  { id: 'irc', label: 'IRC', kind: 'registry' },
   { id: 'networks', label: 'Networks', kind: 'bespoke' },
   // How to attach an IRC client to this instance's bouncer. Self-hosted only
   // (a hosted cell runs no bouncer), and only where the operator enabled it.
@@ -2329,26 +2335,24 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   fonts: 'Fonts',
   palette: 'Colors',
   messages: 'Message rows',
+  'modern-layout': 'Modern layout',
+  timestamps: 'Timestamps',
   members: 'Member prefixes',
   'buffer-list': 'Buffer list',
   nicks: 'Nick coloring',
-  layout: 'Layout',
-  misc: 'Misc',
+  'status-bar': 'Status bar',
+  panels: 'Panels',
   'event-filter': 'Filter',
   consolidate: 'Consolidation',
   composing: 'Composing',
   'smart-filter': 'Smart filter tuning',
-  connection: 'Connection',
+  presence: 'Away and quit',
   ctcp: 'CTCP replies',
-  away: 'Away',
   'auto-away': 'Auto-away',
   pipeline: 'Image pipeline',
   viewing: 'Viewing',
   alerts: 'Alerts',
   push_filters: 'Push filters',
-  system_features: 'System text features',
-  autocomplete: 'Autocomplete',
-  formatting: 'Formatting',
   locale: 'Locale',
   retention: 'Retention',
 });

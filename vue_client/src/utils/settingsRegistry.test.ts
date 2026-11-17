@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CATEGORIES,
+  GROUPS,
   REGISTRY,
   categoryVisible,
   optionVisible,
@@ -310,5 +311,54 @@ describe('optionEnabled — compact body indent (#1186)', () => {
     const indent = REGISTRY.find((o) => o.key === 'look.message.modern.indent')!;
     expect(optionEnabled(indent, () => false)).toBe(true);
     expect(optionEnabled(indent, () => true)).toBe(false);
+  });
+});
+
+describe('pane structure', () => {
+  const inPane = (id: string) => REGISTRY.filter((o) => o.category === id);
+
+  // RegistryPane falls back to the raw group id for a group with no label, so
+  // a regrouped row would head its section with `status-bar`.
+  it('labels every group a registry pane renders', () => {
+    const shown = REGISTRY.filter((o) => CATEGORIES.some((c) => c.id === o.category));
+    const unlabelled = [...new Set(shown.map((o) => o.group))].filter((g) => !(g in GROUPS));
+    // Input bar is one flat list: a lone group never draws its heading.
+    expect(unlabelled).toEqual(['input']);
+    expect(new Set(inPane('input').map((o) => o.group)).size).toBe(1);
+  });
+
+  // Registry order IS render order, so this pins both.
+  it('orders the Appearance groups, with no catch-all among them', () => {
+    expect([...new Set(inPane('appearance').map((o) => o.group))]).toEqual([
+      'fonts',
+      'palette',
+      'messages',
+      'modern-layout',
+      'timestamps',
+      'members',
+      'buffer-list',
+      'nicks',
+      'status-bar',
+      'panels',
+    ]);
+  });
+
+  it('gathers away, the quit message and the CTCP replies under IRC', () => {
+    expect(inPane('irc').map((o) => o.key)).toEqual([
+      'away.all_networks',
+      'chat.quit_message',
+      'away.auto.enabled',
+      'away.auto.delay_seconds',
+      'away.auto.message',
+      'ctcp.replies',
+      'ctcp.msgbuffer',
+      'ctcp.version',
+      'ctcp.time',
+      'ctcp.source',
+      'ctcp.clientinfo',
+    ]);
+    expect(cat('irc')).toEqual({ id: 'irc', label: 'IRC', kind: 'registry' });
+    expect(CATEGORIES.some((c) => c.id === 'away')).toBe(false);
+    expect([...new Set(inPane('chat').map((o) => o.group))]).toEqual(['composing', 'viewing']);
   });
 });
