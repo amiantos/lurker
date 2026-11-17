@@ -1226,6 +1226,17 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'way, since that view holds live messages back and there is nowhere in it ' +
       'for your own message to appear.',
   },
+  {
+    key: 'chat.jitsi_url',
+    label: 'Jitsi server',
+    category: 'chat',
+    group: 'composing',
+    type: 'string',
+    default: '',
+    description:
+      'The Jitsi Meet server /jitsi starts calls on, as a URL: https://meet.example.org. ' +
+      "Empty uses this instance's server, or meet.jit.si when it has none.",
+  },
 
   // ─── Inline media viewer ──────────────────────────────────────────────
   {

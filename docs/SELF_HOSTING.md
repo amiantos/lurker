@@ -543,6 +543,17 @@ environment:
 
 Unset, it falls back to the upstream project link.
 
+### Your own Jitsi server
+
+`/jitsi` posts a link to a new video call room, on the public `meet.jit.si` by default. To use a Jitsi Meet server you run, set `LURKER_JITSI_URL` to its address:
+
+```yaml
+environment:
+  - LURKER_JITSI_URL=https://meet.example.org
+```
+
+Anyone can point `/jitsi` at a different server for themselves, in Settings → Chat → Jitsi server.
+
 ### IRC bouncer (attach from other IRC clients)
 
 Lurker can act as a bouncer (ZNC- and soju-compatible): enable the built-in IRC listener and any ordinary IRC client (WeeChat, irssi, Textual, HexChat, …) can attach to the same always-on connection your web UI uses — same nick, same channels, recent history replayed on attach, and anything you send from the client lands in your Lurker history and web tabs too. Detaching never disconnects you from IRC.

@@ -97,4 +97,22 @@ describe('feature flags', () => {
   it('reports them on once the operator points at a decoder', async () => {
     expect((await withDecoder('http://lurker-previews:8030')).features?.linkPreviews).toBe(true);
   });
+
+  // #527: the operator's Jitsi Meet server, in the form a room name appends to.
+  it("advertises the operator's Jitsi server, or null", async () => {
+    const before = process.env.LURKER_JITSI_URL;
+    try {
+      delete process.env.LURKER_JITSI_URL;
+      expect((await createAnonAgent(app).get('/api/config')).body.jitsiUrl).toBeNull();
+      process.env.LURKER_JITSI_URL = 'https://meet.example.org/';
+      expect((await createAnonAgent(app).get('/api/config')).body.jitsiUrl).toBe(
+        'https://meet.example.org',
+      );
+      process.env.LURKER_JITSI_URL = 'not a url';
+      expect((await createAnonAgent(app).get('/api/config')).body.jitsiUrl).toBeNull();
+    } finally {
+      if (before === undefined) delete process.env.LURKER_JITSI_URL;
+      else process.env.LURKER_JITSI_URL = before;
+    }
+  });
 });

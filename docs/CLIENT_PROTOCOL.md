@@ -48,8 +48,13 @@ GET /api/config            (no auth)
 → { "edition": "standalone" | "node",
     "protocolVersion": 1,
     "minProtocolVersion": 1,
+    "jitsiUrl": null,
     "features": { "linkPreviews": false } }
 ```
+
+`jitsiUrl` (2.7.0) is the operator's Jitsi Meet server, or `null`. A client with
+a `/jitsi` command posts `<base>/lurker-<random>`, taking the base from the
+user's `chat.jitsi_url` setting, then this, then `https://meet.jit.si`.
 
 `features` carries instance-level flags an operator turned on. Treat a missing
 flag as **off** — an older server that doesn't advertise one doesn't have it.

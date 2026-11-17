@@ -23,6 +23,7 @@ import { useDraftStore } from '../stores/drafts.js';
 import { useComposerOverlay, selectNick, addressNick } from '../composables/useComposerOverlay.js';
 import { useViewport } from '../composables/useViewport.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useConfigStore } from '../stores/config.js';
 import { useScrollState } from '../composables/useScrollState.js';
 import MessageInput from './MessageInput.vue';
 import NickPicker from './NickPicker.vue';
@@ -1505,5 +1506,36 @@ describe('scroll position on send (#628)', () => {
     // Positive control, as above: proves the send got as far as the detached
     // branch rather than falling out of submit() somewhere earlier.
     expect(reattach).toHaveBeenCalled();
+  });
+
+  // /jitsi posts a room on the first server anyone named: the user's setting,
+  // then the instance's, then the public one (#527).
+  describe('/jitsi', () => {
+    async function room(): Promise<string> {
+      allowSend();
+      const { el } = await mountComposer();
+      await type(el, '/jitsi');
+      await enter(el);
+      const sent = vi.mocked(socketSendWithAck).mock.calls.at(-1)?.[0] as { text: string };
+      return sent.text;
+    }
+
+    it('uses meet.jit.si when nothing is set', async () => {
+      seedStores('#zebra');
+      expect(await room()).toMatch(/^https:\/\/meet\.jit\.si\/lurker-[0-9a-f]{12}$/);
+    });
+
+    it("uses the instance's server", async () => {
+      seedStores('#zebra');
+      useConfigStore().jitsiUrl = 'https://meet.example.org';
+      expect(await room()).toMatch(/^https:\/\/meet\.example\.org\/lurker-[0-9a-f]{12}$/);
+    });
+
+    it("puts the user's server ahead of the instance's", async () => {
+      seedStores('#zebra');
+      useConfigStore().jitsiUrl = 'https://meet.example.org';
+      useSettingsStore().values['chat.jitsi_url'] = 'https://mine.example/';
+      expect(await room()).toMatch(/^https:\/\/mine\.example\/lurker-[0-9a-f]{12}$/);
+    });
   });
 });
