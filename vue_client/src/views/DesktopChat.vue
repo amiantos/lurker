@@ -347,6 +347,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import { useBuffersStore, type Buffer } from '../stores/buffers.js';
+import { connectionToggleFailed } from '../composables/useNetworkActions.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { useSocket } from '../composables/useSocket.js';
 import { canDisconnect, useNetworksStore } from '../stores/networks.js';
@@ -794,11 +795,11 @@ function toggleServerConnection() {
   if (!active.value) return;
   const id = active.value.networkId;
   // Fire-and-forget — the button's label is driven by networks.states so
-  // success reflects itself. A failed call stays observable via the state
-  // (label doesn't flip), so we just log and let the user retry rather
-  // than wiring a toast through the topic bar for this case.
-  const p = serverOffersDisconnect.value ? networks.disconnect(id) : networks.reconnect(id);
-  p.catch((err) => console.error('[DesktopChat] toggle server connection failed', err));
+  // success reflects itself. A refusal is said in the server buffer, which is
+  // the buffer this button sits over.
+  const wantsDisconnect = serverOffersDisconnect.value;
+  const p = wantsDisconnect ? networks.disconnect(id) : networks.reconnect(id);
+  p.catch((err) => connectionToggleFailed(id, wantsDisconnect, err));
 }
 
 useChatBootstrap({ onJump: onJumpToMessage });

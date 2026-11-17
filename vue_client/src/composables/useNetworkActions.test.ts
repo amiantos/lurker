@@ -15,6 +15,7 @@ vi.mock('./useSocket.js', () => ({
 
 import { useNetworkActions } from './useNetworkActions.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useBuffersStore } from '../stores/buffers.js';
 
 function networkState(state: string): void {
   useNetworksStore().states[1] = { networkId: 1, channels: [], state } as never;
@@ -60,5 +61,41 @@ describe('useNetworkActions connectionItem', () => {
     item.onClick?.();
     expect(reconnect).toHaveBeenCalledWith(1);
     expect(disconnect).not.toHaveBeenCalled();
+  });
+});
+
+describe('useNetworkActions refused toggle', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('says why a Reconnect was refused, in the network’s server buffer', async () => {
+    const networks = useNetworksStore();
+    vi.spyOn(networks, 'reconnect').mockRejectedValue(
+      new Error('this server only allows the networks its admin has listed'),
+    );
+    const said = vi.spyOn(useBuffersStore(), 'pushMessage').mockImplementation(() => true);
+    networkState('disconnected');
+    useNetworkActions().connectionItem(1).onClick?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(said).toHaveBeenCalledWith(
+      expect.objectContaining({
+        networkId: 1,
+        target: ':server:1',
+        text: 'could not connect: this server only allows the networks its admin has listed',
+      }),
+    );
+  });
+
+  it('says a refused Disconnect as one', async () => {
+    const networks = useNetworksStore();
+    vi.spyOn(networks, 'disconnect').mockRejectedValue(new Error('nope'));
+    const said = vi.spyOn(useBuffersStore(), 'pushMessage').mockImplementation(() => true);
+    networkState('connected');
+    useNetworkActions().connectionItem(1).onClick?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(said).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'could not disconnect: nope' }),
+    );
   });
 });

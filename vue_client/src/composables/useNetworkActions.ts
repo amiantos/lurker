@@ -10,6 +10,26 @@ import { useNetworkEditor } from './useNetworkEditor.js';
 import { useNotifyLadder } from './useNotifyLadder.js';
 import { useProfileEditor } from './useProfileEditor.js';
 import { canDisconnect, useNetworksStore, type Network } from '../stores/networks.js';
+import { useBuffersStore } from '../stores/buffers.js';
+
+// A Reconnect or Disconnect the server refused, said in the network's server
+// buffer. The server's reason is the useful part: a host the admin's list no
+// longer allows, an account limited to other networks. Without it the button
+// does nothing at all.
+export function connectionToggleFailed(
+  networkId: number,
+  wantedDisconnect: boolean,
+  err: unknown,
+): void {
+  const reason = (err instanceof Error && err.message) || 'request failed';
+  useBuffersStore().pushMessage({
+    networkId,
+    target: `:server:${networkId}`,
+    type: 'motd',
+    text: `could not ${wantedDisconnect ? 'disconnect' : 'connect'}: ${reason}`,
+    time: new Date().toISOString(),
+  });
+}
 
 // Buffer-list action logic for network rows. Analogous to useBufferActions for
 // channel/DM rows. Builds the network context menu — Join Channel / Channel List,
@@ -32,7 +52,7 @@ export function useNetworkActions() {
   // the click on "Disconnect" would fire a RECONNECT (#1136).
   function toggleConnection(networkId: number, offerDisconnect: boolean): void {
     const p = offerDisconnect ? networks.disconnect(networkId) : networks.reconnect(networkId);
-    p.catch((err) => console.error('[useNetworkActions] toggle connection failed', err));
+    p.catch((err) => connectionToggleFailed(networkId, offerDisconnect, err));
   }
 
   // Disconnect or Reconnect, decided once, now: the label and the action are the same reading
