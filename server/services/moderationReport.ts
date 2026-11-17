@@ -82,10 +82,11 @@ export async function reportUpload(rec: UploadReport): Promise<boolean> {
 
 // Fire-and-forget report immediately after an upload; marks the row synced on
 // success so the flush skips it. Safe to call in any edition (no-op when not a
-// configured node).
-export function reportUploadSoon(rec: UploadReport): void {
-  if (!readConfig()) return;
-  void reportUpload(rec).then((ok) => {
+// configured node). The promise is for a caller that must not write the row
+// until this report has settled; it never rejects.
+export function reportUploadSoon(rec: UploadReport): Promise<boolean> {
+  if (!readConfig()) return Promise.resolve(false);
+  return reportUpload(rec).then((ok) => {
     if (ok) markUploadSynced(rec.cell_upload_id);
     return ok;
   });

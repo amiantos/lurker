@@ -11,8 +11,9 @@
   holds, because the client only holds the pages it has scrolled through and the whole
   point is finding one it hasn't. And a GRID, so the eye can scan instead of squint.
 
-  Media and text uploads have no thumbnail (no ffmpeg, so no video poster frames —
-  #515), so they get a type-icon tile in the same box rather than a different layout.
+  Text uploads have no thumbnail, and video and audio have one only when the instance
+  runs a previews decoder that could make a poster (#778), so those get a type-icon
+  tile in the same box rather than a different layout.
   A file card that happens to show an icon reads as a peer of one that shows a photo;
   a separate list of them would not.
 

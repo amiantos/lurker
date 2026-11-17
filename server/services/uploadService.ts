@@ -37,6 +37,8 @@ import { findUserById, restrictionsOf } from '../db/users.js';
 import { UPLOADS_RESTRICTED } from '../../shared/accountRestrictions.js';
 import { hostedDeletable } from './hostedUploadDelete.js';
 import { reportUploadSoon } from './moderationReport.js';
+import { previewsEnabled } from '../utils/previews.js';
+import { posterForUploadSoon, posterableUrl } from './uploadPoster.js';
 
 // Uploads land in a temp file, never in the heap. multer's memoryStorage used to
 // hold the whole file, and the drivers then copied it again (and fetch copied it a
@@ -185,6 +187,12 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     throw err;
   }
   const contentClass = classified.contentClass;
+  // The output format is the user's, with no policy override: unlike maxDim/
+  // quality/maxMb it isn't a cost lever the operator needs to bake, and the
+  // hosted dropper accepts both webp and jpeg (#560). A media poster's
+  // thumbnail follows it too.
+  const userImageFormat: imagePipeline.OutputFormat =
+    settings['uploads.image.format'] === 'jpeg' ? 'jpeg' : 'webp';
   // An avatar is a still or animated bitmap the crop can cut. sharp reads an
   // APNG's first frame only, so cropping one would lose its animation.
   if (input.avatar && (contentClass !== 'image' || classified.mime === 'image/apng')) {
@@ -245,11 +253,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     outExt = classified.ext;
     outByteSize = bytesOnDisk;
   } else {
-    // The output format is the user's, with no policy override: unlike maxDim/
-    // quality/maxMb it isn't a cost lever the operator needs to bake, and the
-    // hosted dropper accepts both webp and jpeg (#560).
-    const format: imagePipeline.OutputFormat =
-      settings['uploads.image.format'] === 'jpeg' ? 'jpeg' : 'webp';
+    const format = userImageFormat;
     const quality = resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
     let optimized: imagePipeline.OptimizeResult;
     try {
@@ -316,28 +320,31 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // remote object under a `thumbs/` prefix so it doesn't bloat the cell DB /
   // R2 backups; everyone else keeps the inline BLOB. Best-effort: a thumb
   // upload failure falls back to the BLOB so a hiccup never blocks the user.
+  const storeThumbRemotely = async (bytes: Buffer): Promise<string | null> => {
+    // Describe the bytes we actually produced, not the format thumbnails
+    // used to be: the dropper verifies the claimed mime against the magic
+    // bytes and 415s a webp announced as image/jpeg.
+    const thumbFmt = thumbnailFormat(bytes);
+    const tRes = await resolved.driver.upload(
+      bufferSource(bytes),
+      {
+        filename: `thumb.${thumbFmt.ext}`,
+        mime: thumbFmt.mime,
+        contentClass: 'image',
+        kind: 'thumb',
+      },
+      resolved.driverConfig,
+    );
+    return tRes && typeof tRes.url === 'string'
+      ? absolutizeUrl(tRes.url, storesRemotely, input.baseUrl)
+      : null;
+  };
   let thumbnailBlob: Buffer | null = thumb;
   let thumbnailUrl: string | null = null;
   if (resolved.policy.hostsThumbnails && thumb) {
     try {
-      // Describe the bytes we actually produced, not the format thumbnails
-      // used to be: the dropper verifies the claimed mime against the magic
-      // bytes and 415s a webp announced as image/jpeg.
-      const thumbFmt = thumbnailFormat(thumb);
-      const tRes = await resolved.driver.upload(
-        bufferSource(thumb),
-        {
-          filename: `thumb.${thumbFmt.ext}`,
-          mime: thumbFmt.mime,
-          contentClass: 'image',
-          kind: 'thumb',
-        },
-        resolved.driverConfig,
-      );
-      if (tRes && typeof tRes.url === 'string') {
-        thumbnailUrl = absolutizeUrl(tRes.url, storesRemotely, input.baseUrl);
-        thumbnailBlob = null;
-      }
+      thumbnailUrl = await storeThumbRemotely(thumb);
+      if (thumbnailUrl) thumbnailBlob = null;
     } catch {
       // keep thumbnailBlob — fall back to the inline BLOB
     }
@@ -360,7 +367,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // Report the upload to the control plane's moderation index. Self-gates to
   // a no-op in standalone (no control plane configured), so it's called
   // unconditionally; fire-and-forget, never blocks the response.
-  reportUploadSoon({
+  const reported = reportUploadSoon({
     cell_upload_id: id,
     cell_user_id: input.userId,
     url: mainUrl,
@@ -370,6 +377,19 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     width: outWidth,
     height: outHeight,
   });
+
+  // A video or audio file has no thumbnail yet: the decoder makes its poster
+  // from the stored URL, after this answers (#778, services/uploadPoster.ts).
+  if (contentClass === 'media' && previewsEnabled() && posterableUrl(mainUrl)) {
+    posterForUploadSoon({
+      userId: input.userId,
+      uploadId: id,
+      url: mainUrl,
+      format: userImageFormat,
+      storeRemotely: resolved.policy.hostsThumbnails ? storeThumbRemotely : null,
+      reported,
+    });
+  }
 
   // Deletability is decided at capture time (decision 8): the driver returned
   // a ref only if this specific upload's bytes can be destroyed later. Hosted

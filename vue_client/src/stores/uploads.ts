@@ -343,6 +343,18 @@ export const useUploadsStore = defineStore('uploads', {
       cur.sentPercent = frame.phase === 'sending' ? (frame.percent ?? null) : null;
     },
 
+    /**
+     * A thumbnail made after the upload answered: a video or audio poster
+     * (#778). Rows this tab doesn't hold get it from their next fetch.
+     */
+    applyThumbnail(frame: { id?: number; thumbnail_url?: string }) {
+      if (typeof frame?.id !== 'number' || typeof frame.thumbnail_url !== 'string') return;
+      for (const list of [this.recent, this.menuItems]) {
+        const row = list.find((u) => u.id === frame.id);
+        if (row) row.thumbnail_url = frame.thumbnail_url;
+      }
+    },
+
     async uploadText(content: string, filename = 'message.txt') {
       // Long-message → .txt upload. Wrap the text in a Blob so it can ride
       // the same multipart endpoint as image uploads; the server branches on

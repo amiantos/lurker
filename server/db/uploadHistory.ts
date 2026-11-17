@@ -330,6 +330,41 @@ export function getUnsyncedUploadForReport(
     .get(userId, Number(id)) as UnsyncedUploadRow | undefined;
 }
 
+/** Is this row still there, not taken down, and without a thumbnail? */
+export function uploadAwaitsThumbnail(id: number): boolean {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM upload_history
+       WHERE id = ? AND removed = 0 AND thumbnail IS NULL AND thumbnail_url IS NULL`,
+    )
+    .get(Number(id));
+}
+
+/**
+ * Give a thumbnail-less row the thumbnail made for it after the upload (a video
+ * or audio poster, #778): the inline BLOB or the remote URL, never both. Answers
+ * false when the row is gone, taken down, or already has one.
+ *
+ * A remote thumbnail is an object the control plane has to learn about, so
+ * writing one marks the row unsynced and the reporter sends it again.
+ */
+export function setUploadThumbnail(
+  id: number,
+  thumbnail: Buffer | null,
+  thumbnailUrl: string | null,
+): boolean {
+  return (
+    db
+      .prepare(
+        `UPDATE upload_history
+         SET thumbnail = ?, thumbnail_url = ?,
+             synced_to_cp = CASE WHEN ? IS NULL THEN synced_to_cp ELSE 0 END
+         WHERE id = ? AND removed = 0 AND thumbnail IS NULL AND thumbnail_url IS NULL`,
+      )
+      .run(thumbnail, thumbnailUrl, thumbnailUrl, Number(id)).changes > 0
+  );
+}
+
 export function markUploadSynced(id: number): void {
   db.prepare('UPDATE upload_history SET synced_to_cp = 1 WHERE id = ?').run(Number(id));
 }
