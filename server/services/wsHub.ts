@@ -128,7 +128,7 @@ import { setBufferRetentionById } from '../db/bufferRetention.js';
 import { markBufferDirty } from '../db/retention.js';
 import { SESSION_COOKIE, loadBearerCredential } from '../middleware/auth.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
-import { instanceJitsiUrl } from '../utils/jitsi.js';
+import { instanceJitsiUrl } from '../db/instanceSettings.js';
 import { isAllowedBrowserOrigin } from '../utils/corsOrigins.js';
 import { callVerb } from './verbRegistry.js';
 import { timeSyncWork } from './syncWork.js';
@@ -1797,6 +1797,15 @@ export function fanOutUploadLimitsToAll(): void {
   }
 }
 
+/** The admin changed the instance's Jitsi server (#527): every open client
+ *  learns it now, on the `settings` frame as the upload limits do. */
+export function fanOutJitsiUrlToAll(): void {
+  const jitsiUrl = instanceJitsiUrl();
+  for (const userId of socketsByUser.keys()) {
+    fanOut(userId, { kind: 'settings', changes: {}, jitsiUrl });
+  }
+}
+
 // Public alias for verb handlers that produce a value via MCP but still want
 // the user's open WS tabs to react (e.g. set_nick_note). Same signature as
 // the private fanOut; named to make the cross-module call site read clearly.
@@ -3172,7 +3181,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       uploadChunkBytes,
       // #1131: the instance ceiling, the bound on the user's own cap setting.
       uploadCeilingBytes,
-      // #527: the operator's Jitsi Meet server for /jitsi, or null.
+      // #527: the Jitsi Meet server the admin named for /jitsi, or null.
       jitsiUrl: instanceJitsiUrl(),
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),

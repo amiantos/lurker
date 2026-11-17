@@ -53,6 +53,7 @@ import adminNetworksRouter from './adminNetworks.js';
 import adminStorageRouter from './adminStorage.js';
 import adminDccRouter from './adminDcc.js';
 import adminPushRouter from './adminPush.js';
+import adminGeneralRouter from './adminGeneral.js';
 import { deleteAccount } from '../services/deleteAccount.js';
 
 const router = Router();
@@ -72,6 +73,9 @@ router.use('/dcc', adminDccRouter);
 
 // The push relay opt-in (lurker-dev/RELAY_PLAN.md §5a).
 router.use('/push', adminPushRouter);
+
+// Instance-wide settings with no pane of their own (#527).
+router.use('/general', adminGeneralRouter);
 
 // Does anything answer ident lookups for this instance's connections, and
 // which process would? Whoever holds the sockets: this one, or the engine in

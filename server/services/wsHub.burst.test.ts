@@ -203,21 +203,19 @@ describe('connect burst terminator (#635)', () => {
     }
   });
 
-  // #527: the operator's Jitsi server rides the snapshot, which only a
-  // signed-in client gets. Null when none is named, never absent.
-  it("carries the operator's Jitsi server on the snapshot frame", async () => {
-    const before = process.env.LURKER_JITSI_URL;
+  // #527: the admin's Jitsi server rides the snapshot, which only a signed-in
+  // client gets. Null when none is named, never absent.
+  it("carries the instance's Jitsi server on the snapshot frame", async () => {
+    const { setInstanceJitsiUrl } = await import('../db/instanceSettings.js');
     try {
-      delete process.env.LURKER_JITSI_URL;
       expect((await collectBurst())[0]).toMatchObject({ kind: 'snapshot', jitsiUrl: null });
-      process.env.LURKER_JITSI_URL = 'https://meet.example.org/';
+      setInstanceJitsiUrl('https://meet.example.org');
       expect((await collectBurst())[0]).toMatchObject({
         kind: 'snapshot',
         jitsiUrl: 'https://meet.example.org',
       });
     } finally {
-      if (before === undefined) delete process.env.LURKER_JITSI_URL;
-      else process.env.LURKER_JITSI_URL = before;
+      setInstanceJitsiUrl(null);
     }
   });
 

@@ -51,10 +51,6 @@ services:
       # operators of services Lurker talks to can reach you if needed.
       # - USER_AGENT_CONTACT=https://lurker.example.com
       #
-      # ───── Optional: your own Jitsi Meet server ──────────────────────────
-      # Where /jitsi starts calls. Unset, it is the public meet.jit.si.
-      # - LURKER_JITSI_URL=https://meet.example.org
-      #
       # ───── Optional: custom session secret ───────────────────────────────
       # By default Lurker generates a 64-byte secret on first boot and
       # writes it to data/session-secret.key. Set this only if you want

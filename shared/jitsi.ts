@@ -6,8 +6,8 @@
 // tells them apart.
 //
 // Three places can name one, most specific first: the user's own setting
-// (`chat.jitsi_url`), the instance's (LURKER_JITSI_URL, sent as `jitsiUrl` in
-// the `snapshot` frame), and the public server.
+// (`chat.jitsi_url`), the instance's (set by an admin, sent as `jitsiUrl` in the
+// `snapshot` frame), and the public server.
 
 export const DEFAULT_JITSI_URL = 'https://meet.jit.si';
 

@@ -1235,7 +1235,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: '',
     description:
       'The Jitsi Meet server /jitsi starts calls on, as a URL: https://meet.example.org. ' +
-      "Empty uses this instance's server, or meet.jit.si when it has none.",
+      "Empty uses the server this instance's admin chose, or meet.jit.si.",
   },
 
   // ─── Inline media viewer ──────────────────────────────────────────────

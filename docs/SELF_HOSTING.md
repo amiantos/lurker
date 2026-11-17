@@ -545,12 +545,7 @@ Unset, it falls back to the upstream project link.
 
 ### Your own Jitsi server
 
-`/jitsi` posts a link to a new video call room, on the public `meet.jit.si` by default. To use a Jitsi Meet server you run, set `LURKER_JITSI_URL` to its address:
-
-```yaml
-environment:
-  - LURKER_JITSI_URL=https://meet.example.org
-```
+`/jitsi` posts a link to a new video call room, on the public `meet.jit.si` by default. To use a Jitsi Meet server you run, enter its address in Admin → General.
 
 Anyone can point `/jitsi` at a different server for themselves, in Settings → Chat → Jitsi server.
 

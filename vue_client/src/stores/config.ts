@@ -35,7 +35,7 @@ export const useConfigStore = defineStore('config', {
     // failure must not conjure a feature the server may not have: guessing "on" here would show
     // the two settings and then have every resolve 404.
     features: { linkPreviews: false, bouncer: false, dcc: false } as Features,
-    /** The instance's Jitsi Meet server for /jitsi, when the operator named one.
+    /** The instance's Jitsi Meet server for /jitsi, when an admin named one.
      *  From the `snapshot` frame, not /api/config: it is for signed-in users. */
     jitsiUrl: null as string | null,
     checked: false,
