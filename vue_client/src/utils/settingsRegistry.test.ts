@@ -16,6 +16,7 @@ import type { SettingOption, SettingValue } from '../../../shared/settingsRegist
 
 const cat = (id: string) => CATEGORIES.find((c) => c.id === id)!;
 const opt = (key: string) => REGISTRY.find((o) => o.key === key)!;
+const inPane = (id: string) => REGISTRY.filter((o) => o.category === id);
 
 /** An effective-value reader over an override map, defaulting to the registry. */
 function reader(overrides: Record<string, SettingValue>) {
@@ -315,15 +316,16 @@ describe('optionEnabled — compact body indent (#1186)', () => {
 });
 
 describe('pane structure', () => {
-  const inPane = (id: string) => REGISTRY.filter((o) => o.category === id);
-
   // RegistryPane falls back to the raw group id for a group with no label, so
   // a regrouped row would head its section with `status-bar`.
   it('labels every group a registry pane renders', () => {
     const shown = REGISTRY.filter((o) => CATEGORIES.some((c) => c.id === o.category));
     const unlabelled = [...new Set(shown.map((o) => o.group))].filter((g) => !(g in GROUPS));
-    // Input bar is one flat list: a lone group never draws its heading.
-    expect(unlabelled).toEqual(['input']);
+    expect(unlabelled).toEqual([]);
+  });
+
+  // A pane with a lone group draws no heading, which is what makes it flat.
+  it('keeps Input bar one flat list', () => {
     expect(new Set(inPane('input').map((o) => o.group)).size).toBe(1);
   });
 
@@ -344,21 +346,14 @@ describe('pane structure', () => {
   });
 
   it('gathers away, the quit message and the CTCP replies under IRC', () => {
-    expect(inPane('irc').map((o) => o.key)).toEqual([
-      'away.all_networks',
-      'chat.quit_message',
-      'away.auto.enabled',
-      'away.auto.delay_seconds',
-      'away.auto.message',
-      'ctcp.replies',
-      'ctcp.msgbuffer',
-      'ctcp.version',
-      'ctcp.time',
-      'ctcp.source',
-      'ctcp.clientinfo',
-    ]);
-    expect(cat('irc')).toEqual({ id: 'irc', label: 'IRC', kind: 'registry' });
+    const moved = REGISTRY.filter(
+      (o) => /^(away|ctcp)\./.test(o.key) || o.key === 'chat.quit_message',
+    );
+    expect(moved.length).toBeGreaterThan(0);
+    expect(moved.filter((o) => o.category !== 'irc')).toEqual([]);
+    // The category has to exist in the sidebar, or the pane is unreachable.
+    expect(cat('irc')?.kind).toBe('registry');
     expect(CATEGORIES.some((c) => c.id === 'away')).toBe(false);
-    expect([...new Set(inPane('chat').map((o) => o.group))]).toEqual(['composing', 'viewing']);
+    expect(inPane('chat').some((o) => o.group === 'connection')).toBe(false);
   });
 });

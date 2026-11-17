@@ -24,8 +24,12 @@
   color: var(--fg-muted);
   margin: 0 0 var(--space-6);
 }
+/* A group heading has to break a list whose rows are already ruled apart, so
+   it gets twice a row's air above it and a rule of its own beneath. */
 .settings-pane .subhead {
-  margin: var(--space-7) 0 var(--space-3);
+  margin: var(--space-10) 0 var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;

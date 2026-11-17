@@ -477,7 +477,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Any CSS color value; leave empty to match everyone else.',
   },
 
-  // ─── Message layout, and collapsing repeated authors ──────────────────
+  // ─── Message layout, then the rest of Message rows ────────────────────
   {
     key: 'look.message.layout',
     label: 'Message layout',
@@ -1863,7 +1863,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
 
   // ─── Input bar ────────────────────────────────────────────────────────
-  // One flat list: six rows do not need three headings.
+  // One group: six rows do not need three headings, and a pane with a lone
+  // group draws none.
   //
   // System text features:
   // Each setting maps directly to an HTML attribute on the chat input
@@ -1874,7 +1875,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.spellcheck',
     label: 'Spellcheck input',
     category: 'input',
-    group: 'input',
+    group: 'input-bar',
     type: 'bool',
     default: true,
     description:
@@ -1886,7 +1887,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.autocorrect',
     label: 'Autocorrect input',
     category: 'input',
-    group: 'input',
+    group: 'input-bar',
     type: 'bool',
     default: true,
     description:
@@ -1900,7 +1901,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.autocorrect_force_mobile',
     label: 'Force autocorrect on mobile',
     category: 'input',
-    group: 'input',
+    group: 'input-bar',
     type: 'bool',
     default: false,
     description:
@@ -1916,7 +1917,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.suggestion_strip_on_desktop',
     label: 'Use suggestion strip on desktop',
     category: 'input',
-    group: 'input',
+    group: 'input-bar',
     type: 'bool',
     default: false,
     description:
@@ -1938,7 +1939,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.completion.nick_suffix',
     label: 'Nick completion suffix',
     category: 'input',
-    group: 'input',
+    group: 'input-bar',
     type: 'string',
     default: ':',
     description:
@@ -1957,7 +1958,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.show_format_button',
     label: 'Show formatting button',
     category: 'input',
-    group: 'input',
+    group: 'input-bar',
     type: 'bool',
     default: false,
     description:
@@ -2345,6 +2346,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   'event-filter': 'Filter',
   consolidate: 'Consolidation',
   composing: 'Composing',
+  'input-bar': 'Input bar',
   'smart-filter': 'Smart filter tuning',
   presence: 'Away and quit',
   ctcp: 'CTCP replies',
