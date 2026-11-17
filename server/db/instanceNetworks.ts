@@ -16,6 +16,9 @@ export interface InstanceNetworkRow {
   tls: number;
   sasl_likely_required: number;
   channels_json: string;
+  tags_json: string;
+  users: number | null;
+  channel_count: number | null;
   enabled: number;
   position: number;
   created_at: string;
@@ -33,6 +36,12 @@ export interface InstanceNetwork {
   tls: boolean;
   saslLikelyRequired: boolean;
   channels: string[];
+  /** Browse tags, as a builtin's card shows them. */
+  tags: string[];
+  /** How many people are on the network, as the admin gave it. */
+  users: number | null;
+  /** How many channels. `channelCount` because `channels` is the recommended list. */
+  channelCount: number | null;
   enabled: boolean;
   position: number;
 }
@@ -44,13 +53,17 @@ export interface InstanceNetworkInput {
   tls?: boolean;
   saslLikelyRequired?: boolean;
   channels?: string[];
+  tags?: string[];
+  /** null clears a count; absent leaves it. */
+  users?: number | null;
+  channelCount?: number | null;
   enabled?: boolean;
 }
 
-// channels_json is written by us and only ever holds a JSON string[], but a
-// hand-edited DB (or a future schema slip) shouldn't crash every request that
-// lists presets — fall back to "no recommended channels" instead of throwing.
-function parseChannels(json: string): string[] {
+// channels_json and tags_json are written by us and only ever hold a JSON
+// string[], but a hand-edited DB (or a future schema slip) shouldn't crash every
+// request that lists presets — fall back to an empty list instead of throwing.
+function parseStrings(json: string): string[] {
   try {
     const parsed = JSON.parse(json);
     return Array.isArray(parsed) ? parsed.filter((c): c is string => typeof c === 'string') : [];
@@ -67,7 +80,10 @@ export function toInstanceNetwork(row: InstanceNetworkRow): InstanceNetwork {
     port: row.port,
     tls: !!row.tls,
     saslLikelyRequired: !!row.sasl_likely_required,
-    channels: parseChannels(row.channels_json),
+    channels: parseStrings(row.channels_json),
+    tags: parseStrings(row.tags_json),
+    users: row.users,
+    channelCount: row.channel_count,
     enabled: !!row.enabled,
     position: row.position,
   };
@@ -105,8 +121,9 @@ export function createInstanceNetwork(input: InstanceNetworkInput): InstanceNetw
   const result = db
     .prepare(
       `INSERT INTO instance_network
-         (name, host, port, tls, sasl_likely_required, channels_json, enabled, position)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (name, host, port, tls, sasl_likely_required, channels_json, tags_json, users,
+          channel_count, enabled, position)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.name,
@@ -115,6 +132,9 @@ export function createInstanceNetwork(input: InstanceNetworkInput): InstanceNetw
       input.tls === false ? 0 : 1,
       input.saslLikelyRequired ? 1 : 0,
       JSON.stringify(input.channels ?? []),
+      JSON.stringify(input.tags ?? []),
+      input.users ?? null,
+      input.channelCount ?? null,
       input.enabled === false ? 0 : 1,
       next,
     );
@@ -134,12 +154,16 @@ export function updateInstanceNetwork(
     tls: patch.tls ?? existing.tls,
     saslLikelyRequired: patch.saslLikelyRequired ?? existing.saslLikelyRequired,
     channels: patch.channels ?? existing.channels,
+    tags: patch.tags ?? existing.tags,
+    users: patch.users !== undefined ? patch.users : existing.users,
+    channelCount: patch.channelCount !== undefined ? patch.channelCount : existing.channelCount,
     enabled: patch.enabled ?? existing.enabled,
   };
   db.prepare(
     `UPDATE instance_network
         SET name = ?, host = ?, port = ?, tls = ?, sasl_likely_required = ?,
-            channels_json = ?, enabled = ?, updated_at = datetime('now')
+            channels_json = ?, tags_json = ?, users = ?, channel_count = ?, enabled = ?,
+            updated_at = datetime('now')
       WHERE id = ?`,
   ).run(
     merged.name,
@@ -148,6 +172,9 @@ export function updateInstanceNetwork(
     merged.tls ? 1 : 0,
     merged.saslLikelyRequired ? 1 : 0,
     JSON.stringify(merged.channels),
+    JSON.stringify(merged.tags),
+    merged.users,
+    merged.channelCount,
     merged.enabled ? 1 : 0,
     id,
   );

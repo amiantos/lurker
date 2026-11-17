@@ -15,6 +15,7 @@ import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useConfigStore } from '../stores/config.js';
 import type { AccountRestrictions } from '../../../shared/accountRestrictions.js';
+import type { NetworkPreset } from '../utils/builtinNetworks.js';
 
 function setUp(opts: { allowUserDefined: boolean; restrictions?: AccountRestrictions }) {
   const presets = useNetworkPresetsStore();
@@ -86,5 +87,92 @@ describe('NetworkPicker held account', () => {
     const wrapper = mount(NetworkPicker);
     expect(wrapper.find('.locked').exists()).toBe(true);
     expect(wrapper.find('.locked a').exists()).toBe(false);
+  });
+});
+
+// What an admin says about a recommended network shows where a builtin's does,
+// and only what was said.
+describe('NetworkPicker recommended network card', () => {
+  const preset = (over: Partial<NetworkPreset> = {}): NetworkPreset => ({
+    instanceId: 1,
+    name: 'Corp',
+    host: 'irc.corp.example',
+    port: 6697,
+    tls: true,
+    website: '',
+    users: null,
+    channels: null,
+    saslLikelyRequired: false,
+    tags: [],
+    isInstance: true,
+    ...over,
+  });
+  // Locked down, so the instance presets are the whole list.
+  function card(over: Partial<NetworkPreset> = {}) {
+    setUp({ allowUserDefined: false });
+    useNetworkPresetsStore().presets = [preset(over)];
+    return mount(NetworkPicker).find('.net-card');
+  }
+
+  it('keeps the badge by the name when no tags were given', () => {
+    const c = card();
+    expect(c.find('.net-head .net-instance').exists()).toBe(true);
+    expect(c.find('.net-tags').exists()).toBe(false);
+    expect(c.findAll('.stat')).toHaveLength(0);
+  });
+
+  it('shows tags by the name and moves the badge under them', () => {
+    const c = card({ tags: ['gaming', 'linux'] });
+    expect(c.find('.net-head .net-tags').text()).toBe('gaming, linux');
+    expect(c.find('.net-head .net-instance').exists()).toBe(false);
+    expect(c.find('.net-statsrow .net-instance').text()).toBe('recommended here');
+  });
+
+  it('shows each count only when given', () => {
+    const c = card({ users: 1200 });
+    expect(c.findAll('.stat')).toHaveLength(1);
+    expect(c.find('.stat').text()).toBe('1.2k');
+    expect(c.find('.stat').attributes('title')).toBe('~1,200 users');
+    expect(card({ users: 0, channels: 14 }).findAll('.stat')).toHaveLength(2);
+  });
+
+  it('never calls an instance preset a #lurker network', () => {
+    const c = card({ tags: ['lurker'] });
+    expect(c.find('.net-lurker').exists()).toBe(false);
+    expect(c.find('.net-head .net-instance').exists()).toBe(true);
+  });
+});
+
+describe('NetworkPicker tag filter and recommended networks', () => {
+  it('filters a tagged preset by its tags and keeps an untagged one pinned', async () => {
+    setUp({ allowUserDefined: true });
+    const base = {
+      host: 'irc.corp.example',
+      port: 6697,
+      tls: true,
+      website: '',
+      users: null,
+      channels: null,
+      saslLikelyRequired: false,
+      isInstance: true,
+    };
+    useNetworkPresetsStore().presets = [
+      { ...base, instanceId: 1, name: 'Untagged Corp', tags: [] },
+      { ...base, instanceId: 2, name: 'Tagged Corp', tags: ['zz-own-tag'] },
+    ];
+    const wrapper = mount(NetworkPicker);
+    await wrapper.find('.filter-toggle').trigger('click');
+    const chips = wrapper.findAll('.tag-chip');
+    const own = chips.find((c) => c.text() === 'zz-own-tag');
+    expect(own).toBeDefined();
+    const other = chips.find((c) => c.text() !== 'zz-own-tag')!;
+
+    await other.trigger('click');
+    const names = () => wrapper.findAll('.net-name').map((n) => n.text());
+    expect(names()).toContain('Untagged Corp');
+    expect(names()).not.toContain('Tagged Corp');
+
+    await own!.trigger('click');
+    expect(names()).toEqual(['Untagged Corp', 'Tagged Corp']);
   });
 });

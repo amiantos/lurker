@@ -41,7 +41,7 @@
 
     <div v-if="showFilters && showTagFilter" class="tags" role="group" aria-label="Filter by tag">
       <button
-        v-for="tag in builtinNetworkTags"
+        v-for="tag in tagChips"
         :key="tag"
         type="button"
         class="tag-chip"
@@ -62,29 +62,36 @@
         <button type="button" class="net-card" @click="$emit('select', net)">
           <span class="net-head">
             <span class="net-name">{{ net.name }}</span>
-            <span v-if="net.isInstance" class="net-instance">recommended here</span>
-            <span v-else-if="displayTags(net).length" class="net-tags">
+            <span v-if="displayTags(net).length" class="net-tags">
               {{ displayTags(net).join(', ') }}
             </span>
+            <span v-else-if="net.isInstance" class="net-instance">recommended here</span>
           </span>
           <span class="net-statsrow">
             <span class="net-stats">
               <span
                 v-if="net.users != null"
                 class="stat"
-                :title="`~${net.users.toLocaleString()} users (netsplit.de average)`"
+                :title="`~${net.users.toLocaleString()} users${countSource(net)}`"
               >
                 <UsersIcon /> {{ formatCount(net.users) }}
               </span>
               <span
                 v-if="net.channels != null"
                 class="stat"
-                :title="`~${net.channels.toLocaleString()} channels (netsplit.de average)`"
+                :title="`~${net.channels.toLocaleString()} channels${countSource(net)}`"
               >
                 <HashIcon /> {{ formatCount(net.channels) }}
               </span>
             </span>
-            <span v-if="hasLurker(net)" class="net-lurker">#lurker available</span>
+            <!-- An instance preset's badge sits by the name until the admin's
+                 tags take that place, then here, where a builtin's does. -->
+            <span v-if="net.isInstance && displayTags(net).length" class="net-instance">
+              recommended here
+            </span>
+            <span v-else-if="!net.isInstance && hasLurker(net)" class="net-lurker">
+              #lurker available
+            </span>
           </span>
         </button>
       </li>
@@ -161,8 +168,19 @@ function hasLurker(net: NetworkPreset): boolean {
   return net.tags.includes(LURKER_TAG);
 }
 
+// A builtin's counts are netsplit.de's; an instance preset's are its admin's.
+function countSource(net: NetworkPreset): string {
+  return net.isInstance ? '' : ' (netsplit.de average)';
+}
+
 const showTagFilter = computed(
   () => presets.allowUserDefined && !allowedHosts.value && builtinNetworkTags.length > 0,
+);
+// The catalogue's tags, plus any an admin gave a preset that it doesn't have.
+const tagChips = computed<string[]>(() =>
+  [
+    ...new Set([...builtinNetworkTags, ...presets.presets.flatMap((n) => displayTags(n))]),
+  ].toSorted(),
 );
 
 const query = ref('');
@@ -248,10 +266,10 @@ const filtered = computed<NetworkPreset[]>(() => {
   return offered.value.filter((n) => {
     if (q && !n.name.toLowerCase().includes(q) && !n.tags.some((t) => t.toLowerCase().includes(q)))
       return false;
-    // Tag chips are a facet over the builtin catalogue's metadata; instance
-    // presets carry no tags, so a tag filter would silently hide the admin's own
-    // networks. Keep them pinned through it.
-    if (tag && !n.isInstance && !n.tags.includes(tag)) return false;
+    // An instance preset the admin gave no tags stays pinned through a tag
+    // filter: it has no way to match one, and a filter would silently hide the
+    // admin's own network. One with tags is filtered like any other row.
+    if (tag && !(n.isInstance && !n.tags.length) && !n.tags.includes(tag)) return false;
     return true;
   });
 });
@@ -394,7 +412,8 @@ const filtered = computed<NetworkPreset[]>(() => {
   white-space: nowrap;
 }
 /* Marks a network the instance's admin defined, distinguishing it from the
-   bundled catalogue it's pinned above. */
+   bundled catalogue it's pinned above. Opposite the name, or opposite the
+   counts when the preset has tags. */
 .net-instance {
   flex: 1;
   min-width: 0;

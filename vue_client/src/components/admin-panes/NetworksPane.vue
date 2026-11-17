@@ -31,6 +31,7 @@
             {{ preset.channels.join(', ') }}
           </span>
           <span v-else class="row-channels muted">no recommended channels</span>
+          <span v-if="details(preset)" class="row-channels">{{ details(preset) }}</span>
         </div>
         <div class="row-actions">
           <label class="check">
@@ -73,6 +74,21 @@
         <input v-model="draft.channels" placeholder="#general, #random" />
         <small>Comma-separated. Pre-checked for new users during setup.</small>
       </label>
+      <div class="grid">
+        <label>
+          <span>Tags</span>
+          <input v-model="draft.tags" placeholder="gaming, linux" />
+        </label>
+        <label class="count">
+          <span>Users</span>
+          <input v-model="draft.users" type="number" min="0" step="1" />
+        </label>
+        <label class="count">
+          <span>Channels</span>
+          <input v-model="draft.channelCount" type="number" min="0" step="1" />
+        </label>
+      </div>
+      <small class="muted">Optional. Shown on the network’s card in the picker.</small>
       <label class="check">
         <input v-model="draft.tls" type="checkbox" />
         <span>TLS</span>
@@ -120,7 +136,22 @@ const draft = reactive({
   tls: true,
   saslLikelyRequired: false,
   channels: '',
+  tags: '',
+  // '' is "not given"; a number input's v-model hands back a number otherwise.
+  users: '' as number | '',
+  channelCount: '' as number | '',
 });
+
+// The picker-card details a preset was given, on one line. Empty when none.
+function details(preset: AdminNetworkPreset): string {
+  const parts: string[] = [];
+  if (preset.tags.length) parts.push(preset.tags.join(', '));
+  if (preset.users != null) parts.push(`${preset.users.toLocaleString()} users`);
+  if (preset.channelCount != null) {
+    parts.push(`${preset.channelCount.toLocaleString()} channels`);
+  }
+  return parts.join(' · ');
+}
 
 onMounted(() => {
   if (!store.networksLoaded) store.fetchNetworkPresets().catch(() => {});
@@ -152,6 +183,12 @@ async function add(): Promise<void> {
         .split(/[,\s]+/)
         .map((c) => c.trim())
         .filter(Boolean),
+      tags: draft.tags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean),
+      users: draft.users === '' ? null : draft.users,
+      channelCount: draft.channelCount === '' ? null : draft.channelCount,
       enabled: true,
     });
     draft.name = '';
@@ -160,6 +197,9 @@ async function add(): Promise<void> {
     draft.tls = true;
     draft.saslLikelyRequired = false;
     draft.channels = '';
+    draft.tags = '';
+    draft.users = '';
+    draft.channelCount = '';
   });
 }
 
@@ -237,6 +277,9 @@ async function togglePolicy(): Promise<void> {
 }
 .grid .port {
   flex: 0 0 90px;
+}
+.grid .count {
+  flex: 0 0 110px;
 }
 label {
   display: flex;

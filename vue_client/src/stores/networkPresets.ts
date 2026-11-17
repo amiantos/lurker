@@ -9,6 +9,10 @@ import { defineStore } from 'pinia';
 import { api } from '../api.js';
 import type { NetworkPreset } from '../utils/builtinNetworks.js';
 
+function count(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
 export const useNetworkPresetsStore = defineStore('networkPresets', {
   state: () => ({
     presets: [] as NetworkPreset[],
@@ -32,13 +36,15 @@ export const useNetworkPresetsStore = defineStore('networkPresets', {
           tls: !!p.tls,
           saslLikelyRequired: !!p.saslLikelyRequired,
           recommendedChannels: Array.isArray(p.channels) ? (p.channels as string[]) : [],
-          // Instance presets carry none of the netsplit browse metadata, and
-          // shouldn't pretend to: no popularity counts to sort by, no tags to
-          // filter on. They're pinned to the top of the picker instead.
+          // Tags and counts are the admin's to give, and a card shows only
+          // what it was given. An older server sends none. Neither moves the
+          // row: instance presets stay pinned, in the admin's order.
           website: '',
-          users: null,
-          channels: null,
-          tags: [],
+          users: count(p.users),
+          channels: count(p.channelCount),
+          tags: Array.isArray(p.tags)
+            ? p.tags.filter((t): t is string => typeof t === 'string')
+            : [],
           isInstance: true,
         }));
         this.allowUserDefined = data.allowUserDefined !== false;
