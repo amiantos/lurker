@@ -690,3 +690,45 @@ describe('uploads — favourites', () => {
     expect(uploads.favoritesTruncated).toBe(false);
   });
 });
+
+// #778: a video or audio upload's poster is made after the upload answers, and
+// for older rows after a list shows them. It arrives as a frame.
+describe('uploads.applyThumbnail', () => {
+  const row = (id: number) => ({ id, url: `https://x.test/${id}.mp4`, filename: 'a.mp4' });
+
+  it('fills in the row in the browser and in the picker', async () => {
+    const uploads = useUploadsStore();
+    api.mockResolvedValue({ items: [{ ...row(9001), mime: 'video/mp4' }] });
+    await uploads.loadRecent();
+    await uploads.loadMenu('recent');
+    uploads.applyThumbnail({ uploadId: 9001, thumbnail_url: '/api/uploads/9001/thumb' });
+    expect(uploads.recent[0]!.thumbnail_url).toBe('/api/uploads/9001/thumb');
+    expect(uploads.menuItems[0]!.thumbnail_url).toBe('/api/uploads/9001/thumb');
+  });
+
+  it('survives a list response the server built before the thumbnail existed', async () => {
+    const uploads = useUploadsStore();
+    let land!: (v: unknown) => void;
+    api.mockReturnValue(new Promise((r) => (land = r)));
+    const loading = uploads.loadRecent();
+    // The frame crosses the fetch: there is no row to patch yet.
+    uploads.applyThumbnail({ uploadId: 9002, thumbnail_url: '/api/uploads/9002/thumb' });
+    land({ items: [{ ...row(9002), mime: 'video/mp4' }] });
+    await loading;
+    expect(uploads.recent[0]!.thumbnail_url).toBe('/api/uploads/9002/thumb');
+  });
+
+  it('leaves a moderated-away row as its tombstone', async () => {
+    const uploads = useUploadsStore();
+    uploads.applyThumbnail({ uploadId: 9003, thumbnail_url: '/api/uploads/9003/thumb' });
+    api.mockResolvedValue({ items: [{ ...row(9003), mime: 'video/mp4', removed: true }] });
+    await uploads.loadRecent();
+    expect(uploads.recent[0]!.thumbnail_url).toBeUndefined();
+  });
+
+  it('ignores a frame it cannot read', () => {
+    const uploads = useUploadsStore();
+    expect(() => uploads.applyThumbnail({} as never)).not.toThrow();
+    expect(() => uploads.applyThumbnail({ uploadId: 1 })).not.toThrow();
+  });
+});

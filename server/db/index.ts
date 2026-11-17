@@ -1792,6 +1792,13 @@ ensureColumn('upload_history', 'ref', 'TEXT');
 // exportSchema.ts for the same trap).
 ensureColumn('upload_history', 'favorited_at', 'TEXT');
 
+// When the previews decoder was asked for a video or audio upload's poster and
+// answered about the file: a frame (now the thumbnail), or that there is none
+// to be had (#778). Rows uploaded before posters existed have NULL and are
+// asked about when a list shows them; NULL with no thumbnail also means the
+// decoder couldn't be asked yet. Nullable, as favorited_at is and for its reason.
+ensureColumn('upload_history', 'poster_tried_at', 'TEXT');
+
 // The favourites view orders by favorited_at, which idx_upload_history_user
 // (user_id, id DESC) cannot serve — SQLite falls back to walking EVERY row the
 // user has ever uploaded and sorting them in a temp b-tree, then applying LIMIT.

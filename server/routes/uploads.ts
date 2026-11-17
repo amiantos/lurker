@@ -17,6 +17,7 @@ import { driverIds } from '../services/uploadProviders/index.js';
 import { loadDriverForRef, deletableWith } from '../services/uploadProviders/resolve.js';
 import { hostedDeletable, deleteHostedUpload } from '../services/hostedUploadDelete.js';
 import type { UploadListRow } from '../db/uploadHistory.js';
+import { queuePosterCatchUp } from '../services/uploadPoster.js';
 import {
   listUploads,
   isUploadKind,
@@ -262,12 +263,24 @@ router.get('/', (req: Request, res: Response) => {
   // caller wanting the whole curated set asks for it with limit.
   const favorites = req.query.favorites === '1' || req.query.favorites === 'true';
   const rows: UploadListRow[] = listUploads(req.user!.id, { before, limit, q, kind, favorites });
+  // Video and audio rows on this page that have no poster and no answer about
+  // one are asked about now, one at a time; each thumbnail arrives as an
+  // `upload-thumbnail` frame (#778).
+  queuePosterCatchUp(req.user!.id, rows, () => requestBaseUrl(req));
   const configDeletable = configDeletableCheck();
   // Hosted rows are deleted through the control plane, not a driver handle.
   const isAdmin = req.user!.role === 'admin';
   res.json({
     items: rows.map((r) => {
-      const { has_thumbnail, thumbnail_url, removed, uploader_config_id, has_ref, ...rest } = r;
+      const {
+        has_thumbnail,
+        thumbnail_url,
+        removed,
+        uploader_config_id,
+        has_ref,
+        poster_tried: _posterTried,
+        ...rest
+      } = r;
       // The client only ever needs "is it starred"; the timestamp exists to order
       // the favourites view server-side and never leaves the server.
       const { favorited_at, ...item } = rest;

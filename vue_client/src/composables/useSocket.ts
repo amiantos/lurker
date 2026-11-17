@@ -1370,6 +1370,10 @@ function handleMessage(raw: string): void {
     useUploadsStore().applyProgress(payload);
     return;
   }
+  if (payload.kind === 'upload-thumbnail') {
+    useUploadsStore().applyThumbnail(payload);
+    return;
+  }
 }
 
 function open() {

@@ -16,7 +16,11 @@ import {
   reportRow,
   type OwnerDeleteAnswer,
 } from './moderationReport.js';
-import { deleteUploadUnlessRemoved, getUploadForReport } from '../db/uploadHistory.js';
+import {
+  deleteUploadUnlessRemoved,
+  getUnsyncedUploadForReport,
+  getUploadForReport,
+} from '../db/uploadHistory.js';
 import { getHostedUploaderId } from '../db/uploaderConfig.js';
 import { NODE_UPLOAD_PROVIDER_ID } from './uploadProviders/nodeUpload.js';
 import * as systemLog from './systemLog.js';
@@ -62,6 +66,17 @@ export function deleteHostedUpload(userId: number, id: number): Promise<HostedDe
 }
 
 async function deleteOnce(userId: number, id: number): Promise<HostedDeleteResult> {
+  // The control plane deletes the objects it has indexed for the upload. A row
+  // it hasn't acknowledged may hold one it hasn't heard of (a poster thumbnail
+  // stored after the first report, #778), so that report lands first.
+  const unsynced = getUnsyncedUploadForReport(userId, id);
+  if (unsynced && !(await reportRow(unsynced))) {
+    return {
+      ok: false,
+      status: 503,
+      error: 'this upload is still being recorded — try again shortly',
+    };
+  }
   let answer = await requestOwnerDelete(id, userId);
   // The control plane hasn't indexed it (its report never landed, or hasn't
   // yet): report it now, then ask once more.

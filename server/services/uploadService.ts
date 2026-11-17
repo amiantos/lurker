@@ -21,7 +21,7 @@ import {
   staticImageMaxDimension,
 } from './uploadLimits.js';
 import * as imagePipeline from './imagePipeline.js';
-import { thumbnailFormat } from './thumbnailFormat.js';
+import { absolutizeUrl, remoteThumbStore } from './uploadThumbStore.js';
 import { makeUploadProgress } from './uploadProgress.js';
 import { classifyUpload, UnsupportedTypeError, type Classification } from './contentClass.js';
 import { scrubMediaFile, MediaScrubError } from './mediaScrub.js';
@@ -37,6 +37,8 @@ import { findUserById, restrictionsOf } from '../db/users.js';
 import { UPLOADS_RESTRICTED } from '../../shared/accountRestrictions.js';
 import { hostedDeletable } from './hostedUploadDelete.js';
 import { reportUploadSoon } from './moderationReport.js';
+import { previewsEnabled } from '../utils/previews.js';
+import { posterForUploadSoon, posterableUrl } from './uploadPoster.js';
 
 // Uploads land in a temp file, never in the heap. multer's memoryStorage used to
 // hold the whole file, and the drivers then copied it again (and fetch copied it a
@@ -105,15 +107,6 @@ export interface UploadOutput {
 // kind are 502; only a config the user can fix themselves is a 400.
 export function providerErrorStatus(e: { code?: string }): number {
   return e.code === 'PROVIDER_CONFIG' ? 400 : 502;
-}
-
-/** Absolutize a driver result URL. Drivers that store remotely already return an
- *  absolute URL; the local driver returns a root-relative path we prefix with the
- *  instance's public base, unless its own public_base_url made it absolute. */
-function absolutizeUrl(url: string, storesRemotely: boolean, baseUrl: () => string): string {
-  if (storesRemotely || !url.startsWith('/')) return url;
-  const base = baseUrl();
-  return base ? base + url : url;
 }
 
 export async function processUpload(input: UploadInput): Promise<UploadOutput> {
@@ -185,6 +178,12 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     throw err;
   }
   const contentClass = classified.contentClass;
+  // The output format is the user's, with no policy override: unlike maxDim/
+  // quality/maxMb it isn't a cost lever the operator needs to bake, and the
+  // hosted dropper accepts both webp and jpeg (#560). A media poster's
+  // thumbnail follows it too.
+  const userImageFormat: imagePipeline.OutputFormat =
+    settings['uploads.image.format'] === 'jpeg' ? 'jpeg' : 'webp';
   // An avatar is a still or animated bitmap the crop can cut. sharp reads an
   // APNG's first frame only, so cropping one would lose its animation.
   if (input.avatar && (contentClass !== 'image' || classified.mime === 'image/apng')) {
@@ -245,11 +244,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     outExt = classified.ext;
     outByteSize = bytesOnDisk;
   } else {
-    // The output format is the user's, with no policy override: unlike maxDim/
-    // quality/maxMb it isn't a cost lever the operator needs to bake, and the
-    // hosted dropper accepts both webp and jpeg (#560).
-    const format: imagePipeline.OutputFormat =
-      settings['uploads.image.format'] === 'jpeg' ? 'jpeg' : 'webp';
+    const format = userImageFormat;
     const quality = resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
     let optimized: imagePipeline.OptimizeResult;
     try {
@@ -316,28 +311,17 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // remote object under a `thumbs/` prefix so it doesn't bloat the cell DB /
   // R2 backups; everyone else keeps the inline BLOB. Best-effort: a thumb
   // upload failure falls back to the BLOB so a hiccup never blocks the user.
+  const storeThumbRemotely = remoteThumbStore(
+    resolved.driver,
+    resolved.driverConfig,
+    input.baseUrl,
+  );
   let thumbnailBlob: Buffer | null = thumb;
   let thumbnailUrl: string | null = null;
   if (resolved.policy.hostsThumbnails && thumb) {
     try {
-      // Describe the bytes we actually produced, not the format thumbnails
-      // used to be: the dropper verifies the claimed mime against the magic
-      // bytes and 415s a webp announced as image/jpeg.
-      const thumbFmt = thumbnailFormat(thumb);
-      const tRes = await resolved.driver.upload(
-        bufferSource(thumb),
-        {
-          filename: `thumb.${thumbFmt.ext}`,
-          mime: thumbFmt.mime,
-          contentClass: 'image',
-          kind: 'thumb',
-        },
-        resolved.driverConfig,
-      );
-      if (tRes && typeof tRes.url === 'string') {
-        thumbnailUrl = absolutizeUrl(tRes.url, storesRemotely, input.baseUrl);
-        thumbnailBlob = null;
-      }
+      thumbnailUrl = await storeThumbRemotely(thumb);
+      if (thumbnailUrl) thumbnailBlob = null;
     } catch {
       // keep thumbnailBlob — fall back to the inline BLOB
     }
@@ -370,6 +354,18 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     width: outWidth,
     height: outHeight,
   });
+
+  // A video or audio file has no thumbnail yet: the decoder makes its poster
+  // from the stored URL, after this answers (#778, services/uploadPoster.ts).
+  if (contentClass === 'media' && previewsEnabled() && posterableUrl(mainUrl)) {
+    posterForUploadSoon({
+      userId: input.userId,
+      uploadId: id,
+      url: mainUrl,
+      format: userImageFormat,
+      storeRemotely: resolved.policy.hostsThumbnails ? storeThumbRemotely : null,
+    });
+  }
 
   // Deletability is decided at capture time (decision 8): the driver returned
   // a ref only if this specific upload's bytes can be destroyed later. Hosted

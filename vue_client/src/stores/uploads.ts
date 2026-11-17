@@ -117,6 +117,22 @@ export interface UploadCurrent {
   filename: string | null;
 }
 
+// Thumbnails that arrived as `upload-thumbnail` frames this session (#778), by
+// upload id. A frame can cross a list fetch in flight, and the fetch's rows are
+// the older picture; this is what the frames said, for rows that come back
+// without one. One short string per poster made while the tab is open.
+const lateThumbnails = new Map<number, string>();
+
+function withLateThumbnails(items: UploadItem[]): UploadItem[] {
+  if (lateThumbnails.size === 0) return items;
+  for (const item of items) {
+    if (item.thumbnail_url || item.removed) continue;
+    const late = lateThumbnails.get(item.id);
+    if (late) item.thumbnail_url = late;
+  }
+  return items;
+}
+
 export interface UploadProgressFrame {
   token: string;
   phase: 'processing' | 'sending';
@@ -343,6 +359,22 @@ export const useUploadsStore = defineStore('uploads', {
       cur.sentPercent = frame.phase === 'sending' ? (frame.percent ?? null) : null;
     },
 
+    /**
+     * A thumbnail made after the upload answered: a video or audio poster
+     * (#778). Rows this tab doesn't hold get it from their next fetch.
+     */
+    applyThumbnail(frame: { uploadId?: number; thumbnail_url?: string }) {
+      if (typeof frame?.uploadId !== 'number' || typeof frame.thumbnail_url !== 'string') return;
+      // Kept, not only applied: a list response the server built before the
+      // thumbnail existed can land after this frame and would put the row back
+      // without one (withLateThumbnails).
+      lateThumbnails.set(frame.uploadId, frame.thumbnail_url);
+      for (const list of [this.recent, this.menuItems]) {
+        const row = list.find((u) => u.id === frame.uploadId);
+        if (row) row.thumbnail_url = frame.thumbnail_url;
+      }
+    },
+
     async uploadText(content: string, filename = 'message.txt') {
       // Long-message → .txt upload. Wrap the text in a Blob so it can ride
       // the same multipart endpoint as image uploads; the server branches on
@@ -405,7 +437,7 @@ export const useUploadsStore = defineStore('uploads', {
           }),
         );
         if (gen !== this.generation) return; // superseded by a newer filter
-        this.recent = items || [];
+        this.recent = withLateThumbnails(items || []);
         this.cursor = this.recent.length ? this.recent[this.recent.length - 1].id : null;
         // The starred view arrives whole — there is no cursor that can page it (the
         // server orders it by when you starred, not by id), so infinite scroll has
@@ -443,7 +475,7 @@ export const useUploadsStore = defineStore('uploads', {
         // The filters changed while this page was in flight — these rows belong to a
         // list that no longer exists. Appending them would mix two result sets.
         if (gen !== this.generation) return;
-        this.recent.push(...(items || []));
+        this.recent.push(...withLateThumbnails(items || []));
         if (items && items.length) {
           this.cursor = items[items.length - 1].id;
           this.hasMore = items.length === PAGE_SIZE;
@@ -505,7 +537,9 @@ export const useUploadsStore = defineStore('uploads', {
         // tombstone in a menu whose only action is "insert this" would paste a URL
         // whose bytes are gone. The browser shows them because seeing WHY a file
         // vanished is the point there; here there is nothing to offer.
-        this.menuItems = ((items || []) as UploadItem[]).filter((u) => !u.removed);
+        this.menuItems = withLateThumbnails(
+          ((items || []) as UploadItem[]).filter((u) => !u.removed),
+        );
         // ⚠ The mode moves HERE, with the rows it describes — not when the request
         // was issued. `menuMode` is what `menuItems` currently holds, and a failed
         // switch must not leave the tab claiming 'recent' over the starred

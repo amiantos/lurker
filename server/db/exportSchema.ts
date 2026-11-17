@@ -422,6 +422,9 @@ export const EXPORT_TABLES = Object.freeze({
     skippedColumns: {
       synced_to_cp: 'operational: cell↔control-plane moderation-sync bookkeeping, not portable',
       removed: 'instance/CP-owned moderation state; a fresh instance starts it at the default 0',
+      poster_tried_at:
+        'instance-local: whether THIS instance’s previews decoder was asked for a poster. The ' +
+        'thumbnail it made is carried; a row without one is asked about again on the target',
       ref:
         'driver-local delete handle (object/disk key). Deliberately NOT carried: the bytes it names ' +
         'live on the SOURCE instance’s disk/bucket, so a reap driven by it on the target would be ' +

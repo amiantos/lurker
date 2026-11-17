@@ -1222,7 +1222,7 @@ describe('media uploads (#515)', () => {
 
     const list = await agent.get('/api/uploads');
     const row = list.body.items.find((r: { id: number }) => r.id === res.body.id);
-    expect(row.thumbnail_url).toBeUndefined(); // no ffmpeg, no poster frame
+    expect(row.thumbnail_url).toBeUndefined(); // no decoder here to make a poster
     await waitForNoTemps();
   });
 
