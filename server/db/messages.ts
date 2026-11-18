@@ -1962,10 +1962,16 @@ export function hasRecentMessageLike(
 // `maxId` bounds it to rows stored before a point: the engine's backlog hole
 // (#1283) sits between the last row the previous process stored and the
 // first the backlog kept, and the kept tail is above the attach's maxMessageId.
-const newestConversationStmt = db.prepare(
-  `SELECT time FROM messages WHERE buffer_id = ? AND id <= ? AND ${chathistoryMsgFilter()}
-   ORDER BY time DESC LIMIT 1`,
-);
+// ⚠ The `+` on `+id` is load-bearing. Without it the `id <= ?` range lets the
+// planner pick idx_messages_buf_unread (buffer_id, id DESC) instead, then sort
+// every row of the buffer by time in a temp B-tree to find the newest one: on a
+// buffer of a few hundred thousand rows that is seconds per call, synchronous,
+// once per buffer at registration and again per JOIN. The unary plus keeps `id`
+// out of index selection, so the bound is checked per row on the time walk.
+export const NEWEST_CONVERSATION_SQL = `SELECT time FROM messages
+   WHERE buffer_id = ? AND +id <= ? AND ${chathistoryMsgFilter()}
+   ORDER BY time DESC LIMIT 1`;
+const newestConversationStmt = db.prepare(NEWEST_CONVERSATION_SQL);
 export function newestConversationTime(
   networkId: number,
   target: string,
