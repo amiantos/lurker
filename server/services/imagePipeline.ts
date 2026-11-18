@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import fs from 'node:fs';
-import sharp, { type Metadata, type Sharp } from 'sharp';
+import sharp, { type Metadata, type Sharp, type SharpOptions } from 'sharp';
 import { canScrubInPlace, scrubMetadata } from './metadataScrub.js';
+import { decodeHeic } from './heicDecode.js';
+import { imageSignatureOf, SIGNATURE_BYTES } from '../utils/imageSignature.js';
 
 // 512, not 128. The uploads browser (#547) is a gallery you browse BY thumbnail, and
 // at 128px that doesn't work — you squint. Its tiles are ~180px, which is 360 device
@@ -66,18 +68,123 @@ function encode(pipeline: Sharp, format: OutputFormat, quality: number): Sharp {
   return format === 'jpeg' ? pipeline.jpeg({ quality, mozjpeg: true }) : pipeline.webp({ quality });
 }
 
+/** Pixels something other than sharp decoded: RGBA, 8 bits a channel, upright. */
+export interface RawImage {
+  pixels: Buffer;
+  width: number;
+  height: number;
+}
+
+/** What the pipeline works from: a file, its bytes, or pixels already decoded
+ *  (prepareImage). */
+export type ImageInput = Buffer | string | RawImage;
+
+function isRaw(input: ImageInput): input is RawImage {
+  return typeof input !== 'string' && !Buffer.isBuffer(input);
+}
+
+/** sharp on any ImageInput. Every pipeline below starts here, so none of them has
+ *  to know whether the pixels came from libvips or from prepareImage. */
+function open(input: ImageInput, options: SharpOptions = {}): Sharp {
+  if (!isRaw(input)) return sharp(input, options);
+  const { pixels, width, height } = input;
+  return sharp(pixels, { ...options, raw: { width, height, channels: 4 } });
+}
+
+// Can THIS sharp decode HEVC itself? The prebuilt one cannot — its heif loader
+// claims `.avif` and nothing else — but a libvips built against a full libheif
+// (a distro package, a custom image) can, and then there is nothing to work around.
+const NATIVE_HEVC = sharp.format.heif?.input?.fileSuffix?.includes('.heic') ?? false;
+
+async function headOf(input: Buffer | string): Promise<Buffer> {
+  if (typeof input !== 'string') return input.subarray(0, SIGNATURE_BYTES);
+  const fh = await fs.promises.open(input, 'r');
+  try {
+    const head = Buffer.alloc(SIGNATURE_BYTES);
+    const { bytesRead } = await fh.read(head, 0, SIGNATURE_BYTES, 0);
+    return head.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
+/**
+ * Make an upload something the pipeline below can decode. Everything is returned
+ * as it came, except an HEVC-coded HEIF — an iPhone photo — on a sharp that has no
+ * HEVC decoder; that one is decoded here, by services/heicDecode.ts, and returned
+ * as raw pixels.
+ *
+ * Call it ONCE per upload and hand the result to optimize / avatar / thumbnail:
+ * the decode is the expensive part, and two of them read the original.
+ *
+ * ⚠ Which files take the detour is decided narrowly, on purpose. A HEIF container
+ * (by its `ftyp` brand) that sharp either reports as HEVC or cannot read the header
+ * of at all (#626: libvips' libheif refusing a photo with more `iref` references
+ * than its limit). AVIF is the same container with a codec sharp does decode, and
+ * must keep going through sharp — it keeps the colour profile and its animation.
+ *
+ * What comes back raw carries NO metadata: no EXIF, no GPS, no profile. That is
+ * the scrub, done by construction.
+ */
+export async function prepareImage(input: Buffer | string): Promise<ImageInput> {
+  if (NATIVE_HEVC) return input;
+  const kind = imageSignatureOf(await headOf(input));
+  if (kind !== 'image/heic' && kind !== 'image/heif') return input;
+  try {
+    const meta = await sharp(input).metadata();
+    if (meta.compression !== 'hevc') return input;
+  } catch {
+    // sharp cannot even read the header. The other decoder may.
+  }
+  try {
+    return await decodeHeic(input);
+  } catch (cause) {
+    throw unreadable(cause);
+  }
+}
+
+/** An image sharp could not read or could not decode. The route answers it 415. */
+function unreadable(cause: unknown): Error & { code: string } {
+  // Only the last line: libvips puts every seek it retried in front of the reason,
+  // and this message is shown to the user.
+  const detail = ((cause as Error)?.message || String(cause)).trim().split('\n').pop();
+  const err = new Error(`unable to read image: ${detail}`) as Error & { code: string };
+  err.code = 'UNSUPPORTED_FORMAT';
+  return err;
+}
+
+/**
+ * Run a sharp pipeline to its output, with a failure to DECODE answered the same way
+ * as a failure to read the header.
+ *
+ * ⚠ metadata() succeeding promises nothing about the pixels. It reads a header; the
+ * pipeline is what decodes, and that is where a truncated photo, a damaged one, or a
+ * codec this build of libvips has no decoder for finally fails. Unguarded, that
+ * throw is not an UNSUPPORTED_FORMAT, so the route had nothing to map it to and the
+ * user got a 500 "internal error" for what is a bad file.
+ */
+async function decoded<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (cause) {
+    throw unreadable(cause);
+  }
+}
+
 // sharp's reading of an image, and its format; UNSUPPORTED_FORMAT when it
 // can't read one, or reads one Lurker doesn't take.
-async function readImage(input: Buffer | string): Promise<{ meta: Metadata; fmt: FormatInfo }> {
+async function readImage(input: ImageInput): Promise<{ meta: Metadata; fmt: FormatInfo }> {
+  if (isRaw(input)) {
+    // Decoded already, so there is no header to ask. A still, of these dimensions;
+    // the format only names what it was, and the static path never encodes to it.
+    const { width, height } = input;
+    return { meta: { format: 'heif', width, height, pages: 1 } as Metadata, fmt: FORMAT_INFO.heif };
+  }
   let meta: Metadata;
   try {
     meta = await sharp(input).metadata();
   } catch (cause) {
-    const err = new Error(
-      `unable to read image: ${(cause as Error).message || String(cause)}`,
-    ) as Error & { code: string };
-    err.code = 'UNSUPPORTED_FORMAT';
-    throw err;
+    throw unreadable(cause);
   }
   const fmt = meta.format ? FORMAT_INFO[meta.format] : undefined;
   if (!fmt) {
@@ -99,7 +206,7 @@ async function readImage(input: Buffer | string): Promise<{ meta: Metadata; fmt:
 // scrub/passthrough branches below do read the bytes, but only after sharp has
 // confirmed it's an image, which the size cap already bounds.
 export async function optimize(
-  input: Buffer | string,
+  input: ImageInput,
   {
     maxDim,
     quality,
@@ -110,8 +217,9 @@ export async function optimize(
   // Only the passthrough/scrub branches need the bytes in memory; the resize path
   // hands the path straight to sharp. Read lazily so an ordinary image upload
   // never materializes its original file in the heap.
+  // (Never raw pixels: those are a still, and take neither branch.)
   const readInput = async (): Promise<Buffer> =>
-    typeof input === 'string' ? fs.promises.readFile(input) : input;
+    typeof input === 'string' ? fs.promises.readFile(input) : (input as Buffer);
 
   const { meta, fmt } = await readImage(input);
 
@@ -139,7 +247,7 @@ export async function optimize(
     // through to the static single-frame encode below. Either way the metadata
     // is gone; we never pass an un-scrubbed image through.
     try {
-      const out = await sharp(input, { animated: true })
+      const out = await open(input, { animated: true })
         .toFormat(meta.format)
         .toBuffer({ resolveWithObject: true });
       return {
@@ -186,16 +294,18 @@ export async function optimize(
   // hardcoded jpeg constants that could drift. Pick the format once and derive
   // the other two from FORMAT_INFO.
   const outFmt = FORMAT_INFO[format];
-  const out = await encode(
-    sharp(input).rotate().resize({
-      width: maxDim,
-      height: maxDim,
-      fit: 'inside',
-      withoutEnlargement: true,
-    }),
-    format,
-    quality,
-  ).toBuffer({ resolveWithObject: true });
+  const out = await decoded(() =>
+    encode(
+      open(input).rotate().resize({
+        width: maxDim,
+        height: maxDim,
+        fit: 'inside',
+        withoutEnlargement: true,
+      }),
+      format,
+      quality,
+    ).toBuffer({ resolveWithObject: true }),
+  );
 
   return {
     buffer: out.data,
@@ -209,19 +319,21 @@ export async function optimize(
 }
 
 export async function thumbnail(
-  input: Buffer | string,
+  input: ImageInput,
   { format = 'webp', quality = 80 }: { format?: OutputFormat; quality?: number } = {},
 ): Promise<Buffer> {
   // Force first frame for animated inputs; cover-crop to a square. Follows the
   // same format as the full image: a jpeg thumbnail of a transparent PNG is
   // black-backgrounded, which is the most visible face of the alpha bug.
-  return encode(
-    sharp(input, { animated: false })
-      .rotate()
-      .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' }),
-    format,
-    quality,
-  ).toBuffer();
+  return decoded(() =>
+    encode(
+      open(input, { animated: false })
+        .rotate()
+        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' }),
+      format,
+      quality,
+    ).toBuffer(),
+  );
 }
 
 // Avatars (#1189) are drawn small, but the profile modal and a 3x screen draw
@@ -242,7 +354,7 @@ const ANIMATED_AVATAR_SIZE = 256;
 // flattened to its first frame, as optimize() does. An SVG is rasterised:
 // other clients draw an avatar as a bitmap.
 export async function avatar(
-  input: Buffer | string,
+  input: ImageInput,
   { quality, format = 'webp' }: { quality: number; format?: OutputFormat },
 ): Promise<OptimizeResult> {
   const { meta, fmt } = await readImage(input);
@@ -258,7 +370,7 @@ export async function avatar(
   if ((meta.pages || 1) > 1 && (meta.format === 'gif' || meta.format === 'webp')) {
     const frameSide = Math.min(side, ANIMATED_AVATAR_SIZE);
     try {
-      const out = await sharp(input, { animated: true })
+      const out = await open(input, { animated: true })
         .resize(frameSide, frameSide, { fit: 'cover', position: 'centre' })
         .toFormat(meta.format, meta.format === 'webp' ? { quality } : {})
         .toBuffer();
@@ -280,13 +392,15 @@ export async function avatar(
   // rotate() before the crop: the square is cut from the image as it's seen,
   // EXIF orientation applied. A rotated still's sides swap, but the short one
   // is the same either way.
-  const out = await encode(
-    sharp(input, density ? { density } : {})
-      .rotate()
-      .resize(side, side, { fit: 'cover', position: 'attention' }),
-    format,
-    quality,
-  ).toBuffer();
+  const out = await decoded(() =>
+    encode(
+      open(input, density ? { density } : {})
+        .rotate()
+        .resize(side, side, { fit: 'cover', position: 'attention' }),
+      format,
+      quality,
+    ).toBuffer(),
+  );
   return {
     buffer: out,
     mime: outFmt.mime,

@@ -109,6 +109,22 @@ export function providerErrorStatus(e: { code?: string }): number {
   return e.code === 'PROVIDER_CONFIG' ? 400 : 502;
 }
 
+/**
+ * The 415 for an image the pipeline could not decode.
+ *
+ * ⚠ HEIC gets a sentence of its own because a HEIC that fails here has failed in
+ * BOTH decoders — sharp's and the HEVC one behind imagePipeline.prepareImage — and
+ * neither's words for it ("bad seek", "security limit exceeded") give a user
+ * anything to act on. What does is that a JPEG export of the same photo gets
+ * through. See #626 for the kind of file that ends up here.
+ */
+function undecodableMessage(mime: string, detail: string): string {
+  if (mime === 'image/heic' || mime === 'image/heif') {
+    return `this HEIC photo could not be decoded — export it as JPEG or PNG and upload that (${detail})`;
+  }
+  return detail;
+}
+
 export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // An account held off the uploaders (shared/accountRestrictions.ts) is
   // refused HERE, because this is the one function every path that puts a
@@ -248,9 +264,12 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     const quality = resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
     let optimized: imagePipeline.OptimizeResult;
     try {
+      // Once, for both the image and its thumbnail: an iPhone HEIC is decoded here
+      // (the stock sharp has no HEVC decoder), and everything else passes through.
+      const source = await imagePipeline.prepareImage(input.tempPath);
       optimized = input.avatar
-        ? await imagePipeline.avatar(input.tempPath, { quality, format })
-        : await imagePipeline.optimize(input.tempPath, {
+        ? await imagePipeline.avatar(source, { quality, format })
+        : await imagePipeline.optimize(source, {
             maxDim: staticImageMaxDimension(resolved.policy, settings),
             quality,
             format,
@@ -259,15 +278,19 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
             // the SVG passthrough. Was: rasterOnly = isNodeMode().
             rasterOnly: resolved.policy.rasterOnly,
           });
+      // An avatar's thumb is of the crop, so the editor's preview is what goes out.
+      // Inside the try: it decodes the original a second time, and can fail the
+      // same way.
+      thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : source, {
+        format,
+      });
     } catch (err) {
       const e = err as { code?: string; message?: string };
-      if (e.code === 'UNSUPPORTED_FORMAT') throw new UploadRequestError(415, e.message ?? '');
+      if (e.code === 'UNSUPPORTED_FORMAT') {
+        throw new UploadRequestError(415, undecodableMessage(classified.mime, e.message ?? ''));
+      }
       throw err;
     }
-    // An avatar's thumb is of the crop, so the editor's preview is what goes out.
-    thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : input.tempPath, {
-      format,
-    });
     // The optimized image is small and bounded (resized + re-encoded), so it
     // stays a buffer — round-tripping it through another temp file would be
     // pointless I/O. The heap blowup this PR removes was the ORIGINAL bytes.

@@ -1,9 +1,14 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import sharp from 'sharp';
-import { avatar, optimize, thumbnail } from './imagePipeline.js';
+import { avatar, optimize, prepareImage, thumbnail } from './imagePipeline.js';
+import { stopHeicDecoder } from './heicDecode.js';
+import { heicFixture, heicColourAt, HEIC_WIDTH, HEIC_HEIGHT } from '../test-utils/heicFixture.js';
 
 // All fixtures are synthesised on the fly so the test stays self-contained
 // and doesn't need committed binary blobs.
@@ -188,6 +193,34 @@ describe('imagePipeline.optimize', () => {
     });
   });
 
+  // A header that reads and pixels that do not: a photo cut off mid-transfer, or a
+  // codec this libvips has no decoder for. metadata() is happy with both, so the
+  // failure arrives from the encode — which used to be unguarded, and reached the
+  // route as an error it had no status for (a 500).
+  it('rejects an image whose header reads but whose pixels do not decode', async () => {
+    const whole = await sharp({
+      create: {
+        width: 400,
+        height: 400,
+        channels: 3,
+        background: '#888',
+        noise: { type: 'gaussian', mean: 128 },
+      },
+    })
+      .png()
+      .toBuffer();
+    const cut = whole.subarray(0, 200);
+    expect((await sharp(cut).metadata()).format).toBe('png'); // the header really does read
+
+    await expect(optimize(cut, { maxDim: 1024, quality: 80 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+    await expect(thumbnail(cut)).rejects.toMatchObject({ code: 'UNSUPPORTED_FORMAT' });
+    await expect(avatar(cut, { quality: 80 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+  });
+
   it('passes SVG through unchanged in standalone (rasterOnly off)', async () => {
     const svg = Buffer.from(
       '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
@@ -308,3 +341,88 @@ describe('imagePipeline.avatar', () => {
 // thumbnailFormat() has its own suite (thumbnailFormat.test.ts). Its fixtures come
 // from thumbnail() here, so the two stay honest about each other: the sniff is
 // tested against bytes this pipeline really produces, not a hand-rolled header.
+
+// An iPhone photo. The bundled sharp reads its header and cannot decode it, so
+// prepareImage hands it to the HEVC decoder (services/heicDecode.ts) and everything
+// after that is the ordinary pipeline, working from pixels.
+describe('HEIC', () => {
+  afterAll(() => stopHeicDecoder());
+
+  const pixelsOf = async (image: Buffer) =>
+    sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+
+  it('leaves every other image exactly as it came', async () => {
+    const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#0f0' } })
+      .png()
+      .toBuffer();
+    expect(await prepareImage(png)).toBe(png);
+    // AVIF is the same container as HEIC with a codec sharp DOES decode. It must
+    // not take the detour: sharp keeps its colour profile, the detour would not.
+    const avif = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#0f0' } })
+      .avif()
+      .toBuffer();
+    expect(await prepareImage(avif)).toBe(avif);
+  });
+
+  it('optimizes a HEIC to the requested format, the right way up', async () => {
+    const source = await prepareImage(heicFixture());
+    const out = await optimize(source, { maxDim: 2048, quality: 90 });
+
+    expect(out.mime).toBe('image/webp');
+    expect(out.ext).toBe('webp');
+    expect([out.width, out.height]).toEqual([HEIC_WIDTH, HEIC_HEIGHT]);
+    expect(out.animated).toBe(false);
+
+    const { data, info } = await pixelsOf(out.buffer);
+    const colour = (x: number, y: number) => heicColourAt(data, info.width, info.channels, x, y);
+    expect(colour(48, 2)).toBe('green');
+    expect(colour(10, 40)).toBe('red');
+    expect(colour(85, 40)).toBe('blue');
+  });
+
+  it('carries none of the original’s metadata into the output', async () => {
+    // The fixture has an Exif item; a camera’s would hold the GPS fix. Raw pixels
+    // have nowhere to keep one.
+    const out = await optimize(await prepareImage(heicFixture()), { maxDim: 2048, quality: 90 });
+    const meta = await sharp(out.buffer).metadata();
+    expect(meta.exif).toBeUndefined();
+    expect(meta.xmp).toBeUndefined();
+    expect(out.buffer.includes(Buffer.from('Exif'))).toBe(false);
+  });
+
+  it('honours maxDim and the jpeg format', async () => {
+    const out = await optimize(await prepareImage(heicFixture()), {
+      maxDim: 48,
+      quality: 80,
+      format: 'jpeg',
+    });
+    expect(out.mime).toBe('image/jpeg');
+    expect([out.width, out.height]).toEqual([48, 32]);
+  });
+
+  it('thumbnails and avatars from the same decoded pixels', async () => {
+    const source = await prepareImage(heicFixture());
+    const thumb = await sharp(await thumbnail(source)).metadata();
+    expect([thumb.width, thumb.height]).toEqual([512, 512]);
+    const face = await avatar(source, { quality: 80 });
+    expect([face.width, face.height]).toEqual([HEIC_HEIGHT, HEIC_HEIGHT]); // never enlarged
+  });
+
+  it('reads a HEIC from a path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-heic-pipeline-'));
+    try {
+      const file = path.join(dir, 'IMG_0001.HEIC');
+      fs.writeFileSync(file, heicFixture());
+      const out = await optimize(await prepareImage(file), { maxDim: 2048, quality: 90 });
+      expect([out.width, out.height]).toEqual([HEIC_WIDTH, HEIC_HEIGHT]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a HEIC neither decoder can read, as an unsupported format', async () => {
+    await expect(prepareImage(heicFixture().subarray(0, 520))).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+  });
+});
