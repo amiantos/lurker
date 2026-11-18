@@ -16,7 +16,9 @@
 -->
 
 <template>
-  <!-- To body, as NewInviteModal does: the settings layout gives a fixed-position
+  <!-- Not closable while a save is out (Escape and the X included): a refusal
+       is shown in this form, with what was typed.
+       To body, as NewInviteModal does: the settings layout gives a fixed-position
        card a containing block, so rendered in place it would cover only the
        pane's column, not the page. -->
   <Teleport to="body">
@@ -24,7 +26,7 @@
       word="upload"
       :title="existing ? `edit ${existing.label}` : 'add uploader'"
       size="sm"
-      @close="$emit('close')"
+      @close="busy || $emit('close')"
     >
       <label v-if="!existing && drivers.length > 1" class="driver-pick">
         <span>Type</span>

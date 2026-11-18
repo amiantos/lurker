@@ -1230,7 +1230,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Set you away on every network when no Lurker client is in front of you and ' +
       'no IRC client is attached through the bouncer, and clear it when one ' +
-      'returns.',
+      'returns. A bouncer client that sent AWAY * does not count as attached.',
   },
   {
     key: 'away.auto.delay_seconds',

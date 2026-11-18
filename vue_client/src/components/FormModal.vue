@@ -19,7 +19,10 @@
        card a containing block, so rendered in place it would cover only the
        pane's column, not the page. -->
   <Teleport to="body">
-    <AppModal :word="word" :title="title" :size="size" @close="$emit('close')">
+    <!-- Escape and the header's X are closes too, and Cancel is disabled while a
+         save is out: a close then would drop the form its answer belongs to, so
+         a refusal had nowhere to show and a success could close a later form. -->
+    <AppModal :word="word" :title="title" :size="size" @close="busy || $emit('close')">
       <form class="modal-form" @submit.prevent="$emit('submit')" @keydown.enter="blockImeEnter">
         <div class="form-body">
           <slot />
