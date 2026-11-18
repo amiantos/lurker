@@ -40,11 +40,11 @@
             {{ copied ? 'copied' : 'copy' }}
           </button>
         </div>
-        <p class="relay-status small">
-          <span v-if="status" :class="status.ok ? 'muted' : 'error'">{{ status.text }}</span>
+        <p class="relay-status">
           <button type="button" :disabled="checking || busy" @click="check">
-            {{ checking ? 'checking…' : 'check' }}
+            {{ checking ? 'checking…' : 'check registration' }}
           </button>
+          <span v-if="status" class="status" :class="{ bad: !status.ok }">{{ status.text }}</span>
         </p>
       </template>
 
@@ -318,11 +318,12 @@ onMounted(load);
 .push-row.failed .how {
   color: var(--bad);
 }
+/* The key and its copy button are one control: same height, a small gap. */
 .key-row {
   display: flex;
-  align-items: center;
-  gap: 1ch;
-  margin-bottom: var(--space-6);
+  align-items: stretch;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
 }
 .key {
   flex: 1 1 auto;
@@ -334,13 +335,24 @@ onMounted(load);
   border: 1px solid var(--border);
   min-width: 0;
 }
+/* The button, then what it found. Not .muted: in a pane that class is a padded,
+   italic empty-state line, which indented the status and stretched the button
+   beside it. */
 .relay-status {
   display: flex;
-  gap: 1ch;
-  margin-top: calc(-1 * var(--space-4));
-  margin-bottom: var(--space-6);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin: 0 0 var(--space-7);
+}
+.status {
+  color: var(--fg-muted);
+}
+.status.bad {
+  color: var(--bad);
 }
 .check {
+  display: flex;
   flex-direction: row;
   align-items: center;
   gap: var(--space-3);

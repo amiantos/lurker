@@ -41,8 +41,10 @@
 .settings-pane .subhead.sibling {
   margin-top: var(--space-7);
 }
+/* The pane's first heading follows its title or its introduction, which it
+   belongs with: a section's gap there would cut the pane in two. */
 .settings-pane > .subhead:first-of-type {
-  margin-top: var(--space-2);
+  margin-top: var(--space-7);
 }
 
 .settings-pane .error.inline {
