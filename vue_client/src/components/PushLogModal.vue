@@ -37,11 +37,7 @@
           A "sent" line means the push service took it; after that it's the device's.
         </p>
         <ul v-if="store.log.length" class="rows">
-          <li v-for="row in store.log" :key="row.id" class="push-row" :class="row.outcome">
-            <span class="when" :title="row.at">{{ formatDateTime(row.at) }}</span>
-            <span class="what">{{ kindLabel(row.kind) }} · {{ subjectLabel(row) }}</span>
-            <span class="how">{{ outcomeLabel(row) }}</span>
-          </li>
+          <PushLogRow v-for="row in store.log" :key="row.id" :row="row" />
         </ul>
         <p v-else-if="store.logLoaded" class="desc">Nothing in the last week.</p>
         <p v-if="store.logHasMore" class="older">
@@ -58,9 +54,10 @@
 import { onMounted, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import MetaLine from './MetaLine.vue';
+import PushLogRow from './PushLogRow.vue';
 import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
-import { formatRelative, formatDateTime } from '../utils/timestamp.js';
-import { clientLabel, kindLabel, outcomeLabel, subjectLabel } from '../utils/pushLog.js';
+import { formatRelative } from '../utils/timestamp.js';
+import { clientLabel } from '../utils/pushLog.js';
 import type { MetaPart } from '../utils/metaLine.js';
 
 defineEmits<{ close: [] }>();
@@ -131,44 +128,19 @@ h3:first-of-type {
   margin: 0;
   padding: 0;
 }
-.client-row,
-.push-row {
-  padding: var(--space-3) 0;
-  border-top: 1px solid var(--border);
-}
-.client-row:first-child,
-.push-row:first-child {
-  border-top: none;
-}
 .client-row {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
   column-gap: var(--space-6);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--border);
+}
+.client-row:first-child {
+  border-top: none;
 }
 .client-row :deep(.meta-line) {
   color: var(--fg-muted);
-}
-.push-row {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--space-6);
-}
-.push-row .when {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.push-row .how {
-  grid-column: 2;
-  color: var(--fg-muted);
-  overflow-wrap: anywhere;
-}
-.push-row.sent .how {
-  color: var(--fg);
-}
-.push-row.failed .how {
-  color: var(--bad);
 }
 .older {
   margin: var(--space-4) 0 0;

@@ -101,14 +101,12 @@
       </span>
     </p>
     <ul v-if="store.pushLog.length" class="push-log">
-      <li v-for="row in store.pushLog" :key="row.id" class="push-row" :class="row.outcome">
-        <span class="when" :title="row.at">{{ formatDateTime(row.at) }}</span>
-        <span class="what">
-          <strong>{{ row.username ?? `user ${row.user_id}` }}</strong> · {{ kindLabel(row.kind) }} ·
-          {{ subjectLabel(row) }}
-        </span>
-        <span class="how">{{ outcomeLabel(row) }}</span>
-      </li>
+      <PushLogRow
+        v-for="row in store.pushLog"
+        :key="row.id"
+        :row="row"
+        :who="row.username ?? `user ${row.user_id}`"
+      />
     </ul>
     <p v-else-if="store.pushLogLoaded" class="muted small">Nothing in the last week.</p>
     <p v-if="store.pushLogHasMore">
@@ -124,14 +122,8 @@ import { computed, onMounted, ref } from 'vue';
 import { useAdminStore, type AdminPresenceRow } from '../../stores/admin.js';
 import type { RelayStatus } from '../../../../shared/relayStatus.js';
 import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
-import { formatDateTime } from '../../utils/timestamp.js';
-import {
-  clientText,
-  kindLabel,
-  outcomeLabel,
-  pushLogText,
-  subjectLabel,
-} from '../../utils/pushLog.js';
+import { clientText, pushLogText } from '../../utils/pushLog.js';
+import PushLogRow from '../PushLogRow.vue';
 
 const store = useAdminStore();
 const { copied, copy } = useCopyFeedback();
@@ -291,32 +283,6 @@ onMounted(load);
   list-style: none;
   margin: 0;
   padding: 0;
-}
-.push-row {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--space-6);
-  padding: var(--space-3) 0;
-  border-top: 1px solid var(--border);
-}
-.push-row:first-child {
-  border-top: none;
-}
-.push-row .when {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.push-row .how {
-  grid-column: 2;
-  color: var(--fg-muted);
-  overflow-wrap: anywhere;
-}
-.push-row.sent .how {
-  color: var(--fg);
-}
-.push-row.failed .how {
-  color: var(--bad);
 }
 /* The key and its copy button are one control: same height, a small gap. */
 .key-row {
