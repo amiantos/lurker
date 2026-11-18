@@ -29,9 +29,12 @@
     </div>
     <NewInviteModal v-if="composing" @close="composing = false" />
     <ul v-if="invites.length" class="device-list">
+      <!-- Two lines: what state the invite is in, with its actions at the far
+           edge, then the link. The link used to lead the row in a box that broke
+           wherever its width fell, with the state as a boxed tag beneath it,
+           which read as a button once every button had a box. -->
       <li v-for="inv in invites" :key="inv.token" class="device invite-row">
-        <span class="ua">
-          <code class="invite-url">{{ inv.url }}</code>
+        <span class="invite-head">
           <span class="invite-status" :class="`status-${inv.status}`">{{ inv.status }}</span>
           <span
             v-if="describeRestrictions(inv.restrictions)"
@@ -39,18 +42,14 @@
             :title="describeRestrictions(inv.restrictions)"
             >limited</span
           >
-          <span v-if="inv.usedByUsername" class="invite-used"> → {{ inv.usedByUsername }}</span>
-        </span>
-        <span class="last-seen" :title="inv.expiresAt ?? undefined">
-          <template v-if="inv.status === 'consumed' && inv.usedAt"
-            >used {{ formatRelative(inv.usedAt) }}</template
-          >
-          <template v-else-if="inv.expiresAt">expires {{ formatRelative(inv.expiresAt) }}</template>
-          <template v-else>no expiry</template>
+          <MetaLine class="invite-meta" :parts="metaFor(inv)" :title="inv.expiresAt ?? undefined" />
         </span>
         <!-- Two words for two different acts: revoking kills a link someone could
              still redeem, removing only clears the record of one already spent. -->
         <span class="btn-bar">
+          <button v-if="inv.status === 'pending'" @click="copy(inv.url, inv.token)">
+            {{ copiedKey === inv.token ? 'copied' : 'copy link' }}
+          </button>
           <button
             class="bad"
             :disabled="adminBusy"
@@ -64,6 +63,7 @@
             {{ inv.status === 'consumed' ? 'remove' : 'revoke' }}
           </button>
         </span>
+        <code class="invite-url" :title="inv.url">{{ inv.url }}</code>
       </li>
     </ul>
     <p v-else-if="adminStore.invitesLoaded" class="muted small">No invites yet.</p>
@@ -77,6 +77,9 @@ import type { AdminInvite } from '../../stores/admin.js';
 import { formatRelative } from '../../utils/timestamp.js';
 import { describeRestrictions } from '../../utils/accountRestrictions.js';
 import NewInviteModal from './NewInviteModal.vue';
+import MetaLine from '../MetaLine.vue';
+import type { MetaPart } from '../../utils/metaLine.js';
+import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
 
 const adminStore = useAdminStore();
 
@@ -85,6 +88,20 @@ const invites = computed(() => adminStore.invites);
 const adminError = ref('');
 const adminBusy = ref(false);
 const composing = ref(false);
+// One instance for the list: only the row whose link was copied ticks.
+const { copiedKey, copy } = useCopyFeedback();
+
+/** Who used it, and when it was used or runs out. */
+function metaFor(inv: AdminInvite): MetaPart[] {
+  return [
+    inv.usedByUsername && `joined as ${inv.usedByUsername}`,
+    inv.status === 'consumed' && inv.usedAt
+      ? `used ${formatRelative(inv.usedAt)}`
+      : inv.expiresAt
+        ? `expires ${formatRelative(inv.expiresAt)}`
+        : 'no expiry',
+  ];
+}
 
 onMounted(() => {
   // Refetch on every pane activation. The store cache stays correct for THIS
@@ -118,6 +135,59 @@ async function onDeleteInvite(invite: AdminInvite) {
 </script>
 
 <style src="../settings-panes/panes.css"></style>
+<style scoped>
+.invite-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: 0 0 var(--space-5);
+  flex-wrap: wrap;
+}
+/* State and actions on one line, the link under them across the full width. */
+.invite-row {
+  grid-template-columns: 1fr max-content;
+  row-gap: var(--space-3);
+  padding: var(--space-5) 0 var(--space-6);
+}
+.invite-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1ch;
+  min-width: 0;
+}
+/* Colored words, not boxes: a box is a button. */
+.invite-status,
+.invite-limited {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.invite-status {
+  color: var(--fg-muted);
+}
+.invite-status.status-pending {
+  color: var(--accent);
+}
+.invite-status.status-expired {
+  color: var(--bad);
+}
+.invite-limited {
+  color: var(--warn);
+}
+.invite-meta {
+  color: var(--fg-muted);
+}
+/* One line, cut with an ellipsis: the whole link is in the title and in "copy
+   link", and a token wrapped mid-word helped nobody read it. */
+.invite-url {
+  grid-column: 1 / -1;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: all;
+}
+</style>
 <style scoped>
 .invite-actions {
   display: flex;
