@@ -64,13 +64,13 @@ describe('Admin → Networks: card details', () => {
       tags: ['linux', 'tech'],
       users: null,
       channelCount: 14,
-      enabled: true,
     });
+    expect(post[1]!.body).not.toHaveProperty('enabled');
   });
 
   it('edits a listed preset through the form, and can clear a count', async () => {
     const wrapper = await mountPane();
-    await wrapper.find('.row-actions .btn-bar button:not(.bad)').trigger('click');
+    await wrapper.find('.row .btn-bar button:not(.bad)').trigger('click');
     expect(wrapper.find('form h3').text()).toBe('Edit Corp');
     expect(field(wrapper, 'Tags').element.value).toBe('gaming');
     expect(field(wrapper, 'Users').element.value).toBe('120');

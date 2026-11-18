@@ -12,7 +12,7 @@ const ctx = setupTestDb('services-network-policy');
 type Mods = {
   isNetworkHostAllowed: (host: string) => boolean;
   createInstanceNetwork: typeof import('../db/instanceNetworks.js').createInstanceNetwork;
-  updateInstanceNetwork: typeof import('../db/instanceNetworks.js').updateInstanceNetwork;
+  deleteInstanceNetwork: typeof import('../db/instanceNetworks.js').deleteInstanceNetwork;
   setAllowUserDefinedNetworks: (allow: boolean) => void;
   db: typeof import('../db/index.js').default;
 };
@@ -22,7 +22,7 @@ beforeAll(async () => {
   m = {
     isNetworkHostAllowed: (await import('./networkPolicy.js')).isNetworkHostAllowed,
     createInstanceNetwork: (await import('../db/instanceNetworks.js')).createInstanceNetwork,
-    updateInstanceNetwork: (await import('../db/instanceNetworks.js')).updateInstanceNetwork,
+    deleteInstanceNetwork: (await import('../db/instanceNetworks.js')).deleteInstanceNetwork,
     setAllowUserDefinedNetworks: (await import('../db/instanceSettings.js'))
       .setAllowUserDefinedNetworks,
     db: (await import('../db/index.js')).default,
@@ -63,15 +63,15 @@ describe('isNetworkHostAllowed', () => {
     expect(m.isNetworkHostAllowed('  IRC.CORP.EXAMPLE  ')).toBe(true);
   });
 
-  // The allowed set is what's *offered*, so a preset the admin switched off has
-  // to stop authorizing connections too — otherwise "stop offering this" would
-  // quietly mean "hide it, but keep letting people connect to it".
-  it('does not count a disabled preset', () => {
+  // The allowed set is what's listed, so taking a network off the list has to
+  // stop authorizing connections to it too.
+  it('does not count a deleted preset', () => {
     const preset = m.createInstanceNetwork({ name: 'Corp', host: 'irc.corp.example' });
+    m.createInstanceNetwork({ name: 'Other', host: 'irc.other.example' });
     m.setAllowUserDefinedNetworks(false);
     expect(m.isNetworkHostAllowed('irc.corp.example')).toBe(true);
 
-    m.updateInstanceNetwork(preset.id, { enabled: false });
+    m.deleteInstanceNetwork(preset.id);
 
     expect(m.isNetworkHostAllowed('irc.corp.example')).toBe(false);
   });

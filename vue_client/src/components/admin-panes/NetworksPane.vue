@@ -33,23 +33,10 @@
           <span v-else class="row-channels muted">no recommended channels</span>
           <span v-if="details(preset)" class="row-channels">{{ details(preset) }}</span>
         </div>
-        <div class="row-actions">
-          <label class="check">
-            <input
-              type="checkbox"
-              :checked="preset.enabled"
-              :disabled="busy"
-              @change="toggleEnabled(preset)"
-            />
-            <span>Offered</span>
-          </label>
-          <span class="btn-bar">
-            <button type="button" :disabled="busy" @click="edit(preset)">Edit</button>
-            <button type="button" class="bad" :disabled="busy" @click="remove(preset)">
-              Delete
-            </button>
-          </span>
-        </div>
+        <span class="btn-bar row-actions">
+          <button type="button" :disabled="busy" @click="edit(preset)">Edit</button>
+          <button type="button" class="bad" :disabled="busy" @click="remove(preset)">Delete</button>
+        </span>
       </li>
     </ul>
     <p v-else-if="store.networksLoaded" class="muted small">
@@ -114,9 +101,7 @@
       <input
         type="checkbox"
         :checked="!store.allowUserDefinedNetworks"
-        :disabled="
-          busy || (!store.networkPresets.some((p) => p.enabled) && store.allowUserDefinedNetworks)
-        "
+        :disabled="busy || (!store.networkPresets.length && store.allowUserDefinedNetworks)"
         @change="togglePolicy"
       />
       <span>
@@ -126,7 +111,7 @@
         you turn this off or add the host above.
       </span>
     </label>
-    <p v-if="!store.networkPresets.some((p) => p.enabled)" class="muted small">
+    <p v-if="!store.networkPresets.length" class="muted small">
       Add at least one network before you can restrict users to the listed ones.
     </p>
   </section>
@@ -232,13 +217,9 @@ async function save(): Promise<void> {
       channelCount: draft.channelCount === '' ? null : draft.channelCount,
     };
     if (editing.value) await store.updateNetworkPreset(editing.value.id, body);
-    else await store.createNetworkPreset({ ...body, enabled: true });
+    else await store.createNetworkPreset(body);
     reset();
   });
-}
-
-async function toggleEnabled(preset: AdminNetworkPreset): Promise<void> {
-  await run(() => store.updateNetworkPreset(preset.id, { enabled: !preset.enabled }));
 }
 
 async function remove(preset: AdminNetworkPreset): Promise<void> {
