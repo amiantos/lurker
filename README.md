@@ -14,10 +14,10 @@ Lurker is a delightful self-hosted IRC bouncer and client with a retro aesthetic
 # Features
 
 - **Always-on and multi-user.** Each invited user connects to their own set of IRC networks, and Lurker stays connected when they're away. Admins can restrict which networks users can connect to, and make channel recommendations for newcomers.
-- **Modern conveniences.** Peer presence, automatic nick regain, join/part summarization, smart nickname completion, cross-client message drafts, bookmarks, user notes, a powerful highlight & ignore system, reactions, replies, and more.
+- **Modern conveniences & power user features.** Peer presence, automatic nick regain, join/part summarization, smart nickname completion, cross-client message drafts, bookmarks, user notes, a powerful highlight & ignore system, reactions, replies, avatars, message redaction, command aliases, and more.
 - **Full search.** Search your message history, filter by nick, channel, or network; and jump to any message instantly, no matter how old it is.
 - **Image uploads.** Paste an image into the input box, and Lurker optimizes it, anonymizes it, and uploads it to local storage, S3, Zipline, Chibisafe, or external services like x0.at or catbox.moe.
-- **Customizable UI.** The beautiful retro terminal-style PWA interface has 40+ settings to customize it how you want.
+- **Customizable UI.** The beautiful retro terminal-style PWA interface has 40+ settings to customize it how you want. Pick between a traditional IRC experience, or something a bit more modern.
 - **Native apps.** Lurker has official native apps [for iOS](https://github.com/amiantos/lurker-ios) and [for Android](https://github.com/amiantos/lurker-android). A self-hosted server can send native push notifications to both through [push.lurker.chat](https://push.lurker.chat), an optional paid relay. There are also third-party clients such as [Spooky](https://github.com/JawshTheDark/Spooky) (Android), and [luir](https://luir.org) (TUI), which bring their own flavor to Lurker.
 - **Built-in bouncer.** Don't want to use the Lurker clients? Then don't. Lurker has a best-in-class IRC bouncer built in, complete with `soju.im/bouncer-networks`, `soju.im/FILEHOST` support and more, so you can use any IRC client you want, like [clircs](https://github.com/rekkals/clircs), [Halloy](https://github.com/squidowl/halloy), [Goguma](https://codeberg.org/emersion/goguma), [HexDroid](https://github.com/boxlabss/hexdroid) and many others.
 - **Full DCC & Secure DCC support.** DCC SEND and DCC CHAT from anywhere you want, either insecurely or over TLS with SDCC. Fill the XDCC queue with packs, and come back later to all your completed downloads. Admins are in control of which users get access to which DCC features, and set storage limits for those with access to file sharing.
@@ -74,11 +74,9 @@ There's also a [one-shot DigitalOcean deploy script](https://github.com/amiantos
 
 Just want to use Lurker, without hosting it yourself?
 
-It's **$5/month** for a single user account on an officially managed Lurker instance at [Lurker.Chat](https://lurker.chat).
+Sign up for a free account at [Lurker.Chat](https://app.lurker.chat/signup), managed by the same team that builds Lurker.
 
-## Try it out for free
-
-Just want to try it out? You can sign up for a free account that can only access `irc.lurker.chat` at [app.lurker.chat/signup](https://app.lurker.chat/signup).
+Free users can access `irc.lurker.chat` in perpetuity. Connect to any IRC network for only **$5/month**.
 
 # Documentation
 
