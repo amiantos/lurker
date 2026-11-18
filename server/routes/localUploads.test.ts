@@ -162,6 +162,23 @@ describe('GET /uploads/:key', () => {
     expect(res.headers['content-disposition']).toBe('inline');
   });
 
+  it('serves an Opus voice memo inline, codec parameter and all', async () => {
+    // file-type reports Opus as `audio/ogg; codecs=opus`. The allowlist is matched
+    // against that exact string, so without its own entry an accepted upload (#553)
+    // would be forced to Downloads — the same trap as the 3GPP case above.
+    const packet = Buffer.concat([Buffer.from('OpusHead'), Buffer.alloc(11, 1)]);
+    const header = Buffer.alloc(28);
+    header.write('OggS', 0, 'latin1');
+    header[5] = 0x02;
+    header[26] = 1;
+    header[27] = packet.length;
+    const url = await put(Buffer.concat([header, packet]), 'memo.opus', 'audio/ogg');
+    const res = await agent.get(url);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('audio/ogg; codecs=opus');
+    expect(res.headers['content-disposition']).toBe('inline');
+  });
+
   it('serves HTML as inert text/plain source, never executable', async () => {
     // HTML is valid UTF-8 → sniffs to text/plain (never text/html), and nosniff
     // stops the browser from re-sniffing it into an executable document.

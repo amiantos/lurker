@@ -1282,18 +1282,85 @@ describe('media uploads (#515)', () => {
     await waitForNoTemps();
   });
 
+  // #553, end to end, in the shape that prompted it: a screen recording. The EBML
+  // header and an unsized Segment are followed by an Info naming the recorder and a
+  // Tags element — which is where a remux would put a title or a location.
+  it('accepts a WebM screen recording and strips it before it leaves the server', async () => {
+    stub.shouldThrow = null;
+    const RECORDER = 'GStreamer matroskamux on alexs-desktop';
+    const el = (id: number[], body: Buffer) =>
+      Buffer.concat([Buffer.from(id), Buffer.from([0x80 | body.length]), body]);
+    const info = el(
+      [0x15, 0x49, 0xa9, 0x66],
+      Buffer.concat([
+        el([0x2a, 0xd7, 0xb1], Buffer.from([0x0f, 0x42, 0x40])), // TimestampScale
+        el([0x4d, 0x80], Buffer.from(RECORDER)), // MuxingApp
+      ]),
+    );
+    const tags = el([0x12, 0x54, 0xc3, 0x67], Buffer.from(`LOCATION=${GPS}`));
+    const cluster = el([0x1f, 0x43, 0xb6, 0x75], Buffer.alloc(100, 0xab));
+    const webm = Buffer.concat([
+      Buffer.from([
+        0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01, 0x42, 0xf2,
+        0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d, 0x42, 0x87,
+        0x81, 0x02, 0x42, 0x85, 0x81, 0x02, 0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff,
+      ]),
+      info,
+      tags,
+      cluster,
+    ]);
+    expect(webm.includes(Buffer.from(GPS))).toBe(true);
+
+    const res = await agent.post('/api/uploads').attach('image', webm, {
+      filename: 'Screencast From 2026-11-18.webm',
+      contentType: 'video/webm',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.mime).toBe('video/webm');
+    expect(stub.capturedMeta!.filename).toMatch(/\.webm$/);
+    const sent = stub.capturedBytes!;
+    expect(sent.includes(Buffer.from(GPS))).toBe(false);
+    expect(sent.includes(Buffer.from(RECORDER))).toBe(false);
+    // Size-preserving, like the MP4 scrub, so the recorded byte_size is still right.
+    expect(sent.length).toBe(webm.length);
+    expect(sent.subarray(-100).equals(Buffer.alloc(100, 0xab))).toBe(true);
+    await waitForNoTemps();
+  });
+
   it('415s a type we cannot clean, naming what is allowed', async () => {
-    const webm = Buffer.from([
-      0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01, 0x42, 0xf2,
-      0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d, 0x42, 0x87,
-      0x81, 0x02, 0x42, 0x85, 0x81, 0x02, 0x18, 0x53, 0x80, 0x67, 0x01, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00,
+    const avi = Buffer.concat([
+      Buffer.from('RIFF'),
+      Buffer.from([64, 0, 0, 0]),
+      Buffer.from('AVI LIST'),
+      Buffer.alloc(56, 1),
     ]);
     const res = await agent
       .post('/api/uploads')
-      .attach('image', webm, { filename: 'rec.webm', contentType: 'video/webm' });
+      .attach('image', avi, { filename: 'clip.avi', contentType: 'video/x-msvideo' });
     expect(res.status).toBe(415);
     expect(res.body.error).toMatch(/not accepted/);
+    await waitForNoTemps();
+  });
+
+  // The other way an upload is refused: the type is one we take, and the file is
+  // not one the scrubber can walk (FLAC-in-Ogg sniffs as audio/ogg, same as
+  // Vorbis). Nothing may reach the driver.
+  it('415s a container the scrubber cannot clean, and sends nothing', async () => {
+    stub.capturedBytes = null;
+    const flacInOgg = Buffer.alloc(28 + 51, 1);
+    flacInOgg.fill(0, 0, 27);
+    flacInOgg.write('OggS', 0, 'latin1');
+    flacInOgg[5] = 0x02;
+    flacInOgg[26] = 1;
+    flacInOgg[27] = 51;
+    flacInOgg.write('\x7fFLAC', 28, 'latin1');
+    const res = await agent
+      .post('/api/uploads')
+      .attach('image', flacInOgg, { filename: 'a.oga', contentType: 'audio/ogg' });
+    expect(res.status).toBe(415);
+    expect(stub.capturedBytes).toBeNull();
     await waitForNoTemps();
   });
 

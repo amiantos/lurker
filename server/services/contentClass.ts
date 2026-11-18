@@ -73,13 +73,12 @@ const IMAGE_SNIFF_MIMES = new Set([
 /**
  * The media we accept — i.e. the media we can clean (decision 21).
  *
- * All ISO-BMFF except mp3, which is why one box-walking scrubber covers seven of the
- * eight. Deliberately ABSENT: WebM/Ogg/FLAC/WAV. Not because they're dangerous — a
- * WebM comes from a browser recorder and carries a muxer name and a date, not a
- * location — but because we have no scrubber for them yet, and "everything we
- * accept, we clean" is a better rule than "everything we accept, we clean, except
- * these four". They're each a small follow-up (EBML has a `Void` element that plays
- * the same role `free` does in MP4, so the trick transfers).
+ * The first seven are ISO-BMFF, which is why one box-walking scrubber covers them;
+ * mp3 is ID3. WebM/Matroska, Ogg, FLAC and WAV (#553) each have a scrubber of their
+ * own beside it — see services/mediaScrub.ts for which. Still ABSENT, for the reason
+ * those four once were: AVI, AIFF, raw AAC and the rest have no scrubber, and
+ * "everything we accept, we clean" is a better rule than "everything we accept, we
+ * clean, except these".
  *
  * MIMEs verified against file-type 22 (`source/index.js`, the `ftyp` switch) with
  * real and synthesized containers. file-type labels an ISO-BMFF file by its major
@@ -104,6 +103,16 @@ const IMAGE_SNIFF_MIMES = new Set([
  * metadata out via some other host. walkBoxes strips all of it, size-preserving.
  *
  * m4a-ish brands serve as `.m4a`; 3GPP keeps its honest container extension.
+ *
+ * The #553 formats, verified the same way:
+ *   • WebM and Matroska are told apart by the EBML DocType, and an audio-only WebM
+ *     is still `video/webm` — same trap as `audio/mp4` above.
+ *   • An Ogg file is labelled by its FIRST stream's codec. Vorbis, Speex and
+ *     FLAC-in-Ogg are all `audio/ogg`; Theora and OGM are both `video/ogg`. The
+ *     label is therefore not a promise that the scrubber knows the codec — it
+ *     refuses FLAC-in-Ogg and OGM itself, and that refusal is the 415.
+ *   • Opus sniffs as `audio/ogg; codecs=opus`, parameter and all. See
+ *     CANONICAL_MEDIA_MIME.
  */
 const MEDIA_MIMES = new Map<string, string>([
   ['video/mp4', 'mp4'],
@@ -114,16 +123,35 @@ const MEDIA_MIMES = new Map<string, string>([
   ['video/3gpp', '3gp'],
   ['video/3gpp2', '3g2'],
   ['audio/mpeg', 'mp3'],
+  ['video/webm', 'webm'],
+  ['video/matroska', 'mkv'],
+  ['audio/ogg', 'ogg'],
+  ['audio/ogg; codecs=opus', 'opus'],
+  ['video/ogg', 'ogv'],
+  ['audio/flac', 'flac'],
+  ['audio/wav', 'wav'],
 ]);
+
+/**
+ * Sniffed MIME → the bare type we record and hand to a driver, where they differ.
+ *
+ * ⚠ Same reason STORED_CONTENT_TYPE below keeps its charset off the identity: a
+ * driver may match the type against a list of bare ones, the uploads browser files
+ * a row under a kind by its mime, and the scrubber dispatches on it. The codec
+ * parameter survives where it is useful — as the `.opus` extension.
+ */
+const CANONICAL_MEDIA_MIME = new Map<string, string>([['audio/ogg; codecs=opus', 'audio/ogg']]);
 
 /** What's accepted as MIME ranges, for a route that has to list them (FILEHOST's Accept-Post). */
 export function acceptedMimeRanges(): string[] {
   const dialects = [...TEXT_DIALECT_BY_MIME.keys()].filter((mime) => !mime.startsWith('text/'));
-  return ['image/*', 'text/*', ...dialects, ...MEDIA_MIMES.keys()];
+  const media = new Set([...MEDIA_MIMES.keys()].map((m) => CANONICAL_MEDIA_MIME.get(m) ?? m));
+  return ['image/*', 'text/*', ...dialects, ...media];
 }
 
 /** Human list for the 415 — the error message is how a user discovers the policy. */
-export const ACCEPTED_SUMMARY = 'images, text, and audio/video (mp4, mov, m4v, m4a, 3gp, 3g2, mp3)';
+export const ACCEPTED_SUMMARY =
+  'images, text, and audio/video (mp4, mov, m4v, m4a, 3gp, 3g2, mp3, webm, mkv, ogg, opus, flac, wav)';
 
 /**
  * Sniffed types that mean "this is text, I just recognized its dialect" — NOT a
@@ -239,10 +267,11 @@ export async function classifyUpload(
 
     const mediaExt = MEDIA_MIMES.get(sniff.mime);
     if (mediaExt) {
-      return { contentClass: 'media', mime: sniff.mime, ext: mediaExt };
+      const mime = CANONICAL_MEDIA_MIME.get(sniff.mime) ?? sniff.mime;
+      return { contentClass: 'media', mime, ext: mediaExt };
     }
 
-    // A recognized container we don't accept: pdf, zip, exe, webm, an image sharp
+    // A recognized container we don't accept: pdf, zip, exe, avi, an image sharp
     // can't read (bmp/ico)… all one answer. TEXTISH_SNIFF is the exception — it
     // falls through to the text/SVG logic below.
     if (!TEXTISH_SNIFF.has(sniff.mime)) {

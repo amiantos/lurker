@@ -17,9 +17,11 @@
 export type MediaKind = 'image' | 'video' | 'audio' | 'text';
 
 // Deliberately WIDER than what the uploader accepts. The viewer is a renderer of
-// links, not a gate on uploads: a .webm or .flac someone pastes from elsewhere plays
-// perfectly well in a browser, and refusing to show it because *we* can't yet scrub its
-// metadata (#553) would be enforcing our upload policy on other people's links.
+// links, not a gate on uploads: a format someone pastes from elsewhere may play
+// perfectly well in a browser, and refusing to show it because *we* have no metadata
+// scrubber for it would be enforcing our upload policy on other people's links.
+// `.mkv` is here on the same terms as everything else — the element gets to try, and
+// a browser that cannot play Matroska lands on the viewer's "open in browser" card.
 // ⚠ `.3gp`/`.3g2` sit under video even though the ones we see most are audio-only
 // (a Samsung voice memo — see contentClass.ts). Two reasons: the container sniffs as
 // `video/3gpp` and can legitimately carry a picture, and the failure modes aren't
@@ -29,8 +31,8 @@ export type MediaKind = 'image' | 'video' | 'audio' | 'text';
 // <video> when it happens to be audio-only.
 const EXTENSIONS: Record<MediaKind, readonly string[]> = {
   image: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp'],
-  video: ['.mp4', '.mov', '.m4v', '.webm', '.3gp', '.3g2'],
-  audio: ['.mp3', '.m4a', '.ogg', '.oga', '.wav', '.flac'],
+  video: ['.mp4', '.mov', '.m4v', '.webm', '.mkv', '.ogv', '.3gp', '.3g2'],
+  audio: ['.mp3', '.m4a', '.ogg', '.oga', '.opus', '.wav', '.flac'],
   // ⚠ `.md` and `.json` are deliberately ABSENT, though the uploader mints both
   // (#788). This table judges ARBITRARY chat links by extension, and those two are
   // overwhelmingly PAGE urls rather than raw files — a GitHub blob, a docs page, an
