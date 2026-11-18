@@ -52,15 +52,15 @@
   padding: 0 0 var(--space-3);
   margin: 0;
 }
+/* .muted is a color and nothing else. It used to be a padded, italic
+   empty-state block, and every pane's empty state is `.muted.small` instead:
+   the only things left wearing the bare class were inline notes, which it
+   indented by 16px on every side. */
 .settings-pane .muted {
   color: var(--fg-muted);
-  padding: var(--space-7);
-  font-style: italic;
 }
 .settings-pane .muted.small {
-  color: var(--fg-muted);
   padding: var(--space-2) 0;
-  font-style: normal;
 }
 
 /* Compact single-line row used by device lists, passkeys, users, invites. */
