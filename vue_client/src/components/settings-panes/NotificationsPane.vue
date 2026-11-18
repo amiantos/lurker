@@ -7,25 +7,24 @@
   <section id="notifications" class="settings-pane">
     <h2>notifications</h2>
     <p class="section-desc">
-      Each browser/device subscribes independently. Enable here to receive system notifications on
-      this device when a highlight or DM arrives and no other client of yours is currently visible.
+      Push is turned on per device. It fires when none of your clients is visible.
     </p>
     <p v-if="pushError" class="error inline">{{ pushError }}</p>
 
     <div class="this-client">
       <span class="this-label">this client</span>
-      <button v-if="!pushSupported" class="link" disabled>
+      <button v-if="!pushSupported" class="btn-secondary" disabled>
         push not supported in this browser
       </button>
       <button
         v-else-if="thisClientEnabled"
-        class="link danger"
+        class="btn-secondary danger"
         :disabled="pushBusy"
         @click="onDisableThisClient"
       >
         disable for this client
       </button>
-      <button v-else class="link" :disabled="pushBusy" @click="onEnableThisClient">
+      <button v-else class="btn-secondary" :disabled="pushBusy" @click="onEnableThisClient">
         enable for this client
       </button>
     </div>
@@ -58,59 +57,25 @@
     </p>
 
     <p class="test-push">
-      <button class="link" type="button" :disabled="pushBusy || testBusy" @click="onSendTest">
-        {{ testBusy ? 'sending…' : 'send a test push' }}
-      </button>
+      <span class="btn-bar">
+        <button type="button" :disabled="pushBusy || testBusy" @click="onSendTest">
+          {{ testBusy ? 'sending…' : 'send a test push' }}
+        </button>
+        <button type="button" @click="logOpen = true">push log</button>
+      </span>
       <span v-if="testResult" class="muted small">{{ testResult }}</span>
     </p>
     <p class="muted small">
       A test skips every rule below and goes to every device, so it answers whether push reaches you
-      at all. The log underneath says what happened to each real one.
+      at all. The push log says what happened to each real one, and which of your clients were
+      connected.
     </p>
-
-    <hr class="hl-sep" />
-    <h3 class="subhead">current clients</h3>
-    <p class="section-desc">
-      Push fires only while none of these is visible. A tab you left in front, or the app open on
-      your phone, is the usual reason a notification stayed put.
-    </p>
-    <ul v-if="pushSubsStore.clients.length" class="device-list">
-      <li v-for="(c, i) in pushSubsStore.clients" :key="i" class="device">
-        <span class="ua">{{ clientLabel(c.userAgent) }}</span>
-        <span class="last-seen">{{ c.visible ? 'visible' : 'in the background' }}</span>
-        <span v-if="c.connectedAt" class="last-seen" :title="c.connectedAt"
-          >since {{ formatRelative(c.connectedAt) }}</span
-        >
-      </li>
-    </ul>
-    <p v-else class="muted small">No client is connected.</p>
-
-    <hr class="hl-sep" />
-    <h3 class="subhead">recent pushes</h3>
-    <p class="section-desc">
-      Every notification this server tried to send you in the last week, and what became of it. A
-      "sent" line means the push service took it; after that it's the device's.
-    </p>
-    <ul v-if="pushSubsStore.log.length" class="push-log">
-      <li v-for="row in pushSubsStore.log" :key="row.id" class="push-row" :class="row.outcome">
-        <span class="when" :title="row.at">{{ formatDateTime(row.at) }}</span>
-        <span class="what">{{ kindLabel(row.kind) }} · {{ subjectLabel(row) }}</span>
-        <span class="how">{{ outcomeLabel(row) }}</span>
-      </li>
-    </ul>
-    <p v-else-if="pushSubsStore.logLoaded" class="muted small">Nothing in the last week.</p>
-    <p v-if="pushSubsStore.logHasMore">
-      <button class="link" type="button" :disabled="olderBusy" @click="onOlderLog">
-        {{ olderBusy ? 'loading…' : 'show older' }}
-      </button>
-    </p>
+    <PushLogModal v-if="logOpen" @close="logOpen = false" />
 
     <hr class="hl-sep" />
     <h3 class="subhead">alerts</h3>
     <p class="section-desc">
-      One master toggle per signal type. Toast appears in-client when a tab is visible; push fires
-      when no tab is visible — the right one is picked automatically, so a single switch covers
-      both.
+      One switch per kind of alert. You get a toast if a tab is visible, and a push if none is.
     </p>
 
     <div v-for="signal in notificationSignals" :key="signal.key" class="hl-notif notif-signal">
@@ -168,7 +133,7 @@
         >
           <option v-for="c in soundChoices" :key="c" :value="c">{{ c }}</option>
         </select>
-        <button class="link" :disabled="!signal.soundEnabled" @click="onPreviewSound(signal.key)">
+        <button :disabled="!signal.soundEnabled" @click="onPreviewSound(signal.key)">
           preview
         </button>
       </div>
@@ -203,8 +168,7 @@
     <hr class="hl-sep" />
     <h3 class="subhead">always-notify channels</h3>
     <p class="section-desc">
-      Channels flagged "always notify" via the channel context menu fire notifications for every
-      message. This is the one place to see and remove the set.
+      Channels that notify you of every message. Set one from its menu in the channel list.
     </p>
     <p v-if="!alwaysNotifyChannelList.length" class="muted small">
       None yet. Right-click a channel in the buffer list to enable.
@@ -212,23 +176,20 @@
     <ul v-else class="device-list">
       <li v-for="entry in alwaysNotifyChannelList" :key="entry.key" class="device">
         <span class="ua">{{ entry.networkName }} · {{ entry.target }}</span>
-        <div class="row-actions">
+        <span class="btn-bar">
           <IconButton
             :icon="TrashIcon"
             label="stop"
             danger
             @click="removeAlwaysNotify(entry.networkId, entry.target)"
           />
-        </div>
+        </span>
       </li>
     </ul>
 
     <hr class="hl-sep" />
     <h3 class="subhead">push filters</h3>
-    <p class="section-desc">
-      Conditions that suppress push notifications globally. Toasts are unaffected — they only fire
-      when you're at the desk anyway.
-    </p>
+    <p class="section-desc">When push stays quiet. Toasts are unaffected.</p>
     <div class="hl-notif">
       <label class="hl-row" data-setting-key="notifications.push.mute_when_away">
         <input
@@ -297,11 +258,12 @@ import { usePushSubscriptionsStore } from '../../stores/pushSubscriptions.js';
 import type { PushSubscription } from '../../stores/pushSubscriptions.js';
 import { useChannelNotifyStore } from '../../stores/channelNotify.js';
 import { useNetworksStore } from '../../stores/networks.js';
-import { formatRelative, formatDateTime } from '../../utils/timestamp.js';
-import { clientLabel, kindLabel, outcomeLabel, subjectLabel } from '../../utils/pushLog.js';
+import { formatRelative } from '../../utils/timestamp.js';
+import { clientLabel } from '../../utils/pushLog.js';
 import { getOption } from '../../utils/settingsRegistry.js';
 import { playSound } from '../../composables/useHighlightNotifier.js';
 import IconButton from '../IconButton.vue';
+import PushLogModal from '../PushLogModal.vue';
 import type { SettingValue, EnumOption } from '../../../../shared/settingsRegistry.js';
 import {
   isSupported as isPushSupported,
@@ -333,7 +295,7 @@ const pushError = ref('');
 const pushBusy = ref(false);
 const testBusy = ref(false);
 const testResult = ref('');
-const olderBusy = ref(false);
+const logOpen = ref(false);
 const currentEndpoint = ref<string | null>(null);
 
 const thisClientEnabled = computed(() => {
@@ -425,12 +387,6 @@ onMounted(() => {
     });
     refreshPushState();
   }
-  // The log and the client list are about the account, not this browser, so
-  // they load even where push itself isn't supported.
-  pushSubsStore.fetchLog().catch((e: any) => {
-    pushError.value = e.message || 'failed to load the push log';
-  });
-  pushSubsStore.fetchClients().catch(() => {});
 });
 
 async function onSendTest() {
@@ -481,17 +437,6 @@ function onVolumeInput(kindKey: string, raw: string) {
 
 function removeAlwaysNotify(networkId: number, target: string) {
   channelNotify.setNotifyAlways(networkId, target, false);
-}
-
-async function onOlderLog() {
-  olderBusy.value = true;
-  try {
-    await pushSubsStore.fetchOlderLog();
-  } catch (e: any) {
-    pushError.value = e.message || 'failed to load older rows';
-  } finally {
-    olderBusy.value = false;
-  }
 }
 
 async function onEnableThisClient() {
@@ -549,37 +494,6 @@ function deviceLabel(sub: StoredPushSub): string {
   align-items: center;
   gap: 1ch;
   margin: 0 0 var(--space-2);
-}
-.push-log {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.push-row {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--space-6);
-  padding: var(--space-3) 0;
-  border-top: 1px solid var(--border);
-}
-.push-row:first-child {
-  border-top: none;
-}
-.push-row .when {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.push-row .how {
-  grid-column: 2;
-  color: var(--fg-muted);
-  overflow-wrap: anywhere;
-}
-.push-row.sent .how {
-  color: var(--fg);
-}
-.push-row.failed .how {
-  color: var(--bad);
 }
 .this-client {
   display: flex;

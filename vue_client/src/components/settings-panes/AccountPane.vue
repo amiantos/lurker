@@ -39,19 +39,23 @@
                 : `added ${formatRelative(pk.createdAt)}`
             }}
           </span>
-          <button
-            class="link danger"
-            :disabled="!canRemovePasskey || passkeyBusy"
-            :title="removePasskeyTitle"
-            @click="onRemovePasskey(pk)"
-          >
-            remove
-          </button>
+          <span class="btn-bar">
+            <button
+              class="bad"
+              :disabled="!canRemovePasskey || passkeyBusy"
+              :title="removePasskeyTitle"
+              @click="onRemovePasskey(pk)"
+            >
+              remove
+            </button>
+          </span>
         </li>
       </ul>
       <p v-else class="muted small">No passkeys registered.</p>
       <div class="passkey-add">
-        <button class="link" :disabled="passkeyBusy" @click="onAddPasskey">add passkey</button>
+        <button class="btn-secondary" :disabled="passkeyBusy" @click="onAddPasskey">
+          add passkey
+        </button>
       </div>
 
       <h3 class="subhead">password</h3>
@@ -75,7 +79,7 @@
         </label>
         <div class="password-actions">
           <button
-            class="link"
+            class="btn-primary"
             type="submit"
             :disabled="passwordBusy || !newPasswordInput || (hasPassword && !currentPasswordInput)"
           >
@@ -84,7 +88,7 @@
           <button
             v-if="hasPassword"
             type="button"
-            class="link danger"
+            class="btn-secondary danger"
             :disabled="passwordBusy || passkeys.length === 0"
             :title="
               passkeys.length === 0
@@ -100,7 +104,7 @@
     </template>
 
     <div class="signout-row">
-      <button class="link danger" @click="signOut">sign out</button>
+      <button class="btn-secondary danger" @click="signOut">sign out</button>
     </div>
   </section>
 </template>

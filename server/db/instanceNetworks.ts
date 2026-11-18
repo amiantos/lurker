@@ -42,6 +42,8 @@ export interface InstanceNetwork {
   users: number | null;
   /** How many channels. `channelCount` because `channels` is the recommended list. */
   channelCount: number | null;
+  /** Always true. A network that is listed is offered; the field outlives the
+   *  switch it reported so nothing reading the wire shape has to change. */
   enabled: boolean;
   position: number;
 }
@@ -57,7 +59,6 @@ export interface InstanceNetworkInput {
   /** null clears a count; absent leaves it. */
   users?: number | null;
   channelCount?: number | null;
-  enabled?: boolean;
 }
 
 // channels_json and tags_json are written by us and only ever hold a JSON
@@ -89,7 +90,7 @@ export function toInstanceNetwork(row: InstanceNetworkRow): InstanceNetwork {
   };
 }
 
-// Admin view: every preset, disabled ones included.
+// Every preset. There is no disabled one: see `enabled` above.
 export function listInstanceNetworks(): InstanceNetwork[] {
   const rows = db
     .prepare('SELECT * FROM instance_network ORDER BY position, id')
@@ -97,10 +98,11 @@ export function listInstanceNetworks(): InstanceNetwork[] {
   return rows.map(toInstanceNetwork);
 }
 
-// User view: only what's actually on offer. Also the set the lockdown allows —
-// see services/networkPolicy.ts, which is the single predicate both the picker
+// User view: what's on offer, which is all of them. Also the set the lockdown
+// allows — see services/networkPolicy.ts, the single predicate both the picker
 // and the connect path consult, so the UI can never offer something the connect
-// would then refuse.
+// would then refuse. Its own name because those callers mean "offered", and the
+// filter guards a row written with enabled = 0 by anything but this module.
 export function listEnabledInstanceNetworks(): InstanceNetwork[] {
   return listInstanceNetworks().filter((n) => n.enabled);
 }
@@ -135,7 +137,7 @@ export function createInstanceNetwork(input: InstanceNetworkInput): InstanceNetw
       JSON.stringify(input.tags ?? []),
       input.users ?? null,
       input.channelCount ?? null,
-      input.enabled === false ? 0 : 1,
+      1,
       next,
     );
   return getInstanceNetwork(Number(result.lastInsertRowid))!;
@@ -157,12 +159,11 @@ export function updateInstanceNetwork(
     tags: patch.tags ?? existing.tags,
     users: patch.users !== undefined ? patch.users : existing.users,
     channelCount: patch.channelCount !== undefined ? patch.channelCount : existing.channelCount,
-    enabled: patch.enabled ?? existing.enabled,
   };
   db.prepare(
     `UPDATE instance_network
         SET name = ?, host = ?, port = ?, tls = ?, sasl_likely_required = ?,
-            channels_json = ?, tags_json = ?, users = ?, channel_count = ?, enabled = ?,
+            channels_json = ?, tags_json = ?, users = ?, channel_count = ?,
             updated_at = datetime('now')
       WHERE id = ?`,
   ).run(
@@ -175,7 +176,6 @@ export function updateInstanceNetwork(
     JSON.stringify(merged.tags),
     merged.users,
     merged.channelCount,
-    merged.enabled ? 1 : 0,
     id,
   );
   return getInstanceNetwork(id);

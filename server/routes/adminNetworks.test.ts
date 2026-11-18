@@ -140,11 +140,9 @@ describe('presets', () => {
     const created = await add();
     const id = created.body.preset.id;
 
-    const patched = await adminAgent
-      .patch(`/api/admin/networks/${id}`)
-      .send({ name: 'Renamed', enabled: false });
+    const patched = await adminAgent.patch(`/api/admin/networks/${id}`).send({ name: 'Renamed' });
     expect(patched.status).toBe(200);
-    expect(patched.body.preset).toMatchObject({ name: 'Renamed', enabled: false });
+    expect(patched.body.preset).toMatchObject({ name: 'Renamed' });
     // A partial patch must not blank the fields it didn't mention.
     expect(patched.body.preset.host).toBe('irc.corp.example');
 
@@ -177,11 +175,18 @@ describe('presets', () => {
     expect((await adminAgent.delete('/api/admin/networks/9999')).status).toBe(404);
   });
 
-  it('lists disabled presets to the admin', async () => {
-    await add({ enabled: false });
-    const res = await adminAgent.get('/api/admin/networks');
-    expect(res.body.presets).toHaveLength(1);
-    expect(res.body.presets[0].enabled).toBe(false);
+  // A listed network is an offered one. The "Offered" switch is gone, and an
+  // older admin client that still sends its field changes nothing: there is no
+  // way left to hold a network in the list but out of the picker.
+  it('ignores enabled: false, on create and on update', async () => {
+    const created = await add({ enabled: false });
+    expect(created.body.preset.enabled).toBe(true);
+    const patched = await adminAgent
+      .patch(`/api/admin/networks/${created.body.preset.id}`)
+      .send({ enabled: false });
+    expect(patched.status).toBe(200);
+    expect(patched.body.preset.enabled).toBe(true);
+    expect((await adminAgent.get('/api/admin/networks')).body.presets[0].enabled).toBe(true);
   });
 });
 
@@ -209,14 +214,6 @@ describe('the lockdown switch', () => {
     expect(allowUserDefinedNetworks()).toBe(true);
   });
 
-  it('does not count a disabled preset as something to lock down to', async () => {
-    await add({ enabled: false });
-    const res = await adminAgent
-      .put('/api/admin/networks/policy')
-      .send({ allowUserDefined: false });
-    expect(res.status).toBe(409);
-  });
-
   // Same trap from the other direction: delete your way down to nothing while
   // locked down, and the instance quietly becomes unusable.
   it('refuses to delete the last usable preset while locked down', async () => {
@@ -226,31 +223,6 @@ describe('the lockdown switch', () => {
     const res = await adminAgent.delete(`/api/admin/networks/${created.body.preset.id}`);
     expect(res.status).toBe(409);
     expect((await adminAgent.get('/api/admin/networks')).body.presets).toHaveLength(1);
-  });
-
-  // The same hole as the delete guard, through a different door: un-offering the
-  // only preset empties the allowed set just as thoroughly as deleting it, and
-  // leaves the whole instance — the admin too — unable to connect to anything.
-  it('refuses to un-offer the last usable preset while locked down', async () => {
-    const created = await add();
-    await adminAgent.put('/api/admin/networks/policy').send({ allowUserDefined: false });
-
-    const res = await adminAgent
-      .patch(`/api/admin/networks/${created.body.preset.id}`)
-      .send({ enabled: false });
-    expect(res.status).toBe(409);
-    expect((await adminAgent.get('/api/admin/networks')).body.presets[0].enabled).toBe(true);
-  });
-
-  it('allows un-offering one of several while locked down', async () => {
-    const first = await add();
-    await add({ host: 'irc.two.example' });
-    await adminAgent.put('/api/admin/networks/policy').send({ allowUserDefined: false });
-
-    const res = await adminAgent
-      .patch(`/api/admin/networks/${first.body.preset.id}`)
-      .send({ enabled: false });
-    expect(res.status).toBe(200);
   });
 
   it('allows deleting one of several while locked down', async () => {

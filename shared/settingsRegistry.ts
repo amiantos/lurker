@@ -197,9 +197,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'string',
     default: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-    description:
-      'Font family stack used everywhere in the UI. The first installed font wins. ' +
-      'The default is the system monospace fonts.',
+    description: 'Font stack for the whole UI. The first installed font wins.',
   },
   {
     key: 'look.font.size',
@@ -211,9 +209,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 9,
     max: 32,
     default: 14,
-    description:
-      'Base font size in pixels for the whole UI. ' +
-      'Phone-sized viewports use `look.font.size.mobile` instead.',
+    description: 'Font size in pixels. Phone-width screens use the mobile size instead.',
   },
   {
     key: 'look.font.size.mobile',
@@ -225,10 +221,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 9,
     max: 32,
     default: 14,
-    description:
-      'Base font size in pixels used on phone-sized viewports (≤768px). ' +
-      'Lets the desktop and mobile UIs scale independently — a large desktop ' +
-      'setting need not be inherited on a phone, or vice versa.',
+    description: 'Font size in pixels on phone-width screens (768px and under).',
   },
   {
     key: 'look.font.weight',
@@ -241,10 +234,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 900,
     default: 400,
     description:
-      'Default font weight (100–900, in CSS steps of 100). ' +
-      "Bump above 400 (e.g. 500) to roughly match terminals' visual density " +
-      'on macOS, where browsers no longer apply subpixel antialiasing. ' +
-      'Pairs with look.font.smoothing_macos to emulate Terminal.app rendering.',
+      'Font weight, 100–900 in steps of 100. Try 500 on macOS for a terminal-like ' + 'density.',
   },
   {
     key: 'look.font.smoothing_macos',
@@ -254,10 +244,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'bool',
     default: false,
-    description:
-      'Coax WebKit/Blink into denser, Terminal.app-style font rendering by setting ' +
-      '-webkit-font-smoothing: subpixel-antialiased. Off by default; the browser ' +
-      'default rendering is what most users expect.',
+    description: 'Subpixel antialiasing on macOS, for denser Terminal.app-style text.',
   },
 
   // ─── Core palette (Monokai Pro / Brad's iTerm theme) ───────────────────
@@ -269,7 +256,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#212022',
-    description: 'Window background (every region uses this, like a CLI app).',
+    description: 'Window background.',
   },
   {
     key: 'look.color.bg_soft',
@@ -279,7 +266,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#2c2a2e',
-    description: 'Slightly raised background used for hover and active-buffer highlight.',
+    description: 'Background for hover and the active buffer.',
   },
   {
     key: 'look.color.fg',
@@ -289,7 +276,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#fcfcfa',
-    description: 'Default foreground / text color.',
+    description: 'Default text color.',
   },
   {
     key: 'look.color.fg_muted',
@@ -299,7 +286,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#939293',
-    description: 'Muted text (timestamps, system events, secondary labels).',
+    description: 'Timestamps, events and secondary labels.',
   },
   {
     key: 'look.color.accent',
@@ -309,7 +296,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#a99dec',
-    description: 'Primary accent (logo, active-buffer indicator, focused borders).',
+    description: 'Logo, active-buffer indicator and focused borders.',
   },
   {
     key: 'look.color.link',
@@ -319,9 +306,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: 'var(--fg)',
-    description:
-      'Color of clickable URL links inside chat messages. ' +
-      'Any CSS color value; defaults to the foreground color.',
+    description: 'Links in chat messages.',
   },
   {
     key: 'look.color.good',
@@ -331,7 +316,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#b3db82',
-    description: 'Positive / connected state.',
+    description: 'Connected and positive states.',
   },
   {
     key: 'look.color.warn',
@@ -341,7 +326,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#f9d978',
-    description: 'Warning / in-progress state (connecting, modified setting marker).',
+    description: 'In-progress states, and the marker on a modified setting.',
   },
   {
     key: 'look.color.bad',
@@ -351,7 +336,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#ed6c89',
-    description: 'Error / disconnected / destructive state.',
+    description: 'Errors, disconnected states and destructive actions.',
   },
   {
     key: 'look.color.border',
@@ -361,7 +346,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#38353b',
-    description: 'Subtle horizontal/vertical separators between regions.',
+    description: 'Separators between regions.',
   },
   {
     key: 'look.color.mirc_colors',
@@ -410,15 +395,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       '#d2d2d2', // 15 light gray — mIRC's own light grey
     ],
     description:
-      'How the 16 mIRC color codes (0-15) render in chat. One CSS color per line, ' +
-      'in order: white, black, navy, green, red, maroon, purple, orange, yellow, ' +
-      'lime, teal, cyan, blue, magenta, gray, light gray. Defaults pick the ' +
-      'closest hue from your nick palette so coloured text matches the rest of ' +
-      'the theme. Any CSS color value works (hex, rgb(), var(--name), color-mix()), ' +
-      'but prefer a literal: a code names a colour, and a slot that follows the ' +
-      'theme instead is wrong the moment a sender pairs it with a background of ' +
-      'their own. var(--bg) is the worst case — it IS the chat background, so text ' +
-      'set to it is invisible.',
+      'How mIRC color codes 0–15 render, one CSS color per line: white, black, ' +
+      'navy, green, red, maroon, purple, orange, yellow, lime, teal, cyan, blue, ' +
+      'magenta, gray, light gray. Use literal colors, not theme variables: text set ' +
+      'to var(--bg) is invisible.',
   },
 
   {
@@ -433,8 +413,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string-list',
     default: [],
     description:
-      'Colors saved from the color picker (the star button), one per line. ' +
-      'Shown as swatches at the bottom of the picker on every color setting.',
+      'Colors starred in the color picker, one per line. Shown as swatches in every ' + 'picker.',
   },
   // ─── Alternating message rows ─────────────────────────────────────────
   {
@@ -446,8 +425,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'color',
     default: 'var(--bg)',
     description:
-      'Background applied to every other message line in chat buffers, ' +
-      'for visual separation. Set equal to look.color.bg to disable striping.',
+      'Background of every other message line. Set it to the window background for ' +
+      'no striping.',
   },
   {
     key: 'look.color.message.alt_fg',
@@ -458,9 +437,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'color',
     default: '#c4c4c4',
     description:
-      'Foreground applied to every other message line in chat buffers. ' +
-      'Defaults to a slightly dimmed foreground. Nick colors and ' +
-      'inline-highlighted segments still override this.',
+      'Text color of every other message line. Nick colors and highlights still ' + 'override it.',
   },
   // Empty, not var(--fg): an unset colour leaves your lines in the row's own
   // foreground, which on an alternating row is alt_fg (#1268).
@@ -472,12 +449,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '',
-    description:
-      'Color for the text of messages you send, to pick them out at a glance. ' +
-      'Any CSS color value; leave empty to match everyone else.',
+    description: 'Text color of your own messages. Empty matches everyone else.',
   },
 
-  // ─── Per-line display collapsing (nick / timestamp dedupe) ────────────
+  // ─── Message layout, then the rest of Message rows ────────────────────
   {
     key: 'look.message.layout',
     label: 'Message layout',
@@ -495,15 +470,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     } as Readonly<Record<string, string>>,
     default: 'traditional',
     description:
-      'How message rows are laid out. "traditional" (the default) is ' +
-      'the three-column grid: time, nick, text. "modern" is the ' +
-      'two-line layout: nick and time on top, text below, with avatars if ' +
-      'they are on. A phone-width screen always uses modern: the grid does ' +
-      'not fit there. In the modern layout repeated authors always ' +
-      'collapse (notices, status lines and the ' +
-      "server's own text too, each in runs of its own), and only the head " +
-      'line of each run shows a time, so the timestamp collapse setting ' +
-      'below does not apply.',
+      'Traditional is the three-column grid: time, nick, text. Modern puts nick and ' +
+      'time on one line and the text below, with avatars if they are on. Modern ' +
+      'always groups repeated authors and shows one time per group. Phone-width ' +
+      'screens always use modern.',
   },
   {
     key: 'look.message.collapse_authors',
@@ -513,12 +483,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Hide the nick on consecutive messages from the same author so a run ' +
-      'reads as one grouped block. In the traditional layout only plain ' +
-      'messages collapse; actions, notices, and system events always show ' +
-      'their author (the modern layout groups more: see Message layout). ' +
-      'Reset by any divider (date/unread/away/back) or by a gap larger ' +
-      'than the window below.',
+      'Hide the nick on consecutive messages from the same author. Traditional ' +
+      'layout only, and only for plain messages; the modern layout always groups. A ' +
+      'divider, or a gap longer than the collapse window, starts a new group.',
   },
   {
     key: 'look.message.collapse_authors_window',
@@ -530,26 +497,32 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     max: 1440,
     default: 5,
     description:
-      'Maximum gap in minutes between two messages from the same author for ' +
-      'the second to be collapsed. 0 collapses only messages with the exact ' +
-      'same timestamp; larger values keep the grouping going across longer ' +
-      'pauses.',
+      'Longest gap, in minutes, between two messages that still group. 0 groups ' +
+      'only messages with the same timestamp.',
   },
   {
-    key: 'look.message.collapse_timestamps',
-    label: 'Collapse repeated timestamps',
+    key: 'look.action.italic',
+    label: 'Italicize /me actions',
+    category: 'appearance',
+    group: 'messages',
+    type: 'bool',
+    default: true,
+    description: 'Show /me actions in italics.',
+  },
+  {
+    key: 'look.message.hover_actions',
+    label: 'Show hover action bar on messages',
     category: 'appearance',
     group: 'messages',
     type: 'bool',
     default: true,
     description:
-      'Hide the timestamp on consecutive rows that would display the exact ' +
-      'same time string (driven by look.buffer.time_format). Reduces visual ' +
-      'noise in fast bursts without losing any information. Not used by ' +
-      'the modern message layout.',
+      'Show the action bar (reply, quote, copy, bookmark, ignore) when hovering a ' +
+      'message. Off, click a message for the same actions as a menu. Touch devices ' +
+      'always use the menu.',
   },
 
-  // ─── Compact layout density (#1186) ──────────────────────────────────
+  // ─── Modern layout density (#1186) ───────────────────────────────────
   // Themed like the fonts: how tight the rows sit is part of a look. The
   // phone apps, where compact is the default, are meant to read the same
   // three values (a Mobile: follow-up), so the units are ones a native
@@ -560,37 +533,34 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'look.message.modern.group_gap',
     label: 'Modern group gap (px)',
     category: 'appearance',
-    group: 'messages',
+    group: 'modern-layout',
     themed: true,
     type: 'int',
     min: 0,
     max: 48,
     default: 10,
     description:
-      'Vertical space in pixels between message groups in the modern ' +
-      'layout: before each head line, action, notice, event or divider. ' +
-      'Rows within a run stay flush. 0 packs the buffer like a terminal.',
+      'Space in pixels between message groups in the modern layout. 0 packs the ' +
+      'buffer like a terminal.',
   },
   {
     key: 'look.message.modern.line_height',
     label: 'Modern line height (%)',
     category: 'appearance',
-    group: 'messages',
+    group: 'modern-layout',
     themed: true,
     type: 'int',
     min: 100,
     max: 250,
     default: 155,
     description:
-      'Line height of message text in the modern layout, as a percentage ' +
-      'of the font size. 100 sets the lines solid; 155 is the default ' +
-      'everywhere else in the UI.',
+      'Line height of message text in the modern layout, as a percentage of the ' + 'font size.',
   },
   {
     key: 'look.message.modern.indent',
     label: 'Modern body indent (chars)',
     category: 'appearance',
-    group: 'messages',
+    group: 'modern-layout',
     themed: true,
     type: 'int',
     min: 0,
@@ -599,9 +569,54 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // Greyed out while avatars are on: the gutter is the indent then.
     dependsOn: [{ key: 'look.message.avatars', in: [false] }],
     description:
-      'How many characters the text of a message sits in from the nick ' +
-      'above it in the modern layout. 0 puts the text flush under the ' +
-      'nick. Ignored while avatars are on: the avatar gutter is the indent.',
+      'How far, in characters, message text sits in from the nick above it in the ' +
+      'modern layout. Ignored while avatars are on.',
+  },
+
+  // ─── Timestamps ──────────────────────────────────────────────────────────
+  {
+    key: 'look.buffer.time_format',
+    label: 'Message timestamp format',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'string',
+    default: 'HH:mm:ss',
+    description:
+      'Format of the time column in chat buffers. Tokens: YYYY MM DD HH H hh h mm ' +
+      'ss a A (hh and h are 12-hour, a and A are am/pm). Empty hides the column.',
+  },
+  {
+    key: 'look.buffer.time_format_modern',
+    label: 'Modern-layout timestamp format',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'string',
+    default: 'HH:mm',
+    description:
+      'Time format in the modern layout, which phones always use. Tokens: YYYY MM ' +
+      'DD HH H hh h mm ss a A (hh and h are 12-hour, a and A are am/pm). Empty ' +
+      'hides the time.',
+  },
+  {
+    key: 'look.buffer.date_format_modern',
+    label: 'Modern-layout date format',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'string',
+    default: 'YYYY-MM-DD',
+    description:
+      'In the modern layout, the date shown before the time on lines from another ' +
+      'day. Same tokens as the time formats. Empty never shows a date.',
+  },
+  {
+    key: 'look.message.collapse_timestamps',
+    label: 'Collapse repeated timestamps',
+    category: 'appearance',
+    group: 'timestamps',
+    type: 'bool',
+    default: true,
+    description:
+      'Hide a timestamp that repeats the one on the row above. Traditional layout ' + 'only.',
   },
 
   // ─── Member-list mode prefixes ────────────────────────────────────────
@@ -613,9 +628,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#ed6c89',
-    description:
-      'Color for the channel owner prefix (mode +q, usually ~). A rank a network ' +
-      'adds above the usual five uses it too.',
+    description: 'Mode +q, usually ~. Ranks a network adds above the usual five use it too.',
   },
   {
     key: 'look.color.member.admin',
@@ -625,7 +638,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#fc9867',
-    description: 'Color for the channel admin prefix (mode +a, usually &).',
+    description: 'Mode +a, usually &.',
   },
   {
     key: 'look.color.member.op',
@@ -635,7 +648,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#a99dec',
-    description: 'Color for the channel operator prefix (mode +o, usually @).',
+    description: 'Mode +o, usually @.',
   },
   {
     key: 'look.color.member.halfop',
@@ -645,7 +658,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#78dce8',
-    description: 'Color for the half-op prefix (mode +h, usually %).',
+    description: 'Mode +h, usually %.',
   },
   {
     key: 'look.color.member.voice',
@@ -655,7 +668,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#b3db82',
-    description: 'Color for the voiced prefix (mode +v, usually +).',
+    description: 'Mode +v, usually +.',
   },
 
   // ─── Buffer list (channel/DM rows in the sidebar) ─────────────────────
@@ -671,11 +684,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: 'var(--accent)',
-    description:
-      'Color applied to channel/DM rows that have unread messages but no ' +
-      'highlights. Defaults to the accent color so unread rows stand out from ' +
-      'quiet rows at a glance; set it to var(--fg) for a more subdued look, ' +
-      'or any other CSS color for weechat-style two-color buffer states.',
+    description: 'Rows with unread messages but no highlights.',
   },
   {
     key: 'look.color.buffer.highlight',
@@ -685,9 +694,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: 'var(--warn)',
-    description:
-      'Color applied to channel/DM rows that contain highlights. Stands out ' +
-      'from the plain-unread color above.',
+    description: 'Rows with highlights.',
   },
   {
     key: 'look.buffer_list.unread_bold',
@@ -696,10 +703,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'buffer-list',
     type: 'bool',
     default: false,
-    description:
-      'Render channel/DM row labels in bold when they have unread messages or ' +
-      'highlights. Off by default — color already carries the signal; turn on ' +
-      'for an extra weight cue on top of the color.',
+    description: 'Bold the names of rows with unread messages or highlights.',
   },
   {
     key: 'look.buffer_list.unread_display',
@@ -710,11 +714,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     choices: ['full', 'highlights', 'badge', 'off'],
     default: 'full',
     description:
-      'How much detail the unread indicators show on each channel/DM row. ' +
-      '"full" shows the highlight ● plus a full unread count (default). ' +
-      '"highlights" shows the ● plus a highlight-only count (hides the noisy ' +
-      'total). "badge" shows only the ● for highlighted rows, no numbers. ' +
-      '"off" hides both — rely purely on row color/weight.',
+      '"full" shows the highlight dot and an unread count. "highlights" shows the ' +
+      'dot and a count of highlights only. "badge" shows only the dot. "off" shows ' +
+      'neither.',
   },
 
   // ─── Nick coloring ────────────────────────────────────────────────────
@@ -746,9 +748,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       '#7ba4ff',
       '#6799f3',
     ],
-    description:
-      "Palette of colors used to deterministically color other users' nicknames. " +
-      'One entry per line; any CSS color value (hex, rgb(), var(--name)).',
+    description: "Colors given to other people's nicks, one CSS color per line.",
   },
   {
     key: 'look.nick.self_color',
@@ -758,9 +758,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: 'var(--fg)',
-    description:
-      'Color used for your own nickname wherever it appears. ' +
-      'Any CSS color value; defaults to your foreground color.',
+    description: 'Color of your own nick.',
   },
   {
     key: 'look.nick.color_stop_chars',
@@ -770,8 +768,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: '_|',
     description:
-      'Trailing characters trimmed from nicknames before hashing for color selection, ' +
-      "so 'amiantos__' colors the same as 'amiantos'.",
+      "Trailing characters ignored when picking a nick's color, so amiantos__ gets " +
+      'the same color as amiantos.',
   },
   {
     key: 'look.nick.color_hash',
@@ -781,7 +779,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'enum',
     choices: ['djb2-32'],
     default: 'djb2-32',
-    description: 'Hash algorithm used to map nicknames to palette colors.',
+    description: 'How a nick is mapped to a palette color.',
   },
   {
     key: 'look.nick.show_mode_prefix',
@@ -791,8 +789,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Show the channel user-mode prefix (@ op, + voice, % halfop, ~ owner, & admin) before a ' +
-      "speaker's nick in the message list. Reflects the user's current status in that channel.",
+      "Show a speaker's channel status (@ op, + voice, % halfop, ~ owner, & admin) " +
+      'before their nick in the message list.',
   },
   {
     key: 'look.nick.display_names',
@@ -802,165 +800,92 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'On networks that carry IRCv3 metadata, show the name a user set for themselves ' +
-      '(display-name) in place of their nick in the message list, the member list and DM ' +
-      'rows. The nick stays the identity: it shows on hover and in the profile, colors are ' +
-      'keyed on it, and mentions still match it. Off = nicks everywhere.',
+      'On networks that support it, show the name a user set for themselves in ' +
+      'place of their nick. The nick still shows on hover and in the profile, and ' +
+      'mentions still match it.',
   },
 
-  // ─── Misc look ────────────────────────────────────────────────────────
-  {
-    key: 'look.modal.overlay',
-    label: 'Modal backdrop (desktop)',
-    category: 'appearance',
-    group: 'misc',
-    type: 'enum',
-    choices: ['wordmark', 'dimmed', 'clear'],
-    default: 'wordmark',
-    description:
-      'Backdrop shown behind centered modals on desktop. "wordmark" (default) ' +
-      'is the opaque tiled-word wallpaper. "dimmed" replaces it with a ' +
-      'translucent scrim so the chat stays visible (just darkened) behind the ' +
-      'modal. "clear" shows the app behind with no tint at all — the card ' +
-      'floats on its border and shadow. Has no effect on mobile, where every ' +
-      'modal is a full-frame opaque sheet regardless of this setting.',
-  },
-  {
-    key: 'look.action.italic',
-    label: 'Italicize /me actions',
-    category: 'appearance',
-    group: 'misc',
-    type: 'bool',
-    default: true,
-    description: 'Render /me action messages in italics.',
-  },
-  {
-    key: 'look.message.hover_actions',
-    label: 'Show hover action bar on messages',
-    category: 'appearance',
-    group: 'misc',
-    type: 'bool',
-    default: true,
-    description:
-      'Show the floating action toolbar (reply, quote, copy, bookmark, ignore) when ' +
-      'hovering a message on desktop. When off, click a message to open the same ' +
-      'actions as a menu instead. No effect on touch devices, where the bar is ' +
-      'never shown and tapping a message always opens the menu.',
-  },
-  {
-    key: 'look.buffer.time_format',
-    label: 'Message timestamp format',
-    category: 'appearance',
-    group: 'misc',
-    type: 'string',
-    default: 'HH:mm:ss',
-    description:
-      'Time format for the per-message timestamp column in chat buffers. ' +
-      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
-  },
-  {
-    key: 'look.buffer.time_format_modern',
-    label: 'Modern-layout timestamp format',
-    category: 'appearance',
-    group: 'misc',
-    type: 'string',
-    default: 'HH:mm',
-    description:
-      'Time format used in chat buffers when the modern message layout is ' +
-      'active (look.message.layout = modern, or any layout on a phone). ' +
-      "Defaults to HH:mm — the modern layout's timestamp sits by the nick, and " +
-      'seconds are rarely useful at a glance. ' +
-      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
-  },
-  {
-    key: 'look.buffer.date_format_modern',
-    label: 'Modern-layout date format',
-    category: 'appearance',
-    group: 'misc',
-    type: 'string',
-    default: 'YYYY-MM-DD',
-    description:
-      'In the modern layout, the date shown before the time on lines from a day other than ' +
-      'today. Same tokens as the time formats. Empty string never shows a date.',
-  },
+  // ─── Status bar ──────────────────────────────────────────────────────────
   {
     key: 'look.bar.time_format',
     label: 'Status-bar clock format',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'string',
     default: 'HH:mm:ss',
     description:
-      'Time format for the clock displayed in the status bar (above the input). ' +
-      'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the clock.',
+      'Format of the status bar clock. Tokens: YYYY MM DD HH H hh h mm ss a A (hh ' +
+      'and h are 12-hour, a and A are am/pm). Empty hides the clock.',
   },
   {
     key: 'look.bar.lag_min_show_ms',
     label: 'Lag indicator threshold (ms)',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'int',
     min: 0,
     max: 60000,
     default: 500,
-    description:
-      'Minimum lag (in milliseconds) before the status-bar lag indicator appears. ' +
-      "Below this threshold the indicator stays hidden. Modeled on weechat's " +
-      'irc.network.lag_min_show.',
+    description: 'Lag, in milliseconds, at which the lag indicator appears.',
   },
   {
     key: 'look.bar.lag_alarm_ms',
     label: 'Lag alarm threshold (ms)',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'int',
     min: 0,
     max: 60000,
     default: 2000,
     description:
-      'Lag (in milliseconds) at which the status-bar indicator turns red to call ' +
-      'attention to a connection problem. Between the show threshold and this value ' +
-      'the indicator renders in the warning color.',
+      'Lag, in milliseconds, at which the indicator turns red. Below that it shows ' +
+      'in the warning color.',
   },
   {
     key: 'look.bar.lag_always_show',
     label: 'Always show lag value',
     category: 'appearance',
-    group: 'misc',
+    group: 'status-bar',
     type: 'bool',
     default: false,
-    description:
-      'Always display the lag value in the status bar, even when it is below the ' +
-      'show threshold. Useful if you want to keep an eye on round-trip latency.',
+    description: 'Show the lag value even below the threshold.',
   },
 
-  // ─── Layout (collapsible side panels on desktop) ───────────────────────
+  // ─── Panels (side panels and the modal backdrop, desktop) ────────────────
   {
     key: 'look.layout.show_channel_list',
     label: 'Show channel list (desktop)',
     category: 'appearance',
-    group: 'layout',
+    group: 'panels',
     type: 'bool',
     default: true,
     description:
-      'Show the channel/buffer list on the left of the desktop layout. ' +
-      'Turn off to reclaim horizontal space on cramped screens; a slim rail ' +
-      'with a chevron remains so you can re-open it. Has no effect on mobile.',
+      'Show the channel list on the left. Off leaves a slim rail to reopen it. No ' +
+      'effect on mobile.',
   },
   {
     key: 'look.layout.show_member_list',
     label: 'Show member list (desktop)',
     category: 'appearance',
-    group: 'layout',
+    group: 'panels',
     type: 'bool',
     default: true,
     description:
-      'Default for whether the channel members list shows on the right of the ' +
-      'desktop layout. The members toggle in each channel’s topic bar ' +
-      'overrides this per channel and is remembered. Has no effect on mobile.',
+      "Whether the member list shows by default. The toggle in each channel's topic " +
+      'bar overrides this per channel. No effect on mobile.',
+  },
+  {
+    key: 'look.modal.overlay',
+    label: 'Modal backdrop (desktop)',
+    category: 'appearance',
+    group: 'panels',
+    type: 'enum',
+    choices: ['wordmark', 'dimmed', 'clear'],
+    default: 'wordmark',
+    description:
+      '"wordmark" is the tiled-word wallpaper. "dimmed" darkens the chat behind the ' +
+      'modal. "clear" leaves it untouched. No effect on mobile, where every modal ' +
+      'is a full-screen sheet.',
   },
 
   // ─── Events: the filter (#666) ────────────────────────────────────────
@@ -980,12 +905,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     choiceLabels: { all: 'No filter', smart: 'Smart filter', none: 'Hide all' },
     default: 'all',
     description:
-      'How much join/part/quit/nick/host-change/mode noise reaches the message list. ' +
-      '"No filter" (the default) shows every event, folded into summary lines when ' +
-      'consolidation is on. "Smart filter" shows events only for nicks who have recently ' +
-      'spoken, so silent lurkers cycling on and off stay invisible. "Hide all" removes ' +
-      'event rows entirely, leaving conversation only. Kicks, topic changes and ' +
-      'invites are never hidden at any setting.',
+      'How many join, part, quit, nick, host and mode events reach the message ' +
+      'list. "Smart filter" shows them only for people who spoke recently. "Hide ' +
+      'all" removes them. Kicks, topic changes and invites always show.',
   },
   {
     key: 'chat.events.mobile',
@@ -997,11 +919,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     choiceLabels: { all: 'No filter', smart: 'Smart filter', none: 'Hide all' },
     default: 'all',
     description:
-      'The same choice for phone-sized viewports (≤768px) and the native mobile ' +
-      'apps, which read this key unconditionally. A phone screen holds a fraction ' +
-      'of the lines a desktop one does, so "Hide all" is a common pick here even for ' +
-      'people who want everything at their desk. Only the filter is split by device — ' +
-      'the settings below are shared.',
+      'The same choice for phone-width screens and the mobile apps. The settings ' +
+      'below apply to both.',
   },
 
   // ─── Event consolidation (IRCCloud-style summary line) ────────────────
@@ -1014,14 +933,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: true,
     dependsOn: EVENTS_VISIBLE,
     description:
-      'Merge consecutive join/part/quit/nick/host-change events into a single summary line ' +
-      'per nick (e.g. "Alice and Bob joined; Dave left; Eve → Eve_afk"). ' +
-      'Mode changes that only grant or revoke member status join the same line ' +
-      '("…; Alice and Bob were opped; Carol was briefly voiced"), naming who it ' +
-      'was done to rather than who did it — bans, channel keys, limits and ' +
-      'channel flags always keep their own line. ' +
-      'Off shows every event individually. Composes with the "smart" tier — events ' +
-      'it hides are excluded from the summary.',
+      'Merge consecutive events into one summary line, such as "Alice and Bob ' +
+      'joined; Dave left". Op and voice changes join the same line. Bans, keys, ' +
+      'limits and channel flags keep their own line.',
   },
   {
     key: 'chat.consolidate_max_names',
@@ -1036,11 +950,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // transitively through chat.consolidate_joins.
     dependsOn: [{ key: 'chat.consolidate_joins', in: [true] }],
     description:
-      'In each category (joined / left / reconnected / renamed / changed host / ' +
-      'opped / voiced / briefly opped …) of a summary ' +
-      'line, show at most this many nicks before collapsing the rest into ' +
-      '"and N others". Recent speakers (those tracked for nick completion) ' +
-      'are preferred when picking which names to show.',
+      'Most nicks named in each part of a summary line before the rest become "and ' +
+      'N others". Recent speakers are named first.',
   },
   {
     key: 'chat.show_event_host',
@@ -1053,11 +964,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // lines, which is exactly what survives when consolidation is OFF.
     dependsOn: EVENTS_VISIBLE,
     description:
-      'Show the affected user’s user@host next to their nick on JOIN, PART, ' +
-      'QUIT, and nick-change lines (e.g. "alice (~alice@host.example.net) ' +
-      'joined") — useful for channel ops spotting ban masks. Applies to ' +
-      'individual lines only; events that collapse into the consolidation ' +
-      'summary above stay host-less. Regular chat messages are unaffected.',
+      'Show user@host beside the nick on join, part, quit and nick-change lines. ' +
+      'Not shown in summary lines.',
   },
   {
     key: 'chat.show_join_account',
@@ -1068,12 +976,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: false,
     dependsOn: EVENTS_VISIBLE,
     description:
-      'Show the joining user’s services (NickServ) account next to their nick ' +
-      'on JOIN lines (e.g. "alice [aliceacct] joined") — useful for channel ops ' +
-      'confirming who is identified. Requires the network to support the ' +
-      'extended-join extension; nothing is shown for users who are not logged ' +
-      'in, or on networks without it. Applies to individual lines only; events ' +
-      'that collapse into the consolidation summary above stay account-less.',
+      'Show the services (NickServ) account beside the nick on join lines, on ' +
+      'networks with extended-join. Not shown in summary lines.',
   },
 
   // ─── Smart filter tuning (join/part/quit/nick/mode noise) ─────────────
@@ -1094,11 +998,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 5,
     dependsOn: EVENTS_SMART,
     description:
-      'Window in minutes for "recently spoke". An event is hidden if the nick it ' +
-      'concerns has not posted a message within this many minutes before it. For ' +
-      'joins, parts, quits and nick changes that is the nick the event is about; ' +
-      'for op and voice changes it is the nick being opped or voiced, not whoever ' +
-      'set the mode.',
+      'How many minutes back counts as speaking recently. For an op or voice ' +
+      'change, it is the person opped or voiced who must have spoken.',
   },
   {
     key: 'chat.smart_filter_join',
@@ -1108,7 +1009,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     dependsOn: EVENTS_SMART,
-    description: 'Apply smart filter to JOIN events.',
+    description: 'Hide joins from people who have not spoken recently.',
   },
   {
     key: 'chat.smart_filter_quit',
@@ -1118,7 +1019,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     dependsOn: EVENTS_SMART,
-    description: 'Apply smart filter to PART and QUIT events.',
+    description: 'Hide parts and quits from people who have not spoken recently.',
   },
   {
     key: 'chat.smart_filter_nick',
@@ -1128,7 +1029,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     dependsOn: EVENTS_SMART,
-    description: 'Apply smart filter to NICK change events.',
+    description: 'Hide nick changes from people who have not spoken recently.',
   },
   {
     key: 'chat.smart_filter_mode',
@@ -1139,11 +1040,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: true,
     dependsOn: EVENTS_SMART,
     description:
-      'Apply smart filter to MODE events that only grant or revoke member status ' +
-      '(+o, +v, and the equivalents your network offers). The event is hidden when ' +
-      'none of the nicks it acts on has spoken recently. Bans, channel keys, user ' +
-      'limits and channel flags are never hidden, and a single MODE that mixes one ' +
-      'of those in with an op change is shown in full.',
+      'Hide op and voice changes for people who have not spoken recently. Bans, ' +
+      'keys, limits and channel flags always show.',
   },
   {
     key: 'chat.smart_filter_join_unmask',
@@ -1156,8 +1054,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 30,
     dependsOn: EVENTS_SMART,
     description:
-      'If a smart-filtered nick speaks within this many minutes after their JOIN, ' +
-      'the JOIN line is revealed. 0 disables unmasking.',
+      'Reveal a hidden join if that person speaks within this many minutes. 0 never ' + 'reveals.',
   },
 
   // ─── Composing (outgoing message guardrails) ─────────────────────────
@@ -1174,12 +1071,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Allow long messages to send as multiple consecutive IRC lines without ' +
-      'confirmation. When off (the default), trying to send a message that ' +
-      "would split shows a SPLIT warning in the status bar and won't submit " +
-      'until you press Send a second time; one that would split into three or ' +
-      'more offers to upload the text as a file instead. /me actions never ' +
-      'split — they are blocked outright regardless of this setting.',
+      'Send long messages as several lines without asking. Off, a message that ' +
+      'would split needs a second press of Send, and one that would split into ' +
+      'three or more offers to upload as a file. /me actions never split.',
   },
   {
     key: 'chat.send_typing_notifications',
@@ -1188,10 +1082,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'composing',
     type: 'bool',
     default: true,
-    description:
-      'Let other clients see when you are typing (IRCv3 +typing tag). Off stops ' +
-      'this client from sending typing/paused/done notifications while you compose ' +
-      "a message. Doesn't affect seeing other people's typing indicators.",
+    description: 'Let others see when you are typing. You still see theirs either way.',
   },
   {
     key: 'chat.threads',
@@ -1201,13 +1092,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Experimental. Keep replies out of the channel and read them in a thread ' +
-      'panel (Slack style). A line that was replied to shows how many replies it ' +
-      'has; click that to open the thread beside the channel, with its own ' +
-      'composer. A reply in a thread counts toward the channel’s unread badge ' +
-      'only when it mentions you or answers one of your lines; the Threads ' +
-      'button in the header shows how many threads hold one. Off (the default) ' +
-      'shows every reply in the channel.',
+      'Experimental. Replies leave the channel and open in a thread panel beside ' +
+      'it. A line with replies shows how many. A thread reply counts as unread only ' +
+      'when it mentions you or answers you.',
   },
   {
     key: 'chat.keep_position_on_send',
@@ -1217,14 +1104,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Keep your scroll position when you send a message, instead of jumping to ' +
-      'the newest message. For reading back through a busy channel while still ' +
-      'replying — your own line lands at the bottom and the "Return ↓" button ' +
-      'counts it, so you can drop back down when you are ready. Off (the default) ' +
-      'jumps to the bottom on every send. Sending while you are viewing a ' +
-      'jumped-to point in history returns you to the live conversation either ' +
-      'way, since that view holds live messages back and there is nowhere in it ' +
-      'for your own message to appear.',
+      'Keep your scroll position when you send, instead of jumping to the newest ' +
+      'message. Sending from a jumped-to point in history returns to the live ' +
+      'conversation either way.',
   },
   {
     key: 'chat.jitsi_url',
@@ -1234,8 +1116,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: '',
     description:
-      'The Jitsi Meet server /jitsi starts calls on, as a URL: https://meet.example.org. ' +
-      "Empty uses the server this instance's admin chose, or meet.jit.si.",
+      "The Jitsi Meet server /jitsi uses, as a URL. Empty uses this server's " +
+      'default, or meet.jit.si.',
   },
 
   // ─── Inline media viewer ──────────────────────────────────────────────
@@ -1252,9 +1134,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'When enabled, clicking a link to an image, video, audio file, or .txt opens it ' +
-      'in an in-app viewer instead of a new browser tab. Cmd/Ctrl-click always opens ' +
-      'in a new tab.',
+      'Open links to images, video, audio and .txt files in a viewer instead of a ' +
+      'new tab. Cmd/Ctrl-click always opens a new tab.',
   },
 
   // ─── Inline media & link previews ─────────────────────────────────────
@@ -1283,11 +1164,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // hand their address to a stranger's host the moment they pressed the filename. A guarantee
     // a user acts on has to be narrower than the truth, never wider.
     description:
-      'When enabled, a link that points straight at an image renders under the message ' +
-      'instead of showing only as a link, and the image is fetched and served by your ' +
-      'Lurker server, so the site hosting it never sees your device. Video and audio ' +
-      'links get a card naming the file — opening one goes to the site hosting it, ' +
-      'like any other link.',
+      'Show linked images under the message. Your Lurker server fetches them, so ' +
+      'the host never sees your device. Video and audio links get a card that opens ' +
+      "the host's site.",
   },
   {
     key: 'chat.inline_media.hide_urls',
@@ -1297,9 +1176,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'When enabled, URLs that are rendered as inline media will be hidden from the message ' +
-      'and will instead appear as a button in the inline media modal. ' +
-      'When disabled, URLs will render normally as part of the message like link preview cards.',
+      'Hide the URL of a link shown as inline media. It stays available as a button ' +
+      'in the viewer.',
   },
   {
     key: 'chat.link_previews.enabled',
@@ -1310,24 +1188,71 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'When enabled, a link to a web page renders a small card with its title, ' +
-      'description, and thumbnail. Your Lurker server fetches the page — your device ' +
-      'never contacts the site. Video links get a play button, and nothing is sent to ' +
-      'the video host until you press it.',
+      "Show a card with a page's title, description and thumbnail. Your Lurker " +
+      'server fetches the page, so the site never sees your device. Nothing reaches ' +
+      'a video host until you press play.',
   },
 
-  // ─── Connection ───────────────────────────────────────────────────────
+  // ─── Connection (drawn under the list in Settings → Networks) ────────────
   {
     key: 'chat.quit_message',
     label: 'Quit message',
-    category: 'chat',
+    category: 'networks',
     group: 'connection',
     type: 'string',
     default: '',
     description:
-      'The QUIT reason others see when you disconnect from a network and no ' +
-      'explicit /quit message is given. Leave blank to use the Lurker default ' +
-      '(the version and project URL).',
+      'What others see when you disconnect without giving /quit a message. Empty ' +
+      "uses Lurker's version and project URL.",
+  },
+
+  // ─── Away ────────────────────────────────────────────────────────────────
+  {
+    key: 'away.all_networks',
+    label: 'Scope away to all networks by default',
+    category: 'away',
+    group: 'away',
+    type: 'bool',
+    default: false,
+    description:
+      'Make /away and /back apply to every network. On, -one limits them to the ' +
+      'current network. Off, -all reaches every network.',
+  },
+
+  // ─── Auto-away (sets you AWAY when no client is connected) ────────────
+  {
+    key: 'away.auto.enabled',
+    label: 'Auto-set away when no client connected',
+    category: 'away',
+    group: 'auto-away',
+    type: 'bool',
+    default: true,
+    description:
+      'Set you away on every network when no Lurker client is in front of you and ' +
+      'no IRC client is attached through the bouncer, and clear it when one ' +
+      'returns.',
+  },
+  {
+    key: 'away.auto.delay_seconds',
+    label: 'Auto-away delay (seconds)',
+    category: 'away',
+    group: 'auto-away',
+    type: 'int',
+    min: 5,
+    max: 3600,
+    default: 900,
+    description: 'Seconds to wait after the last client leaves before setting away.',
+  },
+  {
+    key: 'away.auto.message',
+    label: 'Auto-away message',
+    category: 'away',
+    group: 'auto-away',
+    type: 'string',
+    default: 'afk',
+    description:
+      'Your auto-away message. The time is appended, as in "afk since 2026-05-09 ' +
+      '15:30:00-0500".',
   },
 
   // ─── CTCP auto-replies (what we disclose to the network on a CTCP query) ──
@@ -1343,137 +1268,71 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   {
     key: 'ctcp.replies',
     label: 'Answer CTCP queries',
-    category: 'chat',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'bool',
     default: true,
     description:
-      'Master switch for replying to CTCP queries from other users (VERSION, ' +
-      'TIME, SOURCE, CLIENTINFO, PING). Turn off to publish nothing — Lurker ' +
-      'stays completely silent to CTCP, like a client with CTCP disabled, and ' +
-      'IRC clients attached through the bouncer are not sent the queries. The ' +
-      'per-type reply templates below apply only while this is on. While an IRC ' +
-      'client is attached, it answers each type whose reply you have not changed.',
+      'Answer CTCP queries: VERSION, TIME, SOURCE, CLIENTINFO and PING. Off, Lurker ' +
+      'answers none, and IRC clients attached through the bouncer are not sent ' +
+      'them. On, an attached client answers each type whose reply you have not ' +
+      'changed.',
   },
   {
     key: 'ctcp.msgbuffer',
     label: 'Where CTCP notices appear',
-    category: 'chat',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'enum',
     choices: ['server', 'system', 'private'],
     default: 'server',
     description:
-      'Which buffer shows incoming CTCP notices — a "X requested CTCP …" probe, ' +
-      'or an unsolicited CTCP reply. Modeled on WeeChat irc.msgbuffer.ctcp. ' +
-      '"server" (default) = the network\'s server buffer; "system" = the ' +
-      'app-wide system buffer (these lines persist there, like other log ' +
-      'lines); "private" = a DM with the sender (or the channel, for a ' +
-      'channel-targeted CTCP). A reply to a /ctcp YOU sent always returns to ' +
-      'the buffer you ran it from, regardless of this.',
+      'Where incoming CTCP requests and unsolicited replies appear: "server" is the ' +
+      'network\'s server buffer, "system" the system buffer, "private" a DM with the ' +
+      'sender (or the channel it was sent to). Replies to your own /ctcp return to ' +
+      'the buffer you sent from.',
   },
   {
     key: 'ctcp.version',
     label: 'CTCP VERSION reply',
-    category: 'chat',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${name} ${version}',
     description:
-      'Reply sent for a CTCP VERSION query. Placeholders: ${name}, ${version}, ' +
-      '${source}, ${time}, ${clientinfo}, ${nick}. Leave EMPTY to not answer ' +
-      'VERSION at all — disclosing your exact client/version aids fingerprinting. ' +
-      'While this is unchanged and an IRC client is attached through the bouncer, ' +
-      'that client answers instead, with "via Lurker <version>" added.',
+      'Reply to VERSION. Placeholders: ${name}, ${version}, ${source}, ${time}, ' +
+      '${clientinfo}, ${nick}. Empty sends no reply. Unchanged, an IRC client ' +
+      'attached through the bouncer answers instead, with "via Lurker <version>" ' +
+      'added.',
   },
   {
     key: 'ctcp.time',
     label: 'CTCP TIME reply',
-    category: 'chat',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${time}',
-    description:
-      'Reply sent for a CTCP TIME query (default is the current server time, ' +
-      'sent as UTC). Same placeholders as the VERSION reply. Leave EMPTY to ' +
-      'withhold it — answering tells the asker you are connected.',
+    description: 'Reply to TIME. Same placeholders as VERSION. Empty sends no reply.',
   },
   {
     key: 'ctcp.source',
     label: 'CTCP SOURCE reply',
-    category: 'chat',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${source}',
-    description:
-      'Reply sent for a CTCP SOURCE query (default is the Lurker project URL). ' +
-      'Same placeholders as the VERSION reply. Leave EMPTY to not answer.',
+    description: 'Reply to SOURCE. Same placeholders as VERSION. Empty sends no reply.',
   },
   {
     key: 'ctcp.clientinfo',
     label: 'CTCP CLIENTINFO reply',
-    category: 'chat',
+    category: 'ctcp',
     group: 'ctcp',
     type: 'string',
     default: '${clientinfo}',
     description:
-      'Reply sent for a CTCP CLIENTINFO query. The default ${clientinfo} ' +
-      'expands to the list of CTCP types you currently answer. Same ' +
-      'placeholders as the VERSION reply. Leave EMPTY to not answer.',
-  },
-
-  // ─── Away ─────────────────────────────────────────────────────────────
-  {
-    key: 'away.all_networks',
-    label: 'Scope away to all networks by default',
-    category: 'away',
-    group: 'away',
-    type: 'bool',
-    default: false,
-    description:
-      'Make /away and /back apply to every network, as irssi does. Off, they apply ' +
-      'to the network you type them on, and -all reaches every network. On, -one ' +
-      'limits them to the current network.',
-  },
-
-  // ─── Auto-away (sets you AWAY when no client is connected) ────────────
-  {
-    key: 'away.auto.enabled',
-    label: 'Auto-set away when no client connected',
-    category: 'away',
-    group: 'auto-away',
-    type: 'bool',
-    default: true,
-    description:
-      'Automatically set you AWAY on every connected network when no Lurker client ' +
-      'is in front of you and no IRC client is attached through the bouncer (a ' +
-      'background connection that sent AWAY * does not count), and clear AWAY when ' +
-      'one comes back. Modeled on the WeeChat screen_away.py script.',
-  },
-  {
-    key: 'away.auto.delay_seconds',
-    label: 'Auto-away delay (seconds)',
-    category: 'away',
-    group: 'auto-away',
-    type: 'int',
-    min: 5,
-    max: 3600,
-    default: 900,
-    description:
-      'How long to wait after the last client goes before setting AWAY. ' +
-      'Avoids flapping on browser refreshes or brief network blips.',
-  },
-  {
-    key: 'away.auto.message',
-    label: 'Auto-away message',
-    category: 'away',
-    group: 'auto-away',
-    type: 'string',
-    default: 'afk',
-    description:
-      'Auto-away message body. The current local timestamp is appended as ' +
-      '" since YYYY-MM-DD HH:MM:SS±ZZZZ", so the default produces ' +
-      '"afk since 2026-05-09 15:30:00-0500".',
+      'Reply to CLIENTINFO. ${clientinfo} is the list of types you answer. Same ' +
+      'placeholders as VERSION. Empty sends no reply.',
   },
 
   // ─── Uploads ────────────────────────────────────────────────────
@@ -1498,11 +1357,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // compatibility preference the user owns, and the hosted dropper accepts
     // both formats, so there is nothing for the operator to protect.
     description:
-      'Format static images are re-encoded to. "webp" (default) is smaller and — ' +
-      'unlike JPEG — has an alpha channel, so transparent PNGs survive the ' +
-      're-encode instead of being flattened onto black. "jpeg" is the escape ' +
-      'hatch for a client or upload host that mangles WebP. Animated GIF/WebP/' +
-      'APNG bypass this entirely and are uploaded verbatim.',
+      'Format static images are re-encoded to. WebP is smaller and keeps ' +
+      'transparency. Use JPEG if a client or host mangles WebP. Animated images are ' +
+      'uploaded untouched.',
   },
   {
     key: 'uploads.image.max_dimension',
@@ -1517,8 +1374,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // server-side in A8), not a tenant knob.
     selfHostedOnly: true,
     description:
-      'Longest-edge limit for static images before they are re-encoded. ' +
-      'Animated GIF/WebP/APNG bypass this and are uploaded verbatim.',
+      'Static images are scaled down to this many pixels on their longest edge. ' +
+      'Animated images are uploaded untouched.',
   },
   {
     key: 'uploads.image.quality',
@@ -1531,10 +1388,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 85,
     selfHostedOnly: true,
     description:
-      'Quality (30–100) for the re-encode pass on static images, handed to ' +
-      'whichever encoder uploads.image.format selects. Higher is better-looking ' +
-      'and bigger in both, but the scales are not identical — WebP at 85 is not ' +
-      'the same picture as JPEG at 85.',
+      'Re-encode quality for static images, 30–100. Higher looks better and is ' + 'larger.',
   },
   {
     key: 'uploads.image.max_upload_mb',
@@ -1553,9 +1407,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: 0,
     selfHostedOnly: true,
     description:
-      'Cap on the raw upload size in megabytes; anything larger is rejected ' +
-      'before the optimization pipeline runs. 0 uses this server’s ceiling, ' +
-      'which the admin sets. A value above the ceiling counts as the ceiling.',
+      "Largest file you can upload, in MB. 0 uses this server's ceiling, and a " +
+      'value above the ceiling counts as it.',
   },
   {
     key: 'uploads.paste.enabled',
@@ -1564,9 +1417,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'pipeline',
     type: 'bool',
     default: true,
-    description:
-      'When enabled, pasting an image into the input area uploads it and ' +
-      'inserts the resulting URL. Disable to fall back to plain text paste.',
+    description: 'Upload a pasted image and insert its link. Off, paste is text only.',
   },
 
   // ─── Notifications (unified intent, per signal type) ──────────────────
@@ -1583,9 +1434,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'Notify me when a message matches one of my highlight rules. Toast appears ' +
-      'in-client when a tab is visible; push fires when no tab is visible. Turning ' +
-      'this off suppresses both.',
+      'When a message matches one of your highlight rules. A toast if a tab is ' +
+      'visible, a push if none is.',
   },
   {
     key: 'notifications.highlight.sound.enabled',
@@ -1594,9 +1444,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: false,
-    description:
-      'Play a short sound when a new highlight arrives. Off by default — opt in ' +
-      'if you want it. Dependent on notifications.highlight.enabled.',
+    description: 'Play a sound for highlights.',
   },
   {
     key: 'notifications.highlight.sound.choice',
@@ -1606,9 +1454,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
     default: 'ping',
-    description:
-      'Which bundled sound to play for highlights. Files live in /sounds/<choice>.mp3 ' +
-      'on the client. Use the preview button in Settings to audition each one.',
+    description: 'Which sound plays for highlights.',
   },
   {
     key: 'notifications.highlight.sound.volume',
@@ -1619,7 +1465,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 0,
     max: 100,
     default: 60,
-    description: 'Playback volume for the highlight sound, 0–100.',
+    description: 'Volume of the highlight sound, 0–100.',
   },
 
   {
@@ -1630,8 +1476,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'Notify me when someone sends me a direct message. Toast in-client when a ' +
-      'tab is visible; push when none is. Master toggle for DM notifications.',
+      'When someone sends you a direct message. A toast if a tab is visible, a push ' +
+      'if none is.',
   },
   {
     key: 'notifications.dm.sound.enabled',
@@ -1640,9 +1486,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: false,
-    description:
-      'Play a short sound on incoming DMs. Off by default. Dependent on ' +
-      'notifications.dm.enabled.',
+    description: 'Play a sound for direct messages.',
   },
   {
     key: 'notifications.dm.sound.choice',
@@ -1652,9 +1496,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
     default: 'chime',
-    description:
-      'Which bundled sound to play for DMs. Audibly distinct default from the ' +
-      'highlight sound so you can tell them apart by ear.',
+    description: 'Which sound plays for direct messages.',
   },
   {
     key: 'notifications.dm.sound.volume',
@@ -1665,7 +1507,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 0,
     max: 100,
     default: 60,
-    description: 'Playback volume for the DM sound, 0–100.',
+    description: 'Volume of the direct message sound, 0–100.',
   },
 
   {
@@ -1678,8 +1520,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: true,
-    description:
-      'Toast me when a friend — the peer of a DM in your FRIENDS section — comes online.',
+    description: 'A toast when someone in your Friends section comes online.',
   },
   {
     key: 'notifications.friend_online.sound.enabled',
@@ -1688,9 +1529,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: false,
-    description:
-      'Play a short sound when a friend comes online. Off by default. Dependent on ' +
-      'notifications.friend_online.enabled.',
+    description: 'Play a sound when a friend comes online.',
   },
   {
     key: 'notifications.friend_online.sound.choice',
@@ -1700,9 +1539,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
     default: 'knock',
-    description:
-      'Which bundled sound to play when a friend comes online. Distinct default ' +
-      'from the highlight/DM sounds so a friend signing on is recognizable by ear.',
+    description: 'Which sound plays when a friend comes online.',
   },
   {
     key: 'notifications.friend_online.sound.volume',
@@ -1713,7 +1550,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 0,
     max: 100,
     default: 60,
-    description: 'Playback volume for the friend-online sound, 0–100.',
+    description: 'Volume of the friend-online sound, 0–100.',
   },
 
   {
@@ -1724,9 +1561,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'Notify me for every message in channels I have flagged "always notify" ' +
-      '(via the channel context menu). Toast in-client, push when no tab is ' +
-      'visible. The per-channel bell is the opt-in; this is the global master.',
+      'Every message in channels you set to always notify. A toast if a tab is ' +
+      'visible, a push if none is.',
   },
   {
     key: 'notifications.always_notify.sound.enabled',
@@ -1735,9 +1571,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: true,
-    description:
-      'Play a short sound for messages in always-notify channels. Dependent on ' +
-      'notifications.always_notify.enabled.',
+    description: 'Play a sound for messages in always-notify channels.',
   },
   {
     key: 'notifications.always_notify.sound.choice',
@@ -1747,9 +1581,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
     default: 'plink',
-    description:
-      'Which bundled sound to play for always-notify channels. Defaults to a ' +
-      'quieter/subtler choice since these channels can be higher-traffic.',
+    description: 'Which sound plays for always-notify channels.',
   },
   {
     key: 'notifications.always_notify.sound.volume',
@@ -1760,7 +1592,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 0,
     max: 100,
     default: 60,
-    description: 'Playback volume for the always-notify sound, 0–100.',
+    description: 'Volume of the always-notify sound, 0–100.',
   },
 
   {
@@ -1773,9 +1605,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: true,
-    description:
-      'Notify me when I am kicked from a channel. Independent of the notify-always ' +
-      'bell, so it applies to every channel — but a muted channel still stays silent.',
+    description: 'When you are kicked from a channel. A muted channel stays silent.',
   },
   {
     key: 'notifications.kicked.sound.enabled',
@@ -1784,9 +1614,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'alerts',
     type: 'bool',
     default: true,
-    description:
-      'Play a short sound when I am kicked from a channel. Dependent on ' +
-      'notifications.kicked.enabled.',
+    description: 'Play a sound when you are kicked.',
   },
   {
     key: 'notifications.kicked.sound.choice',
@@ -1796,9 +1624,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'enum',
     choices: ['ping', 'chime', 'pop', 'beep', 'knock', 'plink'],
     default: 'beep',
-    description:
-      'Which bundled sound to play when I am kicked. Distinct default from the ' +
-      'highlight/DM sounds so being removed from a channel is recognizable by ear.',
+    description: 'Which sound plays when you are kicked.',
   },
   {
     key: 'notifications.kicked.sound.volume',
@@ -1809,7 +1635,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 0,
     max: 100,
     default: 60,
-    description: 'Playback volume for the kick sound, 0–100.',
+    description: 'Volume of the kick sound, 0–100.',
   },
 
   // ─── Push-side filters ────────────────────────────────────────────────
@@ -1823,9 +1649,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Suppress push notifications from a network while you have a manual /away set on it. ' +
-      "Auto-away (triggered when all your tabs close) is unaffected — that's " +
-      'the case push exists to cover.',
+      'No push from a network while you are manually /away on it. Auto-away does ' + 'not count.',
   },
   {
     key: 'notifications.push.quiet_hours.enabled',
@@ -1834,10 +1658,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'push_filters',
     type: 'bool',
     default: false,
-    description:
-      'When on, push notifications are suppressed during the configured quiet ' +
-      "hours window. Toasts are unaffected — they only fire when you're at " +
-      'the desk anyway.',
+    description: 'No push during quiet hours. Toasts still show.',
   },
   {
     key: 'notifications.push.quiet_hours.start',
@@ -1847,9 +1668,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: '22:00',
     description:
-      'Start of the quiet-hours window in HH:MM (24h), interpreted in your ' +
-      'system.timezone. When start > end the window wraps midnight (e.g. ' +
-      '22:00–07:00 means 10pm through 7am).',
+      'Start of quiet hours, HH:MM in 24-hour time, in your timezone. A start later ' +
+      'than the end wraps past midnight.',
   },
   {
     key: 'notifications.push.quiet_hours.end',
@@ -1858,11 +1678,14 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'push_filters',
     type: 'string',
     default: '07:00',
-    description:
-      'End of the quiet-hours window in HH:MM (24h), interpreted in your system.timezone.',
+    description: 'End of quiet hours, HH:MM in 24-hour time, in your timezone.',
   },
 
-  // ─── Input bar (system text features) ─────────────────────────────────
+  // ─── Input bar ────────────────────────────────────────────────────────
+  // One group: six rows do not need three headings, and a pane with a lone
+  // group draws none.
+  //
+  // System text features:
   // Each setting maps directly to an HTML attribute on the chat input
   // element. Defaults are all true so the input behaves like a normal text
   // field out of the box; users can disable any one independently (the most
@@ -1871,56 +1694,45 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.spellcheck',
     label: 'Spellcheck input',
     category: 'input',
-    group: 'system_features',
+    group: 'input-bar',
     type: 'bool',
     default: true,
-    description:
-      'Enable the browser/OS spellchecker on the chat input (red squigglies under ' +
-      "misspellings). Disable if you frequently type words your dictionary doesn't " +
-      'know and find the underlines distracting.',
+    description: "Use the browser's spellchecker in the message box.",
   },
   {
     key: 'input.autocorrect',
     label: 'Autocorrect input',
     category: 'input',
-    group: 'system_features',
+    group: 'input-bar',
     type: 'bool',
     default: true,
     description:
-      'Allow the browser/OS to silently correct what you type as you go (most ' +
-      'visible on Safari and mobile keyboards). Disable to keep chat slang, ' +
-      'URLs, and command arguments exactly as typed. Also suppresses the ' +
-      'sentence-start auto-capitalize behavior, which Safari otherwise re-applies ' +
-      'regardless of any autocapitalize attribute.',
+      'Let the browser correct what you type. Off also stops it capitalizing the ' +
+      'start of sentences.',
   },
   {
     key: 'input.autocorrect_force_mobile',
     label: 'Force autocorrect on mobile',
     category: 'input',
-    group: 'system_features',
+    group: 'input-bar',
     type: 'bool',
     default: false,
     description:
-      'On touch devices, force autocorrect on regardless of the desktop ' +
-      'preference above. Useful if you keep autocorrect off on a hardware ' +
-      'keyboard but want phone-typing assistance back on a soft keyboard. ' +
-      'Re-enables the sentence-start auto-capitalize behavior too, since ' +
-      'they ride together.',
+      'Keep autocorrect and sentence capitals on for touch devices, even with ' +
+      'autocorrect off.',
   },
 
-  // ─── Input bar (autocomplete UI) ──────────────────────────────────────
+  // Autocomplete UI.
   {
     key: 'input.suggestion_strip_on_desktop',
     label: 'Use suggestion strip on desktop',
     category: 'input',
-    group: 'autocomplete',
+    group: 'input-bar',
     type: 'bool',
     default: false,
     description:
-      'Use the mobile-style horizontal suggestion strip on desktop instead of ' +
-      'the @-triggered popup menu. The strip surfaces matching nicks above the ' +
-      "input as you type any 2+ character prefix (no '@' required), tap or " +
-      'click a nick to insert it.',
+      'Show matching nicks in a strip above the message box as you type, instead of ' +
+      'the @ popup.',
   },
   // What a nick picks up when completed at the START of a line — the
   // addressing form, `nick: `. Stored as the punctuation alone, with the
@@ -1935,17 +1747,15 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.completion.nick_suffix',
     label: 'Nick completion suffix',
     category: 'input',
-    group: 'autocomplete',
+    group: 'input-bar',
     type: 'string',
     default: ':',
     description:
-      'Punctuation placed after a nick completed at the start of a line — the ' +
-      '"nick: " addressing form: ":" (default), ",", ";", or empty for a bare ' +
-      'space. A space always follows it. Applies to Tab, the @ picker, the ' +
-      'suggestion strip, and Reply; mid-line completions are unaffected.',
+      'What follows a nick completed at the start of a line, as in "nick: ". Empty ' +
+      'leaves just a space. Mid-line completions are unaffected.',
   },
 
-  // ─── Input bar (formatting) ──────────────────────────────────────────
+  // Formatting.
   // Surfaces the mIRC palette popover for users who want to insert colour /
   // bold / italic / underline codes via mouse. The Cmd/Ctrl+B/I/U keyboard
   // shortcuts always work regardless of this toggle — this only controls the
@@ -1954,14 +1764,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     key: 'input.show_format_button',
     label: 'Show formatting button',
     category: 'input',
-    group: 'formatting',
+    group: 'input-bar',
     type: 'bool',
     default: false,
     description:
-      'Show the palette icon in the input row that opens a mIRC colour picker ' +
-      '(and a clear-formatting option). Off by default to keep the input chrome ' +
-      'minimal — the Cmd/Ctrl+B/I/U keyboard shortcuts for bold/italic/underline ' +
-      'work either way.',
+      'Show the button that opens the color and formatting picker. Cmd/Ctrl+B, I ' +
+      'and U work either way.',
   },
 
   // ─── Theme presets (pointer keys) ─────────────────────────────────────
@@ -1990,12 +1798,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     } as Readonly<Record<string, string>>,
     default: 'single',
     description:
-      'How the active theme preset is chosen. "single" uses the one theme set ' +
-      'in look.theme.active everywhere. "system" follows this device\'s ' +
-      'light/dark preference: look.theme.light applies when the OS is in ' +
-      'light mode, look.theme.dark when it is in dark mode. The preference is ' +
-      'read per device, so a phone in light mode and a desktop in dark mode ' +
-      'each get their assigned theme from the same synced settings.',
+      '"single" uses the active theme everywhere. "system" follows each device\'s ' +
+      'light or dark setting.',
   },
   // ─── Avatars (#607) ─────────────────────────────────────────────────────
   // `avatars` is absent from CATEGORIES so the registry pane never renders
@@ -2011,9 +1815,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'An avatar beside each author in the modern layout. Uses placeholders selected below if ' +
-      "the user does not have an avatar or avatars aren't supported by the server. Only displays " +
-      'in the modern message layout.',
+      'Show an avatar beside each author in the modern layout. People without one ' +
+      'get a placeholder from the avatar set.',
   },
   {
     key: 'look.avatars.set',
@@ -2023,8 +1826,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: 'initial',
     description:
-      'Which set generated avatars draw from: "initial" for the first letter of the name, ' +
-      '"plain" for a bust silhouette, "ealain" for the bundled art, or the id of a set you ' +
+      'Where placeholder avatars come from: "initial" is the first letter of the ' +
+      'name, "plain" a silhouette, "ealain" the bundled art, or the id of a set you ' +
       'uploaded.',
   },
   {
@@ -2035,9 +1838,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: 'dark',
     description:
-      'The theme preset in effect when look.theme.mode is "single": "dark", ' +
-      '"light", or the id of a saved theme. Applying a theme sets this and ' +
-      'clears any per-setting overrides so the theme shows unmodified.',
+      'The theme used when the mode is "single": "dark", "light" or the id of a ' + 'saved theme.',
   },
   {
     key: 'look.theme.light',
@@ -2046,9 +1847,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'presets',
     type: 'string',
     default: 'light',
-    description:
-      'The theme preset used while this device reports a light color scheme, ' +
-      'when look.theme.mode is "system". "dark", "light", or a saved theme id.',
+    description: 'The theme used in light mode when the mode is "system".',
   },
   {
     key: 'look.theme.dark',
@@ -2057,9 +1856,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'presets',
     type: 'string',
     default: 'dark',
-    description:
-      'The theme preset used while this device reports a dark color scheme, ' +
-      'when look.theme.mode is "system". "dark", "light", or a saved theme id.',
+    description: 'The theme used in dark mode when the mode is "system".',
   },
 
   // ─── System / locale ──────────────────────────────────────────────────
@@ -2071,11 +1868,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: '',
     description:
-      'IANA timezone name (e.g. "America/Chicago") used when the server formats ' +
-      'human-readable timestamps for you — currently the timestamp baked into the ' +
-      'auto-away message. The client auto-detects and syncs this on bootstrap, so ' +
-      'travelling updates it on next connect. Leave blank to fall back to the ' +
-      "server's local time.",
+      'IANA timezone, such as "America/Chicago", for times the server writes for ' +
+      'you, like the auto-away message. Your browser sets it automatically. Empty ' +
+      "uses the server's time.",
   },
   {
     key: 'onboarding.look_answered',
@@ -2084,9 +1879,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'onboarding',
     type: 'bool',
     default: false,
-    description:
-      'Set once the first-run flow has asked how chat should look, so a flow that ' +
-      'is offered again starts past the question and never writes over the answer.',
+    description: 'Set once the first-run flow has asked how chat should look.',
   },
   {
     key: 'onboarding.completed',
@@ -2095,11 +1888,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'onboarding',
     type: 'bool',
     default: false,
-    description:
-      'Set once the first-run flow has been finished or skipped, so it never shows ' +
-      'again. Lives here rather than in localStorage so it follows the user across ' +
-      'devices. Must default to false: settingsService drops any row whose value ' +
-      'equals the registry default, so a true default would be unstorable.',
+    // Lives here, not in localStorage, so it follows the user across devices.
+    // Must default to false: settingsService drops any row whose value equals
+    // the registry default, so a true default would be unstorable.
+    description: 'Set once the first-run flow is finished or skipped.',
   },
 
   // ─── Data / retention ─────────────────────────────────────────────────
@@ -2122,10 +1914,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     minNonzero: 1000,
     default: 0,
     description:
-      'Each buffer keeps at most this many lines; older lines are deleted ' +
-      'permanently. 0 keeps everything (up to any limit this server sets); ' +
-      'the smallest nonzero limit is 1,000. Bookmarked messages are never ' +
-      'deleted. Export your data first if you want an archive.',
+      'Each buffer keeps this many lines; older ones are deleted permanently. 0 ' +
+      'keeps everything, up to any limit this server sets. The smallest limit is ' +
+      '1,000. Bookmarked messages are never deleted.',
   },
   // The noise clock: presence/server churn ages out on its own (shorter)
   // schedule regardless of the line limit. Default ON at one week — the
@@ -2148,11 +1939,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     minNonzero: 24,
     default: 168,
     description:
-      'Presence and server noise — joins, parts, quits, nick and mode ' +
-      'changes, MOTDs, away toggles — is deleted permanently once older than ' +
-      'this many hours, regardless of the line limit. 168 = one week; the ' +
-      'smallest nonzero limit is 24. 0 keeps events as long as regular ' +
-      'messages. Bookmarked messages are never deleted.',
+      'Joins, parts, quits, nick and mode changes and other server noise are ' +
+      'deleted permanently after this many hours. 0 keeps them as long as messages. ' +
+      'The smallest limit is 24.',
   },
   // Closed-buffer garbage collection: a buffer closed for longer than this
   // is deleted ENTIRELY — row and history. Default OFF, deliberately and
@@ -2172,9 +1961,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     minNonzero: 7,
     default: 0,
     description:
-      'Buffers closed for longer than this many days are deleted entirely, ' +
-      'history included. 0 keeps closed buffers forever; the smallest nonzero ' +
-      'value is 7. Buffers containing a bookmarked message are never deleted.',
+      'Closed buffers are deleted, history included, after this many days. 0 keeps ' +
+      'them. The smallest limit is 7. A buffer holding a bookmark is never deleted.',
   },
   // ─── /sheep ───────────────────────────────────────────────────────────
   // The undocumented /sheep (the 1995 eSheep screen mate, run from the gSheep
@@ -2282,6 +2070,11 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
   // Command aliases (#276): table-backed, like the two above.
   { id: 'aliases', label: 'Aliases', kind: 'bespoke' },
   { id: 'away', label: 'Away', kind: 'registry' },
+  // What Lurker answers when someone queries your client. Out of Chat, where
+  // it was six rows about neither reading nor composing.
+  { id: 'ctcp', label: 'CTCP', kind: 'registry' },
+  // Bespoke for the network order; the quit message is a registry row embedded
+  // beneath it (the Uploads pattern).
   { id: 'networks', label: 'Networks', kind: 'bespoke' },
   // How to attach an IRC client to this instance's bouncer. Self-hosted only
   // (a hosted cell runs no bouncer), and only where the operator enabled it.
@@ -2329,26 +2122,26 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   fonts: 'Fonts',
   palette: 'Colors',
   messages: 'Message rows',
+  'modern-layout': 'Modern layout',
+  timestamps: 'Timestamps',
   members: 'Member prefixes',
   'buffer-list': 'Buffer list',
   nicks: 'Nick coloring',
-  layout: 'Layout',
-  misc: 'Misc',
+  'status-bar': 'Status bar',
+  panels: 'Panels',
   'event-filter': 'Filter',
   consolidate: 'Consolidation',
   composing: 'Composing',
+  'input-bar': 'Input bar',
   'smart-filter': 'Smart filter tuning',
   connection: 'Connection',
-  ctcp: 'CTCP replies',
   away: 'Away',
+  ctcp: 'CTCP replies',
   'auto-away': 'Auto-away',
   pipeline: 'Image pipeline',
   viewing: 'Viewing',
   alerts: 'Alerts',
   push_filters: 'Push filters',
-  system_features: 'System text features',
-  autocomplete: 'Autocomplete',
-  formatting: 'Formatting',
   locale: 'Locale',
   retention: 'Retention',
 });

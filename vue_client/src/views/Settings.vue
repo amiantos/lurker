@@ -181,7 +181,8 @@ watch(
     // /api/config resolves still hides nothing).
     if (!auth.checked || !config.checked) return;
     if (param !== active) {
-      router.replace({ name: 'settings', params: { category: active } });
+      // The hash rides along, so a link to a row survives the canonical redirect.
+      router.replace({ name: 'settings', params: { category: active }, hash: route.hash });
     }
     onCleanup(() => {});
   },

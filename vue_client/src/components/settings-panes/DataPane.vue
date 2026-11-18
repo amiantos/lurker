@@ -42,14 +42,14 @@
           }}<span v-if="readyJob.includeMessages"> with message history</span>{{ expiryNote }}.
         </p>
         <div class="actions">
-          <a class="link" :href="`/api/exports/${readyJob.id}/download`">download .lurk</a>
-          <button class="link" @click="onStart">rebuild</button>
+          <a class="btn-primary" :href="`/api/exports/${readyJob.id}/download`">download .lurk</a>
+          <button class="btn-secondary" @click="onStart">rebuild</button>
         </div>
       </div>
 
       <!-- Idle / after a failure: offer to (re)start. -->
       <div v-else class="actions">
-        <button class="link" @click="onStart">prepare export</button>
+        <button class="btn-secondary" @click="onStart">prepare export</button>
       </div>
 
       <p v-if="failedJob" class="error inline">
@@ -77,10 +77,14 @@
         <span class="muted small">({{ formatBytes(chosenFile.size) }})</span>
       </div>
       <div class="actions">
-        <button class="link" :disabled="importing || !confirmed || tooLarge" @click="onImport">
+        <button
+          class="btn-primary"
+          :disabled="importing || !confirmed || tooLarge"
+          @click="onImport"
+        >
           {{ importing ? `importing… ${progress}%` : 'import' }}
         </button>
-        <button v-if="!importing" class="link danger" @click="onCancelFile">cancel</button>
+        <button v-if="!importing" class="btn-secondary" @click="onCancelFile">cancel</button>
       </div>
       <label v-if="!importing && !importNotice" class="opt">
         <input type="checkbox" v-model="confirmed" />

@@ -94,7 +94,9 @@ export interface AdminNetworkPreset {
   position: number;
 }
 
-export type AdminNetworkPresetInput = Omit<AdminNetworkPreset, 'id' | 'position'>;
+// `enabled` is not an input: a listed network is an offered one, and the server
+// ignores the field.
+export type AdminNetworkPresetInput = Omit<AdminNetworkPreset, 'id' | 'position' | 'enabled'>;
 
 /** Admin → Notifications: the push relay opt-in (lurker-dev/RELAY_PLAN.md §5a). */
 export interface AdminPushConfig {

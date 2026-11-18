@@ -7,14 +7,11 @@
   <section id="networks" class="settings-pane">
     <h2>networks</h2>
     <p class="section-desc">
-      Drag to change the order networks appear in the sidebar. Adding, editing, and removing
-      networks still happens from the
-      <strong>+</strong> button at the top of the sidebar.
+      Drag to change the order networks appear in the sidebar. Edit opens a network’s settings,
+      where it can also be deleted.
     </p>
 
-    <p v-if="!networks.networks.length" class="muted small">
-      No networks yet — add one with the + button in the sidebar.
-    </p>
+    <p v-if="!networks.networks.length" class="muted small">No networks yet.</p>
 
     <draggable
       v-else
@@ -46,17 +43,36 @@
           >
             blocked
           </span>
+          <span class="btn-bar">
+            <button type="button" @click="openEditor(net)">edit</button>
+          </span>
         </li>
       </template>
     </draggable>
 
+    <p class="add-row">
+      <button class="btn-secondary" @click="openEditor(null)">add network</button>
+    </p>
+
     <p v-if="error" class="error inline">{{ error }}</p>
+
+    <!-- The same editor the sidebar's + and a network's menu open. To body: the
+         settings layout gives a fixed-position card a containing block, so
+         rendered in place it would cover only the pane's column. -->
+    <Teleport to="body">
+      <NetworkForm v-if="editorOpen" :network="editorNetwork" @close="editorOpen = false" />
+    </Teleport>
+
+    <!-- The category's registry rows (the quit message), as Uploads embeds its own. -->
+    <RegistryPane category-id="networks" embedded />
   </section>
 </template>
 
 <script setup lang="ts">
 import { ref, watch } from 'vue';
 import draggable from 'vuedraggable';
+import RegistryPane from './RegistryPane.vue';
+import NetworkForm from '../NetworkForm.vue';
 import { useNetworksStore } from '../../stores/networks.js';
 import type { Network } from '../../stores/networks.js';
 import { GripVerticalIcon } from '@lucide/vue';
@@ -75,9 +91,23 @@ function syncFromStore() {
   localOrder.value = [...networks.networks];
 }
 
-watch(() => networks.networks, syncFromStore, { immediate: true, deep: false });
+// The getter copies the array so the watch tracks its length and every slot:
+// the store adds and removes networks IN PLACE (push / splice), which a watch
+// on the array's identity never saw, so a network added from this pane's own
+// button did not appear in the list above it.
+watch(() => [...networks.networks], syncFromStore, { immediate: true });
 
 const error = ref('');
+
+// Local, not the chat views' network-editor store: nothing in Settings mounts
+// the form that store drives.
+const editorOpen = ref(false);
+const editorNetwork = ref<Network | null>(null);
+
+function openEditor(net: Network | null) {
+  editorNetwork.value = net;
+  editorOpen.value = true;
+}
 
 async function onDragEnd() {
   dragging.value = false;
@@ -105,8 +135,9 @@ async function onDragEnd() {
   padding: 0;
 }
 .network {
-  display: grid;
-  grid-template-columns: max-content max-content 1fr;
+  /* A flex row: grip, name, the host taking the slack, then the blocked tag
+     (when there is one) and the edit button at the far edge. */
+  display: flex;
   gap: var(--space-6);
   align-items: center;
   padding: var(--space-4) var(--space-2);
@@ -130,6 +161,8 @@ async function onDragEnd() {
   color: var(--fg);
 }
 .host {
+  flex: 1;
+  min-width: 0;
   color: var(--fg-muted);
 }
 /* A network the instance admin's network restriction has taken out of service
@@ -138,6 +171,9 @@ async function onDragEnd() {
 .network.blocked .name,
 .network.blocked .host {
   opacity: 0.55;
+}
+.add-row {
+  margin: var(--space-4) 0 0;
 }
 .blocked-tag {
   margin-left: auto;

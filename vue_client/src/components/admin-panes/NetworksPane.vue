@@ -33,21 +33,10 @@
           <span v-else class="row-channels muted">no recommended channels</span>
           <span v-if="details(preset)" class="row-channels">{{ details(preset) }}</span>
         </div>
-        <div class="row-actions">
-          <label class="check">
-            <input
-              type="checkbox"
-              :checked="preset.enabled"
-              :disabled="busy"
-              @change="toggleEnabled(preset)"
-            />
-            <span>Offered</span>
-          </label>
-          <button type="button" class="link" :disabled="busy" @click="edit(preset)">Edit</button>
-          <button type="button" class="link danger" :disabled="busy" @click="remove(preset)">
-            Delete
-          </button>
-        </div>
+        <span class="btn-bar">
+          <button type="button" :disabled="busy" @click="edit(preset)">Edit</button>
+          <button type="button" class="bad" :disabled="busy" @click="remove(preset)">Delete</button>
+        </span>
       </li>
     </ul>
     <p v-else-if="store.networksLoaded" class="muted small">
@@ -102,7 +91,7 @@
         <button type="submit" class="btn-primary" :disabled="busy">
           {{ editing ? 'Save changes' : 'Add network' }}
         </button>
-        <button v-if="editing" type="button" class="link" :disabled="busy" @click="reset">
+        <button v-if="editing" type="button" class="btn-secondary" :disabled="busy" @click="reset">
           Cancel
         </button>
       </div>
@@ -230,13 +219,9 @@ async function save(): Promise<void> {
       channelCount: draft.channelCount === '' ? null : draft.channelCount,
     };
     if (editing.value) await store.updateNetworkPreset(editing.value.id, body);
-    else await store.createNetworkPreset({ ...body, enabled: true });
+    else await store.createNetworkPreset(body);
     reset();
   });
-}
-
-async function toggleEnabled(preset: AdminNetworkPreset): Promise<void> {
-  await run(() => store.updateNetworkPreset(preset.id, { enabled: !preset.enabled }));
 }
 
 async function remove(preset: AdminNetworkPreset): Promise<void> {
@@ -281,10 +266,7 @@ async function togglePolicy(): Promise<void> {
 .row-channels {
   color: var(--fg-muted);
 }
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
+.row > .btn-bar {
   flex-shrink: 0;
 }
 .add {
@@ -339,19 +321,6 @@ label small {
 .policy {
   align-items: flex-start;
   gap: var(--space-4);
-}
-.link {
-  background: transparent;
-  border: 0;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-}
-.link.danger {
-  color: var(--bad);
-}
-.link:hover {
-  text-decoration: underline;
 }
 .form-actions {
   display: flex;

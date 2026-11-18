@@ -36,15 +36,15 @@
         <p class="muted small">Register this key at {{ relayHost }}.</p>
         <div class="key-row">
           <code class="key">{{ push.publicKey }}</code>
-          <button class="link" type="button" @click="copy(push.publicKey)">
+          <button type="button" @click="copy(push.publicKey)">
             {{ copied ? 'copied' : 'copy' }}
           </button>
         </div>
-        <p class="relay-status small">
-          <span v-if="status" :class="status.ok ? 'muted' : 'error'">{{ status.text }}</span>
-          <button class="link" type="button" :disabled="checking || busy" @click="check">
-            {{ checking ? 'checking…' : 'check' }}
+        <p class="relay-status">
+          <button type="button" :disabled="checking || busy" @click="check">
+            {{ checking ? 'checking…' : 'check registration' }}
           </button>
+          <span v-if="status" class="status" :class="{ bad: !status.ok }">{{ status.text }}</span>
         </p>
       </template>
 
@@ -93,24 +93,24 @@
       bug report.
     </p>
     <p class="log-actions">
-      <button class="link" type="button" :disabled="!store.pushLog.length" @click="copyLog">
-        {{ logCopied ? 'copied' : 'copy as text' }}
-      </button>
-      <button class="link" type="button" @click="reloadLog">refresh</button>
+      <span class="btn-bar">
+        <button type="button" :disabled="!store.pushLog.length" @click="copyLog">
+          {{ logCopied ? 'copied' : 'copy as text' }}
+        </button>
+        <button type="button" @click="reloadLog">refresh</button>
+      </span>
     </p>
     <ul v-if="store.pushLog.length" class="push-log">
-      <li v-for="row in store.pushLog" :key="row.id" class="push-row" :class="row.outcome">
-        <span class="when" :title="row.at">{{ formatDateTime(row.at) }}</span>
-        <span class="what">
-          <strong>{{ row.username ?? `user ${row.user_id}` }}</strong> · {{ kindLabel(row.kind) }} ·
-          {{ subjectLabel(row) }}
-        </span>
-        <span class="how">{{ outcomeLabel(row) }}</span>
-      </li>
+      <PushLogRow
+        v-for="row in store.pushLog"
+        :key="row.id"
+        :row="row"
+        :who="row.username ?? `user ${row.user_id}`"
+      />
     </ul>
     <p v-else-if="store.pushLogLoaded" class="muted small">Nothing in the last week.</p>
     <p v-if="store.pushLogHasMore">
-      <button class="link" type="button" :disabled="olderBusy" @click="olderLog">
+      <button class="btn-secondary" type="button" :disabled="olderBusy" @click="olderLog">
         {{ olderBusy ? 'loading…' : 'show older' }}
       </button>
     </p>
@@ -122,14 +122,8 @@ import { computed, onMounted, ref } from 'vue';
 import { useAdminStore, type AdminPresenceRow } from '../../stores/admin.js';
 import type { RelayStatus } from '../../../../shared/relayStatus.js';
 import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
-import { formatDateTime } from '../../utils/timestamp.js';
-import {
-  clientText,
-  kindLabel,
-  outcomeLabel,
-  pushLogText,
-  subjectLabel,
-} from '../../utils/pushLog.js';
+import { clientText, pushLogText } from '../../utils/pushLog.js';
+import PushLogRow from '../PushLogRow.vue';
 
 const store = useAdminStore();
 const { copied, copy } = useCopyFeedback();
@@ -290,37 +284,12 @@ onMounted(load);
   margin: 0;
   padding: 0;
 }
-.push-row {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  column-gap: var(--space-6);
-  padding: var(--space-3) 0;
-  border-top: 1px solid var(--border);
-}
-.push-row:first-child {
-  border-top: none;
-}
-.push-row .when {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.push-row .how {
-  grid-column: 2;
-  color: var(--fg-muted);
-  overflow-wrap: anywhere;
-}
-.push-row.sent .how {
-  color: var(--fg);
-}
-.push-row.failed .how {
-  color: var(--bad);
-}
+/* The key and its copy button are one control: same height, a small gap. */
 .key-row {
   display: flex;
-  align-items: center;
-  gap: 1ch;
-  margin-bottom: var(--space-6);
+  align-items: stretch;
+  gap: var(--space-3);
+  margin: var(--space-3) 0;
 }
 .key {
   flex: 1 1 auto;
@@ -332,13 +301,24 @@ onMounted(load);
   border: 1px solid var(--border);
   min-width: 0;
 }
+/* The button, then what it found. Not .muted: in a pane that class is a padded,
+   italic empty-state line, which indented the status and stretched the button
+   beside it. */
 .relay-status {
   display: flex;
-  gap: 1ch;
-  margin-top: calc(-1 * var(--space-4));
-  margin-bottom: var(--space-6);
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin: 0 0 var(--space-7);
+}
+.status {
+  color: var(--fg-muted);
+}
+.status.bad {
+  color: var(--bad);
 }
 .check {
+  display: flex;
   flex-direction: row;
   align-items: center;
   gap: var(--space-3);

@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   CATEGORIES,
+  GROUPS,
   REGISTRY,
   categoryVisible,
   optionVisible,
@@ -15,6 +16,7 @@ import type { SettingOption, SettingValue } from '../../../shared/settingsRegist
 
 const cat = (id: string) => CATEGORIES.find((c) => c.id === id)!;
 const opt = (key: string) => REGISTRY.find((o) => o.key === key)!;
+const inPane = (id: string) => REGISTRY.filter((o) => o.category === id);
 
 /** An effective-value reader over an override map, defaulting to the registry. */
 function reader(overrides: Record<string, SettingValue>) {
@@ -310,5 +312,50 @@ describe('optionEnabled — compact body indent (#1186)', () => {
     const indent = REGISTRY.find((o) => o.key === 'look.message.modern.indent')!;
     expect(optionEnabled(indent, () => false)).toBe(true);
     expect(optionEnabled(indent, () => true)).toBe(false);
+  });
+});
+
+describe('pane structure', () => {
+  // RegistryPane falls back to the raw group id for a group with no label, so
+  // a regrouped row would head its section with `status-bar`.
+  it('labels every group a registry pane renders', () => {
+    const shown = REGISTRY.filter((o) => CATEGORIES.some((c) => c.id === o.category));
+    const unlabelled = [...new Set(shown.map((o) => o.group))].filter((g) => !(g in GROUPS));
+    expect(unlabelled).toEqual([]);
+  });
+
+  // A pane with a lone group draws no heading, which is what makes it flat.
+  it('keeps Input bar one flat list', () => {
+    expect(new Set(inPane('input').map((o) => o.group)).size).toBe(1);
+  });
+
+  // Registry order IS render order, so this pins both.
+  it('orders the Appearance groups, with no catch-all among them', () => {
+    expect([...new Set(inPane('appearance').map((o) => o.group))]).toEqual([
+      'fonts',
+      'palette',
+      'messages',
+      'modern-layout',
+      'timestamps',
+      'members',
+      'buffer-list',
+      'nicks',
+      'status-bar',
+      'panels',
+    ]);
+  });
+
+  // Away and CTCP are each a pane of their own; the quit message is the one
+  // registry row in Networks, under the network list.
+  it('gives away and CTCP a pane each, and Networks the quit message', () => {
+    const paneOf = (re: RegExp) => [
+      ...new Set(REGISTRY.filter((o) => re.test(o.key)).map((o) => o.category)),
+    ];
+    expect(paneOf(/^away\./)).toEqual(['away']);
+    expect(paneOf(/^ctcp\./)).toEqual(['ctcp']);
+    expect(inPane('networks').map((o) => o.key)).toEqual(['chat.quit_message']);
+    // Each has to exist in the sidebar, or its rows are unreachable.
+    for (const id of ['away', 'ctcp', 'networks']) expect(cat(id)).toBeTruthy();
+    expect([...new Set(inPane('chat').map((o) => o.group))]).toEqual(['composing', 'viewing']);
   });
 });

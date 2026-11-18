@@ -17,10 +17,9 @@
 <template>
   <h3 id="themes" class="subhead" data-setting-group="themes">Themes</h3>
   <p class="section-desc">
-    A theme is a snapshot of the fonts, colors and compact-layout spacing below. Apply one, then
-    tweak individual settings — your edits layer on top and can be saved as a theme of their own.
-    Also available as
-    <code>/theme</code> in any buffer.
+    A theme is a snapshot of the fonts, colors and modern-layout spacing below. Changes you make
+    after applying one sit on top of it and can be saved as a new theme. Also managed with
+    <code>/theme</code>.
   </p>
   <p v-if="error" class="error inline">{{ error }}</p>
 
@@ -33,28 +32,19 @@
           {{ drifted ? 'active · modified' : 'active' }}
         </span>
       </span>
-      <div class="row-actions">
-        <button
-          v-if="t.id !== themes.activeThemeId"
-          class="link"
-          :disabled="busy"
-          @click="apply(t)"
-        >
+      <span class="btn-bar">
+        <button v-if="t.id !== themes.activeThemeId" :disabled="busy" @click="apply(t)">
           Apply
         </button>
         <template v-else-if="drifted">
-          <button v-if="!t.builtin" class="link" :disabled="busy" @click="updateActive(t)">
-            Save changes
-          </button>
+          <button v-if="!t.builtin" :disabled="busy" @click="updateActive(t)">Save changes</button>
           <!-- Re-applying the active theme IS the discard-drift operation; without
                this, a drifted built-in row would render zero actions and the only
                ways back would be /theme apply or resetting keys one by one. -->
-          <button class="link" :disabled="busy" @click="apply(t)">Discard changes</button>
+          <button :disabled="busy" @click="apply(t)">Discard changes</button>
         </template>
-        <button v-if="!t.builtin" class="link danger" :disabled="busy" @click="remove(t)">
-          Delete
-        </button>
-      </div>
+        <button v-if="!t.builtin" class="bad" :disabled="busy" @click="remove(t)">Delete</button>
+      </span>
     </li>
   </ul>
 
@@ -68,7 +58,7 @@
       placeholder="Save current look as…"
       @keydown.enter.prevent="onNameEnter"
     />
-    <button class="link" :disabled="busy || !newName.trim()" @click="saveNew">Save theme</button>
+    <button :disabled="busy || !newName.trim()" @click="saveNew">Save theme</button>
   </div>
 
   <div class="theme-mode">
@@ -262,13 +252,5 @@ function remove(t: ThemePreset) {
 .mode-label {
   min-width: 12ch;
   color: var(--fg-muted);
-}
-.theme-mode select {
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 4px);
-  padding: 3px 6px;
 }
 </style>

@@ -25,6 +25,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import {
+  listEnabledInstanceNetworks,
   listInstanceNetworks,
   getInstanceNetwork,
   createInstanceNetwork,
@@ -87,11 +88,11 @@ function parseCount(raw: unknown, label: string): number | null | undefined | st
 
 // How many presets users could actually connect to. The lockdown is only
 // meaningful relative to this count: drop it to zero while locked down and the
-// instance has no reachable networks at all — for anyone, admin included. Three
-// separate routes can drive it to zero (delete a preset, un-offer a preset, or
-// switch the lockdown on with none), so all three consult this.
+// instance has no reachable networks at all — for anyone, admin included. Two
+// routes can drive it to zero (delete a preset, or switch the lockdown on with
+// none), so both consult this.
 function usablePresetCount(): number {
-  return listInstanceNetworks().filter((p) => p.enabled).length;
+  return listEnabledInstanceNetworks().length;
 }
 
 const STRANDED =
@@ -128,8 +129,6 @@ function readInput(body: unknown, partial: boolean): InstanceNetworkInput | { er
   if (tls !== undefined) input.tls = tls;
   const sasl = bool(b, 'saslLikelyRequired');
   if (sasl !== undefined) input.saslLikelyRequired = sasl;
-  const enabled = bool(b, 'enabled');
-  if (enabled !== undefined) input.enabled = enabled;
   const channels = parseChannels(b.channels);
   if (channels !== undefined) input.channels = channels;
   const tags = parseTags(b.tags);
@@ -169,17 +168,6 @@ router.patch('/:id', (req: Request, res: Response) => {
   const input = readInput(req.body, true);
   if ('error' in input) {
     res.status(400).json({ error: input.error });
-    return;
-  }
-  // Un-offering the last usable preset strands the instance exactly as deleting
-  // it would — same hole, different door.
-  if (
-    input.enabled === false &&
-    existing.enabled &&
-    !allowUserDefinedNetworks() &&
-    usablePresetCount() <= 1
-  ) {
-    res.status(409).json({ error: STRANDED });
     return;
   }
   res.json({ preset: updateInstanceNetwork(id, input) });

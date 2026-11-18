@@ -14,7 +14,7 @@
       in. Also managed with <code>/alias</code>.
     </p>
 
-    <p v-if="formError" class="error inline">{{ formError }}</p>
+    <p v-if="formError && !formOpen" class="error inline">{{ formError }}</p>
     <p v-if="loadError" class="error inline">{{ loadError }}</p>
 
     <p v-if="!store.aliases.length" class="muted small">
@@ -30,57 +30,67 @@
             replaces the /{{ alias.name }} command
           </span>
         </span>
-        <div class="row-actions">
+        <span class="btn-bar">
           <IconButton :icon="PenIcon" label="edit" @click="startEdit(alias)" />
           <IconButton :icon="TrashIcon" label="remove" danger @click="onRemove(alias)" />
-        </div>
+        </span>
       </li>
     </ul>
 
-    <h3 class="subhead">{{ editing ? `edit /${editing}` : 'add alias' }}</h3>
-    <form class="alias-form" @submit.prevent="submit">
-      <label class="field">
-        <span class="field-label">Name</span>
-        <input
-          :value="name"
-          @input="onNameInput"
-          @keydown.enter="blockImeEnter"
-          type="text"
-          :maxlength="ALIAS_NAME_MAX + 1"
-          placeholder="greet"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-        />
-      </label>
-      <label class="field">
-        <span class="field-label">Command</span>
-        <input
-          :value="body"
-          @input="onBodyInput"
-          @keydown.enter="blockImeEnter"
-          type="text"
-          placeholder="/me waves at $1"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-        />
-        <span class="muted small">
-          <code>;</code> between commands (<code>\;</code> for a real one). <code>$1</code>…<code
-            >$9</code
-          >
-          are the words typed after the alias, <code>$2-</code> the second to the end,
-          <code>$*</code> all of them. <code>$channel</code>, <code>$nick</code> and
-          <code>$network</code> are where you ran it.
-        </span>
-      </label>
-      <div class="actions">
-        <button v-if="editing" class="link" type="button" @click="cancelEdit">cancel</button>
-        <button class="link" type="submit" :disabled="!canSubmit || busy">
-          {{ editing ? 'save' : 'add alias' }}
-        </button>
+    <p class="add-row">
+      <button class="btn-secondary" @click="startAdd">add alias</button>
+    </p>
+
+    <FormModal
+      v-if="formOpen"
+      word="alias"
+      size="sm"
+      :title="editing ? `edit /${editing}` : 'add alias'"
+      :submit-label="editing ? 'Save' : 'Add alias'"
+      :can-submit="canSubmit"
+      :busy="busy"
+      :error="formError"
+      @submit="submit"
+      @close="closeForm"
+    >
+      <div class="alias-form">
+        <label class="field">
+          <span class="field-label">Name</span>
+          <input
+            :value="name"
+            @input="onNameInput"
+            @keydown.enter="blockImeEnter"
+            type="text"
+            :maxlength="ALIAS_NAME_MAX + 1"
+            placeholder="greet"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+        </label>
+        <label class="field">
+          <span class="field-label">Command</span>
+          <input
+            :value="body"
+            @input="onBodyInput"
+            @keydown.enter="blockImeEnter"
+            type="text"
+            placeholder="/me waves at $1"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+          <span class="muted small">
+            <code>;</code> between commands (<code>\;</code> for a real one). <code>$1</code>…<code
+              >$9</code
+            >
+            are the words typed after the alias, <code>$2-</code> the second to the end,
+            <code>$*</code> all of them. <code>$channel</code>, <code>$nick</code> and
+            <code>$network</code> are where you ran it.
+          </span>
+        </label>
       </div>
-    </form>
+    </FormModal>
   </section>
 </template>
 
@@ -88,6 +98,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useAliasesStore } from '../../stores/aliases.js';
 import IconButton from '../IconButton.vue';
+import FormModal from '../FormModal.vue';
 import { blockImeEnter, useImeSafeInput } from '../../composables/useImeSafeInput.js';
 import { resolveVerb } from '../../lib/commands/registry.js';
 import {
@@ -123,14 +134,24 @@ const busy = ref(false);
 
 const canSubmit = computed(() => !!name.value.trim() && !!body.value.trim());
 
+/** The add/edit modal is open. */
+const formOpen = ref(false);
+
+function startAdd() {
+  closeForm();
+  formOpen.value = true;
+}
+
 function startEdit(alias: Alias) {
   editing.value = alias.name;
   name.value = alias.name;
   body.value = alias.body;
   formError.value = '';
+  formOpen.value = true;
 }
 
-function cancelEdit() {
+function closeForm() {
+  formOpen.value = false;
   editing.value = null;
   name.value = '';
   body.value = '';
@@ -163,7 +184,7 @@ async function submit() {
     } else {
       await store.set(checkedName.name, checkedBody.body);
     }
-    cancelEdit();
+    closeForm();
   } catch (e: any) {
     formError.value = e.message || 'save failed';
   } finally {
@@ -172,7 +193,7 @@ async function submit() {
 }
 
 async function onRemove(alias: Alias) {
-  if (editing.value === alias.name) cancelEdit();
+  if (editing.value === alias.name) closeForm();
   formError.value = '';
   try {
     await store.remove(alias.name);
@@ -197,8 +218,7 @@ async function onRemove(alias: Alias) {
 .alias-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
-  padding-top: var(--space-3);
+  gap: var(--space-7);
 }
 .field {
   display: flex;
@@ -208,17 +228,7 @@ async function onRemove(alias: Alias) {
 .field-label {
   color: var(--fg-muted);
 }
-.alias-form input[type='text'] {
-  background: var(--bg-soft);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
-}
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-4);
-  padding-top: var(--space-2);
+.add-row {
+  margin: var(--space-4) 0 0;
 }
 </style>

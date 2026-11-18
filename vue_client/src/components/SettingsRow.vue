@@ -13,7 +13,7 @@
     <div class="head">
       <span class="headline">{{ opt.label || opt.key }}</span>
       <span class="type">{{ opt.type }}</span>
-      <button v-if="modified" class="link reset" @click="$emit('reset')" title="reset to default">
+      <button v-if="modified" class="reset" @click="$emit('reset')" title="reset to default">
         reset
       </button>
     </div>
@@ -111,7 +111,7 @@
           :disabled="!!hint"
           @change="$emit('commit', ($event.target as HTMLInputElement).value)"
         />
-        <button type="button" class="link reveal" @click="revealed = !revealed">
+        <button type="button" class="reveal" @click="revealed = !revealed">
           {{ revealed ? 'hide' : 'show' }}
         </button>
       </span>
@@ -262,10 +262,10 @@ function formatDefault(opt: SettingOption, v: SettingValue): string {
 .headline {
   font-weight: 600;
 }
+/* A footnote, not a control: no box (a box reads as a button now that every
+   button has one), and fainter than helper text, at the placeholder's weight. */
 .type {
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  padding: 0 var(--space-2);
+  color: color-mix(in srgb, var(--fg-muted) 55%, var(--bg));
   text-transform: lowercase;
 }
 .key-sub code {
@@ -338,27 +338,10 @@ function formatDefault(opt: SettingOption, v: SettingValue): string {
   padding: 0 var(--space-2);
 }
 
-.link {
-  background: none;
-  border: 0;
-  color: var(--accent);
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  text-decoration: underline;
-}
-.link:hover {
-  color: var(--fg);
-}
-.link:disabled {
-  color: var(--fg-muted);
-  text-decoration: none;
-  cursor: default;
-}
-.link.danger {
-  color: var(--bad);
-}
-.link.reset {
+/* Reset sits on the headline: an outlined button with no block padding, so it
+   does not make that line taller, muted until hovered. */
+.reset {
+  padding: 0 var(--space-2);
   color: var(--fg-muted);
 }
 </style>

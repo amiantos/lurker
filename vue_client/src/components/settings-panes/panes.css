@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: MPL-2.0
  *
  * Shared chrome for every Settings pane: section header, sub-headings, helper
- * text, link-style buttons, device-list rows, errors. Imported unscoped from
- * each pane so the rules apply across all of them with no duplication.
+ * text, device-list rows, errors. Buttons are the outlined ones in main.css.
+ * Imported unscoped from each pane so the rules apply across all of them with
+ * no duplication.
  */
 
 .settings-pane {
@@ -24,34 +25,26 @@
   color: var(--fg-muted);
   margin: 0 0 var(--space-6);
 }
+/* A group heading has to break a list whose rows are already ruled apart, so
+   it gets twice a row's air above it and a rule of its own beneath. */
 .settings-pane .subhead {
-  margin: var(--space-7) 0 var(--space-3);
+  margin: var(--space-10) 0 var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
   color: var(--fg-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-weight: 600;
 }
+/* Headings that divide ONE list (a rule list by network), not sections of the
+   pane: they sit as close as the old headings did, and keep the rule. */
+.settings-pane .subhead.sibling {
+  margin-top: var(--space-7);
+}
+/* The pane's first heading follows its title or its introduction, which it
+   belongs with: a section's gap there would cut the pane in two. */
 .settings-pane > .subhead:first-of-type {
-  margin-top: var(--space-2);
-}
-
-.settings-pane .link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  padding: var(--space-1) var(--space-3);
-  cursor: pointer;
-  font: inherit;
-}
-.settings-pane .link:hover:not(:disabled) {
-  color: var(--fg);
-}
-.settings-pane .link:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-.settings-pane .link.danger {
-  color: var(--bad);
+  margin-top: var(--space-7);
 }
 
 .settings-pane .error.inline {
@@ -59,15 +52,15 @@
   padding: 0 0 var(--space-3);
   margin: 0;
 }
+/* .muted is a color and nothing else. It used to be a padded, italic
+   empty-state block, and every pane's empty state is `.muted.small` instead:
+   the only things left wearing the bare class were inline notes, which it
+   indented by 16px on every side. */
 .settings-pane .muted {
   color: var(--fg-muted);
-  padding: var(--space-7);
-  font-style: italic;
 }
 .settings-pane .muted.small {
-  color: var(--fg-muted);
   padding: var(--space-2) 0;
-  font-style: normal;
 }
 
 /* Compact single-line row used by device lists, passkeys, users, invites. */
@@ -81,6 +74,10 @@
   grid-template-columns: 1fr max-content max-content;
   gap: var(--space-6);
   align-items: center;
+  /* Every row is as tall as one carrying a button bar (a text line plus the
+     buttons' padding and border), so a list where only some rows have actions
+     keeps one rhythm. */
+  grid-auto-rows: minmax(calc(1lh + 2 * var(--space-2) + 2px), auto);
   padding: var(--space-3) 0;
   border-top: 1px solid var(--border);
 }
@@ -120,6 +117,17 @@
   justify-self: end;
 }
 
+/* A row's actions as a button bar (main.css .btn-bar): placed as .row-actions
+   is, but the bar keeps its own layout, since its buttons share their borders. */
+/* Straight after the identity, the bar takes both trailing columns; after a
+   meta cell (last seen, last used) it is simply the third. */
+.settings-pane .device > .btn-bar {
+  justify-self: end;
+}
+.settings-pane .device > .btn-bar:nth-child(2) {
+  grid-column: 2 / -1;
+}
+
 /* STACKED rows: identity on the first line, actions on the second.
 
    The default .device is a three-column grid sized for [identity][meta][one
@@ -131,7 +139,19 @@
    left-aligned so they read as a toolbar for the row above them. */
 .settings-pane .device.stacked {
   grid-template-columns: 1fr;
-  gap: var(--space-2);
+  grid-auto-rows: auto;
+  /* Two lines need more air than one: room between the identity and its
+     buttons, and more under the buttons than over the name, so a bar reads as
+     belonging to the row above it and not to the rule beneath. */
+  gap: var(--space-4);
+  padding: var(--space-6) 0 var(--space-7);
+}
+/* A stacked row's bar sits under the identity and may wrap on a phone. */
+.settings-pane .device.stacked > .btn-bar {
+  grid-column: auto;
+  justify-self: start;
+  flex-wrap: wrap;
+  row-gap: var(--space-2);
 }
 .settings-pane .device.stacked .row-actions {
   grid-column: 1 / -1;

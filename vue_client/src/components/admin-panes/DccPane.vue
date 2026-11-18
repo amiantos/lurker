@@ -9,9 +9,9 @@
   LURKER_DCC_ENABLED. With it off the grants still list, so an admin can clear
   them before turning DCC back on.
 
-  The rows are text until "edit", which turns that row's cells into controls
-  under their own headers, with one save for the row and a "saved" after. The
-  columns are sized for both, so editing moves nothing.
+  The table is read-only. "edit" opens one user's grants and limit in a modal,
+  with one save for all of them. (It used to turn the row's own cells into
+  controls, with every column sized to hold both its text and its control.)
 -->
 
 <template>
@@ -53,7 +53,6 @@
         </tbody>
       </table>
 
-      <p v-if="editError" class="error inline">{{ editError }}</p>
       <table class="users">
         <thead>
           <tr>
@@ -67,79 +66,18 @@
           </tr>
         </thead>
         <tbody>
-          <!-- "edit" turns the row's own cells into controls, each under its
-               header; nothing saves until "save" (or Enter), and Escape puts
-               the row back. Every column is wide enough for both its text and
-               its control, so editing moves nothing. -->
-          <tr
-            v-for="u in info.users"
-            :key="u.id"
-            :class="{ editing: editing?.id === u.id }"
-            @keydown.esc="cancelEdit"
-          >
+          <tr v-for="u in info.users" :key="u.id">
             <th scope="row">{{ u.username }}</th>
-            <template v-if="editing?.id === u.id">
-              <!-- With DCC off for the instance, a part can be taken away but
-                   not given. -->
-              <td class="ctl">
-                <input
-                  v-model="editing.chat"
-                  type="checkbox"
-                  :aria-label="`chat for ${u.username}`"
-                  :disabled="busy || (!info.enabled && !u.chat)"
-                  @keydown.enter.prevent="save(u)"
-                />
-              </td>
-              <td class="ctl">
-                <input
-                  v-model="editing.receive"
-                  type="checkbox"
-                  :aria-label="`receive files for ${u.username}`"
-                  :disabled="busy || (!info.enabled && !u.receive)"
-                  @keydown.enter.prevent="save(u)"
-                />
-              </td>
-              <td class="ctl">
-                <input
-                  v-model="editing.send"
-                  type="checkbox"
-                  :aria-label="`send files for ${u.username}`"
-                  :disabled="busy || (!info.enabled && !u.send)"
-                  @keydown.enter.prevent="save(u)"
-                />
-              </td>
-              <td class="ctl">
-                <input
-                  v-model="editing.limit"
-                  class="limit"
-                  type="number"
-                  step="any"
-                  placeholder="none"
-                  title="In GB. Blank for no limit."
-                  :aria-label="`storage limit in GB for ${u.username}`"
-                  :disabled="busy"
-                  @keydown.enter.prevent="save(u)"
-                />
-                GB
-              </td>
-              <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
-              <td class="act">
-                <button class="link" :disabled="busy" @click="save(u)">save</button>
-                ·
-                <button class="link" :disabled="busy" @click="cancelEdit">cancel</button>
-              </td>
-            </template>
-            <template v-else>
-              <td>{{ u.chat ? 'on' : '—' }}</td>
-              <td>{{ u.receive ? 'on' : '—' }}</td>
-              <td>{{ u.send ? 'on' : '—' }}</td>
-              <td>{{ u.limitBytes === null ? 'none' : formatBytes(u.limitBytes) }}</td>
-              <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
-              <td class="act">
-                <span v-if="savedFor === u.id" class="muted" role="status">saved</span>
-                <button v-else class="link" :disabled="busy" @click="startEdit(u)">edit</button>
-              </td>
-            </template>
+            <td>{{ u.chat ? 'on' : '—' }}</td>
+            <td>{{ u.receive ? 'on' : '—' }}</td>
+            <td>{{ u.send ? 'on' : '—' }}</td>
+            <td>{{ u.limitBytes === null ? 'none' : formatBytes(u.limitBytes) }}</td>
+            <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
+            <td class="act">
+              <span class="btn-bar">
+                <button :disabled="busy" @click="startEdit(u)">edit</button>
+              </span>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -153,13 +91,69 @@
       </p>
     </template>
     <p v-else-if="!loadError" class="muted small">Loading…</p>
+
+    <FormModal
+      v-if="editing && editingUser && info"
+      word="dcc"
+      size="sm"
+      :title="`dcc for ${editingUser.username}`"
+      :busy="busy"
+      :error="editError"
+      @submit="save(editingUser)"
+      @close="cancelEdit"
+    >
+      <div class="grant-form">
+        <!-- With DCC off for the instance, a part can be taken away but not
+             given. -->
+        <label class="ck">
+          <input
+            v-model="editing.chat"
+            type="checkbox"
+            :disabled="busy || (!info.enabled && !editingUser.chat)"
+          />
+          <span>Chat</span>
+        </label>
+        <label class="ck">
+          <input
+            v-model="editing.receive"
+            type="checkbox"
+            :disabled="busy || (!info.enabled && !editingUser.receive)"
+          />
+          <span>Receive files</span>
+        </label>
+        <label class="ck">
+          <input
+            v-model="editing.send"
+            type="checkbox"
+            :disabled="busy || (!info.enabled && !editingUser.send)"
+          />
+          <span>Send files</span>
+        </label>
+        <label class="field">
+          <span>Storage limit (GB)</span>
+          <input
+            v-model="editing.limit"
+            class="limit"
+            type="number"
+            step="any"
+            placeholder="none"
+            :disabled="busy"
+          />
+          <span class="muted">
+            Blank for no limit. Using
+            {{ editingUser.usedBytes ? formatBytes(editingUser.usedBytes) : 'nothing' }} now.
+          </span>
+        </label>
+      </div>
+    </FormModal>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { api } from '../../api.js';
 import { formatBytes } from '../../utils/formatBytes.js';
+import FormModal from '../FormModal.vue';
 
 interface DccUser {
   id: number;
@@ -185,7 +179,7 @@ const GB = 1024 * 1024 * 1024;
 const info = ref<DccInfo | null>(null);
 const loadError = ref('');
 const busy = ref(false);
-// The one row being edited, and what its editor holds. `limit` is in GB, ''
+// The one user being edited, and what the modal holds. `limit` is in GB, ''
 // for none.
 const editing = ref<{
   id: number;
@@ -195,9 +189,9 @@ const editing = ref<{
   limit: string;
 } | null>(null);
 const editError = ref('');
-// The row that just saved, for a moment of "saved".
-const savedFor = ref<number | null>(null);
-let savedTimer: ReturnType<typeof setTimeout> | undefined;
+const editingUser = computed(
+  () => info.value?.users.find((u) => u.id === editing.value?.id) ?? null,
+);
 
 onMounted(async () => {
   try {
@@ -206,7 +200,6 @@ onMounted(async () => {
     loadError.value = e?.message || 'failed to load DCC settings';
   }
 });
-onUnmounted(() => clearTimeout(savedTimer));
 
 // Enough precision that a small limit never reads as 0.
 function limitGb(bytes: number | null): string {
@@ -215,7 +208,6 @@ function limitGb(bytes: number | null): string {
 
 function startEdit(u: DccUser) {
   editError.value = '';
-  savedFor.value = null;
   editing.value = {
     id: u.id,
     chat: u.chat,
@@ -262,13 +254,8 @@ async function save(u: DccUser) {
     u.send = next.send;
     u.limitBytes = next.limitBytes;
     editing.value = null;
-    savedFor.value = u.id;
-    clearTimeout(savedTimer);
-    savedTimer = setTimeout(() => {
-      if (savedFor.value === u.id) savedFor.value = null;
-    }, 2000);
   } catch (e: any) {
-    // The row stays in edit with what was typed: nothing changed.
+    // The modal stays open with what was typed: nothing changed.
     editError.value = e?.message || 'failed to save';
   } finally {
     busy.value = false;
@@ -324,46 +311,38 @@ code {
 .users tbody th {
   color: var(--fg);
 }
-/* Every row is as tall as a row of controls, so going into edit moves
-   nothing. An input is its line of text plus 4px padding and a 1px border
-   each side (main.css), so a text cell carries those 5px as padding instead,
-   and a cell holding a control (.ctl) gets the plain padding. */
 .users tbody th,
 .users tbody td {
-  padding-block: calc(var(--space-3) + 5px);
   vertical-align: middle;
-}
-.users tbody td.ctl {
-  padding-block: var(--space-3);
-}
-/* Sized for both a column's text and its control, so a row going into edit
-   moves nothing: a checkbox or "on", the limit field or "50.00 GB", and
-   "save · cancel" or "edit". */
-.users td:nth-of-type(1),
-.users td:nth-of-type(2) {
-  width: 5em;
-}
-.users td:nth-of-type(3) {
-  width: 10em;
   white-space: nowrap;
 }
 .users .act {
-  width: 8em;
+  width: 1%;
   padding-right: 0;
   text-align: right;
-  white-space: nowrap;
 }
-.users .act .link {
-  padding: 0;
+.grant-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
 }
-.users input[type='checkbox'] {
+.ck {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  cursor: pointer;
+}
+.ck input {
   margin: 0;
 }
-.users .limit {
-  width: 6em;
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
-.users tr.editing {
-  background: var(--bg-soft);
+.field .limit {
+  width: 10em;
 }
 .warn {
   color: var(--warn);

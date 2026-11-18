@@ -411,6 +411,11 @@ button:disabled {
   padding: var(--space-3) var(--space-6);
   cursor: pointer;
 }
+/* A link dressed as a button (a download) is a button to the eye. */
+a.btn-primary,
+a.btn-secondary {
+  text-decoration: none;
+}
 .btn-secondary:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--fg);
@@ -569,6 +574,23 @@ select:focus,
 textarea:focus {
   outline: none;
   border-color: var(--accent);
+}
+/* A select is drawn as the text field it sits beside: the native chrome trims
+   its height below an <input>'s and brings its own border and radius, even with
+   the same padding. Stripped, it takes the rule above; the arrow is two
+   gradients so it follows the theme (an SVG data URI can't read a variable). */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%),
+    linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+  background-repeat: no-repeat;
+  background-position:
+    right 13px center,
+    right 8px center;
+  background-size: 5px 5px;
 }
 /* Dim placeholders well below real input text (and below --fg-muted) so users
    don't mistake the hint for content they typed. opacity:1 neutralises

@@ -52,7 +52,7 @@
       </ul>
       <div class="actions">
         <span class="muted small">Refreshed {{ formatDateTime(stats.generatedAt) }}.</span>
-        <button class="link" :disabled="refreshing" @click="load(true)">
+        <button :disabled="refreshing" @click="load(true)">
           {{ refreshing ? 'refreshing…' : 'refresh now' }}
         </button>
       </div>

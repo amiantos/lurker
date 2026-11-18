@@ -7,13 +7,9 @@
   <section id="ignores" class="settings-pane">
     <h2>ignores</h2>
     <p class="section-desc">
-      Ignore rules hide matching messages. A rule matches by nick/hostmask (<code
-        >nick!user@host</code
-      >
-      with <code>*</code> wildcards) and can be narrowed to specific channels, message text, and
-      event types. Rules are <strong>global</strong> by default; scope one to a single network if
-      you only want it there. Everything here is also available through the
-      <code>/ignore</code> command.
+      An ignore hides messages from a sender (<code>nick!user@host</code>, <code>*</code> for
+      wildcards), on every network or one. It can be narrowed to channels, text or event types. Also
+      managed with <code>/ignore</code>.
     </p>
 
     <p v-if="!ignoreGroups.length" class="muted small">
@@ -22,174 +18,175 @@
     </p>
 
     <template v-for="group in ignoreGroups" :key="group.key">
-      <h3 class="subhead">{{ group.name }}</h3>
+      <h3 class="subhead sibling">{{ group.name }}</h3>
       <ul class="device-list">
         <li v-for="entry in group.entries" :key="entry.id" class="device">
           <span class="ua">
             {{ entry.mask ?? '*' }}
             <span class="muted small ignore-detail">{{ describe(entry) }}</span>
           </span>
-          <div class="row-actions">
+          <span class="btn-bar">
             <IconButton :icon="PenIcon" label="edit" @click="startEdit(entry)" />
             <IconButton :icon="TrashIcon" label="remove" danger @click="onRemove(entry)" />
-          </div>
+          </span>
         </li>
       </ul>
     </template>
 
-    <h3 class="subhead">{{ editing ? 'edit ignore' : 'add ignore' }}</h3>
-    <div class="rule-form">
-      <!-- Scope -->
-      <div class="field">
-        <span class="field-label">Scope</span>
-        <div class="row">
-          <div class="seg" role="group" aria-label="Scope">
+    <p class="add-row">
+      <button class="btn-secondary" @click="startAdd">add ignore</button>
+    </p>
+
+    <!-- Every formError comes from buildRule, so the modal is where it shows:
+         under the fields, beside the button that was refused. -->
+    <FormModal
+      v-if="formOpen"
+      word="ignore"
+      :title="editing ? 'edit ignore' : 'add ignore'"
+      :submit-label="editing ? 'Save' : 'Add ignore'"
+      :can-submit="canSubmit"
+      :error="formError"
+      @submit="submit"
+      @close="closeForm"
+    >
+      <div class="rule-form">
+        <!-- Scope -->
+        <div class="field">
+          <span class="field-label">Scope</span>
+          <div class="row">
+            <div class="seg" role="group" aria-label="Scope">
+              <button
+                type="button"
+                :aria-pressed="scopeMode === 'global'"
+                :class="{ active: scopeMode === 'global' }"
+                @click="scopeMode = 'global'"
+              >
+                Global
+              </button>
+              <button
+                type="button"
+                :aria-pressed="scopeMode === 'network'"
+                :class="{ active: scopeMode === 'network' }"
+                :disabled="!networkOptions.length"
+                @click="selectNetworkScope"
+              >
+                One network
+              </button>
+            </div>
+            <select v-if="scopeMode === 'network'" v-model.number="scopeNetworkId">
+              <option v-for="opt in networkOptions" :key="opt.id" :value="opt.id">
+                {{ opt.name }}
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Who -->
+        <label class="field">
+          <span class="field-label"
+            >Mask <span class="muted small">(who — blank = anyone)</span></span
+          >
+          <input
+            v-model="form.mask"
+            type="text"
+            placeholder="nick or nick!user@host"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+        </label>
+
+        <!-- Where -->
+        <label class="field">
+          <span class="field-label"
+            >Channels <span class="muted small">(where — blank = all buffers)</span></span
+          >
+          <input
+            v-model="form.channels"
+            type="text"
+            placeholder="#chan #other (space-separated)"
+            spellcheck="false"
+            autocapitalize="off"
+            autocomplete="off"
+          />
+        </label>
+
+        <!-- What -->
+        <div class="field">
+          <span class="field-label"
+            >Message text <span class="muted small">(what — blank = any)</span></span
+          >
+          <div class="row">
+            <input
+              v-model="form.pattern"
+              type="text"
+              class="grow"
+              placeholder="text to match in the message"
+              spellcheck="false"
+            />
+            <select v-model="form.patternKind">
+              <option value="substr">contains</option>
+              <option value="full">whole word</option>
+              <option value="regex">regex</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Which (levels) -->
+        <div class="field">
+          <span class="field-label">Event types</span>
+          <div class="chips">
             <button
               type="button"
-              :aria-pressed="scopeMode === 'global'"
-              :class="{ active: scopeMode === 'global' }"
-              @click="scopeMode = 'global'"
+              class="chip"
+              :class="{ active: useAll }"
+              :aria-pressed="useAll"
+              @click="toggleAllLevels"
             >
-              Global
+              ALL
             </button>
             <button
+              v-for="lvl in GRANULAR_LEVELS"
+              :key="lvl"
               type="button"
-              :aria-pressed="scopeMode === 'network'"
-              :class="{ active: scopeMode === 'network' }"
-              :disabled="!networkOptions.length"
-              @click="selectNetworkScope"
+              class="chip"
+              :class="{ active: !useAll && form.levels.includes(lvl) }"
+              :aria-pressed="!useAll && form.levels.includes(lvl)"
+              @click="toggleLevel(lvl)"
             >
-              One network
+              {{ lvl }}
             </button>
           </div>
-          <select v-if="scopeMode === 'network'" v-model.number="scopeNetworkId">
-            <option v-for="opt in networkOptions" :key="opt.id" :value="opt.id">
-              {{ opt.name }}
-            </option>
-          </select>
+          <label class="ck">
+            <input v-model="form.noHighlight" type="checkbox" />
+            <span>Suppress highlights only (don't hide) — NOHIGHLIGHT</span>
+          </label>
+        </div>
+
+        <!-- Modifiers -->
+        <div class="field">
+          <span class="field-label">Options</span>
+          <label class="ck">
+            <input v-model="form.isExcept" type="checkbox" />
+            <span>Exception (whitelist — keep these even if another rule would hide them)</span>
+          </label>
+          <div class="row">
+            <span class="muted small expiry-label">Expires in</span>
+            <input
+              v-model="form.expiry"
+              type="text"
+              class="expiry"
+              placeholder="e.g. 7 days — blank = never"
+              spellcheck="false"
+            />
+          </div>
+          <p v-if="editing && editingExpiresAt" class="muted small">
+            Currently expires {{ formatWhen(editingExpiresAt) }}. Leave blank to remove the expiry,
+            or enter a new duration to reset it.
+          </p>
         </div>
       </div>
-
-      <!-- Who -->
-      <label class="field">
-        <span class="field-label"
-          >Mask <span class="muted small">(who — blank = anyone)</span></span
-        >
-        <input
-          v-model="form.mask"
-          type="text"
-          placeholder="nick or nick!user@host"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-        />
-      </label>
-
-      <!-- Where -->
-      <label class="field">
-        <span class="field-label"
-          >Channels <span class="muted small">(where — blank = all buffers)</span></span
-        >
-        <input
-          v-model="form.channels"
-          type="text"
-          placeholder="#chan #other (space-separated)"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-        />
-      </label>
-
-      <!-- What -->
-      <div class="field">
-        <span class="field-label"
-          >Message text <span class="muted small">(what — blank = any)</span></span
-        >
-        <div class="row">
-          <input
-            v-model="form.pattern"
-            type="text"
-            class="grow"
-            placeholder="text to match in the message"
-            spellcheck="false"
-          />
-          <select v-model="form.patternKind">
-            <option value="substr">contains</option>
-            <option value="full">whole word</option>
-            <option value="regex">regex</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Which (levels) -->
-      <div class="field">
-        <span class="field-label">Event types</span>
-        <div class="chips">
-          <button
-            type="button"
-            class="chip"
-            :class="{ active: useAll }"
-            :aria-pressed="useAll"
-            @click="toggleAllLevels"
-          >
-            ALL
-          </button>
-          <button
-            v-for="lvl in GRANULAR_LEVELS"
-            :key="lvl"
-            type="button"
-            class="chip"
-            :class="{ active: !useAll && form.levels.includes(lvl) }"
-            :aria-pressed="!useAll && form.levels.includes(lvl)"
-            @click="toggleLevel(lvl)"
-          >
-            {{ lvl }}
-          </button>
-        </div>
-        <label class="ck">
-          <input v-model="form.noHighlight" type="checkbox" />
-          <span>Suppress highlights only (don't hide) — NOHIGHLIGHT</span>
-        </label>
-      </div>
-
-      <!-- Modifiers -->
-      <div class="field">
-        <span class="field-label">Options</span>
-        <label class="ck">
-          <input v-model="form.isExcept" type="checkbox" />
-          <span>Exception (whitelist — keep these even if another rule would hide them)</span>
-        </label>
-        <div class="row">
-          <span class="muted small expiry-label">Expires in</span>
-          <input
-            v-model="form.expiry"
-            type="text"
-            class="expiry"
-            placeholder="e.g. 7 days — blank = never"
-            spellcheck="false"
-          />
-        </div>
-        <p v-if="editing && editingExpiresAt" class="muted small">
-          Currently expires {{ formatWhen(editingExpiresAt) }}. Leave blank to remove the expiry, or
-          enter a new duration to reset it.
-        </p>
-      </div>
-
-      <!-- ⚠ Next to the button, not at the top of the pane. It used to render above the section
-           description and above the whole rule list, so for anyone with a few ignores the
-           explanation for a refused submit was off-screen and the click read as doing nothing.
-           Every one of these errors comes from buildRule, so the form is where they belong —
-           and the empty-levels one below is far likelier to be hit than the regex/duration
-           ones this markup was written for. -->
-      <p v-if="formError" class="error inline">{{ formError }}</p>
-
-      <div class="actions">
-        <button v-if="editing" class="link" @click="cancelEdit">cancel</button>
-        <button class="link" :disabled="!canSubmit" @click="submit">
-          {{ editing ? 'save' : 'add ignore' }}
-        </button>
-      </div>
-    </div>
+    </FormModal>
   </section>
 </template>
 
@@ -198,6 +195,7 @@ import { ref, reactive, computed } from 'vue';
 import { useNetworksStore } from '../../stores/networks.js';
 import { useIgnoresStore, type IgnoreEntryWithNetwork } from '../../stores/ignores.js';
 import IconButton from '../IconButton.vue';
+import FormModal from '../FormModal.vue';
 import type { IgnoreRule } from '../../utils/ignoreMatch.js';
 import { durationToExpiry, type IgnorePatternKind } from '../../../../shared/parseIgnore.js';
 import { CANONICAL_ORDER } from '../../../../shared/ignoreLevels.js';
@@ -426,7 +424,23 @@ function resetForm() {
   editingExpiresAt.value = null;
 }
 
+/** The add/edit modal is open. */
+const formOpen = ref(false);
+
+function startAdd() {
+  resetForm();
+  formError.value = '';
+  formOpen.value = true;
+}
+
+function closeForm() {
+  formOpen.value = false;
+  resetForm();
+  formError.value = '';
+}
+
 function startEdit(entry: IgnoreEntryWithNetwork) {
+  formOpen.value = true;
   editing.value = { id: entry.id, scope: entry.networkId };
   editingExpiresAt.value = entry.expiresAt ?? null;
   form.mask = entry.mask ?? '';
@@ -456,11 +470,6 @@ function startEdit(entry: IgnoreEntryWithNetwork) {
   formError.value = '';
 }
 
-function cancelEdit() {
-  resetForm();
-  formError.value = '';
-}
-
 function submit() {
   const rule = buildRule();
   if (!rule) return;
@@ -472,11 +481,11 @@ function submit() {
   // Edit = remove the old rule (in its original scope) then add the new one.
   if (editing.value) ignores.removeRule(editing.value.scope, { id: editing.value.id });
   ignores.addRule(scope, rule);
-  resetForm();
+  closeForm();
 }
 
 function onRemove(entry: IgnoreEntryWithNetwork) {
-  if (editing.value?.id === entry.id) cancelEdit();
+  if (editing.value?.id === entry.id) closeForm();
   ignores.removeRule(entry.networkId, { id: entry.id });
 }
 </script>
@@ -493,8 +502,7 @@ function onRemove(entry: IgnoreEntryWithNetwork) {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
-  padding-top: var(--space-3);
+  gap: var(--space-7);
 }
 .field {
   display: flex;
@@ -512,13 +520,6 @@ function onRemove(entry: IgnoreEntryWithNetwork) {
 .grow {
   flex: 1;
   min-width: 0;
-}
-.rule-form input[type='text'] {
-  background: var(--bg-soft);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
 }
 .seg {
   display: flex;
@@ -573,10 +574,7 @@ function onRemove(entry: IgnoreEntryWithNetwork) {
   flex: 1;
   min-width: 0;
 }
-.actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-4);
-  padding-top: var(--space-2);
+.add-row {
+  margin: var(--space-4) 0 0;
 }
 </style>

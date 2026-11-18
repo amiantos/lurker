@@ -127,38 +127,22 @@
           </div>
         </template>
 
-        <fieldset class="channels">
-          <legend>Channels to join</legend>
-          <div v-if="chips.length" class="chip-row">
-            <button
-              v-for="channel in chips"
-              :key="channel"
-              type="button"
-              class="chip"
-              :class="{ on: selected.includes(channel) }"
-              :aria-pressed="selected.includes(channel)"
-              @click="toggle(channel)"
-            >
-              {{ channel }}
-            </button>
-          </div>
-          <div class="other">
-            <input
-              v-model="extra"
-              :placeholder="extraPlaceholder"
-              autocomplete="off"
-              spellcheck="false"
-              aria-label="Other channels to join"
-            />
-            <small>
-              {{
-                chips.length
-                  ? 'Add any others, comma-separated.'
-                  : 'Comma-separated. Leave blank to land in the server buffer and browse with /list.'
-              }}
-            </small>
-          </div>
-        </fieldset>
+        <!-- One text field, as the add-network form has, filled in with the
+             channels we can vouch for. They were toggle pills above a second
+             field for "any others". -->
+        <label>
+          <span>Channels to join</span>
+          <input
+            v-model="channels"
+            :placeholder="FALLBACK_CHANNEL"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+          <small>
+            Comma-separated. Leave blank to land in the server buffer and browse with /list.
+          </small>
+        </label>
 
         <p v-if="error" class="error">{{ error }}</p>
       </div>
@@ -288,17 +272,12 @@ const form = reactive({
   sasl_password: '',
 });
 
-// Only the channels we can actually vouch for are offered as one-click chips:
-// #lurker where there's an active one, plus the network's own documented channel
-// (#308). We never chip a guess — a brand-new user has no way to tell a real
-// channel from one we invented, and clicking it would silently create an empty
+// The field starts with only the channels we can actually vouch for: #lurker
+// where there's an active one, plus the network's own documented channel
+// (#308). We never fill in a guess — a brand-new user has no way to tell a real
+// channel from one we invented, and joining it would silently create an empty
 // room. Where we know nothing, #chat is offered as a placeholder only.
-const chips = computed(() => (picked.value ? suggestedChannels(picked.value) : []));
-const selected = ref<string[]>([]);
-const extra = ref('');
-const extraPlaceholder = computed(() =>
-  chips.value.length ? '#another, #channel' : FALLBACK_CHANNEL,
-);
+const channels = ref('');
 
 // The builtin catalogue's saslLikelyRequired flag is specifically about
 // datacenter IPs — some networks refuse unauthenticated connections from one —
@@ -311,12 +290,6 @@ const saslRequired = computed(() => {
   return net.isInstance === true || config.isNode;
 });
 
-function toggle(channel: string): void {
-  const idx = selected.value.indexOf(channel);
-  if (idx >= 0) selected.value.splice(idx, 1);
-  else selected.value.push(channel);
-}
-
 function onPick(net: NetworkPreset, auto = false): void {
   solePick.value = auto;
   picked.value = net;
@@ -324,12 +297,11 @@ function onPick(net: NetworkPreset, auto = false): void {
   form.host = net.host;
   form.port = net.port;
   form.tls = net.tls;
-  // Everything we can vouch for starts checked — the point of the flow is that
-  // the happy path is one click. Channel choices are per-network, so both the
-  // chips and anything hand-typed reset on a re-pick: a "#vim" meant for Libera
+  // Everything we can vouch for starts filled in — the point of the flow is that
+  // the happy path is one click. Channel choices are per-network, so the field
+  // resets on a re-pick, hand-typed channels included: a "#vim" meant for Libera
   // must not follow the user to Rizon and get silently joined there.
-  selected.value = [...suggestedChannels(net)];
-  extra.value = '';
+  channels.value = suggestedChannels(net).join(', ');
   step.value = 'setup';
 }
 
@@ -339,8 +311,7 @@ function onManual(): void {
   form.host = '';
   form.port = 6697;
   form.tls = true;
-  selected.value = [];
-  extra.value = '';
+  channels.value = '';
   step.value = 'setup';
 }
 
@@ -356,7 +327,6 @@ async function submit(): Promise<void> {
     // The server splits this on commas and whitespace, de-duplicates, and writes
     // one autojoin row per channel; create() then connects, so the user lands in
     // these channels rather than an empty server buffer.
-    const channels = [...selected.value, extra.value].filter(Boolean).join(',');
     await networks.create({
       name: form.name,
       host: form.host,
@@ -365,7 +335,7 @@ async function submit(): Promise<void> {
       nick: form.nick,
       sasl_account: form.sasl_account,
       sasl_password: form.sasl_password,
-      default_channel: channels,
+      default_channel: channels.value,
     });
     await onboarding.complete();
   } catch (err: unknown) {
@@ -473,59 +443,6 @@ label small {
 }
 .sasl-hint strong {
   color: var(--fg);
-}
-.channels {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  border: 0;
-  padding: 0;
-  margin: 0;
-  min-width: 0;
-}
-.channels legend {
-  padding: 0;
-  color: var(--fg-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-/* Mirrors the label column layout without being a <label> — the input is
-   labelled by aria-label, since the fieldset legend already names the group. */
-.other {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.other input {
-  color: var(--fg);
-  width: 100%;
-  box-sizing: border-box;
-}
-.other small {
-  color: var(--fg-muted);
-  margin-top: var(--space-1);
-}
-.chip {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  padding: var(--space-2) var(--space-4);
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-.chip:hover {
-  border-color: var(--accent);
-}
-.chip.on {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--bg);
 }
 .error {
   color: var(--bad);

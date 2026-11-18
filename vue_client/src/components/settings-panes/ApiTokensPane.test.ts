@@ -12,7 +12,7 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 
 const h = vi.hoisted(() => ({
-  api: vi.fn<(url: string) => Promise<unknown>>(),
+  api: vi.fn<(url: string, opts?: { method?: string; body?: unknown }) => Promise<unknown>>(),
   query: {} as Record<string, string>,
 }));
 vi.mock('../../api.js', () => ({ api: h.api }));
@@ -24,7 +24,8 @@ async function mountWith(query: Record<string, string>) {
   setActivePinia(createPinia());
   h.query = query;
   h.api.mockImplementation(async () => ({ items: [] }));
-  const wrapper = mount(ApiTokensPane);
+  // The create modal teleports to body; stubbed, it renders in place.
+  const wrapper = mount(ApiTokensPane, { global: { stubs: { Teleport: true } } });
   await flushPromises();
   return wrapper;
 }
@@ -32,11 +33,57 @@ async function mountWith(query: Record<string, string>) {
 describe('ApiTokensPane', () => {
   it('starts read-only, as most tokens should be', async () => {
     const w = await mountWith({});
+    expect(w.find('.modal').exists()).toBe(false);
+    await w.find('.add-row button').trigger('click');
     expect((w.find('.check input').element as HTMLInputElement).checked).toBe(false);
   });
 
-  it('starts write-enabled when asked for the scope the bouncer needs', async () => {
+  it('opens write-enabled when asked for the scope the bouncer needs', async () => {
     const w = await mountWith({ scope: 'read-write' });
-    expect((w.find('.check input').element as HTMLInputElement).checked).toBe(true);
+    expect((w.find('.modal .check input').element as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('shows the new token in the same modal, once, and forgets it on Done', async () => {
+    const w = await mountWith({});
+    await w.find('.add-row button').trigger('click');
+    await w.find('.modal input[type="text"]').setValue('autonotes');
+    h.api.mockImplementation(async (_url, opts?: { method?: string }) =>
+      opts?.method === 'POST' ? { name: 'autonotes', token: 'lrk_secret' } : { items: [] },
+    );
+    await w.find('.modal form').trigger('submit');
+    await flushPromises();
+    expect(h.api).toHaveBeenCalledWith('/api/api-tokens', {
+      method: 'POST',
+      body: { name: 'autonotes', scope: 'read' },
+    });
+    expect(w.find('.modal .token').text()).toBe('lrk_secret');
+    expect(w.find('.modal input[type="text"]').exists()).toBe(false);
+
+    const done = w.findAll('.modal-footer button').find((b) => b.text() === 'Done')!;
+    await done.trigger('click');
+    expect(w.find('.modal').exists()).toBe(false);
+    expect(w.text()).not.toContain('lrk_secret');
+  });
+
+  // The token is shown once, in the modal. Escape or the X while the request
+  // is out must not close it: the answer would arrive with nowhere to be shown,
+  // leaving a live token nobody ever saw.
+  it('stays open if closed while the token is being made', async () => {
+    const w = await mountWith({});
+    await w.find('.add-row button').trigger('click');
+    await w.find('.modal input[type="text"]').setValue('autonotes');
+    let answer!: (v: unknown) => void;
+    h.api.mockImplementation((_url, opts?: { method?: string }) =>
+      opts?.method === 'POST'
+        ? new Promise((resolve) => (answer = resolve))
+        : Promise.resolve({ items: [] }),
+    );
+    await w.find('.modal form').trigger('submit');
+    await w.find('.modal').trigger('keydown', { key: 'Escape' });
+    expect(w.find('.modal').exists()).toBe(true);
+
+    answer({ name: 'autonotes', token: 'lrk_secret' });
+    await flushPromises();
+    expect(w.find('.modal .token').text()).toBe('lrk_secret');
   });
 });

@@ -58,16 +58,15 @@ export const usePushSubscriptionsStore = defineStore('pushSubscriptions', {
       if (seq !== this.clientsSeq) return;
       this.clients = clients || [];
     },
-    /** A push to every device, gates skipped; the log gets its rows. */
+    /** A push to every device, gates skipped. The log gets its rows; the modal
+     *  that shows them fetches when it opens. */
     async sendTest(): Promise<{
       sent: number;
       dropped: number;
       devices: number;
       disabled: number;
     }> {
-      const result = await api('/api/push/test', { method: 'POST' });
-      await this.fetchLog().catch(() => {});
-      return result;
+      return api('/api/push/test', { method: 'POST' });
     },
     async fetchAll() {
       if (this.loading) return;
