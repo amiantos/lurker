@@ -23,7 +23,9 @@
           Push fires only while none of these is visible. A tab you left in front, or the app open
           on your phone, is the usual reason a notification stayed put.
         </p>
-        <ul v-if="store.clients.length" class="rows">
+        <p v-if="clientsState === 'loading'" class="desc">Loading…</p>
+        <p v-else-if="clientsState === 'failed'" class="error">Could not load the client list.</p>
+        <ul v-else-if="store.clients.length" class="rows">
           <li v-for="(c, i) in store.clients" :key="i" class="client-row">
             <span class="who">{{ clientLabel(c.userAgent) }}</span>
             <MetaLine :parts="clientMeta(c)" />
@@ -41,7 +43,12 @@
         </ul>
         <p v-else-if="store.logLoaded" class="desc">Nothing in the last week.</p>
         <p v-if="store.logHasMore" class="older">
-          <button type="button" class="btn-secondary" :disabled="olderBusy" @click="onOlder">
+          <button
+            type="button"
+            class="btn-secondary"
+            :disabled="olderBusy || refreshing"
+            @click="onOlder"
+          >
             {{ olderBusy ? 'loading…' : 'show older' }}
           </button>
         </p>
@@ -65,6 +72,13 @@ defineEmits<{ close: [] }>();
 const store = usePushSubscriptionsStore();
 const error = ref('');
 const olderBusy = ref(false);
+// The open's own refresh of the first page is out. "show older" waits for it:
+// both go through the store's one sequence counter, so paging in that window
+// would throw away the fresh page and leave the newest pushes out of the log.
+const refreshing = ref(true);
+// "No client is connected" is a finding, so it is only said once the list has
+// actually arrived. This is the pane where an empty list reads as the answer.
+const clientsState = ref<'loading' | 'loaded' | 'failed'>('loading');
 
 function clientMeta(c: { visible: boolean; connectedAt?: string | null }): MetaPart[] {
   return [
@@ -75,10 +89,18 @@ function clientMeta(c: { visible: boolean; connectedAt?: string | null }): MetaP
 
 // Fetched on open, so the trail is as of now and not as of when Settings loaded.
 onMounted(() => {
-  store.fetchLog().catch((e: any) => {
-    error.value = e.message || 'failed to load the push log';
-  });
-  store.fetchClients().catch(() => {});
+  store
+    .fetchLog()
+    .catch((e: any) => {
+      error.value = e.message || 'failed to load the push log';
+    })
+    .finally(() => {
+      refreshing.value = false;
+    });
+  store.fetchClients().then(
+    () => (clientsState.value = 'loaded'),
+    () => (clientsState.value = 'failed'),
+  );
 });
 
 async function onOlder() {
