@@ -33,7 +33,7 @@
           <span v-else class="row-channels muted">no recommended channels</span>
           <span v-if="details(preset)" class="row-channels">{{ details(preset) }}</span>
         </div>
-        <span class="btn-bar row-actions">
+        <span class="btn-bar">
           <button type="button" :disabled="busy" @click="edit(preset)">Edit</button>
           <button type="button" class="bad" :disabled="busy" @click="remove(preset)">Delete</button>
         </span>
@@ -101,7 +101,9 @@
       <input
         type="checkbox"
         :checked="!store.allowUserDefinedNetworks"
-        :disabled="busy || (!store.networkPresets.length && store.allowUserDefinedNetworks)"
+        :disabled="
+          busy || (!store.networkPresets.some((p) => p.enabled) && store.allowUserDefinedNetworks)
+        "
         @change="togglePolicy"
       />
       <span>
@@ -111,7 +113,7 @@
         you turn this off or add the host above.
       </span>
     </label>
-    <p v-if="!store.networkPresets.length" class="muted small">
+    <p v-if="!store.networkPresets.some((p) => p.enabled)" class="muted small">
       Add at least one network before you can restrict users to the listed ones.
     </p>
   </section>
@@ -264,10 +266,7 @@ async function togglePolicy(): Promise<void> {
 .row-channels {
   color: var(--fg-muted);
 }
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
+.row > .btn-bar {
   flex-shrink: 0;
 }
 .add {

@@ -64,4 +64,26 @@ describe('ApiTokensPane', () => {
     expect(w.find('.modal').exists()).toBe(false);
     expect(w.text()).not.toContain('lrk_secret');
   });
+
+  // The token is shown once, in the modal. Escape or the X while the request
+  // is out must not close it: the answer would arrive with nowhere to be shown,
+  // leaving a live token nobody ever saw.
+  it('stays open if closed while the token is being made', async () => {
+    const w = await mountWith({});
+    await w.find('.add-row button').trigger('click');
+    await w.find('.modal input[type="text"]').setValue('autonotes');
+    let answer!: (v: unknown) => void;
+    h.api.mockImplementation((_url, opts?: { method?: string }) =>
+      opts?.method === 'POST'
+        ? new Promise((resolve) => (answer = resolve))
+        : Promise.resolve({ items: [] }),
+    );
+    await w.find('.modal form').trigger('submit');
+    await w.find('.modal').trigger('keydown', { key: 'Escape' });
+    expect(w.find('.modal').exists()).toBe(true);
+
+    answer({ name: 'autonotes', token: 'lrk_secret' });
+    await flushPromises();
+    expect(w.find('.modal .token').text()).toBe('lrk_secret');
+  });
 });

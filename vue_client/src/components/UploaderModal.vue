@@ -36,7 +36,6 @@
       <UploaderConfigForm
         v-if="driver"
         :key="driver.driver"
-        modal
         :driver="driver"
         :existing="existing"
         :busy="busy"
@@ -52,7 +51,7 @@
 import { ref, computed } from 'vue';
 import AppModal from './AppModal.vue';
 import UploaderConfigForm from './UploaderConfigForm.vue';
-import type { UploaderDriver } from '../utils/uploaders.js';
+import type { UploaderDriver, UploaderDraft } from '../utils/uploaders.js';
 
 const props = defineProps<{
   drivers: UploaderDriver[];
@@ -63,7 +62,7 @@ const props = defineProps<{
 }>();
 
 defineEmits<{
-  save: [payload: { driver: string; label: string; values: Record<string, string> }];
+  save: [payload: UploaderDraft];
   close: [];
 }>();
 

@@ -150,6 +150,9 @@ function openCreate() {
 }
 
 function closeCreate() {
+  // Not while the request is out: the token it returns is shown once, in this
+  // modal, and a close in that window would leave a live token nobody ever saw.
+  if (busy.value) return;
   creating.value = false;
   revealed.value = null;
   createError.value = '';

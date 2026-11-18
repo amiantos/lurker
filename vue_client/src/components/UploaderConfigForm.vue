@@ -13,13 +13,13 @@
   Secrets: an existing secret is shown as a "stored" placeholder, never a value.
   Leaving it blank on save keeps what's stored; typing replaces it.
 
-  `modal` lays it out for an AppModal card (UploaderModal): the fields scroll and
-  the actions become the card's pinned footer. The footer stays inside the
-  <form> either way, so Enter still submits.
+  Laid out for an AppModal card (UploaderModal, its one caller): the fields
+  scroll and the actions are the card's pinned footer. The footer stays inside
+  the <form>, so Enter still submits.
 -->
 
 <template>
-  <form :class="modal ? 'modal-form' : 'uploader-form'" @submit.prevent="onSubmit">
+  <form class="modal-form" @submit.prevent="onSubmit">
     <div class="fields">
       <label>
         <span>Name</span>
@@ -50,10 +50,10 @@
         <span class="field-desc">{{ field.description }}</span>
       </label>
 
-      <p v-if="error" class="error inline">{{ error }}</p>
+      <p v-if="error" class="form-error">{{ error }}</p>
     </div>
 
-    <footer :class="modal ? 'modal-footer' : 'form-actions'">
+    <footer class="modal-footer">
       <button class="btn-secondary" type="button" :disabled="busy" @click="emit('cancel')">
         Cancel
       </button>
@@ -81,8 +81,6 @@ const props = defineProps<{
   existing?: { label: string; config: Record<string, string>; secretsSet: Record<string, boolean> };
   busy?: boolean;
   error?: string;
-  /** Laid out for a modal card: scrolling fields over a pinned footer. */
-  modal?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -144,18 +142,14 @@ function onSubmit() {
 </script>
 
 <style scoped>
-.uploader-form {
-  margin-bottom: var(--space-4);
-}
-
 .fields {
   display: flex;
   flex-direction: column;
   gap: var(--space-7);
 }
-/* In a card the fields are what scrolls, so a seven-field S3 form on a short
-   screen keeps its footer in reach. */
-.modal-form .fields {
+/* The fields are what scrolls, so a seven-field S3 form on a short screen
+   keeps its footer in reach. */
+.fields {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -185,9 +179,9 @@ function onSubmit() {
   color: var(--fg-muted);
 }
 
-.form-actions {
-  display: flex;
-  gap: var(--space-4);
-  margin-top: var(--space-4);
+/* The modal is outside .settings-pane, whose .error.inline this used to wear. */
+.form-error {
+  margin: 0;
+  color: var(--bad);
 }
 </style>

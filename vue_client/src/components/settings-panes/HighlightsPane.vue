@@ -56,6 +56,7 @@
       :title="editing ? 'edit highlight' : 'add highlight'"
       :submit-label="editing ? 'Save' : 'Add highlight'"
       :can-submit="canSubmit"
+      :busy="saving"
       :error="formError"
       @submit="submit"
       @close="closeForm"
@@ -348,6 +349,9 @@ function resetForm() {
 
 /** The add/edit modal is open. */
 const formOpen = ref(false);
+// A save is out. The form submits on Enter now, and a held key would otherwise
+// create the rule once per repeat before the first answer closed the modal.
+const saving = ref(false);
 
 function startAdd() {
   resetForm();
@@ -386,8 +390,10 @@ function startEdit(entry: HighlightRule) {
 // junction), so the rule keeps its id and list position and there's no
 // create-then-delete window that could orphan a duplicate.
 async function submit() {
+  if (saving.value) return;
   const fields = buildFields();
   if (!fields) return;
+  saving.value = true;
   try {
     if (editing.value) {
       await rulesStore.update(editing.value.id, fields);
@@ -397,6 +403,8 @@ async function submit() {
     closeForm();
   } catch (e: any) {
     formError.value = e.message || 'failed to save highlight';
+  } finally {
+    saving.value = false;
   }
 }
 
@@ -432,8 +440,6 @@ async function onRemove(entry: HighlightRule) {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-/* Enabled toggle: muted when off, accent when on; the glyph (toggle-on/off)
-   plus aria-pressed carry the state. */
 .rule-form {
   display: flex;
   flex-direction: column;

@@ -25,6 +25,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import {
+  listEnabledInstanceNetworks,
   listInstanceNetworks,
   getInstanceNetwork,
   createInstanceNetwork,
@@ -91,7 +92,7 @@ function parseCount(raw: unknown, label: string): number | null | undefined | st
 // routes can drive it to zero (delete a preset, or switch the lockdown on with
 // none), so both consult this.
 function usablePresetCount(): number {
-  return listInstanceNetworks().length;
+  return listEnabledInstanceNetworks().length;
 }
 
 const STRANDED =
@@ -183,7 +184,7 @@ router.delete('/:id', (req: Request, res: Response) => {
   // with nothing they're permitted to connect to — including the admin. Refuse,
   // and make them lift the lockdown first; recoverable either way, but a 409
   // beats a silently unusable server.
-  if (!allowUserDefinedNetworks() && usablePresetCount() <= 1) {
+  if (existing.enabled && !allowUserDefinedNetworks() && usablePresetCount() <= 1) {
     res.status(409).json({ error: STRANDED });
     return;
   }

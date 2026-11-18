@@ -411,6 +411,11 @@ button:disabled {
   padding: var(--space-3) var(--space-6);
   cursor: pointer;
 }
+/* A link dressed as a button (a download) is a button to the eye. */
+a.btn-primary,
+a.btn-secondary {
+  text-decoration: none;
+}
 .btn-secondary:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--fg);

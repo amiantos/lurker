@@ -253,12 +253,4 @@ function remove(t: ThemePreset) {
   min-width: 12ch;
   color: var(--fg-muted);
 }
-.theme-mode select {
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 4px);
-  padding: 3px 6px;
-}
 </style>

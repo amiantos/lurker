@@ -147,7 +147,7 @@
 import { ref, computed, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
 import UploaderModal from '../UploaderModal.vue';
-import type { AdminUploader, UploaderDriver } from '../../utils/uploaders.js';
+import type { AdminUploader, UploaderDriver, UploaderDraft } from '../../utils/uploaders.js';
 
 const store = useAdminStore();
 
@@ -247,12 +247,6 @@ async function onCeilingChange(e: Event) {
     }
   }
   input.value = String(store.uploadCeilingMb ?? '');
-}
-
-interface UploaderDraft {
-  driver: string;
-  label: string;
-  values: Record<string, string>;
 }
 
 async function onSaveNew({ driver, label, values }: UploaderDraft) {

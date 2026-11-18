@@ -42,6 +42,13 @@ export interface UploaderDriver {
   creatable: boolean;
 }
 
+/** What the uploader modal hands back on save. */
+export interface UploaderDraft {
+  driver: string;
+  label: string;
+  values: Record<string, string>;
+}
+
 /** One configured uploader, as the user-facing API projects it. */
 export interface Uploader {
   id: number;

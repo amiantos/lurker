@@ -146,7 +146,7 @@ import { api } from '../../api.js';
 import RegistryPane from './RegistryPane.vue';
 import UploaderModal from '../UploaderModal.vue';
 import { hasUploaderChoice } from '../../utils/uploaders.js';
-import type { Uploader, UploaderDriver } from '../../utils/uploaders.js';
+import type { Uploader, UploaderDriver, UploaderDraft } from '../../utils/uploaders.js';
 
 const uploaders = ref<Uploader[]>([]);
 const drivers = ref<UploaderDriver[]>([]);
@@ -228,12 +228,6 @@ function onAdd() {
 function onEdit(u: Uploader) {
   closeForms();
   editing.value = u;
-}
-
-interface UploaderDraft {
-  driver: string;
-  label: string;
-  values: Record<string, string>;
 }
 
 async function onSaveNew({ driver, label, values }: UploaderDraft) {

@@ -3392,16 +3392,6 @@ if (schemaVersion < 28) {
   }
 }
 
-// v29: an instance network is offered or it is not there. The admin pane had an
-// "Offered" checkbox that kept a network listed but hidden from the picker and,
-// under the lockdown, refused; it is gone, and what it had hidden goes with it
-// (Brad, 2026-11-17: delete, don't re-offer — re-offering would put back what an
-// admin deliberately took away, and under the lockdown would let users connect
-// to it again). The column stays, always 1, so the wire shape does not change.
-if (schemaVersion < 29) {
-  const gone = db.prepare('DELETE FROM instance_network WHERE enabled = 0').run().changes;
-  if (gone > 0) console.log(`[db] removed ${gone} instance network(s) that were not offered`);
-}
 // The queue's lookups by bot and pack (a failed pack's later tries, a bot's
 // packs waiting or out). Partial: most rows aren't a queue's. After the block
 // above, as the column is absent on an older install until it runs.
@@ -3413,6 +3403,17 @@ db.exec(
 // deleting a file, the foreign key's own check). Here, not in the base schema:
 // on an older install the column only exists once the block above has run.
 db.exec('CREATE INDEX IF NOT EXISTS idx_dcc_transfers_file ON dcc_transfers(file_id)');
+
+// v29: an instance network is offered or it is not there. The admin pane had an
+// "Offered" checkbox that kept a network listed but hidden from the picker and,
+// under the lockdown, refused; it is gone, and what it had hidden goes with it
+// (Brad, 2026-11-17: delete, don't re-offer — re-offering would put back what an
+// admin deliberately took away, and under the lockdown would let users connect
+// to it again). The column stays, always 1, so the wire shape does not change.
+if (schemaVersion < 29) {
+  const gone = db.prepare('DELETE FROM instance_network WHERE enabled = 0').run().changes;
+  if (gone > 0) console.log(`[db] removed ${gone} instance network(s) that were not offered`);
+}
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +
 // per-user conversion of existing uploads.* settings (self-host), or a single
