@@ -140,7 +140,11 @@
 .settings-pane .device.stacked {
   grid-template-columns: 1fr;
   grid-auto-rows: auto;
-  gap: var(--space-2);
+  /* Two lines need more air than one: room between the identity and its
+     buttons, and more under the buttons than over the name, so a bar reads as
+     belonging to the row above it and not to the rule beneath. */
+  gap: var(--space-4);
+  padding: var(--space-6) 0 var(--space-7);
 }
 /* A stacked row's bar sits under the identity and may wrap on a phone. */
 .settings-pane .device.stacked > .btn-bar {
