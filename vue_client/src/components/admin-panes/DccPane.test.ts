@@ -44,16 +44,18 @@ function info(over: Record<string, unknown> = {}) {
 
 async function mountPane(over: Record<string, unknown> = {}, enabled = true): Promise<VueWrapper> {
   h.api.mockResolvedValueOnce({ ...info(over), enabled });
-  const wrapper = mount(DccPane);
+  // The edit modal teleports to body; stubbed, it renders in place.
+  const wrapper = mount(DccPane, { global: { stubs: { Teleport: true } } });
   await flushPromises();
   return wrapper;
 }
 
 const button = (w: VueWrapper, label: string) =>
-  w.findAll('table.users button').find((b) => b.text() === label)!;
+  w.findAll('button').find((b) => b.text() === label)!;
 const row = (w: VueWrapper) => w.find('table.users tbody tr').text();
-const boxes = (w: VueWrapper) => w.findAll('tr.editing input[type="checkbox"]');
-const limitField = (w: VueWrapper) => w.find('tr.editing input[type="number"]');
+const boxes = (w: VueWrapper) => w.findAll('.modal input[type="checkbox"]');
+const limitField = (w: VueWrapper) => w.find('.modal input[type="number"]');
+const editorOpen = (w: VueWrapper) => w.find('.modal').exists();
 const limitValue = (w: VueWrapper) => (limitField(w).element as HTMLInputElement).value;
 
 beforeEach(() => {
@@ -69,36 +71,36 @@ describe('Admin → DCC', () => {
     expect(w.find('table.users input').exists()).toBe(false);
   });
 
-  it('edits in the row, and saves chat, receive and the limit together', async () => {
+  it('edits in a modal, and saves chat, receive and the limit together', async () => {
     const w = await mountPane();
     await button(w, 'edit').trigger('click');
-    expect(w.findAll('table.users tbody tr')).toHaveLength(1); // no extra row
+    expect(w.find('.modal').text()).toContain('dcc for alice');
+    expect(w.find('table.users input').exists()).toBe(false); // the table stays text
     await boxes(w)[1].setValue(true); // receive
     await limitField(w).setValue('25');
     h.api.mockResolvedValueOnce({ chat: true, receive: true, limitBytes: 25 * GB });
-    await button(w, 'save').trigger('click');
+    await w.find('.modal form').trigger('submit');
     await flushPromises();
     expect(h.api).toHaveBeenLastCalledWith('/api/admin/dcc/users/3', {
       method: 'PUT',
       body: { chat: true, receive: true, limitBytes: 25 * GB },
     });
-    expect(w.find('tr.editing').exists()).toBe(false);
+    expect(editorOpen(w)).toBe(false);
     expect(row(w)).toContain('25.00 GB');
-    expect(row(w)).toContain('saved');
   });
 
-  it('saves on Enter in the limit field', async () => {
+  it('saves on the form submit an Enter in the limit field makes', async () => {
     const w = await mountPane();
     await button(w, 'edit').trigger('click');
     await limitField(w).setValue('30');
     h.api.mockResolvedValueOnce({ chat: true, receive: false, limitBytes: 30 * GB });
-    await limitField(w).trigger('keydown', { key: 'Enter' });
+    await w.find('.modal form').trigger('submit');
     await flushPromises();
     expect(h.api).toHaveBeenLastCalledWith('/api/admin/dcc/users/3', {
       method: 'PUT',
       body: { chat: true, receive: false, limitBytes: 30 * GB },
     });
-    expect(row(w)).toContain('saved');
+    expect(editorOpen(w)).toBe(false);
   });
 
   it('clears the limit when the field is emptied', async () => {
@@ -106,7 +108,7 @@ describe('Admin → DCC', () => {
     await button(w, 'edit').trigger('click');
     await limitField(w).setValue('');
     h.api.mockResolvedValueOnce({ chat: true, receive: false, limitBytes: null });
-    await button(w, 'save').trigger('click');
+    await w.find('.modal form').trigger('submit');
     await flushPromises();
     expect(h.api).toHaveBeenLastCalledWith('/api/admin/dcc/users/3', {
       method: 'PUT',
@@ -119,39 +121,39 @@ describe('Admin → DCC', () => {
     const w = await mountPane();
     await button(w, 'edit').trigger('click');
     await limitField(w).setValue('99');
-    await button(w, 'cancel').trigger('click');
-    expect(w.find('tr.editing').exists()).toBe(false);
+    await button(w, 'Cancel').trigger('click');
+    expect(editorOpen(w)).toBe(false);
     expect(h.api).toHaveBeenCalledTimes(1); // just the load
     expect(row(w)).toContain('50.00 GB');
   });
 
-  it('puts the row back on Escape', async () => {
+  it('closes on Escape, changing nothing', async () => {
     const w = await mountPane();
     await button(w, 'edit').trigger('click');
     await limitField(w).setValue('99');
-    await limitField(w).trigger('keydown', { key: 'Escape' });
-    expect(w.find('tr.editing').exists()).toBe(false);
+    await w.find('.modal').trigger('keydown', { key: 'Escape' });
+    expect(editorOpen(w)).toBe(false);
     expect(row(w)).toContain('50.00 GB');
     expect(h.api).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the row in edit with what was typed when the save fails', async () => {
+  it('keeps the modal open with what was typed when the save fails', async () => {
     const w = await mountPane();
     await button(w, 'edit').trigger('click');
     await limitField(w).setValue('25');
     h.api.mockRejectedValueOnce(new Error('network down'));
-    await button(w, 'save').trigger('click');
+    await w.find('.modal form').trigger('submit');
     await flushPromises();
     expect(w.text()).toContain('network down');
     expect(limitValue(w)).toBe('25');
-    expect(row(w)).not.toContain('saved');
+    expect(editorOpen(w)).toBe(true);
   });
 
   it('refuses a limit that is not a positive number, without a request', async () => {
     const w = await mountPane();
     await button(w, 'edit').trigger('click');
     await limitField(w).setValue('-3');
-    await button(w, 'save').trigger('click');
+    await w.find('.modal form').trigger('submit');
     await flushPromises();
     expect(h.api).toHaveBeenCalledTimes(1);
     expect(w.text()).toContain('above 0');
