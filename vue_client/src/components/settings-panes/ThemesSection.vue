@@ -17,10 +17,9 @@
 <template>
   <h3 id="themes" class="subhead" data-setting-group="themes">Themes</h3>
   <p class="section-desc">
-    A theme is a snapshot of the fonts, colors and compact-layout spacing below. Apply one, then
-    tweak individual settings — your edits layer on top and can be saved as a theme of their own.
-    Also available as
-    <code>/theme</code> in any buffer.
+    A theme is a snapshot of the fonts, colors and modern-layout spacing below. Changes you make
+    after applying one sit on top of it and can be saved as a new theme. Also managed with
+    <code>/theme</code>.
   </p>
   <p v-if="error" class="error inline">{{ error }}</p>
 

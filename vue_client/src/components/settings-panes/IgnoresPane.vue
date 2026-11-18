@@ -7,13 +7,9 @@
   <section id="ignores" class="settings-pane">
     <h2>ignores</h2>
     <p class="section-desc">
-      Ignore rules hide matching messages. A rule matches by nick/hostmask (<code
-        >nick!user@host</code
-      >
-      with <code>*</code> wildcards) and can be narrowed to specific channels, message text, and
-      event types. Rules are <strong>global</strong> by default; scope one to a single network if
-      you only want it there. Everything here is also available through the
-      <code>/ignore</code> command.
+      An ignore hides messages from a sender (<code>nick!user@host</code>, <code>*</code> for
+      wildcards), on every network or one. It can be narrowed to channels, text or event types. Also
+      managed with <code>/ignore</code>.
     </p>
 
     <p v-if="!ignoreGroups.length" class="muted small">

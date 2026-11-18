@@ -7,8 +7,7 @@
   <section id="notifications" class="settings-pane">
     <h2>notifications</h2>
     <p class="section-desc">
-      Each browser/device subscribes independently. Enable here to receive system notifications on
-      this device when a highlight or DM arrives and no other client of yours is currently visible.
+      Push is turned on per device. It fires when none of your clients is visible.
     </p>
     <p v-if="pushError" class="error inline">{{ pushError }}</p>
 
@@ -76,9 +75,7 @@
     <hr class="hl-sep" />
     <h3 class="subhead">alerts</h3>
     <p class="section-desc">
-      One master toggle per signal type. Toast appears in-client when a tab is visible; push fires
-      when no tab is visible — the right one is picked automatically, so a single switch covers
-      both.
+      One switch per kind of alert. You get a toast if a tab is visible, and a push if none is.
     </p>
 
     <div v-for="signal in notificationSignals" :key="signal.key" class="hl-notif notif-signal">
@@ -171,8 +168,7 @@
     <hr class="hl-sep" />
     <h3 class="subhead">always-notify channels</h3>
     <p class="section-desc">
-      Channels flagged "always notify" via the channel context menu fire notifications for every
-      message. This is the one place to see and remove the set.
+      Channels that notify you of every message. Set one from its menu in the channel list.
     </p>
     <p v-if="!alwaysNotifyChannelList.length" class="muted small">
       None yet. Right-click a channel in the buffer list to enable.
@@ -193,10 +189,7 @@
 
     <hr class="hl-sep" />
     <h3 class="subhead">push filters</h3>
-    <p class="section-desc">
-      Conditions that suppress push notifications globally. Toasts are unaffected — they only fire
-      when you're at the desk anyway.
-    </p>
+    <p class="section-desc">When push stays quiet. Toasts are unaffected.</p>
     <div class="hl-notif">
       <label class="hl-row" data-setting-key="notifications.push.mute_when_away">
         <input

@@ -7,12 +7,9 @@
   <section id="highlights" class="settings-pane">
     <h2>highlights</h2>
     <p class="section-desc">
-      Highlight rules mark matching messages (line accent + sidebar dot). A rule matches a keyword
-      (<code>contains</code>, <code>whole word</code>, <code>glob</code>, or <code>regex</code>)
-      and/or a sender hostmask (<code>nick!user@host</code> with <code>*</code> wildcards), and can
-      be narrowed to specific channels. Rules are <strong>global</strong> by default; scope one to a
-      single network if you only want it there. Everything here is also available through the
-      <code>/highlight</code> command. Configure notification delivery in the Notifications pane.
+      A highlight marks a message and its channel. A rule matches a word, a sender
+      (<code>nick!user@host</code>, <code>*</code> for wildcards), or both, on every network or one.
+      Also managed with <code>/highlight</code>.
     </p>
 
     <p v-if="formError && !formOpen" class="error inline">{{ formError }}</p>
