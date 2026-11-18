@@ -857,6 +857,30 @@ describe('chathistory window grid', () => {
   });
 });
 
+// The backfill anchor (newestConversationTime/-Times, #1283): the newest
+// conversation line a buffer holds, read synchronously once per buffer when a
+// draft/chathistory network registers and again at each JOIN. Its `id <= ?`
+// bound must not choose the index: through idx_messages_buf_unread it read the
+// whole buffer and sorted it by time, seconds per call on a big channel, which
+// stalled the event loop long enough for other networks' registrations to
+// time out.
+describe('backfill anchor', () => {
+  it('is one seek on idx_messages_buf_time from the newest end, no sort', async () => {
+    const { NEWEST_CONVERSATION_SQL } = await import('./messages.js');
+    const detail = (
+      db
+        .prepare(`EXPLAIN QUERY PLAN ${NEWEST_CONVERSATION_SQL}`)
+        .all(1, Number.MAX_SAFE_INTEGER) as Array<{
+        detail: string;
+      }>
+    )
+      .map((r) => r.detail)
+      .join(' | ');
+    expect(detail).toMatch(/SEARCH messages USING INDEX idx_messages_buf_time \(buffer_id=\?\)/);
+    expect(detail).not.toMatch(/TEMP B-TREE|idx_messages_buf_unread/);
+  });
+});
+
 // MARKREAD maps a read pointer (an id) to a time and back (bouncer.ts). Both
 // lookups run on a client's command and must stay seeks on the per-buffer id
 // index. idx_messages_buf_time (buffer_id, time) now offers the planner a
