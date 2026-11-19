@@ -19,6 +19,10 @@
 // CRC-32. A master element may open with a checksum of everything after it. Editing
 // under one would leave it wrong and a strict reader would discard the element, so
 // the checksum of every master edited here is voided too — it is optional.
+//
+// A VOID THAT WAS ALREADY THERE is emptied as well. A reader skips its contents, so
+// nothing says they are zeros: a tool that removed a Tags element by retyping it,
+// as this one does, may have left the tags inside.
 
 import { MediaScrubError, ScrubFile, blankCommentHeader } from './mediaScrubIo.js';
 import { scrubFlacBlocks } from './mediaScrubFlac.js';
@@ -133,6 +137,11 @@ async function voidRange(file: ScrubFile, start: number, end: number): Promise<v
   await file.zero(start + header.length, end);
 }
 
+/** Zero the contents of a Void the file came with. */
+async function emptyVoid(file: ScrubFile, el: Element): Promise<void> {
+  if (el.end !== null && el.end > el.data) await file.zero(el.data, Math.min(el.end, file.size));
+}
+
 /** The children of a sized master element, in order. A child that does not fit is
  *  a refusal: something under here did not parse, and what we could not read we
  *  could not clean. */
@@ -154,6 +163,8 @@ async function scrubInfo(file: ScrubFile, start: number, end: number): Promise<v
       await voidRange(file, el.start, el.end!);
     } else if (INFO_BLANKED.has(el.id)) {
       await file.zero(el.data, el.end!);
+    } else if (el.id === VOID) {
+      await emptyVoid(file, el);
     }
   }
 }
@@ -162,6 +173,8 @@ async function scrubSeekHead(file: ScrubFile, start: number, end: number): Promi
   for await (const el of children(file, start, end)) {
     if (el.id === CRC32) {
       await voidRange(file, el.start, el.end!);
+    } else if (el.id === VOID) {
+      await emptyVoid(file, el);
     } else if (el.id === SEEK && el.end! - el.data <= 64) {
       // An index entry for something that is about to stop existing. A reader that
       // followed it would only find a Void, but an index should not point at one.
@@ -181,6 +194,7 @@ async function scrubSeekHead(file: ScrubFile, start: number, end: number): Promi
 async function scrubTracks(file: ScrubFile, start: number, end: number): Promise<void> {
   for await (const el of children(file, start, end)) {
     if (el.id === CRC32) await voidRange(file, el.start, el.end!);
+    else if (el.id === VOID) await emptyVoid(file, el);
     else if (el.id === TRACK_ENTRY) await scrubTrackEntry(file, el.data, el.end!);
   }
 }
@@ -192,6 +206,8 @@ async function scrubTrackEntry(file: ScrubFile, start: number, end: number): Pro
     if (el.id === CRC32 || el.id === TRACK_NAME) {
       // A track name is whatever the recorder called the source: "Alex's Yeti".
       await voidRange(file, el.start, el.end!);
+    } else if (el.id === VOID) {
+      await emptyVoid(file, el);
     } else if (el.id === CODEC_ID && el.end! - el.data <= 64) {
       codec = (await file.read(el.data, el.end! - el.data)).toString('latin1');
     } else if (el.id === CODEC_PRIVATE) {
@@ -283,8 +299,9 @@ export async function scrubEbml(file: ScrubFile): Promise<void> {
     else if (el.id === INFO) await scrubInfo(file, el.data, el.end);
     else if (el.id === TRACKS) await scrubTracks(file, el.data, el.end);
     else if (el.id === SEEK_HEAD) await scrubSeekHead(file, el.data, el.end);
-    // Anything else (the EBML header, Cues, Void, an element newer than this
-    // code) is stepped over untouched.
+    else if (el.id === VOID) await emptyVoid(file, el);
+    // Anything else (the EBML header, Cues, an element newer than this code) is
+    // stepped over untouched.
 
     pos = el.end;
   }
@@ -299,6 +316,7 @@ async function endOfUnsizedCluster(file: ScrubFile, start: number): Promise<numb
     if (!el) return file.size;
     if (AFTER_CLUSTER.has(el.id)) return pos;
     if (el.end === null) throw new MediaScrubError(`unsized element at offset ${pos}`);
+    if (el.id === VOID) await emptyVoid(file, el);
     pos = el.end;
   }
   return file.size;

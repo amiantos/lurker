@@ -145,4 +145,45 @@ describe('scrubMediaFile — WAV', () => {
       MediaScrubError,
     );
   });
+  // Padding is kept as padding, not as whatever it holds. An editor that shrinks a
+  // tag in place renames the chunk and leaves the bytes.
+  it('empties the padding chunks a file came with', async () => {
+    const stale = 'IART Someone Identifiable, left behind';
+    const original = riff([
+      chunk('fmt ', fmt),
+      chunk('JUNK', Buffer.from(stale)),
+      chunk('FLLR', Buffer.from(`${stale}!`)), // odd length: a pad byte follows
+      chunk('data', samples),
+    ]);
+    const p = write('stale.wav', original);
+
+    await scrubMediaFile(p, 'audio/wav');
+    const after = fs.readFileSync(p);
+
+    expect(after.includes(Buffer.from('Identifiable'))).toBe(false);
+    expect(after.length).toBe(original.length);
+    expect(chunksOf(after)).toEqual(chunksOf(original));
+    const [, , dataAt] = chunksOf(after).find(([id]) => id === 'data')!;
+    expect(after.subarray(dataAt + 8, dataAt + 8 + samples.length).equals(samples)).toBe(true);
+  });
+
+  // The other length a recorder writes when it cannot seek back. Unlike 0xFFFFFFFF
+  // it does not overrun the file, so the walk would carry on INTO the samples —
+  // and silence reads as a run of unnamed zero-length chunks, each of which would
+  // be renamed JUNK. Refused, with the audio untouched.
+  it('refuses a streamed file whose data chunk claims no length at all', async () => {
+    const audio = Buffer.concat([Buffer.alloc(64), samples]);
+    const original = Buffer.concat([riff([chunk('fmt ', fmt)]), chunk('data', audio, 0)]);
+    const p = write('streamed-zero.wav', original);
+
+    await expect(scrubMediaFile(p, 'audio/wav')).rejects.toBeInstanceOf(MediaScrubError);
+    expect(fs.readFileSync(p).equals(original)).toBe(true);
+  });
+
+  it('accepts a data chunk that is honestly empty', async () => {
+    const original = riff([chunk('fmt ', fmt), chunk('data', Buffer.alloc(0))]);
+    const p = write('empty.wav', original);
+    await scrubMediaFile(p, 'audio/wav');
+    expect(fs.readFileSync(p).equals(original)).toBe(true);
+  });
 });

@@ -164,4 +164,27 @@ describe('scrubMediaFile — FLAC', () => {
     const p = write('not.flac', Buffer.from('nothing like a flac stream in here'));
     await expect(scrubMediaFile(p, 'audio/flac')).rejects.toBeInstanceOf(MediaScrubError);
   });
+  // PADDING is where a tagger that shrank a tag leaves the rest of it. The spec says
+  // the block is zeros; nothing enforces that.
+  it('empties a padding block the file came with, and leaves it a padding block', async () => {
+    const stale = 'ARTIST=Someone Identifiable, left behind';
+    const original = Buffer.concat([
+      Buffer.from('fLaC'),
+      block(STREAMINFO, streamInfo),
+      block(PADDING, Buffer.from(stale)),
+      block(SEEKTABLE, seekTable),
+      block(PADDING, Buffer.from(stale), true),
+      frames,
+    ]);
+    const p = write('stale-padding.flac', original);
+
+    await scrubMediaFile(p, 'audio/flac');
+    const after = fs.readFileSync(p);
+
+    expect(after.includes(Buffer.from('Identifiable'))).toBe(false);
+    expect(after.length).toBe(original.length);
+    expect(blocks(after)).toEqual(blocks(original)); // same types, lengths, last flag
+    expect(after.includes(seekTable)).toBe(true);
+    expect(after.subarray(blocks(after).audioAt).equals(frames)).toBe(true);
+  });
 });

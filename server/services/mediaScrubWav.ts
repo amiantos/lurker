@@ -20,7 +20,12 @@ import { MediaScrubError, type ScrubFile } from './mediaScrubIo.js';
 // is more likely to be a recorder's notes than something playback depends on, and
 // the failure modes are not symmetric — blanking a sampler's loop points costs a
 // loop, keeping a chunk we did not recognize can cost someone their address.
-const KEPT = new Set(['fmt ', 'fact', 'data', 'JUNK', 'junk', 'PAD ', 'FLLR']);
+const KEPT = new Set(['fmt ', 'fact', 'data']);
+
+// Padding keeps its name and loses its contents. A chunk called JUNK promises
+// nothing about what is in it: an editor that shrank a tag in place can leave the
+// old bytes there.
+const PADDING = new Set(['JUNK', 'junk', 'PAD ', 'FLLR']);
 
 const JUNK = Buffer.from('JUNK');
 
@@ -42,17 +47,26 @@ export async function scrubWav(file: ScrubFile): Promise<void> {
     const end = pos + 8 + length;
 
     if (end > file.size) {
-      // A recorder that could not seek back writes a `data` length of 0 or
-      // 0xFFFFFFFF and stops when the audio does; a recording that was cut off
-      // looks the same. Either way the samples run to the end of the file and
-      // there is nothing after them to clean.
+      // A recorder that could not seek back writes a `data` length of 0xFFFFFFFF
+      // and stops when the audio does; a recording that was cut off looks the
+      // same. Either way the samples run to the end of the file and there is
+      // nothing after them to clean.
       if (id === 'data') return;
       throw new MediaScrubError(`malformed chunk "${id}" at offset ${pos}`);
     }
 
+    // ⚠ The other thing such a recorder writes is a length of 0, and that one is
+    // refused. Nothing tells it apart from a `data` chunk that really is empty, and
+    // walking on would read the samples as chunk headers and blank whichever of
+    // them happened to look like one.
+    if (id === 'data' && length === 0 && end < file.size) {
+      throw new MediaScrubError('a WAV whose data chunk does not say how long it is');
+    }
+
     if (!KEPT.has(id)) {
-      await file.write(JUNK, pos);
-      await file.zero(pos + 8, end);
+      if (!PADDING.has(id)) await file.write(JUNK, pos);
+      // The pad byte after an odd-length chunk goes with it.
+      await file.zero(pos + 8, Math.min(end + (length & 1), file.size));
     }
 
     pos = end + (length & 1);

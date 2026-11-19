@@ -467,4 +467,47 @@ describe('scrubMediaFile — Matroska / WebM', () => {
     const p = write('not.webm', Buffer.from('this is not a matroska file, whatever it says'));
     await expect(scrubMediaFile(p, 'video/webm')).rejects.toBeInstanceOf(MediaScrubError);
   });
+  // A Void is skipped by every reader, so nothing has ever checked what is in one.
+  // A tool that removed Tags the way this scrubber does — retype, same length —
+  // without zeroing would leave the tags sitting there.
+  it('empties the Void elements a file came with, wherever the walk reaches', async () => {
+    const stale = (where: string) => el(VOID, `LOCATION=${SECRETS.location} in ${where}`);
+    const block = el(
+      SIMPLE_BLOCK,
+      Buffer.concat([Buffer.from([0x81, 0, 0, 0x80]), Buffer.alloc(60, 9)]),
+    );
+    const info = el(INFO, Buffer.concat([el(TIMESTAMP_SCALE, uint(1_000_000, 3)), stale('info')]));
+    const tracks = el(
+      TRACKS,
+      Buffer.concat([
+        stale('tracks'),
+        el(TRACK_ENTRY, Buffer.concat([el(TRACK_NUMBER, uint(1, 1)), stale('entry')])),
+      ]),
+    );
+    const seekHead = el(SEEK_HEAD, stale('seekhead'));
+    const cluster = el(
+      CLUSTER,
+      Buffer.concat([el(TIMESTAMP, uint(0, 1)), block, stale('cluster'), block]),
+      8,
+      UNKNOWN,
+    );
+    const original = Buffer.concat([
+      ebmlHeader('webm'),
+      el(SEGMENT, Buffer.concat([seekHead, info, stale('segment'), tracks, cluster]), 8, UNKNOWN),
+    ]);
+    const p = write('stale-void.webm', original);
+    expect(original.includes(Buffer.from(SECRETS.location))).toBe(true);
+
+    await scrubMediaFile(p, 'video/webm');
+    const after = fs.readFileSync(p);
+
+    expect(after.includes(Buffer.from(SECRETS.location))).toBe(false);
+    expect(after.includes(Buffer.from('LOCATION'))).toBe(false);
+    expect(after.length).toBe(original.length);
+    // Every element is where it was and what it was; only Void payloads changed.
+    const shape = (nodes: Parsed[]): unknown[] =>
+      nodes.map((n) => [n.id, n.start, n.end, n.children && shape(n.children)]);
+    expect(shape(parse(after))).toEqual(shape(parse(original)));
+    expect(after.includes(block)).toBe(true);
+  });
 });

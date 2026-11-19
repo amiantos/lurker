@@ -18,7 +18,9 @@ const SEEKTABLE = 3;
 // The blocks a decoder needs. Everything else goes: VORBIS_COMMENT (the tags),
 // PICTURE (cover art, which can carry EXIF of its own), CUESHEET (a disc's catalog
 // number and ISRCs), APPLICATION (anything at all), and any type added later.
-const KEPT = new Set([STREAMINFO, PADDING, SEEKTABLE]);
+// PADDING is not on the list either: it keeps its type and is zeroed like the rest,
+// because nothing makes a tagger that shrank a tag clear what it left behind.
+const KEPT = new Set([STREAMINFO, SEEKTABLE]);
 
 /**
  * Neutralize the metadata blocks of the FLAC stream that starts at `start`.
@@ -43,7 +45,7 @@ export async function scrubFlacBlocks(file: ScrubFile, start: number, end: numbe
     }
 
     if (!KEPT.has(type)) {
-      await file.write(Buffer.from([(last ? 0x80 : 0) | PADDING]), pos);
+      if (type !== PADDING) await file.write(Buffer.from([(last ? 0x80 : 0) | PADDING]), pos);
       await file.zero(pos + 4, blockEnd);
     }
 
