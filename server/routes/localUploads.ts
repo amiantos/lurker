@@ -66,6 +66,12 @@ const INLINE_MIME = new Set<string>([
   // the 415 was.
   'video/3gpp',
   'video/3gpp2',
+  // The #553 containers. webm/ogg/flac/wav were already above; these are the two
+  // spellings that weren't. Opus sniffs with its codec parameter attached — which is
+  // a valid Content-Type, and the exact string this set is matched against — and
+  // Matroska under the name IANA registered for it.
+  'audio/ogg; codecs=opus',
+  'video/matroska',
 ]);
 
 // file-type recommends >= 4100 bytes to recognize every supported signature.

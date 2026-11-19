@@ -60,7 +60,7 @@ describe('isUploadableType', () => {
   // things that obviously aren't uploads, not to enforce policy. The server's 415
   // names the real reason, which beats a drop that silently does nothing.
   it('lets media through for the server to judge', () => {
-    expect(isUploadableType('video/webm')).toBe(true); // server will 415 it, with a reason
+    expect(isUploadableType('video/x-msvideo')).toBe(true); // server will 415 it, with a reason
     expect(isUploadableType('image/png')).toBe(true);
     expect(isUploadableType('text/plain')).toBe(true);
     expect(isUploadableType('application/pdf')).toBe(false);

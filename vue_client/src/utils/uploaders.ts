@@ -114,7 +114,8 @@ export function missingRequired(
 }
 
 // What the upload route accepts: images, text, and the media we can strip metadata
-// from (mp4/mov/m4v/m4a/m4b/3gp/3g2/mp3 — see server/services/contentClass.ts).
+// from (mp4/mov/m4v/m4a/m4b/3gp/3g2/mp3/webm/mkv/ogg/opus/flac/wav — see
+// server/services/contentClass.ts).
 //
 // This is the file PICKER's `accept` attribute, and nothing else. The drop and paste
 // gates deliberately do not share it — they go through the looser isUploadableType()
@@ -150,6 +151,16 @@ export const ACCEPTED_FILE_TYPES = [
   'audio/mpeg',
   'audio/mp4',
   'audio/x-m4a',
+  'video/webm',
+  'video/x-matroska',
+  'video/ogg',
+  'audio/webm',
+  'audio/ogg',
+  'audio/opus',
+  'audio/flac',
+  'audio/x-flac',
+  'audio/wav',
+  'audio/x-wav',
   '.mp4',
   '.mov',
   '.m4v',
@@ -160,6 +171,16 @@ export const ACCEPTED_FILE_TYPES = [
   '.3gp',
   '.3g2',
   '.mp3',
+  '.webm',
+  '.mkv',
+  '.mka',
+  '.ogg',
+  '.oga',
+  '.ogv',
+  '.opus',
+  '.spx',
+  '.flac',
+  '.wav',
 ].join(',');
 
 // What a phone camera can hand back, narrowed to what the server takes. Paired
@@ -181,7 +202,7 @@ export const CAMERA_CAPTURE_TYPES = [
 
 // Deliberately LOOSER than the accepted set: the drop/paste gates exist to ignore
 // things that obviously aren't uploads, not to enforce policy. The server is the
-// gate, and its 415 names the problem ("webm files are not accepted — Lurker takes
+// gate, and its 415 names the problem ("avi files are not accepted — Lurker takes
 // …"), which is far more useful than a drop that silently does nothing — the bug
 // this replaces.
 export function isUploadableType(mime: string, filename = ''): boolean {

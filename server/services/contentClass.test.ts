@@ -43,6 +43,48 @@ function bmff(brand: string, compat: string[] = ['isom', 'mp42']): Buffer {
 
 const mp3Frame = Buffer.concat([Buffer.from([0xff, 0xfb, 0x90, 0x00]), Buffer.alloc(400, 0x55)]);
 
+/** An EBML header with the given DocType and the start of a Segment — as far as
+ *  file-type reads to tell WebM from Matroska. */
+function ebml(docType: string): Buffer {
+  const doc = Buffer.from(docType);
+  const fields = Buffer.concat([
+    Buffer.from([0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01, 0x42, 0xf2, 0x81, 0x04]),
+    Buffer.from([0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x80 | doc.length]),
+    doc,
+    Buffer.from([0x42, 0x87, 0x81, 0x02, 0x42, 0x85, 0x81, 0x02]),
+  ]);
+  return Buffer.concat([
+    Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x80 | fields.length]),
+    fields,
+    Buffer.from([0x18, 0x53, 0x80, 0x67, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+  ]);
+}
+
+/** The first page of an Ogg stream, whose first packet opens with `codec`. That
+ *  opening is all file-type looks at. */
+function oggPage(codec: string): Buffer {
+  const packet = Buffer.concat([Buffer.from(codec, 'latin1'), Buffer.alloc(40, 1)]);
+  const header = Buffer.alloc(28);
+  header.write('OggS', 0, 'latin1');
+  header[5] = 0x02; // beginning of stream
+  header[26] = 1;
+  header[27] = packet.length;
+  return Buffer.concat([header, packet]);
+}
+
+const flacStream = Buffer.concat([
+  Buffer.from('fLaC'),
+  Buffer.from([0x80, 0, 0, 34]),
+  Buffer.alloc(34, 2),
+]);
+
+const wavFile = Buffer.concat([
+  Buffer.from('RIFF'),
+  Buffer.from([36, 0, 0, 0]),
+  Buffer.from('WAVEfmt '),
+  Buffer.alloc(24, 1),
+]);
+
 function crc32(buf: Buffer): number {
   let crc = 0xffffffff;
   for (let n = 0; n < buf.length; n++) {
@@ -150,6 +192,13 @@ describe('classifyUpload — media', () => {
       ['rec.m4a', bmff('3gp4', ['isom', '3gp4']), 'video/3gpp', '3gp'],
       ['v.3g2', bmff('3g2a', []), 'video/3gpp2', '3g2'],
       ['a.mp3', mp3Frame, 'audio/mpeg', 'mp3'],
+      // #553. A screen recording, an OBS capture, and the three audio containers.
+      ['v.webm', ebml('webm'), 'video/webm', 'webm'],
+      ['v.mkv', ebml('matroska'), 'video/matroska', 'mkv'],
+      ['a.ogg', oggPage('\x01vorbis'), 'audio/ogg', 'ogg'],
+      ['v.ogv', oggPage('\x80theora'), 'video/ogg', 'ogv'],
+      ['a.flac', flacStream, 'audio/flac', 'flac'],
+      ['a.wav', wavFile, 'audio/wav', 'wav'],
     ];
     for (const [name, bytes, mime, ext] of cases) {
       const c = await classifyUpload(write(name, bytes), 'application/octet-stream');
@@ -171,18 +220,26 @@ describe('classifyUpload — media', () => {
     expect(c.ext).toBe('mp4');
   });
 
+  // file-type hands Opus back with its codec parameter attached. That string is a
+  // fine Content-Type and a poor identity: the scrubber dispatches on the mime, the
+  // uploads browser files the row by it, and a driver may match it against a list of
+  // bare types. The parameter is kept where it is useful, as the extension.
+  it('records Opus under the bare audio/ogg, and keeps .opus as the extension', async () => {
+    const c = await classifyUpload(write('memo.opus', oggPage('OpusHead')), 'audio/ogg');
+    expect(c).toEqual({ contentClass: 'media', mime: 'audio/ogg', ext: 'opus' });
+  });
+
   it('rejects media we have no scrubber for, rather than leaking its metadata', async () => {
-    // WebM: harmless in practice (a browser recorder writes a muxer name and a
-    // date, not a location), but "everything we accept, we clean" is the rule, and
-    // we have no EBML scrubber yet. A real EBML header, not a stub — file-type needs
-    // to read as far as the DocType to call it webm.
-    const webm = Buffer.from([
-      0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81, 0x01, 0x42, 0xf2,
-      0x81, 0x04, 0x42, 0xf3, 0x81, 0x08, 0x42, 0x82, 0x84, 0x77, 0x65, 0x62, 0x6d, 0x42, 0x87,
-      0x81, 0x02, 0x42, 0x85, 0x81, 0x02, 0x18, 0x53, 0x80, 0x67, 0x01, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00,
+    // AVI: a RIFF container like WAV, with `LIST`/`INFO` chunks like WAV — and an
+    // index of absolute offsets the WAV scrubber knows nothing about. "Everything we
+    // accept, we clean" is the rule, and nothing here cleans it.
+    const avi = Buffer.concat([
+      Buffer.from('RIFF'),
+      Buffer.from([64, 0, 0, 0]),
+      Buffer.from('AVI LIST'),
+      Buffer.alloc(56, 1),
     ]);
-    await expect(classifyUpload(write('v.webm', webm), 'video/webm')).rejects.toBeInstanceOf(
+    await expect(classifyUpload(write('v.avi', avi), 'video/avi')).rejects.toBeInstanceOf(
       UnsupportedTypeError,
     );
   });

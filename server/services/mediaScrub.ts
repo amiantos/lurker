@@ -31,16 +31,20 @@
 // containers (WebP/PNG/GIF/SVG) but on a Buffer — images are small and bounded, so
 // they can afford it. Media can't.
 
-import fs from 'node:fs';
+//
+// The other containers (#553) follow the same rule with their own padding element,
+// one module each: Matroska/WebM retypes to `Void` (mediaScrubEbml.ts), FLAC to a
+// PADDING block (mediaScrubFlac.ts), WAV to a `JUNK` chunk (mediaScrubWav.ts), and
+// Ogg empties its comment packet where it lies (mediaScrubOgg.ts).
 
-/** A container we could not make sense of. The route turns this into a 415.
- *  Deliberately NOT a passthrough fallback (which is what the image scrubbers do):
- *  there is no sharp re-encode behind us to catch what we miss, and the failure mode
- *  is someone's home address in a public channel. Refusing the upload is the
- *  conservative answer. */
-export class MediaScrubError extends Error {
-  code = 'MEDIA_SCRUB_FAILED';
-}
+import fs from 'node:fs';
+import { MediaScrubError, ScrubFile, zeroRange } from './mediaScrubIo.js';
+import { scrubEbml } from './mediaScrubEbml.js';
+import { scrubFlacBlocks } from './mediaScrubFlac.js';
+import { scrubOgg } from './mediaScrubOgg.js';
+import { scrubWav } from './mediaScrubWav.js';
+
+export { MediaScrubError };
 
 // Boxes whose entire contents are metadata. `udta` (user data — this is where
 // ©xyz GPS, ©mak/©mod device info and com.apple.quicktime.* live), `meta`
@@ -61,17 +65,6 @@ const TIMESTAMPED = new Set(['mvhd', 'tkhd', 'mdhd']);
 const MAX_BOX_DEPTH = 8;
 
 const FREE = Buffer.from('free');
-const ZERO_CHUNK = Buffer.alloc(64 * 1024);
-
-/** Overwrite a byte range with zeros, chunked so a huge box can't blow up memory. */
-async function zeroRange(fh: fs.promises.FileHandle, start: number, end: number): Promise<void> {
-  let pos = start;
-  while (pos < end) {
-    const n = Math.min(ZERO_CHUNK.length, end - pos);
-    await fh.write(ZERO_CHUNK, 0, n, pos);
-    pos += n;
-  }
-}
 
 /**
  * Walk an ISO-BMFF box tree between [start, end), neutralizing metadata boxes.
@@ -156,8 +149,11 @@ async function zeroTimestamps(
   await zeroRange(fh, from, to);
 }
 
-/** ID3 tags on an MP3. Both edits keep the file length identical. */
-async function scrubId3(fh: fs.promises.FileHandle, size: number): Promise<void> {
+/** ID3 tags on an MP3 — or in front of a FLAC, which some taggers do. Both edits
+ *  keep the file length identical. Returns where the ID3v2 tag ends, which is where
+ *  the audio stream begins (0 when there is no tag). */
+async function scrubId3(fh: fs.promises.FileHandle, size: number): Promise<number> {
+  let audioStart = 0;
   // ID3v2 prefix: "ID3" ver(2) flags(1) size(4, synchsafe — 7 bits per byte).
   const head = Buffer.alloc(10);
   const { bytesRead } = await fh.read(head, 0, 10, 0);
@@ -172,6 +168,9 @@ async function scrubId3(fh: fs.promises.FileHandle, size: number): Promise<void>
     // ID3v2 tag are padding, which the spec allows, so the tag stays well-formed
     // and every byte offset after it is unchanged.
     if (end > 10) await zeroRange(fh, 10, end);
+    // An ID3v2.4 tag may close with a 10-byte footer (flag bit 4), which the
+    // declared size does not count.
+    audioStart = Math.min(end + (head[5] & 0x10 ? 10 : 0), size);
   }
 
   // ID3v1 trailer: the last 128 bytes, starting "TAG". Keep the magic (so it stays a
@@ -184,6 +183,7 @@ async function scrubId3(fh: fs.promises.FileHandle, size: number): Promise<void>
       await zeroRange(fh, size - 128 + 3, size);
     }
   }
+  return audioStart;
 }
 
 /**
@@ -197,9 +197,20 @@ export async function scrubMediaFile(path: string, mime: string): Promise<void> 
   const fh = await fs.promises.open(path, 'r+');
   try {
     const { size } = await fh.stat();
-    if (mime === 'audio/mpeg') {
-      await scrubId3(fh, size);
-      return;
+    switch (mime) {
+      case 'audio/mpeg':
+        await scrubId3(fh, size);
+        return;
+      case 'audio/flac':
+        return await scrubFlacBlocks(new ScrubFile(fh, size), await scrubId3(fh, size), size);
+      case 'audio/wav':
+        return await scrubWav(new ScrubFile(fh, size));
+      case 'audio/ogg':
+      case 'video/ogg':
+        return await scrubOgg(new ScrubFile(fh, size));
+      case 'video/webm':
+      case 'video/matroska':
+        return await scrubEbml(new ScrubFile(fh, size));
     }
     // Everything else we accept is ISO-BMFF: mp4, mov, m4v, m4a, m4b/f4a/f4b, 3gp, 3g2.
     // They differ only in their `ftyp` major brand — to the box walker they are one

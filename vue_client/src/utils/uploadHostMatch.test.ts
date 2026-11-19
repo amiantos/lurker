@@ -71,14 +71,17 @@ describe('mediaKindForUrl', () => {
   });
 
   // Deliberately WIDER than what the uploader accepts. The viewer renders links; it is
-  // not a gate on uploads. Refusing to play someone's .webm because *we* can't yet
-  // scrub its metadata (#553) would be enforcing our upload policy on their link.
+  // not a gate on uploads. These were once refused as uploads (#553) and played as
+  // links all the same; the table must not narrow to whatever the uploader takes.
   it.each([
     ['https://x.test/a.webm', 'video'],
+    ['https://x.test/a.mkv', 'video'],
+    ['https://x.test/a.ogv', 'video'],
     ['https://x.test/a.flac', 'audio'],
     ['https://x.test/a.ogg', 'audio'],
+    ['https://x.test/a.opus', 'audio'],
     ['https://x.test/a.wav', 'audio'],
-  ] as const)('plays %s even though we would not accept it as an upload', (url, kind) => {
+  ] as const)('plays %s, whatever the uploader happens to accept', (url, kind) => {
     expect(mediaKindForUrl(url)).toBe(kind);
   });
 
