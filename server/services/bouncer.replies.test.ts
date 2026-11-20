@@ -258,25 +258,51 @@ describe('replies go only to whoever asked', () => {
     await until(() => live.events.some((e) => e.type === 'whois_result'), 5000, 'whois_result');
   });
 
-  it("keeps the 301 for a message to someone away out of the server buffer, not a WHOIS's", async () => {
+  it("keeps the 301 for a DM to someone away out of the server buffer, not a WHOIS's", async () => {
     const live = await seedLive();
     const nick = `dave${seq}`;
     const dave = await rawClient(ircd.port, nick);
     cleanups.push(() => dave.socket.destroy());
+    const c = await attach(live);
+    const away = () =>
+      live.events.findLast((e) => e.type === 'peer-presence' && e.nick === nick)?.awayMessage;
+    const rows = (text: string) => serverRows(live).filter((t) => t.includes(text));
+
     dave.send('AWAY :gone fishing');
     await dave.waitFor(/ 306 /);
-    const c = await attach(live);
-
-    live.conn.raw(`PRIVMSG ${nick} :you there?`);
+    live.conn.say(nick, 'you there?');
     // A bouncer client still hears it: the line is the network's.
     await c.waitFor((l) => commandOf(l) === '301');
     await sentinel(live, [c]);
-    expect(serverRows(live).filter((t) => t.includes('gone fishing'))).toEqual([]);
+    expect(rows('gone fishing')).toEqual([]);
+    // The DM is where it shows instead, reason and all.
+    expect(away()).toBe('gone fishing');
+
+    // Already away, and a different reason: the row is not the only place it was.
+    dave.send('AWAY :at the dentist');
+    dave.send('PING dentist');
+    await dave.waitFor(/PONG .*dentist/);
+    live.conn.say(nick, 'still there?');
+    await until(() => away() === 'at the dentist', 5000, 'the new reason');
+    await sentinel(live, [c]);
+    expect(rows('at the dentist')).toEqual([]);
 
     live.conn.raw(`WHOIS ${nick}`);
     await until(() => live.events.some((e) => e.type === 'whois_result'), 5000, 'whois_result');
     await sentinel(live, [c]);
-    expect(serverRows(live).filter((t) => t.includes('gone fishing'))).toHaveLength(1);
+    expect(rows('at the dentist')).toHaveLength(1);
+  });
+
+  it('keeps the 301 from someone with no DM, which has nowhere else to show', async () => {
+    const live = await seedLive();
+    const nick = `erin${seq}`;
+    const erin = await rawClient(ircd.port, nick);
+    cleanups.push(() => erin.socket.destroy());
+    erin.send('AWAY :out to lunch');
+    await erin.waitFor(/ 306 /);
+    live.conn.raw(`PRIVMSG ${nick} :\u0001VERSION\u0001`);
+    await sentinel(live, []);
+    expect(serverRows(live).filter((t) => t.includes('out to lunch'))).toHaveLength(1);
   });
 
   it('sends each client only its own WHOIS and LIST replies', async () => {

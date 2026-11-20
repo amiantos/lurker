@@ -1165,7 +1165,7 @@ export class FakeIrcd extends EventEmitter {
             'fake.host',
             this.serverName,
             m.nick!,
-            'H',
+            m.away !== null ? 'G' : 'H',
             `0 ${realname}`,
           );
           continue;
@@ -1179,7 +1179,7 @@ export class FakeIrcd extends EventEmitter {
           h: 'fake.host',
           s: this.serverName,
           n: m.nick!,
-          f: 'H',
+          f: m.away !== null ? 'G' : 'H',
           d: '0',
           l: '0',
           a: m.account ?? '0',
