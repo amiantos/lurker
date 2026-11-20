@@ -258,6 +258,27 @@ describe('replies go only to whoever asked', () => {
     await until(() => live.events.some((e) => e.type === 'whois_result'), 5000, 'whois_result');
   });
 
+  it("keeps the 301 for a message to someone away out of the server buffer, not a WHOIS's", async () => {
+    const live = await seedLive();
+    const nick = `dave${seq}`;
+    const dave = await rawClient(ircd.port, nick);
+    cleanups.push(() => dave.socket.destroy());
+    dave.send('AWAY :gone fishing');
+    await dave.waitFor(/ 306 /);
+    const c = await attach(live);
+
+    live.conn.raw(`PRIVMSG ${nick} :you there?`);
+    // A bouncer client still hears it: the line is the network's.
+    await c.waitFor((l) => commandOf(l) === '301');
+    await sentinel(live, [c]);
+    expect(serverRows(live).filter((t) => t.includes('gone fishing'))).toEqual([]);
+
+    live.conn.raw(`WHOIS ${nick}`);
+    await until(() => live.events.some((e) => e.type === 'whois_result'), 5000, 'whois_result');
+    await sentinel(live, [c]);
+    expect(serverRows(live).filter((t) => t.includes('gone fishing'))).toHaveLength(1);
+  });
+
   it('sends each client only its own WHOIS and LIST replies', async () => {
     const live = await seedLive();
     const carol = await peer('carol');

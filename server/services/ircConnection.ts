@@ -2549,6 +2549,10 @@ export class IrcConnection {
         }
         return;
       }
+      // RPL_AWAY for a message sent to someone away: one per message, and the
+      // DM already shows that they are away. The 301 inside a WHOIS the user
+      // asked for is part of its reply and stays.
+      if (rawCommand === '301' && this.replyOwner !== 'user') return;
       // NAMES replies are denied because a joined channel's nicklist is where
       // they show. One for a channel we are not in has no nicklist to land in
       // (see 'userlist'), so it renders verbatim like any other numeric.
