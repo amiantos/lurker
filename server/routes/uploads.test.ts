@@ -17,7 +17,7 @@ import type { ContentClass } from '../services/uploadProviders/types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveDataDir } from '../utils/dataDir.js';
-import { heicFixture, HEIC_WIDTH, HEIC_HEIGHT } from '../test-utils/heicFixture.js';
+import { heicFixture } from '../test-utils/heicFixture.js';
 
 const ctx = setupTestDb('routes-uploads');
 
@@ -313,47 +313,31 @@ describe('POST /api/uploads', () => {
   });
 
   // An iPhone photo, straight from the camera roll. This used to be a 500: sharp
-  // read the header, took it for an image, and failed on the first pixel.
-  it('accepts a HEIC and stores it as the optimized format', async () => {
+  // read the header, took it for an image, and failed on the first pixel. sharp has
+  // no HEVC decoder and Lurker ships none, so it is still refused — with a status
+  // the client understands and a sentence the user can act on, and without the
+  // upload reaching the driver.
+  it('answers a HEIC with a 415 that says what to do instead', async () => {
     stub.shouldThrow = null;
+    stub.capturedBytes = null;
     const res = await agent
       .post('/api/uploads')
       .attach('image', heicFixture(), { filename: 'IMG_0412.HEIC', contentType: 'image/heic' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.mime).toBe('image/webp');
-    expect(stub.capturedMeta!.filename).toBe('IMG_0412.webp');
-    const meta = await sharp(stub.capturedBytes!).metadata();
-    expect([meta.format, meta.width, meta.height]).toEqual(['webp', HEIC_WIDTH, HEIC_HEIGHT]);
-    expect(meta.exif).toBeUndefined();
-
-    // And it has a thumbnail, made from the same decode.
-    const thumb = await agent.get(`/api/uploads/${res.body.id}/thumb`);
-    expect(thumb.status).toBe(200);
-  });
-
-  // A HEIC that fails in BOTH decoders. Neither's message is something a user can
-  // act on — the answer has to say what to do instead.
-  it('tells the user what to do with a HEIC it cannot decode', async () => {
-    const brands = Buffer.from('heic\0\0\0\0mif1heic');
-    const ftyp = Buffer.concat([
-      Buffer.from([0, 0, 0, 8 + brands.length]),
-      Buffer.from('ftyp'),
-      brands,
-    ]);
-    const heic = Buffer.concat([
-      ftyp,
-      Buffer.from([0, 0, 0, 16]),
-      Buffer.from('meta'),
-      Buffer.alloc(8),
-    ]);
-    const res = await agent
-      .post('/api/uploads')
-      .attach('image', heic, { filename: 'IMG_0412.HEIC', contentType: 'image/heic' });
     expect(res.status).toBe(415);
     expect(res.body.error).toMatch(/HEIC photo could not be decoded/);
     expect(res.body.error).toMatch(/JPEG/);
     expect(res.body.error).not.toMatch(/\n/);
+    expect(stub.capturedBytes).toBeNull();
+  });
+
+  it('answers a HEIC avatar the same way', async () => {
+    const res = await agent
+      .post('/api/uploads')
+      .field('purpose', 'avatar')
+      .attach('image', heicFixture(), { filename: 'me.heic', contentType: 'image/heic' });
+    expect(res.status).toBe(415);
+    expect(res.body.error).toMatch(/HEIC photo could not be decoded/);
   });
 
   it('rejects a content class the resolved driver does not accept (415)', async () => {

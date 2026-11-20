@@ -112,11 +112,13 @@ export function providerErrorStatus(e: { code?: string }): number {
 /**
  * The 415 for an image the pipeline could not decode.
  *
- * ⚠ HEIC gets a sentence of its own because a HEIC that fails here has failed in
- * BOTH decoders — sharp's and the HEVC one behind imagePipeline.prepareImage — and
- * neither's words for it ("bad seek", "security limit exceeded") give a user
- * anything to act on. What does is that a JPEG export of the same photo gets
- * through. See #626 for the kind of file that ends up here.
+ * ⚠ HEIC gets a sentence of its own because it is the one format that fails here
+ * as a matter of course, not because the file is damaged. An iPhone photo is
+ * HEVC-coded, and the libvips sharp installs has no HEVC decoder: it reads the
+ * header, takes the file for an image, and cannot decode a pixel. Lurker does not
+ * ship a decoder of its own for it either. sharp's words for that ("bad seek",
+ * "security limit exceeded" — #626) give a user nothing to act on; what does is
+ * that a JPEG export of the same photo gets through.
  */
 function undecodableMessage(mime: string, detail: string): string {
   if (mime === 'image/heic' || mime === 'image/heif') {
@@ -264,12 +266,9 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     const quality = resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
     let optimized: imagePipeline.OptimizeResult;
     try {
-      // Once, for both the image and its thumbnail: an iPhone HEIC is decoded here
-      // (the stock sharp has no HEVC decoder), and everything else passes through.
-      const source = await imagePipeline.prepareImage(input.tempPath);
       optimized = input.avatar
-        ? await imagePipeline.avatar(source, { quality, format })
-        : await imagePipeline.optimize(source, {
+        ? await imagePipeline.avatar(input.tempPath, { quality, format })
+        : await imagePipeline.optimize(input.tempPath, {
             maxDim: staticImageMaxDimension(resolved.policy, settings),
             quality,
             format,
@@ -281,7 +280,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
       // An avatar's thumb is of the crop, so the editor's preview is what goes out.
       // Inside the try: it decodes the original a second time, and can fail the
       // same way.
-      thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : source, {
+      thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : input.tempPath, {
         format,
       });
     } catch (err) {

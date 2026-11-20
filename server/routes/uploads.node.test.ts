@@ -96,10 +96,8 @@ const pipelineCapture = {
   opts: null as { maxDim: number; quality: number; format?: string; rasterOnly?: boolean } | null,
 };
 vi.mock('../services/imagePipeline.js', () => ({
-  // Nothing here is HEIC, so the source goes to optimize() as it came.
-  prepareImage: async (input: Buffer | string) => input,
   optimize: async (
-    _buf: Buffer | string,
+    _buf: Buffer,
     opts: { maxDim: number; quality: number; format?: string; rasterOnly?: boolean },
   ) => {
     pipelineCapture.opts = opts;

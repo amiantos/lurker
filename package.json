@@ -49,7 +49,6 @@
     "file-type": "^22.3.0",
     "http_ece": "1.2.1",
     "irc-framework": "^4.13.1",
-    "libheif-js": "^1.23.5",
     "multer": "^2.5.0",
     "selfsigned": "^5.5.0",
     "sharp": "^0.35.5",

@@ -72,7 +72,6 @@ import { failInterruptedDccSends, settleInterruptedDccReceives } from './db/dccT
 import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
 import { describeRecentSyncWork } from './services/syncWork.js';
 import { stopSearchRunner } from './services/searchRunner.js';
-import { stopHeicDecoder } from './services/heicDecode.js';
 import restoreGate from './services/restoreGate.js';
 import * as systemMessages from './db/systemMessages.js';
 
@@ -353,7 +352,6 @@ function shutdown(signal: string): void {
   stopIgnoreSweeper();
   stopEventLoopMonitor();
   stopSearchRunner();
-  stopHeicDecoder();
   ircManager.shutdown();
   // The detaches just written must leave before this process's descriptors
   // are closed out from under them: server.close with no client connected
