@@ -218,17 +218,6 @@ describe('CHATHISTORY msgids', () => {
     expect(lines[0]).toContain(';msgid=upstream-uuid-1 :bob!u@h PRIVMSG #tagged :tagged msg');
   });
 
-  it('leaves out a notice of ours to a nick that only sits in this buffer (#1174)', async () => {
-    // chat.notice_buffer kept it where it was typed: it was never sent here.
-    const typed = { type: 'notice', self: true, nick: 'kept1', text: '→ bob: hi' };
-    expect(await historyOf('kept0', { ...typed, nick: 'kept0' })).toHaveLength(1);
-    const lines = await historyOf('kept1', {
-      ...typed,
-      extra: { sentTo: { target: 'bob', text: 'hi' } },
-    });
-    expect(lines).toEqual([]);
-  });
-
   it('carries no msgid for a message the network gave none', async () => {
     const lines = await historyOf('mid2', {});
     expect(lines).toHaveLength(1);

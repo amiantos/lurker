@@ -959,8 +959,6 @@ describe('MessageInput command dispatch', () => {
         type: 'notice',
         networkId: 1,
         target: 'bob',
-        // The buffer it was typed in: where its row goes if not bob's (#1174).
-        issuingTarget: '#zebra',
         text: `${OPEN}surprise${CLOSE}`,
       });
     });

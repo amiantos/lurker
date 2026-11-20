@@ -2775,9 +2775,6 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // not the bouncer's job), so playback stays consistent with it rather
       // than hiding in history what the client will then see live.
       if (row.mirrored || !row.text) continue;
-      // A notice of ours to a nick, kept in the buffer it was typed in (#1174):
-      // it was never sent to this buffer's target.
-      if (row.sentTo) continue;
       if (row.self && !this.replaysSelfLine(isChannel, bufferTarget)) continue;
       const prefix = this.replayedSource(row.nick || 'unknown', row.userhost);
       const target = this.replayedTarget(row.self, isChannel, bufferTarget, selfNick);
@@ -3834,9 +3831,8 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // batch it came in was kept from the clients, and so is this.
   if (event.replay) return;
   if (type !== 'message' && type !== 'action' && type !== 'notice') return;
-  // A notice whose row is not in the buffer of the nick it was to
-  // (chat.notice_buffer, #1174) names the line as it was sent: that is what
-  // the clients are given.
+  // A notice whose row went to the server buffer (chat.notice_buffer, #1174)
+  // names the line as it was sent: that is what the clients are given.
   const sentTo = event.sentTo as { target?: unknown; text?: unknown } | undefined;
   if (typeof sentTo?.target === 'string' && typeof sentTo.text === 'string') {
     event = { ...event, target: sentTo.target, text: sentTo.text };

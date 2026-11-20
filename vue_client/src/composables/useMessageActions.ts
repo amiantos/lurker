@@ -47,9 +47,6 @@ export interface MessageLike {
   msgid?: string;
   // An end-to-end encrypted line; reactions are cleartext tags, so none here.
   e2e?: boolean;
-  // The line as sent, on a notice of ours to a nick that chat.notice_buffer
-  // kept in the buffer it was typed in (#1174): it isn't a line of this buffer.
-  sentTo?: { target: string; text: string };
   // message / action / notice / … — only the first two can be reacted to.
   type?: string;
   // The line was deleted (#1013): nothing to copy, quote, answer or react to.
@@ -67,7 +64,6 @@ export function replyable(m: MessageLike): boolean {
     m.id != null &&
     !!m.msgid &&
     !m.e2e &&
-    !m.sentTo &&
     (m.type === 'message' || m.type === 'action' || m.type === 'notice') &&
     !!m.target &&
     !m.target.startsWith(':') &&

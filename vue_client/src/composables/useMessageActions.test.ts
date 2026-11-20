@@ -193,7 +193,6 @@ describe('useMessageActions', () => {
         { target: ':server:1' },
         { target: '=alice' },
         { id: null },
-        { sentTo: { target: 'bob', text: 'hi' } },
       ]) {
         // Paired with the case, so a failure names which gate let it through.
         expect({ over, reply: hasReply({ ...replyableMine, ...over }) }).toEqual({

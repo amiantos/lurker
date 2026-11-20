@@ -456,92 +456,40 @@ describe('our own notice to a nick follows chat.notice_buffer', () => {
     expect(publish.mock.calls[0][0]).toMatchObject({ target: '&local', text: 'psst' });
   });
 
-  // Kept out of their buffer, it is the row of the buffer it was typed in.
-  it('is the row of the buffer it was typed in, or the server buffer without one', () => {
+  it('the server buffer row keeps the line as sent', () => {
     settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
-    ensureOpen(userId, networkId, '#typed');
-    const conn = makeConn();
-    const server = `:server:${networkId}`;
-    expect(conn.ownNoticeElsewhere('typedbob', 'x', '#typed')).toMatchObject({
-      target: '#typed',
-      text: '→ typedbob: x',
-      sentTo: { target: 'typedbob', text: 'x' },
-      notable: false,
-    });
-    // Not a buffer of ours, a DCC chat, the server buffer, or none said.
-    for (const issuing of ['#nowhere', '=dccpal', server, undefined]) {
-      expect(conn.ownNoticeElsewhere('typedbob', 'x', issuing)?.target).toBe(server);
-    }
-    // Typed in their own buffer it stays there, whatever the setting.
-    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
-    ensureOpen(userId, networkId, 'typedpal');
-    expect(conn.ownNoticeElsewhere('TypedPal', 'x', 'typedpal')).toBeNull();
-    expect(conn.ownNoticeElsewhere('TypedPal', 'x', '#typed')?.target).toBe('#typed');
-  });
-
-  type Expecting = { expectNoticeEcho(peer: string, text: string, moved: unknown): void };
-
-  it('the echo is put where the notice was typed, and keeps the line as sent', () => {
-    // The echo names no buffer: the place is kept from the send. One this
-    // connection did not send has none, and is the server buffer's.
-    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
-    ensureOpen(userId, networkId, '#typed2');
     const conn = makeConn();
     enableEcho(conn);
-    const moved = conn.ownNoticeElsewhere('EchoBob', 'psst', '#typed2');
-    (conn as unknown as Expecting).expectNoticeEcho('EchoBob', 'psst', moved);
-    const echoed = (msgid: string) =>
-      conn.client.emit('message', {
-        nick: 'me',
-        target: 'echobob',
-        type: 'notice',
-        message: 'psst',
-        tags: { msgid },
-      });
-    echoed('typed-1');
-    echoed('typed-2');
-    expect(listMessages(networkId, '#typed2')).toMatchObject([
-      {
-        text: '→ EchoBob: psst',
-        msgid: 'typed-1',
-        self: true,
-        sentTo: { target: 'EchoBob', text: 'psst' },
-      },
-    ]);
+    conn.client.emit('message', {
+      nick: 'me',
+      target: 'KeptBob',
+      type: 'notice',
+      message: 'psst',
+      tags: { msgid: 'kept-1' },
+    });
     expect(
-      listMessages(networkId, `:server:${networkId}`).filter((m) => m.msgid === 'typed-2'),
-    ).toMatchObject([{ text: '→ echobob: psst' }]);
-    expect(listMessages(networkId, 'echobob')).toEqual([]);
+      listMessages(networkId, `:server:${networkId}`).filter((m) => m.msgid === 'kept-1'),
+    ).toMatchObject([
+      { text: '→ KeptBob: psst', self: true, sentTo: { target: 'KeptBob', text: 'psst' } },
+    ]);
+    expect(listMessages(networkId, 'keptbob')).toEqual([]);
   });
 
-  it('history bringing back a notice kept where it was typed stores it once', () => {
+  it('history bringing back a kept notice stores it once, however the nick is spelled', () => {
     settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
-    ensureOpen(userId, networkId, '#typed3');
     const conn = makeConn();
     const time = 1750000100000;
     const own = { type: 'notice', nick: 'me', self: true, time };
-    const kept = (text: string, msgid?: string) =>
-      conn.publish({ ...own, ...conn.ownNoticeElsewhere('RepCy', text, '#typed3')!, msgid });
-    kept('tagged', 'typed-rep');
-    kept('untagged');
-    // As history hands each back: the server buffer's by the setting, with the
+    conn.publish({ ...own, ...conn.ownNoticeElsewhere('RepCy', 'tagged')!, msgid: 'kept-rep' });
+    // As history hands it back: the server buffer's by the setting, with the
     // nick as the network spells it, then their buffer's once the setting says so.
-    const back = (text: string, msgid?: string) => {
-      const replay = { ...own, msgid, replay: true, replayAsked: true };
-      conn.publish({ ...replay, ...conn.ownNoticeElsewhere('repcy', text)! });
-      settingsService.update(userId, { 'chat.notice_buffer': 'private' });
-      conn.publish({ ...replay, target: 'repcy', text });
-      settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
-    };
-    back('tagged', 'typed-rep');
-    back('untagged');
-    expect(listMessages(networkId, '#typed3').map((m) => m.text)).toEqual([
-      '→ RepCy: tagged',
-      '→ RepCy: untagged',
-    ]);
+    const replay = { ...own, msgid: 'kept-rep', replay: true, replayAsked: true };
+    conn.publish({ ...replay, ...conn.ownNoticeElsewhere('repcy', 'tagged')! });
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    conn.publish({ ...replay, target: 'repcy', text: 'tagged' });
     expect(listMessages(networkId, 'repcy')).toEqual([]);
     const inServer = listMessages(networkId, `:server:${networkId}`).map((m) => m.text);
-    expect(inServer.filter((t) => t?.includes('RepCy') || t?.includes('repcy'))).toEqual([]);
+    expect(inServer.filter((t) => /repcy: tagged/i.test(t ?? ''))).toEqual(['→ RepCy: tagged']);
   });
 
   // Without echo-message the row is ircManager's own.
@@ -786,16 +734,6 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.notice(userId, networkId, 'bob', 'psst');
     expect(notice.mock.calls[0][3]).toBe(moved);
     expect(publish.mock.calls[0][0]).toMatchObject({ ...moved, type: 'notice', self: true });
-  });
-
-  it('a notice is placed by the buffer it was typed in', () => {
-    const ownNoticeElsewhere = vi.fn<(peer: string, text: string, issuing?: string) => null>(
-      () => null,
-    );
-    const { conn } = fakeConn({ ownNoticeElsewhere });
-    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
-    ircManager.notice(userId, networkId, 'bob', 'psst', { issuingTarget: '#here' });
-    expect(ownNoticeElsewhere).toHaveBeenCalledWith('bob', 'psst', '#here');
   });
 
   it('keeps the optimistic publish when the cap is absent', () => {

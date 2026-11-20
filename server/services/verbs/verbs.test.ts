@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -491,21 +491,6 @@ describe('send_message / send_action', () => {
       text: 'heads up',
     });
     expect(result).toEqual({ ok: false, error: 'not-connected' });
-  });
-
-  it('send_notice says where the notice was typed', () => {
-    const notice = vi.spyOn(ircManager, 'notice').mockReturnValue(true);
-    try {
-      const input = { networkId: net.id, target: 'bob', text: 'psst' };
-      callVerb('send_notice', rwCtx(owner.id), { ...input, issuingTarget: '#here' });
-      callVerb('send_notice', rwCtx(owner.id), input);
-      expect(notice.mock.calls.map((call) => call[4])).toEqual([
-        { issuingTarget: '#here' },
-        { issuingTarget: undefined },
-      ]);
-    } finally {
-      notice.mockRestore();
-    }
   });
 
   it('send_notice is rejected for read-only scope', () => {

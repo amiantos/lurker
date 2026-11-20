@@ -1231,10 +1231,7 @@ class IrcManager extends EventEmitter {
     networkId: number,
     target: string,
     text: string,
-    // `issuingTarget`: the buffer it was typed in, when the client said. A
-    // notice to a nick that is not to go in their buffer is shown there
-    // (chat.notice_buffer, #1174).
-    opts: { lineHooks?: LineHooks; issuingTarget?: string } = {},
+    opts: { lineHooks?: LineHooks } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -1259,10 +1256,10 @@ class IrcManager extends EventEmitter {
     const adoptEcho = conn.echoActive();
     const chunks = conn.sayChunks('NOTICE', target, text);
     for (const chunk of chunks) {
-      // To a nick whose buffer it is not to be put in (#1174): the buffer it
-      // was typed in, saying who it was for. Decided here, once, so a wait in
-      // the queue cannot part the row from its pending line.
-      const moved = conn.ownNoticeElsewhere(target, chunk, opts.issuingTarget);
+      // To a nick whose buffer it is not to be put in (#1174): the server
+      // buffer, saying who it was for. Decided here, once, so a wait in the
+      // queue cannot part the row from its pending line.
+      const moved = conn.ownNoticeElsewhere(target, chunk);
       const row = () => {
         conn.publish({
           type: 'notice',
