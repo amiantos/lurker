@@ -34,6 +34,10 @@ too, unless what you typed is already complete: `/aw` + Enter becomes `/away `,
 and `/away` + Enter sends. On a nick or a channel, Enter sends what you typed
 (`/join #new` joins `#new`) unless you picked a row with the arrows.
 
+Once the command is typed, its usage stays under the menu with the argument you
+are on picked out, and stays through the ones the menu has nothing to offer for:
+a reason, a message. Escape puts it away until you start another command.
+
 ## Common commands
 
 - `/commands` — list every command. (`/help` asks the IRC server for its own

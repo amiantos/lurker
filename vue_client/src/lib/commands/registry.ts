@@ -727,24 +727,40 @@ function flagUsage(f: FlagSpec): string {
 // Past this many, the options print as `[opts]` and are spelled out in a note.
 const INLINE_FLAGS = 2;
 
-/** `/dcc chat [-passive] [-secure] <nick>`: one form under a given name. */
-export function formUsage(name: string, f: FormSpec): string {
+/** One word of a usage line, and the slot or option it prints. */
+export interface UsagePart {
+  readonly text: string;
+  readonly arg?: ArgSpec;
+  /** `all` for the `[opts]` that stands in for a long run of them. */
+  readonly flag?: FlagSpec | 'all';
+}
+
+/** A form's usage word by word, so the one being typed can be picked out (#1369). */
+export function formUsageParts(name: string, f: FormSpec): UsagePart[] {
   const flags = f.flags ?? [];
-  const flagPart =
+  const flagPart: UsagePart[] =
     flags.length === 0
       ? []
       : flags.length > INLINE_FLAGS
-        ? ['[opts]']
-        : flags.map((x) => `[${flagUsage(x)}]`);
+        ? [{ text: '[opts]', flag: 'all' }]
+        : flags.map((x) => ({ text: `[${flagUsage(x)}]`, flag: x }));
   // Options read best after the words that pick the form and before its values.
   const lead = f.args.findIndex((a) => a.kind !== 'keyword');
   const split = lead === -1 ? f.args.length : lead;
+  const word = (a: ArgSpec): UsagePart => ({ text: argUsage(a), arg: a });
   return [
-    `/${name}`,
-    ...f.args.slice(0, split).map(argUsage),
+    { text: `/${name}` },
+    ...f.args.slice(0, split).map(word),
     ...flagPart,
-    ...f.args.slice(split).map(argUsage),
-  ].join(' ');
+    ...f.args.slice(split).map(word),
+  ];
+}
+
+/** `/dcc chat [-passive] [-secure] <nick>`: one form under a given name. */
+export function formUsage(name: string, f: FormSpec): string {
+  return formUsageParts(name, f)
+    .map((part) => part.text)
+    .join(' ');
 }
 
 /** The one-line usage a command is listed under, by the name given or its own. */

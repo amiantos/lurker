@@ -27,6 +27,11 @@
   row's contents, and a `select` handler. `reverse` opens the list bottom-up so
   the primary candidate (best match / newest line) sits at the bottom nearest
   the input; the active row defaults there too.
+
+  `pinned` adds a `#footer` under the rows that stays put while they scroll,
+  and keeps the panel up with no rows at all (the usage line of a slash
+  command, #1369). It takes no part in keyboard nav: hasCandidates() is still
+  about rows, so with only the footer showing every key is the composer's.
 -->
 
 <template>
@@ -38,17 +43,22 @@
     @pointerdown.stop
     @mousedown.prevent.stop
   >
-    <div
-      v-for="(row, i) in displayRows"
-      :key="keyFor(row, i)"
-      role="button"
-      class="row"
-      :class="{ active: i === activeIndex }"
-      @mousedown.prevent
-      @click="pick(i)"
-      @mouseenter="activeIndex = i"
-    >
-      <slot name="row" :row="row" :index="i" :active="i === activeIndex" />
+    <div class="rows">
+      <div
+        v-for="(row, i) in displayRows"
+        :key="keyFor(row, i)"
+        role="button"
+        class="row"
+        :class="{ active: i === activeIndex }"
+        @mousedown.prevent
+        @click="pick(i)"
+        @mouseenter="activeIndex = i"
+      >
+        <slot name="row" :row="row" :index="i" :active="i === activeIndex" />
+      </div>
+    </div>
+    <div v-if="pinned" class="pinned" :class="{ alone: displayRows.length === 0 }">
+      <slot name="footer" />
     </div>
   </div>
 </template>
@@ -74,6 +84,9 @@ const props = withDefaults(
     reverse?: boolean;
     // Stable :key for a row; defaults to its display position.
     rowKey?: (row: Row, index: number) => string | number;
+    // Render the `#footer` slot, and stay visible on it alone. A prop and not
+    // a look at the slot: a computed never notices a slot coming or going.
+    pinned?: boolean;
   }>(),
   {
     open: false,
@@ -82,6 +95,7 @@ const props = withDefaults(
     ignore: () => [],
     reverse: false,
     rowKey: undefined,
+    pinned: false,
   },
 );
 
@@ -97,7 +111,7 @@ const displayRows = computed<readonly Row[]>(() =>
   props.reverse ? props.rows.toReversed() : props.rows,
 );
 // Hidden when closed or empty, so a no-match token never shows an empty box.
-const visible = computed(() => props.open && displayRows.value.length > 0);
+const visible = computed(() => props.open && (displayRows.value.length > 0 || props.pinned));
 
 function keyFor(row: Row, index: number): string | number {
   return props.rowKey ? props.rowKey(row, index) : index;
@@ -162,6 +176,20 @@ function recomputePosition(): void {
   panelBottom.value = Math.max(distance + 4, 8);
 }
 
+// The anchor grows as a draft wraps, and a pinned panel is up for the whole of
+// it (#1369), so its top has to be followed, not read once on open.
+let anchorSize: ResizeObserver | null = null;
+watch(
+  () => (visible.value ? props.anchor : null),
+  (el) => {
+    anchorSize?.disconnect();
+    anchorSize = null;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    anchorSize = new ResizeObserver(recomputePosition);
+    anchorSize.observe(el);
+  },
+);
+
 const panelStyle = computed(() => ({ bottom: `${panelBottom.value}px` }));
 
 function onDocPointerDown(e: PointerEvent): void {
@@ -189,6 +217,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  anchorSize?.disconnect();
   window.removeEventListener('resize', recomputePosition);
   window.visualViewport?.removeEventListener('resize', recomputePosition);
   window.visualViewport?.removeEventListener('scroll', recomputePosition);
@@ -222,12 +251,26 @@ watch(
   max-width: 480px;
   margin: 0 auto;
   max-height: 50vh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-popover-up);
   z-index: var(--z-popover);
+}
+/* The rows scroll; the footer under them does not. */
+.rows {
+  min-height: 0;
+  overflow-y: auto;
+}
+.pinned {
+  flex: none;
+  border-top: 1px solid var(--border);
+}
+.pinned.alone {
+  border-top: 0;
 }
 .row {
   display: flex;
