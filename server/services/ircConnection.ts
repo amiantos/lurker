@@ -11,6 +11,7 @@ import {
   hasSameMessageWithMsgid,
   hasSameNoticeAnywhere,
   hasRecentMessageLike,
+  hasRecentOwnNoticeKept,
   findNoticeByMsgid,
   maxMessageId,
   newestConversationTime,
@@ -5226,9 +5227,13 @@ export class IrcConnection {
         // on almost every ircd is the literal "No such nick/channel" — one
         // failure the user can meet in three places shouldn't speak ircd in
         // one of them and English in the other two.
+        // For a notice kept in the server buffer (#1174) the raw handler's
+        // line there is the report, as for the unclaimed 401 below.
+        const home = this.sendErrorHome(eventNick as string);
+        if (home === this.serverTarget()) return;
         this.publish({
           type: 'error',
-          target: this.sendErrorHome(eventNick as string),
+          target: home,
           text: `${eventNick} isn't on this network.`,
           raw: event,
         });
@@ -8850,13 +8855,22 @@ export class IrcConnection {
       };
       if (hasRecentMessageLike(this.network.id, target, type, nick, text, time, probe)) return true;
       if (between === null) return false;
-      const like = (home: string, words: string) =>
-        hasRecentMessageLike(this.network.id, home, type, nick, words, time, probe);
-      // In the server buffer ours reads `→ bob: hi`; theirs reads as sent.
-      const inServer = event.self ? `→ ${between.peer}: ${between.text}` : between.text;
+      const like = (home: string) =>
+        hasRecentMessageLike(this.network.id, home, type, nick, between.text, time, probe);
+      // In the server buffer theirs reads as sent; ours reads `→ bob: hi`, and
+      // is known by the line as sent, kept with it, however bob is spelled.
       return (
-        like(this.canonicalDmTarget(between.peer), between.text) ||
-        like(this.serverTarget(), inServer)
+        like(this.canonicalDmTarget(between.peer)) ||
+        (event.self
+          ? hasRecentOwnNoticeKept(
+              this.network.id,
+              this.serverTarget(),
+              between.peer,
+              between.text,
+              time,
+              probe,
+            )
+          : like(this.serverTarget()))
       );
     }
     if (typeof event.msgid === 'string' && event.msgid !== '') {
@@ -13366,11 +13380,13 @@ export class IrcConnection {
     };
   }
 
-  // A refusal of what we sent `target` is shown where the row is: the server
-  // buffer, for a notice kept there (#1174). In the nick's buffer it would
-  // make the buffer the setting said not to.
+  // Where a refusal of what we sent `target` belongs: with the row, so the
+  // server buffer for a notice kept there (#1174).
+  // Only for a send still in the window a refusal is attributed in: the entry
+  // outlives it until the next send prunes it.
   private sendErrorHome(target: string): string {
-    return this.lastUserSendAt.get(target.toLowerCase())?.shownIn ?? target;
+    const shownIn = this.lastUserSendAt.get(target.toLowerCase())?.shownIn;
+    return shownIn && this.recentUserSend(target) ? shownIn : target;
   }
 
   // A notice between us and one nick, as it was on the wire: who, and the
@@ -13710,15 +13726,12 @@ export class IrcConnection {
       return;
     }
     if (!this.recentUserSend(target)) return;
-    const home = this.sendErrorHome(target);
-    // Outside the nick's buffer the line has to say who it was to.
-    const text = sendRejectionText(reason);
-    this.publish({
-      type: 'error',
-      target: home,
-      text: home === target ? text : `${target}: ${text}`,
-      raw,
-    });
+    // A notice kept in the server buffer (#1174) has its refusal there
+    // already: the raw handler's line. In the nick's buffer a line of ours
+    // would make the buffer the setting said not to, and a second one in the
+    // server buffer would count toward its unread badge.
+    if (this.sendErrorHome(target) === this.serverTarget()) return;
+    this.publish({ type: 'error', target, text: sendRejectionText(reason), raw });
   }
 
   // Someone's message to us was discarded by our caller ID (#206). Judged as

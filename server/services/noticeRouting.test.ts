@@ -269,7 +269,7 @@ describe('NOTICE routing (#439)', () => {
 });
 
 // chat.notice_buffer (#1174): where a notice to our nick is stored. The cases
-// above are its default, `private`.
+// above are `private`, all Lurker did before it; the default is `auto`.
 describe('NOTICE placement (chat.notice_buffer)', () => {
   afterEach(() => settingsService.reset(1, 'chat.notice_buffer'));
 
@@ -339,17 +339,33 @@ describe('NOTICE placement (chat.notice_buffer)', () => {
     ]);
   });
 
-  // A refusal of a notice kept in the server buffer is said there: in the
-  // nick's buffer it would make the buffer the setting said not to.
-  it('says a kept notice was refused in the server buffer, naming the nick', () => {
+  // A refusal of a notice kept in the server buffer is there already, as the
+  // network's own line (the raw handler's). A line of ours in the nick's buffer
+  // would make the buffer the setting said not to; a second in the server
+  // buffer would badge it.
+  it('adds no line of its own for a refused notice kept in the server buffer', () => {
     const { conn, publish } = harness();
     conn.noteUserSend('ghost', true, ':server:1');
     conn.client.emit('irc error', { error: 'no_such_nick', nick: 'ghost' });
     conn.handleSendRejection('ghost', 'Cannot send', {});
-    expect(publish.mock.calls.map(([e]) => [e.type, e.target, e.text])).toEqual([
-      ['error', ':server:1', "ghost isn't on this network."],
-      ['error', ':server:1', expect.stringMatching(/^ghost: /)],
-    ]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('forgets where a notice was kept once the refusal window has passed', () => {
+    const { conn, publish } = harness();
+    insertMessage({
+      networkId: 1,
+      target: 'oldpal',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'oldpal',
+      text: 'hi',
+      self: false,
+    });
+    conn.noteUserSend('oldpal', true, ':server:1');
+    conn.lastUserSendAt.get('oldpal')!.at -= 10 * 60 * 1000;
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'oldpal' });
+    expect(publish.mock.calls.map(([e]) => [e.type, e.target])).toEqual([['error', 'oldpal']]);
   });
 
   it('says any other refused send in the buffer it was sent to', () => {

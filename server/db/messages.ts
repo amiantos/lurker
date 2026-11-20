@@ -10,7 +10,7 @@ import {
   resolveOrMintForInsert,
 } from './bufferResolve.js';
 import { markBufferDirty, noteNoiseInsert } from './retention.js';
-import { networkCasemapping } from './buffers.js';
+import { foldTargetFor, networkCasemapping } from './buffers.js';
 import { foldTargetWith } from './casemapping.js';
 import { isServicesNick } from '../utils/servicesNick.js';
 import type { Casemapping } from './casemapping.js';
@@ -796,7 +796,7 @@ export function redactionsForMessages(
 // target, or is already deleted. Whether the network will ALLOW it is the
 // network's answer (a FAIL), not ours: the spec says to let the user try.
 const redactSendStmt = db.prepare(`
-  SELECT m.network_id, m.msgid, b.target, b.kind
+  SELECT m.network_id, m.msgid, m.extra, b.target, b.kind
   FROM messages m
   JOIN networks n ON n.id = m.network_id
   JOIN buffers b ON b.id = m.buffer_id
@@ -814,9 +814,13 @@ export interface RedactSendTarget {
 
 export function redactSendTarget(userId: number, messageId: number): RedactSendTarget | null {
   const row = redactSendStmt.get(messageId, userId) as
-    | { network_id: number; msgid: string; target: string; kind: string }
+    | { network_id: number; msgid: string; extra: string | null; target: string; kind: string }
     | undefined;
   if (!row) return null;
+  // A notice of the user's kept in the server buffer (chat.notice_buffer,
+  // #1174) was sent to the nick it names.
+  const sentTo = sentToOf(row.extra);
+  if (sentTo) return { networkId: row.network_id, target: sentTo.target, msgid: row.msgid };
   // `server` (the :server:N console) and `dcc` (=nick) are not IRC targets.
   if (row.kind !== 'channel' && row.kind !== 'dm') return null;
   return { networkId: row.network_id, target: row.target, msgid: row.msgid };
@@ -2033,6 +2037,47 @@ export function hasRecentMessageLike(
   const lo = new Date(t - toleranceMs).toISOString();
   const hi = new Date(t + toleranceMs).toISOString();
   return !!hasLikeStmt.get({ bufferId, maxId, tailRows, type, nick, text, lo, hi });
+}
+
+// The same for a notice of the user's own kept in the server buffer
+// (chat.notice_buffer, #1174), whose row reads `→ bob: hi`: known by the line
+// as sent, kept in `extra`, with the nick compared as the network folds it. A
+// replay can spell it another way than it was typed. The same bounded tail.
+const ownNoticeKeptStmt = db.prepare(
+  `SELECT extra FROM (
+     SELECT type, self, extra, time FROM messages
+      WHERE buffer_id = @bufferId AND id <= @maxId ORDER BY id DESC LIMIT @tailRows
+   )
+   WHERE type = 'notice' AND self = 1 AND time BETWEEN @lo AND @hi
+     AND ${SENT_TO_TEXT_SQL} IS @text`,
+);
+export function hasRecentOwnNoticeKept(
+  networkId: number,
+  serverTarget: string,
+  peer: string,
+  text: string,
+  time: string,
+  {
+    toleranceMs = 5000,
+    maxId = Number.MAX_SAFE_INTEGER,
+    tailRows = CATCH_UP_TAIL_ROWS,
+  }: RepeatProbeOptions = {},
+): boolean {
+  if (!networkId || !peer) return false;
+  const t = Date.parse(time);
+  if (!Number.isFinite(t)) return false;
+  const bufferId = resolveBufferIdByNetwork(networkId, serverTarget);
+  if (bufferId === undefined) return false;
+  const lo = new Date(t - toleranceMs).toISOString();
+  const hi = new Date(t + toleranceMs).toISOString();
+  const folded = foldTargetFor(networkId, peer);
+  const rows = ownNoticeKeptStmt.all({ bufferId, maxId, tailRows, text, lo, hi }) as Array<{
+    extra: string | null;
+  }>;
+  return rows.some((row) => {
+    const sentTo = sentToOf(row.extra);
+    return sentTo !== null && foldTargetFor(networkId, sentTo.target) === folded;
+  });
 }
 
 // The time of the newest conversation line a buffer holds (the rows a

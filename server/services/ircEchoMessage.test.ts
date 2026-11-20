@@ -492,6 +492,22 @@ describe('our own notice to a nick follows chat.notice_buffer', () => {
     expect(inServer.filter((t) => /repcy: tagged/i.test(t ?? ''))).toEqual(['→ RepCy: tagged']);
   });
 
+  it('the same on a network that tags no msgid', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    const conn = makeConn();
+    const own = { type: 'notice', nick: 'me', self: true, time: 1750000200000 };
+    conn.publish({ ...own, ...conn.ownNoticeElsewhere('RepDee', 'untagged')! });
+    const replay = { ...own, replay: true, replayAsked: true };
+    conn.publish({ ...replay, ...conn.ownNoticeElsewhere('repdee', 'untagged')! });
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    conn.publish({ ...replay, target: 'repdee', text: 'untagged' });
+    expect(listMessages(networkId, 'repdee')).toEqual([]);
+    const inServer = listMessages(networkId, `:server:${networkId}`).map((m) => m.text);
+    expect(inServer.filter((t) => /repdee: untagged/i.test(t ?? ''))).toEqual([
+      '→ RepDee: untagged',
+    ]);
+  });
+
   // Without echo-message the row is ircManager's own.
   function sender(): { conn: IrcConnection; publish: ReturnType<typeof vi.fn> } {
     const { conn, publish } = makeReceiver();

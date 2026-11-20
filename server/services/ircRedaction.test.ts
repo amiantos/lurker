@@ -263,6 +263,9 @@ describe('a REDACT from the network', () => {
         msgid: 'sent-9',
         ...rig.conn.ownNoticeElsewhere('bob', 'secret')!,
       });
+      // Ours to delete: the REDACT goes to who it was sent.
+      const sent = rowByMsgid(rig, server, 'sent-9');
+      expect(redactSendTarget(userId, sent.id)).toMatchObject({ target: 'bob', msgid: 'sent-9' });
       ircd.sendRaw(rig.nick, `@msgid=kept-2 :carol!c@fake.host NOTICE ${rig.nick} :hers`);
       await until(() => rows(rig, server).some((m) => m.msgid === 'kept-2'), 5000, 'stored');
       // Another nick's REDACT reaches neither: not the notice to bob, not carol's.

@@ -596,6 +596,7 @@ Common fields on every **persisted** event (`db/messages.ts` `rowToEvent` +
   nick, text, kind,                   // kind = raw IRC command; see the ⚠ below
   self,                               // you sent it (any of your clients)
   userhost, alt, mirrored, dm,
+  sentTo?,                            // { target, text }: a notice of yours kept in :server: (§9.1)
   matched, matchedRuleId,             // highlight decoration
   fromIgnored, notifyAlways, notify,
   msgid?,                             // IRCv3 server message id, when supplied
@@ -973,7 +974,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | ----------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `message`                     | P   | PRIVMSG (`kind:'privmsg'` in stored rows)                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `action`                      | P   | `/me`                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `notice`                      | P   | `mirrored:true` on the `:server:` copy of a notice to a closed/absent DM                                                                                                                                                                                                                                                                                                                                                                                               |
+| `notice`                      | P   | `mirrored:true` on the `:server:` copy of a notice to a closed DM under `chat.notice_buffer` `private`. `sentTo?` on a notice of the user's kept in `:server:` (§9.1)                                                                                                                                                                                                                                                                                                  |
 | `join`                        | P   | `account?`                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `part` / `quit`               | P   | `text` = reason                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `kick`                        | P   | `kicked`, `text`                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -1434,11 +1435,13 @@ these signals:
   buffer.
 
   A notice the user **sends** to a nick goes in that nick's buffer under
-  `private` (creating or reopening it, as a `message` does) and, under `auto`,
-  when that buffer is open. Otherwise it is stored in `:server:`: its row's
-  `text` names who it was for (`→ bob: hi`), and it carries
-  `sentTo{ target, text }`, the line as it was sent, live and in history.
-  Render `text`. A refusal of such a notice (`error`) is in `:server:` too.
+  `private` (creating it; a closed one stays closed) and, under `auto`, when
+  that buffer is open. Otherwise it is stored in `:server:`: its row's `text`
+  names who it was for (`→ bob: hi`), and it carries `sentTo{ target, text }`,
+  the line as it was sent, live and in history. Render `text`. Offer delete on
+  such a row as on any line of the user's: the server sends the REDACT to
+  `sentTo.target`. A refusal of such a notice is the network's own line in
+  `:server:`.
 
   A notice-only buffer is deliberately **not** a "conversation": the server
   won't start presence-tracking its nick (no MONITOR slot, no presence dot)

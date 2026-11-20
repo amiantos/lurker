@@ -70,6 +70,22 @@ describe('useMessageActions', () => {
       expect(keys(mine())).not.toContain('delete');
     });
 
+    it('is offered on a notice of yours kept in the server buffer (#1174)', () => {
+      // The server buffer is no IRC target, but that notice went to a nick.
+      useNetworksStore().states = { 1: { state: 'connected', canRedact: true } } as never;
+      const kept = mine({
+        type: 'notice',
+        target: ':server:1',
+        text: '→ bob: hi',
+        sentTo: { target: 'bob', text: 'hi' },
+      });
+      expect(keys(kept)).toContain('delete');
+      expect(keys({ ...kept, sentTo: undefined })).not.toContain('delete');
+      expect(keys({ ...kept, self: false })).not.toContain('delete');
+      // Reply stays off: there is nothing in the server buffer to send it to.
+      expect(keys(kept)).not.toContain('reply');
+    });
+
     it("is offered on someone else's line only where you hold a prefix mode", () => {
       useNetworksStore().states = {
         1: { state: 'connected', nick: 'me', canRedact: true },
