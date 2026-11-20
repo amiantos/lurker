@@ -18,6 +18,7 @@ import {
   listMessages,
   searchMessages,
   redactSendTarget,
+  replySendMsgid,
 } from '../db/messages.js';
 import type { MessageEvent } from '../db/messages.js';
 import { IrcConnection } from './ircConnection.js';
@@ -244,6 +245,39 @@ describe('a REDACT from the network', () => {
       await until(() => redactedFrames(rig).length === 1, 5000, 'frame');
       expect(redactedFrames(rig)[0]).toMatchObject({ target: server, by: 'bob' });
       expect(rowByMsgid(rig, server, 'kept-1').text).toBeNull();
+    } finally {
+      settings.reset(userId, 'chat.notice_buffer');
+      dispose(rig);
+    }
+  });
+
+  it('finds a notice of ours kept in the buffer it was typed in, and only its own nick’s', async () => {
+    const settings = (await import('./settingsService.js')).default;
+    settings.update(userId, { 'chat.notice_buffer': 'server' });
+    const rig = await connect('recv5c', '#d5c');
+    const server = `:server:${rig.network.id}`;
+    try {
+      rig.conn.publish({
+        type: 'notice',
+        nick: rig.nick,
+        self: true,
+        msgid: 'typed-9',
+        ...rig.conn.ownNoticeElsewhere('bob', 'secret', '#d5c')!,
+      });
+      const row = rowByMsgid(rig, '#d5c', 'typed-9');
+      // Ours to delete, by a REDACT to who it was sent; no reply in #d5c names it.
+      expect(redactSendTarget(userId, row.id)).toMatchObject({ target: 'bob', msgid: 'typed-9' });
+      expect(replySendMsgid(userId, rig.network.id, '#d5c', row.id)).toBeNull();
+      ircd.sendRaw(rig.nick, `@msgid=kept-2 :carol!c@fake.host NOTICE ${rig.nick} :hers`);
+      await until(() => rows(rig, server).some((m) => m.msgid === 'kept-2'), 5000, 'stored');
+      // Another nick's REDACT reaches neither: not the notice to bob, not carol's.
+      ircd.sendRaw(rig.nick, `:${rig.nick}!u@fake.host REDACT dave typed-9`);
+      ircd.sendRaw(rig.nick, `:bob!b@fake.host REDACT ${rig.nick} kept-2`);
+      ircd.sendRaw(rig.nick, `:${rig.nick}!u@fake.host REDACT BOB typed-9`);
+      await until(() => redactedFrames(rig).length === 1, 5000, 'frame');
+      expect(redactedFrames(rig)[0]).toMatchObject({ target: '#d5c', self: true });
+      expect(rowByMsgid(rig, '#d5c', 'typed-9').text).toBeNull();
+      expect(rowByMsgid(rig, server, 'kept-2').text).toBe('hers');
     } finally {
       settings.reset(userId, 'chat.notice_buffer');
       dispose(rig);

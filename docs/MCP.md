@@ -124,7 +124,10 @@ Send a CTCP ACTION (`/me ...`). Same shape and error semantics as
 
 Send a NOTICE to a channel or peer. Same shape and error semantics as
 `send_message`, with NOTICE conventions — no auto-reply is expected, and bots
-conventionally use it for output that should not trigger further bots.
+conventionally use it for output that should not trigger further bots. Takes
+an optional `issuingTarget`, the buffer the notice was typed in: a notice to a
+nick that the `chat.notice_buffer` setting keeps out of that nick's buffer is
+shown there, or in the server buffer when it is omitted.
 
 ### `send_raw` _(read-write)_
 

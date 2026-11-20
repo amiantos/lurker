@@ -24,6 +24,11 @@ registerVerb({
         description: 'A channel name like "#foo" or a peer nick.',
       },
       text: { type: 'string' },
+      issuingTarget: {
+        type: 'string',
+        description:
+          'The buffer the notice was typed in. A notice to a nick that the chat.notice_buffer setting keeps out of their buffer is shown there, or in the server buffer when this is omitted.',
+      },
     },
     required: ['networkId', 'target', 'text'],
     additionalProperties: false,
@@ -33,7 +38,11 @@ registerVerb({
     const target = typeof input.target === 'string' ? input.target : '';
     const text = typeof input.text === 'string' ? input.text : '';
     if (!target || !text) return { ok: false, error: 'empty-target-or-text' };
-    const ok = ircManager.notice(ctx.userId, networkId, target, text);
+    const issuingTarget =
+      typeof input.issuingTarget === 'string' && input.issuingTarget
+        ? input.issuingTarget
+        : undefined;
+    const ok = ircManager.notice(ctx.userId, networkId, target, text, { issuingTarget });
     return ok ? { ok: true } : { ok: false, error: 'not-connected' };
   },
 });

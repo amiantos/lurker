@@ -9,7 +9,10 @@ import {
   hasConversationForTarget,
   hasMessageWithMsgid,
   hasSameMessageWithMsgid,
+  hasSameNoticeAnywhere,
   hasRecentMessageLike,
+  hasRecentOwnNoticeAnywhere,
+  findNoticeByMsgid,
   maxMessageId,
   newestConversationTime,
   newestConversationTimes,
@@ -746,8 +749,9 @@ interface IrcEvent {
   [key: string]: unknown;
 }
 
-// Our own notice to a nick as the server buffer's row (chat.notice_buffer,
-// #1174): where it goes, what it says, and the line as it was sent.
+// Our own notice to a nick as the row of another buffer than theirs
+// (chat.notice_buffer, #1174): which buffer, what the row says, and the line
+// as it was sent.
 export interface MovedNotice {
   target: string;
   text: string;
@@ -872,6 +876,10 @@ function extractExtras(event: IrcEvent): Record<string, unknown> | null {
       if (event.account) extras = { account: event.account };
       break;
   }
+  // A notice of ours kept outside the buffer of the nick it was to
+  // (chat.notice_buffer, #1174): the line as sent stays with the row, since
+  // the buffer no longer says who it was for (sentToOf).
+  if (event.type === 'notice' && event.sentTo) extras = { sentTo: event.sentTo };
   // RPE2E: persist the lock flag for message/action/notice so the indicator
   // survives a reload and reaches late-attaching clients (round-trips through the
   // `extra` JSON column → rowToEvent's Object.assign).
@@ -1331,7 +1339,7 @@ export class IrcConnection {
   // target from a CTCP probe, which is also a real user-initiated PRIVMSG but
   // reports its outcome back to the buffer it was issued from. Both count for
   // the rejection handler; only the former may open a DM buffer (#817).
-  lastUserSendAt: Map<string, { at: number; conversational: boolean; inServerBuffer?: boolean }>;
+  lastUserSendAt: Map<string, { at: number; conversational: boolean; shownIn?: string }>;
   // nick → the user's last raw COMMAND naming them, for placing a 401 (#434):
   // what went out through raw() — /whois, /kick #c nick, and a /raw PRIVMSG or
   // NOTICE counts too. A null channel means the command was a direct one (a
@@ -1441,6 +1449,13 @@ export class IrcConnection {
   private sendQueueWaiting = 0;
   // The user's messages the queue is holding (#1326), by id, oldest first.
   private readonly pendingSends = new Map<string, PendingSend>();
+  // Notices sent and not yet echoed, with where each row goes (expectNoticeEcho).
+  private readonly noticesAwaitingEcho: Array<{
+    peer: string;
+    text: string;
+    moved: MovedNotice | null;
+    at: number;
+  }> = [];
   // id → the line as sent, for a pending row that reads otherwise (#1174).
   private readonly pendingSentTo = new Map<string, { target: string; text: string }>();
   private pendingSendSeq = 0;
@@ -3633,9 +3648,12 @@ export class IrcConnection {
         // fold to the existing buffer row's casing (#289); channel case is
         // normalized inside publish().
         const selfTarget = targetIsChannel ? eventTarget : this.canonicalDmTarget(eventTarget);
-        // Our own notice to a nick whose buffer it is not to be put in (#1174).
+        // Our own notice to a nick whose buffer it is not to be put in
+        // (#1174): where it was decided as the line went, or, for one this
+        // connection did not send (history, another session), the server
+        // buffer.
         const moved =
-          type === 'notice' ? this.ownNoticeInServerBuffer(eventTarget, eventMessage) : null;
+          type === 'notice' ? this.ownNoticeEchoed(eventTarget, eventMessage, replay) : null;
         this.publish({
           type,
           target: moved?.target ?? selfTarget,
@@ -5515,11 +5533,29 @@ export class IrcConnection {
     };
     let shownIn = target;
     let line = redactIn(target);
-    // A notice to or from a nick may be the server buffer's row
-    // (chat.notice_buffer, #1174).
+    // A notice to or from a nick may be another buffer's row
+    // (chat.notice_buffer, #1174): found by its msgid, and only if it is that
+    // nick's — one we sent them, or one of theirs in the server buffer.
     if (!line && !isChannelTarget(eventTarget)) {
-      shownIn = this.serverTarget();
-      line = redactIn(shownIn);
+      const fold = (name: string | null) => foldTargetFor(this.network.id, name ?? '');
+      const elsewhere = findNoticeByMsgid(this.network.id, msgid);
+      const peer = fold(target);
+      const theirs =
+        !!elsewhere &&
+        (elsewhere.self
+          ? !!elsewhere.sentTo && fold(elsewhere.sentTo.target) === peer
+          : elsewhere.inServerBuffer && fold(elsewhere.nick) === peer);
+      if (elsewhere && theirs) {
+        shownIn = elsewhere.target;
+        line = redactMessage({
+          networkId: this.network.id,
+          bufferId: elsewhere.bufferId,
+          msgid,
+          by,
+          reason,
+          time,
+        });
+      }
     }
     if (!line) return;
     this.publishEphemeral({
@@ -8796,21 +8832,15 @@ export class IrcConnection {
     // the page before, the kept tail after a hole — so there the probe reads
     // the whole tail.
     if (event.replay) {
-      // A notice to or from a nick may be stored in either of two buffers
-      // (chat.notice_buffer, #1174), and which one can have changed since.
-      const other = this.otherNoticeHome(event);
+      // A notice to or from a nick is not always in the buffer this copy
+      // resolves to (chat.notice_buffer, #1174): its row can be their
+      // buffer's, the server buffer's, or the one it was typed in.
+      const between = this.noticeBetween(event);
       if (typeof event.msgid === 'string' && event.msgid !== '') {
         return (
           hasSameMessageWithMsgid(this.network.id, target, event.msgid, type, nick, text) ||
-          (other !== null &&
-            hasSameMessageWithMsgid(
-              this.network.id,
-              other.target,
-              event.msgid,
-              type,
-              nick,
-              other.text,
-            ))
+          (between !== null &&
+            hasSameNoticeAnywhere(this.network.id, event.msgid, nick, between.text))
         );
       }
       // An event row (storeReplayedEvent) is stamped with the server's time
@@ -8823,10 +8853,15 @@ export class IrcConnection {
         maxId: event.replayAsked ? undefined : (this.replayMaxId ?? undefined),
         ...(conversation ? {} : { toleranceMs: 0 }),
       };
+      if (hasRecentMessageLike(this.network.id, target, type, nick, text, time, probe)) return true;
+      if (between === null) return false;
+      const like = (home: string) =>
+        hasRecentMessageLike(this.network.id, home, type, nick, between.text, time, probe);
       return (
-        hasRecentMessageLike(this.network.id, target, type, nick, text, time, probe) ||
-        (other !== null &&
-          hasRecentMessageLike(this.network.id, other.target, type, nick, other.text, time, probe))
+        like(this.canonicalDmTarget(between.peer)) ||
+        (event.self
+          ? hasRecentOwnNoticeAnywhere(this.network.id, between.peer, between.text, time, probe)
+          : like(this.serverTarget()))
       );
     }
     if (typeof event.msgid === 'string' && event.msgid !== '') {
@@ -8997,12 +9032,12 @@ export class IrcConnection {
     text: string,
     hooks?: SendHooks,
     // Where its row goes, decided once: the caller's own row uses the same.
-    moved: MovedNotice | null = this.ownNoticeInServerBuffer(target, text),
+    moved: MovedNotice | null = this.ownNoticeElsewhere(target, text),
   ): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
-    // Its row may be the server buffer's (#1174): a wait shown where the row
+    // Its row may be another buffer's (#1174): a wait shown where the row
     // will be, with the row's text, is the one the echo ends.
     this.writeUserLine('NOTICE', target, text, null, 'notice', text, hooks, false, moved);
   }
@@ -9021,7 +9056,7 @@ export class IrcConnection {
     shown: string,
     hooks?: SendHooks,
     armDcc = false,
-    // Its row, when that is the server buffer's and not `target`'s.
+    // Its row, when that is another buffer's than `target`'s.
     moved?: MovedNotice | null,
   ): void {
     this.typingOver(target, false);
@@ -9037,7 +9072,8 @@ export class IrcConnection {
       // What the user sent, to where: it can be taken back while it waits.
       target,
       onSent: () => {
-        this.noteUserSend(target, true, !!moved);
+        this.noteUserSend(target, true, moved?.target);
+        if (kind === 'notice') this.expectNoticeEcho(target, wire, moved ?? null);
         // An `xdcc send` arms its request once the bot has been asked (#1149):
         // a PRIVMSG's, as before the queue; a NOTICE or a /me never asked one.
         // Never let a DB hiccup in arming break the user's actual message.
@@ -13301,54 +13337,100 @@ export class IrcConnection {
     return this.canonicalDmTarget(peer);
   }
 
-  // Our own notice to `peer`, when its row belongs in the server buffer: the
-  // row says who it was for, as WeeChat's "Notice -> bob" does, since the
-  // buffer no longer does. Null when it goes in the peer's buffer as sent.
-  // `sentTo` is the line as it went, for the bouncer's echo to its clients
-  // (dispatchIrcEvent); it is not stored.
+  // Our own notice to `peer`, when its row does not go in their buffer: it is
+  // the row of the buffer it was typed in (`issuing`, as the client said; the
+  // server buffer where it did not, or that buffer is not one of ours, open),
+  // and says who it was for, as irssi's and WeeChat's do, since the buffer no
+  // longer does. Null when it goes in the peer's buffer as sent — typed
+  // there, too, whatever the setting.
+  // `sentTo` is the line as it went: kept with the row (extractExtras), and
+  // what the bouncer gives its clients (dispatchIrcEvent).
   // Only for one nick: `@#room`, `bob,#room` and a mask are not a buffer's
   // peer, and go where they went before. `notable` false: a line we wrote
-  // is not news in the server buffer.
-  ownNoticeInServerBuffer(peer: string, text: string): MovedNotice | null {
+  // is not news in the buffer it sits in.
+  ownNoticeElsewhere(peer: string, text: string, issuing?: string): MovedNotice | null {
     if (!isSinglePeerTarget(peer)) return null;
-    const home = this.noticeHome(peer);
-    if (home !== this.serverTarget()) return null;
+    if (this.noticeHome(peer) !== this.serverTarget()) return null;
+    const id = this.network.id;
+    const typedIn = issuing ? this.issuingBuffer(issuing) : null;
+    if (typedIn !== null && foldTargetFor(id, typedIn) === foldTargetFor(id, peer)) return null;
     return {
-      target: home,
+      target: typedIn ?? this.serverTarget(),
       text: `→ ${peer}: ${text}`,
       sentTo: { target: peer, text },
       notable: false,
     };
   }
 
-  // A refusal of what we sent `target` is shown where the row is: the server
-  // buffer, for a notice kept there (#1174). In the nick's buffer it would
-  // make the buffer the setting said not to.
-  private sendErrorHome(target: string): string {
-    return this.lastUserSendAt.get(target.toLowerCase())?.inServerBuffer
-      ? this.serverTarget()
-      : target;
+  // The buffer a line was typed in, as a place a row can be put: one of this
+  // network's that is there and open (the client makes a buffer for any
+  // target it is sent a line for), and not a DCC chat. Null otherwise.
+  private issuingBuffer(issuing: string): string | null {
+    const id = this.network.id;
+    if (foldTargetFor(id, issuing) === foldTargetFor(id, this.serverTarget())) {
+      return this.serverTarget();
+    }
+    if (isDccChatTarget(issuing)) return null;
+    if (getBufferState(this.network.user_id, id, issuing) !== 'open') return null;
+    return isChannelTarget(issuing) ? issuing : this.canonicalDmTarget(issuing);
   }
 
-  // The other buffer chat.notice_buffer could have put a notice to or from a
-  // nick in, with the text its row has there: a line history brings back is
-  // looked for in both, since the setting, or the buffer, may have changed
-  // since it was stored (alreadyPersisted).
-  private otherNoticeHome(event: IrcEvent): { target: string; text: string | null } | null {
-    const target = event.target as string;
-    const text = (event.text as string | undefined) ?? null;
-    if (event.type !== 'notice' || isChannelTarget(target)) return null;
-    const server = this.serverTarget();
-    if (target !== server) {
-      if (!isSinglePeerTarget(target)) return null;
-      return { target: server, text: event.self ? `→ ${target}: ${text ?? ''}` : text };
+  // The notices that have gone and wait for their echo, oldest first, each
+  // with the place its row was given (null: the peer's buffer). The echo says
+  // nothing of the buffer a line was typed in, so it is kept from the send;
+  // and the place is decided once, so the row, its pending line and a refusal
+  // agree. Pruned by age as the next goes: an echo is back in seconds or not
+  // at all.
+  private expectNoticeEcho(peer: string, text: string, moved: MovedNotice | null): void {
+    if (!this.echoActive() || !isSinglePeerTarget(peer)) return;
+    const now = Date.now();
+    while (
+      this.noticesAwaitingEcho.length > 0 &&
+      now - this.noticesAwaitingEcho[0].at > SEND_REJECTION_ATTRIBUTION_MS
+    ) {
+      this.noticesAwaitingEcho.shift();
     }
+    this.noticesAwaitingEcho.push({
+      peer: foldTargetFor(this.network.id, peer),
+      text,
+      moved,
+      at: now,
+    });
+  }
+
+  // Where the row of an echoed notice of ours goes: as decided when it went
+  // (expectNoticeEcho), else as the setting says with no buffer it was typed
+  // in — a line history brought back, or one another session sent.
+  private ownNoticeEchoed(peer: string, text: string, replay: boolean): MovedNotice | null {
+    if (!replay) {
+      const folded = foldTargetFor(this.network.id, peer);
+      const at = this.noticesAwaitingEcho.findIndex((n) => n.peer === folded && n.text === text);
+      if (at !== -1) return this.noticesAwaitingEcho.splice(at, 1)[0].moved;
+    }
+    return this.ownNoticeElsewhere(peer, text);
+  }
+
+  // A refusal of what we sent `target` is shown where the row is: the buffer
+  // a notice was typed in, when it is kept there (#1174). In the nick's
+  // buffer it would make the buffer the setting said not to.
+  private sendErrorHome(target: string): string {
+    return this.lastUserSendAt.get(target.toLowerCase())?.shownIn ?? target;
+  }
+
+  // A notice between us and one nick, as it was on the wire: who, and the
+  // words. A line history brings back is looked for by these, since its row
+  // may be in another buffer than this copy resolves to (alreadyPersisted).
+  // Null for any other line.
+  private noticeBetween(event: IrcEvent): { peer: string; text: string } | null {
+    if (event.type !== 'notice') return null;
     const sentTo = event.sentTo as { target: string; text: string } | undefined;
-    if (sentTo) return { target: this.canonicalDmTarget(sentTo.target), text: sentTo.text };
-    const nick = event.nick as string | undefined;
-    return !event.self && nick && isSinglePeerTarget(nick)
-      ? { target: this.canonicalDmTarget(nick), text }
-      : null;
+    if (sentTo) return { peer: sentTo.target, text: sentTo.text };
+    const target = event.target as string;
+    const text = (event.text as string | undefined) ?? '';
+    if (isChannelTarget(target)) return null;
+    const peer = event.self ? target : (event.nick as string | undefined);
+    if (!peer || peer === this.serverTarget() || !isSinglePeerTarget(peer)) return null;
+    return { peer, text };
   }
 
   // The draft/multiline batches `text` to `target` goes out as, or null when it
@@ -13501,9 +13583,9 @@ export class IrcConnection {
   // Record that the user just sent a real message to `target`. handleSendRejection
   // reads this to tell an actual failed message from an automated TAGMSG/typing
   // bounce — the rejection numeric alone doesn't say which command it refused.
-  // `inServerBuffer`: it was a notice whose row is the server buffer's
+  // `shownIn`: it was a notice whose row is another buffer's than `target`'s
   // (chat.notice_buffer), so that is where a refusal of it is said.
-  noteUserSend(target: string, conversational = true, inServerBuffer = false): void {
+  noteUserSend(target: string, conversational = true, shownIn?: string): void {
     const now = Date.now();
     // Prune entries past the attribution window before adding. They can never
     // satisfy recentUserSend again, so keeping them would let the map grow
@@ -13513,7 +13595,7 @@ export class IrcConnection {
     for (const [key, seen] of this.lastUserSendAt) {
       if (now - seen.at > SEND_REJECTION_ATTRIBUTION_MS) this.lastUserSendAt.delete(key);
     }
-    this.lastUserSendAt.set(target.toLowerCase(), { at: now, conversational, inServerBuffer });
+    this.lastUserSendAt.set(target.toLowerCase(), { at: now, conversational, shownIn });
     if (conversational) this.typingOver(target, true);
     // A direct message supersedes a channel command's claim on the next 401
     // (#434): messaging someone you just tried to kick means that 401 answers

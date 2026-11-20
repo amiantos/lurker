@@ -5281,11 +5281,11 @@ function handleCommand(
         localInfo(networkId, target, 'usage: /notice <target> <text>');
         return true;
       }
-      return ackedSend({ type: 'notice', networkId, target: who, text: chatBody(body) }, body, {
-        networkId,
-        target,
-        line,
-      });
+      return ackedSend(
+        { type: 'notice', networkId, target: who, issuingTarget: target, text: chatBody(body) },
+        body,
+        { networkId, target, line },
+      );
     }
     case 'slap': {
       // mIRC's classic: a CTCP ACTION with the canonical trout line, so it rides

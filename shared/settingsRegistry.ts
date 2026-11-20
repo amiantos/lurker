@@ -1209,7 +1209,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Where a notice sent to your nick appears: "private" is a buffer for its ' +
       'sender, "auto" that buffer if you have it open and the server buffer if ' +
-      'not, "server" always the server buffer. A notice you send follows the same rule.',
+      'not, "server" always the server buffer. A notice you send that is kept ' +
+      'out of their buffer appears where you typed it.',
   },
 
   // ─── Connection (drawn under the list in Settings → Networks) ────────────

@@ -3559,6 +3559,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
               networkId: msg.networkId,
               target: msg.target,
               text: msg.text,
+              // Where it was typed, for a notice shown there (#1174).
+              ...(typeof msg.issuingTarget === 'string' && msg.issuingTarget
+                ? { issuingTarget: msg.issuingTarget }
+                : {}),
             },
           ) as { ok: boolean; error?: string };
         } catch (err) {

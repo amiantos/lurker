@@ -339,7 +339,7 @@ describe('NOTICE placement (chat.notice_buffer)', () => {
   // nick's buffer it would make the buffer the setting said not to.
   it('says a kept notice was refused in the server buffer, naming the nick', () => {
     const { conn, publish } = harness();
-    conn.noteUserSend('ghost', true, true);
+    conn.noteUserSend('ghost', true, ':server:1');
     conn.client.emit('irc error', { error: 'no_such_nick', nick: 'ghost' });
     conn.handleSendRejection('ghost', 'Cannot send', {});
     expect(publish.mock.calls.map(([e]) => [e.type, e.target, e.text])).toEqual([

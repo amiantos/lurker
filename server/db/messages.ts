@@ -10,7 +10,7 @@ import {
   resolveOrMintForInsert,
 } from './bufferResolve.js';
 import { markBufferDirty, noteNoiseInsert } from './retention.js';
-import { networkCasemapping } from './buffers.js';
+import { foldTargetFor, networkCasemapping } from './buffers.js';
 import { foldTargetWith } from './casemapping.js';
 import { isServicesNick } from '../utils/servicesNick.js';
 import type { Casemapping } from './casemapping.js';
@@ -572,7 +572,7 @@ export function replyRootFor(
 }
 
 const replySendStmt = db.prepare(`
-  SELECT m.msgid FROM messages m
+  SELECT m.msgid, m.extra FROM messages m
   JOIN networks n ON n.id = m.network_id
   WHERE m.id = ? AND n.user_id = ? AND m.network_id = ? AND m.buffer_id = ?
     AND m.type IN ${REPLY_LINE_TYPES_SQL}
@@ -593,9 +593,15 @@ export function replySendMsgid(
   if (bufferId === undefined) return null;
   const row = findAcrossDrain(
     bufferId,
-    (id) => replySendStmt.get(messageId, userId, networkId, id) as { msgid: string } | undefined,
+    (id) =>
+      replySendStmt.get(messageId, userId, networkId, id) as
+        | { msgid: string; extra: string | null }
+        | undefined,
   );
-  return row?.msgid ?? null;
+  // Nor a notice to someone else that only sits here (#1174): the buffer never
+  // saw it either.
+  if (!row || sentToOf(row.extra)) return null;
+  return row.msgid;
 }
 
 function rowToEvent(row: MessageRow): MessageEvent {
@@ -796,7 +802,7 @@ export function redactionsForMessages(
 // target, or is already deleted. Whether the network will ALLOW it is the
 // network's answer (a FAIL), not ours: the spec says to let the user try.
 const redactSendStmt = db.prepare(`
-  SELECT m.network_id, m.msgid, b.target, b.kind
+  SELECT m.network_id, m.msgid, m.extra, b.target, b.kind
   FROM messages m
   JOIN networks n ON n.id = m.network_id
   JOIN buffers b ON b.id = m.buffer_id
@@ -814,9 +820,13 @@ export interface RedactSendTarget {
 
 export function redactSendTarget(userId: number, messageId: number): RedactSendTarget | null {
   const row = redactSendStmt.get(messageId, userId) as
-    | { network_id: number; msgid: string; target: string; kind: string }
+    | { network_id: number; msgid: string; extra: string | null; target: string; kind: string }
     | undefined;
   if (!row) return null;
+  // A notice kept outside its conversation's buffer (#1174) was sent to the
+  // nick it names, whatever buffer its row is in.
+  const sentTo = sentToOf(row.extra);
+  if (sentTo) return { networkId: row.network_id, target: sentTo.target, msgid: row.msgid };
   // `server` (the :server:N console) and `dcc` (=nick) are not IRC targets.
   if (row.kind !== 'channel' && row.kind !== 'dm') return null;
   return { networkId: row.network_id, target: row.target, msgid: row.msgid };
@@ -1898,6 +1908,87 @@ export function hasMessageWithMsgid(networkId: number, msgid: string): boolean {
   return !!hasMsgidStmt.get(networkId, msgid);
 }
 
+// A notice between the user and a nick is not always in that nick's buffer
+// (chat.notice_buffer, #1174): one they sent can be the row of the buffer it
+// was typed in, saying who it was for, with the line as sent kept in `extra`
+// (`sentTo`); one they were sent can be the server buffer's. So a notice that
+// history brings back is looked for by msgid across the network, by the words
+// it had on the wire. A seek on idx_messages_msgid.
+const SENT_TO_TEXT_SQL = `CASE WHEN json_valid(extra) THEN json_extract(extra, '$.sentTo.text') END`;
+const sameNoticeAnywhereStmt = db.prepare(
+  `SELECT 1 FROM messages
+   WHERE network_id = ? AND msgid = ? AND type = 'notice' AND nick IS ?
+     AND (text IS ? OR redacted_at IS NOT NULL OR ${SENT_TO_TEXT_SQL} IS ?)
+   LIMIT 1`,
+);
+export function hasSameNoticeAnywhere(
+  networkId: number,
+  msgid: string,
+  nick: string | null,
+  text: string | null,
+): boolean {
+  if (!networkId || !msgid) return false;
+  return !!sameNoticeAnywhereStmt.get(networkId, msgid, nick, text, text);
+}
+
+// The line as sent, of a row kept outside its conversation's buffer. Null for
+// every other row, and for an `extra` that is not ours to read.
+export interface SentTo {
+  target: string;
+  text: string;
+}
+export function sentToOf(extra: string | null | undefined): SentTo | null {
+  if (!extra) return null;
+  try {
+    const sentTo = (JSON.parse(extra) as { sentTo?: Partial<SentTo> }).sentTo;
+    return typeof sentTo?.target === 'string' && typeof sentTo.text === 'string'
+      ? { target: sentTo.target, text: sentTo.text }
+      : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// The notice a msgid names, wherever on the network its row is: for a REDACT
+// of one that is not in the buffer of the nick it was to or from.
+const noticeByMsgidStmt = db.prepare(`
+  SELECT m.buffer_id, m.nick, m.self, m.extra, b.target, b.kind
+  FROM messages m JOIN buffers b ON b.id = m.buffer_id
+  WHERE m.network_id = ? AND m.msgid = ? AND m.type = 'notice'
+  ORDER BY m.id DESC LIMIT 1
+`);
+export interface NoticeElsewhere {
+  bufferId: number;
+  /** The buffer the row is in. */
+  target: string;
+  inServerBuffer: boolean;
+  nick: string | null;
+  self: boolean;
+  sentTo: SentTo | null;
+}
+export function findNoticeByMsgid(networkId: number, msgid: string): NoticeElsewhere | null {
+  if (!networkId || !msgid) return null;
+  const row = noticeByMsgidStmt.get(networkId, msgid) as
+    | {
+        buffer_id: number;
+        nick: string | null;
+        self: number;
+        extra: string | null;
+        target: string;
+        kind: string;
+      }
+    | undefined;
+  if (!row) return null;
+  return {
+    bufferId: row.buffer_id,
+    target: row.target,
+    inServerBuffer: row.kind === 'server',
+    nick: row.nick,
+    self: row.self === 1,
+    sentTo: sentToOf(row.extra),
+  };
+}
+
 // The msgid-less version of the same question, for networks that don't tag
 // messages (Libera, OFTC, ZNC…): the same target, sender, kind and text within
 // a short window of the same time. Only ever consulted in the catch-up window,
@@ -1952,6 +2043,45 @@ export function hasRecentMessageLike(
   const lo = new Date(t - toleranceMs).toISOString();
   const hi = new Date(t + toleranceMs).toISOString();
   return !!hasLikeStmt.get({ bufferId, maxId, tailRows, type, nick, text, lo, hi });
+}
+
+// The msgid-less form of hasSameNoticeAnywhere, for a notice of the user's
+// own: the same words to the same nick within the window, in whichever buffer
+// it was typed in. The network's newest rows only (idx_messages_net, by id),
+// as hasRecentMessageLike reads a buffer's: no index covers `time`.
+export const OWN_NOTICE_TAIL_ROWS = 5000;
+const ownNoticeLikeStmt = db.prepare(
+  `SELECT extra FROM (
+     SELECT type, self, extra, time FROM messages
+      WHERE network_id = @networkId AND id <= @maxId ORDER BY id DESC LIMIT @tailRows
+   )
+   WHERE type = 'notice' AND self = 1 AND time BETWEEN @lo AND @hi
+     AND ${SENT_TO_TEXT_SQL} IS @text`,
+);
+export function hasRecentOwnNoticeAnywhere(
+  networkId: number,
+  peer: string,
+  text: string,
+  time: string,
+  {
+    toleranceMs = 5000,
+    maxId = Number.MAX_SAFE_INTEGER,
+    tailRows = OWN_NOTICE_TAIL_ROWS,
+  }: RepeatProbeOptions = {},
+): boolean {
+  if (!networkId || !peer) return false;
+  const t = Date.parse(time);
+  if (!Number.isFinite(t)) return false;
+  const lo = new Date(t - toleranceMs).toISOString();
+  const hi = new Date(t + toleranceMs).toISOString();
+  const folded = foldTargetFor(networkId, peer);
+  const rows = ownNoticeLikeStmt.all({ networkId, maxId, tailRows, text, lo, hi }) as Array<{
+    extra: string | null;
+  }>;
+  return rows.some((row) => {
+    const sentTo = sentToOf(row.extra);
+    return sentTo !== null && foldTargetFor(networkId, sentTo.target) === folded;
+  });
 }
 
 // The time of the newest conversation line a buffer holds (the rows a
