@@ -366,7 +366,75 @@ describe('our own notice to a nick follows chat.notice_buffer', () => {
       self: true,
       msgid: 'n1',
       sentTo: { target: 'OwnNew', text: 'psst' },
+      // Our own line is not news in the server buffer.
+      notable: false,
     });
+  });
+
+  it('only a notice to one nick is moved', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    const conn = makeConn();
+    expect(conn.ownNoticeInServerBuffer('bob', 'x')).toMatchObject({ text: '→ bob: x' });
+    for (const target of ['#room', '@#room', 'bob,#room', '$$*']) {
+      expect(conn.ownNoticeInServerBuffer(target, 'x')).toBeNull();
+    }
+  });
+
+  it('history bringing a notice back finds it in the buffer the setting had put it in', () => {
+    // Stored in the server buffer, then asked for again once the setting (or
+    // the buffer) says their buffer: one row, not one in each.
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    const conn = makeConn();
+    const notice = (fields: object) =>
+      conn.client.emit('message', {
+        nick: 'RepBob',
+        ident: 'b',
+        hostname: 'h',
+        target: 'me',
+        type: 'notice',
+        message: 'kept once',
+        time: 1750000000000,
+        tags: { msgid: 'rep-1' },
+        ...fields,
+      });
+    notice({});
+    const own = () =>
+      conn.publish({
+        type: 'notice',
+        target: 'RepAnn',
+        nick: 'me',
+        text: 'sent once',
+        self: true,
+        time: 1750000000000,
+        msgid: 'rep-2',
+        replay: true,
+        replayAsked: true,
+      });
+    conn.publish({
+      type: 'notice',
+      ...conn.ownNoticeInServerBuffer('RepAnn', 'sent once')!,
+      nick: 'me',
+      self: true,
+      time: 1750000000000,
+      msgid: 'rep-2',
+    });
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    conn.publish({
+      type: 'notice',
+      target: 'RepBob',
+      nick: 'RepBob',
+      text: 'kept once',
+      time: 1750000000000,
+      msgid: 'rep-1',
+      replay: true,
+      replayAsked: true,
+    });
+    own();
+    expect(listMessages(networkId, 'RepBob')).toEqual([]);
+    expect(listMessages(networkId, 'RepAnn')).toEqual([]);
+    const kept = listMessages(networkId, `:server:${networkId}`).map((m) => m.text);
+    expect(kept.filter((t) => t === 'kept once')).toHaveLength(1);
+    expect(kept.filter((t) => t === '→ RepAnn: sent once')).toHaveLength(1);
   });
 
   it('auto: with their buffer open the echo goes there, as sent', () => {
@@ -551,6 +619,7 @@ describe('ircManager optimistic-publish gating', () => {
       // adoption, so they all start from a live socket.
       state: 'connected',
       outboundBatches: () => null,
+      ownNoticeInServerBuffer: () => null,
       echoActive: () => true,
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},

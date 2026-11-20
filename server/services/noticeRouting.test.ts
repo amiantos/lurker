@@ -334,4 +334,26 @@ describe('NOTICE placement (chat.notice_buffer)', () => {
       ['bob', false],
     ]);
   });
+
+  // A refusal of a notice kept in the server buffer is said there: in the
+  // nick's buffer it would make the buffer the setting said not to.
+  it('says a kept notice was refused in the server buffer, naming the nick', () => {
+    const { conn, publish } = harness();
+    conn.noteUserSend('ghost', true, true);
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'ghost' });
+    conn.handleSendRejection('ghost', 'Cannot send', {});
+    expect(publish.mock.calls.map(([e]) => [e.type, e.target, e.text])).toEqual([
+      ['error', ':server:1', "ghost isn't on this network."],
+      ['error', ':server:1', expect.stringMatching(/^ghost: /)],
+    ]);
+  });
+
+  it('says any other refused send in the buffer it was sent to', () => {
+    const { conn, publish } = harness();
+    conn.noteUserSend('ghost2');
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'ghost2' });
+    conn.handleSendRejection('ghost2', 'Cannot send', {});
+    expect(publish.mock.calls.map(([e]) => e.target)).toEqual(['ghost2', 'ghost2']);
+    expect(publish.mock.calls[1][0].text).not.toMatch(/^ghost2: /);
+  });
 });

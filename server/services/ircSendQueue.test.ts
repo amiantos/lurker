@@ -978,14 +978,48 @@ describe('a held message shows as pending (#1326)', () => {
       ]);
       vi.advanceTimersByTime(2000);
       expect(lines.at(-1)).toBe('NOTICE nobuffer :psst');
-      // A notice to the nick's own buffer is not it.
-      echoed(conn, ownRow('nobuffer', 'psst', 'notice'));
+      // Known by the line as sent: other words are not it, and the network
+      // spelling the nick its own way still is.
+      const row = (to: string, text: string) => ({
+        ...ownRow(':server:1', `→ ${to}: ${text}`, 'notice'),
+        sentTo: { target: to, text },
+      });
+      echoed(conn, row('nobuffer', 'other'));
       expect(pendingFrames(published)).toHaveLength(1);
-      echoed(conn, ownRow(':server:1', '→ nobuffer: psst', 'notice'));
+      echoed(conn, row('NoBuffer', 'psst'));
       expect(pendingFrames(published).at(-1)).toMatchObject({
         type: 'send-pending-done',
         sent: true,
       });
+      conn.dispose();
+    } finally {
+      settingsService.reset(1, 'chat.notice_buffer');
+    }
+  });
+
+  it('a notice held for the server buffer is ended by the echo in their buffer, opened since', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    try {
+      const { conn, published } = backlog();
+      conn.notice('opened', 'psst');
+      vi.advanceTimersByTime(2000);
+      echoed(conn, ownRow('Opened', 'psst', 'notice'));
+      expect(pendingFrames(published).at(-1)).toMatchObject({ type: 'send-pending-done' });
+      conn.dispose();
+    } finally {
+      settingsService.reset(1, 'chat.notice_buffer');
+    }
+  });
+
+  it('says a notice kept in the server buffer was not sent there, naming who it was for', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    try {
+      const { conn, published } = backlog();
+      conn.notice('nobody', 'psst');
+      expect(conn.flushSendQueue()).toBe(1);
+      expect(published.filter((e) => e.type === 'error')).toMatchObject([
+        { target: ':server:1', text: expect.stringMatching(/^not sent \(.*\): → nobody: psst$/) },
+      ]);
       conn.dispose();
     } finally {
       settingsService.reset(1, 'chat.notice_buffer');

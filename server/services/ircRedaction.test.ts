@@ -232,6 +232,24 @@ describe('a REDACT from the network', () => {
     }
   });
 
+  it('finds a notice chat.notice_buffer kept in the server buffer (#1174)', async () => {
+    const settings = (await import('./settingsService.js')).default;
+    settings.update(userId, { 'chat.notice_buffer': 'server' });
+    const rig = await connect('recv5b');
+    const server = `:server:${rig.network.id}`;
+    try {
+      ircd.sendRaw(rig.nick, `@msgid=kept-1 :bob!b@fake.host NOTICE ${rig.nick} :secret`);
+      await until(() => rows(rig, server).some((m) => m.msgid === 'kept-1'), 5000, 'stored');
+      ircd.sendRaw(rig.nick, `:bob!b@fake.host REDACT ${rig.nick} kept-1`);
+      await until(() => redactedFrames(rig).length === 1, 5000, 'frame');
+      expect(redactedFrames(rig)[0]).toMatchObject({ target: server, by: 'bob' });
+      expect(rowByMsgid(rig, server, 'kept-1').text).toBeNull();
+    } finally {
+      settings.reset(userId, 'chat.notice_buffer');
+      dispose(rig);
+    }
+  });
+
   it('ignores a msgid it does not hold, and a second REDACT for the same line', async () => {
     const rig = await connect('recv6', '#d6');
     try {

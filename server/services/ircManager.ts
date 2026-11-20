@@ -77,7 +77,7 @@ import { contextKey, isChannelContext } from './e2e/context.js';
 import { e2eDbg } from './e2e/debug.js';
 import db from '../db/index.js';
 import { reactionSendTarget } from '../db/reactions.js';
-import { isChannelTarget, isDccChatTarget, dccChatPeer } from '../../shared/channels.js';
+import { isDccChatTarget, dccChatPeer } from '../../shared/channels.js';
 import {
   dccChatHostFor,
   dccChatHostsFor,
@@ -1259,7 +1259,7 @@ class IrcManager extends EventEmitter {
       const row = () => {
         // To a nick whose buffer it is not to be put in (#1174): the server
         // buffer, saying who it was for.
-        const moved = isChannelTarget(target) ? null : conn.ownNoticeInServerBuffer(target, chunk);
+        const moved = conn.ownNoticeInServerBuffer(target, chunk);
         conn.publish({
           type: 'notice',
           target: moved?.target ?? target,
@@ -1267,7 +1267,7 @@ class IrcManager extends EventEmitter {
           text: moved?.text ?? chunk,
           kind: 'notice',
           self: true,
-          ...(moved ? { sentTo: moved.sentTo } : {}),
+          ...(moved ? { sentTo: moved.sentTo, notable: moved.notable } : {}),
         });
       };
       conn.notice(target, chunk, lineHooks(opts.lineHooks, chunk, adoptEcho ? undefined : row));

@@ -1433,7 +1433,8 @@ these signals:
   **not** `mirrored` (it is the only copy, and searchable). The user's own
   notice to a nick follows the same rule. In `:server:` its `text` names who it
   was for (`→ bob: hi`), and the live frame alone also carries
-  `sentTo{ target, text }`, the line as it was sent. Render `text`.
+  `sentTo{ target, text }`, the line as it was sent. Render `text`. A refusal
+  of such a notice (`error`) is in `:server:` too.
 
   A notice-only buffer is deliberately **not** a "conversation": the server
   won't start presence-tracking its nick (no MONITOR slot, no presence dot)
