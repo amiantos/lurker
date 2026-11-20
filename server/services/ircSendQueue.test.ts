@@ -1011,6 +1011,20 @@ describe('a held message shows as pending (#1326)', () => {
     }
   });
 
+  it('a notice held in their buffer is ended by the echo in the server buffer, closed since', () => {
+    const { conn, published } = backlog();
+    conn.notice('closed', 'psst');
+    expect(heldOf(published)).toMatchObject([{ target: 'closed', text: 'psst' }]);
+    vi.advanceTimersByTime(2000);
+    const moved = {
+      ...ownRow(':server:1', '→ Closed: psst', 'notice'),
+      sentTo: { target: 'Closed', text: 'psst' },
+    };
+    echoed(conn, moved);
+    expect(pendingFrames(published).at(-1)).toMatchObject({ type: 'send-pending-done' });
+    conn.dispose();
+  });
+
   it('says a notice kept in the server buffer was not sent there, naming who it was for', () => {
     settingsService.update(1, { 'chat.notice_buffer': 'server' });
     try {

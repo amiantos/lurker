@@ -748,7 +748,7 @@ interface IrcEvent {
 
 // Our own notice to a nick as the server buffer's row (chat.notice_buffer,
 // #1174): where it goes, what it says, and the line as it was sent.
-interface MovedNotice {
+export interface MovedNotice {
   target: string;
   text: string;
   sentTo: { target: string; text: string };
@@ -8992,13 +8992,18 @@ export class IrcConnection {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.writeUserLine('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags, 'action', text, hooks);
   }
-  notice(target: string, text: string, hooks?: SendHooks): void {
+  notice(
+    target: string,
+    text: string,
+    hooks?: SendHooks,
+    // Where its row goes, decided once: the caller's own row uses the same.
+    moved: MovedNotice | null = this.ownNoticeInServerBuffer(target, text),
+  ): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
     // Its row may be the server buffer's (#1174): a wait shown where the row
     // will be, with the row's text, is the one the echo ends.
-    const moved = this.ownNoticeInServerBuffer(target, text);
     this.writeUserLine('NOTICE', target, text, null, 'notice', text, hooks, false, moved);
   }
 
@@ -9163,24 +9168,18 @@ export class IrcConnection {
   private settlePendingEcho(event: IrcEvent): void {
     const kind = event.type === 'message' ? 'privmsg' : event.type;
     const target = typeof event.target === 'string' ? event.target : '';
-    const folded = foldTargetFor(this.network.id, target);
-    // A notice whose pending row is the server buffer's is known by the line
-    // as sent, on both sides: the echo may spell the nick otherwise, or be
-    // their buffer's row after all, opened since (#1174).
+    // A notice is known by the line as sent, on both sides: its pending row
+    // and its echo's can each be the server buffer's or the nick's, and not
+    // the same one if the buffer was opened or closed in between (#1174).
     const echoSentTo = event.sentTo as { target: string; text: string } | undefined;
     const sentFolded = foldTargetFor(this.network.id, echoSentTo?.target ?? target);
     const sentText = echoSentTo?.text ?? event.text;
     for (const id of this.pendingEchoTimers.keys()) {
       const pending = this.pendingSends.get(id);
       if (!pending || pending.kind !== kind) continue;
-      const sentTo = this.pendingSentTo.get(id);
-      if (sentTo) {
-        if (sentTo.text !== sentText) continue;
-        if (foldTargetFor(this.network.id, sentTo.target) !== sentFolded) continue;
-      } else {
-        if (pending.text !== event.text) continue;
-        if (foldTargetFor(this.network.id, pending.target) !== folded) continue;
-      }
+      const sent = this.pendingSentTo.get(id) ?? pending;
+      if (sent.text !== sentText) continue;
+      if (foldTargetFor(this.network.id, sent.target) !== sentFolded) continue;
       this.endPending(id, true);
       return;
     }

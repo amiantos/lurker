@@ -477,7 +477,12 @@ describe('our own notice to a nick follows chat.notice_buffer', () => {
     ensureOpen(userId, networkId, 'SentSrv');
     const { conn, publish } = sender();
     expect(ircManager.notice(userId, networkId, 'SentSrv', 'psst')).toBe(true);
-    expect(conn.notice).toHaveBeenCalledWith('SentSrv', 'psst', expect.anything());
+    expect(conn.notice).toHaveBeenCalledWith(
+      'SentSrv',
+      'psst',
+      expect.anything(),
+      expect.objectContaining({ target: `:server:${networkId}` }),
+    );
     expect(publish.mock.calls.map(([e]) => e)).toMatchObject([
       {
         type: 'notice',
@@ -604,7 +609,7 @@ describe('ircManager optimistic-publish gating', () => {
     const action = vi.fn<(target: string, text: string, tags?: unknown, hooks?: Hooks) => void>(
       (_target, _text, _tags, hooks) => hooks?.row?.(),
     );
-    const notice = vi.fn<(target: string, text: string, hooks?: Hooks) => void>(
+    const notice = vi.fn<(target: string, text: string, hooks?: Hooks, moved?: unknown) => void>(
       (_target, _text, hooks) => hooks?.row?.(),
     );
     const publish = vi.fn<(event: unknown) => void>();
@@ -665,8 +670,32 @@ describe('ircManager optimistic-publish gating', () => {
     // sender's line hooks (#1149).
     expect(say).toHaveBeenCalledWith('#gate', 'hi', null, undefined);
     expect(action).toHaveBeenCalledWith('#gate', 'waves', null, undefined);
-    expect(notice).toHaveBeenCalledWith('#gate', 'psst', undefined);
+    expect(notice).toHaveBeenCalledWith('#gate', 'psst', undefined, null);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('a notice waiting in the queue keeps the placement it was given', () => {
+    // Decided once: were the row to ask again as the line goes, a buffer
+    // opened meanwhile would part it from its pending line and from where a
+    // refusal is said (#1174).
+    const moved = {
+      target: ':server:1',
+      text: '→ bob: psst',
+      sentTo: { target: 'bob', text: 'psst' },
+      notable: false,
+    };
+    const ownNoticeInServerBuffer = vi
+      .fn<() => typeof moved | null>()
+      .mockReturnValueOnce(moved)
+      .mockReturnValue(null);
+    const { conn, notice, publish } = fakeConn({
+      echoActive: () => false,
+      ownNoticeInServerBuffer,
+    });
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    ircManager.notice(userId, networkId, 'bob', 'psst');
+    expect(notice.mock.calls[0][3]).toBe(moved);
+    expect(publish.mock.calls[0][0]).toMatchObject({ ...moved, type: 'notice', self: true });
   });
 
   it('keeps the optimistic publish when the cap is absent', () => {
