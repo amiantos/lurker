@@ -106,8 +106,7 @@
                 class="link channel"
                 @click="onChannelClick(ch.name)"
               >
-                <span class="ch-prefix">{{ ch.prefix }}</span
-                >{{ ch.name }}
+                <span class="ch-prefix">{{ ch.prefix }}</span>{{ ch.name }}
               </button>
             </dd>
           </template>

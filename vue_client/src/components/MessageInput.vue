@@ -15,8 +15,7 @@
     <span class="prompt"
       ><template v-if="!isMobile"
         >{{ promptLabelNoModes }}<span v-if="promptModes" class="modes">{{ promptModes }}</span
-        ><span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span
-        >&nbsp;</template
+        ><span v-if="awayLabel" class="away">&nbsp;{{ awayLabel }}</span>&nbsp;</template
       ><span
         v-if="hasHistory"
         ref="promptBtnEl"

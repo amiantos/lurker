@@ -47,8 +47,7 @@
     </p>
     <p class="muted small">
       Any other client attaches to one network at a time: sign in as
-      <code>{{ username }}/{{ exampleNetwork }}</code
-      >, with the network’s name as it appears in
+      <code>{{ username }}/{{ exampleNetwork }}</code>, with the network’s name as it appears in
       <RouterLink to="/settings/networks">Networks</RouterLink>.
     </p>
     <p class="muted small">

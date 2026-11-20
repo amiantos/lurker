@@ -32,8 +32,7 @@
     <p v-if="dcc.filesError" class="error">{{ dcc.filesError }}</p>
     <div v-if="dcc.pick" class="pick">
       <span>
-        Pick a file to send to <span class="peer">{{ dcc.pick.nick }}</span
-        >, or
+        Pick a file to send to <span class="peer">{{ dcc.pick.nick }}</span>, or
         <button class="link inline" :disabled="!!dcc.uploading" @click="chooseUpload">
           upload one…
         </button>
