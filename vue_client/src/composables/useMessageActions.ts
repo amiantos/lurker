@@ -47,6 +47,9 @@ export interface MessageLike {
   msgid?: string;
   // An end-to-end encrypted line; reactions are cleartext tags, so none here.
   e2e?: boolean;
+  // The line as sent, on a notice of ours that chat.notice_buffer kept in the
+  // server buffer (#1174): who a delete of it goes to.
+  sentTo?: { target: string; text: string };
   // message / action / notice / … — only the first two can be reacted to.
   type?: string;
   // The line was deleted (#1013): nothing to copy, quote, answer or react to.
@@ -110,7 +113,11 @@ export function deletable(m: MessageLike): boolean {
   // can go like any other.
   if (m.id == null || !m.msgid || m.redaction) return false;
   if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') return false;
-  if (!m.target || m.target.startsWith(':') || isDccChatTarget(m.target)) return false;
+  // The server buffer is no IRC target, but a notice of ours kept there was
+  // sent to a nick, and the REDACT goes to them (redactSendTarget).
+  const keptNotice = !!m.sentTo && !!m.self && m.type === 'notice';
+  if (!m.target || isDccChatTarget(m.target)) return false;
+  if (m.target.startsWith(':') && !keptNotice) return false;
   const networkId = m.networkId ?? m.network_id;
   if (!redactionsGoOut(networkId)) return false;
   if (m.self) return true;

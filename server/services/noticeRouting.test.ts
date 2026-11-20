@@ -15,7 +15,7 @@
 // MUST be first — redirect DATABASE_PATH before the static imports below open
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
@@ -32,6 +32,7 @@ function closeBuffer(userId: number, networkId: number, target: string): void {
 }
 const reopenBuffer = reopenBufferRow;
 import { insertMessage } from '../db/messages.js';
+import settingsService from './settingsService.js';
 
 beforeAll(() => {
   createUser('notice-alice'); // id 1
@@ -125,7 +126,11 @@ function emitNotice(conn: IrcConnection, fields: Record<string, unknown>): void 
   });
 }
 
+// What `private` does, the only behaviour before chat.notice_buffer (#1174).
 describe('NOTICE routing (#439)', () => {
+  beforeEach(() => settingsService.update(1, { 'chat.notice_buffer': 'private' }));
+  afterEach(() => settingsService.reset(1, 'chat.notice_buffer'));
+
   it('persists a nick notice to the sender buffer (no mirror when not closed)', () => {
     const { conn, publish, publishEphemeral } = harness();
     emitNotice(conn, { nick: 'ChanServ', target: 'alice', message: 'hi there' });
@@ -260,5 +265,115 @@ describe('NOTICE routing (#439)', () => {
     expect(track).not.toHaveBeenCalled();
     conn.probePresence('RealPal');
     expect(track).toHaveBeenCalledWith('RealPal');
+  });
+});
+
+// chat.notice_buffer (#1174): where a notice to our nick is stored. The cases
+// above are `private`, all Lurker did before it; the default is `auto`.
+describe('NOTICE placement (chat.notice_buffer)', () => {
+  afterEach(() => settingsService.reset(1, 'chat.notice_buffer'));
+
+  // Every persisted copy of the notice, as [target, mirrored].
+  function copies(publish: ReturnType<typeof harness>['publish']): Array<[unknown, boolean]> {
+    return publish.mock.calls.map(([e]) => [e.target, e.mirrored === true]);
+  }
+
+  it('auto: a sender with no buffer goes to the server buffer, once', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = harness();
+    emitNotice(conn, { nick: 'AutoNew', target: 'alice', message: 'hi there' });
+    expect(copies(publish)).toEqual([[':server:1', false]]);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'notice', nick: 'AutoNew', text: 'hi there' }),
+    );
+  });
+
+  it('auto: a sender whose buffer is open goes there, in its casing', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = harness();
+    ensureBufferOpen(1, 1, 'autopal');
+    emitNotice(conn, { nick: 'AutoPal', target: 'alice', message: 'hi there' });
+    expect(copies(publish)).toEqual([['autopal', false]]);
+  });
+
+  it('auto: a closed buffer is not open, and the server buffer copy is the only one', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = harness();
+    closeBuffer(1, 1, 'AutoShut');
+    emitNotice(conn, { nick: 'AutoShut', target: 'alice', message: 'hi there' });
+    // Not the mirror: there is no home copy for it to be a second copy of.
+    expect(copies(publish)).toEqual([[':server:1', false]]);
+  });
+
+  it('server: an open buffer is passed over', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = harness();
+    ensureBufferOpen(1, 1, 'SrvPal');
+    emitNotice(conn, { nick: 'SrvPal', target: 'alice', message: 'hi there' });
+    expect(copies(publish)).toEqual([[':server:1', false]]);
+  });
+
+  it('a channel hint still wins', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = harness();
+    join(conn, '#Christian');
+    emitNotice(conn, { nick: 'ChanServ', target: 'alice', message: '[#christian] welcome!' });
+    expect(copies(publish)).toEqual([['#Christian', false]]);
+  });
+
+  it('leaves channel notices and private messages where they were', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = harness();
+    emitNotice(conn, { nick: 'bob', target: '#general', message: 'heads up' });
+    conn.client.emit('message', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      type: 'privmsg',
+      target: 'alice',
+      message: 'hello',
+    });
+    expect(copies(publish)).toEqual([
+      ['#general', false],
+      ['bob', false],
+    ]);
+  });
+
+  // A refusal of a notice kept in the server buffer is there already, as the
+  // network's own line (the raw handler's). A line of ours in the nick's buffer
+  // would make the buffer the setting said not to; a second in the server
+  // buffer would badge it.
+  it('adds no line of its own for a refused notice kept in the server buffer', () => {
+    const { conn, publish } = harness();
+    conn.noteUserSend('ghost', true, ':server:1');
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'ghost' });
+    conn.handleSendRejection('ghost', 'Cannot send', {});
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('forgets where a notice was kept once the refusal window has passed', () => {
+    const { conn, publish } = harness();
+    insertMessage({
+      networkId: 1,
+      target: 'oldpal',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'oldpal',
+      text: 'hi',
+      self: false,
+    });
+    conn.noteUserSend('oldpal', true, ':server:1');
+    conn.lastUserSendAt.get('oldpal')!.at -= 10 * 60 * 1000;
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'oldpal' });
+    expect(publish.mock.calls.map(([e]) => [e.type, e.target])).toEqual([['error', 'oldpal']]);
+  });
+
+  it('says any other refused send in the buffer it was sent to', () => {
+    const { conn, publish } = harness();
+    conn.noteUserSend('ghost2');
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'ghost2' });
+    conn.handleSendRejection('ghost2', 'Cannot send', {});
+    expect(publish.mock.calls.map(([e]) => e.target)).toEqual(['ghost2', 'ghost2']);
+    expect(publish.mock.calls[1][0].text).not.toMatch(/^ghost2: /);
   });
 });

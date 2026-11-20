@@ -356,6 +356,10 @@ describe('pane structure', () => {
     expect(inPane('networks').map((o) => o.key)).toEqual(['chat.quit_message']);
     // Each has to exist in the sidebar, or its rows are unreachable.
     for (const id of ['away', 'ctcp', 'networks']) expect(cat(id)).toBeTruthy();
-    expect([...new Set(inPane('chat').map((o) => o.group))]).toEqual(['composing', 'viewing']);
+    expect([...new Set(inPane('chat').map((o) => o.group))]).toEqual([
+      'composing',
+      'viewing',
+      'notices',
+    ]);
   });
 });

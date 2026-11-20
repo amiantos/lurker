@@ -232,6 +232,56 @@ describe('a REDACT from the network', () => {
     }
   });
 
+  it('finds a notice chat.notice_buffer kept in the server buffer (#1174)', async () => {
+    const settings = (await import('./settingsService.js')).default;
+    settings.update(userId, { 'chat.notice_buffer': 'server' });
+    const rig = await connect('recv5b');
+    const server = `:server:${rig.network.id}`;
+    try {
+      ircd.sendRaw(rig.nick, `@msgid=kept-1 :bob!b@fake.host NOTICE ${rig.nick} :secret`);
+      await until(() => rows(rig, server).some((m) => m.msgid === 'kept-1'), 5000, 'stored');
+      ircd.sendRaw(rig.nick, `:bob!b@fake.host REDACT ${rig.nick} kept-1`);
+      await until(() => redactedFrames(rig).length === 1, 5000, 'frame');
+      expect(redactedFrames(rig)[0]).toMatchObject({ target: server, by: 'bob' });
+      expect(rowByMsgid(rig, server, 'kept-1').text).toBeNull();
+    } finally {
+      settings.reset(userId, 'chat.notice_buffer');
+      dispose(rig);
+    }
+  });
+
+  it('finds a notice of ours kept in the server buffer, and only for its own nick', async () => {
+    const settings = (await import('./settingsService.js')).default;
+    settings.update(userId, { 'chat.notice_buffer': 'server' });
+    const rig = await connect('recv5c');
+    const server = `:server:${rig.network.id}`;
+    try {
+      rig.conn.publish({
+        type: 'notice',
+        nick: rig.nick,
+        self: true,
+        msgid: 'sent-9',
+        ...rig.conn.ownNoticeElsewhere('bob', 'secret')!,
+      });
+      // Ours to delete: the REDACT goes to who it was sent.
+      const sent = rowByMsgid(rig, server, 'sent-9');
+      expect(redactSendTarget(userId, sent.id)).toMatchObject({ target: 'bob', msgid: 'sent-9' });
+      ircd.sendRaw(rig.nick, `@msgid=kept-2 :carol!c@fake.host NOTICE ${rig.nick} :hers`);
+      await until(() => rows(rig, server).some((m) => m.msgid === 'kept-2'), 5000, 'stored');
+      // Another nick's REDACT reaches neither: not the notice to bob, not carol's.
+      ircd.sendRaw(rig.nick, `:${rig.nick}!u@fake.host REDACT dave sent-9`);
+      ircd.sendRaw(rig.nick, `:bob!b@fake.host REDACT ${rig.nick} kept-2`);
+      ircd.sendRaw(rig.nick, `:${rig.nick}!u@fake.host REDACT BOB sent-9`);
+      await until(() => redactedFrames(rig).length === 1, 5000, 'frame');
+      expect(redactedFrames(rig)[0]).toMatchObject({ target: server, self: true });
+      expect(rowByMsgid(rig, server, 'sent-9').text).toBeNull();
+      expect(rowByMsgid(rig, server, 'kept-2').text).toBe('hers');
+    } finally {
+      settings.reset(userId, 'chat.notice_buffer');
+      dispose(rig);
+    }
+  });
+
   it('ignores a msgid it does not hold, and a second REDACT for the same line', async () => {
     const rig = await connect('recv6', '#d6');
     try {

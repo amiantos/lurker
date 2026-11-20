@@ -23,6 +23,7 @@ import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import db from '../db/index.js';
 import { invalidateCasemappingCache } from '../db/buffers.js';
+import settingsService from './settingsService.js';
 
 beforeAll(() => {
   createUser('queue-alice'); // id 1
@@ -963,6 +964,80 @@ describe('a held message shows as pending (#1326)', () => {
       { target: '#c', kind: 'notice', text: 'psst' },
     ]);
     conn.dispose();
+  });
+
+  it('holds a notice where chat.notice_buffer will put its row, and its echo ends the wait', () => {
+    // The echo is matched by buffer and text: a wait named for the nick would
+    // sit out the whole echo timeout under a row already drawn (#1174).
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    try {
+      const { conn, published, lines } = backlog();
+      conn.notice('nobuffer', 'psst');
+      expect(heldOf(published)).toMatchObject([
+        { target: ':server:1', kind: 'notice', text: '→ nobuffer: psst' },
+      ]);
+      vi.advanceTimersByTime(2000);
+      expect(lines.at(-1)).toBe('NOTICE nobuffer :psst');
+      // Known by the line as sent: other words are not it, and the network
+      // spelling the nick its own way still is.
+      const row = (to: string, text: string) => ({
+        ...ownRow(':server:1', `→ ${to}: ${text}`, 'notice'),
+        sentTo: { target: to, text },
+      });
+      echoed(conn, row('nobuffer', 'other'));
+      expect(pendingFrames(published)).toHaveLength(1);
+      echoed(conn, row('NoBuffer', 'psst'));
+      expect(pendingFrames(published).at(-1)).toMatchObject({
+        type: 'send-pending-done',
+        sent: true,
+      });
+      conn.dispose();
+    } finally {
+      settingsService.reset(1, 'chat.notice_buffer');
+    }
+  });
+
+  it('a notice held for the server buffer is ended by the echo in their buffer, opened since', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    try {
+      const { conn, published } = backlog();
+      conn.notice('opened', 'psst');
+      vi.advanceTimersByTime(2000);
+      echoed(conn, ownRow('Opened', 'psst', 'notice'));
+      expect(pendingFrames(published).at(-1)).toMatchObject({ type: 'send-pending-done' });
+      conn.dispose();
+    } finally {
+      settingsService.reset(1, 'chat.notice_buffer');
+    }
+  });
+
+  it('a notice held in their buffer is ended by the echo in the server buffer, closed since', () => {
+    const { conn, published } = backlog();
+    conn.notice('closed', 'psst', undefined, null);
+    expect(heldOf(published)).toMatchObject([{ target: 'closed', text: 'psst' }]);
+    vi.advanceTimersByTime(2000);
+    const moved = {
+      ...ownRow(':server:1', '→ Closed: psst', 'notice'),
+      sentTo: { target: 'Closed', text: 'psst' },
+    };
+    echoed(conn, moved);
+    expect(pendingFrames(published).at(-1)).toMatchObject({ type: 'send-pending-done' });
+    conn.dispose();
+  });
+
+  it('says a notice kept in the server buffer was not sent there, naming who it was for', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    try {
+      const { conn, published } = backlog();
+      conn.notice('nobody', 'psst');
+      expect(conn.flushSendQueue()).toBe(1);
+      expect(published.filter((e) => e.type === 'error')).toMatchObject([
+        { target: ':server:1', text: expect.stringMatching(/^not sent \(.*\): → nobody: psst$/) },
+      ]);
+      conn.dispose();
+    } finally {
+      settingsService.reset(1, 'chat.notice_buffer');
+    }
   });
 
   it('ends the wait unsent, with no row, for a message taken back', () => {

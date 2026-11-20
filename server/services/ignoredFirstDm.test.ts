@@ -15,6 +15,8 @@ import ignoreRulesService from './ignoreRulesService.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { getState } from '../db/buffers.js';
+import { listMessages } from '../db/messages.js';
+import settingsService from './settingsService.js';
 
 let userId: number;
 let networkId: number;
@@ -97,10 +99,35 @@ describe("an ignored nick's first DM", () => {
   });
 
   it('does the same for a notice', () => {
-    const conn = makeConn();
-    dmFrom(conn, 'Grima2', 'notice');
-    dmFrom(conn, 'theoden', 'notice');
-    expect(getState(userId, networkId, 'grima2')).toBe('closed');
-    expect(getState(userId, networkId, 'theoden')).toBe('open');
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    try {
+      const conn = makeConn();
+      dmFrom(conn, 'Grima2', 'notice');
+      dmFrom(conn, 'theoden', 'notice');
+      expect(getState(userId, networkId, 'grima2')).toBe('closed');
+      expect(getState(userId, networkId, 'theoden')).toBe('open');
+    } finally {
+      settingsService.reset(userId, 'chat.notice_buffer');
+    }
+  });
+
+  // chat.notice_buffer would put a notice from a nick with no buffer in the
+  // server buffer (#1174), where no ignore reaches it.
+  it('keeps their notice out of the server buffer, whatever chat.notice_buffer says', () => {
+    for (const mode of ['auto', 'server']) {
+      settingsService.update(userId, { 'chat.notice_buffer': mode });
+      try {
+        const conn = makeConn();
+        dmFrom(conn, `Grima${mode}`, 'notice');
+        dmFrom(conn, `eowyn${mode}`, 'notice');
+        expect(getState(userId, networkId, `grima${mode}`)).toBe('closed');
+        expect(getState(userId, networkId, `eowyn${mode}`)).toBeUndefined();
+        const kept = listMessages(networkId, `:server:${networkId}`).map((m) => m.nick);
+        expect(kept).toContain(`eowyn${mode}`);
+        expect(kept).not.toContain(`Grima${mode}`);
+      } finally {
+        settingsService.reset(userId, 'chat.notice_buffer');
+      }
+    }
   });
 });

@@ -1256,16 +1256,27 @@ class IrcManager extends EventEmitter {
     const adoptEcho = conn.echoActive();
     const chunks = conn.sayChunks('NOTICE', target, text);
     for (const chunk of chunks) {
-      const row = () =>
+      // To a nick whose buffer it is not to be put in (#1174): the server
+      // buffer, saying who it was for. Decided here, once, so a wait in the
+      // queue cannot part the row from its pending line.
+      const moved = conn.ownNoticeElsewhere(target, chunk);
+      const row = () => {
         conn.publish({
           type: 'notice',
-          target,
+          target: moved?.target ?? target,
           nick: conn.currentNick,
-          text: chunk,
+          text: moved?.text ?? chunk,
           kind: 'notice',
           self: true,
+          ...(moved ? { sentTo: moved.sentTo, notable: moved.notable } : {}),
         });
-      conn.notice(target, chunk, lineHooks(opts.lineHooks, chunk, adoptEcho ? undefined : row));
+      };
+      conn.notice(
+        target,
+        chunk,
+        lineHooks(opts.lineHooks, chunk, adoptEcho ? undefined : row),
+        moved,
+      );
     }
     return true;
   }

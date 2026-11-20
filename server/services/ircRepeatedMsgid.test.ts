@@ -14,6 +14,7 @@ import db from '../db/index.js';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import settingsService from './settingsService.js';
 import type { Network } from '../db/networks.js';
 import { ensureOpen as ensureBufferOpen, close as closeBufferRow } from '../db/buffers.js';
 import { refoldNetworkBuffers } from '../db/refoldBuffers.js';
@@ -198,6 +199,9 @@ describe('a message the network sends twice', () => {
   });
 
   it('gets no second mirror when it is a notice to a closed buffer', () => {
+    // The mirror is `private`'s: under the default the server buffer has the
+    // only copy.
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
     const conn = makeConn();
     ensureBufferOpen(userId, network.id, 'NickServ');
     closeBufferRow(userId, network.id, 'NickServ');
@@ -216,5 +220,6 @@ describe('a message the network sends twice', () => {
       ['NickServ', 0],
       [`:server:${network.id}`, 1],
     ]);
+    settingsService.reset(userId, 'chat.notice_buffer');
   });
 });

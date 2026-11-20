@@ -18,6 +18,7 @@ import { createNetwork } from '../db/networks.js';
 import { listMessages } from '../db/messages.js';
 import { ensureOpen } from '../db/buffers.js';
 import { partitionMultiline, splitAction, splitSay } from './messageSplit.js';
+import settingsService from './settingsService.js';
 
 let userId: number;
 let networkId: number;
@@ -328,6 +329,226 @@ describe('self-echo adoption in the message handler', () => {
   });
 });
 
+// chat.notice_buffer (#1174) places our own notice to a nick as it places one
+// from them. In the server buffer the row names who it was for, and carries
+// the line as sent (`sentTo`) for the bouncer's echo.
+describe('our own notice to a nick follows chat.notice_buffer', () => {
+  afterEach(() => settingsService.reset(userId, 'chat.notice_buffer'));
+
+  const echo = (conn: IrcConnection, target: string) =>
+    conn.client.emit('message', {
+      nick: 'me',
+      target,
+      type: 'notice',
+      message: 'psst',
+      tags: { msgid: 'n1' },
+    });
+
+  it('private: the echo is their buffer row, as sent', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, 'OwnPriv');
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({ target: 'OwnPriv', text: 'psst' });
+    expect(publish.mock.calls[0][0]).not.toHaveProperty('sentTo');
+  });
+
+  it('auto: with no buffer open the echo is a server buffer row naming them', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, 'OwnNew');
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      type: 'notice',
+      target: `:server:${networkId}`,
+      text: '→ OwnNew: psst',
+      self: true,
+      msgid: 'n1',
+      sentTo: { target: 'OwnNew', text: 'psst' },
+      // Our own line is not news in the server buffer.
+      notable: false,
+    });
+  });
+
+  it('only a notice to one nick is moved', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    const conn = makeConn();
+    expect(conn.ownNoticeElsewhere('bob', 'x')).toMatchObject({ text: '→ bob: x' });
+    for (const target of ['#room', '@#room', 'bob,#room', '$$*']) {
+      expect(conn.ownNoticeElsewhere(target, 'x')).toBeNull();
+    }
+  });
+
+  it('history bringing a notice back finds it in the buffer the setting had put it in', () => {
+    // Stored in the server buffer, then asked for again once the setting (or
+    // the buffer) says their buffer: one row, not one in each.
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    const conn = makeConn();
+    const notice = (fields: object) =>
+      conn.client.emit('message', {
+        nick: 'RepBob',
+        ident: 'b',
+        hostname: 'h',
+        target: 'me',
+        type: 'notice',
+        message: 'kept once',
+        time: 1750000000000,
+        tags: { msgid: 'rep-1' },
+        ...fields,
+      });
+    notice({});
+    const own = () =>
+      conn.publish({
+        type: 'notice',
+        target: 'RepAnn',
+        nick: 'me',
+        text: 'sent once',
+        self: true,
+        time: 1750000000000,
+        msgid: 'rep-2',
+        replay: true,
+        replayAsked: true,
+      });
+    conn.publish({
+      type: 'notice',
+      ...conn.ownNoticeElsewhere('RepAnn', 'sent once')!,
+      nick: 'me',
+      self: true,
+      time: 1750000000000,
+      msgid: 'rep-2',
+    });
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    conn.publish({
+      type: 'notice',
+      target: 'RepBob',
+      nick: 'RepBob',
+      text: 'kept once',
+      time: 1750000000000,
+      msgid: 'rep-1',
+      replay: true,
+      replayAsked: true,
+    });
+    own();
+    expect(listMessages(networkId, 'RepBob')).toEqual([]);
+    expect(listMessages(networkId, 'RepAnn')).toEqual([]);
+    const kept = listMessages(networkId, `:server:${networkId}`).map((m) => m.text);
+    expect(kept.filter((t) => t === 'kept once')).toHaveLength(1);
+    expect(kept.filter((t) => t === '→ RepAnn: sent once')).toHaveLength(1);
+  });
+
+  it('auto: with their buffer open the echo goes there, as sent', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    ensureOpen(userId, networkId, 'ownpal');
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, 'OwnPal');
+    expect(publish.mock.calls[0][0]).toMatchObject({ target: 'ownpal', text: 'psst' });
+    expect(publish.mock.calls[0][0]).not.toHaveProperty('sentTo');
+  });
+
+  it('a notice to a channel is the channel row whatever the setting', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, '&local');
+    expect(publish.mock.calls[0][0]).toMatchObject({ target: '&local', text: 'psst' });
+  });
+
+  it('the server buffer row keeps the line as sent', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    const conn = makeConn();
+    enableEcho(conn);
+    conn.client.emit('message', {
+      nick: 'me',
+      target: 'KeptBob',
+      type: 'notice',
+      message: 'psst',
+      tags: { msgid: 'kept-1' },
+    });
+    expect(
+      listMessages(networkId, `:server:${networkId}`).filter((m) => m.msgid === 'kept-1'),
+    ).toMatchObject([
+      { text: '→ KeptBob: psst', self: true, sentTo: { target: 'KeptBob', text: 'psst' } },
+    ]);
+    expect(listMessages(networkId, 'keptbob')).toEqual([]);
+  });
+
+  it('history bringing back a kept notice stores it once, however the nick is spelled', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    const conn = makeConn();
+    const time = 1750000100000;
+    const own = { type: 'notice', nick: 'me', self: true, time };
+    conn.publish({ ...own, ...conn.ownNoticeElsewhere('RepCy', 'tagged')!, msgid: 'kept-rep' });
+    // As history hands it back: the server buffer's by the setting, with the
+    // nick as the network spells it, then their buffer's once the setting says so.
+    const replay = { ...own, msgid: 'kept-rep', replay: true, replayAsked: true };
+    conn.publish({ ...replay, ...conn.ownNoticeElsewhere('repcy', 'tagged')! });
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    conn.publish({ ...replay, target: 'repcy', text: 'tagged' });
+    expect(listMessages(networkId, 'repcy')).toEqual([]);
+    const inServer = listMessages(networkId, `:server:${networkId}`).map((m) => m.text);
+    expect(inServer.filter((t) => /repcy: tagged/i.test(t ?? ''))).toEqual(['→ RepCy: tagged']);
+  });
+
+  it('the same on a network that tags no msgid', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    const conn = makeConn();
+    const own = { type: 'notice', nick: 'me', self: true, time: 1750000200000 };
+    conn.publish({ ...own, ...conn.ownNoticeElsewhere('RepDee', 'untagged')! });
+    const replay = { ...own, replay: true, replayAsked: true };
+    conn.publish({ ...replay, ...conn.ownNoticeElsewhere('repdee', 'untagged')! });
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    conn.publish({ ...replay, target: 'repdee', text: 'untagged' });
+    expect(listMessages(networkId, 'repdee')).toEqual([]);
+    const inServer = listMessages(networkId, `:server:${networkId}`).map((m) => m.text);
+    expect(inServer.filter((t) => /repdee: untagged/i.test(t ?? ''))).toEqual([
+      '→ RepDee: untagged',
+    ]);
+  });
+
+  // Without echo-message the row is ircManager's own.
+  function sender(): { conn: IrcConnection; publish: ReturnType<typeof vi.fn> } {
+    const { conn, publish } = makeReceiver();
+    conn.state = 'connected';
+    conn.notice = vi.fn<typeof conn.notice>((_target, _text, hooks) => hooks?.row?.());
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    return { conn, publish };
+  }
+
+  it('private: the row sent without an echo is their buffer row', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
+    const { publish } = sender();
+    expect(ircManager.notice(userId, networkId, 'SentPriv', 'psst')).toBe(true);
+    expect(publish.mock.calls.map(([e]) => e)).toMatchObject([
+      { type: 'notice', target: 'SentPriv', text: 'psst', self: true },
+    ]);
+  });
+
+  it('server: the row sent without an echo is a server buffer row naming them', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    ensureOpen(userId, networkId, 'SentSrv');
+    const { conn, publish } = sender();
+    expect(ircManager.notice(userId, networkId, 'SentSrv', 'psst')).toBe(true);
+    expect(conn.notice).toHaveBeenCalledWith(
+      'SentSrv',
+      'psst',
+      expect.anything(),
+      expect.objectContaining({ target: `:server:${networkId}` }),
+    );
+    expect(publish.mock.calls.map(([e]) => e)).toMatchObject([
+      {
+        type: 'notice',
+        target: `:server:${networkId}`,
+        text: '→ SentSrv: psst',
+        self: true,
+        sentTo: { target: 'SentSrv', text: 'psst' },
+      },
+    ]);
+  });
+});
+
 describe('server-time + msgid persistence (real publish)', () => {
   it('persists an adopted echo with the ISO of the @time tag and its msgid', () => {
     const conn = makeConn();
@@ -442,7 +663,7 @@ describe('ircManager optimistic-publish gating', () => {
     const action = vi.fn<(target: string, text: string, tags?: unknown, hooks?: Hooks) => void>(
       (_target, _text, _tags, hooks) => hooks?.row?.(),
     );
-    const notice = vi.fn<(target: string, text: string, hooks?: Hooks) => void>(
+    const notice = vi.fn<(target: string, text: string, hooks?: Hooks, moved?: unknown) => void>(
       (_target, _text, hooks) => hooks?.row?.(),
     );
     const publish = vi.fn<(event: unknown) => void>();
@@ -457,6 +678,7 @@ describe('ircManager optimistic-publish gating', () => {
       // adoption, so they all start from a live socket.
       state: 'connected',
       outboundBatches: () => null,
+      ownNoticeElsewhere: () => null,
       echoActive: () => true,
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
@@ -502,8 +724,32 @@ describe('ircManager optimistic-publish gating', () => {
     // sender's line hooks (#1149).
     expect(say).toHaveBeenCalledWith('#gate', 'hi', null, undefined);
     expect(action).toHaveBeenCalledWith('#gate', 'waves', null, undefined);
-    expect(notice).toHaveBeenCalledWith('#gate', 'psst', undefined);
+    expect(notice).toHaveBeenCalledWith('#gate', 'psst', undefined, null);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('a notice waiting in the queue keeps the placement it was given', () => {
+    // Decided once: were the row to ask again as the line goes, a buffer
+    // opened meanwhile would part it from its pending line and from where a
+    // refusal is said (#1174).
+    const moved = {
+      target: ':server:1',
+      text: '→ bob: psst',
+      sentTo: { target: 'bob', text: 'psst' },
+      notable: false,
+    };
+    const ownNoticeElsewhere = vi
+      .fn<() => typeof moved | null>()
+      .mockReturnValueOnce(moved)
+      .mockReturnValue(null);
+    const { conn, notice, publish } = fakeConn({
+      echoActive: () => false,
+      ownNoticeElsewhere,
+    });
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    ircManager.notice(userId, networkId, 'bob', 'psst');
+    expect(notice.mock.calls[0][3]).toBe(moved);
+    expect(publish.mock.calls[0][0]).toMatchObject({ ...moved, type: 'notice', self: true });
   });
 
   it('keeps the optimistic publish when the cap is absent', () => {
