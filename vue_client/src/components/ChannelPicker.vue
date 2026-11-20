@@ -22,10 +22,14 @@
     reverse
     :row-key="rowKey"
     @select="onSelect"
+    :pinned="hint !== null"
     @close="emit('close')"
   >
     <template #row="{ row }">
       <span class="channel">{{ row }}</span>
+    </template>
+    <template #footer>
+      <CommandUsageLine v-if="hint" :hint="hint" />
     </template>
   </VerticalPopover>
 </template>
@@ -36,7 +40,9 @@ import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import VerticalPopover from './VerticalPopover.vue';
+import CommandUsageLine from './CommandUsageLine.vue';
 import type { PopoverNav } from './popoverNav.js';
+import type { UsageHint } from '../lib/commands/completion.js';
 
 const props = withDefaults(
   defineProps<{
@@ -46,12 +52,15 @@ const props = withDefaults(
     query?: string;
     networkId?: number | null;
     anchor?: HTMLElement | null;
+    // The usage line of the slash command being typed, pinned under the rows (#1369).
+    hint?: UsageHint | null;
   }>(),
   {
     open: false,
     query: '',
     networkId: null,
     anchor: null,
+    hint: null,
   },
 );
 

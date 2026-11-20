@@ -25,11 +25,15 @@
     reverse
     :row-key="rowKey"
     @select="onSelect"
+    :pinned="hint !== null"
     @close="emit('close')"
   >
     <template #row="{ row }">
       <span class="value">{{ row.label ?? row.value }}</span>
       <span v-if="row.detail" class="detail">{{ row.detail }}</span>
+    </template>
+    <template #footer>
+      <CommandUsageLine v-if="hint" :hint="hint" />
     </template>
   </VerticalPopover>
 </template>
@@ -37,19 +41,23 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import VerticalPopover from './VerticalPopover.vue';
+import CommandUsageLine from './CommandUsageLine.vue';
 import type { PopoverNav } from './popoverNav.js';
-import type { Candidate } from '../lib/commands/completion.js';
+import type { Candidate, UsageHint } from '../lib/commands/completion.js';
 
 withDefaults(
   defineProps<{
     open?: boolean;
     rows?: readonly Candidate[];
     anchor?: HTMLElement | null;
+    // The usage line of the slash command being typed, pinned under the rows (#1369).
+    hint?: UsageHint | null;
   }>(),
   {
     open: false,
     rows: () => [],
     anchor: null,
+    hint: null,
   },
 );
 

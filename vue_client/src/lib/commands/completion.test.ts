@@ -7,10 +7,12 @@ import {
   candidatesFor,
   argKind,
   isComplete,
+  usageHint,
   type Candidate,
   type CompletionContext,
 } from './completion.js';
 import { specFor } from './registry.js';
+import type { Alias } from '../../../../shared/aliases.js';
 
 // What the caret is sitting in, and the token a pick replaces. The first three
 // groups are the mobile apps' CommandCompletionTests, case for case, so the two
@@ -439,5 +441,68 @@ describe("the user's own aliases (#276)", () => {
 
   it('leaves commands alone when there are no aliases', () => {
     expect(completionContext('/join #li', 9)).toMatchObject({ verb: 'join', kind: 'channel' });
+  });
+});
+
+// The line kept in view while the arguments are typed (#1369): the usage as
+// text, with the word under the caret in brackets here.
+describe('the usage line', () => {
+  const line = (value: string, caret = value.length, aliases: Alias[] = []) => {
+    const hint = usageHint(value, caret, aliases);
+    return hint && hint.parts.map((p) => (p.active ? `{${p.text}}` : p.text)).join(' ');
+  };
+
+  it('is absent while the verb is typed, and for no command', () => {
+    expect(line('/ki')).toBeNull();
+    expect(line('/kick')).toBeNull();
+    expect(line('/nosuchverb a b')).toBeNull();
+    expect(line('//kick bob')).toBeNull();
+    expect(line('hello there')).toBeNull();
+  });
+
+  it('marks the argument under the caret, and follows it along the line', () => {
+    expect(line('/kick ')).toBe('/kick {<nick>} [reason]');
+    expect(line('/kick bo')).toBe('/kick {<nick>} [reason]');
+    expect(line('/kick bob ')).toBe('/kick <nick> {[reason]}');
+    expect(line('/kick bob spamming the channel')).toBe('/kick <nick> {[reason]}');
+    expect(line('/kick bob spam', 8)).toBe('/kick {<nick>} [reason]');
+  });
+
+  it('stays for text nothing completes', () => {
+    expect(completionContext('/me waves', 9)).toBeNull();
+    expect(line('/me waves')).toBe('/me {<text>}');
+  });
+
+  it('shows the word order the line fits', () => {
+    expect(line('/kick #ops bo')).toBe('/kick <#chan> {<nick>} [reason]');
+    expect(line('/invite #ops ')).toBe(line('/invite #ops x'));
+    expect(line('/invite #ops ')).not.toBe(line('/invite '));
+  });
+
+  it('shows the family while a subcommand is chosen, then that subcommand', () => {
+    expect(line('/dcc ')).toBe('/dcc [list]');
+    expect(line('/dcc se')).toBe('/dcc [list]');
+    expect(line('/dcc send ')).toBe('/dcc send [-passive] [-secure] {<nick>} [file]');
+    expect(usageHint('/dcc send ', 10)?.summary).toBe(
+      'send one of your files; with no file, pick or upload one',
+    );
+    expect(usageHint('/dcc ', 5)?.summary).toBe('DCC transfers and direct chats');
+    expect(line('/dcc close ')).toBe('/dcc close {chat} <nick>');
+  });
+
+  it('marks the options while one is typed, and the one whose value is', () => {
+    expect(line('/dcc send -')).toBe('/dcc send {[-passive]} {[-secure]} <nick> [file]');
+    expect(line('/dcc send -secure ')).toBe('/dcc send [-passive] [-secure] {<nick>} [file]');
+    const timed = usageHint('/ignore -time ', 14);
+    expect(timed?.parts.filter((p) => p.active).map((p) => p.text)).toEqual(['[opts]']);
+  });
+
+  it('marks nothing when the line has more words than the command takes', () => {
+    expect(line('/get input.foo extra ')).toBe('/get <key>');
+  });
+
+  it("is named as typed for a built-in alias, and as the command for the user's own", () => {
+    expect(line('/hop ')).toMatch(/^\/hop /);
+    expect(line('/j2 ', 4, [{ name: 'j2', body: '/join' }])).toMatch(/^\/join /);
   });
 });

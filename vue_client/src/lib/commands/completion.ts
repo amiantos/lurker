@@ -24,6 +24,7 @@ import {
   specFor,
   commandUsage,
   formUsage,
+  formUsageParts,
   type ArgKind,
   type ArgSpec,
   type CommandSpec,
@@ -120,35 +121,41 @@ function tokenEnd(value: string, from: number, quoted: boolean): number {
   return i;
 }
 
-/**
- * Classify the caret. Null when the line isn't a command, is a `//` escape,
- * names an unknown verb, or the caret is in a slot with nothing to suggest.
- *
- * `aliases` are the user's own (#276). An alias wins over a command of its
- * name, as it does on send, and one that is a plain rename (`/alias j2 /join`)
- * completes its arguments as the command it stands for.
- */
-export function completionContext(
-  value: string,
-  caret: number,
-  aliases: readonly Alias[] = [],
-): CompletionContext | null {
-  if (caret < 0 || caret > value.length) return null;
+/** Whether the line is a command at all, and the caret somewhere in it. */
+function isCommandLine(value: string, caret: number): boolean {
+  if (caret < 0 || caret > value.length) return false;
   // The command must open the line. ` /join` is text to the channel, here as in
   // the dispatcher, irssi and the apps.
-  if (value[0] !== '/' || value[1] === '/') return null;
+  if (value[0] !== '/' || value[1] === '/') return false;
   // A caret sitting on the slash has nothing to complete.
-  if (caret < 1) return null;
+  return caret >= 1;
+}
 
+function verbEndOf(value: string): number {
   let i = 1;
   while (i < value.length && !isSpace(value[i])) i++;
-  const verbEnd = i;
+  return i;
+}
 
-  if (caret <= verbEnd) {
-    return { type: 'command', query: value.slice(1, caret), start: 0, end: verbEnd };
-  }
+/** The argument the caret is in, once it is past the verb of a known command. */
+interface ArgumentAt {
+  readonly spec: CommandSpec;
+  readonly verb: string;
+  readonly preceding: string[];
+  /** Where each preceding token began; -1 for one an alias's body supplied. */
+  readonly starts: number[];
+  readonly query: string;
+  readonly start: number;
+  readonly end: number;
+}
 
-  // Past the verb. An unknown one goes raw on send, so its arguments are opaque.
+function argumentAt(
+  value: string,
+  caret: number,
+  verbEnd: number,
+  aliases: readonly Alias[],
+): ArgumentAt | null {
+  // An unknown verb goes raw on send, so its arguments are opaque.
   const typed = value.slice(1, verbEnd).toLowerCase();
   const alias = aliases.find((a) => a.name === typed);
   // One level, as WeeChat has it: the body names a command, not another alias.
@@ -185,6 +192,33 @@ export function completionContext(
     preceding.push(value.slice(tokenStart, scan));
     starts.push(tokenStart);
   }
+  return { spec, verb, preceding, starts, query, start, end };
+}
+
+/**
+ * Classify the caret. Null when the line isn't a command, is a `//` escape,
+ * names an unknown verb, or the caret is in a slot with nothing to suggest.
+ *
+ * `aliases` are the user's own (#276). An alias wins over a command of its
+ * name, as it does on send, and one that is a plain rename (`/alias j2 /join`)
+ * completes its arguments as the command it stands for.
+ */
+export function completionContext(
+  value: string,
+  caret: number,
+  aliases: readonly Alias[] = [],
+): CompletionContext | null {
+  if (!isCommandLine(value, caret)) return null;
+  const verbEnd = verbEndOf(value);
+
+  if (caret <= verbEnd) {
+    return { type: 'command', query: value.slice(1, caret), start: 0, end: verbEnd };
+  }
+
+  const at = argumentAt(value, caret, verbEnd, aliases);
+  if (!at) return null;
+  const { spec, verb, preceding, starts } = at;
+  let { query, start, end } = at;
 
   const fits = fittingForms(spec, preceding, query);
   const first = fits.find((f) => f.arg);
@@ -379,6 +413,58 @@ function slotsFor(verb: string, fits: readonly Fit[], query: string): Slot[] {
     }
   }
   return slots;
+}
+
+// ── The usage line ──────────────────────────────────────────────────────────
+
+/** The usage of the command being typed, with the argument under the caret marked (#1369). */
+export interface UsageHint {
+  readonly parts: readonly { readonly text: string; readonly active: boolean }[];
+  readonly summary: string;
+}
+
+/**
+ * What to keep in view while a command's arguments are typed. It answers
+ * wherever the verb is known, including the slots `completionContext` has
+ * nothing to suggest for: a message, a reason, a channel key. Null while the
+ * verb itself is being typed, where the rows already show each usage.
+ */
+export function usageHint(
+  value: string,
+  caret: number,
+  aliases: readonly Alias[] = [],
+): UsageHint | null {
+  if (!isCommandLine(value, caret)) return null;
+  const verbEnd = verbEndOf(value);
+  if (caret <= verbEnd) return null;
+  const at = argumentAt(value, caret, verbEnd, aliases);
+  if (!at) return null;
+  const { spec, verb, preceding, query } = at;
+  const family: UsageHint = {
+    parts: [{ text: commandUsage(spec, verb), active: false }],
+    summary: spec.summary,
+  };
+  const fits = fittingForms(spec, preceding, query);
+  // More words than any form takes: the usage still says what it wanted.
+  if (!fits.length) return family;
+  // A subcommand is being chosen, and the rows list them. No one form yet.
+  const keywords = new Set(fits.map((f) => (f.arg?.kind === 'keyword' ? f.arg.label : null)));
+  keywords.delete(null);
+  if (keywords.size > 1) return family;
+
+  const fit = fits.find((f) => f.arg) ?? fits[0];
+  const option = query.startsWith('-') && takesFlagHere(fit);
+  return {
+    parts: formUsageParts(verb, fit.form).map((part) => ({
+      text: part.text,
+      active: fit.valueOf
+        ? part.flag === fit.valueOf || part.flag === 'all'
+        : option && fit.form.flags?.length
+          ? part.flag !== undefined
+          : part.arg !== undefined && part.arg === fit.arg,
+    })),
+    summary: fit.form.summary ?? spec.summary,
+  };
 }
 
 // ── Candidates ──────────────────────────────────────────────────────────────

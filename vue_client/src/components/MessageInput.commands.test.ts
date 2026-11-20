@@ -377,3 +377,104 @@ describe('slash-command completion', () => {
     expect(rows()).toEqual(['-host <addr>']);
   });
 });
+
+// The usage line (#1369): what the popover's footer says, and the word it marks.
+const usageLine = () =>
+  document.querySelector('.vertical-popover .usage-line .usage')?.textContent ?? null;
+const usageMarked = () =>
+  [...document.querySelectorAll('.vertical-popover .usage-line .active')].map((n) => n.textContent);
+const escape = async () => {
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await flush();
+};
+
+describe('the usage line under a command (#1369)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(socketSend).mockClear();
+    seed();
+  });
+  afterEach(() => {
+    for (const wrapper of mounted) wrapper.unmount();
+    mounted = [];
+  });
+
+  it('is not there while the verb is typed', async () => {
+    const el = await composer();
+    await type(el, '/kic');
+    expect(rows().length).toBeGreaterThan(0);
+    expect(usageLine()).toBeNull();
+  });
+
+  it('sits under the suggestions, and stays when there are none', async () => {
+    const el = await composer();
+    await type(el, '/kick al');
+    expect(rows()).toEqual(['alexis', 'alice']);
+    expect(usageLine()).toBe('/kick <nick> [reason]');
+    expect(usageMarked()).toEqual(['<nick>']);
+
+    await type(el, '/kick alice being rude');
+    expect(rows()).toEqual([]);
+    expect(usageLine()).toBe('/kick <nick> [reason]');
+    expect(usageMarked()).toEqual(['[reason]']);
+    expect(document.querySelectorAll('.vertical-popover')).toHaveLength(1);
+  });
+
+  it('shows for a nick nobody here has', async () => {
+    const el = await composer();
+    await type(el, '/msg zz');
+    expect(rows()).toEqual([]);
+    expect(usageMarked()).toEqual(['<nick>']);
+    expect(document.querySelectorAll('.vertical-popover')).toHaveLength(1);
+  });
+
+  it('rides the ordinary pickers inside free text', async () => {
+    const el = await composer();
+    await type(el, '/me waves at @al');
+    expect(rows()).toEqual(['alexis', 'alice']);
+    expect(usageLine()).toBe('/me <text>');
+    expect(document.querySelectorAll('.vertical-popover')).toHaveLength(1);
+  });
+
+  it('follows a pick to the next argument', async () => {
+    const el = await composer();
+    await type(el, '/kick bo');
+    await key(el, 'Tab');
+    expect(el.value).toBe('/kick bob ');
+    expect(usageMarked()).toEqual(['[reason]']);
+  });
+
+  it('takes no keys: Enter sends with only the line showing', async () => {
+    const el = await composer();
+    await type(el, '/kick alice being rude');
+    expect(usageMarked()).toEqual(['[reason]']);
+    await key(el, 'Enter');
+    expect(sent()).toHaveLength(1);
+    expect(el.value).toBe('');
+    expect(usageLine()).toBeNull();
+  });
+
+  it('Escape puts it away for the rest of that command, and the lists come back', async () => {
+    const el = await composer();
+    await type(el, '/kick al');
+    await escape();
+    expect(document.querySelector('.vertical-popover')).toBeNull();
+    await type(el, '/kick ali');
+    expect(rows()).toEqual(['alice']);
+    expect(usageLine()).toBeNull();
+    await type(el, '/kick alice go away');
+    expect(document.querySelector('.vertical-popover')).toBeNull();
+
+    await type(el, '/msg alice hi');
+    expect(usageLine()).toBe('/msg <nick> [text]');
+  });
+
+  it('shows in the system buffer', async () => {
+    useNetworksStore().activeKey = SYSTEM_KEY;
+    const el = await composer();
+    await type(el, '/network connect ');
+    expect(rows()).toEqual(['testnet']);
+    expect(usageLine()).toBe('/network connect <name>');
+    expect(usageMarked()).toEqual(['<name>']);
+  });
+});

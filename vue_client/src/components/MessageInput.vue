@@ -101,8 +101,9 @@
       :buffer="buffer"
       :self-nick="ownNick"
       :anchor="formEl"
+      :hint="usage"
       @select="onPickerSelect"
-      @close="closePicker"
+      @close="onPickerDismissed(closePicker)"
     />
     <!-- `#channel` completion. Identical popover on desktop and mobile — there
          is no compact-strip variant for channels (issue #154). Independent of
@@ -113,18 +114,22 @@
       :query="channelPickerQuery"
       :network-id="active?.networkId ?? null"
       :anchor="formEl"
+      :hint="usage"
       @select="onChannelPickerSelect"
-      @close="closeChannelPicker"
+      @close="onPickerDismissed(closeChannelPicker)"
     />
     <!-- Slash-command completion (#533): commands, then subcommands, options
-         and named things. Nick and channel arguments use the two pickers above. -->
+         and named things. Nick and channel arguments use the two pickers above.
+         It is also where the usage line shows when nothing else is up to carry
+         it (#1369): open on `usageAlone`, with no rows. -->
     <CommandPicker
       ref="commandPickerEl"
-      :open="commandPickerOpen"
+      :open="commandPickerOpen || usageAlone"
       :rows="commandPickerRows"
       :anchor="formEl"
+      :hint="usage"
       @select="onCommandPickerSelect"
-      @close="closeCommandPicker"
+      @close="onPickerDismissed(closeCommandPicker)"
     />
     <!-- Previous-input recall menu, opened by tapping the `>` prompt — the
          pointer path to history for mobile, where Up-arrow is unreachable
@@ -179,10 +184,12 @@ import { helpLines, resolveVerb } from '../lib/commands/registry.js';
 import {
   completionContext,
   candidatesFor,
+  usageHint,
   isComplete,
   type Candidate,
   type CompletionContext,
   type LiveKind,
+  type UsageHint,
 } from '../lib/commands/completion.js';
 import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
@@ -450,6 +457,12 @@ const emojiPickerEl = ref<InstanceType<typeof EmojiPicker> | null>(null);
 const commandPickerEl = ref<InstanceType<typeof CommandPicker> | null>(null);
 const commandPickerOpen = ref(false);
 const commandPickerRows = shallowRef<readonly Candidate[]>([]);
+// The usage line (#1369): the command being typed, kept in view under whichever
+// popover is open from its first argument to its last. `usageDismissedFor` is
+// the verb it was dismissed on (Escape, a tap elsewhere); it stays away until
+// the line is a different command, where the lists come back with the next key.
+const usage = shallowRef<UsageHint | null>(null);
+let usageDismissedFor: string | null = null;
 let commandCtx: CompletionContext | null = null;
 // The arrows moved the highlight since the token last changed: the row is then
 // a choice, and Enter takes it whatever the typed text would do on its own.
@@ -961,6 +974,7 @@ function walkHistory(key: 'ArrowUp' | 'ArrowDown'): void {
   const list = inputHistory.forBuffer(networkId, target);
   if (!list.length) return;
   resetCompletion();
+  closeUsage();
   closePicker();
   closeStrip();
   closeChannelPicker();
@@ -1147,6 +1161,8 @@ function applyCompletion() {
     if (!el) return;
     el.setSelectionRange(caret, caret);
     if (completion) completion.caret = caret;
+    // Cycling skips onInput, and the pick may have moved on to the next argument.
+    refreshUsage();
   });
 }
 
@@ -1535,7 +1551,10 @@ function onKeydown(e: KeyboardEvent): void {
     !(channelPickerOpen.value && (!commandCtx || channelPickerEl.value?.hasCandidates())) &&
     !commandPickerOpen.value &&
     !emojiPickerOpen.value &&
-    !historyPickerOpen.value
+    !historyPickerOpen.value &&
+    // The usage line keeps a popover up with nothing listed, and that is a
+    // thing to dismiss too.
+    !(usage.value && (pickerOpen.value || channelPickerOpen.value || usageAlone.value))
   ) {
     e.preventDefault();
     cancelReply();
@@ -1735,6 +1754,52 @@ function closeCommandPicker() {
   if (commandPickerRows.value.length) commandPickerRows.value = NO_ROWS;
   commandCtx = null;
   commandNavigated = false;
+}
+
+// The verb a usage line would be for: the line's first word, once a space ends it.
+function usageVerb(value: string): string | null {
+  return /^\/(\S+)\s/.exec(value)?.[1].toLowerCase() ?? null;
+}
+
+function refreshUsage(): void {
+  const el = inputEl.value;
+  const value = text.value;
+  const verb = usageVerb(value);
+  if (usageDismissedFor !== verb) usageDismissedFor = null;
+  usage.value =
+    el && verb !== null && usageDismissedFor === null
+      ? usageHint(value, el.selectionStart ?? value.length, aliases.aliases)
+      : null;
+}
+
+// The line under it is gone or is not the user's typing any more (sent, another
+// buffer, a recalled one). The next keystroke looks again.
+function closeUsage(): void {
+  if (usage.value) usage.value = null;
+}
+
+// Nothing else is up to carry the usage line, so the command picker shows it
+// with no rows. Not while a strip is: on a phone that sits where this would.
+const usageAlone = computed(
+  () =>
+    usage.value !== null &&
+    !pickerOpen.value &&
+    !channelPickerOpen.value &&
+    !commandPickerOpen.value &&
+    !emojiPickerOpen.value &&
+    !historyPickerOpen.value &&
+    !overlay.nickOpen &&
+    !overlay.emojiOpen,
+);
+
+// A popover's own `close`: Escape, or a tap outside it. That is the user
+// putting the usage line away as well as the list.
+function onPickerDismissed(close: () => void): void {
+  if (usage.value) {
+    usageDismissedFor = usageVerb(text.value);
+    usage.value = null;
+  }
+  close();
 }
 
 // The lists a command's grammar can name that only this component can read.
@@ -2059,7 +2124,12 @@ async function maybeConvertShortcode() {
   });
 }
 
-function refreshPicker() {
+function refreshPicker(): void {
+  refreshSuggesters();
+  refreshUsage();
+}
+
+function refreshSuggesters() {
   const el = inputEl.value;
   if (!el) {
     closePicker();
@@ -2434,9 +2504,13 @@ function onInput() {
     if (!el || !refreshCommandCompletion(text.value, el.selectionStart ?? text.value.length)) {
       closeSuggesters();
     }
+    refreshUsage();
     return;
   }
-  if (!sendable.value || !active.value) return;
+  if (!sendable.value || !active.value) {
+    closeUsage();
+    return;
+  }
   if (completion) resetCompletion();
   // Inline-convert a just-completed `:shortcode:`, then refresh the suggester
   // for whatever shortcode (if any) is still in progress at the caret.
@@ -2477,6 +2551,8 @@ function onInput() {
 
 watch(active, (newActive, oldActive) => {
   resetCompletion();
+  closeUsage();
+  usageDismissedFor = null;
   closePicker();
   closeStrip();
   closeChannelPicker();
@@ -2820,6 +2896,7 @@ function commitInput(
 
 async function submit() {
   resetCompletion();
+  closeUsage();
   closePicker();
   closeStrip();
   closeChannelPicker();

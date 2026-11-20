@@ -26,6 +26,7 @@
     reverse
     :row-key="rowKey"
     @select="onSelect"
+    :pinned="hint !== null"
     @close="emit('close')"
   >
     <template #row="{ row }">
@@ -33,6 +34,9 @@
         <span class="emoji-glyph">{{ row.emoji }}</span>
         <span class="emoji-name">:{{ row.name }}:</span>
       </span>
+    </template>
+    <template #footer>
+      <CommandUsageLine v-if="hint" :hint="hint" />
     </template>
   </VerticalPopover>
 </template>
@@ -42,7 +46,9 @@ import { ref, computed } from 'vue';
 import { searchEmojiSync } from '../utils/emojiShortcodes.js';
 import { emojiFn } from '../composables/useEmoji.js';
 import VerticalPopover from './VerticalPopover.vue';
+import CommandUsageLine from './CommandUsageLine.vue';
 import type { PopoverNav } from './popoverNav.js';
+import type { UsageHint } from '../lib/commands/completion.js';
 import type { EmojiMatch } from '../utils/emojiData.js';
 
 const props = withDefaults(
@@ -51,11 +57,14 @@ const props = withDefaults(
     // The shortcode body under the caret (no colons); 2+ chars (issue #402).
     query?: string;
     anchor?: HTMLElement | null;
+    // The usage line of the slash command being typed, pinned under the rows (#1369).
+    hint?: UsageHint | null;
   }>(),
   {
     open: false,
     query: '',
     anchor: null,
+    hint: null,
   },
 );
 

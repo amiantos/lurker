@@ -21,6 +21,7 @@
     reverse
     :row-key="rowKey"
     @select="onSelect"
+    :pinned="hint !== null"
     @close="emit('close')"
   >
     <template #row="{ row }">
@@ -29,6 +30,9 @@
       }}</span>
       <span v-if="row.displayName" class="badge">{{ row.nick }}</span>
       <span v-if="row.recent" class="badge">recent</span>
+    </template>
+    <template #footer>
+      <CommandUsageLine v-if="hint" :hint="hint" />
     </template>
   </VerticalPopover>
 </template>
@@ -40,7 +44,9 @@ import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
 import VerticalPopover from './VerticalPopover.vue';
+import CommandUsageLine from './CommandUsageLine.vue';
 import type { PopoverNav } from './popoverNav.js';
+import type { UsageHint } from '../lib/commands/completion.js';
 import type { Buffer } from '../stores/buffers.js';
 
 interface NickRow {
@@ -58,6 +64,8 @@ const props = withDefaults(
     buffer?: Buffer | null;
     selfNick?: string;
     anchor?: HTMLElement | null;
+    // The usage line of the slash command being typed, pinned under the rows (#1369).
+    hint?: UsageHint | null;
   }>(),
   {
     open: false,
@@ -65,6 +73,7 @@ const props = withDefaults(
     buffer: null,
     selfNick: '',
     anchor: null,
+    hint: null,
   },
 );
 
