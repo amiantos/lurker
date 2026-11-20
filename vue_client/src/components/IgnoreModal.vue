@@ -21,9 +21,9 @@
           />
         </label>
         <p class="hint">
-          Plain nick (e.g. <code>{{ nick }}</code
-          >) or <code>nick!user@host</code> with <code>*</code> wildcards. The default targets this
-          user's identity (<code>user@host</code>) so it survives nick changes.
+          Plain nick (e.g. <code>{{ nick }}</code>) or <code>nick!user@host</code> with
+          <code>*</code> wildcards. The default targets this user's identity
+          (<code>user@host</code>) so it survives nick changes.
         </p>
         <div v-if="networkId" class="scope" role="radiogroup" aria-label="Scope">
           <button

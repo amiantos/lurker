@@ -32,8 +32,7 @@
     <p v-else class="section-desc">
       Where pasted and picked files are uploaded. Lurker pastes a link into the message — the file
       itself is hosted by
-      <strong>{{ soleUploaderLabel }}</strong
-      >, which this server provides.
+      <strong>{{ soleUploaderLabel }}</strong>, which this server provides.
     </p>
     <p v-if="error" class="error inline">{{ error }}</p>
 

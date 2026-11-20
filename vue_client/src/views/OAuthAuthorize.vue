@@ -69,10 +69,7 @@
       </template>
 
       <template v-else-if="state === 'code'">
-        <p class="subtitle">
-          Paste this code into <strong>{{ info?.app.name }}</strong
-          >.
-        </p>
+        <p class="subtitle">Paste this code into <strong>{{ info?.app.name }}</strong>.</p>
         <div class="code-row">
           <code class="code">{{ code }}</code>
           <button class="btn-secondary" @click="onCopy">{{ copied ? 'Copied' : 'Copy' }}</button>

@@ -37,10 +37,7 @@
       </template>
 
       <template v-else>
-        <p class="subtitle">
-          Recovering <strong>{{ status.username }}</strong
-          >.
-        </p>
+        <p class="subtitle">Recovering <strong>{{ status.username }}</strong>.</p>
         <p class="warning">
           This replaces every way into the account. Other devices are signed out, and any existing
           password and passkeys stop working.
