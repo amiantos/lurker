@@ -32,6 +32,7 @@ function closeBuffer(userId: number, networkId: number, target: string): void {
 }
 const reopenBuffer = reopenBufferRow;
 import { insertMessage } from '../db/messages.js';
+import settingsService from './settingsService.js';
 
 beforeAll(() => {
   createUser('notice-alice'); // id 1
@@ -260,5 +261,77 @@ describe('NOTICE routing (#439)', () => {
     expect(track).not.toHaveBeenCalled();
     conn.probePresence('RealPal');
     expect(track).toHaveBeenCalledWith('RealPal');
+  });
+});
+
+// chat.notice_buffer (#1174): where a notice to our nick is stored. The cases
+// above are its default, `private`.
+describe('NOTICE placement (chat.notice_buffer)', () => {
+  afterEach(() => settingsService.reset(1, 'chat.notice_buffer'));
+
+  // Every persisted copy of the notice, as [target, mirrored].
+  function copies(publish: ReturnType<typeof harness>['publish']): Array<[unknown, boolean]> {
+    return publish.mock.calls.map(([e]) => [e.target, e.mirrored === true]);
+  }
+
+  it('auto: a sender with no buffer goes to the server buffer, once', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = harness();
+    emitNotice(conn, { nick: 'AutoNew', target: 'alice', message: 'hi there' });
+    expect(copies(publish)).toEqual([[':server:1', false]]);
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'notice', nick: 'AutoNew', text: 'hi there' }),
+    );
+  });
+
+  it('auto: a sender whose buffer is open goes there, in its casing', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = harness();
+    ensureBufferOpen(1, 1, 'autopal');
+    emitNotice(conn, { nick: 'AutoPal', target: 'alice', message: 'hi there' });
+    expect(copies(publish)).toEqual([['autopal', false]]);
+  });
+
+  it('auto: a closed buffer is not open, and the server buffer copy is the only one', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = harness();
+    closeBuffer(1, 1, 'AutoShut');
+    emitNotice(conn, { nick: 'AutoShut', target: 'alice', message: 'hi there' });
+    // Not the mirror: there is no home copy for it to be a second copy of.
+    expect(copies(publish)).toEqual([[':server:1', false]]);
+  });
+
+  it('server: an open buffer is passed over', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = harness();
+    ensureBufferOpen(1, 1, 'SrvPal');
+    emitNotice(conn, { nick: 'SrvPal', target: 'alice', message: 'hi there' });
+    expect(copies(publish)).toEqual([[':server:1', false]]);
+  });
+
+  it('a channel hint still wins', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = harness();
+    join(conn, '#Christian');
+    emitNotice(conn, { nick: 'ChanServ', target: 'alice', message: '[#christian] welcome!' });
+    expect(copies(publish)).toEqual([['#Christian', false]]);
+  });
+
+  it('leaves channel notices and private messages where they were', () => {
+    settingsService.update(1, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = harness();
+    emitNotice(conn, { nick: 'bob', target: '#general', message: 'heads up' });
+    conn.client.emit('message', {
+      nick: 'bob',
+      ident: 'b',
+      hostname: 'h',
+      type: 'privmsg',
+      target: 'alice',
+      message: 'hello',
+    });
+    expect(copies(publish)).toEqual([
+      ['#general', false],
+      ['bob', false],
+    ]);
   });
 });

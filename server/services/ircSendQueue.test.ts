@@ -23,6 +23,7 @@ import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import db from '../db/index.js';
 import { invalidateCasemappingCache } from '../db/buffers.js';
+import settingsService from './settingsService.js';
 
 beforeAll(() => {
   createUser('queue-alice'); // id 1
@@ -963,6 +964,32 @@ describe('a held message shows as pending (#1326)', () => {
       { target: '#c', kind: 'notice', text: 'psst' },
     ]);
     conn.dispose();
+  });
+
+  it('holds a notice where chat.notice_buffer will put its row, and its echo ends the wait', () => {
+    // The echo is matched by buffer and text: a wait named for the nick would
+    // sit out the whole echo timeout under a row already drawn (#1174).
+    settingsService.update(1, { 'chat.notice_buffer': 'auto' });
+    try {
+      const { conn, published, lines } = backlog();
+      conn.notice('nobuffer', 'psst');
+      expect(heldOf(published)).toMatchObject([
+        { target: ':server:1', kind: 'notice', text: '→ nobuffer: psst' },
+      ]);
+      vi.advanceTimersByTime(2000);
+      expect(lines.at(-1)).toBe('NOTICE nobuffer :psst');
+      // A notice to the nick's own buffer is not it.
+      echoed(conn, ownRow('nobuffer', 'psst', 'notice'));
+      expect(pendingFrames(published)).toHaveLength(1);
+      echoed(conn, ownRow(':server:1', '→ nobuffer: psst', 'notice'));
+      expect(pendingFrames(published).at(-1)).toMatchObject({
+        type: 'send-pending-done',
+        sent: true,
+      });
+      conn.dispose();
+    } finally {
+      settingsService.reset(1, 'chat.notice_buffer');
+    }
   });
 
   it('ends the wait unsent, with no row, for a message taken back', () => {

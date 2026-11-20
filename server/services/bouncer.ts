@@ -3831,6 +3831,12 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // batch it came in was kept from the clients, and so is this.
   if (event.replay) return;
   if (type !== 'message' && type !== 'action' && type !== 'notice') return;
+  // A notice whose row went to the server buffer (chat.notice_buffer, #1174)
+  // names the line as it was sent: that is what the clients are given.
+  const sentTo = event.sentTo as { target?: unknown; text?: unknown } | undefined;
+  if (typeof sentTo?.target === 'string' && typeof sentTo.text === 'string') {
+    event = { ...event, target: sentTo.target, text: sentTo.text };
+  }
   const target = typeof event.target === 'string' ? event.target : '';
   // ⚠⚠ `=nick` is a DCC chat buffer, not an IRC target. Without this, a line the
   // user types in the web UI is echoed to attached clients as `PRIVMSG =alice`,

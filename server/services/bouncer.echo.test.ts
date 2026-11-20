@@ -9,6 +9,7 @@
 // Against a real IrcConnection on the fake ircd, with the real bouncer in
 // front. See bouncerHarness.ts.
 
+import net from 'node:net';
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
@@ -371,5 +372,33 @@ describe('a DCC chat buffer is never echoed to an attached client', () => {
     expect(after.filter((l) => l.includes('dm-visible'))).toHaveLength(1);
     expect(after.filter((l) => l.includes('dcc-secret'))).toEqual([]);
     expect(after.filter((l) => l.includes('=bob'))).toEqual([]);
+  });
+});
+
+// chat.notice_buffer (#1174) can keep our own notice to a nick in the server
+// buffer, which is no IRC target. The clients are still given the NOTICE that
+// went, not the row.
+describe('a notice kept in the server buffer still reaches attached clients', () => {
+  it('relays it as the NOTICE that was sent', async () => {
+    const settings = (await import('./settingsService.js')).default;
+    const live = await seedLive();
+    settings.update(live.userId, { 'chat.notice_buffer': 'server' });
+    const c = await attachIn(live, '#room', `${BASE_CAPS} echo-message`);
+    // Someone for the network to deliver it to: it echoes nothing it refused.
+    const carol = net.connect({ host: '127.0.0.1', port: ircd.port });
+    cleanups.push(() => carol.destroy());
+    carol.write('NICK carol\r\nUSER carol 0 * :carol\r\n');
+    await ircd.waitForRegistration('carol');
+
+    const mark = c.lines.length;
+    expect(ircManager.notice(live.userId, live.networkId, 'carol', 'kept-in-server')).toBe(true);
+    await c.waitFor((l) => l.includes('kept-in-server'));
+    const got = c.lines.slice(mark).filter((l) => l.includes('kept-in-server'));
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatch(/ NOTICE carol :kept-in-server$/);
+    expect(live.events.find((e) => e.type === 'notice' && e.self)).toMatchObject({
+      target: `:server:${live.networkId}`,
+      text: '→ carol: kept-in-server',
+    });
   });
 });

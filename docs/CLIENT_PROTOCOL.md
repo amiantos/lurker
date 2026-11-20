@@ -1426,6 +1426,15 @@ these signals:
   `mirrored:true`. Render the mirror like any other `:server:` line; it's
   excluded from search so it can't double up results.
 
+  That table is the default. The `chat.notice_buffer` setting (#1174) moves
+  where a notice to the user's nick is stored, and nothing a client does
+  changes: under `auto` it is stored in `:server:` unless the sender's buffer
+  is open, under `server` always, as an ordinary `:server:` line that is
+  **not** `mirrored` (it is the only copy, and searchable). The user's own
+  notice to a nick follows the same rule. In `:server:` its `text` names who it
+  was for (`→ bob: hi`), and the live frame alone also carries
+  `sentTo{ target, text }`, the line as it was sent. Render `text`.
+
   A notice-only buffer is deliberately **not** a "conversation": the server
   won't start presence-tracking its nick (no MONITOR slot, no presence dot)
   until a real PRIVMSG/ACTION arrives (`db/messages.ts:440`).

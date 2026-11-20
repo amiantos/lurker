@@ -18,6 +18,7 @@ import { createNetwork } from '../db/networks.js';
 import { listMessages } from '../db/messages.js';
 import { ensureOpen } from '../db/buffers.js';
 import { partitionMultiline, splitAction, splitSay } from './messageSplit.js';
+import settingsService from './settingsService.js';
 
 let userId: number;
 let networkId: number;
@@ -325,6 +326,99 @@ describe('self-echo adoption in the message handler', () => {
       message: 'RPEE2E whatever',
     });
     expect(handshake).not.toHaveBeenCalled();
+  });
+});
+
+// chat.notice_buffer (#1174) places our own notice to a nick as it places one
+// from them. In the server buffer the row names who it was for, and carries
+// the line as sent (`sentTo`) for the bouncer's echo.
+describe('our own notice to a nick follows chat.notice_buffer', () => {
+  afterEach(() => settingsService.reset(userId, 'chat.notice_buffer'));
+
+  const echo = (conn: IrcConnection, target: string) =>
+    conn.client.emit('message', {
+      nick: 'me',
+      target,
+      type: 'notice',
+      message: 'psst',
+      tags: { msgid: 'n1' },
+    });
+
+  it('private: the echo is their buffer row, as sent', () => {
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, 'OwnPriv');
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({ target: 'OwnPriv', text: 'psst' });
+    expect(publish.mock.calls[0][0]).not.toHaveProperty('sentTo');
+  });
+
+  it('auto: with no buffer open the echo is a server buffer row naming them', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, 'OwnNew');
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0]).toMatchObject({
+      type: 'notice',
+      target: `:server:${networkId}`,
+      text: '→ OwnNew: psst',
+      self: true,
+      msgid: 'n1',
+      sentTo: { target: 'OwnNew', text: 'psst' },
+    });
+  });
+
+  it('auto: with their buffer open the echo goes there, as sent', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'auto' });
+    ensureOpen(userId, networkId, 'ownpal');
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, 'OwnPal');
+    expect(publish.mock.calls[0][0]).toMatchObject({ target: 'ownpal', text: 'psst' });
+    expect(publish.mock.calls[0][0]).not.toHaveProperty('sentTo');
+  });
+
+  it('a notice to a channel is the channel row whatever the setting', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    const { conn, publish } = makeReceiver();
+    enableEcho(conn);
+    echo(conn, '&local');
+    expect(publish.mock.calls[0][0]).toMatchObject({ target: '&local', text: 'psst' });
+  });
+
+  // Without echo-message the row is ircManager's own.
+  function sender(): { conn: IrcConnection; publish: ReturnType<typeof vi.fn> } {
+    const { conn, publish } = makeReceiver();
+    conn.state = 'connected';
+    conn.notice = vi.fn<typeof conn.notice>((_target, _text, hooks) => hooks?.row?.());
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    return { conn, publish };
+  }
+
+  it('private: the row sent without an echo is their buffer row', () => {
+    const { publish } = sender();
+    expect(ircManager.notice(userId, networkId, 'SentPriv', 'psst')).toBe(true);
+    expect(publish.mock.calls.map(([e]) => e)).toMatchObject([
+      { type: 'notice', target: 'SentPriv', text: 'psst', self: true },
+    ]);
+  });
+
+  it('server: the row sent without an echo is a server buffer row naming them', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'server' });
+    ensureOpen(userId, networkId, 'SentSrv');
+    const { conn, publish } = sender();
+    expect(ircManager.notice(userId, networkId, 'SentSrv', 'psst')).toBe(true);
+    expect(conn.notice).toHaveBeenCalledWith('SentSrv', 'psst', expect.anything());
+    expect(publish.mock.calls.map(([e]) => e)).toMatchObject([
+      {
+        type: 'notice',
+        target: `:server:${networkId}`,
+        text: '→ SentSrv: psst',
+        self: true,
+        sentTo: { target: 'SentSrv', text: 'psst' },
+      },
+    ]);
   });
 });
 

@@ -3622,11 +3622,17 @@ export class IrcConnection {
         // fold to the existing buffer row's casing (#289); channel case is
         // normalized inside publish().
         const selfTarget = targetIsChannel ? eventTarget : this.canonicalDmTarget(eventTarget);
+        // Our own notice to a nick whose buffer it is not to be put in (#1174).
+        const moved =
+          type === 'notice' && !targetIsChannel
+            ? this.ownNoticeInServerBuffer(eventTarget, eventMessage)
+            : null;
         this.publish({
           type,
-          target: selfTarget,
+          target: moved?.target ?? selfTarget,
           nick: eventNick,
-          text: eventMessage,
+          text: moved?.text ?? eventMessage,
+          ...(moved ? { sentTo: moved.sentTo } : {}),
           kind: eventType,
           self: true,
           userhost: buildUserhost(event),
@@ -3650,7 +3656,9 @@ export class IrcConnection {
       else if (isNotice) {
         // A NOTICE addressed to us persists to the sender's buffer (its natural
         // home), like a PRIVMSG — so the buffer surfaces on first notice and the
-        // history lives in the right place. Open/closed is a client display
+        // history lives in the right place. (Where the user asked for it:
+        // chat.notice_buffer can keep it in the server buffer instead, see
+        // noticeHome.) Open/closed is a client display
         // concern: the wsHub fan-out drops live delivery to a buffer the user has
         // closed (closed stays closed — a notice never reopens it, see
         // DM_ELIGIBLE_TYPES), and the closed-buffer mirror below persists a
@@ -3676,7 +3684,7 @@ export class IrcConnection {
           this.currentNick &&
           eventTarget.toLowerCase() === this.currentNick.toLowerCase()
         ) {
-          target = this.canonicalDmTarget(eventNick as string);
+          target = this.noticeHome(eventNick as string);
         } else {
           target = `:server:${this.network.id}`;
         }
@@ -8949,7 +8957,10 @@ export class IrcConnection {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
-    this.writeUserLine('NOTICE', target, text, null, 'notice', text, hooks);
+    // Its row may be the server buffer's (#1174): a wait shown where the row
+    // will be, with the row's text, is the one the echo ends.
+    const moved = isChannelTarget(target) ? null : this.ownNoticeInServerBuffer(target, text);
+    this.writeUserLine('NOTICE', target, text, null, 'notice', text, hooks, false, moved);
   }
 
   // One line of the user's. When it goes the send is noted (so a rejection
@@ -8966,9 +8977,11 @@ export class IrcConnection {
     shown: string,
     hooks?: SendHooks,
     armDcc = false,
+    // Where its row goes and what it says, when not `target` and `shown`.
+    row?: { target: string; text: string } | null,
   ): void {
     this.typingOver(target, false);
-    const held = this.holdSend(target, kind, shown, hooks?.row);
+    const held = this.holdSend(row?.target ?? target, kind, row?.text ?? shown, hooks?.row);
     const said = kind === 'action' ? `/me ${shown}` : shown;
     this.writeLine(command, target, wire, tags, {
       // What the user sent, to where: it can be taken back while it waits.
@@ -13206,6 +13219,38 @@ export class IrcConnection {
   // user started (#289). Falls back to the given casing for first contact.
   canonicalDmTarget(name: string): string {
     return getBuffer(this.network.user_id, this.network.id, name)?.target ?? name;
+  }
+
+  // Where a notice between us and `peer` is stored, per chat.notice_buffer
+  // (#1174, WeeChat's irc.look.notice_as_pv):
+  //   private → the peer's buffer, made if there is none (the default, #439)
+  //   auto    → the peer's buffer if it is open, the server buffer if not
+  //   server  → the server buffer
+  // "Open" is the buffer's own row, never a guess from its history: that guess
+  // is what #439 took out. A closed buffer is not open, so under auto its
+  // notice is the server buffer's one copy and the closed-buffer mirror has
+  // nothing to do.
+  noticeHome(peer: string): string {
+    const mode = effectiveSetting(this.network.user_id, 'chat.notice_buffer');
+    if (mode === 'server') return this.serverTarget();
+    if (mode === 'auto' && getBufferState(this.network.user_id, this.network.id, peer) !== 'open') {
+      return this.serverTarget();
+    }
+    return this.canonicalDmTarget(peer);
+  }
+
+  // Our own notice to `peer`, when its row belongs in the server buffer: the
+  // row says who it was for, as WeeChat's "Notice -> bob" does, since the
+  // buffer no longer does. Null when it goes in the peer's buffer as sent.
+  // `sentTo` is the line as it went, for the bouncer's echo to its clients
+  // (dispatchIrcEvent); it is not stored.
+  ownNoticeInServerBuffer(
+    peer: string,
+    text: string,
+  ): { target: string; text: string; sentTo: { target: string; text: string } } | null {
+    const home = this.noticeHome(peer);
+    if (home !== this.serverTarget()) return null;
+    return { target: home, text: `→ ${peer}: ${text}`, sentTo: { target: peer, text } };
   }
 
   // The draft/multiline batches `text` to `target` goes out as, or null when it

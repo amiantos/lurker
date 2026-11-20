@@ -1193,6 +1193,25 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'a video host until you press play.',
   },
 
+  // ─── Notices (#1174) ─────────────────────────────────────────────────────
+  // WeeChat's irc.look.notice_as_pv, with its values: a notice to your nick
+  // either makes a buffer for its sender, joins one that is open, or stays in
+  // the server buffer. Read by the server where the notice is stored, so every
+  // device shows it in the same place.
+  {
+    key: 'chat.notice_buffer',
+    label: 'Where notices to you appear',
+    category: 'chat',
+    group: 'notices',
+    type: 'enum',
+    choices: ['private', 'auto', 'server'],
+    default: 'private',
+    description:
+      'Where a notice sent to your nick appears: "private" is a buffer for its ' +
+      'sender, "auto" that buffer if you have it open and the server buffer if ' +
+      'not, "server" always the server buffer. A notice you send follows the same rule.',
+  },
+
   // ─── Connection (drawn under the list in Settings → Networks) ────────────
   {
     key: 'chat.quit_message',
@@ -2140,6 +2159,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   'auto-away': 'Auto-away',
   pipeline: 'Image pipeline',
   viewing: 'Viewing',
+  notices: 'Notices',
   alerts: 'Alerts',
   push_filters: 'Push filters',
   locale: 'Locale',
