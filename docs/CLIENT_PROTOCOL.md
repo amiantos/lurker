@@ -1408,40 +1408,42 @@ these signals:
   must resolve-or-drop. (`mark-all-read` fans
   out `read-state` for _closed_ buffers too — resurrecting them in the sidebar
   was bug #319; typing-tag DM creation was #292.)
-- **NOTICEs may create a DM buffer, but never reopen a closed one.** Both
-  outcomes are decided server-side and arrive as ordinary frames — don't
-  special-case either. What the server actually does with an incoming
-  DM-targeted event (`server/db/buffers.ts:21-29`):
+- **Where a NOTICE to the user's nick is stored is the server's decision, and
+  never reopens a closed buffer.** It arrives as an ordinary frame in the
+  buffer the server chose: don't special-case it. The `chat.notice_buffer`
+  setting (#1174) decides, for a notice **received** from a nick:
 
-  | Trigger              | Buffer has no row | Buffer row is closed                      |
-  | -------------------- | ----------------- | ----------------------------------------- |
-  | `message` / `action` | creates it, open  | **reopens** it                            |
-  | `notice`             | creates it, open  | **stays closed** → mirrored to `:server:` |
+  | `chat.notice_buffer` | Sender's buffer is open | No buffer for the sender | Sender's buffer is closed                 |
+  | -------------------- | ----------------------- | ------------------------ | ----------------------------------------- |
+  | `auto` (default)     | that buffer             | `:server:`               | `:server:`                                |
+  | `private`            | that buffer             | creates it, open         | **stays closed** → mirrored to `:server:` |
+  | `server`             | `:server:`              | `:server:`               | `:server:`                                |
 
-  So a NOTICE from a nick you've never talked to does open a buffer for that
-  nick — that's how services (NickServ, ChanServ, oper notices) get their own
-  buffer instead of dumping into `:server:`. Only the **closed-row** case
-  routes elsewhere: the real copy is persisted in the closed DM buffer (waiting
-  for a reopen) and a second, durable copy lands in `:server:` carrying
-  `mirrored:true`. Render the mirror like any other `:server:` line; it's
-  excluded from search so it can't double up results.
+  A `message` or `action` is not affected: it creates the buffer, or reopens a
+  closed one (`server/db/buffers.ts:21-29`).
 
-  That table is the default. The `chat.notice_buffer` setting (#1174) moves
-  where a notice to the user's nick is stored, and nothing a client does
-  changes: under `auto` it is stored in `:server:` unless the sender's buffer
-  is open, under `server` always, as an ordinary `:server:` line that is
-  **not** `mirrored` (it is the only copy, and searchable).
+  `private` was the only behaviour before 2.7.2: a notice from a nick you've
+  never talked to opens a buffer for it, so services (NickServ, ChanServ) each
+  get their own. In its closed-buffer case the real copy is persisted in the
+  closed DM buffer (waiting for a reopen) and a second, durable copy lands in
+  `:server:` carrying `mirrored:true`. Render the mirror like any other
+  `:server:` line; it's excluded from search so it can't double up results.
+  Under `auto` and `server` a notice in `:server:` is an ordinary line that is
+  **not** `mirrored`: it is the only copy, and searchable. A notice from
+  someone the user ignores is never put in `:server:`; it keeps the sender's
+  buffer.
 
-  The user's own notice to a nick is kept out of that nick's buffer by the same
-  rule, and is then stored in the buffer it was typed in: send `issuingTarget`
-  on the `notice` frame (§6). Without it, or when that buffer isn't an open
-  one on the network, it is stored in `:server:`. Typed in the nick's own
-  buffer it stays there. Such a row's `text` names who it was for
-  (`→ bob: hi`), and it carries `sentTo{ target, text }`, the line as it was
-  sent, live and in history. Render `text`. A row with `sentTo` is not a line
-  of the buffer it sits in: don't offer reply on it, and a delete of it goes to
-  `sentTo.target` (the server sees to that). A refusal of such a notice
-  (`error`) is in the same buffer.
+  A notice the user **sends** to a nick follows the same table to decide
+  whether it goes in that nick's buffer, but where the table says `:server:`
+  it is stored in the buffer it was typed in: send `issuingTarget` on the
+  `notice` frame (§6). Without it, or when that buffer isn't an open one on the
+  network, it is stored in `:server:`. Typed in the nick's own buffer it stays
+  there. Such a row's `text` names who it was for (`→ bob: hi`), and it
+  carries `sentTo{ target, text }`, the line as it was sent, live and in
+  history. Render `text`. A row with `sentTo` is not a line of the buffer it
+  sits in: don't offer reply on it, and a delete of it goes to `sentTo.target`
+  (the server sees to that). A refusal of such a notice (`error`) is in the
+  same buffer.
 
   A notice-only buffer is deliberately **not** a "conversation": the server
   won't start presence-tracking its nick (no MONITOR slot, no presence dot)

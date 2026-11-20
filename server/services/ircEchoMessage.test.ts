@@ -345,6 +345,7 @@ describe('our own notice to a nick follows chat.notice_buffer', () => {
     });
 
   it('private: the echo is their buffer row, as sent', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
     const { conn, publish } = makeReceiver();
     enableEcho(conn);
     echo(conn, 'OwnPriv');
@@ -553,6 +554,7 @@ describe('our own notice to a nick follows chat.notice_buffer', () => {
   }
 
   it('private: the row sent without an echo is their buffer row', () => {
+    settingsService.update(userId, { 'chat.notice_buffer': 'private' });
     const { publish } = sender();
     expect(ircManager.notice(userId, networkId, 'SentPriv', 'psst')).toBe(true);
     expect(publish.mock.calls.map(([e]) => e)).toMatchObject([

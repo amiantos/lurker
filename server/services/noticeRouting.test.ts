@@ -15,7 +15,7 @@
 // MUST be first — redirect DATABASE_PATH before the static imports below open
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
@@ -126,7 +126,11 @@ function emitNotice(conn: IrcConnection, fields: Record<string, unknown>): void 
   });
 }
 
+// What `private` does, the only behaviour before chat.notice_buffer (#1174).
 describe('NOTICE routing (#439)', () => {
+  beforeEach(() => settingsService.update(1, { 'chat.notice_buffer': 'private' }));
+  afterEach(() => settingsService.reset(1, 'chat.notice_buffer'));
+
   it('persists a nick notice to the sender buffer (no mirror when not closed)', () => {
     const { conn, publish, publishEphemeral } = harness();
     emitNotice(conn, { nick: 'ChanServ', target: 'alice', message: 'hi there' });

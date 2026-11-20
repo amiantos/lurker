@@ -1013,7 +1013,7 @@ describe('a held message shows as pending (#1326)', () => {
 
   it('a notice held in their buffer is ended by the echo in the server buffer, closed since', () => {
     const { conn, published } = backlog();
-    conn.notice('closed', 'psst');
+    conn.notice('closed', 'psst', undefined, null);
     expect(heldOf(published)).toMatchObject([{ target: 'closed', text: 'psst' }]);
     vi.advanceTimersByTime(2000);
     const moved = {

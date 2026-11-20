@@ -3711,7 +3711,15 @@ export class IrcConnection {
           this.currentNick &&
           eventTarget.toLowerCase() === this.currentNick.toLowerCase()
         ) {
-          target = this.noticeHome(eventNick as string);
+          // Someone ignored keeps their own buffer, where the ignore hides
+          // the line: in the server buffer it would be past the ignore list,
+          // as its mirror would be (below).
+          const home = this.noticeHome(eventNick as string);
+          target =
+            home === this.serverTarget() &&
+            this.noticeSenderIgnored(eventNick as string, event, eventMessage ?? '')
+              ? this.canonicalDmTarget(eventNick as string)
+              : home;
         } else {
           target = `:server:${this.network.id}`;
         }
@@ -13321,8 +13329,9 @@ export class IrcConnection {
 
   // Where a notice between us and `peer` is stored, per chat.notice_buffer
   // (#1174, WeeChat's irc.look.notice_as_pv):
-  //   private → the peer's buffer, made if there is none (the default, #439)
+  //   private → the peer's buffer, made if there is none (#439)
   //   auto    → the peer's buffer if it is open, the server buffer if not
+  //             (the default)
   //   server  → the server buffer
   // "Open" is the buffer's own row, never a guess from its history: that guess
   // is what #439 took out. A closed buffer is not open, so under auto its
@@ -13337,10 +13346,24 @@ export class IrcConnection {
     return this.canonicalDmTarget(peer);
   }
 
+  // Whether an ignore hides this sender's notice to us. Judged as the line it
+  // is in their buffer, as dccSenderIgnored judges a request.
+  private noticeSenderIgnored(nick: string, event: Record<string, unknown>, text: string): boolean {
+    try {
+      return evaluateIgnores(
+        ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
+        { nick, userhost: buildUserhost(event), target: nick, text, type: 'notice', isDm: true },
+      ).hide;
+    } catch (e) {
+      console.warn('[notice] ignore check failed:', (e as Error)?.message || e);
+      return false;
+    }
+  }
+
   // Our own notice to `peer`, when its row does not go in their buffer: it is
   // the row of the buffer it was typed in (`issuing`, as the client said; the
   // server buffer where it did not, or that buffer is not one of ours, open),
-  // and says who it was for, as irssi's and WeeChat's do, since the buffer no
+  // and says who it was for, as WeeChat's does, since the buffer no
   // longer does. Null when it goes in the peer's buffer as sent — typed
   // there, too, whatever the setting.
   // `sentTo` is the line as it went: kept with the row (extractExtras), and

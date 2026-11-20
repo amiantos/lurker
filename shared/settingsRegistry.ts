@@ -1205,7 +1205,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'notices',
     type: 'enum',
     choices: ['private', 'auto', 'server'],
-    default: 'private',
+    // WeeChat's default, and what most clients do. Until 2.7.2 Lurker did
+    // only what `private` does (#439).
+    default: 'auto',
     description:
       'Where a notice sent to your nick appears: "private" is a buffer for its ' +
       'sender, "auto" that buffer if you have it open and the server buffer if ' +
