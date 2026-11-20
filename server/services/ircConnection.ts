@@ -2549,6 +2549,18 @@ export class IrcConnection {
         }
         return;
       }
+      // RPL_AWAY for a message sent to someone away: one per message, and the
+      // DM already shows that they are away and why (the 'away' handler keeps
+      // the message). Only for a peer whose presence is kept: the 301 a /ctcp
+      // or an INVITE draws from anyone else has nowhere else to be read. The
+      // 301 inside a WHOIS the user asked for is part of its reply and stays.
+      if (
+        rawCommand === '301' &&
+        this.replyOwner !== 'user' &&
+        this.eligiblePeer(msg?.params?.[1])
+      ) {
+        return;
+      }
       // NAMES replies are denied because a joined channel's nicklist is where
       // they show. One for a channel we are not in has no nicklist to land in
       // (see 'userlist'), so it renders verbatim like any other numeric.
@@ -6745,6 +6757,13 @@ export class IrcConnection {
     else if (state === 'away') allowed = prevState !== 'away';
     else if (state === 'back') allowed = prevState === 'away';
     if (!allowed) {
+      // Already away, and now told why: the 301 a message to them draws, after
+      // a WHO that said only that they were. The reason is kept, and the
+      // moment they left is not moved.
+      if (state === 'away' && awayMessage && prev && prev.awayMessage !== awayMessage) {
+        const next = writePeerState(this.network.id, canonical, 'away', prev.stateAt, awayMessage);
+        this.publishPeerPresence(canonical, next);
+      }
       return;
     }
     const stateAt = new Date().toISOString();
@@ -14776,7 +14795,9 @@ export function formatSocketCloseErrorMessage(
 // (echoing the raw line would duplicate it) and (b) high-volume or
 // Lurker-initiated floods. It grows only when we add a new server-buffer
 // renderer (a deliberate act), and a miss shows a benign duplicate line, never
-// a silent drop. Note: 005 ISUPPORT is intentionally NOT here — the connect
+// a silent drop. One numeric is dropped outside this set, by who it concerns
+// and not by number: the 301 for a message to a peer whose presence the DM
+// shows (see the 'raw' handler). Note: 005 ISUPPORT is intentionally NOT here — the connect
 // burst is part of the authentic server log.
 const SERVER_BUFFER_DENIED_NUMERICS = new Set<string>([
   // RPL_LISTSTART/RPL_LIST/RPL_LISTEND — /LIST can be thousands of rows; cached

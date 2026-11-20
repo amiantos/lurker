@@ -131,6 +131,8 @@ export interface FakeClient {
   user: string | null;
   registered: boolean;
   signon: number;
+  // The message of an AWAY in force, which a WHOIS and a PRIVMSG answer with a 301.
+  away: string | null;
   caps: Set<string>;
   capNegotiating: boolean;
   channels: Set<string>;
@@ -658,6 +660,7 @@ export class FakeIrcd extends EventEmitter {
       user: null,
       registered: false,
       signon: 0,
+      away: null,
       caps: new Set(),
       metadataSubs: new Set(),
       capNegotiating: false,
@@ -848,6 +851,7 @@ export class FakeIrcd extends EventEmitter {
           if (!m) return this.num(c, '401', target, 'No such nick/channel');
           this.tagged(m, out, msgid, clientTags, time);
           if (c.caps.has('echo-message')) this.tagged(c, out, msgid, clientTags, time);
+          if (cmd === 'PRIVMSG' && m.away !== null) this.num(c, '301', m.nick!, m.away);
         }
         return;
       }
@@ -898,6 +902,7 @@ export class FakeIrcd extends EventEmitter {
         const target = this.client(p[p.length - 1] ?? '');
         if (!target) return this.num(c, '401', p[0] ?? '', 'No such nick/channel');
         this.num(c, '311', target.nick!, `~${target.user}`, 'fake.host', '*', target.user ?? '');
+        if (target.away !== null) this.num(c, '301', target.nick!, target.away);
         if (target === c) {
           this.num(c, '317', target.nick!, '0', String(target.signon), 'seconds idle, signon time');
         }
@@ -926,6 +931,7 @@ export class FakeIrcd extends EventEmitter {
         return this.num(c, '323', 'End of /LIST');
       }
       case 'AWAY':
+        c.away = p[0] || null;
         return p[0]
           ? this.num(c, '306', 'You have been marked as being away')
           : this.num(c, '305', 'You are no longer marked as being away');
@@ -1159,7 +1165,7 @@ export class FakeIrcd extends EventEmitter {
             'fake.host',
             this.serverName,
             m.nick!,
-            'H',
+            m.away !== null ? 'G' : 'H',
             `0 ${realname}`,
           );
           continue;
@@ -1173,7 +1179,7 @@ export class FakeIrcd extends EventEmitter {
           h: 'fake.host',
           s: this.serverName,
           n: m.nick!,
-          f: 'H',
+          f: m.away !== null ? 'G' : 'H',
           d: '0',
           l: '0',
           a: m.account ?? '0',
