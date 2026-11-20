@@ -66,6 +66,34 @@ function encode(pipeline: Sharp, format: OutputFormat, quality: number): Sharp {
   return format === 'jpeg' ? pipeline.jpeg({ quality, mozjpeg: true }) : pipeline.webp({ quality });
 }
 
+/** An image sharp could not read or could not decode. The route answers it 415. */
+function unreadable(cause: unknown): Error & { code: string } {
+  // Only the last line: libvips puts every seek it retried in front of the reason,
+  // and this message is shown to the user.
+  const detail = ((cause as Error)?.message || String(cause)).trim().split('\n').pop();
+  const err = new Error(`unable to read image: ${detail}`) as Error & { code: string };
+  err.code = 'UNSUPPORTED_FORMAT';
+  return err;
+}
+
+/**
+ * Run a sharp pipeline to its output, with a failure to DECODE answered the same way
+ * as a failure to read the header.
+ *
+ * ⚠ metadata() succeeding promises nothing about the pixels. It reads a header; the
+ * pipeline is what decodes, and that is where a truncated photo, a damaged one, or a
+ * codec this build of libvips has no decoder for finally fails. Unguarded, that
+ * throw is not an UNSUPPORTED_FORMAT, so the route had nothing to map it to and the
+ * user got a 500 "internal error" for what is a bad file.
+ */
+async function decoded<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (cause) {
+    throw unreadable(cause);
+  }
+}
+
 // sharp's reading of an image, and its format; UNSUPPORTED_FORMAT when it
 // can't read one, or reads one Lurker doesn't take.
 async function readImage(input: Buffer | string): Promise<{ meta: Metadata; fmt: FormatInfo }> {
@@ -73,11 +101,7 @@ async function readImage(input: Buffer | string): Promise<{ meta: Metadata; fmt:
   try {
     meta = await sharp(input).metadata();
   } catch (cause) {
-    const err = new Error(
-      `unable to read image: ${(cause as Error).message || String(cause)}`,
-    ) as Error & { code: string };
-    err.code = 'UNSUPPORTED_FORMAT';
-    throw err;
+    throw unreadable(cause);
   }
   const fmt = meta.format ? FORMAT_INFO[meta.format] : undefined;
   if (!fmt) {
@@ -186,16 +210,18 @@ export async function optimize(
   // hardcoded jpeg constants that could drift. Pick the format once and derive
   // the other two from FORMAT_INFO.
   const outFmt = FORMAT_INFO[format];
-  const out = await encode(
-    sharp(input).rotate().resize({
-      width: maxDim,
-      height: maxDim,
-      fit: 'inside',
-      withoutEnlargement: true,
-    }),
-    format,
-    quality,
-  ).toBuffer({ resolveWithObject: true });
+  const out = await decoded(() =>
+    encode(
+      sharp(input).rotate().resize({
+        width: maxDim,
+        height: maxDim,
+        fit: 'inside',
+        withoutEnlargement: true,
+      }),
+      format,
+      quality,
+    ).toBuffer({ resolveWithObject: true }),
+  );
 
   return {
     buffer: out.data,
@@ -215,13 +241,15 @@ export async function thumbnail(
   // Force first frame for animated inputs; cover-crop to a square. Follows the
   // same format as the full image: a jpeg thumbnail of a transparent PNG is
   // black-backgrounded, which is the most visible face of the alpha bug.
-  return encode(
-    sharp(input, { animated: false })
-      .rotate()
-      .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' }),
-    format,
-    quality,
-  ).toBuffer();
+  return decoded(() =>
+    encode(
+      sharp(input, { animated: false })
+        .rotate()
+        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' }),
+      format,
+      quality,
+    ).toBuffer(),
+  );
 }
 
 // Avatars (#1189) are drawn small, but the profile modal and a 3x screen draw
@@ -280,13 +308,15 @@ export async function avatar(
   // rotate() before the crop: the square is cut from the image as it's seen,
   // EXIF orientation applied. A rotated still's sides swap, but the short one
   // is the same either way.
-  const out = await encode(
-    sharp(input, density ? { density } : {})
-      .rotate()
-      .resize(side, side, { fit: 'cover', position: 'attention' }),
-    format,
-    quality,
-  ).toBuffer();
+  const out = await decoded(() =>
+    encode(
+      sharp(input, density ? { density } : {})
+        .rotate()
+        .resize(side, side, { fit: 'cover', position: 'attention' }),
+      format,
+      quality,
+    ).toBuffer(),
+  );
   return {
     buffer: out,
     mime: outFmt.mime,

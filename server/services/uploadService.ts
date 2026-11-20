@@ -109,6 +109,24 @@ export function providerErrorStatus(e: { code?: string }): number {
   return e.code === 'PROVIDER_CONFIG' ? 400 : 502;
 }
 
+/**
+ * The 415 for an image the pipeline could not decode.
+ *
+ * ⚠ HEIC gets a sentence of its own because it is the one format that fails here
+ * as a matter of course, not because the file is damaged. An iPhone photo is
+ * HEVC-coded, and the libvips sharp installs has no HEVC decoder: it reads the
+ * header, takes the file for an image, and cannot decode a pixel. Lurker does not
+ * ship a decoder of its own for it either. sharp's words for that ("bad seek",
+ * "security limit exceeded" — #626) give a user nothing to act on; what does is
+ * that a JPEG export of the same photo gets through.
+ */
+function undecodableMessage(mime: string, detail: string): string {
+  if (mime === 'image/heic' || mime === 'image/heif') {
+    return `this HEIC photo could not be decoded — export it as JPEG or PNG and upload that (${detail})`;
+  }
+  return detail;
+}
+
 export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // An account held off the uploaders (shared/accountRestrictions.ts) is
   // refused HERE, because this is the one function every path that puts a
@@ -259,15 +277,19 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
             // the SVG passthrough. Was: rasterOnly = isNodeMode().
             rasterOnly: resolved.policy.rasterOnly,
           });
+      // An avatar's thumb is of the crop, so the editor's preview is what goes out.
+      // Inside the try: it decodes the original a second time, and can fail the
+      // same way.
+      thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : input.tempPath, {
+        format,
+      });
     } catch (err) {
       const e = err as { code?: string; message?: string };
-      if (e.code === 'UNSUPPORTED_FORMAT') throw new UploadRequestError(415, e.message ?? '');
+      if (e.code === 'UNSUPPORTED_FORMAT') {
+        throw new UploadRequestError(415, undecodableMessage(classified.mime, e.message ?? ''));
+      }
       throw err;
     }
-    // An avatar's thumb is of the crop, so the editor's preview is what goes out.
-    thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : input.tempPath, {
-      format,
-    });
     // The optimized image is small and bounded (resized + re-encoded), so it
     // stays a buffer — round-tripping it through another temp file would be
     // pointless I/O. The heap blowup this PR removes was the ORIGINAL bytes.

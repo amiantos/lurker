@@ -4,6 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
 import { avatar, optimize, thumbnail } from './imagePipeline.js';
+import { heicFixture, HEIC_WIDTH, HEIC_HEIGHT } from '../test-utils/heicFixture.js';
 
 // All fixtures are synthesised on the fly so the test stays self-contained
 // and doesn't need committed binary blobs.
@@ -188,6 +189,34 @@ describe('imagePipeline.optimize', () => {
     });
   });
 
+  // A header that reads and pixels that do not: a photo cut off mid-transfer, or a
+  // codec this libvips has no decoder for. metadata() is happy with both, so the
+  // failure arrives from the encode — which used to be unguarded, and reached the
+  // route as an error it had no status for (a 500).
+  it('rejects an image whose header reads but whose pixels do not decode', async () => {
+    const whole = await sharp({
+      create: {
+        width: 400,
+        height: 400,
+        channels: 3,
+        background: '#888',
+        noise: { type: 'gaussian', mean: 128 },
+      },
+    })
+      .png()
+      .toBuffer();
+    const cut = whole.subarray(0, 200);
+    expect((await sharp(cut).metadata()).format).toBe('png'); // the header really does read
+
+    await expect(optimize(cut, { maxDim: 1024, quality: 80 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+    await expect(thumbnail(cut)).rejects.toMatchObject({ code: 'UNSUPPORTED_FORMAT' });
+    await expect(avatar(cut, { quality: 80 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+  });
+
   it('passes SVG through unchanged in standalone (rasterOnly off)', async () => {
     const svg = Buffer.from(
       '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>',
@@ -308,3 +337,39 @@ describe('imagePipeline.avatar', () => {
 // thumbnailFormat() has its own suite (thumbnailFormat.test.ts). Its fixtures come
 // from thumbnail() here, so the two stay honest about each other: the sniff is
 // tested against bytes this pipeline really produces, not a hand-rolled header.
+
+// An iPhone photo. The bundled sharp reads its header — so the pipeline takes it for
+// an image — and has no HEVC decoder to read the pixels with. Lurker does not ship
+// one either, so the answer is a refusal; what matters is that it is THE refusal,
+// UNSUPPORTED_FORMAT, which the route turns into a 415 that says what to do.
+describe('HEIC', () => {
+  // The premise, pinned. If a sharp upgrade ever ships an HEVC decoder this fails,
+  // and the refusal below (and the route's message about it) can go.
+  it('is a file the bundled sharp can read the header of and nothing more', async () => {
+    const meta = await sharp(heicFixture()).metadata();
+    expect([meta.format, meta.compression]).toEqual(['heif', 'hevc']);
+    expect([meta.width, meta.height]).toEqual([HEIC_WIDTH, HEIC_HEIGHT]);
+    await expect(sharp(heicFixture()).raw().toBuffer()).rejects.toThrow(/HEVC/);
+  });
+
+  it('is refused as an unsupported format by every pipeline, not thrown raw', async () => {
+    const heic = heicFixture();
+    await expect(optimize(heic, { maxDim: 2048, quality: 90 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+    await expect(thumbnail(heic)).rejects.toMatchObject({ code: 'UNSUPPORTED_FORMAT' });
+    await expect(avatar(heic, { quality: 80 })).rejects.toMatchObject({
+      code: 'UNSUPPORTED_FORMAT',
+    });
+  });
+
+  // AVIF is the same container with a codec sharp does decode. The refusal must be
+  // about the codec, not the container.
+  it('does not take AVIF down with it', async () => {
+    const avif = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#0f0' } })
+      .avif()
+      .toBuffer();
+    const out = await optimize(avif, { maxDim: 2048, quality: 90 });
+    expect([out.mime, out.width, out.height]).toEqual(['image/webp', 8, 8]);
+  });
+});
