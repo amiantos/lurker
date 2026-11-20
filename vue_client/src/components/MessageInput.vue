@@ -41,6 +41,8 @@
       :autocorrect="systemFeatures.autocorrect"
       :autocapitalize="systemFeatures.autocapitalize"
       @keydown="onKeydown"
+      @keyup="refreshUsage"
+      @click="refreshUsage"
       @input="syncModelFromDom"
       @compositionstart="onCompositionStart"
       @compositionend="onCompositionEnd"
@@ -153,8 +155,9 @@
       :open="emojiPickerOpen"
       :query="emojiPickerQuery"
       :anchor="formEl"
+      :hint="usage"
       @select="onEmojiSelect"
-      @close="closeEmojiPicker"
+      @close="onPickerDismissed(closeEmojiPicker)"
     />
     <Teleport to="body">
       <LongMessageUploadModal
@@ -974,7 +977,6 @@ function walkHistory(key: 'ArrowUp' | 'ArrowDown'): void {
   const list = inputHistory.forBuffer(networkId, target);
   if (!list.length) return;
   resetCompletion();
-  closeUsage();
   closePicker();
   closeStrip();
   closeChannelPicker();
@@ -1761,19 +1763,39 @@ function usageVerb(value: string): string | null {
   return /^\/(\S+)\s/.exec(value)?.[1].toLowerCase() ?? null;
 }
 
+// Runs on every edit and on every caret move (keyup, a click), since the caret
+// alone says which argument is marked. Only where commands complete at all.
 function refreshUsage(): void {
   const el = inputEl.value;
   const value = text.value;
   const verb = usageVerb(value);
   if (usageDismissedFor !== verb) usageDismissedFor = null;
-  usage.value =
-    el && verb !== null && usageDismissedFor === null
-      ? usageHint(value, el.selectionStart ?? value.length, aliases.aliases)
+  const commandsOnly = (isSystemBuffer.value || isServer.value) && !isPaused.value;
+  const applies = commandsOnly || (sendable.value && !!active.value);
+  const next =
+    el && applies && verb !== null && usageDismissedFor === null
+      ? usageHint(
+          value,
+          el.selectionStart ?? value.length,
+          aliases.aliases,
+          active.value?.networkId == null,
+        )
       : null;
+  if (next || usage.value) usage.value = next;
 }
 
+// The text can change under a showing line with no keystroke: a recalled
+// entry, a draft cleared from another device.
+watch(
+  () => text.value,
+  () => {
+    if (usage.value) refreshUsage();
+  },
+  { flush: 'post' },
+);
+
 // The line under it is gone or is not the user's typing any more (sent, another
-// buffer, a recalled one). The next keystroke looks again.
+// buffer). The next keystroke looks again.
 function closeUsage(): void {
   if (usage.value) usage.value = null;
 }
@@ -2897,6 +2919,8 @@ function commitInput(
 async function submit() {
   resetCompletion();
   closeUsage();
+  // A dismissal is for the command it was made on, not the next one of its name.
+  usageDismissedFor = null;
   closePicker();
   closeStrip();
   closeChannelPicker();

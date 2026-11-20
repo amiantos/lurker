@@ -497,6 +497,21 @@ describe('the usage line', () => {
     expect(timed?.parts.filter((p) => p.active).map((p) => p.text)).toEqual(['[opts]']);
   });
 
+  it('marks the text when its first word sits where a channel could', () => {
+    expect(line('/topic Lurker')).toBe(line('/topic Lurker rocks'));
+    expect(line('/topic Lurker')).toMatch(/\{\[text\]\}$/);
+    expect(line('/part bye')).toMatch(/\{\[reason\]\}$/);
+  });
+
+  it('keeps a usage written by hand, unmarked', () => {
+    expect(line('/mode ')).toBe('/mode [target] <flags>');
+  });
+
+  it('is absent in the system buffer for a command that needs a network', () => {
+    expect(usageHint('/kick bob ', 10, [], true)).toBeNull();
+    expect(usageHint('/set inp', 8, [], true)).not.toBeNull();
+  });
+
   it('marks nothing when the line has more words than the command takes', () => {
     expect(line('/get input.foo extra ')).toBe('/get <key>');
   });

@@ -469,6 +469,46 @@ describe('the usage line under a command (#1369)', () => {
     expect(usageLine()).toBe('/msg <nick> [text]');
   });
 
+  it('stays while an emoji shortcode is typed inside the text', async () => {
+    const el = await composer();
+    await type(el, '/me waves :smi');
+    expect(usageLine()).toBe('/me <text>');
+    expect(document.querySelectorAll('.vertical-popover')).toHaveLength(1);
+  });
+
+  it('follows the caret when it moves with nothing typed', async () => {
+    const el = await composer();
+    await type(el, '/kick bob spamming');
+    expect(usageMarked()).toEqual(['[reason]']);
+    el.setSelectionRange(8, 8);
+    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'ArrowLeft', bubbles: true }));
+    await flush();
+    expect(usageMarked()).toEqual(['<nick>']);
+    el.setSelectionRange(3, 3);
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+    expect(usageLine()).toBeNull();
+  });
+
+  it('a dismissal does not outlive the command it was made on', async () => {
+    const el = await composer();
+    await type(el, '/kick alice ');
+    await escape();
+    await type(el, '/kick alice bye');
+    expect(usageLine()).toBeNull();
+    await key(el, 'Enter');
+    expect(el.value).toBe('');
+    await type(el, '/kick bob ');
+    expect(usageLine()).toBe('/kick <nick> [reason]');
+  });
+
+  it('is not shown in the system buffer for a command that cannot run there', async () => {
+    useNetworksStore().activeKey = SYSTEM_KEY;
+    const el = await composer();
+    await type(el, '/kick bob ');
+    expect(usageLine()).toBeNull();
+  });
+
   it('shows in the system buffer', async () => {
     useNetworksStore().activeKey = SYSTEM_KEY;
     const el = await composer();

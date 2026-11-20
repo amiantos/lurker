@@ -433,6 +433,8 @@ export function usageHint(
   value: string,
   caret: number,
   aliases: readonly Alias[] = [],
+  /** The system buffer: nothing for a command that needs a network. */
+  agnosticOnly = false,
 ): UsageHint | null {
   if (!isCommandLine(value, caret)) return null;
   const verbEnd = verbEndOf(value);
@@ -440,11 +442,17 @@ export function usageHint(
   const at = argumentAt(value, caret, verbEnd, aliases);
   if (!at) return null;
   const { spec, verb, preceding, query } = at;
+  if (agnosticOnly && !spec.networkAgnostic) return null;
   const family: UsageHint = {
     parts: [{ text: commandUsage(spec, verb), active: false }],
     summary: spec.summary,
   };
-  const fits = fittingForms(spec, preceding, query);
+  let fits = fittingForms(spec, preceding, query);
+  // A word where the channel is optional is the text after it (`/topic Lurker`),
+  // which is no slot to complete and is still the argument being typed.
+  if (!fits.length && query) {
+    fits = fittingForms(spec, [...preceding, query], '').filter((f) => f.arg?.rest);
+  }
   // More words than any form takes: the usage still says what it wanted.
   if (!fits.length) return family;
   // A subcommand is being chosen, and the rows list them. No one form yet.
@@ -453,6 +461,9 @@ export function usageHint(
   if (keywords.size > 1) return family;
 
   const fit = fits.find((f) => f.arg) ?? fits[0];
+  // A usage written by hand (`/mode [target] <flags>`) reads better than the
+  // slots it stands for, and has no words to mark.
+  if (spec.usage && fit.form.args[0]?.kind !== 'keyword') return family;
   const option = query.startsWith('-') && takesFlagHere(fit);
   return {
     parts: formUsageParts(verb, fit.form).map((part) => ({

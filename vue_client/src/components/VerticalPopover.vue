@@ -176,6 +176,20 @@ function recomputePosition(): void {
   panelBottom.value = Math.max(distance + 4, 8);
 }
 
+// The anchor grows as a draft wraps, and a pinned panel is up for the whole of
+// it (#1369), so its top has to be followed, not read once on open.
+let anchorSize: ResizeObserver | null = null;
+watch(
+  () => (visible.value ? props.anchor : null),
+  (el) => {
+    anchorSize?.disconnect();
+    anchorSize = null;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    anchorSize = new ResizeObserver(recomputePosition);
+    anchorSize.observe(el);
+  },
+);
+
 const panelStyle = computed(() => ({ bottom: `${panelBottom.value}px` }));
 
 function onDocPointerDown(e: PointerEvent): void {
@@ -203,6 +217,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  anchorSize?.disconnect();
   window.removeEventListener('resize', recomputePosition);
   window.visualViewport?.removeEventListener('resize', recomputePosition);
   window.visualViewport?.removeEventListener('scroll', recomputePosition);
