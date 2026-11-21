@@ -42,6 +42,18 @@ A notification that never arrived has a trail. Under **Settings → Notification
 An admin sees everyone's log and connected clients under **Admin →
 Notifications**, with a copy button for pasting it into a bug report.
 
+If turning push on fails with "couldn't reach its push service" (Chrome's own
+wording is "Registration failed - push service error"), the browser could not
+register with its vendor's push service, which happens before your Lurker
+server is involved. The usual causes:
+
+- A DNS filter (Pi-hole, AdGuard), ad blocker, VPN or firewall blocking it.
+  Chrome needs `mtalk.google.com` and `fcm.googleapis.com`.
+- Brave, which ships with it off: turn on **Use Google services for push
+  messaging** under `brave://settings/privacy` and restart.
+- A Chromium build without Google services (ungoogled-chromium, some distro
+  packages), where web push can't work at all.
+
 ## The iOS and Android apps
 
 - The apps use native push. On lurker.chat it's built in. On a self-hosted server the
