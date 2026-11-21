@@ -65,8 +65,7 @@
               />
             </div>
             <small v-if="avatarsUnavailable" class="no-avatars">
-              This server isn't running lurker-previews, so avatars don't show here. People on other
-              clients still see yours.
+              To display avatars, you need <code>lurker-previews</code>.
             </small>
           </label>
           <label>
