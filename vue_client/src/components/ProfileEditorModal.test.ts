@@ -28,6 +28,7 @@ vi.mock('../api.js', () => ({
 import ProfileEditorModal from './ProfileEditorModal.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useProfileEditor } from '../composables/useProfileEditor.js';
+import { useConfigStore } from '../stores/config.js';
 
 const NET = 7;
 const LIMITS = { maxSubs: 10, maxKeys: 10, maxValueBytes: null, beforeConnect: false };
@@ -166,5 +167,25 @@ describe('profile editor', () => {
     expect(calls.at(-1)!.url).toBe('/api/networks/8/metadata');
     expect((input(wrapper, 'Pronouns').element as HTMLInputElement).value).toBe('they/them');
     expect((input(wrapper, 'Status').element as HTMLInputElement).value).toBe('on that server');
+  });
+
+  it('says avatars need lurker-previews, once the server has said it has none', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: {}, unset: [], live: {}, avatarPreview: null };
+    const config = useConfigStore();
+
+    // Not yet answered: the flag's default is off, which isn't the server saying so.
+    let wrapper = await open();
+    expect(wrapper.find('.no-avatars').exists()).toBe(false);
+    wrapper.unmount();
+
+    config.checked = true;
+    wrapper = await open();
+    expect(wrapper.find('.no-avatars').text()).toContain('lurker-previews');
+    wrapper.unmount();
+
+    config.features = { ...config.features, linkPreviews: true };
+    wrapper = await open();
+    expect(wrapper.find('.no-avatars').exists()).toBe(false);
   });
 });
