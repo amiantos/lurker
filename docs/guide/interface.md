@@ -85,6 +85,9 @@ on the server ([self-hosting docs](/SELF_HOSTING#link-previews-inline-media)).
   author gets one: the picture they set on networks that keep profile data, or a
   square in their nick colour with a tile from the active avatar set. Upload your
   own set as a zip of square images under Settings › Appearance › Avatars.
+  Pictures need the server to run
+  [`lurker-previews`](/SELF_HOSTING#link-previews-inline-media); without it
+  everyone gets the generated square.
 
 ## See also
 

@@ -64,6 +64,10 @@
                 @change="onPicked"
               />
             </div>
+            <small v-if="avatarsUnavailable" class="no-avatars">
+              This server isn't running lurker-previews, so avatars don't show here. People on other
+              clients still see yours.
+            </small>
           </label>
           <label>
             <span class="title">Pronouns</span>
@@ -146,6 +150,7 @@ import RenderSegments from './RenderSegments.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useUploadsStore } from '../stores/uploads.js';
 import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import { useProfileEditor } from '../composables/useProfileEditor.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
@@ -171,7 +176,14 @@ const FIELDS = METADATA_SUB_KEYS as Field[];
 const networks = useNetworksStore();
 const uploads = useUploadsStore();
 const auth = useAuthStore();
+const config = useConfigStore();
 const editor = useProfileEditor();
+
+// Avatars other people set reach this client through the previews decoder
+// (avatarProxy.ts), so without one every avatar here is a generated tile, the
+// user's own included. Said only once /api/config has answered: the flag
+// defaults to off, and a failed fetch isn't the server saying so.
+const avatarsUnavailable = computed(() => config.checked && !config.linkPreviews);
 
 const form = reactive<Record<Field, string>>(blank());
 const initial = ref<Record<Field, string>>(blank());

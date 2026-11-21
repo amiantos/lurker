@@ -294,6 +294,10 @@ cache (the thumbnail is stored with the upload), but the decoder fetches the
 uploaded file by its public URL, so an instance served only on a private
 address gets none.
 
+The avatars people set on their IRC profiles come through the same decoder.
+Without it, everyone shows as a generated placeholder, including you after you
+set an avatar of your own.
+
 It's off by default because it makes your deployment fetch third-party URLs that
 appear in chat — a behavior an operator should choose, not inherit.
 
