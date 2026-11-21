@@ -80,6 +80,21 @@ export async function ensurePermission(): Promise<string> {
   return Notification.requestPermission();
 }
 
+// What to show when pushManager.subscribe() rejects. An AbortError is the
+// browser failing to register with its own push service (Google's for Chrome,
+// Mozilla's for Firefox), which happens before this server is involved, so the
+// browser's text ("Registration failed - push service error") sends people to
+// their server config when the cause is on their machine or network. Brave
+// ships with Google's push service turned off, so it gets its own hint.
+export function subscribeErrorMessage(err: unknown, isBrave = false): string {
+  const detail = err instanceof Error ? err.message : '';
+  if (!(err instanceof Error) || err.name !== 'AbortError') return detail || 'failed to enable';
+  const hint = isBrave
+    ? 'Brave couldn\'t reach its push service. Turn on "Use Google services for push messaging" in brave://settings/privacy and restart Brave.'
+    : "This browser couldn't reach its push service. A DNS filter, ad blocker or firewall may be blocking it.";
+  return detail ? `${hint} (${detail})` : hint;
+}
+
 export async function enable(): Promise<PushSubscription> {
   if (!isSupported()) throw new Error('push not supported in this browser');
   const reg = await registerSW();
@@ -87,10 +102,15 @@ export async function enable(): Promise<PushSubscription> {
   const permission = await ensurePermission();
   if (permission !== 'granted') throw new Error(`notification permission ${permission}`);
   const { publicKey } = await api<{ publicKey: string }>('/api/push/config');
-  const sub = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(publicKey) as unknown as BufferSource,
-  });
+  let sub: PushSubscription;
+  try {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(publicKey) as unknown as BufferSource,
+    });
+  } catch (err) {
+    throw new Error(subscribeErrorMessage(err, 'brave' in navigator), { cause: err });
+  }
   const json = sub.toJSON();
   await api('/api/push/subscriptions', {
     method: 'POST',
