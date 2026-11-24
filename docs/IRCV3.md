@@ -172,6 +172,12 @@ as a highlight, even when it doesn't mention your nick. Web client only for now.
   or on an E2E channel, the reply goes out as a plain message.
   <br>`server/services/ircConnection.ts:2436` (receive), `:8305` (send),
   `server/db/messages.ts:317` (the quote)
+- **Through ZNC, or on a network without `echo-message`,** a reply to one of your own
+  messages shows without the quote, and you can't react to your own messages. Lurker
+  learns the `msgid` of a message you send from the network's echo. ZNC answers
+  `echo-message` itself instead of passing the network's echo on, so that echo has no
+  `msgid`. Connect Lurker to the network directly; to attach other IRC clients, use
+  [Lurker's own bouncer](#attaching-your-own-irc-client).
 - **Quote** is Reply's plain-text sibling, for when the people you're answering can't
   see a reply tag at all. It puts `> <alice> what she said` above your draft, on its
   own line, and your answer goes under it — two messages, no tag, that read the same
