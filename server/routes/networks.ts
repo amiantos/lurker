@@ -393,6 +393,7 @@ router.post('/reorder', (req: Request, res: Response) => {
     return;
   }
   const networks = listNetworksForUser(req.user!.id).map((n) => networkPayload(n, isAllowed));
+  fanOutToUser(req.user!.id, { kind: 'networks-changed' });
   res.json({ networks });
 });
 
@@ -536,6 +537,7 @@ async function attachCertificateInner(req: Request, res: Response): Promise<void
     res.status(404).json({ error: 'network not found' });
     return;
   }
+  fanOutToUser(req.user!.id, { kind: 'networks-changed' });
   res.json({ network: networkPayload(updated), certificate: describeClientCert(pair.cert) });
 }
 
@@ -550,6 +552,7 @@ router.delete('/:id/certificate', (req: Request, res: Response) => {
     res.status(404).json({ error: 'network not found' });
     return;
   }
+  fanOutToUser(req.user!.id, { kind: 'networks-changed' });
   res.json({ network: networkPayload(updated) });
 });
 

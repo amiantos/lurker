@@ -2547,6 +2547,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // IRC event (a DCC transfer row), already shaped as its frame.
   ircManager.on('user-frame', (userId: number, frame: WsPayload) => fanOut(userId, frame));
 
+  // A network was added, edited or removed: by another of the user's clients,
+  // or by `/save` here. The rows come from GET /api/networks, so this only
+  // says to read them again.
+  ircManager.on('network-changed', ({ userId }: { userId: number }) =>
+    fanOut(userId, { kind: 'networks-changed' }),
+  );
+
   ircManager.on('event', (rawEvent) => {
     // EnrichedEvent (from ircConnection) is a strict superset of MessageEvent.
     const event = rawEvent as MessageEvent & { userId: number; state?: string };
@@ -3830,6 +3837,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           });
         }
         break;
+      case 'save-login': {
+        // `/save` (#1412): keep the NickServ login this connection just offered
+        // as the network's own. A network that isn't connected has none.
+        const networkId = Number(msg.networkId);
+        const conn = ircManager.getConnection(userId, networkId);
+        const where = typeof msg.issuingTarget === 'string' ? msg.issuingTarget : undefined;
+        if (conn?.saveLoginOffer(where)) ircManager.networkChanged(userId, networkId);
+        break;
+      }
       case 'probe-presence': {
         // Client just activated a DM — refresh its presence cache so the
         // banner/sidebar dim reflect current state rather than whatever stale

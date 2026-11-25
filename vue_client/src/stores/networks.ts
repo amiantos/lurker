@@ -204,6 +204,8 @@ export function tagSupport(state: NetworkState | null | undefined): {
   };
 }
 
+let fetchAllRead = 0;
+
 export const useNetworksStore = defineStore('networks', {
   state: () => ({
     networks: [] as Network[],
@@ -311,7 +313,11 @@ export const useNetworksStore = defineStore('networks', {
   },
   actions: {
     async fetchAll() {
+      // The newest read wins: a `networks-changed` can start one while another
+      // is in flight, and the older answer must not land last.
+      const read = ++fetchAllRead;
       const { networks } = await api('/api/networks');
+      if (read !== fetchAllRead) return;
       this.networks = networks;
       this.loaded = true;
     },

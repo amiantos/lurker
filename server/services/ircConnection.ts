@@ -109,7 +109,7 @@ import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../../shared/ident.js';
 import { validateClientCertPair, isClientCertProblem } from '../utils/clientCert.js';
-import { networkProxy, setNetworkUserModes } from '../db/networks.js';
+import { getNetwork, networkProxy, setNetworkUserModes, updateNetwork } from '../db/networks.js';
 import { getEngineMark, pruneEngineMarks, storeUnderMark } from '../db/engineMarks.js';
 import { isProxyProblem } from '../../shared/proxy.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
@@ -118,6 +118,8 @@ import { ProxyTransport } from './proxyTransport.js';
 import { MonitorList } from './monitorList.js';
 import type { MonitorHolder, MonitorSync } from './monitorList.js';
 import { ReplyRouter, listModeNumerics } from './replyRouter.js';
+import { servicesLoginFromMessage, servicesLoginFromRaw } from './servicesLogin.js';
+import type { ServicesLogin } from './servicesLogin.js';
 import { CommandIssuers, isErrorNumeric } from './commandIssuers.js';
 import { ChathistoryBackfill } from './chathistoryBackfill.js';
 import type { Asker, QueryEnd, ReplyOwner } from './replyRouter.js';
@@ -996,6 +998,10 @@ function memberSnapshot(m: ChannelMember): ChannelMember {
   };
 }
 
+// How long NickServ has to answer an IDENTIFY before its password stops
+// counting as the one that logged us in (#1412).
+const LOGIN_ANSWER_MS = 60_000;
+
 // Normalize a services account off the wire into ChannelMember.account's
 // tristate. There are TWO logged-out sentinels: `*` on JOIN/ACCOUNT, and `0` on
 // a WHOX 354 reply — normalize both here, at the parse boundary, so exactly one
@@ -1329,6 +1335,14 @@ export class IrcConnection {
   // durable (see stopAutojoining); the send-permission logic re-probes instead
   // of consulting a flag.
   identifiedToServices: boolean;
+  // A password the user just gave NickServ by hand, and the buffer to answer
+  // in, until a 900 says it worked (#1412). Then it is `loginOffer`, which
+  // `/save` writes to the network. Both die with the socket.
+  private loginAttempt: (ServicesLogin & { where: string; at: number }) | null = null;
+  private loginOffer: { account: string; password: string } | null = null;
+  // A 900 seen on this socket. With one already in, a login by hand is a
+  // second account's and not a saved password gone stale.
+  private loggedInOnSocket = false;
   // Last time the user sent a real PRIVMSG/NOTICE/ACTION to a target (lowercase
   // key → epoch ms). Lets the send-rejection handler tell an actual failed
   // message (surface it inline) from an automated TAGMSG/typing bounce (stay
@@ -2756,12 +2770,8 @@ export class IrcConnection {
     // RPL_LOGGEDIN (900): the user identified to services mid-session (NickServ
     // or SASL). That's exactly what +R/+M channels were waiting on, so drop the
     // unsendable set and let the next message re-probe — typing resumes too (#283).
-    on('loggedin', () => {
-      // Also the gate stopAutojoining waits on: account-based channel access
-      // (+I/+e $a:) only starts matching once the server considers us
-      // identified, so a join rejection before this point says nothing durable.
-      this.identifiedToServices = true;
-      this.unsendableTargets.clear();
+    on('loggedin', (event: Record<string, unknown>) => {
+      this.loginConfirmed(typeof event?.account === 'string' ? event.account : '');
     });
 
     // SASL authentication failed (ERR_SASLFAIL 904 / 905, or a mechanism/account
@@ -3022,6 +3032,7 @@ export class IrcConnection {
       // for the re-attach, and a redial drops them (onEnginePhase 'dialing').
       this.sawRegistered = false;
       if (!this.engineSocketAlive) {
+        this.forgetLogin();
         this.sendPacer.drop();
         this.clearTyping();
       }
@@ -3518,6 +3529,13 @@ export class IrcConnection {
       const eventNick = event.nick as string;
       const lower = eventNick.toLowerCase();
       const account = normalizeAccount(event.account);
+      // Our own login, on a network that sends no 900 for one made through
+      // NickServ: ergo answers with a notice and this (#1412).
+      // An `ACCOUNT *` of our own is the logout.
+      if (this.isSelfNick(eventNick)) {
+        if (account) this.loginConfirmed(account);
+        else if (account === null) this.loggedInOnSocket = false;
+      }
       for (const ch of this.channels.values()) {
         const member = ch.members.get(lower);
         if (!member) continue;
@@ -7970,6 +7988,111 @@ export class IrcConnection {
   // the dial or the registration; flood protection (#1193) applies here and
   // now: the queue reads it per line, and a wait scheduled under the old rule
   // is reconsidered, so a backlog goes at once when protection is turned off.
+  // The user's own line to NickServ carried a password (#1412): kept until the
+  // network says whether it worked. `where` is the buffer they typed it in when
+  // the client said, else the one their line went to.
+  private noteLoginAttempt(login: ServicesLogin | null, where?: string): void {
+    if (!login) return;
+    this.loginAttempt = { ...login, where: where || this.serverTarget(), at: Date.now() };
+  }
+
+  // A login belongs to its socket: neither a password the network never
+  // confirmed nor an offer outlives it.
+  private forgetLogin(): void {
+    this.loginAttempt = null;
+    this.loginOffer = null;
+    this.loggedInOnSocket = false;
+  }
+
+  // The network's word that we are logged in: a 900, or an ACCOUNT of our own.
+  // A network may send both; the second finds no attempt left.
+  private loginConfirmed(account: string): void {
+    // The gate stopAutojoining waits on: account-based channel access
+    // (+I/+e $a:) only starts matching once the server considers us
+    // identified, so a join rejection before this point says nothing durable.
+    this.identifiedToServices = true;
+    // What +R/+M channels were waiting on (#283).
+    this.unsendableTargets.clear();
+    const already = this.loggedInOnSocket;
+    this.loggedInOnSocket = true;
+    this.offerLoginSave(account, already);
+  }
+
+  // A login confirmed after a password given by hand: offer to keep it. Over a saved
+  // one too when that one is stale: it differs, and it had not logged this
+  // socket in (`already`), so this is not a second account's. Never on a
+  // network that logs in by certificate, where a saved password would switch
+  // the mechanism to PLAIN. Read from the row: `this.network` is the copy this
+  // connection was built with, and the settings may have changed since.
+  private offerLoginSave(account: string, already: boolean): void {
+    const attempt = this.loginAttempt;
+    this.loginAttempt = null;
+    if (!attempt) return;
+    // An IDENTIFY is answered at once. One this old was refused, and the login
+    // came some other way: not with its password. A REGISTER may wait on an
+    // email.
+    if (!attempt.registering && Date.now() - attempt.at > LOGIN_ANSWER_MS) return;
+    // The saved login is SASL's. On a network without it the password would
+    // be saved and never used.
+    if (!this.client.network.cap.available?.has('sasl')) return;
+    const saved = getNetwork(this.network.id, this.network.user_id);
+    if (!saved || saved.client_cert) return;
+    const as = account || attempt.account || this.currentNick;
+    if (!as) return;
+    const replaces = !!saved.sasl_password;
+    if (replaces) {
+      const savedAs = saved.sasl_account || saved.nick;
+      const fold = (name: string) => foldTargetFor(this.network.id, name);
+      const same = saved.sasl_password === attempt.password && fold(savedAs) === fold(as);
+      if (already || same) return;
+    }
+    this.loginOffer = { account: as, password: attempt.password };
+    this.sayAboutLogin(
+      attempt.where,
+      replaces
+        ? `Logged in as ${as}. Type /save to replace the password saved for this network.`
+        : `Logged in as ${as}. Type /save to log in automatically from now on.`,
+    );
+  }
+
+  // A line of Lurker's about the login, in `where` if that buffer is there and
+  // open (a notice does not reopen a closed one), else in the server buffer.
+  private sayAboutLogin(where: string | undefined, text: string): void {
+    const { id, user_id: userId } = this.network;
+    const open = !!where && getBufferState(userId, id, where) === 'open';
+    this.publish({
+      type: 'notice',
+      target: open ? where : this.serverTarget(),
+      nick: 'lurker',
+      notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
+      text,
+    });
+  }
+
+  // `/save`, typed in `where`: write the offered login to the network. On this
+  // connection's copy too, which is the one its own reconnects read. False
+  // when nothing was on offer, said in passing and not kept.
+  saveLoginOffer(where?: string): boolean {
+    const offer = this.loginOffer;
+    const fields = offer && { sasl_account: offer.account, sasl_password: offer.password };
+    if (!fields || !updateNetwork(this.network.id, this.network.user_id, fields)) {
+      const { id, user_id: userId } = this.network;
+      // Only into a buffer that is there and open: the client makes a buffer
+      // for any target it is sent a line for.
+      const open = !!where && getBufferState(userId, id, where) === 'open';
+      this.publishEphemeral({
+        type: 'error',
+        target: open ? where : this.serverTarget(),
+        text: 'Nothing to save. /save follows a login to NickServ.',
+      });
+      return false;
+    }
+    this.loginOffer = null;
+    Object.assign(this.network, fields);
+    this.sayAboutLogin(where, `Saved. Lurker will log in as ${fields.sasl_account} on connect.`);
+    return true;
+  }
+
   networkEdited(network: Network): void {
     if (network.flood_protection === this.network.flood_protection) return;
     this.network.flood_protection = network.flood_protection;
@@ -8315,6 +8438,7 @@ export class IrcConnection {
         // client would be told the network lost it and found it again.
         this.wantChannelRenameCap();
         this.resetRestoreState();
+        this.forgetLogin();
         // A fresh socket: no stored seq is about it.
         this.pruneCatchUpMarks(null);
         this.storedUnderSeq = null;
@@ -9101,6 +9225,8 @@ export class IrcConnection {
       target,
       onSent: () => {
         this.noteUserSend(target, true, moved?.target);
+        if (kind === 'privmsg')
+          this.noteLoginAttempt(servicesLoginFromMessage(target, shown), target);
         // An `xdcc send` arms its request once the bot has been asked (#1149):
         // a PRIVMSG's, as before the queue; a NOTICE or a /me never asked one.
         // Never let a DB hiccup in arming break the user's actual message.
@@ -13935,6 +14061,9 @@ export class IrcConnection {
     this.replies.send(asker, clean, undefined, {
       onSent: () => {
         this.noteOutgoingCommand(clean);
+        if (asker !== 'lurker') {
+          this.noteLoginAttempt(servicesLoginFromRaw(clean), opts.issuingTarget);
+        }
         if (asker === 'user' && opts.issuingTarget) {
           this.commandIssuers.typedIn(clean, opts.issuingTarget);
         }

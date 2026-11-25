@@ -432,6 +432,7 @@ export const COMMANDS = [
   cmd(['quit', 'disconnect'], 'Server', 'disconnect from current network', { args: [REASON] }),
   cmd(['reconnect'], 'Server', 'reconnect to current network'),
   cmd(['flushq'], 'Server', 'drop your messages still waiting to be sent on this network'),
+  cmd(['save'], 'Server', 'keep the NickServ login you just gave, so Lurker logs in on connect'),
   cmd(['names'], 'Server', 'list the users on a channel', { args: [opt('#chan', 'channel')] }),
   cmd(['who'], 'Server', 'find users', { args: [optText('mask')] }),
   cmd(['whowas'], 'Server', 'look up a departed nick', { args: [opt('nick', 'nick')] }),

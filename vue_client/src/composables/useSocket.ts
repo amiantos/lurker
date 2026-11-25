@@ -1234,6 +1234,13 @@ function handleMessage(raw: string): void {
     pins.setNetwork(payload.networkId, payload.pinned || []);
     return;
   }
+  if (payload.kind === 'networks-changed') {
+    // The saved networks changed somewhere else: another device, or `/save`.
+    void useNetworksStore()
+      .fetchAll()
+      .catch(() => {});
+    return;
+  }
   if (payload.kind === 'favorites-changed') {
     // Full ordered global list, replace wholesale — the same frame seeds the
     // connect burst, so this one handler covers seed and every correction.
