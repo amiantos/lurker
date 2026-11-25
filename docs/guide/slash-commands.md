@@ -53,7 +53,9 @@ a reason, a message. Escape puts it away until you start another command.
   XDCC requests are not messages and still go.
 - `/nick <newnick>` — change your nick on the current network. Lurker saves it
   as the network's nick, so you keep it after a reconnect. A nick the network
-  gives you on its own (yours was taken, or it renamed you) is not saved.
+  gives you on its own (yours was taken, or it renamed you) is not saved; to
+  keep one, `/nick` to it. A nick changed from an IRC client attached to Lurker
+  is saved the same way.
 - `/save` — keep the password you just gave NickServ (`identify` or
   `register`) as the network's login, so Lurker logs you in on every connect.
   Lurker offers it once the network confirms the login, on a network with no

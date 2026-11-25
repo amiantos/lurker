@@ -163,7 +163,8 @@ Leave a channel, with an optional part `reason`.
 ### `set_nick` _(read-write)_
 
 Change your nick on a network. Asynchronous and may be rejected (nick in use /
-invalid) — watch the server buffer for the outcome.
+invalid) — watch the server buffer for the outcome. A nick the network grants is
+saved as the network's nick, so later connects use it.
 
 ### `set_away` _(read-write)_
 

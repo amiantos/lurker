@@ -1349,10 +1349,14 @@ export class IrcConnection {
   // second account's and not a saved password gone stale.
   private loggedInOnSocket = false;
   private onNetworkSaved: () => void;
-  // The nick the user last asked for with a NICK of their own (#1418). When
-  // the network grants it, it becomes the network's saved nick. A rename the
+  // The nicks the user has asked for with a NICK of their own, folded, and not
+  // yet answered (#1418). When the network grants one, it becomes the
+  // network's saved nick. A rename the
   // network makes on its own (a fallback, a forced one) never matches.
-  private nickAsked: string | null = null;
+  private nickAsked = new Set<string>();
+  // The ident connect() registered with, which the saved nick may since have
+  // moved away from. Null on a socket this process did not dial.
+  private identSent: string | null = null;
   // Last time the user sent a real PRIVMSG/NOTICE/ACTION to a target (lowercase
   // key → epoch ms). Lets the send-rejection handler tell an actual failed
   // message (surface it inline) from an automated TAGMSG/typing bounce (stay
@@ -2631,7 +2635,7 @@ export class IrcConnection {
       // 'nick invalid' handlers say it, and where it was typed too (#816).
       if ((rawCommand === '432' || rawCommand === '433') && !this.preRegistered) {
         const refused = String(msg?.params?.[1] ?? '');
-        this.nickAsked = null;
+        this.nickAsked.delete(foldTargetFor(this.network.id, refused));
         const why = String(msg?.params?.[msg.params.length - 1] ?? '');
         this.lineServerError = {
           command: rawCommand,
@@ -4537,8 +4541,10 @@ export class IrcConnection {
           // a 421 (#384). It keeps the nick listed if a bouncer client watches it.
           this.syncMonitor();
         }
-        this.keepAskedNick(eventNewNick);
         this.currentNick = eventNewNick;
+        // After currentNick: what hears of the save reads it (the bouncer's
+        // network attributes).
+        this.keepAskedNick(eventNewNick);
         // Repair the framework's copy when it would otherwise stay behind. Its
         // own rule is kept — a digit-leading UID still isn't stored, because
         // other parts of it treat user.nick as something you could send as —
@@ -8012,25 +8018,55 @@ export class IrcConnection {
     this.loginAttempt = { ...login, where: where || this.serverTarget(), at: Date.now() };
   }
 
-  // The nick we now have is the one the user asked for: it is the network's
-  // nick from here on, so the next connect asks for it too (#1418).
+  // A NICK of the user's went out. One for the nick we already hold draws no
+  // answer, and still says which nick they want: the fallback they have
+  // decided to stay on. Any other waits for the network to grant it.
+  private noteNickAsked(nick: string | null, typed: boolean): void {
+    if (!nick) return;
+    // Only typed here: an attached IRC client naming the nick it was just told
+    // it has is not a choice.
+    if (nick !== this.currentNick || !typed) {
+      this.nickAsked.add(foldTargetFor(this.network.id, nick));
+      return;
+    }
+    if (this.regainNick) {
+      this.regainNick = null;
+      this.pendingRegainSetup = false;
+      this.syncMonitor();
+    }
+    this.saveNick(nick);
+  }
+
+  // The nick we now have is one the user asked for: keep it.
   private keepAskedNick(nick: string): void {
-    const asked = this.nickAsked;
-    const fold = (name: string) => foldTargetFor(this.network.id, name);
-    if (!asked || fold(asked) !== fold(nick)) return;
-    this.nickAsked = null;
-    if (nick === this.network.nick) return;
+    if (this.nickAsked.delete(foldTargetFor(this.network.id, nick))) this.saveNick(nick);
+  }
+
+  // `nick` is the network's nick from here on, so the next connect asks for it
+  // too (#1418). Judged against the row: `this.network` is the copy this
+  // connection was built with, and the settings may have changed since.
+  private saveNick(nick: string): void {
     const { id, user_id: userId } = this.network;
-    // A row that is gone has nothing to keep.
-    if (!this.quietly(() => updateNetwork(id, userId, { nick }), undefined)) return;
-    this.network.nick = nick;
+    try {
+      const saved = getNetwork(id, userId);
+      if (!saved || saved.nick === nick) return;
+      const fields: { nick: string; sasl_account?: string } = { nick };
+      // A login with no account of its own logs in as the nick. It was the old
+      // nick's password, so name that account before the nick moves on.
+      if (saved.sasl_password && !saved.sasl_account) fields.sasl_account = saved.nick;
+      if (!updateNetwork(id, userId, fields)) return;
+      Object.assign(this.network, fields);
+    } catch (e) {
+      console.warn(`[network ${id}] nick not saved:`, (e as Error)?.message || e);
+      return;
+    }
     this.onNetworkSaved();
   }
 
   // A login belongs to its socket: neither a password the network never
   // confirmed nor an offer outlives it.
   private forgetLogin(): void {
-    this.nickAsked = null;
+    this.nickAsked.clear();
     this.loginAttempt = null;
     this.loginOffer = null;
     this.loggedInOnSocket = false;
@@ -8221,6 +8257,7 @@ export class IrcConnection {
     if (!engineConfigured()) this.announceConnecting();
     this.wantChannelRenameCap();
     this.resetRestoreState();
+    this.identSent = this.network.username || nick;
     this.client.connect({
       host: this.network.host,
       port: this.network.port,
@@ -9628,7 +9665,7 @@ export class IrcConnection {
         : Math.max(
             // The ident we registered with (connect() sends the same), before
             // the network adds its `~`…
-            Buffer.byteLength(`~${this.network.username || this.network.nick}`),
+            Buffer.byteLength(`~${this.identSent ?? (this.network.username || this.network.nick)}`),
             // …or the one identd answered, which replaces it.
             Buffer.byteLength(this.identdIdent ?? ''),
           );
@@ -14094,7 +14131,7 @@ export class IrcConnection {
       onSent: () => {
         this.noteOutgoingCommand(clean);
         if (asker !== 'lurker') {
-          this.nickAsked = nickAskedIn(clean) ?? this.nickAsked;
+          this.noteNickAsked(nickAskedIn(clean), asker === 'user');
           this.noteLoginAttempt(servicesLoginFromRaw(clean), opts.issuingTarget);
         }
         if (asker === 'user' && opts.issuingTarget) {
