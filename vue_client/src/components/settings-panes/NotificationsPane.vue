@@ -78,6 +78,22 @@
       One switch per kind of alert. You get a toast if a tab is visible, and a push if none is.
     </p>
 
+    <div class="hl-notif notif-all">
+      <label class="hl-row" data-setting-key="notifications.viewed_buffer.sound">
+        <input
+          type="checkbox"
+          :checked="!!settings.effective('notifications.viewed_buffer.sound')"
+          @change="
+            onCommit(
+              'notifications.viewed_buffer.sound',
+              ($event.target as HTMLInputElement).checked,
+            )
+          "
+        />
+        <span>play sounds for the active buffer</span>
+      </label>
+    </div>
+
     <div v-for="signal in notificationSignals" :key="signal.key" class="hl-notif notif-signal">
       <h4 class="notif-signal-title">{{ signal.title }}</h4>
       <p class="section-desc small">{{ signal.help }}</p>
@@ -506,6 +522,8 @@ function deviceLabel(sub: StoredPushSub): string {
   font-weight: 600;
 }
 
+/* The switch over the kinds a buffer can raise sits above them, ruled off like one. */
+.notif-all + .notif-signal,
 .notif-signal + .notif-signal {
   margin-top: var(--space-7);
   padding-top: var(--space-6);

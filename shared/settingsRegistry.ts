@@ -1659,6 +1659,20 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description: 'Volume of the kick sound, 0–100.',
   },
 
+  {
+    // The toast stays off there either way: the line is already on screen.
+    // Each kind's own toggles still decide whether it makes a sound at all (#1411).
+    key: 'notifications.viewed_buffer.sound',
+    label: 'Play sounds for the active buffer',
+    category: 'notifications',
+    group: 'alerts',
+    type: 'bool',
+    default: false,
+    description:
+      'Play notification sounds for the buffer on screen too. Off, a buffer you ' +
+      'are looking at stays silent.',
+  },
+
   // ─── Push-side filters ────────────────────────────────────────────────
   // These only affect push delivery — toasts are unaffected (toasts require a
   // visible client, which short-circuits push anyway). All off by default.

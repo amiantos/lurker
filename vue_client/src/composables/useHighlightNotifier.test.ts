@@ -18,12 +18,26 @@ let effective: Mock<(key: string) => unknown>;
 // Load a fresh notifyForEvent with the stores it reads mocked. `viewed` is the
 // buffer key currently on screen (default '' so the event's buffer is never the
 // viewed one); `hidden` models a background tab; `enabled` toggles the per-kind
-// master switch. Sound is forced off so no Audio is constructed.
-async function load(opts: { viewed?: string; hidden?: boolean; enabled?: boolean } = {}) {
+// master switch. Sound is off unless `sound` asks for it, so no Audio is
+// constructed; `viewedSound` is the setting that lets it play for the buffer
+// on screen (#1411). `played` counts the sounds.
+let played: Mock<() => void>;
+async function load(
+  opts: {
+    viewed?: string;
+    hidden?: boolean;
+    enabled?: boolean;
+    sound?: boolean;
+    viewedSound?: boolean;
+  } = {},
+) {
   vi.resetModules();
   push = vi.fn<(t: unknown) => void>();
   effective = vi.fn<(key: string) => unknown>((key: string) => {
-    if (key.includes('.sound.')) return false; // no sound / no Audio
+    if (key === 'notifications.viewed_buffer.sound') return opts.viewedSound ?? false;
+    if (key.endsWith('.sound.enabled')) return opts.sound ?? false;
+    if (key.endsWith('.sound.choice')) return 'ping';
+    if (key.endsWith('.sound.volume')) return 60;
     if (key.endsWith('.enabled')) return opts.enabled ?? true;
     return undefined;
   });
@@ -34,6 +48,16 @@ async function load(opts: { viewed?: string; hidden?: boolean; enabled?: boolean
   }));
   vi.doMock('./useViewedBuffer.js', () => ({ viewedBuffer: () => opts.viewed ?? '' }));
   vi.stubGlobal('document', { hidden: opts.hidden ?? false });
+  played = vi.fn<() => void>();
+  vi.stubGlobal(
+    'Audio',
+    class {
+      preload = '';
+      cloneNode() {
+        return { volume: 0, play: played };
+      }
+    },
+  );
   return import('./useHighlightNotifier.js');
 }
 
@@ -114,6 +138,75 @@ describe('notifyForEvent notify gate', () => {
     notifyForEvent(dm({ text: '\x0304red\x03 and \x02bold\x02 text' }));
     expect(push).toHaveBeenCalledTimes(1);
     expect((push.mock.calls[0][0] as { body: string }).body).toBe('red and bold text');
+  });
+});
+
+describe('notifyForEvent sound', () => {
+  beforeEach(() => vi.resetModules());
+
+  it('plays with the toast for a buffer that is off-screen', async () => {
+    const { notifyForEvent } = await load({ sound: true });
+    notifyForEvent(dm());
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(played).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays silent in the viewed buffer by default', async () => {
+    const { notifyForEvent } = await load({ sound: true, viewed: '1::bob' });
+    notifyForEvent(dm());
+    expect(played).not.toHaveBeenCalled();
+  });
+
+  it('plays in the viewed buffer when asked to, still with no toast (#1411)', async () => {
+    const { notifyForEvent } = await load({ sound: true, viewed: '1::bob', viewedSound: true });
+    notifyForEvent(dm());
+    expect(played).toHaveBeenCalledTimes(1);
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('plays nothing in the viewed buffer for a kind whose sound is off', async () => {
+    const { notifyForEvent } = await load({ sound: false, viewed: '1::bob', viewedSound: true });
+    notifyForEvent(dm());
+    expect(played).not.toHaveBeenCalled();
+  });
+
+  it('plays nothing in the viewed buffer for a kind that is off', async () => {
+    const { notifyForEvent } = await load({
+      enabled: false,
+      sound: true,
+      viewed: '1::bob',
+      viewedSound: true,
+    });
+    notifyForEvent(dm());
+    expect(played).not.toHaveBeenCalled();
+  });
+
+  it('plays nothing in a hidden tab, whatever is asked', async () => {
+    const { notifyForEvent } = await load({
+      hidden: true,
+      sound: true,
+      viewed: '1::bob',
+      viewedSound: true,
+    });
+    notifyForEvent(dm());
+    expect(played).not.toHaveBeenCalled();
+  });
+
+  it('plays once for a burst from one sender in the viewed buffer', async () => {
+    const { notifyForEvent } = await load({ sound: true, viewed: '1::bob', viewedSound: true });
+    notifyForEvent(dm());
+    notifyForEvent(dm({ id: 2 }));
+    expect(played).toHaveBeenCalledTimes(1);
+  });
+
+  it('still toasts the next line once the user looks away', async () => {
+    const opts = { sound: true, viewed: '1::bob', viewedSound: true };
+    const { notifyForEvent } = await load(opts);
+    notifyForEvent(dm());
+    opts.viewed = '1::#chan';
+    notifyForEvent(dm({ id: 2 }));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(played).toHaveBeenCalledTimes(2);
   });
 });
 
