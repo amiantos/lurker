@@ -54,7 +54,7 @@ a reason, a message. Escape puts it away until you start another command.
 - `/save` — keep the password you just gave NickServ (`identify` or
   `register`) as the network's login, so Lurker logs you in on every connect.
   Lurker offers it once the network confirms the login, on a network with no
-  password saved.
+  password saved or one whose saved password no longer works.
 - `/set`, `/get` — read and change settings from the keyboard.
 - `/away [message]` — set your away status on the current network; `/back` (or
   `/away` with no message) clears it. Add `-all` for every network. The **Scope

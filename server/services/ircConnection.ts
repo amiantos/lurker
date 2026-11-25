@@ -1336,6 +1336,9 @@ export class IrcConnection {
   // `/save` writes to the network. Both die with the socket.
   private loginAttempt: (ServicesLogin & { where: string }) | null = null;
   private loginOffer: { account: string; password: string } | null = null;
+  // A 900 seen on this socket. With one already in, a login by hand is a
+  // second account's and not a saved password gone stale.
+  private loggedInOnSocket = false;
   // Last time the user sent a real PRIVMSG/NOTICE/ACTION to a target (lowercase
   // key → epoch ms). Lets the send-rejection handler tell an actual failed
   // message (surface it inline) from an automated TAGMSG/typing bounce (stay
@@ -2769,7 +2772,9 @@ export class IrcConnection {
       // identified, so a join rejection before this point says nothing durable.
       this.identifiedToServices = true;
       this.unsendableTargets.clear();
-      this.offerLoginSave(typeof event?.account === 'string' ? event.account : '');
+      const already = this.loggedInOnSocket;
+      this.loggedInOnSocket = true;
+      this.offerLoginSave(typeof event?.account === 'string' ? event.account : '', already);
     });
 
     // SASL authentication failed (ERR_SASLFAIL 904 / 905, or a mechanism/account
@@ -3031,6 +3036,7 @@ export class IrcConnection {
       this.sawRegistered = false;
       this.loginAttempt = null;
       this.loginOffer = null;
+      this.loggedInOnSocket = false;
       if (!this.engineSocketAlive) {
         this.sendPacer.drop();
         this.clearTyping();
@@ -7988,23 +7994,33 @@ export class IrcConnection {
     this.loginAttempt = { ...login, where: where || this.serverTarget() };
   }
 
-  // RPL_LOGGEDIN after a password given by hand: offer to keep it. Not when the
-  // network already has a password saved (this one may be a second account's),
-  // nor when it logs in by certificate, where a saved password would switch
+  // RPL_LOGGEDIN after a password given by hand: offer to keep it. Over a saved
+  // one too when that one is stale: it differs, and it had not logged this
+  // socket in (`already`), so this is not a second account's. Never on a
+  // network that logs in by certificate, where a saved password would switch
   // the mechanism to PLAIN. Read from the row: `this.network` is the copy this
   // connection was built with, and the settings may have changed since.
-  private offerLoginSave(account: string): void {
+  private offerLoginSave(account: string, already: boolean): void {
     const attempt = this.loginAttempt;
     this.loginAttempt = null;
     if (!attempt) return;
     const saved = getNetwork(this.network.id, this.network.user_id);
-    if (!saved || saved.sasl_password || saved.client_cert) return;
+    if (!saved || saved.client_cert) return;
     const as = account || attempt.account || this.currentNick;
     if (!as) return;
+    const replaces = !!saved.sasl_password;
+    if (replaces) {
+      const savedAs = saved.sasl_account || saved.nick;
+      const same =
+        saved.sasl_password === attempt.password && savedAs.toLowerCase() === as.toLowerCase();
+      if (already || same) return;
+    }
     this.loginOffer = { account: as, password: attempt.password };
     this.sayAboutLogin(
       attempt.where,
-      `Logged in as ${as}. Type /save to log in automatically from now on.`,
+      replaces
+        ? `Logged in as ${as}. Type /save to replace the password saved for this network.`
+        : `Logged in as ${as}. Type /save to log in automatically from now on.`,
     );
   }
 

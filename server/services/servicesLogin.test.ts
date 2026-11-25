@@ -9,7 +9,7 @@
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createUser } from '../db/users.js';
-import { createNetwork, getNetwork } from '../db/networks.js';
+import { createNetwork, getNetwork, updateNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { ensureOpen as ensureBufferOpen } from '../db/buffers.js';
 import { IrcConnection } from './ircConnection.js';
@@ -241,16 +241,57 @@ describe('offering to save a NickServ login', () => {
     }
   });
 
-  it('offers nothing on a network that already has a password saved', async () => {
+  it('offers to replace a saved password that no longer logs in', async () => {
     const t = await connect();
     try {
-      // Saved in the settings since this connection was built.
-      const { updateNetwork } = await import('../db/networks.js');
+      // Saved in the settings since this connection was built, and wrong: no
+      // 900 came of it on this socket.
+      updateNetwork(t.network.id, userId, { sasl_account: 'main', sasl_password: 'old' });
+      t.conn.say('NickServ', 'identify main new');
+      await t.said('PRIVMSG NickServ :identify main new');
+      t.loggedIn('main');
+      await until(() => t.lurkerLines().length === 1, 5000, 'the offer');
+      expect(t.lurkerLines()[0]).toMatchObject({
+        text: 'Logged in as main. Type /save to replace the password saved for this network.',
+      });
+      expect(t.saved().sasl_password).toBe('old');
+      expect(t.conn.saveLoginOffer('NickServ')).toBe(true);
+      expect(t.saved()).toMatchObject({ sasl_account: 'main', sasl_password: 'new' });
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
+  it('offers nothing for the password already saved', async () => {
+    const t = await connect();
+    try {
+      // A network with no SASL: the saved login never ran, and typing it by
+      // hand is not news. The account is matched whatever its case.
+      updateNetwork(t.network.id, userId, { sasl_account: 'Main', sasl_password: 'same' });
+      t.conn.say('NickServ', 'identify same');
+      await t.said('PRIVMSG NickServ :identify same');
+      t.loggedIn('main');
+      await until(() => t.conn.identifiedToServices, 5000, 'the 900');
+      expect(t.lurkerLines()).toEqual([]);
+      expect(t.conn.saveLoginOffer()).toBe(false);
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
+  it('offers nothing for a second account, when the saved one logged in', async () => {
+    const t = await connect();
+    try {
       updateNetwork(t.network.id, userId, { sasl_account: 'main', sasl_password: 'first' });
+      // The saved login worked on this socket.
+      t.loggedIn('main');
+      await until(() => t.conn.identifiedToServices, 5000, 'the first 900');
       t.conn.say('NickServ', 'identify other second');
       await t.said('PRIVMSG NickServ :identify other second');
       t.loggedIn('other');
-      await until(() => t.conn.identifiedToServices, 5000, 'the 900');
+      // The 900 that answered the attempt spends it.
+      const pending = t.conn as unknown as { loginAttempt: unknown };
+      await until(() => pending.loginAttempt === null, 5000, 'the second 900');
       expect(t.lurkerLines()).toEqual([]);
       expect(t.conn.saveLoginOffer()).toBe(false);
       expect(t.saved()).toMatchObject({ sasl_account: 'main', sasl_password: 'first' });
