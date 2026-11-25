@@ -432,6 +432,7 @@ import { useThreadsStore } from '../stores/threads.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
 import { hiddenAsThreadReply } from '../lib/threadHide.js';
 import { parseUserHost } from '../utils/userhost.js';
+import { prefixOf } from '../utils/memberPrefix.js';
 import type { ThreadStats } from '../../../shared/replies.js';
 import {
   formatTimestamp,
@@ -1934,6 +1935,7 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
 const logContext: LogContext<ChatMessage> = {
   time,
   prefix: prefixText,
+  nickPrefix: (m) => prefixOf(authorModes(m), memberPrefix.value),
   hostSuffix: eventHostSuffix,
   accountSuffix: joinAccountSuffix,
   newMask: chghostMask,

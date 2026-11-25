@@ -16,6 +16,7 @@ function ctx(over: Partial<LogContext<Msg>> = {}): LogContext<Msg> {
   return {
     time: (iso) => (iso ? iso.slice(11, 19) : ''),
     prefix: (m) => MARKS[m.type] ?? (m.type === 'error' ? '!!' : '--'),
+    nickPrefix: () => '',
     hostSuffix: (m) => (m.userhost ? ` (${m.userhost})` : ''),
     accountSuffix: (m) => (m.account ? ` [${m.account}]` : ''),
     newMask: () => 'new@host',
@@ -62,6 +63,19 @@ describe('logLine', () => {
     expect(line({ nick: 'bob', text: 'yes, ship it', addressedText: 'alice: yes, ship it' })).toBe(
       '[12:04:05] <bob> alice: yes, ship it',
     );
+  });
+
+  it('puts the mode prefix on a message’s nick, and on nothing else', () => {
+    const c = ctx({ nickPrefix: (m) => (m.nick === 'alice' ? '@' : '') });
+    expect(line({ nick: 'alice', text: 'hello' }, c)).toBe('[12:04:05] <@alice> hello');
+    expect(line({ nick: 'bob', text: 'hello' }, c)).toBe('[12:04:05] <bob> hello');
+    expect(line({ type: 'action', nick: 'alice', text: 'waves' }, c)).toBe(
+      '[12:04:05] * alice waves',
+    );
+    expect(line({ type: 'notice', nick: 'alice', text: 'psst' }, c)).toBe(
+      '[12:04:05] -alice- psst',
+    );
+    expect(line({ type: 'join', nick: 'alice' }, c)).toBe('[12:04:05] --> alice joined');
   });
 
   it('leaves the brackets off when the reader shows no timestamps', () => {

@@ -11,6 +11,7 @@
 // IRC logs write them.
 //
 //   [12:04:05] <alice> what she said
+//   [12:04:07] <@dave> with mode prefixes shown (#1404)
 //   [12:04:09] * bob waves
 //   [12:05:00] --> carol joined
 //
@@ -56,6 +57,8 @@ export interface LogRow<M extends LogMessage> {
 export interface LogContext<M extends LogMessage> {
   time(iso: string | undefined): string;
   prefix(m: M): string;
+  // The speaker's `@` or `+`, when the list shows one on their nick.
+  nickPrefix(m: M): string;
   hostSuffix(m: M): string;
   accountSuffix(m: M): string;
   newMask(m: M): string;
@@ -80,14 +83,16 @@ function plainText(text: string): string {
 }
 
 // A chat line the way IRC writes it (quoteMarks): `<nick> text`, `* nick text`,
-// `-nick- text`.
-function chatLine(m: LogMessage): string {
+// `-nick- text`. The mode prefix goes on a message alone, where the list puts
+// it in every layout: `<@nick> text`.
+function chatLine<M extends LogMessage>(m: M, ctx: LogContext<M>): string {
   const [open, close] = quoteMarks(m.type);
   const text = m.redaction
     ? redactionLabel(m.redaction, m.nick)
     : plainText(m.addressedText ?? m.text ?? '');
   const source = m.relaySource ? `[${m.relaySource}] ` : '';
-  return `${open}${m.nick ?? ''}${close} ${source}${text}`.trimEnd();
+  const rank = m.type === 'message' ? ctx.nickPrefix(m) : '';
+  return `${open}${rank}${m.nick ?? ''}${close} ${source}${text}`.trimEnd();
 }
 
 // An event line's words, as the list prints them after the mark.
@@ -162,7 +167,7 @@ export function logLine<M extends LogMessage>(row: LogRow<M>, ctx: LogContext<M>
   if (!m) return null;
   const time = ctx.time(m.time);
   if (m.type === 'message' || m.type === 'notice' || m.type === 'action') {
-    return stamped(time, chatLine(m));
+    return stamped(time, chatLine(m, ctx));
   }
   const mark = ctx.prefix(m);
   const body = eventBody(m, ctx);
