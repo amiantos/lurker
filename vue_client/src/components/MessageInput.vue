@@ -5013,6 +5013,10 @@ function handleCommand(
       }
       return sendRaw(networkId, target, parsed.line, line);
     }
+    case 'save':
+      // Keep the password just given to NickServ as the network's login
+      // (#1412). The server holds the offer and answers in this buffer.
+      return sendOrToast({ type: 'save-login', networkId, issuingTarget: target }, line);
     case 'flushq': {
       // HexChat's name for it (#1322). The server marks each dropped message
       // not sent in its own buffer; this line is the count, or that there was

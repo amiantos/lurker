@@ -3830,6 +3830,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           });
         }
         break;
+      case 'save-login': {
+        // `/save` (#1412): keep the NickServ login this connection just offered
+        // as the network's own. A network that isn't connected has none.
+        const networkId = Number(msg.networkId);
+        const conn = ircManager.getConnection(userId, networkId);
+        const where = typeof msg.issuingTarget === 'string' ? msg.issuingTarget : undefined;
+        if (conn?.saveLoginOffer(where)) ircManager.networkChanged(userId, networkId);
+        break;
+      }
       case 'probe-presence': {
         // Client just activated a DM — refresh its presence cache so the
         // banner/sidebar dim reflect current state rather than whatever stale
