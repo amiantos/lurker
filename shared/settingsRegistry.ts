@@ -1663,7 +1663,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // The toast stays off there either way: the line is already on screen.
     // Each kind's own toggles still decide whether it makes a sound at all (#1411).
     key: 'notifications.viewed_buffer.sound',
-    label: 'Always play sounds for the active buffer',
+    label: 'Play sounds for the active buffer',
     category: 'notifications',
     group: 'alerts',
     type: 'bool',
