@@ -1935,7 +1935,7 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
 const logContext: LogContext<ChatMessage> = {
   time,
   prefix: prefixText,
-  nickPrefix: (m) => prefixOf(authorModes(m), memberPrefix.value),
+  nickPrefix: (m) => (showModePrefix.value ? prefixOf(authorModes(m), memberPrefix.value) : ''),
   hostSuffix: eventHostSuffix,
   accountSuffix: joinAccountSuffix,
   newMask: chghostMask,
