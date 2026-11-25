@@ -793,6 +793,17 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'before their nick in the message list.',
   },
   {
+    key: 'look.nick.mode_prefix_nick_color',
+    label: 'Color mode prefix like the nick',
+    category: 'appearance',
+    group: 'nicks',
+    type: 'bool',
+    default: false,
+    description:
+      "Draw a mode prefix in its nick's color, in the member list and the " +
+      'message list, instead of the Member prefixes colors.',
+  },
+  {
     key: 'look.nick.display_names',
     label: 'Show display names',
     category: 'appearance',

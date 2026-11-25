@@ -14,7 +14,7 @@
         @click="onRowClick($event, m)"
         @contextmenu.prevent="onRowContextMenu($event, m)"
       >
-        <span class="prefix">{{ prefixOf(m) }}</span>
+        <span class="prefix" :style="prefixStyle(m)">{{ prefixOf(m) }}</span>
         <span class="nick" :style="nickStyle(m)" :title="nickOf(m)">{{ labelOf(m) }}</span>
         <button
           type="button"
@@ -47,6 +47,7 @@ import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useSettingsStore } from '../stores/settings.js';
 import {
   prefixOf as modePrefixOf,
   prefixClass as modePrefixClass,
@@ -56,6 +57,7 @@ import IgnoreModal from './IgnoreModal.vue';
 import { EllipsisVerticalIcon } from '@lucide/vue';
 
 const networks = useNetworksStore();
+const settings = useSettingsStore();
 const buffers = useBuffersStore();
 const nicks = useNickColors();
 const displayNames = useDisplayNames();
@@ -132,6 +134,10 @@ function nickStyle(m: BufferMember): { color: string } | null {
   if (isSelf(m)) return { color: nicks.selfColor.value };
   const c = nicks.color(nickOf(m));
   return c ? { color: c } : null;
+}
+// The prefix in the nick's colour, over its rank colour (#1403).
+function prefixStyle(m: BufferMember): { color: string } | null {
+  return settings.effective('look.nick.mode_prefix_nick_color') ? nickStyle(m) : null;
 }
 
 function nickOf(m: BufferMember): string {

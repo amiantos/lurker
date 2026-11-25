@@ -21,8 +21,11 @@ vi.mock('../composables/useSocket.js', () => ({
 
 let wrapper: VueWrapper | null = null;
 
-function glyphFor(prefix: { mode: string; symbol: string }[] | null) {
-  useSettingsStore().values = { 'look.nick.show_mode_prefix': true } as never;
+function glyphFor(
+  prefix: { mode: string; symbol: string }[] | null,
+  settings: Record<string, unknown> = {},
+) {
+  useSettingsStore().values = { 'look.nick.show_mode_prefix': true, ...settings } as never;
   const networks = useNetworksStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = {
@@ -69,6 +72,14 @@ describe('MessageList — PREFIX glyph', () => {
     ]);
     expect(glyph.text()).toBe('!');
     expect(glyph.classes()).toContain('mode-owner');
+  });
+
+  it('leaves the rank colour off when the glyph takes the nick colour (#1403)', () => {
+    const glyph = glyphFor([{ mode: 'Y', symbol: '!' }], {
+      'look.nick.mode_prefix_nick_color': true,
+    });
+    expect(glyph.text()).toBe('!');
+    expect(glyph.classes()).toEqual(['mode-glyph']);
   });
 
   it('shows no glyph for a letter the conventional table lacks, before ISUPPORT', () => {

@@ -11,6 +11,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import MemberList from './MemberList.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useSettingsStore } from '../stores/settings.js';
 import type { PrefixMode } from '../../../shared/channelModes.js';
 
 const WITH_Y: PrefixMode[] = [
@@ -64,6 +65,24 @@ describe('MemberList — PREFIX', () => {
     ]);
     expect(rows[0].classes).toContain('mode-owner');
     expect(rows[1].classes).toContain('mode-op');
+  });
+
+  it('draws the prefix in the nick colour when asked to (#1403)', () => {
+    mountWith([{ nick: 'alice', modes: ['o'] }], WITH_Y);
+    const colours = () => {
+      const li = wrapper!.find('li');
+      return [
+        (li.find('.prefix').element as HTMLElement).style.color,
+        (li.find('.nick').element as HTMLElement).style.color,
+      ];
+    };
+    expect(colours()[0]).toBe('');
+    wrapper!.unmount();
+    useSettingsStore().values = { 'look.nick.mode_prefix_nick_color': true } as never;
+    mountWith([{ nick: 'alice', modes: ['o'] }], WITH_Y);
+    const [prefix, nick] = colours();
+    expect(nick).not.toBe('');
+    expect(prefix).toBe(nick);
   });
 
   it('uses the conventional table before the network sends one', () => {

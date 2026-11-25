@@ -20,6 +20,7 @@
 import { computed } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
 import type { PrefixMode } from '../../../shared/channelModes.js';
@@ -61,6 +62,7 @@ const props = withDefaults(
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const settings = useSettingsStore();
 const nicks = useNickColors();
 const displayNames = useDisplayNames();
 
@@ -79,7 +81,13 @@ const displayName = computed(() =>
   props.nick && !props.plain ? displayNames.displayNameFor(networkId.value, props.nick) : null,
 );
 const nameSegments = computed(() => formattingSegments(displayName.value ?? ''));
-const glyphClass = computed(() => prefixClass(props.modes, props.prefix));
+// The glyph takes its rank's member colour, or with no class the nick's own
+// colour from the span around it (#1403).
+const glyphClass = computed(() =>
+  settings.effective('look.nick.mode_prefix_nick_color')
+    ? ''
+    : prefixClass(props.modes, props.prefix),
+);
 
 const selfLower = computed(() => {
   const key = networks.activeKey;
@@ -110,7 +118,8 @@ const style = computed(() => {
   cursor: pointer;
 }
 /* The mode glyph reuses the nicklist's per-mode colors so it reads as a status
-   marker rather than part of the (separately-colored) nick. */
+   marker rather than part of the (separately-colored) nick. Without a mode
+   class (look.nick.mode_prefix_nick_color) it inherits the nick's. */
 .mode-glyph.mode-owner {
   color: var(--member-owner);
 }
