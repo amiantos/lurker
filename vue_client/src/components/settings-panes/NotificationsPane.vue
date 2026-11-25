@@ -165,6 +165,22 @@
       </div>
     </div>
 
+    <div class="hl-notif">
+      <label class="hl-row" data-setting-key="notifications.viewed_buffer.sound">
+        <input
+          type="checkbox"
+          :checked="!!settings.effective('notifications.viewed_buffer.sound')"
+          @change="
+            onCommit(
+              'notifications.viewed_buffer.sound',
+              ($event.target as HTMLInputElement).checked,
+            )
+          "
+        />
+        <span>play sounds in the buffer you're viewing</span>
+      </label>
+    </div>
+
     <hr class="hl-sep" />
     <h3 class="subhead">always-notify channels</h3>
     <p class="section-desc">

@@ -11,9 +11,10 @@
 // sub-toggle, so toast/sound delivery is decoupled from how the signal was
 // generated. Settings are read live so quick-toggles take effect at once.
 //
-// The in-app toast + sound fire only for a visible tab when the event's
-// buffer isn't the one on screen — see shouldNotifyInApp for the three cases
-// that suppress them.
+// The in-app toast + sound fire only for a visible tab, and the toast only
+// when the event's buffer isn't the one on screen — see tabVisible and
+// viewing. The sound follows the toast unless the user asked to hear the
+// viewed buffer too (`notifications.viewed_buffer.sound`, #1411).
 
 import { useToastsStore, type ToastKind } from '../stores/toasts.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -91,9 +92,9 @@ function throttled(event: NotifyEvent, kind: ToastKind): boolean {
   return false;
 }
 
-// The in-app toast + sound only reach a user whose tab is in the foreground
-// and not already looking at the buffer the event belongs to. Three things
-// suppress them:
+// The in-app toast + sound only reach a user whose tab is in the foreground,
+// and the toast only one not already looking at the buffer the event belongs
+// to. Three things suppress them:
 //
 //   - No document: a non-browser context (SSR, tests) has no DOM to render a
 //     toast into, so this returns false — matching usePresence.currentVisible().
@@ -108,16 +109,21 @@ function throttled(event: NotifyEvent, kind: ToastKind): boolean {
 //   - Viewed buffer: the event's buffer is the one whose message list is on
 //     screen right now, so the message is already materializing in plain view
 //     and a toast would be redundant (issue #50) — Discord and Slack mute the
-//     focused channel the same way.
+//     focused channel the same way. The sound goes with it by default, and
+//     plays on its own when the user turns `notifications.viewed_buffer.sound`
+//     on: some want to hear the room they have open (#1411).
 //
 // "Viewed buffer" is viewedBuffer(), owned by MessageList — NOT networks
 // .activeKey. activeKey only tracks the last-opened buffer and lingers across
 // route / mobile-screen changes, so keying off it would wrongly suppress a
 // toast while the user sits on the Settings route or the mobile buffer list,
 // where no message list is mounted.
-function shouldNotifyInApp(event: NotifyEvent): boolean {
-  if (typeof document === 'undefined' || document.hidden) return false;
-  return viewedBuffer() !== `${event.networkId}::${event.target}`;
+function tabVisible(): boolean {
+  return typeof document !== 'undefined' && !document.hidden;
+}
+
+function viewing(event: NotifyEvent): boolean {
+  return viewedBuffer() === `${event.networkId}::${event.target}`;
 }
 
 export function notifyForEvent(event: NotifyEvent | null | undefined): void {
@@ -132,16 +138,30 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   const kindKey = pickKindKey(event);
   if (!kindKey) return;
 
-  // Toast + sound only when the tab is visible and the event's buffer isn't
-  // the one on screen — a hidden tab is the push path's job, and the viewed
-  // buffer is already in plain view. See shouldNotifyInApp.
-  if (!shouldNotifyInApp(event)) return;
+  // Only when the tab is visible — a hidden tab is the push path's job.
+  if (!tabVisible()) return;
 
   const settings = useSettingsStore();
   if (!settings.effective(`notifications.${kindKey}.enabled`)) return;
 
+  // The viewed buffer is already in plain view: no toast, and no sound unless
+  // the user asked for one there. See viewing.
+  const inView = viewing(event);
+  const sound =
+    !!settings.effective(`notifications.${kindKey}.sound.enabled`) &&
+    (!inView || !!settings.effective('notifications.viewed_buffer.sound'));
+  if (inView && !sound) return;
+
   // Collapse a rapid burst from one source into a single toast + sound.
   if (throttled(event, kindKey)) return;
+
+  if (sound) {
+    playSound(
+      (settings.effective(`notifications.${kindKey}.sound.choice`) as string) || 'ping',
+      settings.effective(`notifications.${kindKey}.sound.volume`),
+    );
+  }
+  if (inView) return;
 
   const networks = useNetworksStore();
   const toasts = useToastsStore();
@@ -179,13 +199,6 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
     target: event.target,
     messageId: event.id,
   });
-
-  if (settings.effective(`notifications.${kindKey}.sound.enabled`)) {
-    playSound(
-      (settings.effective(`notifications.${kindKey}.sound.choice`) as string) || 'ping',
-      settings.effective(`notifications.${kindKey}.sound.volume`),
-    );
-  }
 }
 
 export function playSound(choice: string, volume: unknown): void {
