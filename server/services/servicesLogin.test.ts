@@ -39,9 +39,11 @@ describe('servicesLoginFromMessage', () => {
   it('reads the password off REGISTER, and not the email after it', () => {
     expect(servicesLoginFromMessage('NickServ', 'REGISTER hunter2 me@example.test')).toEqual({
       password: 'hunter2',
+      registering: true,
     });
     expect(servicesLoginFromMessage('NickServ', '  register   hunter2  ')).toEqual({
       password: 'hunter2',
+      registering: true,
     });
   });
 
@@ -69,7 +71,14 @@ describe('servicesLoginFromRaw', () => {
     });
     expect(servicesLoginFromRaw('privmsg nickserv :REGISTER hunter2 me@example.test')).toEqual({
       password: 'hunter2',
+      registering: true,
     });
+    // Tags are no part of it.
+    expect(servicesLoginFromRaw('@label=1 PRIVMSG NickServ :identify hunter2')).toEqual({
+      password: 'hunter2',
+    });
+    // Without the colon the network takes the first word alone: no password.
+    expect(servicesLoginFromRaw('PRIVMSG NickServ identify hunter2')).toBeNull();
   });
 
   it('reads the NS and NICKSERV commands', () => {
@@ -78,6 +87,23 @@ describe('servicesLoginFromRaw', () => {
       password: 'hunter2',
     });
     expect(servicesLoginFromRaw('nickserv :identify hunter2')).toEqual({ password: 'hunter2' });
+  });
+
+  it('reads a last parameter given with its colon, as the network does', () => {
+    expect(servicesLoginFromRaw('NS IDENTIFY brad :hunter2')).toEqual({
+      account: 'brad',
+      password: 'hunter2',
+    });
+    expect(servicesLoginFromRaw('NICKSERV IDENTIFY :hunter2')).toEqual({ password: 'hunter2' });
+  });
+
+  it('reads the IDENTIFY command some networks alias to NickServ', () => {
+    expect(servicesLoginFromRaw('IDENTIFY hunter2')).toEqual({ password: 'hunter2' });
+    expect(servicesLoginFromRaw('identify brad hunter2')).toEqual({
+      account: 'brad',
+      password: 'hunter2',
+    });
+    expect(servicesLoginFromRaw('IDENTIFY')).toBeNull();
   });
 
   it('is nothing for any other line', () => {
@@ -95,7 +121,7 @@ describe('offering to save a NickServ login', () => {
   let seq = 0;
 
   beforeAll(async () => {
-    ircd = await FakeIrcd.start({});
+    ircd = await FakeIrcd.start({ sasl: true });
     userId = createUser('save-login-int').id;
   });
 
@@ -105,12 +131,12 @@ describe('offering to save a NickServ login', () => {
 
   type Event = Record<string, unknown>;
 
-  async function connect(fields: Record<string, unknown> = {}) {
+  async function connect(fields: Record<string, unknown> = {}, on: FakeIrcd = ircd) {
     const nick = `saver${seq++}`;
     const network = createNetwork(userId, {
       name: nick,
       host: '127.0.0.1',
-      port: ircd.port,
+      port: on.port,
       tls: false,
       nick,
       autoconnect: false,
@@ -120,16 +146,16 @@ describe('offering to save a NickServ login', () => {
     const conn = new IrcConnection({ network, onEvent: (e) => events.push(e as Event) });
     conn.connect();
     await until(() => conn.state === 'connected', 5000, 'connected');
-    await ircd.waitForRegistration(nick);
+    await on.waitForRegistration(nick);
     const server = (conn as unknown as { serverTarget(): string }).serverTarget();
     // The network's word that a login worked.
     const loggedIn = (account: string) =>
-      ircd.sendRaw(
+      on.sendRaw(
         nick,
         `:fake.ircd 900 ${nick} ${nick}!u@h ${account} :You are now logged in as ${account}`,
       );
     const said = (text: string) =>
-      ircd.waitForLine((line, c) => c.nick === nick && line === text).then(() => undefined);
+      on.waitForLine((line, c) => c.nick === nick && line === text).then(() => undefined);
     // Lurker's lines about the login, among its others (`Connecting to…`).
     const lurkerLines = () =>
       events.filter(
@@ -228,6 +254,66 @@ describe('offering to save a NickServ login', () => {
     }
   });
 
+  it('opens what waited on a login when ergo confirms one, as a 900 does', async () => {
+    const t = await connect();
+    try {
+      expect(t.conn.identifiedToServices).toBe(false);
+      ircd.sendRaw(t.nick, `:${t.nick}!u@h ACCOUNT ${t.nick}`);
+      await until(() => t.conn.identifiedToServices, 5000, 'the ACCOUNT');
+      expect(t.conn.identifiedToServices).toBe(true);
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
+  it('offers nothing where the network has no SASL to log in with', async () => {
+    const plain = await FakeIrcd.start({});
+    const t = await connect({}, plain);
+    try {
+      t.conn.say('NickServ', 'identify hunter2');
+      await t.said('PRIVMSG NickServ :identify hunter2');
+      t.loggedIn(t.nick);
+      await until(() => t.conn.identifiedToServices, 5000, 'the 900');
+      expect(t.lurkerLines()).toEqual([]);
+      expect(t.conn.saveLoginOffer()).toBe(false);
+    } finally {
+      t.conn.dispose();
+      await plain.close();
+    }
+  });
+
+  // A typo, refused; the login that follows came some other way.
+  it('offers nothing for an IDENTIFY the network left unanswered', async () => {
+    const t = await connect();
+    try {
+      t.conn.say('NickServ', 'identify typo');
+      await t.said('PRIVMSG NickServ :identify typo');
+      const held = t.conn as unknown as { loginAttempt: { at: number } | null };
+      held.loginAttempt!.at -= 61_000;
+      t.loggedIn(t.nick);
+      await until(() => held.loginAttempt === null, 5000, 'the 900');
+      expect(t.lurkerLines()).toEqual([]);
+      expect(t.conn.saveLoginOffer()).toBe(false);
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
+  it('keeps a REGISTER for as long as its VERIFY takes', async () => {
+    const t = await connect();
+    try {
+      t.conn.say('NickServ', 'REGISTER hunter2 me@example.test');
+      await t.said('PRIVMSG NickServ :REGISTER hunter2 me@example.test');
+      const held = t.conn as unknown as { loginAttempt: { at: number } | null };
+      held.loginAttempt!.at -= 3_600_000;
+      t.loggedIn(t.nick);
+      await until(() => t.lurkerLines().length === 1, 5000, 'the offer');
+      expect(t.conn.saveLoginOffer()).toBe(true);
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
   it('says it in the server buffer when the buffer it was typed in is not open', async () => {
     const t = await connect();
     try {
@@ -320,6 +406,38 @@ describe('offering to save a NickServ login', () => {
       expect(t.lurkerLines()).toEqual([]);
       expect(t.conn.saveLoginOffer()).toBe(false);
       expect(t.saved()).toMatchObject({ sasl_account: 'main', sasl_password: 'first' });
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
+  it('offers the replacement after a logout from the saved account', async () => {
+    const t = await connect();
+    try {
+      updateNetwork(t.network.id, userId, { sasl_account: 'main', sasl_password: 'first' });
+      t.loggedIn('main');
+      await until(() => t.conn.identifiedToServices, 5000, 'the first 900');
+      // The password changed at NickServ; out, and back in with the new one.
+      const flag = t.conn as unknown as { loggedInOnSocket: boolean };
+      ircd.sendRaw(t.nick, `:${t.nick}!u@h ACCOUNT *`);
+      await until(() => !flag.loggedInOnSocket, 5000, 'the logout');
+      t.conn.say('NickServ', 'identify main second');
+      await t.said('PRIVMSG NickServ :identify main second');
+      t.loggedIn('main');
+      await until(() => t.lurkerLines().length === 1, 5000, 'the offer');
+      expect(t.lurkerLines()[0]).toMatchObject({
+        text: 'Logged in as main. Type /save to replace the password saved for this network.',
+      });
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
+  it('says there is nothing to save in the server buffer, for a buffer that is not open', async () => {
+    const t = await connect();
+    try {
+      expect(t.conn.saveLoginOffer('#never-opened')).toBe(false);
+      expect(t.events.at(-1)).toMatchObject({ type: 'error', target: t.server });
     } finally {
       t.conn.dispose();
     }

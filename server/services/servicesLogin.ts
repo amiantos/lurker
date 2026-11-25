@@ -14,6 +14,8 @@ export interface ServicesLogin {
   /** The account named on the line, when it named one. The 900 has the last word. */
   account?: string;
   password: string;
+  /** A REGISTER, which a network may confirm only after a VERIFY by email. */
+  registering?: boolean;
 }
 
 // `NickServ`, or `NickServ@services.host` as some networks ask for it.
@@ -34,22 +36,34 @@ export function servicesLoginFromMessage(target: string, text: string): Services
       return null;
     // `REGISTER <password> [email]`, for the nick in use.
     case 'REGISTER':
-      return args.length >= 1 ? { password: args[0] } : null;
+      return args.length >= 1 ? { password: args[0], registering: true } : null;
     default:
       return null;
   }
 }
 
-/** A raw line of the user's: `PRIVMSG NickServ :…`, or the `NS` / `NICKSERV` command. */
+/**
+ * A raw line of the user's: `PRIVMSG NickServ :…`, the `NS` / `NICKSERV`
+ * command, or the `IDENTIFY` some networks alias to it. Read as its parameters,
+ * the way the network reads it: the last may be a `:trailing` one.
+ */
 export function servicesLoginFromRaw(line: string): ServicesLogin | null {
-  const match = /^\s*(\S+)\s+(.*)$/.exec(line);
-  if (!match) return null;
-  const command = match[1].toUpperCase();
-  const rest = match[2];
-  if (command === 'NS' || command === 'NICKSERV') {
-    return servicesLoginFromMessage('NickServ', rest.replace(/^:/, ''));
+  // Tags are no part of the command.
+  const body = line.trim().replace(/^@\S+\s+/, '');
+  const colon = body.search(/\s:/);
+  const params = (colon < 0 ? body : body.slice(0, colon)).split(/\s+/).filter(Boolean);
+  if (colon >= 0) params.push(body.slice(colon).replace(/^\s+:/, ''));
+  const command = params.shift()?.toUpperCase();
+  switch (command) {
+    case 'NS':
+    case 'NICKSERV':
+      return servicesLoginFromMessage('NickServ', params.join(' '));
+    case 'IDENTIFY':
+      return servicesLoginFromMessage('NickServ', ['IDENTIFY', ...params].join(' '));
+    case 'PRIVMSG':
+      // Without the colon the message is its first word alone.
+      return params.length >= 2 ? servicesLoginFromMessage(params[0], params[1]) : null;
+    default:
+      return null;
   }
-  if (command !== 'PRIVMSG') return null;
-  const privmsg = /^(\S+)\s+:?(.*)$/.exec(rest);
-  return privmsg ? servicesLoginFromMessage(privmsg[1], privmsg[2]) : null;
 }
