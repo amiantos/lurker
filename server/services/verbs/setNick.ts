@@ -14,7 +14,8 @@ registerVerb({
   name: 'set_nick',
   description:
     'Change your nickname on a network. The change is asynchronous and may be rejected by the ' +
-    'server (nick in use, invalid, or banned) — watch the server buffer for the outcome. Returns ' +
+    'server (nick in use, invalid, or banned) — watch the server buffer for the outcome. A nick ' +
+    "the server grants is saved as the network's nick, so later connects use it. Returns " +
     '{ ok: false, error: "not-connected" } when the network is offline.',
   scope: 'read-write',
   input: {
