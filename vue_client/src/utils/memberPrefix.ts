@@ -91,18 +91,12 @@ export function statusAudience(symbol: string, prefix: Prefix): string {
   return i === 0 ? `sent only to ${who}` : `sent only to ${who} and above`;
 }
 
-// The rank symbols of a network's PREFIX, as one string (`~&@%+`).
-function prefixSymbols(prefix: Prefix): string {
-  return orDefault(prefix)
-    .map((p) => p.symbol)
-    .join('');
-}
-
 // The channel a STATUSMSG target (`@#room`) is shown in, or null when `target`
-// is not one. The server decides by the network's own STATUSMSG; the browser
-// only knows PREFIX, and needs the buffer to show.
-export function statusmsgChannel(target: string, prefix: Prefix): string | null {
-  if (!target || !prefixSymbols(prefix).includes(target[0])) return null;
+// is not one on this network. `symbols` is the network's own STATUSMSG
+// (`modeSpec.statusmsg`), as the server reads it: the two must agree on which
+// buffer the line is in.
+export function statusmsgChannel(target: string, symbols: string): string | null {
+  if (!target || !symbols.includes(target[0])) return null;
   const rest = target.slice(1);
   return isChannelTarget(rest) ? rest : null;
 }

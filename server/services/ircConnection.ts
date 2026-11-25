@@ -7400,6 +7400,8 @@ export class IrcConnection {
   // An incoming DM (or DM activate) makes this nick a tracked DM peer; presence
   // then rides MONITOR. Returns true on a fresh add.
   trackDmPeer(nick: string | undefined | null): boolean {
+    // `@#chan` is some of a channel, not someone to watch for.
+    if (nick && this.statusTarget(nick)) return false;
     return this.addPeerWatch(nick, 'dm');
   }
 
@@ -9349,11 +9351,7 @@ export class IrcConnection {
       },
       onDropped: (why) => {
         held.dropped();
-        this.reportNotSent(
-          moved?.target ?? this.statusTarget(target)?.channel ?? target,
-          said,
-          why,
-        );
+        this.reportNotSent(moved?.target ?? target, said, why);
         hooks?.onDropped?.(why);
       },
     });
@@ -9615,6 +9613,8 @@ export class IrcConnection {
   // `why` is the reason when it was taken back instead (withdrawQueued).
   private reportNotSent(target: string, text: string, why = 'connection dropped'): void {
     if (this.disposed) return;
+    // Where its row would have been: `@#chan`'s is the channel's.
+    target = this.statusTarget(target)?.channel ?? target;
     // Once a re-attach is over: publish() stores nothing while one replays,
     // and a channel pruned by it (lost while the link was down) takes its
     // waiting messages with it right then.
@@ -13812,6 +13812,8 @@ export class IrcConnection {
   // `shownIn`: it was a notice whose row is the server buffer's
   // (chat.notice_buffer), so that is where a refusal of it is said.
   noteUserSend(target: string, conversational = true, shownIn?: string): void {
+    // To `@#chan` is to the channel: a refusal names the channel.
+    target = this.statusTarget(target)?.channel ?? target;
     const now = Date.now();
     // Prune entries past the attribution window before adding. They can never
     // satisfy recentUserSend again, so keeping them would let the map grow

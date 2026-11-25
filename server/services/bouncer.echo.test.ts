@@ -69,7 +69,7 @@ afterEach(() => {
 
 let seq = 0;
 
-async function seedLive(): Promise<Live> {
+async function seedLive(port = ircd.port): Promise<Live> {
   seq += 1;
   const password = 'hunter2hunter2';
   const user = users.createUser(`echo_${seq}`);
@@ -77,7 +77,7 @@ async function seedLive(): Promise<Live> {
   const network = networks.createNetwork(user.id, {
     name: 'fake',
     host: '127.0.0.1',
-    port: ircd.port,
+    port,
     tls: false,
     nick: `lurk${seq}`,
     autoconnect: false,
@@ -272,6 +272,29 @@ describe('a client that did not ask for echo-message', () => {
     );
     const after = await linesAfter(c, mark, '#room');
     expect(after.filter((l) => l.includes('waves') || l.includes('noted'))).toEqual([]);
+  });
+
+  // #1408: the row of a line to `@#room` is the channel's, and the clients are
+  // still given, and the sender's echo still known by, the target it went to.
+  it('never gets its own line to the ops back, and another client gets it as sent', async () => {
+    // No echo-message upstream: the row is the one published as the line goes.
+    const ranked = await FakeIrcd.start({ isupport: ['STATUSMSG=@+'], caps: [] });
+    cleanups.push(() => void ranked.close());
+    const live = await seedLive(ranked.port);
+    const c = await attachIn(live, '#room');
+    // A line that is not a plain channel's goes to clients that take their own.
+    const other = await attachIn(live, '#room', `${BASE_CAPS} znc.in/self-message`);
+
+    const mark = c.lines.length;
+    c.send('PRIVMSG @#room :ops only');
+    await until(
+      () => live.events.some((e) => e.text === 'ops only' && e.target === '#room' && e.id != null),
+      5000,
+      'the row, in the channel',
+    );
+    await other.waitFor((l) => l.includes(':ops only'));
+    expect(other.lines.find((l) => l.includes(':ops only'))).toContain('PRIVMSG @#room :ops only');
+    expect(c.lines.slice(mark).filter((l) => l.includes('ops only'))).toEqual([]);
   });
 
   // The suppression is for this session's own line, not for the text: someone

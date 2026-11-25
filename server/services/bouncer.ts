@@ -3837,6 +3837,12 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   if (typeof sentTo?.target === 'string' && typeof sentTo.text === 'string') {
     event = { ...event, target: sentTo.target, text: sentTo.text };
   }
+  // A line to a rank of the channel alone (#1408): its row is the channel's,
+  // and the clients are given the target it went to (`@#chan`), which is also
+  // what the sending client's echo is keyed by.
+  if (typeof event.statusmsg === 'string' && typeof event.target === 'string') {
+    event = { ...event, target: event.statusmsg + event.target };
+  }
   const target = typeof event.target === 'string' ? event.target : '';
   // ⚠⚠ `=nick` is a DCC chat buffer, not an IRC target. Without this, a line the
   // user types in the web UI is echoed to attached clients as `PRIVMSG =alice`,

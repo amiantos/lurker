@@ -679,6 +679,7 @@ describe('ircManager optimistic-publish gating', () => {
       state: 'connected',
       outboundBatches: () => null,
       ownNoticeElsewhere: () => null,
+      statusTarget: () => null,
       echoActive: () => true,
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},

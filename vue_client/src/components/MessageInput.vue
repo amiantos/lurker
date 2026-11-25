@@ -4790,7 +4790,7 @@ function handleCommand(
       if (!who) return true;
       const body = msgParts.join(' ');
       // To `@#chan`, the line is the channel's (STATUSMSG, #1408).
-      const channel = statusmsgChannel(who, networks.prefixFor(networkId));
+      const channel = statusmsgChannel(who, networks.states[networkId]?.modeSpec?.statusmsg ?? '');
       if (body) {
         if (
           !ackedSend({ type: 'send', networkId, target: who, text: chatBody(body) }, body, {

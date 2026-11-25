@@ -417,7 +417,7 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   sendPending: [ { id, target, kind, text, at } ],  // the user's messages held in the send queue (#1326); `send-pending` / `send-pending-done` keep it current
   multilineLimits,
   modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
-              maxModes, topicLen },
+              maxModes, topicLen, statusmsg },
   canReact,                           // legacy: both reaction directions — see below
   canAddReaction, canRemoveReaction,  // reacting / taking yours back
   canReply,                           // a reply carries its tag

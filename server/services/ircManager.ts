@@ -1020,6 +1020,13 @@ class IrcManager extends EventEmitter {
     // outbound queue comes (sayEncrypted, #1149): the timestamp in each chunk
     // is read by the receiver against a window, and a message queued behind a
     // backlog would otherwise be stamped before it was sent.
+    // A message to `@#chan` would go in the clear, past the channel's check.
+    if (
+      conn.statusTarget(target) &&
+      this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'ranked')
+    ) {
+      return true;
+    }
     if (isChannelContext(target)) {
       const check = e2eManager.checkOutgoing(userId, networkId, contextKey(target, ''), text);
       e2eDbg(() => `outbound ${target}: ${check.kind}`);
@@ -1154,11 +1161,18 @@ class IrcManager extends EventEmitter {
     userId: number,
     networkId: number,
     target: string,
-    kind: 'action' | 'notice' | 'reaction',
+    kind: 'action' | 'notice' | 'reaction' | 'ranked',
   ): boolean {
+    // `@#chan` is the channel, to some of it (STATUSMSG).
+    target = conn.statusTarget(target)?.channel ?? target;
     if (!isChannelContext(target)) return false;
     if (!e2eManager.isChannelEnabled(userId, networkId, contextKey(target, ''))) return false;
-    const what = { action: '/me actions', notice: 'notices', reaction: 'reactions' }[kind];
+    const what = {
+      action: '/me actions',
+      notice: 'notices',
+      reaction: 'reactions',
+      ranked: 'messages to one rank',
+    }[kind];
     conn.publishEphemeral({
       type: 'e2e',
       level: 'warn',

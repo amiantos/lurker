@@ -149,18 +149,17 @@ describe('statusAudience', () => {
 });
 
 describe('statusmsgChannel', () => {
-  it('reads one rank symbol in front of a channel', () => {
-    expect(statusmsgChannel('@#chan', null)).toBe('#chan');
-    expect(statusmsgChannel('+&local', null)).toBe('&local');
-    expect(statusmsgChannel('!#chan', WITH_Y)).toBe('#chan');
+  it('reads one of the network’s STATUSMSG symbols in front of a channel', () => {
+    expect(statusmsgChannel('@#chan', '@+')).toBe('#chan');
+    expect(statusmsgChannel('+&local', '@+')).toBe('&local');
   });
 
-  it('is nothing for a channel, a nick, or a symbol the network lacks', () => {
-    expect(statusmsgChannel('#chan', null)).toBeNull();
-    expect(statusmsgChannel('+chan', null)).toBeNull();
-    expect(statusmsgChannel('bob', null)).toBeNull();
-    expect(statusmsgChannel('@bob', null)).toBeNull();
-    expect(statusmsgChannel('@#chan', prefixFrom('(v)+'))).toBeNull();
-    expect(statusmsgChannel('', null)).toBeNull();
+  it('is nothing for a channel, a nick, or a symbol the network does not take', () => {
+    expect(statusmsgChannel('#chan', '@+')).toBeNull();
+    expect(statusmsgChannel('+chan', '@+')).toBeNull();
+    expect(statusmsgChannel('@bob', '@+')).toBeNull();
+    expect(statusmsgChannel('%#chan', '@+')).toBeNull();
+    expect(statusmsgChannel('@#chan', '')).toBeNull();
+    expect(statusmsgChannel('', '@+')).toBeNull();
   });
 });

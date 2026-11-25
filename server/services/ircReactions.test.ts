@@ -591,7 +591,12 @@ describe('ircManager.react', () => {
   function stubConn() {
     const sendReaction = vi.fn<IrcConnection['sendReaction']>(() => true);
     const publishEphemeral = vi.fn<IrcConnection['publishEphemeral']>();
-    const conn = { state: 'connected', sendReaction, publishEphemeral } as unknown as IrcConnection;
+    const conn = {
+      state: 'connected',
+      sendReaction,
+      publishEphemeral,
+      statusTarget: () => null,
+    } as unknown as IrcConnection;
     return { conn, sendReaction, publishEphemeral };
   }
 
