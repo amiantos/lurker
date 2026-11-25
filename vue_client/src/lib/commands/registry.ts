@@ -342,7 +342,9 @@ export const COMMANDS = [
   cmd(['list'], 'Channels', 'list channels on current network', {
     args: [optText('filter')],
   }),
-  cmd(['nick'], 'Channels', 'change your nick', { args: [arg('newnick', 'newNick')] }),
+  cmd(['nick'], 'Channels', 'change your nick, here and on later connects', {
+    args: [arg('newnick', 'newNick')],
+  }),
   cmd(['whois'], 'Channels', "open a user's profile", { args: [NICK] }),
   cmd(['invite'], 'Channels', 'invite a user to a channel', {
     forms: [form([NICK, opt('#chan', 'channel')]), form([CHAN, NICK])],

@@ -51,6 +51,9 @@ a reason, a message. Escape puts it away until you start another command.
   network (a long paste that flood protection is spacing out). Each one is
   marked not sent in its buffer. Raw lines (`/quote`), CTCP requests and
   XDCC requests are not messages and still go.
+- `/nick <newnick>` — change your nick on the current network. Lurker saves it
+  as the network's nick, so you keep it after a reconnect. A nick the network
+  gives you on its own (yours was taken, or it renamed you) is not saved.
 - `/save` — keep the password you just gave NickServ (`identify` or
   `register`) as the network's login, so Lurker logs you in on every connect.
   Lurker offers it once the network confirms the login, on a network with no

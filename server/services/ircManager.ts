@@ -545,6 +545,7 @@ class IrcManager extends EventEmitter {
       network,
       onEvent: (event) => this.emit('event', event),
       onUserFrame: (frame) => this.emit('user-frame', userId, frame),
+      onNetworkSaved: () => this.networkChanged(userId, networkId),
       // #1085: the queue moves on the connection mapped now, which may not be
       // the one whose receive just ended.
       pumpXdcc: () => this.getConnection(userId, networkId)?.pumpXdccQueue(),

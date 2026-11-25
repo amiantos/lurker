@@ -1002,6 +1002,11 @@ function memberSnapshot(m: ChannelMember): ChannelMember {
 // counting as the one that logged us in (#1412).
 const LOGIN_ANSWER_MS = 60_000;
 
+/** The nick a raw line of the user's asks for: `NICK foo`, tags or colon aside. */
+export function nickAskedIn(line: string): string | null {
+  return /^\s*(?:@\S+\s+)?NICK\s+:?(\S+)\s*$/i.exec(line)?.[1] ?? null;
+}
+
 // Normalize a services account off the wire into ChannelMember.account's
 // tristate. There are TWO logged-out sentinels: `*` on JOIN/ACCOUNT, and `0` on
 // a WHOX 354 reply — normalize both here, at the parse boundary, so exactly one
@@ -1343,6 +1348,11 @@ export class IrcConnection {
   // A 900 seen on this socket. With one already in, a login by hand is a
   // second account's and not a saved password gone stale.
   private loggedInOnSocket = false;
+  private onNetworkSaved: () => void;
+  // The nick the user last asked for with a NICK of their own (#1418). When
+  // the network grants it, it becomes the network's saved nick. A rename the
+  // network makes on its own (a fallback, a forced one) never matches.
+  private nickAsked: string | null = null;
   // Last time the user sent a real PRIVMSG/NOTICE/ACTION to a target (lowercase
   // key → epoch ms). Lets the send-rejection handler tell an actual failed
   // message (surface it inline) from an automated TAGMSG/typing bounce (stay
@@ -1619,6 +1629,7 @@ export class IrcConnection {
     network,
     onEvent,
     onUserFrame,
+    onNetworkSaved,
     reconnectGate,
     onTakenOver,
     onNeedsRebuild,
@@ -1627,6 +1638,8 @@ export class IrcConnection {
     network: Network;
     onEvent: (event: EnrichedEvent) => void;
     onUserFrame?: (frame: Record<string, unknown>) => void;
+    /** This connection wrote to its own network row (a `/nick`, #1418). */
+    onNetworkSaved?: () => void;
     pumpXdcc?: () => void;
     reconnectGate?: ReconnectGate;
     onTakenOver?: () => void;
@@ -1635,6 +1648,7 @@ export class IrcConnection {
     this.network = network;
     this.onEvent = onEvent;
     this.onUserFrame = onUserFrame ?? (() => {});
+    this.onNetworkSaved = onNetworkSaved ?? (() => {});
     this.pumpXdcc = pumpXdcc ?? (() => this.pumpXdccQueue());
     this.reconnectGate = reconnectGate;
     this.onTakenOver = onTakenOver;
@@ -2617,6 +2631,7 @@ export class IrcConnection {
       // 'nick invalid' handlers say it, and where it was typed too (#816).
       if ((rawCommand === '432' || rawCommand === '433') && !this.preRegistered) {
         const refused = String(msg?.params?.[1] ?? '');
+        this.nickAsked = null;
         const why = String(msg?.params?.[msg.params.length - 1] ?? '');
         this.lineServerError = {
           command: rawCommand,
@@ -4522,6 +4537,7 @@ export class IrcConnection {
           // a 421 (#384). It keeps the nick listed if a bouncer client watches it.
           this.syncMonitor();
         }
+        this.keepAskedNick(eventNewNick);
         this.currentNick = eventNewNick;
         // Repair the framework's copy when it would otherwise stay behind. Its
         // own rule is kept — a digit-leading UID still isn't stored, because
@@ -7996,9 +8012,25 @@ export class IrcConnection {
     this.loginAttempt = { ...login, where: where || this.serverTarget(), at: Date.now() };
   }
 
+  // The nick we now have is the one the user asked for: it is the network's
+  // nick from here on, so the next connect asks for it too (#1418).
+  private keepAskedNick(nick: string): void {
+    const asked = this.nickAsked;
+    const fold = (name: string) => foldTargetFor(this.network.id, name);
+    if (!asked || fold(asked) !== fold(nick)) return;
+    this.nickAsked = null;
+    if (nick === this.network.nick) return;
+    const { id, user_id: userId } = this.network;
+    // A row that is gone has nothing to keep.
+    if (!this.quietly(() => updateNetwork(id, userId, { nick }), undefined)) return;
+    this.network.nick = nick;
+    this.onNetworkSaved();
+  }
+
   // A login belongs to its socket: neither a password the network never
   // confirmed nor an offer outlives it.
   private forgetLogin(): void {
+    this.nickAsked = null;
     this.loginAttempt = null;
     this.loginOffer = null;
     this.loggedInOnSocket = false;
@@ -14062,6 +14094,7 @@ export class IrcConnection {
       onSent: () => {
         this.noteOutgoingCommand(clean);
         if (asker !== 'lurker') {
+          this.nickAsked = nickAskedIn(clean) ?? this.nickAsked;
           this.noteLoginAttempt(servicesLoginFromRaw(clean), opts.issuingTarget);
         }
         if (asker === 'user' && opts.issuingTarget) {
