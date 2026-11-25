@@ -83,8 +83,10 @@ function pickKindKey(event: NotifyEvent): ToastKind | null {
 const NOTIFY_THROTTLE_MS = 3000;
 const lastNotifyAt = new Map<string, number>();
 
-function throttled(event: NotifyEvent, kind: ToastKind): boolean {
-  const key = `${event.networkId}::${event.target ?? ''}::${event.nick ?? '?'}::${kind}`;
+// A sound on its own in the viewed buffer keeps a window apart from the
+// toast's: it must not cost the toast that follows once the user looks away.
+function throttled(event: NotifyEvent, kind: ToastKind, inView: boolean): boolean {
+  const key = `${event.networkId}::${event.target ?? ''}::${event.nick ?? '?'}::${kind}${inView ? '::viewed' : ''}`;
   const now = Date.now();
   const prev = lastNotifyAt.get(key);
   if (prev !== undefined && now - prev < NOTIFY_THROTTLE_MS) return true;
@@ -153,7 +155,7 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   if (inView && !sound) return;
 
   // Collapse a rapid burst from one source into a single toast + sound.
-  if (throttled(event, kindKey)) return;
+  if (throttled(event, kindKey, inView)) return;
 
   if (sound) {
     playSound(

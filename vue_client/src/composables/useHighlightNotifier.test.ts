@@ -141,9 +141,6 @@ describe('notifyForEvent notify gate', () => {
   });
 });
 
-// #968. The toast side of the kick signal. A kick is the room telling you you're
-// out of it, so it can't wear the "<nick> in <where>" title every other alert
-// here uses — that would read as something bob said in the channel.
 describe('notifyForEvent sound', () => {
   beforeEach(() => vi.resetModules());
 
@@ -201,8 +198,21 @@ describe('notifyForEvent sound', () => {
     notifyForEvent(dm({ id: 2 }));
     expect(played).toHaveBeenCalledTimes(1);
   });
+
+  it('still toasts the next line once the user looks away', async () => {
+    const opts = { sound: true, viewed: '1::bob', viewedSound: true };
+    const { notifyForEvent } = await load(opts);
+    notifyForEvent(dm());
+    opts.viewed = '1::#chan';
+    notifyForEvent(dm({ id: 2 }));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(played).toHaveBeenCalledTimes(2);
+  });
 });
 
+// #968. The toast side of the kick signal. A kick is the room telling you you're
+// out of it, so it can't wear the "<nick> in <where>" title every other alert
+// here uses — that would read as something bob said in the channel.
 describe('notifyForEvent kick-of-us', () => {
   beforeEach(() => vi.resetModules());
 

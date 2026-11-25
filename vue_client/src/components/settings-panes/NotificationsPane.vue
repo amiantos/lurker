@@ -522,7 +522,7 @@ function deviceLabel(sub: StoredPushSub): string {
   font-weight: 600;
 }
 
-/* The switch for every kind sits above the kinds, ruled off like one of them. */
+/* The switch over the kinds a buffer can raise sits above them, ruled off like one. */
 .notif-all + .notif-signal,
 .notif-signal + .notif-signal {
   margin-top: var(--space-7);

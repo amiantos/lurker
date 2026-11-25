@@ -11,10 +11,10 @@
 // buffer and lingers across route and mobile-screen changes, so it still
 // reads as "in view" while the user sits on Settings or the buffer list.
 // Toast suppression keys off this instead (useHighlightNotifier
-// .shouldNotifyInApp) so a highlight in the last-opened buffer still toasts
+// .viewing) so a highlight in the last-opened buffer still toasts
 // while that buffer's messages aren't actually on screen.
 //
-// A plain module variable (not a ref): the only reader, shouldNotifyInApp,
+// A plain module variable (not a ref): the only reader, viewing,
 // polls it imperatively when an event arrives — there's nothing to react to.
 let viewedBufferKey: string | null = null;
 

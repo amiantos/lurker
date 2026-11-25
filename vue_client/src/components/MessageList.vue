@@ -2672,7 +2672,7 @@ function onScrollerResize() {
 
 // Report which buffer's messages are on screen so toast suppression can tell
 // "looking at this buffer" apart from networks.activeKey's looser "last-opened
-// buffer" (see useHighlightNotifier.shouldNotifyInApp). This component mounts
+// buffer" (see useHighlightNotifier.viewing). This component mounts
 // only while a buffer's messages are actually rendered, so its lifecycle is
 // the signal: follow activeKey while mounted, clear on unmount (Settings
 // route, mobile list/members screen, system console).
