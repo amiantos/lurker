@@ -2772,9 +2772,7 @@ export class IrcConnection {
       // identified, so a join rejection before this point says nothing durable.
       this.identifiedToServices = true;
       this.unsendableTargets.clear();
-      const already = this.loggedInOnSocket;
-      this.loggedInOnSocket = true;
-      this.offerLoginSave(typeof event?.account === 'string' ? event.account : '', already);
+      this.loginConfirmed(typeof event?.account === 'string' ? event.account : '');
     });
 
     // SASL authentication failed (ERR_SASLFAIL 904 / 905, or a mechanism/account
@@ -3534,6 +3532,9 @@ export class IrcConnection {
       const eventNick = event.nick as string;
       const lower = eventNick.toLowerCase();
       const account = normalizeAccount(event.account);
+      // Our own login, on a network that sends no 900 for one made through
+      // NickServ: ergo answers with a notice and this (#1412).
+      if (account && lower === this.currentNick.toLowerCase()) this.loginConfirmed(account);
       for (const ch of this.channels.values()) {
         const member = ch.members.get(lower);
         if (!member) continue;
@@ -7994,7 +7995,15 @@ export class IrcConnection {
     this.loginAttempt = { ...login, where: where || this.serverTarget() };
   }
 
-  // RPL_LOGGEDIN after a password given by hand: offer to keep it. Over a saved
+  // The network's word that we are logged in: a 900, or an ACCOUNT of our own.
+  // A network may send both; the second finds no attempt left.
+  private loginConfirmed(account: string): void {
+    const already = this.loggedInOnSocket;
+    this.loggedInOnSocket = true;
+    this.offerLoginSave(account, already);
+  }
+
+  // A login confirmed after a password given by hand: offer to keep it. Over a saved
   // one too when that one is stale: it differs, and it had not logged this
   // socket in (`already`), so this is not a second account's. Never on a
   // network that logs in by certificate, where a saved password would switch

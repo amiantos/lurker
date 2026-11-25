@@ -203,6 +203,31 @@ describe('offering to save a NickServ login', () => {
     }
   });
 
+  // ergo sends no 900 for a login made through NickServ: a notice, and the
+  // account-notify line for our own nick. Its REGISTER waits on a VERIFY.
+  it('offers when the network confirms with an ACCOUNT of our own instead', async () => {
+    const t = await connect();
+    try {
+      ensureBufferOpen(userId, t.network.id, 'NickServ');
+      t.conn.say('NickServ', 'REGISTER hunter2 me@example.test');
+      await t.said('PRIVMSG NickServ :REGISTER hunter2 me@example.test');
+      t.conn.say('NickServ', `VERIFY ${t.nick} abc123`);
+      await t.said(`PRIVMSG NickServ :VERIFY ${t.nick} abc123`);
+      // Someone else's login is not ours.
+      ircd.sendRaw(t.nick, ':other!u@h ACCOUNT other');
+      ircd.sendRaw(t.nick, `:${t.nick}!u@h ACCOUNT ${t.nick}`);
+      await until(() => t.lurkerLines().length === 1, 5000, 'the offer');
+      expect(t.lurkerLines()[0]).toMatchObject({
+        target: 'NickServ',
+        text: `Logged in as ${t.nick}. Type /save to log in automatically from now on.`,
+      });
+      expect(t.conn.saveLoginOffer('NickServ')).toBe(true);
+      expect(t.saved()).toMatchObject({ sasl_account: t.nick, sasl_password: 'hunter2' });
+    } finally {
+      t.conn.dispose();
+    }
+  });
+
   it('says it in the server buffer when the buffer it was typed in is not open', async () => {
     const t = await connect();
     try {
