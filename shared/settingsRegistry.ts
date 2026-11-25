@@ -799,10 +799,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     group: 'nicks',
     type: 'bool',
     default: false,
-    dependsOn: [{ key: 'look.nick.show_mode_prefix', in: [true] }],
     description:
-      "Draw the mode prefix in the speaker's nick color in the message list, " +
-      'instead of the Member prefixes colors.',
+      "Draw a mode prefix in its nick's color, in the member list and the " +
+      'message list, instead of the Member prefixes colors.',
   },
   {
     key: 'look.nick.display_names',
