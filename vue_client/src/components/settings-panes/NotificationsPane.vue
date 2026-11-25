@@ -90,7 +90,7 @@
             )
           "
         />
-        <span>play sounds in the buffer you're viewing</span>
+        <span>always play sounds in the active buffer</span>
       </label>
     </div>
 
