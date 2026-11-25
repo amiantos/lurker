@@ -35,13 +35,13 @@ function message(id: number, nick: string, second: number, text: string, type = 
   };
 }
 
-function mountList(settings: Record<string, unknown> = {}) {
+function mountList(settings: Record<string, unknown> = {}, members: unknown[] = []) {
   useSettingsStore().values = { 'look.buffer.time_format': 'HH:mm:ss', ...settings } as never;
   const networks = useNetworksStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
   const b = useBuffersStore().ensure(1, '#chan', 9);
-  b.members = [];
+  b.members = members as never;
   b.messages = [
     message(1, 'alice', 1, 'so I was thinking'),
     message(2, 'alice', 2, 'it has the fix'),
@@ -111,6 +111,28 @@ describe('MessageList copy', () => {
         '[12:04:05] <bob> sure, send it over',
       ].join('\n'),
     );
+  });
+
+  it('writes a speaker’s mode prefix when the list shows it (#1404)', () => {
+    const members = [
+      { nick: 'Alice', modes: ['o'] },
+      { nick: 'bob', modes: ['v'] },
+    ];
+    mountList({ 'look.nick.show_mode_prefix': true }, members);
+    select([textNode(2, 'fix'), 0], [textNode(5, 'sure'), 4]);
+    // A message alone: bob's action and carol's join carry none.
+    expect(copy()).toBe(
+      [
+        '[12:04:02] <@alice> it has the fix',
+        '[12:04:03] * bob waves',
+        '[12:04:04] --> carol joined',
+        '[12:04:05] <+bob> sure, send it over',
+      ].join('\n'),
+    );
+    wrapper!.unmount();
+    mountList({}, members);
+    select([textNode(2, 'fix'), 0], [textNode(5, 'sure'), 4]);
+    expect(copy()).toContain('<alice> it has the fix');
   });
 
   it('writes the same lines in the compact layout', () => {
