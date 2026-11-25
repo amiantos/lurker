@@ -2547,6 +2547,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // IRC event (a DCC transfer row), already shaped as its frame.
   ircManager.on('user-frame', (userId: number, frame: WsPayload) => fanOut(userId, frame));
 
+  // A network was added, edited or removed: by another of the user's clients,
+  // or by `/save` here. The rows come from GET /api/networks, so this only
+  // says to read them again.
+  ircManager.on('network-changed', ({ userId }: { userId: number }) =>
+    fanOut(userId, { kind: 'networks-changed' }),
+  );
+
   ircManager.on('event', (rawEvent) => {
     // EnrichedEvent (from ircConnection) is a strict superset of MessageEvent.
     const event = rawEvent as MessageEvent & { userId: number; state?: string };

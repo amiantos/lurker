@@ -103,9 +103,12 @@ describe('the save-login frame', () => {
     const ws = await attach();
     const asked = stubConnection(true);
     ircManager.on('network-changed', onChanged);
+    // Every client is told to read the networks again: the row has a login now.
+    const kinds: unknown[] = [];
+    ws.on('message', (raw) => kinds.push(JSON.parse(raw.toString()).kind));
     try {
       ws.send(JSON.stringify({ type: 'save-login', networkId, issuingTarget: '#room' }));
-      await until(() => changed.length > 0);
+      await until(() => changed.length > 0 && kinds.includes('networks-changed'));
     } finally {
       ws.close();
     }
