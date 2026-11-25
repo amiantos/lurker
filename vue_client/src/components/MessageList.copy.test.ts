@@ -135,6 +135,21 @@ describe('MessageList copy', () => {
     expect(copy()).toContain('<alice> it has the fix');
   });
 
+  it('marks a line sent to a rank of the channel alone (#1408)', () => {
+    mountList();
+    const b = useBuffersStore().ensure(1, '#chan', 9);
+    b.messages = [
+      { ...message(6, 'alice', 6, 'ops only', 'notice'), statusmsg: '@' },
+      message(7, 'alice', 7, 'everyone'),
+    ] as never;
+    return wrapper!.vm.$nextTick().then(() => {
+      const mark = wrapper!.find('[data-msg-id="6"] .status-to');
+      expect(mark.text()).toBe('@#chan');
+      expect(mark.attributes('title')).toBe('sent only to ops and above');
+      expect(wrapper!.find('[data-msg-id="7"] .status-to').exists()).toBe(false);
+    });
+  });
+
   it('writes the same lines in the compact layout', () => {
     mountList({
       'look.message.layout': 'modern',

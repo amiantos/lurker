@@ -109,6 +109,7 @@ declare module 'irc-framework' {
     cap: CapState;
     /** Whether ISUPPORT offers a token (`whox`, `monitor`, …). */
     supports(feature: string): boolean;
+    extractTargetGroup?(target: string): { target: string; target_group: string } | null;
   }
 
   /** The connected user state. */
