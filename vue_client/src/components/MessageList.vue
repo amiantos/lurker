@@ -490,7 +490,7 @@ import {
 } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
-import { foldName, sameName } from '../utils/foldName.js';
+import { folderFor, sameName } from '../utils/foldName.js';
 import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
@@ -834,6 +834,9 @@ const selfNickRaw = computed(() => {
   const b = buffer.value;
   return (b && b.networkId != null ? networks.states[b.networkId]?.nick : null) || null;
 });
+// Lowercased for the two shared helpers that take it that way (smartHidesMode,
+// which the apps port, and the nick splitter's set). Compare a nick against
+// our own with nickIsSelf, which folds by the network's casemapping.
 const selfLower = computed(() => selfNickRaw.value?.toLowerCase() ?? null);
 
 const nickSet = computed((): Set<string> => {
@@ -1116,8 +1119,9 @@ const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_
 function nickMember(nick: string): BufferMember | undefined {
   const b = buffer.value;
   if (!b || !nick) return undefined;
-  const folded = foldName(b.networkId, nick);
-  return b.members?.find((m) => foldName(b.networkId, m.nick) === folded);
+  const fold = folderFor(b.networkId);
+  const folded = fold(nick);
+  return b.members?.find((m) => m.nick === nick || fold(m.nick) === folded);
 }
 
 // The current user's own modes in the active channel, gating the operator
@@ -1394,8 +1398,7 @@ const renderRows = computed((): RenderRow[] => {
   // Our own churn is never hidden. A rename is checked under BOTH nicks: nick rows carry no self
   // flag, and own-nick can land before the row renders, leaving the OLD name failing the test.
   const isOurs = (m: ChatMessage): boolean =>
-    ownNickLc != null &&
-    (m.nick?.toLowerCase() === ownNickLc || m.newNick?.toLowerCase() === ownNickLc);
+    nickIsSelf(m.nick ?? '') || nickIsSelf(m.newNick ?? '');
 
   const dividerAfterId = buf?.dividerAfterId || 0;
   // Skip divider insertion entirely when there's nothing to mark (no pointer

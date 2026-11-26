@@ -1,7 +1,11 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { normalizeCasemapping, type Casemapping } from '../../../shared/casemapping.js';
+import {
+  foldTargetWith,
+  normalizeCasemapping,
+  type Casemapping,
+} from '../../../shared/casemapping.js';
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
 import { useAuthStore } from './auth.js';
@@ -239,8 +243,14 @@ export const useNetworksStore = defineStore('networks', {
     isOwnNick:
       (state) =>
       (networkId: number | null | undefined, nick: string | null | undefined): boolean => {
-        const own = networkId != null ? state.states[networkId]?.nick : null;
-        return !!own && !!nick && own.toLowerCase() === nick.toLowerCase();
+        const net = networkId != null ? state.states[networkId] : null;
+        if (!net?.nick || !nick) return false;
+        // By the network's casemapping (#1425), as utils/foldName does; inline
+        // because that module reads this store.
+        return (
+          net.nick === nick ||
+          foldTargetWith(net.casemapping, net.nick) === foldTargetWith(net.casemapping, nick)
+        );
       },
     // Presence row for a (network, nick), disconnected-aware: a down network's
     // cached rows are stale, so report a synthetic 'offline'. Connected with no

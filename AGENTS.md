@@ -221,7 +221,7 @@ These are the non-obvious constraints that have bitten changes before:
   fragment) is a literal character and stays `#`.
 - **Fold IRC target case per network when matching buffers.** Servers send
   channel and nick names with inconsistent casing, and the fold depends on the
-  network's `CASEMAPPING` (`rfc1459` folds `[]\~` to `{}|^`). Never look a
+  network's `CASEMAPPING` (`rfc1459` folds `[ \ ] ^` to `{ | } ~`). Never look a
   buffer up by exact key, and never fold with a bare `toLowerCase`: on the
   server use `foldTargetFor(networkId, raw)` /
   `foldTargetWith(mapping, target)` from `server/db/`; on the client use the

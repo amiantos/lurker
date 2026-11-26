@@ -59,6 +59,41 @@ beforeEach(() => {
   vi.mocked(socketSend).mockClear();
 });
 
+describe('names fold by the network’s casemapping (#1425)', () => {
+  // The fold is the network's own (#1425): under rfc1459 `[ \ ] ^` are the
+  // upper case of `{ | } ~`, on an ascii network only A-Z fold, and a network that
+  // declared nothing folds with toLowerCase.
+  it('folds names by the network’s casemapping', () => {
+    h.states = { 1: { casemapping: 'rfc1459' }, 2: { casemapping: 'ascii' }, 3: {} };
+    const store = useBuffersStore();
+    for (const net of [1, 2, 3]) {
+      store.replaceBacklog(net, '#Foo[bar]', [], undefined, undefined, undefined);
+      store.replaceBacklog(net, 'Élan^', [], undefined, undefined, undefined);
+    }
+    // rfc1459: the bracket twins are one name; Unicode case is not folded.
+    expect(store.findByTarget(1, '#foo{BAR}')?.target).toBe('#Foo[bar]');
+    expect(store.findDm(1, 'Élan~')?.target).toBe('Élan^');
+    expect(store.findDm(1, 'élan^')).toBeNull();
+    // ascii: neither.
+    expect(store.findByTarget(2, '#foo{bar}')).toBeNull();
+    expect(store.findByTarget(2, '#FOO[BAR]')?.target).toBe('#Foo[bar]');
+    expect(store.findDm(2, 'élan^')).toBeNull();
+    // Undeclared: toLowerCase, as before.
+    expect(store.findByTarget(3, '#foo{bar}')).toBeNull();
+    expect(store.findDm(3, 'élan^')?.target).toBe('Élan^');
+  });
+
+  it('finds a member by a nick that differs only by rfc1459 case', () => {
+    h.states = { 1: { casemapping: 'rfc1459' } };
+    const store = useBuffersStore();
+    store.setMembers(1, '#chan', [
+      { nick: 'foo{m}', modes: ['o'], away: false, account: 'foo', user: 'u', host: 'h' },
+    ]);
+    expect(store.accountFor(1, 'FOO[M]')).toBe('foo');
+    expect(store.userhostFor(1, 'foo[m]')).toBe('u@h');
+  });
+});
+
 describe('setMembers provisional (#863)', () => {
   const alice = { nick: 'alice', modes: [], away: false };
   const bob = { nick: 'bob', modes: ['o'], away: false };
@@ -198,39 +233,6 @@ describe('applyReadState', () => {
   // broadcast whose target case differs from the buffer's stored key must still
   // resolve to the open buffer (findByTarget), not silently drop the badge or
   // fork a phantom lowercase entry.
-  // The fold is the network's own (#1425): under rfc1459 `[]\~` are the upper
-  // case of `{}|^`, on an ascii network only A-Z fold, and a network that
-  // declared nothing folds with toLowerCase.
-  it('folds names by the network’s casemapping', () => {
-    h.states = { 1: { casemapping: 'rfc1459' }, 2: { casemapping: 'ascii' }, 3: {} };
-    const store = useBuffersStore();
-    for (const net of [1, 2, 3]) {
-      store.replaceBacklog(net, '#Foo[bar]', [], undefined, undefined, undefined);
-      store.replaceBacklog(net, 'Élan^', [], undefined, undefined, undefined);
-    }
-    // rfc1459: the bracket twins are one name; Unicode case is not folded.
-    expect(store.findByTarget(1, '#foo{BAR}')?.target).toBe('#Foo[bar]');
-    expect(store.findDm(1, 'Élan~')?.target).toBe('Élan^');
-    expect(store.findDm(1, 'élan^')).toBeNull();
-    // ascii: neither.
-    expect(store.findByTarget(2, '#foo{bar}')).toBeNull();
-    expect(store.findByTarget(2, '#FOO[BAR]')?.target).toBe('#Foo[bar]');
-    expect(store.findDm(2, 'élan^')).toBeNull();
-    // Undeclared: toLowerCase, as before.
-    expect(store.findByTarget(3, '#foo{bar}')).toBeNull();
-    expect(store.findDm(3, 'élan^')?.target).toBe('Élan^');
-  });
-
-  it('finds a member by a nick that differs only by rfc1459 case', () => {
-    h.states = { 1: { casemapping: 'rfc1459' } };
-    const store = useBuffersStore();
-    store.setMembers(1, '#chan', [
-      { nick: 'foo{m}', modes: ['o'], away: false, account: 'foo', user: 'u', host: 'h' },
-    ]);
-    expect(store.accountFor(1, 'FOO[M]')).toBe('foo');
-    expect(store.userhostFor(1, 'foo[m]')).toBe('u@h');
-  });
-
   it('updates a buffer opened under a different target case', () => {
     const store = useBuffersStore();
     store.replaceBacklog(1, '#Chan', [], undefined, undefined, undefined);

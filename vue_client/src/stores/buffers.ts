@@ -18,7 +18,7 @@ import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
-import { foldName, sameName } from '../utils/foldName.js';
+import { foldName, folderFor, sameName } from '../utils/foldName.js';
 
 const MAX_PER_BUFFER = 500;
 // The most rows one INCREMENTAL merge (prepend/append) may take from a single
@@ -69,7 +69,9 @@ const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingJoins = new Map<string, ReturnType<typeof setTimeout>>();
 const PENDING_JOIN_TIMEOUT = 10000;
 function joinKey(networkId: number | string, channel: string) {
-  return `${networkId}::${channel.toLowerCase()}`;
+  // By the network's fold (#1425): the server confirms under the channel's own
+  // spelling, which can differ from the one typed by more than letter case.
+  return `${networkId}::${foldName(networkId, channel)}`;
 }
 
 // Targets THIS tab has asked the server to open.
@@ -156,9 +158,10 @@ function resolveExistingKey(
   const nid = Number(networkId);
   // By the network's own casemapping (#1425), as the server folds the registry:
   // `#foo[bar]` and `#foo{bar}` are one channel under rfc1459.
-  const folded = foldName(nid, target);
+  const fold = folderFor(nid);
+  const folded = fold(target);
   for (const [k, b] of Object.entries(buffers)) {
-    if (b.networkId === nid && foldName(nid, b.target) === folded) return k;
+    if (b.networkId === nid && fold(b.target) === folded) return k;
   }
   return null;
 }
@@ -575,12 +578,11 @@ export const useBuffersStore = defineStore('buffers', {
         // signature accepts a string, and `'3' !== 3` would silently match
         // nothing rather than fail loudly. Same guard resolveExistingKey uses.
         const nid = Number(networkId);
-        const lc = foldName(nid, nick);
+        const fold = folderFor(nid);
+        const lc = fold(nick);
         for (const b of Object.values(state.buffers)) {
           if (b.networkId !== nid) continue;
-          const m = b.members?.find(
-            (x) => typeof x === 'object' && foldName(nid, x.nick || '') === lc,
-          );
+          const m = b.members?.find((x) => typeof x === 'object' && fold(x.nick || '') === lc);
           if (m && m.account !== undefined) return m.account;
         }
         return undefined;
@@ -604,19 +606,18 @@ export const useBuffersStore = defineStore('buffers', {
       (networkId: number | string, nick: string): string | null => {
         if (!nick) return null;
         const nid = Number(networkId);
-        const lc = foldName(nid, nick);
+        const fold = folderFor(nid);
+        const lc = fold(nick);
         for (const b of Object.values(state.buffers)) {
           if (b.networkId !== nid) continue;
-          const m = b.members?.find(
-            (x) => typeof x === 'object' && foldName(nid, x.nick || '') === lc,
-          );
+          const m = b.members?.find((x) => typeof x === 'object' && fold(x.nick || '') === lc);
           if (m?.user && m?.host) return `${m.user}@${m.host}`;
         }
         for (const b of Object.values(state.buffers)) {
-          if (b.networkId !== nid || foldName(nid, b.target) !== lc) continue;
+          if (b.networkId !== nid || fold(b.target) !== lc) continue;
           for (let i = b.messages.length - 1; i >= 0; i--) {
             const msg = b.messages[i];
-            if (msg.self || foldName(nid, msg.nick || '') !== lc) continue;
+            if (msg.self || fold(msg.nick || '') !== lc) continue;
             const uh = msg.userhost;
             if (typeof uh === 'string' && uh) {
               // Rows store the full mask (nick!user@host); the header wants
@@ -637,12 +638,13 @@ export const useBuffersStore = defineStore('buffers', {
       (state) =>
       (networkId: number | string, nick: string): Buffer | null => {
         const nid = Number(networkId);
-        const folded = foldName(nid, nick);
+        const fold = folderFor(nid);
+        const folded = fold(nick);
         return (
           Object.values(state.buffers).find(
             (b) =>
               b.networkId === nid &&
-              foldName(nid, b.target) === folded &&
+              fold(b.target) === folded &&
               !isChannelTarget(b.target) &&
               !b.target.startsWith(':'),
           ) ?? null
@@ -1360,10 +1362,9 @@ export const useBuffersStore = defineStore('buffers', {
       const bufKey = resolveExistingKey(this.buffers, networkId, target);
       if (!bufKey) return;
       const buf = this.buffers[bufKey];
-      const lc = foldName(buf.networkId, nick);
-      const m = buf.members.find(
-        (x) => typeof x === 'object' && foldName(buf.networkId, x.nick || '') === lc,
-      );
+      const fold = folderFor(buf.networkId);
+      const lc = fold(nick);
+      const m = buf.members.find((x) => typeof x === 'object' && fold(x.nick || '') === lc);
       if (!m) return;
       // Never let a patch blank out a nick, and skip keys the sender omitted so
       // a chghost carrying only the changed half can't wipe the other one.
