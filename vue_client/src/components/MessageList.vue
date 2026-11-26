@@ -312,7 +312,9 @@
               :nick="row.m.nick ?? ''"
               interactive
               @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-            /><template v-for="(seg, si) in describeMode(row.m.modes, row.m.text)" :key="si"
+            /><template
+              v-for="(seg, si) in describeMode(row.m.modes, row.m.text, { raw: rawModes })"
+              :key="si"
               ><template v-if="seg.t === 'nick'"
                 ><NickRef
                   :nick="seg.nick"
@@ -1281,6 +1283,10 @@ const smartFilterMode = computed(() => !!settings.effective('chat.smart_filter_m
 const consolidateEnabled = computed(
   () => eventMode.value !== 'none' && !!settings.effective('chat.consolidate_joins'),
 );
+// With consolidation off the reader asked for every event as it happened, so a
+// mode line is its mode string (`set +v alice`), not a sentence (#1431). The
+// setting itself, not consolidateEnabled: the event tier doesn't change this.
+const rawModes = computed(() => !settings.effective('chat.consolidate_joins'));
 const consolidateMaxNames = computed(
   () => (settings.effective('chat.consolidate_max_names') as number) || 5,
 );
@@ -1951,6 +1957,7 @@ const logContext: LogContext<ChatMessage> = {
   accountSuffix: joinAccountSuffix,
   newMask: chghostMask,
   modePhrase,
+  rawModes: () => rawModes.value,
 };
 
 function onDocumentCopy(e: ClipboardEvent): void {

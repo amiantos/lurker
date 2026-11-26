@@ -101,15 +101,32 @@ describe('describeMode — channel modes', () => {
 
 describe('describeMode — the fallbacks', () => {
   it('shows a compact mode string when a message carries several changes', () => {
-    expect(say([prefix('+o', 'alice'), list('-b', '*!*@host')])).toBe(' set +o alice -b *!*@host');
+    expect(say([prefix('+o', 'alice'), list('-b', '*!*@host')])).toBe(' set +o-b alice *!*@host');
+  });
+
+  it('runs letters together under their sign, as an operator types them (#1431)', () => {
+    expect(say([prefix('+a', 'alice'), prefix('+o', 'alice')])).toBe(' set +ao alice alice');
+    expect(say([prefix('+o', 'alice'), prefix('-v', 'bob'), prefix('-h', 'bob'), chan('+m')])).toBe(
+      ' set +o-vh+m alice bob bob',
+    );
+    // A parameterless mode among them takes no slot in the parameter list.
+    expect(say([chan('+m'), chan('+l', '50'), prefix('+v', 'carol')])).toBe(' set +mlv 50 carol');
   });
 
   it('withholds the key in the multi-change form too', () => {
     // The row's raw `text` is the wire form and carries the key, which is why
     // this rebuilds from the parsed list instead of reusing it.
     const said = say([chan('+k', 'hunter2'), chan('+m')]);
-    expect(said).toBe(' set +k +m');
+    expect(said).toBe(' set +km');
     expect(said).not.toContain('hunter2');
+  });
+
+  it('keeps the withheld key’s place, so no other param reads as the key', () => {
+    expect(say([chan('+k', 'hunter2'), chan('+l', '50')])).toBe(' set +kl * 50');
+    expect(say([prefix('+o', 'alice'), chan('+k', 'hunter2')])).toBe(' set +ok alice *');
+    const segs = describeMode([chan('+k', 'hunter2'), prefix('+o', 'alice')]);
+    expect(segs.map((s) => (s.t === 'nick' ? s.nick : s.text)).join('')).toBe(' set +ko * alice');
+    expect(JSON.stringify(segs)).not.toContain('hunter2');
   });
 
   it('does not narrate an unstamped change, because it cannot know what it is', () => {
@@ -147,5 +164,31 @@ describe('describeMode — the fallbacks', () => {
 
   it('ignores malformed entries rather than narrating them', () => {
     expect(say([{ mode: '', param: 'x' }, prefix('+o', 'alice')])).toBe(' gave op to alice');
+  });
+});
+
+describe('describeMode — raw, for a reader with consolidation off (#1431)', () => {
+  const raw = (modes: ModeChange[]) => describeMode(modes, null, { raw: true });
+  const text = (segs: ModeSegment[]) =>
+    segs.map((s) => (s.t === 'nick' ? s.nick : s.text)).join('');
+
+  it('shows a single change as its mode string, not a sentence', () => {
+    expect(text(raw([prefix('+v', 'alice')]))).toBe(' set +v alice');
+    expect(text(raw([prefix('-o', 'alice')]))).toBe(' set -o alice');
+    expect(text(raw([list('+b', '*!*@host')]))).toBe(' set +b *!*@host');
+    expect(text(raw([chan('+m')]))).toBe(' set +m');
+    expect(text(raw([chan('+l', '50')]))).toBe(' set +l 50');
+  });
+
+  it('still withholds the channel key', () => {
+    expect(text(raw([chan('+k', 'hunter2')]))).toBe(' set +k');
+  });
+
+  it('keeps a member a nick, and a mask an argument', () => {
+    expect(raw([prefix('+o', 'alice')])).toContainEqual({ t: 'nick', nick: 'alice' });
+    // `+q alice` on a network where q is the quiet list: a mask, never a nick.
+    expect(raw([list('+q', 'alice')])).not.toContainEqual({ t: 'nick', nick: 'alice' });
+    // Unstamped: not known to be a member, so not offered as one.
+    expect(raw([{ mode: '+o', param: 'alice' }])).not.toContainEqual({ t: 'nick', nick: 'alice' });
   });
 });

@@ -15,7 +15,9 @@
 // which the raw form never offered. It also keeps this file free of any view
 // framework, so the phone can port it as-is.
 //
-// Only a SINGLE-change message is narrated. A message carrying several changes
+// Only a SINGLE-change message is narrated, and only for a reader who has event
+// consolidation ON. With it off the caller passes `opts.raw` to describeMode,
+// and a single change is shown as its mode string like the rest (#1431). A message carrying several changes
 // falls back to a compact mode string, matching gamja (which gates its
 // narration on `modeStr.length === 2`): "gave op to alice and banned *!*@host
 // and set the user limit to 50" is worse than `+o-b+l alice *!*@host 50`, and
@@ -124,24 +126,51 @@ function chanSegments(sign: string, letter: string, param?: string): ModeSegment
   return text(add ? ` set +${letter}` : ` unset +${letter}`);
 }
 
+/** What stands in a mode string where the channel key was. */
+const KEY_WITHHELD = '*';
+
 /**
- * A compact mode string for a message carrying more than one change, and for
- * anything else this can't narrate.
+ * A compact mode string: for a message carrying more than one change, for a
+ * single change when the reader has consolidation off (`opts.raw`), and for
+ * anything this can't narrate.
  *
  * Rebuilt from the parsed list rather than reusing the row's raw `text`,
  * because `text` is the wire form INCLUDING a `+k` key. Reconstructing is what
- * lets the key be dropped here the way it already is everywhere else (#476).
+ * lets the key be withheld here the way it already is everywhere else (#476).
  */
 function rawSegments(modes: readonly ModeChange[]): ModeSegment[] {
-  const parts = modes.map((m) => {
+  // The form an operator would type (#1431): the letters run together under
+  // their sign, then the parameters in order — `+ao alice alice`, `+o-b alice
+  // *!*@host` — rather than each change spelled out with its own sign.
+  let letters = '';
+  let sign = '';
+  const params: ModeSegment[] = [];
+  let shown = 0;
+  for (const m of modes) {
+    const s = m.mode.startsWith('-') ? '-' : '+';
+    if (s !== sign) letters += s;
+    sign = s;
+    const letter = modeLetter(m.mode);
+    letters += letter;
+    if (!m.param) continue;
     // The one param that is withheld; the letter still shows, so the reader
-    // knows a key was set.
-    if (modeLetter(m.mode) === 'k') return m.mode;
-    return m.param ? `${m.mode} ${m.param}` : m.mode;
-  });
+    // knows a key was set. It keeps its place in the list as `*`, or the
+    // params after it would sit under the wrong letters: `+kl hunter2 50`
+    // shown as `+kl 50` reads as a key of 50.
+    if (letter === 'k') {
+      params.push({ t: 'arg', text: KEY_WITHHELD });
+      continue;
+    }
+    shown += 1;
+    // A member stays a nick here too: only the stamp says `+q alice` is one.
+    params.push(m.kind === 'prefix' ? { t: 'nick', nick: m.param } : { t: 'arg', text: m.param });
+  }
+  // With no other param there is nothing to line up, and `+k` alone says it.
+  const list = shown > 0 ? params : [];
   return [
     { t: 'text', text: ' set ' },
-    { t: 'arg', text: parts.join(' ') },
+    { t: 'arg', text: letters },
+    ...list.flatMap((p): ModeSegment[] => [{ t: 'text', text: ' ' }, p]),
   ];
 }
 
@@ -174,10 +203,14 @@ function withoutKeyParam(text: string): string {
  * @param modes the row's parsed change list, each stamped with its `kind`.
  * @param rawText the row's raw `text`, used only when there is no parsed list
  *   at all — backlog old enough to predate it.
+ * @param opts.raw show the mode string for a single change too, not a
+ *   sentence. Set for a reader who turned event consolidation off: they asked
+ *   for every event as it happened, and `set +v alice` is that (#1431).
  */
 export function describeMode(
   modes: readonly ModeChange[] | null | undefined,
   rawText?: string | null,
+  opts: { raw?: boolean } = {},
 ): ModeSegment[] {
   const list = (modes ?? []).filter((m) => m && m.mode);
 
@@ -193,7 +226,7 @@ export function describeMode(
     ];
   }
 
-  if (list.length > 1) return rawSegments(list);
+  if (list.length > 1 || opts.raw) return rawSegments(list);
 
   const only = list[0];
   const sign = only.mode.startsWith('-') ? '-' : '+';

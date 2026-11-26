@@ -67,6 +67,8 @@ export interface LogContext<M extends LogMessage> {
   accountSuffix(m: M): string;
   newMask(m: M): string;
   modePhrase(g: ConsolidationGroup): string;
+  // Whether a mode line is its mode string and not a sentence, as the list shows it.
+  rawModes(): boolean;
 }
 
 function stamped(time: string, rest: string): string {
@@ -122,7 +124,7 @@ function eventBody<M extends LogMessage>(m: M, ctx: LogContext<M>): string {
     case 'mode':
       return (
         nick +
-        describeMode(m.modes, m.text)
+        describeMode(m.modes, m.text, { raw: ctx.rawModes() })
           .map((seg) => (seg.t === 'nick' ? seg.nick : seg.text))
           .join('')
       );
