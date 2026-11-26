@@ -540,10 +540,22 @@ describe('nickColor — hash', () => {
     expect(asLounge('bob_')).toBe('color-19'); // 402 % 32 = 18
   });
 
-  it('sum does not lowercase', () => {
+  it('sum does not lowercase past ASCII', () => {
     // U+0178 is 376, its lowercase U+00FF is 255: slots 24 and 31.
     expect(asLounge('\u0178')).toBe('color-25');
     expect(asLounge('\u00ff')).toBe('color-32');
+  });
+
+  // A mention is colored as typed, so `alice: hi` has to land where Alice's
+  // own lines do. At 32 colors that falls out of the arithmetic; at any other
+  // length it needs the ASCII fold. Unfolded, Alice is 478 % 19 = 3.
+  it('sum is ASCII case-insensitive at any palette length', () => {
+    const nineteen = Array.from({ length: 19 }, (_, i) => `slot-${i}`);
+    const at19 = (nick: string) =>
+      nickColor(nick, { palette: nineteen, stopChars: '', hash: 'sum' });
+    expect(at19('alice')).toBe('slot-16'); // 510 % 19 = 16
+    expect(at19('Alice')).toBe('slot-16');
+    expect(at19('ALICE')).toBe('slot-16');
   });
 
   it('sum adds UTF-16 code units, not code points', () => {
@@ -555,11 +567,19 @@ describe('nickColor — hash', () => {
     expect(asLounge('bob_', '_|')).toBe('color-20');
   });
 
-  it('djb2-32 is the default and is unchanged by the option', () => {
-    const palette = getOption('look.nick.colors')?.default as string[];
-    const bare = nickColor('Alice_', { palette, stopChars: '_|' });
-    expect(bare).not.toBeNull();
-    expect(nickColor('alice', { palette, stopChars: '_|', hash: 'djb2-32' })).toBe(bare);
+  // Slots worked outside this codebase from weechat's djb2_32 over the
+  // trimmed, lowercased nick, modulo 19. A change to the hash or to the
+  // trim/lowercase order moves these.
+  it('djb2-32 is the default and its slots are pinned', () => {
+    const nineteen = Array.from({ length: 19 }, (_, i) => `slot-${i}`);
+    const at = (nick: string, hash?: 'djb2-32') =>
+      nickColor(nick, { palette: nineteen, stopChars: '_|', hash });
+    expect(at('alice')).toBe('slot-2');
+    expect(at('Alice_')).toBe('slot-2');
+    expect(at('bob')).toBe('slot-0');
+    expect(at('amiantos__')).toBe('slot-9');
+    expect(at('_underscore')).toBe('slot-11');
+    expect(at('bob', 'djb2-32')).toBe('slot-0');
   });
 
   it('the registry offers both hashes and defaults to djb2-32', () => {

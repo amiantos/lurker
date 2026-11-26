@@ -91,14 +91,18 @@ on the server ([self-hosting docs](/SELF_HOSTING#link-previews-inline-media)).
 
 ## Nick colors from The Lounge
 
-To give every nick the color it has in The Lounge, change three settings under
-Settings › Appearance:
+To give other people's nicks the colors they have in The Lounge, change three
+settings under Settings › Appearance:
 
 1. **Nick hash algorithm**: Sum (The Lounge).
 2. **Trailing characters to ignore**: empty.
 3. **Nick color palette**: The Lounge's 32 colors, in order.
 
-::: details Palette for The Lounge's default theme
+Your own nick keeps its own color setting. Clearing the ignored characters also
+means `bob_` and `bob` stop sharing an avatar tile. Applying a theme resets the
+palette, so save the result as a theme of your own.
+
+::: details Light palette (The Lounge's default theme)
 ```
 #107ead
 #a86500
@@ -135,7 +139,7 @@ Settings › Appearance:
 ```
 :::
 
-::: details Palette for The Lounge's Morning theme
+::: details Dark palette (The Lounge's Morning theme)
 ```
 #f7adf7
 #abf99f

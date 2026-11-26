@@ -12,9 +12,9 @@ import { shortcodeScanRegex } from './emojiShortcodes.js';
 //
 // Two hashes:
 //   djb2-32  weechat's gui_nick_find_color. The nick is lowercased first.
-//   sum      The Lounge's colorClass: UTF-16 code units added up, and the nick
-//            is NOT lowercased. With The Lounge's 32 colors and no stop chars
-//            a nick gets the color it has there (#1446).
+//   sum      The Lounge's colorClass: UTF-16 code units added up. With The
+//            Lounge's 32 colors and no stop chars a nick gets the color it
+//            has there (#1446).
 
 function trimForColor(nick: string, stopChars: string): string {
   let out = '';
@@ -40,9 +40,18 @@ function djb2(str: string): number {
 
 // The Lounge walks charCodeAt, so an astral character counts as its two
 // surrogates. Summing code points would move those nicks to another color.
+//
+// The Lounge does not lowercase, and neither does this, with one exception:
+// ASCII A-Z is folded. Each fold adds 32, so at 32 colors the result is the
+// one The Lounge gives, and at any other palette length `Alice` and a mention
+// typed `alice` still agree. Other letters are left as they are, because
+// folding those would move a nick off its Lounge color.
 function sumCodeUnits(str: string): number {
   let h = 0;
-  for (let i = 0; i < str.length; i++) h += str.charCodeAt(i);
+  for (let i = 0; i < str.length; i++) {
+    const unit = str.charCodeAt(i);
+    h += unit >= 0x41 && unit <= 0x5a ? unit + 32 : unit;
+  }
   return h;
 }
 
