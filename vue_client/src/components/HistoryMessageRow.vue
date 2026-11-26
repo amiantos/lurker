@@ -22,7 +22,7 @@
         <span v-else class="net">{{ networkLabel }}</span>
       </div>
       <div class="meta">
-        <span class="time">{{ time }}</span>
+        <span class="time" :title="timeTitle">{{ time }}</span>
         <button
           v-if="removable"
           type="button"
@@ -70,6 +70,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { formatTimestamp, formatDate } from '../utils/timestamp.js';
+import { is12Hour, theirTimeTitle } from '../utils/timeZone.js';
 import LinkedText from './LinkedText.vue';
 import ReplyQuote from './ReplyQuote.vue';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
@@ -161,6 +162,16 @@ const selfColor = computed(() => nicks.selfColorOn(props.message.networkId));
 // History rows are out-of-buffer (search/highlights), so a bare HH:mm is
 // ambiguous — prepend the calendar date. Skipped if the user's format
 // already includes a year token to avoid doubling up.
+// The line's time on its author's clock, where their zone is known (#1450).
+const timeTitle = computed(() => {
+  const { nick, self } = line.value;
+  if (!nick || self) return undefined;
+  const zone = networks.metadataFor(props.message.networkId, nick)?.tz;
+  return zone
+    ? theirTimeTitle(nick, props.message.time, zone, is12Hour(tsFormat.value as string))
+    : undefined;
+});
+
 const time = computed(() => {
   const fmt = tsFormat.value as string;
   const iso = props.message.time ?? '';

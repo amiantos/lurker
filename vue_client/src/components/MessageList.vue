@@ -162,11 +162,13 @@
               :title="'Relayed via ' + row.m.relayBot"
               >{{ row.m.relaySource }}</span
             >
-            <span class="time">{{ time(row.m?.time) }}</span>
+            <span class="time" :title="timeTitle(row.m)">{{ time(row.m?.time) }}</span>
           </div>
         </template>
         <template v-else>
-          <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
+          <span class="time" :title="timeTitle(row.m)">{{
+            row.continuationTime ? '' : time(row.m?.time)
+          }}</span>
           <span
             class="prefix"
             :class="prefixClass(row.m)"
@@ -350,6 +352,7 @@
                  branch (see the note below), so it starts a chain of its own. --><span
             v-if="compactMode && !compactHead(row.m) && !row.continuationTime"
             class="time trailing"
+            :title="timeTitle(row.m)"
             >{{ time(row.m?.time) }}</span
           >
           <!-- ⚠ Attachments used to be mounted HERE, outside the chain, and the reason is
@@ -451,6 +454,7 @@ import {
   formatDateTime,
   formatDayLabel,
 } from '../utils/timestamp.js';
+import { is12Hour, theirTimeTitle } from '../utils/timeZone.js';
 import { consolidateRows } from '../utils/consolidate.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
@@ -867,6 +871,17 @@ function time(iso: string | undefined): string {
   if (!t || !dateFmt || !iso) return t;
   if (formatDate(iso) === formatDate(new Date().toISOString())) return t;
   return `${formatTimestamp(iso, dateFmt)} ${t}`;
+}
+
+// A line's time on its author's clock (#1450), where their time zone is known:
+// from their metadata, or one set on them. Not on our own lines.
+function timeTitle(m: ChatMessage | undefined): string | undefined {
+  if (!m?.nick || m.self) return undefined;
+  if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') return undefined;
+  const zone = networks.metadataFor(buffer.value?.networkId, m.nick)?.tz;
+  return zone
+    ? theirTimeTitle(m.nick, m.time, zone, is12Hour(tsFormat.value as string))
+    : undefined;
 }
 
 // Drops the /clear marker for the currently-active buffer. Wired to the

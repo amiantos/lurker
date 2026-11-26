@@ -54,6 +54,10 @@
             <dt>Status</dt>
             <dd>{{ meta.status }}</dd>
           </template>
+          <template v-if="localTime">
+            <dt>Local time</dt>
+            <dd>{{ localTime }} <span class="muted">({{ meta?.tz }})</span></dd>
+          </template>
           <template v-if="meta?.homepage">
             <dt>Homepage</dt>
             <dd>
@@ -131,6 +135,8 @@
             </button>
           </p>
         </div>
+        <!-- What you set on them (#1449). Your own profile has its own editor. -->
+        <NickMetadataEditor v-if="!isSelf" :network-id="networkId" :nick="nick" />
       </section>
 
       <!-- One status line, chosen in `statusLine` — see the note there for why
@@ -190,14 +196,18 @@
 import { computed, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import IgnoreModal from './IgnoreModal.vue';
+import NickMetadataEditor from './NickMetadataEditor.vue';
 import { useWhoisStore } from '../stores/whois.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { socketSend } from '../composables/useSocket.js';
 import { formatDateTime } from '../utils/timestamp.js';
+import { is12Hour, timeInZone } from '../utils/timeZone.js';
+import { useNow } from '../composables/useNow.js';
 import { splitChannelToken } from '../utils/memberPrefix.js';
 import { formattingSegments } from '../utils/nickColor.js';
 import RenderSegments from './RenderSegments.vue';
@@ -234,6 +244,7 @@ const nickNotes = useNickNotesStore();
 const relayBots = useRelayBotsStore();
 const contextMenu = useContextMenu();
 const networks = useNetworksStore();
+const settings = useSettingsStore();
 const profileEditor = useProfileEditor();
 const buffers = useBuffersStore();
 const ignoreOpen = ref(false);
@@ -247,6 +258,15 @@ const whois = computed(() => entry.value?.data ?? null);
 // land there too, so this is current whether or not the reply has come.
 const meta = computed(() => networks.metadataFor(props.networkId, props.nick));
 const displayNameSegments = computed(() => formattingSegments(meta.value?.displayName ?? ''));
+// Their clock now (#1450), where a time zone is known: theirs, or one set on them.
+const now = useNow();
+const localTime = computed(() =>
+  timeInZone(
+    now.value,
+    meta.value?.tz,
+    is12Hour(settings.effective('look.buffer.time_format') as string),
+  ),
+);
 
 const selfNick = computed(() => networks.states[props.networkId]?.nick ?? null);
 const isSelf = computed(
@@ -413,6 +433,7 @@ const hasDetails = computed(
         meta.value.avatarUrl ||
         meta.value.pronouns ||
         meta.value.status ||
+        meta.value.tz ||
         meta.value.homepage)
     ) ||
     !!(

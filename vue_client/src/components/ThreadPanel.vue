@@ -216,6 +216,7 @@ import type {
 } from '../composables/useMessageActions.js';
 import { onSocketOpen } from '../composables/useSocket.js';
 import { formatDate, formatTimestamp } from '../utils/timestamp.js';
+import { is12Hour, theirTimeTitle } from '../utils/timeZone.js';
 import { parseUserHost } from '../utils/userhost.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { RenderSegment } from '../utils/nickColor.js';
@@ -464,8 +465,15 @@ function time(m: ThreadMessage): string {
   return `${formatTimestamp(m.time, dateFmt)} ${t}`;
 }
 
+// The full local time, and under it the author's own where their zone is known (#1450).
 function fullTime(m: ThreadMessage): string | undefined {
-  return m.time ? new Date(m.time).toLocaleString() : undefined;
+  if (!m.time) return undefined;
+  const local = new Date(m.time).toLocaleString();
+  const nick = String(m.nick ?? '');
+  const zone =
+    nick && !m.self ? networks.metadataFor(buffer.value?.networkId, nick)?.tz : undefined;
+  const theirs = zone ? theirTimeTitle(nick, m.time, zone, is12Hour(tsFormat.value)) : undefined;
+  return theirs ? `${local}\n${theirs}` : local;
 }
 
 // The standard layout's prefix column, as the message list prints it.
