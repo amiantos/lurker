@@ -76,12 +76,7 @@
              search / highlights / saved / uploads live on the list top bar. -->
         <span v-if="isServerBuffer || isVirtual" class="title">{{ bufferLabel }}</span>
         <span class="spacer"></span>
-        <button
-          v-if="!isVirtual && !isServerBuffer"
-          class="icon"
-          title="Search this buffer"
-          @click="openSearch(true)"
-        >
+        <button v-if="!isVirtual" class="icon" title="Search this buffer" @click="openSearch(true)">
           <SearchIcon />
         </button>
         <button

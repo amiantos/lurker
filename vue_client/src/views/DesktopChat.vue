@@ -125,39 +125,38 @@
       </div>
       <div class="topic-actions">
         <template v-if="active && !isVirtual">
-          <!-- Search & highlights scoped to this buffer (channels/DMs only) —
-               parity with the mobile topic bar. The server buffer has no
-               per-buffer scope, so it's excluded. -->
-          <template v-if="!isServerBuffer">
-            <button
-              v-if="isChannel"
-              type="button"
-              class="link"
-              title="Channel settings"
-              aria-label="Channel settings"
-              @click="active && channelModal.open(active.networkId, active.target)"
-            >
-              <SlidersHorizontalIcon />
-            </button>
-            <button
-              type="button"
-              class="link"
-              title="Search this buffer"
-              aria-label="Search this buffer"
-              @click="openSearch(true)"
-            >
-              <SearchIcon />
-            </button>
-            <button
-              type="button"
-              class="link"
-              title="Activity in this buffer"
-              aria-label="Activity in this buffer"
-              @click="openHighlights(true)"
-            >
-              <BellIcon />
-            </button>
-          </template>
+          <!-- Search & highlights scoped to this buffer — parity with the
+               mobile topic bar. The server buffer is searched too (#1437);
+               it has no highlights of its own. -->
+          <button
+            v-if="isChannel"
+            type="button"
+            class="link"
+            title="Channel settings"
+            aria-label="Channel settings"
+            @click="active && channelModal.open(active.networkId, active.target)"
+          >
+            <SlidersHorizontalIcon />
+          </button>
+          <button
+            type="button"
+            class="link"
+            title="Search this buffer"
+            aria-label="Search this buffer"
+            @click="openSearch(true)"
+          >
+            <SearchIcon />
+          </button>
+          <button
+            v-if="!isServerBuffer"
+            type="button"
+            class="link"
+            title="Activity in this buffer"
+            aria-label="Activity in this buffer"
+            @click="openHighlights(true)"
+          >
+            <BellIcon />
+          </button>
           <template v-if="isServerBuffer">
             <button
               type="button"

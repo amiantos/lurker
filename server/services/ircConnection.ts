@@ -2811,6 +2811,26 @@ export class IrcConnection {
       this.sayWhereAsked();
     });
 
+    // WALLOPS (#1437): a line to everyone with user mode +w, from an oper or a
+    // server. It has no target, so it is the server buffer's, as in every
+    // client that shows it; a notice there, so search finds it. An ignored
+    // sender's is dropped: the server buffer is past the ignore list.
+    on('wallops', (event: Record<string, unknown>) => {
+      const text = typeof event?.message === 'string' ? event.message : '';
+      if (!text) return;
+      const from = typeof event.nick === 'string' && event.nick ? event.nick : '';
+      if (from && this.noticeSenderIgnored(from, event, text)) return;
+      const tags = event.tags as Record<string, string> | undefined;
+      this.publish({
+        type: 'notice',
+        target: this.serverTarget(),
+        nick: from || (event.hostname as string) || 'server',
+        text: `[WALLOPS] ${text}`,
+        userhost: buildUserhost(event),
+        time: tags?.time || undefined,
+      });
+    });
+
     // RPL_LOGGEDIN (900): the user identified to services mid-session (NickServ
     // or SASL). That's exactly what +R/+M channels were waiting on, so drop the
     // unsendable set and let the next message re-probe — typing resumes too (#283).

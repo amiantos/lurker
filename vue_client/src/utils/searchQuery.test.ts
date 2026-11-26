@@ -21,4 +21,9 @@ describe('parseSearchQuery', () => {
     expect(p.from).toEqual([]);
     expect(p.query).toBe('from: word: just text');
   });
+
+  it("takes a server buffer's own target as in: (#1437)", () => {
+    const p = parseSearchQuery('in::server:5 on:libera kline');
+    expect(p).toEqual({ query: 'kline', from: [], in: ':server:5', on: 'libera' });
+  });
 });

@@ -10,7 +10,7 @@ import { useActiveBuffer } from './useActiveBuffer.js';
 // share modal visibility. The filter grammar (`in:<target> on:<network>`) lives
 // here so it can't drift between the shells.
 export function useBufferSearchScope() {
-  const { active, isServerBuffer, isSystemBuffer } = useActiveBuffer();
+  const { active, isSystemBuffer } = useActiveBuffer();
 
   const showSearch = ref(false);
   const showHighlights = ref(false);
@@ -21,11 +21,11 @@ export function useBufferSearchScope() {
   // mirroring the topic bar's scoped buttons. The `on:` token is dropped when
   // the network name has whitespace (the filter parser splits tokens on spaces,
   // so it couldn't round-trip); `in:<target>` alone still scopes by
-  // channel/nick. Null for server/system buffers, which have no per-buffer
-  // scope.
+  // channel/nick. A server buffer is scoped by its own target (`:server:<id>`,
+  // #1437). Null for the system buffer, which has no messages to search.
   const bufferScope = computed<string | null>(() => {
     const a = active.value;
-    if (!a || isServerBuffer.value || isSystemBuffer.value || !a.target) return null;
+    if (!a || isSystemBuffer.value || !a.target) return null;
     const netName = (a.network as { name?: string } | null)?.name;
     const onTok = netName && !/\s/.test(netName) ? ` on:${netName}` : '';
     return `in:${a.target}${onTok}`;
