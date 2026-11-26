@@ -131,8 +131,8 @@
                 spellcheck="false"
               />
             </div>
-            <!-- Nobody paints the colour as sent (#1452): each client shows the
-                 nearest colour of its own theme, this one included. -->
+            <!-- Nobody paints the colour as sent (#1452): each client keeps its
+                 hue and fits the rest to its own theme, this one included. -->
             <small v-if="shownAs">
               Shows as <span class="swatch chip" :style="{ background: shownAs }"></span> in this
               theme.
@@ -312,7 +312,7 @@ const settings = useSettingsStore();
 const pickerOpen = ref(false);
 const swatchEl = ref<HTMLElement | null>(null);
 const pickedColor = computed(() => normalizeMetadataColor(form.color));
-const shownAs = computed(() => nicks.snapped(pickedColor.value));
+const shownAs = computed(() => nicks.adapted(pickedColor.value));
 // The picker can hand back anything CSS takes (a theme reference); the wire takes hex.
 function onColorPicked(value: string): void {
   const rgb = resolveCssColor(value, document.body);

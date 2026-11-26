@@ -74,7 +74,7 @@ a reason, a message. Escape puts it away until you start another command.
   uploads a picture for you, cropped square.
 - `/color <#rrggbb>` and `/tz <zone>` — the nick colour you ask others to show
   you in, and your time zone (`Europe/Berlin`), on the same networks. `off`
-  clears either. Other people see the nearest colour of their own theme.
+  clears either. Other people see that colour fitted to their own theme.
 - `/nickmeta <nick>` — what you have set on someone, seen only by you:
   `/nickmeta bob name Robert` (or `name hide`), `/nickmeta bob avatar hide`,
   `/nickmeta bob color 3` (a colour of your nick palette, or a `#hex` for the

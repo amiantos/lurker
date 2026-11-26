@@ -9,7 +9,7 @@ import { useNickMetadataStore } from '../stores/nickMetadata.js';
 import { nickColor, splitTextByTokens, type NickColorHash } from '../utils/nickColor.js';
 import { parseHex } from '../lib/color.js';
 import { themeColor } from '../lib/cssColor.js';
-import { snapToPalette } from '../../../shared/colorSnap.js';
+import { adaptToPalette, rgbToHex, snapToPalette } from '../../../shared/colorAdapt.js';
 import { emojiFn } from './useEmoji.js';
 
 type NetworkId = number | string | null | undefined;
@@ -24,7 +24,8 @@ export interface NickColorsAPI {
   ): unknown[];
   selfColor: ComputedRef<string>;
   selfColorOn(networkId: NetworkId): string;
-  snapped(hex: string | null | undefined): string | null;
+  adapted(hex: string | null | undefined): string | null;
+  slotNearest(hex: string | null | undefined): number;
 }
 
 // Provides reactive helpers that read coloring options from the settings store.
@@ -36,7 +37,8 @@ export interface NickColorsAPI {
 //
 // A nick's colour, first that applies (#1449, #1452):
 //   1. the palette slot the user picked for that nick;
-//   2. the `color` the nick published, snapped to the palette (never as sent);
+//   2. the `color` the nick published, adapted to the palette (never as sent):
+//      its hue, at a lightness and chroma the palette already uses;
 //   3. the palette entry the nick hashes to.
 // 1 and 2 need the network: a caller without one gets the hash.
 export function useNickColors(): NickColorsAPI {
@@ -52,23 +54,29 @@ export function useNickColors(): NickColorsAPI {
   const hash = computed(() => settings.effective('look.nick.color_hash') as NickColorHash);
   const selfColor = computed(() => settings.effective('look.nick.self_color') as string);
 
-  // The palette as sRGB, and what each published hex snapped to under it. Both
-  // start over when the palette or the theme behind a `var()` entry changes.
+  // The palette as sRGB, and what each published hex came out as under it.
+  // Both start over when the palette or the theme behind a `var()` entry changes.
   const paletteRgb = computed(() => palette.value.map((entry) => themeColor(entry)));
-  const snaps = computed(() => {
+  const adaptedByHex = computed(() => {
     void paletteRgb.value;
     return new Map<string, string | null>();
   });
 
-  function snapped(hex: string | null | undefined): string | null {
+  function adapted(hex: string | null | undefined): string | null {
     if (!hex) return null;
-    const known = snaps.value.get(hex);
+    const known = adaptedByHex.value.get(hex);
     if (known !== undefined) return known;
     const rgb = parseHex(hex);
-    const index = rgb ? snapToPalette(rgb, paletteRgb.value) : -1;
-    const out = index < 0 ? null : palette.value[index];
-    snaps.value.set(hex, out);
+    const shown = rgb ? adaptToPalette(rgb, paletteRgb.value) : null;
+    const out = shown ? rgbToHex(shown) : null;
+    adaptedByHex.value.set(hex, out);
     return out;
+  }
+
+  // The palette slot nearest in tint to a hex (`/nickmeta <nick> color #hex`), or -1.
+  function slotNearest(hex: string | null | undefined): number {
+    const rgb = hex ? parseHex(hex) : null;
+    return rgb ? snapToPalette(rgb, paletteRgb.value) : -1;
   }
 
   function color(nick: string, networkId?: NetworkId): string | null {
@@ -77,7 +85,7 @@ export function useNickColors(): NickColorsAPI {
       return palette.value[meta.colorSlot % palette.value.length];
     }
     return (
-      snapped(meta?.color) ??
+      adapted(meta?.color) ??
       nickColor(nick, {
         palette: palette.value,
         stopChars: stopChars.value,
@@ -91,7 +99,7 @@ export function useNickColors(): NickColorsAPI {
   function selfColorOn(networkId: NetworkId): string {
     const own = networkId != null ? networks.states[networkId]?.nick : null;
     const mine = own ? networks.wireMetadataFor(networkId, own)?.color : null;
-    return snapped(mine) ?? selfColor.value;
+    return adapted(mine) ?? selfColor.value;
   }
 
   function splitText(
@@ -105,7 +113,7 @@ export function useNickColors(): NickColorsAPI {
     return splitTextByTokens(text, nickSet, selfLower, (n) => color(n, networkId), emojiFn());
   }
 
-  return { color, splitText, selfColor, selfColorOn, snapped };
+  return { color, splitText, selfColor, selfColorOn, adapted, slotNearest };
 }
 
 // Reactive accessor for the user-overridable mIRC palette (look.color.mirc_colors).

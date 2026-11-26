@@ -100,7 +100,7 @@ describe('profile editor', () => {
 
     await colour.setValue(' #0F0 ');
     expect(wrapper.find('.field small').text()).toMatch(/^Shows as\s+in this theme\.$/);
-    // Snapped: a colour of the nick palette, not the hex typed.
+    // Fitted to the theme, not the hex typed.
     const chip = (wrapper.find('.swatch.chip').element as HTMLElement).style.background;
     expect(chip).not.toBe('');
     expect(chip).not.toBe('#00ff00');

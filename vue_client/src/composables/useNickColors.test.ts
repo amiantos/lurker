@@ -14,7 +14,7 @@ import { useNickMetadataStore } from '../stores/nickMetadata.js';
 import { useSettingsStore } from '../stores/settings.js';
 
 // Which colour a nick gets (#1449, #1452): the slot the user picked, else the
-// colour the nick published snapped to the palette, else the hash.
+// colour the nick published fitted to the palette, else the hash.
 describe('nick colours with metadata', () => {
   let palette: string[];
 
@@ -30,17 +30,21 @@ describe('nick colours with metadata', () => {
     expect(nicks.color('bob', 1)).toBe(hashed);
   });
 
-  it('never paints a published colour as sent: it lands on the palette', () => {
+  it('never paints a published colour as sent: it is fitted to the palette', () => {
     const networks = useNetworksStore();
     const nicks = useNickColors();
-    networks.applyUserMetadata(1, 'bob', { color: '#00ff00' });
+    // A dark green: unreadable on a dark theme as sent.
+    networks.applyUserMetadata(1, 'bob', { color: '#3b5940' });
     const shown = nicks.color('bob', 1);
-    expect(shown).not.toBe('#00ff00');
-    expect(palette).toContain(shown);
-    // The palette's own green, not whatever bob hashes to.
-    expect(shown).toBe(nicks.snapped('#00ff00'));
+    expect(shown).toMatch(/^#[0-9a-f]{6}$/);
+    expect(shown).not.toBe('#3b5940');
+    expect(shown).toBe(nicks.adapted('#3b5940'));
+    // Still green: more green than red or blue.
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(shown!.slice(i, i + 2), 16));
+    expect(g).toBeGreaterThan(r);
+    expect(g).toBeGreaterThan(b);
     // A colour of the palette is itself.
-    expect(nicks.snapped(palette[4])).toBe(palette[4]);
+    expect(nicks.adapted(palette[4])).toBe(palette[4]);
     // Only on the network it was published on.
     expect(nicks.color('bob', 2)).toBe(nicks.color('bob'));
   });
@@ -63,9 +67,12 @@ describe('nick colours with metadata', () => {
     networks.applyUserMetadata(1, 'bob', { color: '#00ff00' });
     useNickMetadataStore().applyUpdate(1, 'carol', { color: '1' });
     nicks.color('bob', 1);
-    settings.values = { 'look.nick.colors': ['#101010', '#20e020', '#e02020'] } as never;
-    expect(nicks.color('bob', 1)).toBe('#20e020');
-    expect(nicks.color('carol', 1)).toBe('#20e020');
+    const before = nicks.color('bob', 1);
+    settings.values = { 'look.nick.colors': ['#103010', '#104010', '#301010'] } as never;
+    // Fitted to the new palette's (much darker) range, not kept from the old.
+    expect(nicks.color('bob', 1)).not.toBe(before);
+    expect(nicks.color('bob', 1)).toBe(nicks.adapted('#00ff00'));
+    expect(nicks.color('carol', 1)).toBe('#104010');
   });
 
   it('shows our own nick in the colour we published, where we did', () => {
@@ -75,7 +82,7 @@ describe('nick colours with metadata', () => {
     networks.states[2] = { networkId: 2, channels: [], nick: 'me' };
     expect(nicks.selfColorOn(1)).toBe(nicks.selfColor.value);
     networks.applyUserMetadata(1, 'me', { color: '#00ff00' });
-    expect(nicks.selfColorOn(1)).toBe(nicks.snapped('#00ff00'));
+    expect(nicks.selfColorOn(1)).toBe(nicks.adapted('#00ff00'));
     expect(nicks.selfColorOn(2)).toBe(nicks.selfColor.value);
     expect(nicks.selfColorOn(null)).toBe(nicks.selfColor.value);
   });

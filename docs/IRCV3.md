@@ -68,9 +68,9 @@ the profile modal. Set yours with `/displayname` and `/avatar`, or in the
 network menu's Edit Profile. Lurker remembers yours per network and sets it
 again after every connect, since most servers forget it when you disconnect.
 
-A member can also publish a nick colour and a time zone. The colour is shown
-as the nearest colour of your theme's nick palette, never the exact one they
-picked, so it always reads on your theme. The time zone puts their local time
+A member can also publish a nick colour and a time zone. The colour keeps its
+hue but is shown as light and as vivid as your theme's own nick colours, never
+exactly as they picked it, so it always reads on your theme. The time zone puts their local time
 in their profile and in the tooltip of each of their messages' timestamps.
 Set yours with `/color` and `/tz`, or in Edit Profile.
 
@@ -98,8 +98,8 @@ kept with your notes: per network, per nick.
   and only while link previews are configured; otherwise everyone gets a
   generated tile in their nick colour. `color` is read only as `#rgb` or
   `#rrggbb` and is never painted as sent, since a raw hex fights every theme:
-  each client snaps it to the nearest entry of its theme's nick palette (by
-  distance in OKLab). `lurker.chat/tz` is Lurker's own key, vendor-prefixed as
+  each client keeps its hue and brings its lightness and chroma inside the
+  range of its theme's nick palette (in OKLCH; Halloy does the same). `lurker.chat/tz` is Lurker's own key, vendor-prefixed as
   the spec asks of a non-standard one: an IANA zone name such as
   `Europe/Berlin`; anything else is ignored.
 - **Your own metadata** — saved per network when the server accepts a `SET`

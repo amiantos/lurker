@@ -49,7 +49,7 @@ export interface UserMetadataEntry {
   pronouns?: string;
   homepage?: string;
   status?: string;
-  // `#rrggbb` as sent (#1452); shown snapped to the theme's nick palette.
+  // `#rrggbb` as sent (#1452); shown adapted to the theme's nick palette.
   color?: string;
   // An IANA zone (#1450).
   tz?: string;

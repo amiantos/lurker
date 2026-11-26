@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // What a row shows of its author's metadata beyond the avatar: the time on
-// their clock in the timestamp's tooltip (#1450), their colour snapped to the
+// their clock in the timestamp's tooltip (#1450), their colour fitted to the
 // palette (#1452), and whatever the user set on them over all of it (#1449).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -85,9 +85,11 @@ describe('MessageList — author metadata', () => {
     expect(timeTitle(2)).toMatch(/^carol's time: Wed.*08:00 \(America\/New_York\)$/);
   });
 
-  it('paints a published colour as its nearest palette entry, and a picked slot over it', async () => {
+  it('paints a published colour fitted to the palette, and a picked slot over it', async () => {
     mountChat({ bob: { color: '#00ff10' } });
-    expect(nickColour(1)).toBe(PALETTE[1]);
+    const shown = nickColour(1);
+    expect(shown).toMatch(/^#[0-9a-f]{6}$/);
+    expect(shown).not.toBe('#00ff10');
     useNickMetadataStore().applyUpdate(1, 'bob', { color: '2' });
     await nextTick();
     expect(nickColour(1)).toBe(PALETTE[2]);

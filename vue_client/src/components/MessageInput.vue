@@ -5003,10 +5003,7 @@ function handleCommand(
       const palette = settings.effective('look.nick.colors') as string[];
       const parsed = parseNickMetaCommand(argLine, {
         paletteSize: palette.length,
-        snap: (hex) => {
-          const shown = nickColors.snapped(normalizeMetadataColor(hex));
-          return shown === null ? -1 : palette.indexOf(shown);
-        },
+        snap: (hex) => nickColors.slotNearest(normalizeMetadataColor(hex)),
         knowsZone: (zone) => timeInZone(Date.now(), zone) !== null,
       });
       if ('error' in parsed) {

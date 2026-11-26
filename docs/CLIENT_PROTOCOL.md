@@ -451,8 +451,10 @@ square of at most 256 px but the origin's image behind a previews decoder too
 old to resize it, or a CDN — never the origin URL the user set), and `null` when the server can't serve it,
 in which case show your generated tile. Absent on a server that predates it.
 `color` (#1452) is the colour the user asked for, always lower-case `#rrggbb`.
-⚠ **Never paint it as sent**: it knows nothing of your theme. Snap it to the
-nearest colour of the theme's nick palette (the web client's `snapToPalette`),
+⚠ **Never paint it as sent**: it knows nothing of your theme. Adapt it to the
+theme's nick palette: keep its hue, hold its lightness inside the palette's
+range, and allow no more chroma than the palette's most vivid entry
+(`adaptToPalette` in `shared/colorAdapt.ts` is the reference, with the maths),
 and fall back to the nick's own palette colour when there is none. `tz` (#1450)
 is an IANA zone (`Europe/Berlin`), the `lurker.chat/tz` key on the wire; treat a
 zone your platform doesn't know as absent.

@@ -249,7 +249,7 @@ export interface UserMetadataView {
   homepage?: string;
   status?: string;
   // `#rrggbb` as the user sent it (#1452). Never painted as is: a client
-  // snaps it to its theme's nick palette.
+  // adapts it to its theme's nick palette (shared/colorAdapt.ts).
   color?: string;
   // An IANA zone (#1450).
   tz?: string;

@@ -14,7 +14,7 @@ export const METADATA_TZ_KEY = 'lurker.chat/tz';
 
 // The keys Lurker shows, in order of preference: a server with a small
 // `max-subs` grants the first. A `color` is never painted as sent (#607: hex
-// values fight every theme); a client snaps it to its theme's nick palette
+// values fight every theme); a client adapts it to its theme's nick palette
 // (#1452). The profile editor's fields too (#1189).
 export const METADATA_SUB_KEYS = [
   'display-name',
