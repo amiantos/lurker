@@ -148,6 +148,28 @@ describe('ThreadPanel', () => {
     expect(w.find('.rule').text()).toBe('3 replies');
   });
 
+  // The timestamp's tooltip: the full local time, and under it the author's
+  // own where their time zone is known (#1450).
+  it("adds the author's own time to a line's tooltip, where their zone is known", async () => {
+    seed();
+    useNetworksStore().applyUserMetadata(1, 'bob', { tz: 'Asia/Tokyo' });
+    const w = await mountAt('/buffer/9/thread/m1');
+    const threads = useThreadsStore();
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'm1',
+      token: threads.view!.token,
+      root: line(1),
+      replies: [line(2, { nick: 'bob', replyTo: { msgid: 'm1', root: 'm1', parent: null } })],
+    });
+    await w.vm.$nextTick();
+    const titles = w.findAll('.t-line').map((r) => r.find('.time').attributes('title') ?? '');
+    // alice has no zone: the local time alone.
+    expect(titles[0]).not.toContain("'s time");
+    // 12:02 UTC on a Saturday is 21:02 in Tokyo.
+    expect(titles[1].split('\n')[1]).toMatch(/^bob's time: Sat.*21:02 \(Asia\/Tokyo\)$/);
+  });
+
   it('says so when the first line is gone, and offers neither Reply nor Quote on a line', async () => {
     seed();
     const w = await mountAt('/buffer/9/thread/m1');

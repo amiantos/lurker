@@ -105,7 +105,9 @@ const isSelf = computed(() => {
 
 const style = computed(() => {
   if (isSelf.value) return { color: nicks.selfColorOn(networkId.value) };
-  const c = nicks.color(props.nick, networkId.value);
+  // A relayed author is someone on another network: no metadata of the nick
+  // that happens to share their name here, as for the display name.
+  const c = nicks.color(props.nick, props.plain ? null : networkId.value);
   return c ? { color: c } : null;
 });
 </script>

@@ -577,6 +577,11 @@ replaces the field, `null` removes it, a colour slot paints
 `palette[slot % palette.length]` ahead of any `color`. `userMetadata` itself is
 never rewritten, so a profile view can show "theirs" beside "yours".
 
+⚠ **A relayed author gets none of it.** A line a relay bot carried in (the one
+you show under the remote person's name) belongs to someone on another
+network: give it no display name, avatar, colour or time zone from
+`userMetadata` or `nickMetadata`, even when a local nick has the same name.
+
 Send `set-nick-metadata` with `{networkId, nick, key, value}` to set (`value:
 null` hides), or `{networkId, nick, key, reset: true}` to go back to theirs.
 Every session then receives `nick-metadata-updated` `{networkId, nick, values}`

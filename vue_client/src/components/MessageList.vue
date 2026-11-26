@@ -874,9 +874,10 @@ function time(iso: string | undefined): string {
 }
 
 // A line's time on its author's clock (#1450), where their time zone is known:
-// from their metadata, or one set on them. Not on our own lines.
+// from their metadata, or one set on them. Not on our own lines, and not on a
+// relayed author's: the zone would be that of whoever shares their nick here.
 function timeTitle(m: ChatMessage | undefined): string | undefined {
-  if (!m?.nick || m.self) return undefined;
+  if (!m?.nick || m.self || m.relaySource) return undefined;
   if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') return undefined;
   const zone = networks.metadataFor(buffer.value?.networkId, m.nick)?.tz;
   return zone
@@ -1911,7 +1912,8 @@ function prefixClass(m: ChatMessage | undefined) {
 function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
   if (m && nickRow(m)) {
     if (m.self) return { color: selfColor.value as string };
-    const c = nicks.color(m.nick ?? '', buffer.value?.networkId);
+    // A relayed author is someone on another network (see NickRef's `plain`).
+    const c = nicks.color(m.nick ?? '', m.relaySource ? null : buffer.value?.networkId);
     return c ? { color: c } : null;
   }
   // System-buffer lines tied to a network (#355) color the network name with

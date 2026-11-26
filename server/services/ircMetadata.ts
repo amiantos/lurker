@@ -167,9 +167,6 @@ export function vetMetadataValue(
     if (!isHttpUrl(sized)) return null;
     return key === 'avatar' ? sized : value;
   }
-  // Kept in the one spelling every client can read without a parser of its own.
-  if (key === METADATA_COLOR_KEY) return normalizeMetadataColor(value);
-  if (key === METADATA_TZ_KEY) return normalizeTimeZone(value);
   return value;
 }
 
@@ -186,6 +183,10 @@ export function vetNickMetadata(key: unknown, raw: string | null): { value: stri
   if (key === METADATA_COLOR_KEY) {
     const slot = parseColorSlot(raw.trim());
     return slot === null ? null : { value: String(slot) };
+  }
+  if (key === METADATA_TZ_KEY) {
+    const zone = normalizeTimeZone(raw);
+    return zone === null ? null : { value: zone };
   }
   const value = vetMetadataValue(key, raw);
   return value === null ? null : { value };
@@ -248,8 +249,8 @@ export interface UserMetadataView {
   pronouns?: string;
   homepage?: string;
   status?: string;
-  // `#rrggbb` as the user sent it (#1452). Never painted as is: a client
-  // adapts it to its theme's nick palette (shared/colorAdapt.ts).
+  // The user's colour as lower-case `#rrggbb` (#1452). Never painted as is: a
+  // client adapts it to its theme's nick palette (shared/colorAdapt.ts).
   color?: string;
   // An IANA zone (#1450).
   tz?: string;
@@ -269,8 +270,14 @@ export function userMetadataView(record: MetadataRecord, mint: AvatarMint): User
   if (record.pronouns) view.pronouns = record.pronouns;
   if (record.homepage) view.homepage = record.homepage;
   if (record.status) view.status = record.status;
-  if (record[METADATA_COLOR_KEY]) view.color = record[METADATA_COLOR_KEY];
-  if (record[METADATA_TZ_KEY]) view.tz = record[METADATA_TZ_KEY];
+  // The record keeps both as the network sent them, which is what a bouncer
+  // client is replayed. A client of ours gets the one spelling it can read
+  // without a parser of its own, or nothing: a colour that isn't hex, a zone
+  // that isn't one.
+  const color = normalizeMetadataColor(record[METADATA_COLOR_KEY]);
+  if (color) view.color = color;
+  const tz = normalizeTimeZone(record[METADATA_TZ_KEY]);
+  if (tz) view.tz = tz;
   return view;
 }
 

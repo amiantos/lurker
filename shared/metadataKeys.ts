@@ -34,7 +34,9 @@ export const METADATA_VALUE_MAX_CHARS: Readonly<Record<string, number>> = {
   status: 200,
   homepage: 2048,
   avatar: 2048,
-  [METADATA_COLOR_KEY]: 7,
+  // Kept as sent, like every key: clients are handed them normalised
+  // (userMetadataView), a bouncer client the network's own spelling.
+  [METADATA_COLOR_KEY]: 64,
   [METADATA_TZ_KEY]: 64,
 };
 

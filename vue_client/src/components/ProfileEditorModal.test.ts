@@ -135,6 +135,17 @@ describe('profile editor', () => {
     expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
   });
 
+  it('leaves a colour it did not touch as it was saved, whatever its spelling', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: { color: '#ABC' }, unset: [], live: {}, avatarPreview: null };
+    const wrapper = await open();
+    await input(wrapper, 'Status').setValue('lunch');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    // Not re-sent as #aabbcc: another session may have changed it since.
+    expect(calls.at(-1)?.body).toEqual({ values: { status: 'lunch' } });
+  });
+
   it("fills in this device's zone when asked", async () => {
     setNetwork({ state: 'connected', metadataLimits: LIMITS });
     reply = { values: {}, unset: [], live: {}, avatarPreview: null };

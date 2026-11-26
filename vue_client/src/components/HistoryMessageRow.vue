@@ -161,8 +161,9 @@ const selfColor = computed(() => nicks.selfColorOn(props.message.networkId));
 
 // The line's time on its author's clock, where their zone is known (#1450).
 const timeTitle = computed(() => {
-  const { nick, self } = line.value;
-  if (!nick || self) return undefined;
+  const { nick, self, relaySource } = line.value;
+  // Not a relayed author's: the zone would be that of whoever shares their nick here.
+  if (!nick || self || relaySource) return undefined;
   const zone = networks.metadataFor(props.message.networkId, nick)?.tz;
   return zone
     ? theirTimeTitle(nick, props.message.time, zone, is12Hour(tsFormat.value as string))
@@ -201,7 +202,7 @@ const targetLabel = computed(() => {
 
 const nickStyle = computed((): CSSProperties | null => {
   if (line.value.self) return { color: selfColor.value };
-  const c = nicks.color(line.value.nick, props.message.networkId);
+  const c = nicks.color(line.value.nick, line.value.relaySource ? null : props.message.networkId);
   return c ? { color: c } : null;
 });
 </script>

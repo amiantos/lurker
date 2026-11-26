@@ -38,16 +38,26 @@
       <template v-for="r in rows" :key="r.key">
         <dt>{{ r.label }}</dt>
         <dd :data-key="r.key">
-          <span class="value">
-            <template v-if="r.key === 'display-name' && r.value">
-              <RenderSegments :segments="formattingSegments(r.value)" />
-            </template>
-            <template v-else-if="r.key === COLOR && r.color">
-              <span class="swatch" :style="{ background: r.color }"></span>
-              <span :style="{ color: r.color }">{{ nick }}</span>
-            </template>
-            <template v-else-if="r.key === TZ">{{ r.value }}</template>
-            <span v-else class="muted">Hidden</span>
+          <span class="value stack">
+            <span class="yours">
+              <template v-if="r.key === 'display-name' && r.value">
+                <RenderSegments :segments="formattingSegments(r.value)" />
+              </template>
+              <template v-else-if="r.key === COLOR && r.color">
+                <span class="swatch" :style="{ background: r.color }"></span>
+                <span :style="{ color: r.color }">{{ nick }}</span>
+              </template>
+              <template v-else-if="r.key === TZ">{{ r.value }}</template>
+              <span v-else class="muted">Hidden</span>
+            </span>
+            <!-- What Reset would bring back, where they set something else. -->
+            <span v-if="r.theirName" class="muted theirs">
+              Theirs: <RenderSegments :segments="formattingSegments(r.theirName)" />
+            </span>
+            <span v-else-if="r.theirColor" class="muted theirs">
+              Theirs: <span class="swatch" :style="{ background: r.theirColor }"></span>
+            </span>
+            <span v-else-if="r.theirZone" class="muted theirs">Theirs: {{ r.theirZone }}</span>
           </span>
           <span class="btn-bar">
             <button v-if="r.key !== 'avatar'" type="button" @click="edit(r.key)">Edit</button>
@@ -165,6 +175,7 @@ import { useNickNotesStore } from '../stores/nickNotes.js';
 import { formatDateTime } from '../utils/timestamp.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useNow } from '../composables/useNow.js';
+import { useNickColors } from '../composables/useNickColors.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
 import { is12Hour, knownTimeZones, timeInTypedZone, zonesBut } from '../utils/timeZone.js';
@@ -188,6 +199,7 @@ const store = useNickMetadataStore();
 const nickNotes = useNickNotesStore();
 const settings = useSettingsStore();
 const now = useNow();
+const nicks = useNickColors();
 
 const NAME_MAX = METADATA_VALUE_MAX_CHARS['display-name'];
 const LABELS: Record<NickMetadataKey, string> = {
@@ -227,13 +239,24 @@ const currentSlot = computed(() => {
 });
 
 const rows = computed(() =>
-  NICK_METADATA_KEYS.filter((key) => Object.hasOwn(mine.value, key)).map((key) => ({
-    key,
-    label: LABELS[key],
-    value: mine.value[key],
-    color: key === COLOR && currentSlot.value !== null ? palette.value[currentSlot.value] : null,
-    theirs: theirs(key),
-  })),
+  NICK_METADATA_KEYS.filter((key) => Object.hasOwn(mine.value, key)).map((key) => {
+    const value = mine.value[key];
+    const color =
+      key === COLOR && currentSlot.value !== null ? palette.value[currentSlot.value] : null;
+    const w = wire.value;
+    // Theirs, shown only where it differs from what stands in front of it.
+    const theirColor = key === COLOR ? nicks.adapted(w?.color) : null;
+    return {
+      key,
+      label: LABELS[key],
+      value,
+      color,
+      theirs: theirs(key),
+      theirName: key === 'display-name' && w?.displayName !== value ? w?.displayName : undefined,
+      theirColor: theirColor && theirColor !== color ? theirColor : null,
+      theirZone: key === TZ && w?.tz !== value ? w?.tz : undefined,
+    };
+  }),
 );
 
 // What "Add metadata" offers: the fields not set yet. An avatar can only be
@@ -418,10 +441,17 @@ input[list]::-webkit-calendar-picker-indicator {
 .swatch.pick:hover {
   border-color: var(--fg-muted);
 }
-.value.note {
+.value.note,
+.value.stack {
   flex-direction: column;
   align-items: flex-start;
   gap: var(--space-1);
+}
+.yours,
+.theirs {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
 }
 .note-body {
   color: var(--fg);

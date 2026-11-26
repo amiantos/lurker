@@ -123,7 +123,7 @@
                 :value="form.color"
                 @input="form.color = imeSafeValue($event)"
                 @keydown.enter="blockImeEnter"
-                :maxlength="max('color')"
+                maxlength="7"
                 placeholder="#rrggbb"
                 aria-label="Nick color"
                 autocomplete="off"
@@ -148,7 +148,7 @@
           </div>
           <label>
             <span class="title">Time zone</span>
-            <div class="avatar-row">
+            <div class="avatar-row zone-row">
               <input
                 :disabled="locked"
                 :value="form[TZ]"
@@ -428,8 +428,11 @@ async function save(): Promise<void> {
   // changed it since this opened.
   const values: Record<string, string | null> = {};
   for (const f of FIELDS) {
-    // A colour goes out in the one spelling every client reads.
-    const value = (f === 'color' && normalizeMetadataColor(form[f])) || form[f].trim();
+    const typed = form[f].trim();
+    // A colour that was changed goes out in the one spelling every client
+    // reads. One left alone is compared, and kept, as it was saved.
+    const value =
+      (f === 'color' && typed !== initial.value[f] && normalizeMetadataColor(typed)) || typed;
     if (value !== initial.value[f] || (value && !savedKeys.value.has(f))) values[f] = value || null;
   }
   saving.value = true;
@@ -559,6 +562,11 @@ label small {
 }
 .avatar-row button {
   flex: none;
+}
+/* The field and its button, one height: the button's padding makes it the
+   taller of the two when each keeps its own. */
+.zone-row {
+  align-items: stretch;
 }
 .file-input {
   display: none;

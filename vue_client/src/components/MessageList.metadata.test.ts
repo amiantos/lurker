@@ -94,4 +94,16 @@ describe('MessageList — author metadata', () => {
     await nextTick();
     expect(nickColour(1)).toBe(PALETTE[2]);
   });
+
+  // A relayed author is someone on another network (#996): nothing of the
+  // local nick that happens to share their name.
+  it("gives a relayed author neither the local nick's zone nor its colour", async () => {
+    mountChat({ carol: { tz: 'Asia/Tokyo', color: '#00ff10' } });
+    const b = useBuffersStore().byKey('1::#chan')!;
+    b.messages.push(message(4, 'carol', { relayBot: 'bridge', relaySource: 'discord' }) as never);
+    await nextTick();
+    expect(timeTitle(2)).toMatch(/^carol's time/);
+    expect(timeTitle(4)).toBeUndefined();
+    expect(nickColour(4)).not.toBe(nickColour(2));
+  });
 });

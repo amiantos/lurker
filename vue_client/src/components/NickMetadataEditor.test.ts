@@ -161,6 +161,26 @@ describe('NickMetadataEditor (#1449)', () => {
     expect(wrapper!.find('dd[data-key="color"]').exists()).toBe(false);
   });
 
+  // What Reset would bring back is said beside what stands in front of it.
+  it('shows theirs beside yours where they set something else', async () => {
+    open({ displayName: 'Bobby', color: '#00ff00', tz: 'Europe/Berlin' });
+    useNickMetadataStore().applyUpdate(1, 'bob', {
+      'display-name': 'Robert',
+      color: '0',
+      'lurker.chat/tz': 'Europe/Berlin',
+    });
+    await nextTick();
+    const row = (key: string) => wrapper!.find(`dd[data-key="${key}"]`);
+    expect(row('display-name').find('.yours').text()).toBe('Robert');
+    expect(row('display-name').find('.theirs').text()).toBe('Theirs: Bobby');
+    // Their colour as this theme shows it, never the hex they sent.
+    const theirs = (row('color').find('.theirs .swatch').element as HTMLElement).style.background;
+    expect(theirs).toMatch(/^#[0-9a-f]{6}$/);
+    expect(theirs).not.toBe('#00ff00');
+    // The same zone on both sides: nothing to tell apart.
+    expect(row('lurker.chat/tz').find('.theirs').exists()).toBe(false);
+  });
+
   it('lists what is set, with Reset where they have a value and Remove where not', async () => {
     open({ displayName: 'Bobby' });
     useNickMetadataStore().applyUpdate(1, 'bob', {
@@ -170,13 +190,14 @@ describe('NickMetadataEditor (#1449)', () => {
     });
     await nextTick();
     const row = (key: string) => wrapper!.find(`dd[data-key="${key}"]`);
-    expect(row('display-name').find('.value').text()).toBe('Hidden');
+    expect(row('display-name').find('.yours').text()).toBe('Hidden');
+    expect(row('display-name').find('.theirs').text()).toBe('Theirs: Bobby');
     expect(
       row('display-name')
         .findAll('button')
         .map((b) => b.text()),
     ).toEqual(['Edit', 'Reset']);
-    expect(row('lurker.chat/tz').find('.value').text()).toBe('Asia/Tokyo');
+    expect(row('lurker.chat/tz').find('.yours').text()).toBe('Asia/Tokyo');
     expect(
       row('lurker.chat/tz')
         .findAll('button')

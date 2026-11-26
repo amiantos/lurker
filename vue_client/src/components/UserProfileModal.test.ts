@@ -24,6 +24,7 @@ vi.mock('../composables/useSocket.js', () => ({
 
 import { useWhoisStore } from '../stores/whois.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useNickMetadataStore } from '../stores/nickMetadata.js';
 import UserProfileModal from './UserProfileModal.vue';
 
 const NET = 1;
@@ -150,5 +151,26 @@ describe('UserProfileModal — channel list', () => {
       ['@', '&ops'],
       ['+', '#voiced'],
     ]);
+  });
+});
+
+// Their clock now (#1450), from their time zone or one set on them (#1449).
+describe('UserProfileModal — local time', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const row = (w: ReturnType<typeof open>, label: string) => {
+    const dt = w.findAll('dt').find((d) => d.text() === label);
+    return dt ? (dt.element.nextElementSibling as HTMLElement).textContent!.trim() : null;
+  };
+
+  it('shows the time where they are, with the zone', () => {
+    useNetworksStore().applyUserMetadata(NET, 'bob', { tz: 'Asia/Tokyo' });
+    expect(row(open('bob'), 'Local time')).toMatch(/^\w{3} \d{1,2}:\d\d\s+\(Asia\/Tokyo\)$/);
+  });
+
+  it('takes a zone the user set on them, and has no row without one', () => {
+    expect(row(open('bob'), 'Local time')).toBeNull();
+    useNickMetadataStore().applyUpdate(NET, 'bob', { 'lurker.chat/tz': 'Europe/Berlin' });
+    expect(row(open('bob'), 'Local time')).toMatch(/\(Europe\/Berlin\)$/);
   });
 });

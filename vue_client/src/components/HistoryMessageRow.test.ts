@@ -216,3 +216,34 @@ describe('HistoryMessageRow — replies', () => {
     expect(w.findComponent({ name: 'ReplyQuote' }).emitted('jump')).toBeUndefined();
   });
 });
+
+// A line's time on its author's clock (#1450), in the timestamp's tooltip.
+describe('HistoryMessageRow — author time zone', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  // 12:00 UTC on a Monday; 14:00 in Berlin (summer time).
+  const plain = (over: Partial<HistoryMessage> = {}) =>
+    mountRow(reply({ replyTo: undefined, ...over }));
+  const title = (w: ReturnType<typeof mountRow>) => w.find('.time').attributes('title');
+
+  it('says the time where the author is, when their zone is known', () => {
+    useNetworksStore().applyUserMetadata(1, 'bob', { tz: 'Europe/Berlin' });
+    expect(title(plain())).toMatch(/^bob's time: Mon.*14:00 \(Europe\/Berlin\)$/);
+    // By the row's own network, and nothing where no zone is known.
+    expect(title(plain({ networkId: 2 }))).toBeUndefined();
+    expect(title(plain({ nick: 'carol' }))).toBeUndefined();
+  });
+
+  it('has none for a relayed author: the zone belongs to whoever shares their nick here', () => {
+    useRelayBotsStore().byKey['1::bridgebot'] = { nick: 'bridgebot', pattern: '' };
+    useNetworksStore().applyUserMetadata(1, 'carol', { tz: 'Asia/Tokyo', color: '#00ff00' });
+    const w = plain({ nick: 'bridgebot', text: '[Discord] <carol> hi' });
+    expect(w.find('.body > .nick').text()).toBe('carol');
+    expect(title(w)).toBeUndefined();
+    // Nor that person's colour: the relayed carol keeps her hashed one.
+    const hashed = plain({ nick: 'carol', networkId: 2 });
+    expect((w.find('.body > .nick').element as HTMLElement).style.color).toBe(
+      (hashed.find('.body > .nick').element as HTMLElement).style.color,
+    );
+  });
+});
