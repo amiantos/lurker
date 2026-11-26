@@ -271,9 +271,7 @@ const hoverActions = computed(
   () => canHover.value && !!settings.effective('look.message.hover_actions'),
 );
 const actionItalic = computed(() => !!settings.effective('look.action.italic'));
-const selfColor = computed<string | null>(
-  () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
-);
+const selfColor = computed<string | null>(() => nicks.selfColorOn(buffer.value?.networkId) ?? null);
 
 // Always the list's compact layout here (the panel is narrow like a phone), so
 // its settings apply: avatars, and the compact timestamp format with a date
@@ -513,7 +511,12 @@ const nickSet = computed((): Set<string> => {
 
 function segments(m: ThreadMessage, text: string | undefined): RenderSegment[] {
   const body = text ?? String(m.text ?? '');
-  return nicks.splitText(body, nickSet.value, selfLower.value) as RenderSegment[];
+  return nicks.splitText(
+    body,
+    nickSet.value,
+    selfLower.value,
+    buffer.value?.networkId,
+  ) as RenderSegment[];
 }
 
 // ─── Scrolling and read state ────────────────────────────────────────────

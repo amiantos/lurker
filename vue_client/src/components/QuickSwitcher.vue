@@ -103,7 +103,7 @@ function dmStyle(networkId: string | number, target: string): { color: string } 
   if (!isDmTarget(target)) return null;
   const selfNick = networks.states[networkId]?.nick;
   if (selfNick && target.toLowerCase() === selfNick.toLowerCase()) return null;
-  const c = nicks.color(target);
+  const c = nicks.color(target, networkId);
   return c ? { color: c } : null;
 }
 

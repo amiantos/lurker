@@ -648,9 +648,8 @@ const threadsHere = computed(
 // the row a `selected` background so users with no hover can see which message
 // the menu targets (#392). Cleared when the menu closes.
 const selectedMessageId = ref<number | null>(null);
-const selfColor = computed<string | null>(
-  () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
-);
+// Own nick: the theme's colour, or the one we published on this network (#1452).
+const selfColor = computed<string | null>(() => nicks.selfColorOn(buffer.value?.networkId) ?? null);
 // Compact mode uses its own format setting so users can run the per-line
 // time column at lower precision (default HH:mm) without affecting their
 // standard-layout timestamps. Note: `tsFormat` is referenced via `time()`
@@ -1897,7 +1896,7 @@ function prefixClass(m: ChatMessage | undefined) {
 function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
   if (m && nickRow(m)) {
     if (m.self) return { color: selfColor.value as string };
-    const c = nicks.color(m.nick ?? '');
+    const c = nicks.color(m.nick ?? '', buffer.value?.networkId);
     return c ? { color: c } : null;
   }
   // System-buffer lines tied to a network (#355) color the network name with
@@ -1941,7 +1940,12 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     segments = computed(() => {
       // An action's body includes its author, unlike a plain message.
       const text = m.type === 'action' ? `${m.nick} ${m.text || ''}` : m.text || '';
-      return nicks.splitText(text, nickSet.value, selfLower.value) as RenderSegment[];
+      return nicks.splitText(
+        text,
+        nickSet.value,
+        selfLower.value,
+        buffer.value?.networkId,
+      ) as RenderSegment[];
     });
     segmentsByMessage.set(m, segments);
   }

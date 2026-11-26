@@ -104,8 +104,8 @@ const isSelf = computed(() => {
 });
 
 const style = computed(() => {
-  if (isSelf.value) return { color: nicks.selfColor.value };
-  const c = nicks.color(props.nick);
+  if (isSelf.value) return { color: nicks.selfColorOn(networkId.value) };
+  const c = nicks.color(props.nick, networkId.value);
   return c ? { color: c } : null;
 });
 </script>

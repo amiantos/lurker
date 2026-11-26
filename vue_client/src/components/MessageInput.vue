@@ -1129,7 +1129,7 @@ function buildNickStripItems(buf: Buffer, networkId: number, prefix: string): Ni
     displayNames.plainDisplayNameFor(networkId, nick),
   )
     .slice(0, 30)
-    .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick) }));
+    .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick, networkId) }));
 }
 
 // Same recency ordering the ChannelPicker uses, so in-place Tab-completion and

@@ -156,7 +156,7 @@ const shown = computed(() => {
 });
 
 const tsFormat = computed(() => settings.effective('look.buffer.time_format'));
-const selfColor = computed(() => settings.effective('look.nick.self_color'));
+const selfColor = computed(() => nicks.selfColorOn(props.message.networkId));
 
 // History rows are out-of-buffer (search/highlights), so a bare HH:mm is
 // ambiguous — prepend the calendar date. Skipped if the user's format
@@ -189,8 +189,8 @@ const targetLabel = computed(() => {
 });
 
 const nickStyle = computed((): CSSProperties | null => {
-  if (line.value.self) return { color: selfColor.value as string };
-  const c = nicks.color(line.value.nick);
+  if (line.value.self) return { color: selfColor.value };
+  const c = nicks.color(line.value.nick, props.message.networkId);
   return c ? { color: c } : null;
 });
 </script>

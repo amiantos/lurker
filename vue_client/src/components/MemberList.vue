@@ -131,8 +131,8 @@ function nickStyle(m: BufferMember): { color: string } | null {
   // regardless of inline style, but skipping the inline color keeps the DOM
   // honest.
   if (isAway(m)) return null;
-  if (isSelf(m)) return { color: nicks.selfColor.value };
-  const c = nicks.color(nickOf(m));
+  if (isSelf(m)) return { color: nicks.selfColorOn(buffer.value?.networkId) };
+  const c = nicks.color(nickOf(m), buffer.value?.networkId);
   return c ? { color: c } : null;
 }
 // The prefix in the nick's colour, over its rank colour (#1403).
