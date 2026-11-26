@@ -1,9 +1,10 @@
 # IRCv3 Support — what we use, and why it matters to you
 
 > **Audience:** anyone evaluating Lurker's protocol support, plus contributors
-> deciding what to build next. Last verified against `main` @ `9df7bb9`.
-> The server source is authoritative; `file:line` references point into this
-> repository unless otherwise noted (e.g. upstream deps like irc-framework).
+> deciding what to build next. Last verified against `main` @ `3166b24`.
+> The server source is authoritative; file references name the function to look
+> for, and point into this repository unless otherwise noted (e.g. upstream deps
+> like irc-framework).
 
 Most clients publish a bare list of IRCv3 capability names. That tells you almost
 nothing — "we support `multi-prefix`" is not a feature, it's an implementation
@@ -36,27 +37,27 @@ refresh.
   one. Lurker shows the highest glyph, read from the network's own `PREFIX`, but
   tests the whole set when deciding which moderation actions to offer you, so
   someone who is both `+o` and `+v` is understood correctly.
-  <br>`vue_client/src/utils/memberPrefix.ts:20`, `vue_client/src/composables/useMemberActions.ts:199`
+  <br>`vue_client/src/utils/memberPrefix.ts` (`prefixOf`), `vue_client/src/composables/useMemberActions.ts` (`hasRankAtLeast`)
 - **`userhost-in-names`** — full `nick!ident@host` masks arrive with the member
   list, so hostmasks are known the moment you join rather than after a round-trip.
-  <br>`irc-framework/src/commands/handlers/channel.js:71`
+  <br>`irc-framework/src/commands/handlers/channel.js` (`RPL_NAMEREPLY`)
 - **`away-notify`** — away state updates live, with no polling.
-  <br>`server/services/ircConnection.ts:1845`
+  <br>`server/services/ircConnection.ts` (the `away` and `back` handlers)
 - **`whox`** — on joining, Lurker issues a single extended `WHO` to learn away state
   for the whole channel at once, instead of one query per member. `away-notify` keeps
   it current from then on.
-  <br>`server/services/ircConnection.ts:2326`
+  <br>`server/services/ircConnection.ts` (`sendAwaySyncWho`)
 - **`chghost`** — when someone's hostmask changes (typically a cloak applied after
   they identify), you see one clean line and the nicklist updates in place, rather
   than a fake disconnect-and-rejoin.
-  <br>`server/services/ircConnection.ts:1405`
+  <br>`server/services/ircConnection.ts` (the `user updated` handler)
 - **`extended-join`**, **`account-notify`** — a member's registered account is known
   on join and stays current if they identify or log out later, without Lurker having
   to run `WHOIS` at you. Account changes update the nicklist **silently**: on
   networks like Libera, identifying fires an account change and a cloak change
   back-to-back, and rendering both would print two lines per identify in every
   channel you share.
-  <br>`server/services/ircConnection.ts:1467`
+  <br>`server/services/ircConnection.ts` (the `join` and `account` handlers)
 
 ### People have names and faces, where the network keeps them
 
@@ -125,18 +126,18 @@ only works if timestamps are trustworthy.
   ordering. Lurker normalises these to a canonical UTC form on the way in, and falls
   back to receive time for implausibly far-future stamps so one clock-skewed server
   can't reorder your buffer list.
-  <br>`server/services/ircConnection.ts:294`
+  <br>`server/services/ircConnection.ts` (`normalizeEventTime`)
 - **`echo-message`** — your own sent messages come back from the server, and _that_
   copy is the one Lurker stores. It's the only way your own messages learn their
   server-assigned ID and authoritative timestamp, which is what keeps them ordered
   identically across every device you're signed in on.
-  <br>`server/services/ircConnection.ts:1533`
+  <br>`server/services/ircConnection.ts` (`echoActive`, the `message` handler)
 - **`msgid`** — on networks that send one, each message's server-assigned ID is
   stored and indexed. Messages on networks that don't send them, and messages from
   before Lurker kept them, have none. A message the network sends twice under the
   same ID, in the same channel or conversation, is stored once. Reactions and replies
   are anchored on it.
-  <br>`server/services/ircConnection.ts:2434`
+  <br>`server/services/ircConnection.ts` (the `message` handler)
 - **`draft/chathistory`** — what you missed while Lurker was off the network comes
   back. On a network that keeps history (ergo, soju, another Lurker), every rejoin
   asks for the lines between the newest one the channel holds and the join, and
@@ -170,14 +171,14 @@ other people's chatter. One line too long for a single IRC message goes the same
 way. Incoming multi-line messages are reassembled the same way.
 
 - **`batch`**, **`draft/multiline`**, **`message-tags`**
-  <br>`server/services/ircConnection.ts:518`
+  <br>`server/services/ircConnection.ts` (`sendMultiline`, `accumulateMultiline`, `flushMultiline`)
 
 ### Replies show what they answer
 
 A reply opens with a faded quote of the message it answers, like `╭─ <alice> hi?`,
 and clicking it jumps to the original. The quote is part of the reply, so a reply
 doesn't break up someone's run of messages. A reply to one of your own messages counts
-as a highlight, even when it doesn't mention your nick. Web client only for now.
+as a highlight, even when it doesn't mention your nick.
 
 - **`+reply`** (and the older **`+draft/reply`**, read and sent alongside it), which
   requires **`message-tags`**. Lurker finds the original by its `msgid` in the same
@@ -186,8 +187,8 @@ as a highlight, even when it doesn't mention your nick. Web client only for now.
   Replies you send start with `nick: ` too, so people on clients without reply support
   still see who you're answering. On a network whose `CLIENTTAGDENY` refuses the tag,
   or on an E2E channel, the reply goes out as a plain message.
-  <br>`server/services/ircConnection.ts:2436` (receive), `:8305` (send),
-  `server/db/messages.ts:317` (the quote)
+  <br>`server/services/ircConnection.ts` (the `message` handler, `replyTags`),
+  `server/db/messages.ts` (`replyContextOf`)
 - **Through ZNC, or on a network without `echo-message`,** a reply to one of your own
   messages shows without the quote, and you can't react to your own messages. Lurker
   learns the `msgid` of a message you send from the network's echo. ZNC answers
@@ -211,7 +212,6 @@ as a highlight, even when it doesn't mention your nick. Web client only for now.
 Emoji (or short text) reactions show as chips under the message they're on, with a
 count; click one to add yours or take it back. Other people's reactions to your
 messages show up in the activity view beside your highlights. They don't ping you.
-Web client only for now.
 
 - **`+draft/react`** and **`+draft/unreact`**, sent on `TAGMSG` and anchored to a
   message by **`+reply`** / **`+draft/reply`** (each name the network allows). Sending
@@ -223,7 +223,7 @@ Web client only for now.
   be cleartext about an encrypted line. Other people's reactions there still show,
   read-only. New reactions from someone you ignore are dropped; ones they gave before
   you ignored them stay. Reactions aren't replayed to bouncer clients yet (#991).
-  <br>`server/services/ircConnection.ts:3926` (receive), `:8321` (send)
+  <br>`server/services/ircConnection.ts` (the `tagmsg` handler, `sendReaction`)
 
 ### A deleted message is deleted here too
 
@@ -277,8 +277,7 @@ An op can do it from Lurker with `/rename #newname [reason]`.
 ### You can see when someone is typing
 
 Typing indicators in channels and DMs, both directions — Lurker sends yours and
-displays other people's. Currently a web-client feature; the iOS app doesn't render
-them yet.
+displays other people's.
 
 - **`+typing`** (carried over `TAGMSG`), which requires **`message-tags`** — so it's
   automatically off on networks that don't speak IRCv3, because those answer every
@@ -290,7 +289,7 @@ them yet.
   At most one notification goes to a target every three seconds, carrying your
   newest state (the spec's rule), so typing never uses up the flood allowance your
   message needs; a message you send takes back any typing notification still waiting.
-  <br>`server/services/ircConnection.ts:4873` (send), `:2746` (receive)
+  <br>`server/services/ircConnection.ts` (`sendTyping`, the `tagmsg` handler)
 
 ### You can see when your DM peers are around
 
@@ -300,11 +299,11 @@ Presence dots on DMs, without Lurker hammering the network with `WHOIS` polls.
   specific people connect or disconnect. Networks without it get no presence
   tracking at all; we deliberately don't fall back to polling, because polling
   every open DM's peer is abusive to the network.
-  <br>`server/services/ircConnection.ts:1298` (ISUPPORT gate), `:2891` (seed)
+  <br>`server/services/ircConnection.ts` (`monitorLimitFromIsupport`, `seedMonitorWatch`)
 - **`extended-monitor`** — extends that to away/back state for people you share no
   channel with, which is what makes presence useful for DM peers rather than just
   channel regulars.
-  <br>`server/services/ircConnection.ts:880`
+  <br>`server/services/ircConnection.ts` (the constructor's `requestCap` calls)
 
 ### End-to-end encryption can identify who it's talking to
 
@@ -313,23 +312,26 @@ a nickname, since nicknames are trivially reassigned.
 
 - **`userhost-in-names`** — supplies that identity for everyone in a channel from
   the moment you join. Without it there's nothing stable to pin a key to.
-  <br>`server/services/ircConnection.ts:3866`
+  <br>`server/services/ircConnection.ts` (`buildE2eHandle`)
 
 ### Connecting works, and failure is legible
 
-- **`sasl`** (3.1 / 3.2, PLAIN) — proper account authentication rather than
-  `/msg NickServ`. Under 3.2, Lurker reads the server's advertised mechanism list
-  and fails fast with a clear reason if PLAIN isn't offered, instead of hanging. A
+- **`sasl`** (3.1 / 3.2, PLAIN and EXTERNAL) — proper account authentication rather
+  than `/msg NickServ`. With a password Lurker uses PLAIN; with a client certificate
+  and no password it uses EXTERNAL. Under 3.2, the server's advertised mechanism list
+  is read, and Lurker fails fast with a clear reason if the one it needs isn't
+  offered, instead of hanging. A
   genuine authentication failure is treated as _terminal_ — Lurker stops retrying
   and tells you, rather than looping against a password that will never work.
-  <br>`server/services/ircConnection.ts:3115`, `:959`
+  <br>`server/services/ircConnection.ts` (`connect`, the `sasl failed` handler, `isTerminalSaslFailure`),
+  `irc-framework/src/commands/handlers/registration.js`
 - **`cap-3.1` / `cap-3.2`** — versioned capability negotiation, which is how the
   SASL mechanism list is readable at all.
 - **`cap-notify`** — if a network enables a capability mid-session (common right
   after a services upgrade), it's picked up without you reconnecting.
 - **`invite-notify`** — invites are recorded as a real "X invited Y" line that
   survives in your history.
-  <br>`server/services/ircConnection.ts:1974`
+  <br>`server/services/ircConnection.ts` (the `invite` handler)
 
 ---
 
@@ -347,7 +349,7 @@ we advertise only what we actually implement.
 | Backlog replays at its original timestamps, not at attach time                                               | `server-time`                                                 |
 | Scrollback on demand — page back through Lurker's full stored history from your terminal client              | `draft/chathistory`                                           |
 | Joins, parts, quits, nick changes, kicks, and mode and topic changes in that scrollback                      | `draft/event-playback`                                        |
-| What you've read in one client is read in the others, and in the web and iOS apps                            | `draft/read-marker`                                           |
+| What you've read in one client is read in the others, and in the web and mobile apps                         | `draft/read-marker`                                           |
 | A client connecting in the background doesn't count as you being here                                        | `draft/pre-away`                                              |
 | Your own sent messages echoed back, if your client wants them                                                | `echo-message`                                                |
 | Your outgoing DMs attributed to you correctly in replay                                                      | `znc.in/self-message`                                         |
@@ -375,10 +377,10 @@ Implementation notes worth knowing if you're writing against it:
   one, or the message predates Lurker keeping them), or if it's a decrypted E2E
   message, whose ID belongs to the encrypted line. Message references are
   `timestamp` only, as with soju.
-  <br>`server/services/bouncer.ts:177`, `:570`
+  <br>`server/services/bouncer.ts` (`MAX_CHATHISTORY`, `handleChatHistory`)
 - A client that negotiates `draft/chathistory` gets no playback on attach, as with
   soju. It fetches the history it wants itself, so it doesn't see the same lines twice.
-  <br>`server/services/bouncer.ts:2016`
+  <br>`server/services/bouncer.ts` (`sendPlayback`)
 - With `draft/event-playback`, history also has joins, parts, quits, nick changes,
   kicks, and mode and topic changes, and they count toward the limit, as with soju.
   Events that name your current nick are left out: your own join, part, quit or nick
@@ -387,17 +389,17 @@ Implementation notes worth knowing if you're writing against it:
   invites aren't replayed, a JOIN is sent without extended-join's account and
   realname, and by default join, part, quit, nick and mode lines are kept for 7 days.
   Playback on attach stays messages only.
-  <br>`server/db/messages.ts:617`, `server/services/bouncer.ts:2089`
+  <br>`server/db/messages.ts` (`loadHistoryWindow`), `server/services/bouncer.ts` (`sendChatHistoryBatch`)
 - Tags that only a server may set — `time`, `account`, `msgid`, `label`, `batch` —
   are stripped from anything an attached client sends, so a downstream client can't
   forge them.
-  <br>`server/services/bouncer.ts:302`
+  <br>`server/services/bouncer.ts` (`parseClientLine`)
 - Caps whose lines come from the network (`away-notify`, `account-notify`,
   `account-tag`, `chghost`, `extended-join`, `multi-prefix`, `userhost-in-names`) are
   offered only while the network you bind has them, as soju does. `CAP LS 302` lists
   them before you pick a network, then `CAP DEL` takes back any that network lacks, and
   `CAP NEW` offers them again when it reconnects.
-  <br>`server/services/bouncer.ts:157`
+  <br>`server/services/bouncer.ts` (`PASSTHROUGH_CAPS`, `updateSupportedCaps`)
 - What the network sends is trimmed to the caps your client negotiated, as soju and ZNC
   do: no `AWAY` without `away-notify`, a bare `JOIN` without `extended-join`, one prefix
   per nick in NAMES and WHO without `multi-prefix`, and so on. Without `chghost`, a host
@@ -409,37 +411,37 @@ Implementation notes worth knowing if you're writing against it:
   `L` and `S` from the client's list, and sends `730` and `731` only to the clients
   watching that nick. Everyone shares the network's limit, a client's list holds at most
   1000 nicks, and a nick that doesn't fit gets `734`.
-  <br>`server/services/bouncer.ts:2416`, `server/services/monitorList.ts`
+  <br>`server/services/bouncer.ts` (`handleMonitor`), `server/services/monitorList.ts`
 - Someone's away, account, host and realname changes reach a client that shares a
   channel with them. With `extended-monitor`, they also reach a client whose own
   `MONITOR` list has them, but not other clients: the network sends them for every nick
   on its one list, including Lurker's DM contacts and other clients' watches (soju
   sends them to every client). Both names are offered while the network has either.
-  <br>`server/services/bouncerClientFilter.ts:401`
+  <br>`server/services/bouncerClientFilter.ts` (`inAudience`)
 - `PART` leaves the channel and the channel stays in Lurker's list, dimmed, with its
   scrollback — the same thing `/part` does in the web app, and no longer rejoining on
-  connect. Closing that window (in the web or iOS app; there's no way to ask for it
+  connect. Closing that window (in the web or mobile apps; there's no way to ask for it
   from here) sends no second `PART`, because a network answers one for a channel it
   knows you left with `442`, and every attached client would be handed that error for
   a command nobody issued. A `PART` you send is forwarded either way — it's your
   command, and the server's answer to it is yours to see. ZNC and gamja both decline
   to send a `PART` for a channel they aren't on; soju and The Lounge never get there,
   because their own `PART` drops the channel outright.
-  <br>`server/services/wsHub.ts` (`closeBuffer`), `server/services/bouncer.ts:2415`
+  <br>`server/services/wsHub.ts` (`closeBuffer`), `server/services/ircManager.ts` (`partChannel`)
 
-- Read markers are the account's, the same unread position the web and iOS apps show.
+- Read markers are the account's, the same unread position the web and mobile apps show.
   `MARKREAD` with a time moves it to the newest message at or before that time, and
   every client on the network that negotiated `draft/read-marker` hears the move, as do
   the apps. A channel's marker comes after its `JOIN`, before `NAMES`; ask for a DM's
   with `MARKREAD <nick>`.
-  <br>`server/services/bouncer.ts:2208`, `server/services/ircManager.ts:948`
-- Away is the account's, as it is in the web and iOS apps. `AWAY` from any client sets
+  <br>`server/services/bouncer.ts` (`handleMarkRead`), `server/services/ircManager.ts` (`markRead`)
+- Away is the account's, as it is in the web and mobile apps. `AWAY` from any client sets
   or clears it on every network. That client gets its `305` or `306`, and so does every
   other client, including one that attaches while you're away. `AWAY *` (from
   `draft/pre-away`) marks a connection that isn't you, such as goguma's background sync:
   it leaves your away alone. Any other attached client counts as you being here, so
   auto-away waits until the last one goes.
-  <br>`server/services/bouncer.ts:2370`, `server/services/presence.ts:47`
+  <br>`server/services/bouncer.ts` (`handleAway`), `server/services/presence.ts` (`evaluatePresence`)
 - A reply goes only to whoever asked: your client, another attached client, the web
   app, or Lurker itself, which sends `MODE` and `WHO` when it joins a channel. A
   network's replies don't say who asked, so Lurker matches them to its queries in the
@@ -467,7 +469,7 @@ Implementation notes worth knowing if you're writing against it:
   that failed to connect says why in its `error` attribute until it connects. A client
   attached to a network that's deleted is disconnected. Networks are managed in Lurker
   itself, so `ADDNETWORK`, `CHANGENETWORK` and `DELNETWORK` are refused.
-  <br>`server/services/bouncer.ts:1631`
+  <br>`server/services/bouncer.ts` (`onNetworkChanged`)
 - `soju.im/FILEHOST` points your client at `<PUBLIC_BASE_URL>/api/filehost`. It's only
   advertised when `PUBLIC_BASE_URL` is set to an https URL and your account has an
   uploader. Your client uploads there with the credentials it logged in with: HTTP Basic
@@ -478,7 +480,7 @@ Implementation notes worth knowing if you're writing against it:
   `201 Created` with a `Location`; errors are plain text. Failed logins count toward the
   same limit as the web sign-in. A network's own `FILEHOST` token is never passed on, so
   your client can't send your Lurker password to the network's upload server.
-  <br>`server/routes/filehost.ts`, `server/services/bouncer.ts:584`
+  <br>`server/routes/filehost.ts`, `server/services/bouncer.ts` (`filehostToken`)
 
 ---
 
@@ -488,40 +490,40 @@ Capability names as they appear on [ircv3.net](https://ircv3.net/software/client
 "Client" is Lurker connecting out to a network; "Bouncer" is your IRC client
 attaching to Lurker.
 
-| Capability                              | Client | Bouncer |
-| --------------------------------------- | :----: | :-----: |
-| `cap-3.1`, `cap-3.2`                    |   ✅   |   ✅    |
-| `cap-notify`                            |   ✅   |   ✅    |
-| `sasl-3.1`, `sasl-3.2` (PLAIN)          |   ✅   |   ✅    |
-| `server-time`                           |   ✅   |   ✅    |
-| `message-tags`                          |   ✅   |   ✅    |
-| `msgid`                                 |   ✅   |   ✅    |
-| `echo-message`                          |   ✅   |   ✅    |
-| `batch`                                 |   ✅   |   ✅    |
-| `draft/multiline`                       |   ✅   |    —    |
-| `draft/metadata-2`                      |   ✅   |   ✅    |
-| `+typing`                               |   ✅   |    —    |
-| `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
-| `+reply`, `+draft/reply`                |   ✅   |    —    |
-| `draft/message-redaction`               |   ✅   |   ✅    |
-| `draft/channel-rename`                  |   ✅   |   ✅    |
-| `draft/chathistory`                     |   ✅   |   ✅    |
-| `draft/event-playback`                  |   ✅   |   ✅    |
-| `draft/read-marker`                     |   —    |   ✅    |
-| `draft/pre-away`                        |   —    |   ✅    |
-| `multi-prefix`                          |   ✅   |   ✅    |
-| `userhost-in-names`                     |   ✅   |   ✅    |
-| `away-notify`                           |   ✅   |   ✅    |
-| `extended-join`                         |   ✅   |   ✅    |
-| `account-notify`                        |   ✅   |   ✅    |
-| `chghost`                               |   ✅   |   ✅    |
-| `invite-notify`                         |   ✅   |   ✅    |
-| `monitor`                               |   ✅   |   ✅    |
-| `extended-monitor`                      |   ✅   |   ✅    |
-| `whox`                                  |   ✅   |    —    |
-| `znc.in/self-message`                   |   —    |   ✅    |
-| `soju.im/bouncer-networks` (+`-notify`) |   —    |   ✅    |
-| `soju.im/FILEHOST`                      |   —    |   ✅    |
+| Capability                                           | Client | Bouncer |
+| ---------------------------------------------------- | :----: | :-----: |
+| `cap-3.1`, `cap-3.2`                                 |   ✅   |   ✅    |
+| `cap-notify`                                         |   ✅   |   ✅    |
+| `sasl-3.1`, `sasl-3.2` (PLAIN; EXTERNAL as a client) |   ✅   |   ✅    |
+| `server-time`                                        |   ✅   |   ✅    |
+| `message-tags`                                       |   ✅   |   ✅    |
+| `msgid`                                              |   ✅   |   ✅    |
+| `echo-message`                                       |   ✅   |   ✅    |
+| `batch`                                              |   ✅   |   ✅    |
+| `draft/multiline`                                    |   ✅   |    —    |
+| `draft/metadata-2`                                   |   ✅   |   ✅    |
+| `+typing`                                            |   ✅   |    —    |
+| `+draft/react`, `+draft/unreact`                     |   ✅   |    —    |
+| `+reply`, `+draft/reply`                             |   ✅   |    —    |
+| `draft/message-redaction`                            |   ✅   |   ✅    |
+| `draft/channel-rename`                               |   ✅   |   ✅    |
+| `draft/chathistory`                                  |   ✅   |   ✅    |
+| `draft/event-playback`                               |   ✅   |   ✅    |
+| `draft/read-marker`                                  |   —    |   ✅    |
+| `draft/pre-away`                                     |   —    |   ✅    |
+| `multi-prefix`                                       |   ✅   |   ✅    |
+| `userhost-in-names`                                  |   ✅   |   ✅    |
+| `away-notify`                                        |   ✅   |   ✅    |
+| `extended-join`                                      |   ✅   |   ✅    |
+| `account-notify`                                     |   ✅   |   ✅    |
+| `chghost`                                            |   ✅   |   ✅    |
+| `invite-notify`                                      |   ✅   |   ✅    |
+| `monitor`                                            |   ✅   |   ✅    |
+| `extended-monitor`                                   |   ✅   |   ✅    |
+| `whox`                                               |   ✅   |    —    |
+| `znc.in/self-message`                                |   —    |   ✅    |
+| `soju.im/bouncer-networks` (+`-notify`)              |   —    |   ✅    |
+| `soju.im/FILEHOST`                                   |   —    |   ✅    |
 
 ### Negotiated but not yet used
 
@@ -538,7 +540,8 @@ nothing in Lurker reads them yet. We'd rather say so than count them.
 ## Not supported yet
 
 Kept deliberately, as a roadmap. Ordered by what we think it would actually buy
-you, not by spec number.
+you, not by spec number. This list is about Lurker as a client, connecting out to
+a network.
 
 ### High value — natural fits for features Lurker already has
 
@@ -576,6 +579,3 @@ you, not by spec number.
   — how to attach a terminal client.
 - [Client Protocol & API](/CLIENT_PROTOCOL) — Lurker's own WebSocket protocol, which
   is what first-party clients speak. It is not IRC.
-- Lurker's entries in the IRCv3 support tables:
-  [Web Clients](https://ircv3.net/software/clients) and Bouncers, as
-  _Lurker_ and _Lurker (as Server)_.
