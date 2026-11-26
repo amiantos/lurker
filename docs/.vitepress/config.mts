@@ -48,6 +48,7 @@ export default defineConfig({
             { text: 'Notifications', link: '/guide/notifications' },
             { text: 'Files and Chat (DCC)', link: '/guide/dcc' },
             { text: 'Encryption (E2E)', link: '/guide/encryption' },
+            { text: 'Coming from The Lounge', link: '/guide/from-thelounge' },
           ],
         },
       ],

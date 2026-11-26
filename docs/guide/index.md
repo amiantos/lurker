@@ -30,6 +30,7 @@ Whichever you choose, the application is identical — this guide covers using i
 - [Notifications](/guide/notifications) — staying informed across devices.
 - [Files and Chat (DCC)](/guide/dcc) — receiving and sending files, XDCC bots, and direct chats.
 - [Encryption (E2E)](/guide/encryption) — end-to-end encrypted channels.
+- [Coming from The Lounge](/guide/from-thelounge) — keeping your nick colors.
 
 ::: info This guide is growing
 Lurker's manual is being written. Some chapters are outlines today — follow the
