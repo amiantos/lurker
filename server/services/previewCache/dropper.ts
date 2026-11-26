@@ -58,7 +58,30 @@ export async function readDropper(
   key: string,
   maxBytes: number,
 ): Promise<S3Read> {
-  return readRemote(publicDropperUrl(cfg, key), { 'accept-encoding': 'identity' }, maxBytes);
+  const url = publicDropperUrl(cfg, key);
+  // ⚠⚠ ASKED WITH A HEAD FIRST, and a GET is sent only for an object the HEAD found.
+  // This read is the cold probe as well (`lookup` on an index miss), so for every new
+  // image it runs BEFORE the first store and its answer is a 404. A CDN caches the 404
+  // to a GET: cdn.lurker.chat kept one for 3 minutes, ignored the query string in its
+  // cache key, and stamped it `max-age=14400` for the client. The store then landed, the
+  // descriptor minted this same URL, and a reader arriving inside those minutes was
+  // handed our own probe's 404 and held it for four hours, with no request reaching the
+  // cell to notice. Measured on the same edge: a HEAD for a missing key is answered
+  // uncached and leaves nothing behind for the GET that follows.
+  // ⚠ Anything but a 2xx or a 404 is an error, not a reason to try the GET anyway: the
+  // GET is the request that can poison the edge, and a miss here is only the proxy path.
+  try {
+    const head = await fetch(url, {
+      method: 'HEAD',
+      headers: { 'accept-encoding': 'identity' },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (head.status === 404) return { kind: 'missing' };
+    if (!head.ok) return { kind: 'error' };
+  } catch {
+    return { kind: 'error' };
+  }
+  return readRemote(url, { 'accept-encoding': 'identity' }, maxBytes);
 }
 
 /**
