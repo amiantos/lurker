@@ -121,6 +121,14 @@ describe('describeMode — the fallbacks', () => {
     expect(said).not.toContain('hunter2');
   });
 
+  it('keeps the withheld key’s place, so no other param reads as the key', () => {
+    expect(say([chan('+k', 'hunter2'), chan('+l', '50')])).toBe(' set +kl * 50');
+    expect(say([prefix('+o', 'alice'), chan('+k', 'hunter2')])).toBe(' set +ok alice *');
+    const segs = describeMode([chan('+k', 'hunter2'), prefix('+o', 'alice')]);
+    expect(segs.map((s) => (s.t === 'nick' ? s.nick : s.text)).join('')).toBe(' set +ko * alice');
+    expect(JSON.stringify(segs)).not.toContain('hunter2');
+  });
+
   it('does not narrate an unstamped change, because it cannot know what it is', () => {
     // Without `kind`, `+q alice` might grant ownership or quiet a mask. Guessing
     // is the bug the stamp exists to prevent, so this shows the mode string.

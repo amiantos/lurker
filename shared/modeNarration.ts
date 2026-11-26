@@ -16,7 +16,8 @@
 // framework, so the phone can port it as-is.
 //
 // Only a SINGLE-change message is narrated, and only for a reader who has event
-// consolidation on (`opts.raw` on describeMode). A message carrying several changes
+// consolidation ON. With it off the caller passes `opts.raw` to describeMode,
+// and a single change is shown as its mode string like the rest (#1431). A message carrying several changes
 // falls back to a compact mode string, matching gamja (which gates its
 // narration on `modeStr.length === 2`): "gave op to alice and banned *!*@host
 // and set the user limit to 50" is worse than `+o-b+l alice *!*@host 50`, and
@@ -125,13 +126,17 @@ function chanSegments(sign: string, letter: string, param?: string): ModeSegment
   return text(add ? ` set +${letter}` : ` unset +${letter}`);
 }
 
+/** What stands in a mode string where the channel key was. */
+const KEY_WITHHELD = '*';
+
 /**
- * A compact mode string for a message carrying more than one change, and for
- * anything else this can't narrate.
+ * A compact mode string: for a message carrying more than one change, for a
+ * single change when the reader has consolidation off (`opts.raw`), and for
+ * anything this can't narrate.
  *
  * Rebuilt from the parsed list rather than reusing the row's raw `text`,
  * because `text` is the wire form INCLUDING a `+k` key. Reconstructing is what
- * lets the key be dropped here the way it already is everywhere else (#476).
+ * lets the key be withheld here the way it already is everywhere else (#476).
  */
 function rawSegments(modes: readonly ModeChange[]): ModeSegment[] {
   // The form an operator would type (#1431): the letters run together under
@@ -140,22 +145,33 @@ function rawSegments(modes: readonly ModeChange[]): ModeSegment[] {
   let letters = '';
   let sign = '';
   const params: ModeSegment[] = [];
+  let shown = 0;
   for (const m of modes) {
     const s = m.mode.startsWith('-') ? '-' : '+';
     if (s !== sign) letters += s;
     sign = s;
     const letter = modeLetter(m.mode);
     letters += letter;
+    if (!m.param) continue;
     // The one param that is withheld; the letter still shows, so the reader
-    // knows a key was set.
-    if (!m.param || letter === 'k') continue;
+    // knows a key was set. It keeps its place in the list as `*`, or the
+    // params after it would sit under the wrong letters: `+kl hunter2 50`
+    // shown as `+kl 50` reads as a key of 50.
+    if (letter === 'k') {
+      params.push({ t: 'arg', text: KEY_WITHHELD });
+      continue;
+    }
+    shown += 1;
     // A member stays a nick here too: only the stamp says `+q alice` is one.
-    params.push(
-      { t: 'text', text: ' ' },
-      m.kind === 'prefix' ? { t: 'nick', nick: m.param } : { t: 'arg', text: m.param },
-    );
+    params.push(m.kind === 'prefix' ? { t: 'nick', nick: m.param } : { t: 'arg', text: m.param });
   }
-  return [{ t: 'text', text: ' set ' }, { t: 'arg', text: letters }, ...params];
+  // With no other param there is nothing to line up, and `+k` alone says it.
+  const list = shown > 0 ? params : [];
+  return [
+    { t: 'text', text: ' set ' },
+    { t: 'arg', text: letters },
+    ...list.flatMap((p): ModeSegment[] => [{ t: 'text', text: ' ' }, p]),
+  ];
 }
 
 /**
