@@ -82,7 +82,7 @@ works on every network, including those that keep no profile data, and it is
 kept with your notes: per network, per nick.
 
 - **`draft/metadata-2`** — Lurker subscribes to `display-name`, `avatar`,
-  `pronouns`, `homepage`, `status`, `color` and `lurker.chat/tz`, keeps a record per nick, and re-syncs
+  `pronouns`, `homepage`, `status`, `color` and `timezone`, keeps a record per nick, and re-syncs
   on every re-attach. A record outlives the nick: someone who signs off keeps
   their last known profile, so the lines they wrote keep their avatar, and it
   is remembered across restarts for as long as they have a line (`user_metadata_cache`).
@@ -100,9 +100,9 @@ kept with your notes: per network, per nick.
   generated tile in their nick colour. `color` is read only as `#rgb` or
   `#rrggbb` and is never painted as sent, since a raw hex fights every theme:
   each client keeps its hue and brings its lightness and chroma inside the
-  range of its theme's nick palette (in OKLCH; Halloy does the same). `lurker.chat/tz` is Lurker's own key, vendor-prefixed as
-  the spec asks of a non-standard one: an IANA zone name such as
-  `Europe/Berlin`; anything else is ignored.
+  range of its theme's nick palette (in OKLCH; Halloy does the same). `timezone` is an IANA zone name such as
+  `Europe/Berlin`; anything else is ignored. The key is proposed for the IRCv3
+  registry ([ircv3.github.io#659](https://github.com/ircv3/ircv3.github.io/pull/659)).
 - **Your own metadata** — saved per network when the server accepts a `SET`
   (from the web app, a bouncer client, or `/quote`), so one it refuses isn't
   sent again at every connect. After a fresh registration Lurker

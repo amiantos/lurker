@@ -173,7 +173,7 @@ function seedAlice(): { alice: User; net: Network; ruleId: number } {
   const rule = createRule(alice.id, { pattern: 'alice', kind: 'plain', case_sensitive: false });
   setNote({ userId: alice.id, networkId: net.id, nick: 'bob', note: 'lives in berlin' });
   const onBob = { userId: alice.id, networkId: net.id, nick: 'bob' };
-  setNickMetadata({ ...onBob, key: 'lurker.chat/tz', value: 'Europe/Berlin' });
+  setNickMetadata({ ...onBob, key: 'timezone', value: 'Europe/Berlin' });
   setNickMetadata({ ...onBob, key: 'display-name', value: null });
   saveNetworkMetadata(alice.id, net.id, 'display-name', 'Alice A.');
   saveNetworkMetadata(alice.id, net.id, 'status', null);
@@ -339,7 +339,7 @@ describe('importFromZipBuffer — roundtrip', () => {
       .all(bob.id);
     expect(bobNickMetadata).toEqual([
       { network_id: bobNets[0].id, nick: 'bob', key: 'display-name', value: null },
-      { network_id: bobNets[0].id, nick: 'bob', key: 'lurker.chat/tz', value: 'Europe/Berlin' },
+      { network_id: bobNets[0].id, nick: 'bob', key: 'timezone', value: 'Europe/Berlin' },
     ]);
 
     // Our own metadata (#1189) rides the network rekey, saved unsets and all.

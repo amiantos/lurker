@@ -97,8 +97,8 @@ describe('vetting a value', () => {
     expect(vetMetadataValue('color', '#FF0000')).toBe('#FF0000');
     expect(vetMetadataValue('color', 'red')).toBe('red');
     expect(vetMetadataValue('color', 'x'.repeat(65))).toBeNull();
-    expect(vetMetadataValue('lurker.chat/tz', 'europe/berlin')).toBe('europe/berlin');
-    expect(vetMetadataValue('lurker.chat/tz', '+01:00')).toBe('+01:00');
+    expect(vetMetadataValue('timezone', 'europe/berlin')).toBe('europe/berlin');
+    expect(vetMetadataValue('timezone', '+01:00')).toBe('+01:00');
   });
   it('treats an empty or oversized value as unset, never truncated', () => {
     expect(vetMetadataValue('display-name', '')).toBeNull();
@@ -147,7 +147,7 @@ describe('what a client is sent', () => {
     }
   });
   it('hands a client a time zone only when it is one, under the name given (#1450)', () => {
-    const tz = (zone: string) => view({ 'lurker.chat/tz': zone }).tz;
+    const tz = (zone: string) => view({ timezone: zone }).tz;
     expect(tz('europe/berlin')).toBe('Europe/Berlin');
     expect(tz('America/Los_Angeles')).toBe('America/Los_Angeles');
     expect(tz('UTC')).toBe('UTC');

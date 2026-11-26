@@ -1107,9 +1107,9 @@ describe('own metadata (#1189)', () => {
       'color',
       'display-name',
       'homepage',
-      'lurker.chat/tz',
       'pronouns',
       'status',
+      'timezone',
     ]);
   });
 

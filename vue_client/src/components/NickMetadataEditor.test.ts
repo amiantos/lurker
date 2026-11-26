@@ -121,7 +121,7 @@ describe('NickMetadataEditor (#1449)', () => {
         type: 'set-nick-metadata',
         networkId: 1,
         nick: 'bob',
-        key: 'lurker.chat/tz',
+        key: 'timezone',
         value: 'Europe/Berlin',
       },
     ]);
@@ -147,7 +147,7 @@ describe('NickMetadataEditor (#1449)', () => {
     useNickMetadataStore().applyUpdate(1, 'bob', {
       'display-name': 'Bob',
       color: '1',
-      'lurker.chat/tz': 'Asia/Tokyo',
+      timezone: 'Asia/Tokyo',
     });
     await nextTick();
     expect(wrapper!.find('.adds').exists()).toBe(false);
@@ -167,7 +167,7 @@ describe('NickMetadataEditor (#1449)', () => {
     useNickMetadataStore().applyUpdate(1, 'bob', {
       'display-name': 'Robert',
       color: '0',
-      'lurker.chat/tz': 'Europe/Berlin',
+      timezone: 'Europe/Berlin',
     });
     await nextTick();
     const row = (key: string) => wrapper!.find(`dd[data-key="${key}"]`);
@@ -178,7 +178,7 @@ describe('NickMetadataEditor (#1449)', () => {
     expect(theirs).toMatch(/^#[0-9a-f]{6}$/);
     expect(theirs).not.toBe('#00ff00');
     // The same zone on both sides: nothing to tell apart.
-    expect(row('lurker.chat/tz').find('.theirs').exists()).toBe(false);
+    expect(row('timezone').find('.theirs').exists()).toBe(false);
   });
 
   it('lists what is set, with Reset where they have a value and Remove where not', async () => {
@@ -186,7 +186,7 @@ describe('NickMetadataEditor (#1449)', () => {
     useNickMetadataStore().applyUpdate(1, 'bob', {
       'display-name': null,
       color: '1',
-      'lurker.chat/tz': 'Asia/Tokyo',
+      timezone: 'Asia/Tokyo',
     });
     await nextTick();
     const row = (key: string) => wrapper!.find(`dd[data-key="${key}"]`);
@@ -197,9 +197,9 @@ describe('NickMetadataEditor (#1449)', () => {
         .findAll('button')
         .map((b) => b.text()),
     ).toEqual(['Edit', 'Reset']);
-    expect(row('lurker.chat/tz').find('.yours').text()).toBe('Asia/Tokyo');
+    expect(row('timezone').find('.yours').text()).toBe('Asia/Tokyo');
     expect(
-      row('lurker.chat/tz')
+      row('timezone')
         .findAll('button')
         .map((b) => b.text()),
     ).toEqual(['Edit', 'Remove']);

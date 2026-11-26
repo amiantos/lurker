@@ -122,7 +122,7 @@ describe('profile editor', () => {
     expect(wrapper.text()).toMatch(/\d:\d\d.* there now\./);
     await wrapper.find('form').trigger('submit');
     await flushPromises();
-    expect(calls.at(-1)?.body).toEqual({ values: { 'lurker.chat/tz': 'Europe/Berlin' } });
+    expect(calls.at(-1)?.body).toEqual({ values: { timezone: 'Europe/Berlin' } });
   });
 
   it('lets a colour saved as any text by an older version through until it is touched', async () => {

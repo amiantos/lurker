@@ -258,14 +258,7 @@ import {
 const props = defineProps<{ networkId: number }>();
 
 // The keys Lurker shows; the template names each.
-type Field =
-  | 'display-name'
-  | 'avatar'
-  | 'pronouns'
-  | 'homepage'
-  | 'status'
-  | 'color'
-  | 'lurker.chat/tz';
+type Field = 'display-name' | 'avatar' | 'pronouns' | 'homepage' | 'status' | 'color' | 'timezone';
 const FIELDS = METADATA_SUB_KEYS as Field[];
 
 const networks = useNetworksStore();
