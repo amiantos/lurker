@@ -199,3 +199,36 @@ describe('messages held in the send queue (#1326)', () => {
     expect(ids(store)).toEqual([]);
   });
 });
+
+describe('casemapping (#1425)', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('takes the network’s mapping from the snapshot, and null when there is none', () => {
+    const networks = useNetworksStore();
+    networks.applySnapshot([
+      { networkId: 1, channels: [], casemapping: 'rfc1459' },
+      { networkId: 2, channels: [] },
+      // A value this build doesn't know folds as an undeclared network.
+      { networkId: 3, channels: [], casemapping: 'klingon' as never },
+    ]);
+    expect(networks.states[1]?.casemapping).toBe('rfc1459');
+    expect(networks.states[2]?.casemapping).toBeNull();
+    expect(networks.states[3]?.casemapping).toBeNull();
+  });
+
+  it('is replaced by a casemapping frame, and folds names from then on', async () => {
+    const { foldName, sameName } = await import('../utils/foldName.js');
+    const networks = useNetworksStore();
+    networks.applySnapshot([{ networkId: 1, channels: [] }]);
+    expect(sameName(1, 'foo[m]', 'FOO{M}')).toBe(false);
+    networks.applyCasemapping({ networkId: 1, casemapping: 'rfc1459' });
+    expect(sameName(1, 'foo[m]', 'FOO{M}')).toBe(true);
+    expect(foldName(1, 'A[\\]^')).toBe('a{|}~');
+    networks.applyCasemapping({ networkId: 1, casemapping: 'rfc1459-strict' });
+    expect(foldName(1, 'A[\\]^')).toBe('a{|}^');
+    // No network (the system buffer), or one never heard of: lowercase.
+    expect(foldName(null, 'ÉLAN[')).toBe('élan[');
+    expect(foldName(99, 'ÉLAN[')).toBe('élan[');
+    expect(sameName(1, '', 'a')).toBe(false);
+  });
+});

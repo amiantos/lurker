@@ -490,6 +490,7 @@ import {
 } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
+import { foldName, sameName } from '../utils/foldName.js';
 import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
@@ -828,12 +829,12 @@ const initialLoading = computed(() => {
   return b.loadingHistory || b.unseeded || b.pendingRefetch;
 });
 
-const selfLower = computed(() => {
+// The app-scoped system buffer has no network (and no self nick).
+const selfNickRaw = computed(() => {
   const b = buffer.value;
-  // The app-scoped system buffer has no network (and no self nick).
-  const sn = b && b.networkId != null ? networks.states[b.networkId]?.nick : null;
-  return sn ? sn.toLowerCase() : null;
+  return (b && b.networkId != null ? networks.states[b.networkId]?.nick : null) || null;
 });
+const selfLower = computed(() => selfNickRaw.value?.toLowerCase() ?? null);
 
 const nickSet = computed((): Set<string> => {
   const b = buffer.value;
@@ -1108,21 +1109,21 @@ watch(
 
 const showModePrefix = computed(() => !!settings.effective('look.nick.show_mode_prefix'));
 
-// Look up a speaker in the active buffer by case-folded nick — servers send
-// case-variant nicks, so we never key on exact casing.
+// Look up a speaker in the active buffer by folded nick — servers send
+// case-variant nicks, so we never key on exact casing. Folded by the network's
+// casemapping (#1425): under rfc1459 `foo[m]` and `foo{m}` are one nick, and a
+// line said as one keeps its `@` when the member list holds the other.
 function nickMember(nick: string): BufferMember | undefined {
   const b = buffer.value;
   if (!b || !nick) return undefined;
-  const lc = nick.toLowerCase();
-  return b.members?.find((m) => m.nick.toLowerCase() === lc);
+  const folded = foldName(b.networkId, nick);
+  return b.members?.find((m) => foldName(b.networkId, m.nick) === folded);
 }
 
 // The current user's own modes in the active channel, gating the operator
 // actions in the nick menu (mirrors MemberList's selfModes).
 const selfModes = computed<string[]>(() => {
-  const sl = selfLower.value;
-  if (!sl) return [];
-  const me = buffer.value?.members?.find((m) => m.nick.toLowerCase() === sl);
+  const me = selfNickRaw.value ? nickMember(selfNickRaw.value) : undefined;
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
 
@@ -1146,9 +1147,8 @@ function authorModes(m: ChatMessage | undefined): string[] | undefined {
 }
 
 function nickIsSelf(member: MemberLike | string): boolean {
-  const sl = selfLower.value;
   const nick = typeof member === 'string' ? member : member.nick;
-  return !!sl && !!nick && nick.toLowerCase() === sl;
+  return sameName(buffer.value?.networkId, nick, selfNickRaw.value);
 }
 
 function nickMenuContext(): MemberContext {

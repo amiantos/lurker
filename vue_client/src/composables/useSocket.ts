@@ -364,6 +364,9 @@ function applyEvent(event: any): boolean {
     case 'mode-spec':
       networks.applyModeSpec(event);
       break;
+    case 'casemapping':
+      networks.applyCasemapping(event);
+      break;
     case 'react-support':
       networks.applyReactSupport(event);
       break;

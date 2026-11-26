@@ -423,6 +423,7 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   canReply,                           // a reply carries its tag
   canRedact,                          // a line can be deleted (draft/message-redaction)
   userhostBytes,                      // for estimating where a long message splits — see below
+  casemapping,                        // 'ascii'|'rfc1459'|'rfc1459-strict'|'rfc7613'|null — how names fold here; see below
   away: { active, since, message, autoSet, backAt } | null,
   channels: [ { name, topic, topicSetBy, topicSetAt,
                 modes, modeParams: { "<letter>": "<value>" }, createdAt,
@@ -470,6 +471,17 @@ on the server so a client never has to read 005 (`shared/channelModes.ts`):
   means no limit.
 - `topicLen` — the longest topic the server accepts, in bytes; `null` when not
   advertised.
+
+**`casemapping` is how this network folds names**, from its ISUPPORT
+`CASEMAPPING`: `ascii` folds A-Z only; `rfc1459` also folds `[ \ ] ^` to
+`{ | } ~`; `rfc1459-strict` folds `[ \ ]` but not `^`; `rfc7613` and `null` (the
+network never declared one) fold with Unicode lowercase. Compare nicks and
+targets by it — `foo[m]` and `foo{m}` are one nick under `rfc1459` — and never
+by a bare lowercase. It is a property of the network, so a disconnected
+network's blob carries it; a `casemapping` frame replaces it when the network
+declares a different one. Absent on a server that predates it: fold with
+lowercase. Maps the server keys by "lowercased nick" (`peerPresence` and its
+neighbours) are keyed by the server and looked up as sent.
 
 ⚠ `modeSpec` is **`null` until the network's registration burst has ended** —
 before then the server only has defaults, and a default is not the network
@@ -998,6 +1010,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `channel-topic`               | E   | `topic, setBy, setAt` — 332/331/333: set state, render nothing                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key                                                                                                                                                                                                                                                                                                                                                                                                |
 | `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `casemapping`                 | E   | `casemapping` — how the network folds names changed (§5.1); sent ahead of any `buffer-renamed` it causes                                                                                                                                                                                                                                                                                                                                                               |
 | `react-support`               | E   | the `canReact` family, `canReply` or `canRedact` changed (§5.1)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `line-budget`                 | E   | `userhostBytes` — the bytes ahead of your text on each line changed (§5.1)                                                                                                                                                                                                                                                                                                                                                                                             |
 | `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                                                                                                                                                                                                                                                                                                                                                                                                         |

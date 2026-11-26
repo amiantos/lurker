@@ -6054,6 +6054,18 @@ describe('CASEMAPPING capture + refold (#707)', () => {
       merged: true,
       bufferId: merged!.id,
     });
+    // Clients are told the fold (#1425), before the merge it caused: they
+    // match the names in that frame by it.
+    const types = published.map((e) => e.type);
+    expect(published.find((e) => e.type === 'casemapping')).toMatchObject({
+      casemapping: 'rfc1459',
+    });
+    expect(types.indexOf('casemapping')).toBeLessThan(types.indexOf('buffer-renamed'));
+    expect(conn.snapshot().casemapping).toBe('rfc1459');
+    // Declared again on a reconnect: nothing changed, nothing sent.
+    published.length = 0;
+    raw005(conn, 'CHANTYPES=# CASEMAPPING=rfc1459 MONITOR=100');
+    expect(published.find((e) => e.type === 'casemapping')).toBeUndefined();
   });
 
   it("NEVER captures irc-framework's defaulted rfc1459 — no token, no store", () => {
@@ -6063,6 +6075,7 @@ describe('CASEMAPPING capture + refold (#707)', () => {
     expect(conn.client.network.options.CASEMAPPING).toBe('rfc1459');
     raw005(conn, 'CHANTYPES=# MONITOR=100');
     expect(getNetwork(network.id, network.user_id)?.casemapping).toBeNull();
+    expect(conn.snapshot().casemapping).toBeNull();
   });
 
   it('a declaration on a LATER 005 line still captures', async () => {

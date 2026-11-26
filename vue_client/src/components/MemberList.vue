@@ -42,6 +42,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
+import { sameName } from '../utils/foldName.js';
 import { useBuffersStore, type BufferMember, bufferNeedsHydration } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { useDisplayNames } from '../composables/useDisplayNames.js';
@@ -110,7 +111,7 @@ const memberPrefix = computed(() => networks.prefixFor(buffer.value?.networkId))
 const selfModes = computed<string[]>(() => {
   const sn = selfNick.value;
   if (!sn) return [];
-  const me = members.value.find((m) => nickOf(m).toLowerCase() === sn.toLowerCase());
+  const me = members.value.find((m) => sameName(buffer.value?.networkId, nickOf(m), sn));
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
 
@@ -123,8 +124,7 @@ watch(
 );
 
 function isSelf(m: BufferMember): boolean {
-  const sn = selfNick.value;
-  return !!sn && nickOf(m).toLowerCase() === sn.toLowerCase();
+  return sameName(buffer.value?.networkId, nickOf(m), selfNick.value);
 }
 function nickStyle(m: BufferMember): { color: string } | null {
   // Away members render in a flat muted color — the .away CSS rule wins

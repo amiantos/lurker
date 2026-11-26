@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import { normalizeCasemapping, type Casemapping } from '../../../shared/casemapping.js';
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
 import { useAuthStore } from './auth.js';
@@ -122,6 +123,11 @@ export interface NetworkState {
   // else null/absent. Drives the composer's multiline-aware SPLIT/FLOOD hint
   // and upload-as-.txt gate. Refreshed by the snapshot pushed on connect. (#381)
   multilineLimits?: MultilineLimits | null;
+  // How the network folds names (#1425): its ISUPPORT CASEMAPPING, or
+  // null/absent when it never declared one (fold with toLowerCase). Seeded by
+  // the snapshot, replaced by `casemapping` frames. Read through
+  // utils/foldName, never compared against directly.
+  casemapping?: Casemapping | null;
   // The network's channel-mode vocabulary, parsed from its ISUPPORT on the
   // server (#727). Seeded by the snapshot, replaced by `mode-spec` frames.
   modeSpec?: ModeSpec | null;
@@ -437,9 +443,14 @@ export const useNetworksStore = defineStore('networks', {
         const remembered = (this.states[snap.networkId]?.dccSecureChats ?? []).filter(
           (n) => !has(snap.dccSecureChats, n) && !has(snap.dccChats, n),
         );
-        map[snap.networkId] = remembered.length
+        const next = remembered.length
           ? { ...snap, dccSecureChats: [...(snap.dccSecureChats ?? []), ...remembered] }
           : snap;
+        // Normalized as applyCasemapping does: an unknown value folds as undeclared.
+        map[snap.networkId] = {
+          ...next,
+          casemapping: normalizeCasemapping(snap.casemapping) ?? null,
+        };
       }
       this.states = map;
     },
@@ -461,6 +472,14 @@ export const useNetworksStore = defineStore('networks', {
       this.states[event.networkId] = {
         ...existing,
         userModes: typeof event.modes === 'string' ? event.modes : '',
+      };
+    },
+    applyCasemapping(event: any) {
+      const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
+      // Normalized here: an unknown value must fold as "undeclared", not crash the fold.
+      this.states[event.networkId] = {
+        ...existing,
+        casemapping: normalizeCasemapping(event.casemapping) ?? null,
       };
     },
     applyModeSpec(event: any) {

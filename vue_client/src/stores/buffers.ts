@@ -18,6 +18,7 @@ import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
 import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
+import { foldName, sameName } from '../utils/foldName.js';
 
 const MAX_PER_BUFFER = 500;
 // The most rows one INCREMENTAL merge (prepend/append) may take from a single
@@ -153,9 +154,11 @@ function resolveExistingKey(
   if (buffers[exact]) return exact;
   if (target.startsWith(':')) return null;
   const nid = Number(networkId);
-  const lower = target.toLowerCase();
+  // By the network's own casemapping (#1425), as the server folds the registry:
+  // `#foo[bar]` and `#foo{bar}` are one channel under rfc1459.
+  const folded = foldName(nid, target);
   for (const [k, b] of Object.entries(buffers)) {
-    if (b.networkId === nid && b.target.toLowerCase() === lower) return k;
+    if (b.networkId === nid && foldName(nid, b.target) === folded) return k;
   }
   return null;
 }
@@ -568,15 +571,15 @@ export const useBuffersStore = defineStore('buffers', {
       (state) =>
       (networkId: number | string, nick: string): string | null | undefined => {
         if (!nick) return undefined;
-        const lc = nick.toLowerCase();
         // Coerce before comparing: buffers store networkId as a number, but the
         // signature accepts a string, and `'3' !== 3` would silently match
         // nothing rather than fail loudly. Same guard resolveExistingKey uses.
         const nid = Number(networkId);
+        const lc = foldName(nid, nick);
         for (const b of Object.values(state.buffers)) {
           if (b.networkId !== nid) continue;
           const m = b.members?.find(
-            (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
+            (x) => typeof x === 'object' && foldName(nid, x.nick || '') === lc,
           );
           if (m && m.account !== undefined) return m.account;
         }
@@ -600,20 +603,20 @@ export const useBuffersStore = defineStore('buffers', {
       (state) =>
       (networkId: number | string, nick: string): string | null => {
         if (!nick) return null;
-        const lc = nick.toLowerCase();
         const nid = Number(networkId);
+        const lc = foldName(nid, nick);
         for (const b of Object.values(state.buffers)) {
           if (b.networkId !== nid) continue;
           const m = b.members?.find(
-            (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
+            (x) => typeof x === 'object' && foldName(nid, x.nick || '') === lc,
           );
           if (m?.user && m?.host) return `${m.user}@${m.host}`;
         }
         for (const b of Object.values(state.buffers)) {
-          if (b.networkId !== nid || b.target.toLowerCase() !== lc) continue;
+          if (b.networkId !== nid || foldName(nid, b.target) !== lc) continue;
           for (let i = b.messages.length - 1; i >= 0; i--) {
             const msg = b.messages[i];
-            if (msg.self || (msg.nick || '').toLowerCase() !== lc) continue;
+            if (msg.self || foldName(nid, msg.nick || '') !== lc) continue;
             const uh = msg.userhost;
             if (typeof uh === 'string' && uh) {
               // Rows store the full mask (nick!user@host); the header wants
@@ -633,12 +636,13 @@ export const useBuffersStore = defineStore('buffers', {
     findDm:
       (state) =>
       (networkId: number | string, nick: string): Buffer | null => {
-        const lower = nick.toLowerCase();
+        const nid = Number(networkId);
+        const folded = foldName(nid, nick);
         return (
           Object.values(state.buffers).find(
             (b) =>
-              b.networkId === Number(networkId) &&
-              b.target.toLowerCase() === lower &&
+              b.networkId === nid &&
+              foldName(nid, b.target) === folded &&
               !isChannelTarget(b.target) &&
               !b.target.startsWith(':'),
           ) ?? null
@@ -1356,9 +1360,9 @@ export const useBuffersStore = defineStore('buffers', {
       const bufKey = resolveExistingKey(this.buffers, networkId, target);
       if (!bufKey) return;
       const buf = this.buffers[bufKey];
-      const lc = nick.toLowerCase();
+      const lc = foldName(buf.networkId, nick);
       const m = buf.members.find(
-        (x) => typeof x === 'object' && (x.nick || '').toLowerCase() === lc,
+        (x) => typeof x === 'object' && foldName(buf.networkId, x.nick || '') === lc,
       );
       if (!m) return;
       // Never let a patch blank out a nick, and skip keys the sender omitted so
@@ -1546,9 +1550,7 @@ export const useBuffersStore = defineStore('buffers', {
       // Buffer.networkId, so coerce a numeric-string id first — otherwise an
       // existing buffer wouldn't match and we'd send a duplicate JOIN.
       const nid = typeof networkId === 'string' ? Number(networkId) : networkId;
-      const existing = this.forNetwork(nid).find(
-        (b) => b.target.toLowerCase() === channel.toLowerCase(),
-      );
+      const existing = this.forNetwork(nid).find((b) => sameName(nid, b.target, channel));
       if (existing) {
         // Already open (joined, or parted with history) — never blank, so focus
         // it immediately. Re-send JOIN if we're not currently in it.
