@@ -158,3 +158,29 @@ describe('describeMode — the fallbacks', () => {
     expect(say([{ mode: '', param: 'x' }, prefix('+o', 'alice')])).toBe(' gave op to alice');
   });
 });
+
+describe('describeMode — raw, for a reader with consolidation off (#1431)', () => {
+  const raw = (modes: ModeChange[]) => describeMode(modes, null, { raw: true });
+  const text = (segs: ModeSegment[]) =>
+    segs.map((s) => (s.t === 'nick' ? s.nick : s.text)).join('');
+
+  it('shows a single change as its mode string, not a sentence', () => {
+    expect(text(raw([prefix('+v', 'alice')]))).toBe(' set +v alice');
+    expect(text(raw([prefix('-o', 'alice')]))).toBe(' set -o alice');
+    expect(text(raw([list('+b', '*!*@host')]))).toBe(' set +b *!*@host');
+    expect(text(raw([chan('+m')]))).toBe(' set +m');
+    expect(text(raw([chan('+l', '50')]))).toBe(' set +l 50');
+  });
+
+  it('still withholds the channel key', () => {
+    expect(text(raw([chan('+k', 'hunter2')]))).toBe(' set +k');
+  });
+
+  it('keeps a member a nick, and a mask an argument', () => {
+    expect(raw([prefix('+o', 'alice')])).toContainEqual({ t: 'nick', nick: 'alice' });
+    // `+q alice` on a network where q is the quiet list: a mask, never a nick.
+    expect(raw([list('+q', 'alice')])).not.toContainEqual({ t: 'nick', nick: 'alice' });
+    // Unstamped: not known to be a member, so not offered as one.
+    expect(raw([{ mode: '+o', param: 'alice' }])).not.toContainEqual({ t: 'nick', nick: 'alice' });
+  });
+});

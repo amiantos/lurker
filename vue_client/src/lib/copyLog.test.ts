@@ -21,6 +21,7 @@ function ctx(over: Partial<LogContext<Msg>> = {}): LogContext<Msg> {
     accountSuffix: (m) => (m.account ? ` [${m.account}]` : ''),
     newMask: () => 'new@host',
     modePhrase: (g) => ` were given +${g.letter}`,
+    rawModes: () => false,
     ...over,
   };
 }
@@ -133,6 +134,18 @@ describe('logLine', () => {
       modes: [{ mode: '+o', param: 'dave', kind: 'prefix' }] as never,
     });
     expect(out).toMatch(/^\[12:04:05\] -- op .*dave$/);
+  });
+
+  it('writes the mode string when the list shows one (consolidation off)', () => {
+    const out = line(
+      {
+        type: 'mode',
+        nick: 'op',
+        modes: [{ mode: '+o', param: 'dave', kind: 'prefix' }] as never,
+      },
+      ctx({ rawModes: () => true }),
+    );
+    expect(out).toBe('[12:04:05] -- op set +o dave');
   });
 
   it('writes a folded run of events in the list’s words', () => {

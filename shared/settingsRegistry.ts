@@ -946,7 +946,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Merge consecutive events into one summary line, such as "Alice and Bob ' +
       'joined; Dave left". Op and voice changes join the same line. Bans, keys, ' +
-      'limits and channel flags keep their own line.',
+      'limits and channel flags keep their own line. With this off, a mode change is ' +
+      'shown as its mode string, such as "set +v Alice".',
   },
   {
     key: 'chat.consolidate_max_names',

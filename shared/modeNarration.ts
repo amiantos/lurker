@@ -15,7 +15,8 @@
 // which the raw form never offered. It also keeps this file free of any view
 // framework, so the phone can port it as-is.
 //
-// Only a SINGLE-change message is narrated. A message carrying several changes
+// Only a SINGLE-change message is narrated, and only for a reader who has event
+// consolidation on (`opts.raw` on describeMode). A message carrying several changes
 // falls back to a compact mode string, matching gamja (which gates its
 // narration on `modeStr.length === 2`): "gave op to alice and banned *!*@host
 // and set the user limit to 50" is worse than `+o-b+l alice *!*@host 50`, and
@@ -138,7 +139,7 @@ function rawSegments(modes: readonly ModeChange[]): ModeSegment[] {
   // *!*@host` — rather than each change spelled out with its own sign.
   let letters = '';
   let sign = '';
-  const params: string[] = [];
+  const params: ModeSegment[] = [];
   for (const m of modes) {
     const s = m.mode.startsWith('-') ? '-' : '+';
     if (s !== sign) letters += s;
@@ -147,12 +148,14 @@ function rawSegments(modes: readonly ModeChange[]): ModeSegment[] {
     letters += letter;
     // The one param that is withheld; the letter still shows, so the reader
     // knows a key was set.
-    if (m.param && letter !== 'k') params.push(m.param);
+    if (!m.param || letter === 'k') continue;
+    // A member stays a nick here too: only the stamp says `+q alice` is one.
+    params.push(
+      { t: 'text', text: ' ' },
+      m.kind === 'prefix' ? { t: 'nick', nick: m.param } : { t: 'arg', text: m.param },
+    );
   }
-  return [
-    { t: 'text', text: ' set ' },
-    { t: 'arg', text: [letters, ...params].join(' ') },
-  ];
+  return [{ t: 'text', text: ' set ' }, { t: 'arg', text: letters }, ...params];
 }
 
 /**
@@ -184,10 +187,14 @@ function withoutKeyParam(text: string): string {
  * @param modes the row's parsed change list, each stamped with its `kind`.
  * @param rawText the row's raw `text`, used only when there is no parsed list
  *   at all — backlog old enough to predate it.
+ * @param opts.raw show the mode string for a single change too, not a
+ *   sentence. Set for a reader who turned event consolidation off: they asked
+ *   for every event as it happened, and `set +v alice` is that (#1431).
  */
 export function describeMode(
   modes: readonly ModeChange[] | null | undefined,
   rawText?: string | null,
+  opts: { raw?: boolean } = {},
 ): ModeSegment[] {
   const list = (modes ?? []).filter((m) => m && m.mode);
 
@@ -203,7 +210,7 @@ export function describeMode(
     ];
   }
 
-  if (list.length > 1) return rawSegments(list);
+  if (list.length > 1 || opts.raw) return rawSegments(list);
 
   const only = list[0];
   const sign = only.mode.startsWith('-') ? '-' : '+';
