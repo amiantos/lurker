@@ -74,6 +74,13 @@ export function bufferClosed(networkId: number | string | null, target: string):
  *  (afterward the old name no longer resolves). */
 export function bufferRenamed(networkId: number | string | null, from: string, to: string): void {
   const canonicalFrom = canonicalTarget(networkId, from);
+  // `from` already IS the buffer at `to`: a casemapping refold merge, where the
+  // survivor keeps its name and the absorbed twin (dropped just before this)
+  // was the only other row `from` could name. Now that names fold by the
+  // network's casemapping (#1425), `from` resolves to the survivor itself, and
+  // a rekey of a buffer onto its own key runs every store's destination-wins
+  // branch against it — deleting the survivor's pins, draft and history.
+  if (canonicalFrom === to) return;
   for (const get of participants) get().rekeyBuffer(networkId, canonicalFrom, to);
 }
 

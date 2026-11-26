@@ -7151,6 +7151,13 @@ export class IrcConnection {
             : '') +
           ` (refold ${Date.now() - startedAt}ms)`,
       );
+      // Before the merges below: a client folds the names in those frames by
+      // the rule that made them one buffer.
+      this.publishEphemeral({
+        type: 'casemapping',
+        target: this.serverTarget(),
+        casemapping: declared,
+      });
       for (const m of merges) {
         this.applyRuleScopeMoves(m.rulesMoved);
         // A closed survivor (both twins were closed) is never announced:
@@ -14899,6 +14906,11 @@ export class IrcConnection {
       // the wire. Computed post-registration, which is when this snapshot is
       // pushed (setState('connected') fires after CAP). (#381)
       multilineLimits: this.multilineLimits(),
+      // How this network folds names (#1425): the stored ISUPPORT CASEMAPPING,
+      // or null when it never declared one (the legacy fold). A property of
+      // the network row, so a disconnected network's blob carries it too;
+      // kept current by `casemapping` frames.
+      casemapping: networkCasemapping(this.network.id),
       // Channel-mode vocabulary for the channel modal and rank gating (#727).
       // Null until the registration burst ends (see clientModeSpec); then also
       // sent as a `mode-spec` frame, since 005 follows the 001 that pushes this.

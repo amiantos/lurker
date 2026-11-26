@@ -221,11 +221,12 @@ These are the non-obvious constraints that have bitten changes before:
   fragment) is a literal character and stays `#`.
 - **Fold IRC target case per network when matching buffers.** Servers send
   channel and nick names with inconsistent casing, and the fold depends on the
-  network's `CASEMAPPING` (`rfc1459` folds `[]\~` to `{}|^`). Never look a
+  network's `CASEMAPPING` (`rfc1459` folds `[ \ ] ^` to `{ | } ~`). Never look a
   buffer up by exact key, and never fold with a bare `toLowerCase`: on the
   server use `foldTargetFor(networkId, raw)` /
   `foldTargetWith(mapping, target)` from `server/db/`; on the client use the
-  buffers store's `findByTarget` / `findDm`.
+  buffers store's `findByTarget` / `findDm` for buffers and `foldName` /
+  `sameName` (`vue_client/src/utils/foldName.ts`) for any other name compare.
 - **A default is not a statement.** A missing field that parses to its zero
   value is not the server stating that value. Gate on a presence flag set when
   the field was actually received, not on the value, and not on a neighbouring

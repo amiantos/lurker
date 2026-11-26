@@ -25,6 +25,7 @@ import {
   setChannelKey as setBufferChannelKey,
   deleteBuffer,
   listAutojoinChannels,
+  networkCasemapping,
 } from '../db/buffers.js';
 import { redactSendTarget, hasMessageForTarget, replySendMsgid } from '../db/messages.js';
 import {
@@ -1776,6 +1777,8 @@ class IrcManager extends EventEmitter {
           // longer than the live snapshot's window ago left out, as there.
           userMetadata: offlineUserMetadata(net.id),
           metadataLimits: null,
+          // Its buffers are still named and matched while it is off (#1425).
+          casemapping: networkCasemapping(net.id),
         }),
       );
     }

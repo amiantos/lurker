@@ -251,6 +251,38 @@ describe('applyBufferRenamed — the full frame contract', () => {
     expect(useDraftStore().drafts[`${NET}::#foo{bar}`]).toBeUndefined();
   });
 
+  it('refold merge with the new fold known: the survivor keeps its own state (#1425)', () => {
+    // The `casemapping` frame lands BEFORE the merge it causes, so by now
+    // `from` folds onto the survivor. Rekeying the survivor onto its own key
+    // ran every store's destination-wins branch against it.
+    // The twins are from before the network said how it folds; once it has,
+    // the store would not hold two.
+    useBuffersStore().ensure(NET, '#keep{it}', 4242); // survivor
+    useBuffersStore().ensure(NET, '#keep[it]', 9999); // absorbed bracket-twin
+    useNetworksStore().applyCasemapping({ networkId: NET, casemapping: 'rfc1459' });
+    const key = `${NET}::#keep{it}`;
+    useDraftStore().drafts[key] = 'mine';
+    usePinsStore().byNetwork[NET] = ['#keep{it}'];
+    useRecentBuffersStore().keys = [key];
+    useNetworksStore().activeKey = key;
+
+    applyBufferRenamed({
+      networkId: NET,
+      from: '#keep[it]',
+      to: '#keep{it}',
+      bufferId: 4242,
+      merged: true,
+      mergedFromBufferId: 9999,
+    });
+
+    expect(useBuffersStore().buffers[key]?.id).toBe(4242);
+    expect(useBuffersStore().buffers[`${NET}::#keep[it]`]).toBeUndefined();
+    expect(useDraftStore().drafts[key]).toBe('mine');
+    expect(usePinsStore().byNetwork[NET]).toEqual(['#keep{it}']);
+    expect(useRecentBuffersStore().keys).toEqual([key]);
+    expect(useNetworksStore().activeKey).toBe(key);
+  });
+
   it('a merge frame can never leave the survivor rowless — worst case it re-materializes', () => {
     // The pathological corner: both twins held with NO learned ids, so neither
     // the id lookup nor the survivor-proof can orient the sweep. Whatever the
