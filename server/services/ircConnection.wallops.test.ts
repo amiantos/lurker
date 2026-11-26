@@ -85,17 +85,14 @@ describe('WALLOPS', () => {
     expect(t.wallops().map((e) => e.notable)).toEqual([false, undefined]);
   });
 
-  it('is found by a search of the server buffer', async () => {
+  it('is found by search, as any notice is', async () => {
     const t = await connect();
     ircd!.sendRaw(t.nick, ':oper!o@staff.example WALLOPS :maintenance at midnight');
     await until(() => t.wallops().length === 1, 5000, 'the wallops');
-    // What "Search this buffer" sends from a server buffer: in::server:<id>.
-    const found = searchMessages(t.userId, { query: 'maintenance', target: t.server });
+    const found = searchMessages(t.userId, { query: 'maintenance' });
     expect(found.map((m) => [m.target, m.nick, m.text])).toEqual([
       [t.server, 'oper', '[WALLOPS] maintenance at midnight'],
     ]);
-    // And scoped to it alone: nothing from another buffer, nothing missed.
-    expect(searchMessages(t.userId, { query: 'maintenance', target: '#nowhere' })).toEqual([]);
   });
 
   it("drops an ignored sender's", async () => {

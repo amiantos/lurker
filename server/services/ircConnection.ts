@@ -2813,7 +2813,7 @@ export class IrcConnection {
 
     // WALLOPS (#1437): a line to everyone with user mode +w, from an oper or a
     // server. It has no target, so it is the server buffer's, as in every
-    // client that shows it; a notice there, so search finds it. An ignored
+    // client that shows it; a notice there, so the search finds it. An ignored
     // sender's is dropped: the server buffer is past the ignore list.
     on('wallops', (event: Record<string, unknown>) => {
       const text = typeof event?.message === 'string' ? event.message : '';

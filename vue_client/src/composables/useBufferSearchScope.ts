@@ -21,14 +21,11 @@ export function useBufferSearchScope() {
   // mirroring the topic bar's scoped buttons. The `on:` token is dropped when
   // the network name has whitespace (the filter parser splits tokens on spaces,
   // so it couldn't round-trip); `in:<target>` alone still scopes by
-  // channel/nick. A server buffer is scoped by its own target alone
-  // (`:server:<id>`, #1437): that names one network already, where `on:` would
-  // pick the first of two networks with one name. Null for the system buffer,
-  // which has no messages to search.
+  // channel/nick. Null for server/system buffers, which have no per-buffer
+  // scope.
   const bufferScope = computed<string | null>(() => {
     const a = active.value;
-    if (!a || isSystemBuffer.value || !a.target) return null;
-    if (isServerBuffer.value) return `in:${a.target}`;
+    if (!a || isServerBuffer.value || isSystemBuffer.value || !a.target) return null;
     const netName = (a.network as { name?: string } | null)?.name;
     const onTok = netName && !/\s/.test(netName) ? ` on:${netName}` : '';
     return `in:${a.target}${onTok}`;
