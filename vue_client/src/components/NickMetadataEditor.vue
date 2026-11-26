@@ -4,16 +4,37 @@
 -->
 
 <!--
-  Metadata the user sets on somebody else (#1449), inside the profile view,
-  under the note: what is set, each with Edit and Reset, then "Add metadata" →
-  a field → that field's own form. On a network with IRCv3 metadata a value
-  here stands in front of the other person's; on one without, it is all there
-  is. Nothing changes until the server echoes the save (stores/nickMetadata.ts).
+  What the user keeps on somebody, inside the profile view: their note, and the
+  metadata they set on that person (#1449), as one list. Each row has its Edit;
+  a metadata row has Reset too (Remove, where the other person set nothing).
+  Under the list, an outlined button for each thing still to add: "Add note",
+  and "Add metadata" → a field → that field's own form.
+
+  On a network with IRCv3 metadata a value here stands in front of the other
+  person's; on one without, it is all there is. Nothing changes until the
+  server echoes the save (stores/nickMetadata.ts). The note is edited in
+  NickNoteModal, which also deletes it: a note can be long, so there is no
+  one-click Remove on its row. `metadata` is false on our own profile, which
+  keeps the note and has Edit Profile for the rest.
 -->
 
 <template>
   <div class="nick-meta">
-    <dl v-if="rows.length" class="mine">
+    <dl v-if="noteText || rows.length" class="mine">
+      <template v-if="noteText">
+        <dt>Note</dt>
+        <dd data-key="note">
+          <span class="value note">
+            <span class="note-body">{{ noteText }}</span>
+            <span v-if="noteUpdatedAt" class="muted">
+              Updated {{ formatDateTime(noteUpdatedAt) }}
+            </span>
+          </span>
+          <span class="btn-bar">
+            <button type="button" @click="openNote">Edit</button>
+          </span>
+        </dd>
+      </template>
       <template v-for="r in rows" :key="r.key">
         <dt>{{ r.label }}</dt>
         <dd :data-key="r.key">
@@ -125,12 +146,12 @@
       <button type="button" class="btn-secondary" @click="picking = false">Cancel</button>
     </p>
 
-    <p v-else-if="addable.length" class="meta">
-      <button type="button" class="link inline" @click="startAdd">
-        <PlusIcon />
-        Add metadata
+    <div v-else-if="!noteText || addable.length" class="btn-bar adds">
+      <button v-if="!noteText" type="button" @click="openNote"><PlusIcon /> Add note</button>
+      <button v-if="addable.length" type="button" data-add="metadata" @click="startAdd">
+        <PlusIcon /> Add metadata
       </button>
-    </p>
+    </div>
   </div>
 </template>
 
@@ -140,11 +161,13 @@ import { PlusIcon } from '@lucide/vue';
 import RenderSegments from './RenderSegments.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useNickMetadataStore } from '../stores/nickMetadata.js';
+import { useNickNotesStore } from '../stores/nickNotes.js';
+import { formatDateTime } from '../utils/timestamp.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useNow } from '../composables/useNow.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
-import { is12Hour, knownTimeZones, timeInZone, zonesBut } from '../utils/timeZone.js';
+import { is12Hour, knownTimeZones, timeInTypedZone, zonesBut } from '../utils/timeZone.js';
 import {
   METADATA_COLOR_KEY as COLOR,
   METADATA_TZ_KEY as TZ,
@@ -156,10 +179,13 @@ import {
   type NickMetadataKey,
 } from '../../../shared/nickMetadata.js';
 
-const props = defineProps<{ networkId: number; nick: string }>();
+const props = withDefaults(defineProps<{ networkId: number; nick: string; metadata?: boolean }>(), {
+  metadata: true,
+});
 
 const networks = useNetworksStore();
 const store = useNickMetadataStore();
+const nickNotes = useNickNotesStore();
 const settings = useSettingsStore();
 const now = useNow();
 
@@ -171,7 +197,16 @@ const LABELS: Record<NickMetadataKey, string> = {
   [TZ]: 'Time zone',
 };
 
-const mine = computed(() => store.valuesFor(props.networkId, props.nick) ?? {});
+const mine = computed(() =>
+  props.metadata ? (store.valuesFor(props.networkId, props.nick) ?? {}) : {},
+);
+
+const noteEntry = computed(() => nickNotes.entryFor(props.networkId, props.nick));
+const noteText = computed(() => noteEntry.value?.note || '');
+const noteUpdatedAt = computed(() => noteEntry.value?.updatedAt || '');
+function openNote(): void {
+  nickNotes.openEditor(props.networkId, props.nick);
+}
 // What the other person set themselves: "theirs", for Reset and Hide.
 const wire = computed(() => networks.wireMetadataFor(props.networkId, props.nick));
 const palette = computed(() => settings.effective('look.nick.colors') as string[]);
@@ -204,9 +239,9 @@ const rows = computed(() =>
 // What "Add metadata" offers: the fields not set yet. An avatar can only be
 // hidden, so it is offered only when there is one to hide.
 const addable = computed(() =>
-  NICK_METADATA_KEYS.filter(
-    (key) => !Object.hasOwn(mine.value, key) && (key !== 'avatar' || theirs('avatar')),
-  ).map((key) => ({ key, label: LABELS[key] })),
+  (props.metadata ? NICK_METADATA_KEYS : [])
+    .filter((key) => !Object.hasOwn(mine.value, key) && (key !== 'avatar' || theirs('avatar')))
+    .map((key) => ({ key, label: LABELS[key] })),
 );
 
 const picking = ref(false);
@@ -221,7 +256,7 @@ const zones = computed(() => (editing.value === TZ ? knownTimeZones() : []));
 // under the field it was just picked into.
 const zoneOptions = computed(() => zonesBut(zones.value, draft.value));
 
-const draftZoneTime = computed(() => timeInZone(now.value, draft.value.trim(), hour12.value));
+const draftZoneTime = computed(() => timeInTypedZone(now.value, draft.value, hour12.value));
 const localTime = computed(() =>
   new Intl.DateTimeFormat(undefined, {
     hour: 'numeric',
@@ -282,7 +317,6 @@ function pickColor(slot: number): void {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  margin-top: var(--space-4);
 }
 .mine {
   display: grid;
@@ -294,13 +328,15 @@ function pickColor(slot: number): void {
 .mine dt {
   color: var(--fg-muted);
   font-weight: 400;
-  align-self: center;
+  /* On the first line of a value that wraps (a note), where the bar sits. */
+  align-self: start;
+  padding-top: var(--space-2);
 }
 .mine dd {
   margin: 0;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-5);
 }
@@ -310,6 +346,8 @@ function pickColor(slot: number): void {
   display: inline-flex;
   align-items: center;
   gap: var(--space-3);
+  /* The height of the bar beside it, so a one-line value centres on it. */
+  padding: var(--space-2) 0;
 }
 .muted {
   color: var(--fg-muted);
@@ -380,18 +418,21 @@ input[list]::-webkit-calendar-picker-indicator {
 .swatch.pick:hover {
   border-color: var(--fg-muted);
 }
-.meta {
-  margin: 0;
+.value.note {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
 }
-.link.inline {
-  background: none;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  padding: 0 var(--space-2);
+.note-body {
+  color: var(--fg);
+  white-space: pre-wrap;
 }
-.link.inline:hover {
-  text-decoration: underline;
+.adds {
+  align-self: flex-start;
+}
+.adds > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 </style>

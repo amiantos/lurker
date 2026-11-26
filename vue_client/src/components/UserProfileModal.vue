@@ -10,9 +10,9 @@
   when the new reply arrives; while we have nothing cached the empty
   state shows a spinner (or "offline" if MONITOR already knows).
 
-  Note editor lives in NickNoteModal — the "Edit note" button opens
-  that instead of duplicating the editor here, so the editor has a
-  single source of truth.
+  The note and the metadata set on the nick are NickMetadataEditor's, under
+  the details. The note itself is edited in NickNoteModal, so that editor has
+  a single source of truth.
 -->
 
 <template>
@@ -122,21 +122,12 @@
         </div>
       </section>
 
-      <!-- Your note — headingless; a divider sets it off from the details above
-           (only when there are details to divide from). -->
+      <!-- What you keep on them: your note, and the metadata you set on them
+           (#1449), one list. A divider sets it off from the details above (only
+           when there are details to divide from). Your own profile keeps the
+           note alone; Edit Profile is the door to the rest. -->
       <section class="section note-section" :class="{ divided: hasDetails }">
-        <div class="note">
-          <p v-if="noteText" class="note-body">{{ noteText }}</p>
-          <p class="meta">
-            <span v-if="noteUpdatedAt">Updated {{ formatDateTime(noteUpdatedAt) }}</span>
-            <button type="button" class="link inline" @click="openNoteEditor">
-              <component :is="noteText ? PenIcon : PlusIcon" />
-              {{ noteText ? 'Edit' : 'Add note' }}
-            </button>
-          </p>
-        </div>
-        <!-- What you set on them (#1449). Your own profile has its own editor. -->
-        <NickMetadataEditor v-if="!isSelf" :network-id="networkId" :nick="nick" />
+        <NickMetadataEditor :network-id="networkId" :nick="nick" :metadata="!isSelf" />
       </section>
 
       <!-- One status line, chosen in `statusLine` — see the note there for why
@@ -198,7 +189,6 @@ import AppModal from './AppModal.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import NickMetadataEditor from './NickMetadataEditor.vue';
 import { useWhoisStore } from '../stores/whois.js';
-import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useNetworksStore } from '../stores/networks.js';
@@ -223,8 +213,6 @@ import {
   LoaderCircleIcon,
   LockIcon,
   MailIcon,
-  PenIcon,
-  PlusIcon,
   RefreshCwIcon,
   SatelliteDishIcon,
   ShieldHalfIcon,
@@ -240,7 +228,6 @@ const props = defineProps<{
 }>();
 
 const whoisStore = useWhoisStore();
-const nickNotes = useNickNotesStore();
 const relayBots = useRelayBotsStore();
 const contextMenu = useContextMenu();
 const networks = useNetworksStore();
@@ -449,10 +436,6 @@ const hasDetails = computed(
     ),
 );
 
-const noteEntry = computed(() => nickNotes.entryFor(props.networkId, props.nick));
-const noteText = computed(() => noteEntry.value?.note || '');
-const noteUpdatedAt = computed(() => noteEntry.value?.updatedAt || '');
-
 function humanDuration(seconds: number): string {
   if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
   const min = Math.floor(seconds / 60);
@@ -478,10 +461,6 @@ function onSendDm() {
 function onIgnore() {
   if (isSelf.value) return;
   ignoreOpen.value = true;
-}
-
-function openNoteEditor() {
-  nickNotes.openEditor(props.networkId, props.nick);
 }
 
 function onSetRelay(mark: boolean) {
@@ -683,24 +662,6 @@ code {
 .ch-prefix {
   color: var(--fg-muted);
   margin-right: 1px;
-}
-
-.note .note-body {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.meta {
-  margin: 0;
-  color: var(--fg-muted);
-  display: flex;
-  gap: var(--space-6);
-  align-items: baseline;
-}
-/* Only space the meta line off the note body when a note is present; with no
-   note the Add-note button sits on its own with no superfluous top gap. */
-.note-body + .meta {
-  margin-top: var(--space-4);
 }
 
 .link.inline {

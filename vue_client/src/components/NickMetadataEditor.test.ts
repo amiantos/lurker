@@ -15,17 +15,18 @@ import { socketSend } from '../composables/useSocket.js';
 import NickMetadataEditor from './NickMetadataEditor.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useNickMetadataStore } from '../stores/nickMetadata.js';
+import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useSettingsStore } from '../stores/settings.js';
 
 const send = vi.mocked(socketSend);
 const PALETTE = ['#e02020', '#20e020', '#2020e0'];
 let wrapper: VueWrapper | null = null;
 
-function open(wire: Record<string, unknown> | null = null) {
+function open(wire: Record<string, unknown> | null = null, metadata = true) {
   useSettingsStore().values = { 'look.nick.colors': PALETTE } as never;
   if (wire) useNetworksStore().applyUserMetadata(1, 'bob', wire as never);
   wrapper = mount(NickMetadataEditor, {
-    props: { networkId: 1, nick: 'bob' },
+    props: { networkId: 1, nick: 'bob', metadata },
     attachTo: document.body,
   });
 }
@@ -37,7 +38,7 @@ const options = () =>
     .map((o) => o.text())
     .slice(1);
 async function add(label: string) {
-  await wrapper!.find('.meta button').trigger('click');
+  await wrapper!.find('[data-add="metadata"]').trigger('click');
   const select = wrapper!.find('.picker select');
   const option = select.findAll('option').find((o) => o.text() === label)!;
   await select.setValue(option.attributes('value'));
@@ -57,7 +58,7 @@ describe('NickMetadataEditor (#1449)', () => {
 
   it('offers every field but the avatar to someone with no metadata', async () => {
     open();
-    await wrapper!.find('.meta button').trigger('click');
+    await wrapper!.find('[data-add="metadata"]').trigger('click');
     expect(options()).toEqual(['Display name', 'Nick color', 'Time zone']);
   });
 
@@ -109,6 +110,9 @@ describe('NickMetadataEditor (#1449)', () => {
     await input.setValue('Berlin');
     expect(button('Save').attributes('disabled')).toBeDefined();
     expect(wrapper!.find('.editor small').text()).toMatch(/Not a time zone/);
+    // An offset reads as a zone to Intl; the server refuses it, so Save does too.
+    await input.setValue('+01:00');
+    expect(button('Save').attributes('disabled')).toBeDefined();
     await input.setValue('Europe/Berlin');
     expect(wrapper!.find('.editor small').text()).toMatch(/\d:\d\d.* there, .*\d:\d\d.* here/);
     await wrapper!.find('.editor').trigger('submit');
@@ -121,6 +125,40 @@ describe('NickMetadataEditor (#1449)', () => {
         value: 'Europe/Berlin',
       },
     ]);
+  });
+
+  // The note is a row of the same list, and both adds are one bar of buttons.
+  it('offers both adds as outlined buttons, each only while there is something to add', async () => {
+    open();
+    const adds = () => wrapper!.findAll('.adds button').map((b) => b.text());
+    expect(wrapper!.find('.adds').classes()).toContain('btn-bar');
+    expect(adds()).toEqual(['Add note', 'Add metadata']);
+    await button('Add note').trigger('click');
+    expect(useNickNotesStore().editor).toEqual({ open: true, networkId: 1, nick: 'bob' });
+
+    useNickNotesStore().applyUpdate(1, 'bob', 'lives in Berlin', '2026-11-26T00:00:00Z');
+    await nextTick();
+    expect(adds()).toEqual(['Add metadata']);
+    const note = wrapper!.find('dd[data-key="note"]');
+    expect(note.find('.note-body').text()).toBe('lives in Berlin');
+    // Edit only: the note's own editor deletes it, a long note isn't one click from gone.
+    expect(note.findAll('button').map((b) => b.text())).toEqual(['Edit']);
+
+    useNickMetadataStore().applyUpdate(1, 'bob', {
+      'display-name': 'Bob',
+      color: '1',
+      'lurker.chat/tz': 'Asia/Tokyo',
+    });
+    await nextTick();
+    expect(wrapper!.find('.adds').exists()).toBe(false);
+  });
+
+  it('keeps the note alone on our own profile', async () => {
+    open(null, false);
+    useNickMetadataStore().applyUpdate(1, 'bob', { color: '1' });
+    await nextTick();
+    expect(wrapper!.findAll('.adds button').map((b) => b.text())).toEqual(['Add note']);
+    expect(wrapper!.find('dd[data-key="color"]').exists()).toBe(false);
   });
 
   it('lists what is set, with Reset where they have a value and Remove where not', async () => {
@@ -149,7 +187,7 @@ describe('NickMetadataEditor (#1449)', () => {
     expect(sent()).toEqual([
       { type: 'set-nick-metadata', networkId: 1, nick: 'bob', key: 'color', reset: true },
     ]);
-    // Nothing is left to add (no avatar to hide), so nothing is offered.
-    expect(wrapper!.find('.meta button').exists()).toBe(false);
+    // Nothing is left to add (no avatar to hide), so it isn't offered.
+    expect(wrapper!.find('[data-add="metadata"]').exists()).toBe(false);
   });
 });
