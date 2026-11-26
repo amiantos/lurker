@@ -52,11 +52,11 @@
     "multer": "^2.5.0",
     "selfsigned": "^5.5.0",
     "sharp": "^0.35.5",
-    "socks": "^2.8.10",
+    "socks": "^2.8.11",
     "tsx": "^4.23.15",
     "uuid": "^14.0.3",
     "web-push": "^3.6.7",
-    "ws": "^8.22.2",
+    "ws": "^8.23.0",
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
@@ -70,11 +70,11 @@
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.18.2",
     "@types/yauzl": "^3.4.0",
-    "@vitest/coverage-v8": "^5.1.0",
+    "@vitest/coverage-v8": "^5.1.1",
     "concurrently": "^10.0.7",
     "happy-dom": "^21.0.4",
-    "oxfmt": "^0.78.0",
-    "oxlint": "^1.93.0",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
     "supertest": "^7.3.2",
     "typescript": "^6.0.3",
     "vitest": "^5.0.0"
