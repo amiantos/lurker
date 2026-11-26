@@ -138,6 +138,9 @@ describe('/color and /tz', () => {
       line: 'METADATA * SET lurker.chat/tz :Europe/Berlin',
       write: { key: 'lurker.chat/tz', value: 'Europe/Berlin' },
     });
+    expect(parseTzCommand('Europe/Kyiv')).toMatchObject({
+      line: 'METADATA * SET lurker.chat/tz :Europe/Kyiv',
+    });
     expect(parseTzCommand('OFF')).toMatchObject({ write: { value: null } });
     expect(parseTzCommand('Berlin')).toHaveProperty('error');
     expect(parseTzCommand('+02:00')).toHaveProperty('error');

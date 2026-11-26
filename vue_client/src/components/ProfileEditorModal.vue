@@ -235,7 +235,7 @@ import {
   deviceTimeZone,
   is12Hour,
   knownTimeZones,
-  timeInZone,
+  timeInTypedZone,
   zonesBut,
 } from '../utils/timeZone.js';
 import { toHex } from '../lib/color.js';
@@ -334,15 +334,20 @@ const zones = knownTimeZones();
 const zoneOptions = computed(() => zonesBut(zones, form[TZ]));
 const deviceZone = deviceTimeZone();
 const zoneTime = computed(() =>
-  timeInZone(
+  timeInTypedZone(
     now.value,
-    form[TZ].trim(),
+    form[TZ],
     is12Hour(settings.effective('look.buffer.time_format') as string),
   ),
 );
-// A value the server would drop is not sent: Save waits for a real one.
+// A value the server would drop is not sent: Save waits for a real one. Only
+// a field that was touched counts: a colour saved by an older version as any
+// text (`/metadata set color red`) must not hold every other field's Save.
+const touched = (f: Field) => form[f].trim() !== initial.value[f];
 const invalid = computed(
-  () => (!!form.color.trim() && !pickedColor.value) || (!!form[TZ].trim() && !zoneTime.value),
+  () =>
+    (touched('color') && !!form.color.trim() && !pickedColor.value) ||
+    (touched(TZ) && !!form[TZ].trim() && !zoneTime.value),
 );
 const dirty = computed(() => FIELDS.some((f) => form[f].trim() !== initial.value[f]));
 

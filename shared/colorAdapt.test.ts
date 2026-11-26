@@ -111,11 +111,9 @@ describe('snapToPalette', () => {
     palette.forEach((entry, i) => expect(snapToPalette(entry, palette)).toBe(i));
   });
 
-  it('gives black, white and grey somewhere to go', () => {
+  it('has no slot for black, white or grey: nothing to match on', () => {
     for (const hex of ['#000000', '#ffffff', '#808080']) {
-      const i = snapToPalette(rgb(hex), palette);
-      expect(i).toBeGreaterThanOrEqual(0);
-      expect(i).toBeLessThan(palette.length);
+      expect(snapToPalette(rgb(hex), palette)).toBe(-1);
     }
   });
 

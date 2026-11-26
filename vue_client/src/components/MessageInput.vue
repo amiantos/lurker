@@ -212,7 +212,6 @@ import {
 } from '../lib/commands/metadata.js';
 import { parseNickMetaCommand } from '../lib/commands/nickMetadata.js';
 import { useNickMetadataStore } from '../stores/nickMetadata.js';
-import { timeInZone } from '../utils/timeZone.js';
 import { METADATA_COLOR_KEY, normalizeMetadataColor } from '../../../shared/metadataKeys.js';
 import { parseAvatarsCommand } from '../lib/commands/avatars.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
@@ -4991,10 +4990,8 @@ function handleCommand(
       const nicks = rest.join(',').split(',').filter(Boolean).join(',');
       return sendRaw(networkId, target, nicks ? `ACCEPT ${nicks}` : 'ACCEPT *', line);
     }
-    // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
-    // echoed by the server where a /command's reply goes. A change is saved
-    // per network (#1189): by the server as it goes out, or here by REST when
-    // the network isn't connected, to be set at the next connect.
+    // Metadata set on somebody else (#1449): kept by Lurker, never sent to the
+    // network. The server echoes a save to every session.
     case 'nickmeta': {
       if (networkId == null) {
         localInfo(networkId, target, "/nickmeta: there's no network here.");
@@ -5004,7 +5001,7 @@ function handleCommand(
       const parsed = parseNickMetaCommand(argLine, {
         paletteSize: palette.length,
         snap: (hex) => nickColors.slotNearest(normalizeMetadataColor(hex)),
-        knowsZone: (zone) => timeInZone(Date.now(), zone) !== null,
+        isSelf: (nick) => networks.isOwnNick(networkId, nick),
       });
       if ('error' in parsed) {
         localInfo(networkId, target, parsed.error);
@@ -5031,6 +5028,10 @@ function handleCommand(
       else nickMetadata.set(networkId, parsed.nick, parsed.key, parsed.value);
       return true;
     }
+    // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
+    // echoed by the server where a /command's reply goes. A change is saved
+    // per network (#1189): by the server as it goes out, or here by REST when
+    // the network isn't connected, to be set at the next connect.
     case 'metadata':
     case 'avatar':
     case 'color':

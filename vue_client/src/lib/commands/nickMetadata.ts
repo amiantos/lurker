@@ -11,7 +11,14 @@
 //   /nickmeta <nick> tz <zone>           an IANA time zone
 //   /nickmeta <nick> -<field>            back to whatever they set
 
-import { METADATA_COLOR_KEY, METADATA_TZ_KEY } from '../../../../shared/metadataKeys.js';
+import {
+  METADATA_COLOR_KEY,
+  METADATA_TZ_KEY,
+  METADATA_VALUE_MAX_CHARS,
+  normalizeTimeZone,
+} from '../../../../shared/metadataKeys.js';
+import { isChannelTarget } from '../../../../shared/channels.js';
+import { stripFormatting } from '../../../../shared/textMatch.js';
 import type { NickMetadataKey } from '../../../../shared/nickMetadata.js';
 
 export type NickMetaCommand =
@@ -38,16 +45,21 @@ const FIELDS: Record<string, NickMetadataKey> = {
 export interface NickMetaContext {
   /** How many colours the nick palette has; `color <n>` counts from 1. */
   paletteSize: number;
-  /** The palette slot nearest a hex, or -1 when the text is no colour. */
+  /** The palette slot nearest a hex in tint, or -1 for no colour or one with no tint. */
   snap(hex: string): number;
-  /** Whether this browser knows the zone. */
-  knowsZone(zone: string): boolean;
+  /** Whether a nick is our own on this network. */
+  isSelf(nick: string): boolean;
 }
 
 export function parseNickMetaCommand(argLine: string, ctx: NickMetaContext): NickMetaCommand {
   const words = argLine.trim().split(/\s+/).filter(Boolean);
   const [nick, rawField] = words;
   if (!nick) return { error: NICKMETA_USAGE };
+  // Metadata is set on a person. Ours has its own commands and its own editor.
+  if (isChannelTarget(nick)) return { error: `/nickmeta: ${nick} is a channel, not a nick` };
+  if (ctx.isSelf(nick)) {
+    return { error: '/nickmeta is for other people; yours is /displayname, /color, /tz' };
+  }
   if (!rawField) return { op: 'list', nick };
 
   const resetting = rawField.startsWith('-');
@@ -61,8 +73,16 @@ export function parseNickMetaCommand(argLine: string, ctx: NickMetaContext): Nic
   const hide = value.toLowerCase() === 'hide';
 
   switch (key) {
-    case 'display-name':
-      return { op: 'set', nick, key, value: hide ? null : value };
+    case 'display-name': {
+      if (hide) return { op: 'set', nick, key, value: null };
+      // The server's rules, said here: it refuses these without a word.
+      const max = METADATA_VALUE_MAX_CHARS['display-name'];
+      if (value.length > max) return { error: `/nickmeta: a name is at most ${max} characters` };
+      if (!stripFormatting(value).trim()) {
+        return { error: '/nickmeta: that name is only formatting codes' };
+      }
+      return { op: 'set', nick, key, value };
+    }
     case 'avatar':
       return hide
         ? { op: 'set', nick, key, value: null }
@@ -78,14 +98,16 @@ export function parseNickMetaCommand(argLine: string, ctx: NickMetaContext): Nic
       }
       if (slot < 0) {
         return {
-          error: `/nickmeta: a color is 1 to ${ctx.paletteSize} (your nick palette) or a #hex, which takes the nearest`,
+          error: `/nickmeta: a color is 1 to ${ctx.paletteSize} (your nick palette), or a #hex with a tint, which takes the nearest`,
         };
       }
       return { op: 'set', nick, key, value: String(slot) };
     }
-    default:
-      return ctx.knowsZone(value)
-        ? { op: 'set', nick, key, value }
+    default: {
+      const zone = normalizeTimeZone(value);
+      return zone
+        ? { op: 'set', nick, key, value: zone }
         : { error: `/nickmeta: "${value}" isn't a time zone (like Europe/Berlin)` };
+    }
   }
 }

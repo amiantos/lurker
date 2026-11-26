@@ -6,6 +6,7 @@ import ircManager from '../ircManager.js';
 import { fanOutToUser } from '../wsHub.js';
 import { vetNickMetadata } from '../ircMetadata.js';
 import { NICK_METADATA_KEYS, isNickMetadataKey } from '../../../shared/nickMetadata.js';
+import { isChannelTarget } from '../../../shared/channels.js';
 
 /** Authenticated caller context passed to every verb handler. */
 interface VerbContext {
@@ -38,6 +39,10 @@ registerVerb({
     const nick = typeof input.nick === 'string' ? input.nick.trim() : '';
     if (!nick) {
       throw Object.assign(new Error('nick is empty or whitespace'), { code: 'invalid_input' });
+    }
+    // Metadata is set on a person; a channel's row would never be read.
+    if (isChannelTarget(nick)) {
+      throw Object.assign(new Error('nick is a channel'), { code: 'invalid_input' });
     }
     const key = input.key;
     if (!isNickMetadataKey(key)) {

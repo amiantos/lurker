@@ -125,6 +125,16 @@ describe('profile editor', () => {
     expect(calls.at(-1)?.body).toEqual({ values: { 'lurker.chat/tz': 'Europe/Berlin' } });
   });
 
+  it('lets a colour saved as any text by an older version through until it is touched', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: { color: 'red' }, unset: [], live: {}, avatarPreview: null };
+    const wrapper = await open();
+    await input(wrapper, 'Status').setValue('lunch');
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
+    await wrapper.find('input[aria-label="Nick color"]').setValue('blue');
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
   it("fills in this device's zone when asked", async () => {
     setNetwork({ state: 'connected', metadataLimits: LIMITS });
     reply = { values: {}, unset: [], live: {}, avatarPreview: null };

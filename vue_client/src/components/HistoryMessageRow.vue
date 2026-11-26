@@ -159,9 +159,6 @@ const shown = computed(() => {
 const tsFormat = computed(() => settings.effective('look.buffer.time_format'));
 const selfColor = computed(() => nicks.selfColorOn(props.message.networkId));
 
-// History rows are out-of-buffer (search/highlights), so a bare HH:mm is
-// ambiguous — prepend the calendar date. Skipped if the user's format
-// already includes a year token to avoid doubling up.
 // The line's time on its author's clock, where their zone is known (#1450).
 const timeTitle = computed(() => {
   const { nick, self } = line.value;
@@ -172,6 +169,9 @@ const timeTitle = computed(() => {
     : undefined;
 });
 
+// History rows are out-of-buffer (search/highlights), so a bare HH:mm is
+// ambiguous — prepend the calendar date. Skipped if the user's format
+// already includes a year token to avoid doubling up.
 const time = computed(() => {
   const fmt = tsFormat.value as string;
   const iso = props.message.time ?? '';

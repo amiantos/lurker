@@ -7,7 +7,7 @@ import { NICKMETA_USAGE, parseNickMetaCommand, type NickMetaContext } from './ni
 const ctx: NickMetaContext = {
   paletteSize: 4,
   snap: (hex) => (hex === '#ff0000' ? 2 : -1),
-  knowsZone: (zone) => zone === 'Europe/Berlin',
+  isSelf: (nick) => nick.toLowerCase() === 'me',
 };
 const parse = (line: string) => parseNickMetaCommand(line, ctx);
 
@@ -26,6 +26,21 @@ describe('/nickmeta', () => {
     });
     expect(parse('bob displayname HIDE')).toMatchObject({ key: 'display-name', value: null });
     expect(parse('bob name')).toEqual({ error: NICKMETA_USAGE });
+  });
+
+  // The server refuses these without a frame, so the command has to say it.
+  it('says why a name the server would refuse is refused', () => {
+    expect(parse(`bob name ${'x'.repeat(64)}`)).toMatchObject({ op: 'set' });
+    expect(parse(`bob name ${'x'.repeat(65)}`)).toHaveProperty('error');
+    expect(parse('bob name \x02\x02')).toHaveProperty('error');
+  });
+
+  it('is for other people: not a channel, not ourselves', () => {
+    for (const target of ['#chan', '&local', '+modeless', '!safe']) {
+      expect(parse(`${target} name x`)).toHaveProperty('error');
+    }
+    expect(parse('Me name Foo')).toHaveProperty('error');
+    expect(parse('me')).toHaveProperty('error');
   });
 
   it('only ever hides an avatar', () => {
@@ -54,7 +69,11 @@ describe('/nickmeta', () => {
       key: 'lurker.chat/tz',
       value: 'Europe/Berlin',
     });
+    // In its usual spelling, as the server would store it.
+    expect(parse('bob zone europe/berlin')).toMatchObject({ value: 'Europe/Berlin' });
     expect(parse('bob timezone Berlin')).toHaveProperty('error');
+    // An offset reads as a zone to Intl; the server refuses it.
+    expect(parse('bob tz +01:00')).toHaveProperty('error');
   });
 
   it('resets a field with a leading dash', () => {

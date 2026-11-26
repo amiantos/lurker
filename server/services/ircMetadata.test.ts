@@ -103,6 +103,11 @@ describe('vetting a value', () => {
     expect(vetMetadataValue('lurker.chat/tz', 'europe/berlin')).toBe('Europe/Berlin');
     expect(vetMetadataValue('lurker.chat/tz', 'America/Los_Angeles')).toBe('America/Los_Angeles');
     expect(vetMetadataValue('lurker.chat/tz', 'UTC')).toBe('UTC');
+    // The name given, never the runtime's canonical one: ICU answers a renamed
+    // zone with its OLD name, and an alias with another place.
+    expect(vetMetadataValue('lurker.chat/tz', 'Europe/Kyiv')).toMatch(/^Europe\/Kyiv$/);
+    expect(vetMetadataValue('lurker.chat/tz', 'Asia/Kolkata')).toBe('Asia/Kolkata');
+    expect(vetMetadataValue('lurker.chat/tz', 'EST')).toBe('EST');
     // An offset is not a zone: it has no DST, and reads as one to Intl.
     expect(vetMetadataValue('lurker.chat/tz', '+01:00')).toBeNull();
     expect(vetMetadataValue('lurker.chat/tz', 'Mars/Olympus_Mons')).toBeNull();

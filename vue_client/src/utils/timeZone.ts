@@ -4,6 +4,8 @@
 // A moment as somebody else's clock shows it (#1450): the user's time zone
 // from their metadata (`lurker.chat/tz`), or one set on them (#1449).
 
+import { normalizeTimeZone } from '../../../shared/metadataKeys.js';
+
 // A formatter per zone and clock style: building one is the costly part, and a
 // buffer asks for the same few zones on every row.
 const formatters = new Map<string, Intl.DateTimeFormat | null>();
@@ -48,6 +50,20 @@ export function timeInZone(
   const date = when instanceof Date ? when : new Date(when);
   if (Number.isNaN(date.getTime())) return null;
   return formatterFor(zone, hour12)?.format(date) ?? null;
+}
+
+/**
+ * The time in a zone somebody is typing, or null until it is a zone the
+ * server will take too. `timeInZone` alone is not the test: Intl also reads a
+ * bare offset (`+01:00`), which the server refuses (shared normalizeTimeZone).
+ */
+export function timeInTypedZone(
+  when: string | number | Date,
+  typed: string | null | undefined,
+  hour12 = false,
+): string | null {
+  const zone = normalizeTimeZone(typed);
+  return zone ? timeInZone(when, zone, hour12) : null;
 }
 
 /** A line's time on its author's clock, for the timestamp's tooltip. */

@@ -54,18 +54,41 @@ export function normalizeMetadataColor(value: string | null | undefined): string
 // takes a bare offset (`+01:00`), which is not a zone and has no DST.
 const TIME_ZONE_RE = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/;
 
+// The zones this runtime lists, by lower-cased name, to give a zone typed in
+// the wrong case its usual spelling. Built on first use.
+let zonesByLower: Map<string, string> | null = null;
+function listedZone(lower: string): string | undefined {
+  if (!zonesByLower) {
+    zonesByLower = new Map();
+    try {
+      for (const zone of Intl.supportedValuesOf('timeZone'))
+        zonesByLower.set(zone.toLowerCase(), zone);
+    } catch {
+      // A runtime too old to list them: zones keep the spelling they came in.
+    }
+  }
+  return zonesByLower.get(lower);
+}
+
 /**
- * An IANA time zone as this runtime spells it (`europe/berlin` reads as
- * `Europe/Berlin`), or null when the runtime doesn't know the zone.
+ * An IANA time zone this runtime knows, or null. The name is the one given:
+ * only its case is put right (`europe/berlin` reads as `Europe/Berlin`).
+ * ⚠ Not `resolvedOptions().timeZone`: that answers with the runtime's
+ * canonical zone, which for a renamed one is the OLD name (`Europe/Kyiv`
+ * comes back `Europe/Kiev`, `Asia/Kolkata` as `Asia/Calcutta`) and for an
+ * alias a different place altogether (`EST` as `America/Panama`).
  */
 export function normalizeTimeZone(value: string | null | undefined): string | null {
   const zone = (value ?? '').trim();
   if (!zone || zone.length > 64 || !TIME_ZONE_RE.test(zone)) return null;
+  let canonical: string;
   try {
-    return new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions().timeZone || null;
+    canonical = new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions().timeZone;
   } catch {
     return null;
   }
+  const lower = zone.toLowerCase();
+  return listedZone(lower) ?? (canonical.toLowerCase() === lower ? canonical : zone);
 }
 
 // A key Lurker doesn't show, bounded like a status.

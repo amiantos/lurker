@@ -126,13 +126,15 @@ export function rgbToHex({ r, g, b }: Rgb8): string {
  * The index of the palette entry nearest in tint to `target`, or -1 when the
  * palette has no colour in it. The colour is adapted first and lightness is
  * left out of the distance: within a palette it says little, and it is what
- * sent a dark green to blue. A null entry is skipped. On a tie the first wins,
- * so the answer never depends on iteration quirks.
+ * sent a dark green to blue. Also -1 for a grey, black or white: with no tint
+ * there is nothing to match on, and any slot would be a guess. A null entry is
+ * skipped. On a tie the first wins, so the answer never depends on iteration quirks.
  */
 export function snapToPalette(target: Rgb8, palette: ReadonlyArray<Rgb8 | null>): number {
   const adapted = adaptToPalette(target, palette);
   if (!adapted) return -1;
   const [, ta, tb] = srgbToOklab(adapted);
+  if (Math.hypot(ta, tb) < 0.01) return -1;
   let best = -1;
   let bestDistance = Infinity;
   for (let i = 0; i < palette.length; i++) {

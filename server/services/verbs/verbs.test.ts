@@ -408,6 +408,7 @@ describe('get_nick_metadata / set_nick_metadata (#1449)', () => {
       { key: 'display-name', value: 'x'.repeat(65) },
       { key: 'pronouns', value: 'they/them' }, // not a key set on others
       { key: 'display-name' }, // no value and no reset is not a statement
+      { nick: '#chan', key: 'display-name', value: 'x' }, // a person, not a channel
     ];
     for (const input of refused) {
       expect(() =>
