@@ -33,7 +33,7 @@
           <span class="net">{{ row.networkName }}</span>
           <span class="sep">/</span>
           <span class="target" :style="row.style">{{ row.label }}</span>
-          <span v-if="row.unread > 0" class="badge">{{ row.unread }}</span>
+          <span v-if="row.unread > 0" class="badge">{{ unreadLabel(row.unread) }}</span>
         </li>
       </ul>
       <p v-else class="empty">No matches.</p>
@@ -44,6 +44,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch, nextTick } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
+import { unreadLabel } from '../utils/unreadLabel.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore } from '../stores/favorites.js';

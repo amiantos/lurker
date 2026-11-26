@@ -1441,6 +1441,12 @@ onMergeDrained((survivorId) => {
 onUnreadFilled((bufferId) => {
   const buf = getBufferById(bufferId);
   if (!buf || !socketsByUser.has(buf.userId)) return;
+  // Not for a closed buffer the sidebar doesn't hold: a client would
+  // re-materialize it from the frame (#319). Closed but still joined is shown.
+  if (buf.state === 'closed') {
+    const conn = ircManager.listConnections(buf.userId).find((c) => c.network.id === buf.networkId);
+    if (!conn?.isChannelJoined(buf.target)) return;
+  }
   broadcastReadState(
     buf.userId,
     buf.networkId,

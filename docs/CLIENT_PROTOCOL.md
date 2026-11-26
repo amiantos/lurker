@@ -763,10 +763,12 @@ mark-read. Never count unread locally (§9.4).
 
 **`unread` is the whole count, however large.** Older servers stopped
 counting at 1000, so `1000` there meant "1000 or more"; render the number so it
-fits (`1.2k`), don't cap it. One exception that needs no handling: the first
-time a buffer with a long unread range is asked about, the server counts it in
-the background and reports at most 1000 until it is done, then sends
-`read-state` again with the whole number.
+fits (`1.2k`), don't cap it. One exception that needs no handling: when the
+server has to count a long unread range from scratch (the first time such a
+buffer is asked about, or after a mark-read into the middle of one), it does so
+in the background and reports at most 1000 until it is done, then sends
+`read-state` again with the whole number. So `unread` can drop to 1000 and come
+back up with no new lines; don't read a rise as activity.
 
 **A DM's `highlights` equals its `unread`** — every DM line is a mention of
 you — **unless a whole-buffer NOUNREAD rule covers it** (the notification

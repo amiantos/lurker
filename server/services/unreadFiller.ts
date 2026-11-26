@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Builds the stored unread count (db/unreadCounts.ts) for a buffer whose unread
-// range is too long to count in one statement: one bounded chunk per turn of
-// the event loop, so WS fan-out and the IRC sockets are served between chunks
-// (better-sqlite3 is synchronous). Where each buffer's walk has got to lives in
+// range is too long to count in one statement: one bounded chunk at a time,
+// yielding between chunks so WS fan-out and the IRC sockets are served
+// (better-sqlite3 is synchronous), and resting as long as each chunk took. Where each buffer's walk has got to lives in
 // its row, so there is nothing here to lose on a restart.
 //
 // A buffer lands in the queue when a read or a mark-read finds more unread than
@@ -28,6 +28,9 @@ export function onUnreadFilled(fn: (bufferId: number) => void): void {
   filled = fn;
 }
 
+/** The longest pause between chunks, however slow the last one was. */
+const MAX_REST_MS = 250;
+
 let pumping = false;
 
 function pump(): void {
@@ -42,6 +45,7 @@ function step(): void {
     pumping = false;
     return;
   }
+  const started = performance.now();
   try {
     if (fillUnreadStep(bufferId) === 'done') filled(bufferId);
   } catch (err) {
@@ -50,7 +54,11 @@ function step(): void {
     dropUnreadFill(bufferId);
     console.warn(`[unread] fill failed for buffer ${bufferId}:`, (err as Error).message);
   }
-  setImmediate(step);
+  // Rest for as long as the chunk held the loop, so a fill never takes more
+  // than half of it however slow the storage. A fast chunk just yields.
+  const held = performance.now() - started;
+  if (held < 1) setImmediate(step);
+  else setTimeout(step, Math.min(held, MAX_REST_MS));
 }
 
 /** Run every queued fill to the end, synchronously. Tests only. */

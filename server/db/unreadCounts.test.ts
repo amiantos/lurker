@@ -335,7 +335,22 @@ describe('a buffer too deep to count in one statement', () => {
     expect(stored('#jump').count).toBe(15);
   });
 
-  it('a mark-read during a fill starts the count again from the new pointer', () => {
+  it('a mark-read behind a fill takes its lines off and lets the fill carry on', () => {
+    unread.setUnreadWalkRowsForTests(5);
+    const ids = Array.from({ length: 30 }, () => say('#behindfill'));
+    const id = bufferId('#behindfill');
+    expect(unread.readUnreadCount(id, 0)).toBeNull();
+    expect(unread.fillUnreadStep(id)).toBe('more');
+    expect(unread.fillUnreadStep(id)).toBe('more');
+    unread.resetUnreadFillQueueForTests();
+    bufferReads.setReadState(userId, netId, '#behindfill', ids[2]!);
+    expect(stored('#behindfill')).toMatchObject({ afterId: ids[2], count: 7, fillId: ids[9] });
+    expect(unread.nextFillBuffer()).toBe(id);
+    expectExact('#behindfill');
+    expect(stored('#behindfill').count).toBe(27);
+  });
+
+  it('a mark-read past a fill starts the count again from the new pointer', () => {
     unread.setUnreadWalkRowsForTests(5);
     const ids = Array.from({ length: 30 }, () => say('#moved'));
     const id = bufferId('#moved');

@@ -224,7 +224,8 @@ export function readUnreadCount(bufferId: number, afterId: number): UnreadCount 
  * the new pointer (nothing, when the buffer was read to its end), then what
  * the pointer moved over (little, when a deep buffer is read a screen at a
  * time). A deep buffer takes the second first. Neither fitting, the fill
- * counts it.
+ * counts it — carrying on from where it is, when one is already under way and
+ * the pointer is still behind it.
  */
 export function advanceUnreadCount(bufferId: number, afterId: number): void {
   const row = rowStmt.get(bufferId) as CounterRow | undefined;
@@ -245,6 +246,25 @@ export function advanceUnreadCount(bufferId: number, afterId: number): void {
     return true;
   };
 
+  // A fill is under way and the pointer moved inside the part it has walked:
+  // take what it moved over off the part-built count and let the fill carry
+  // on, rather than start a long walk again for every screen read meanwhile.
+  const movedOverMidFill = (): boolean => {
+    if (row.count === null || row.fillId === null) return false;
+    if (row.afterId >= afterId || afterId > row.fillId) return false;
+    const w = walk(row, bufferId, row.afterId, afterId);
+    if (!complete(w)) return false;
+    storeStmt.run({
+      bufferId,
+      afterId,
+      count: Math.max(0, row.count - w.n),
+      replies: Math.max(0, row.replies - w.r),
+      fillId: row.fillId,
+    });
+    queueFill(bufferId);
+    return true;
+  };
+
   const deep = known(row) && (row.count as number) >= walkRows;
   if (deep && movedOver()) return;
   const left = walk(row, bufferId, afterId, Number.MAX_SAFE_INTEGER);
@@ -253,5 +273,6 @@ export function advanceUnreadCount(bufferId: number, afterId: number): void {
     return;
   }
   if (!deep && movedOver()) return;
+  if (movedOverMidFill()) return;
   beginFill(bufferId, afterId);
 }
