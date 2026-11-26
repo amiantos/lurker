@@ -2826,6 +2826,8 @@ export class IrcConnection {
         target: this.serverTarget(),
         nick: from || (event.hostname as string) || 'server',
         text: `[WALLOPS] ${text}`,
+        // Our own, relayed back to us, is not news.
+        ...(this.isSelfNick(from) ? { notable: false } : {}),
         userhost: buildUserhost(event),
         time: tags?.time || undefined,
       });

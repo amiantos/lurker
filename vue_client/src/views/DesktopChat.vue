@@ -126,8 +126,8 @@
       <div class="topic-actions">
         <template v-if="active && !isVirtual">
           <!-- Search & highlights scoped to this buffer — parity with the
-               mobile topic bar. The server buffer is searched too (#1437);
-               it has no highlights of its own. -->
+               mobile topic bar. The server buffer is searched too (#1437),
+               and has no activity button. -->
           <button
             v-if="isChannel"
             type="button"

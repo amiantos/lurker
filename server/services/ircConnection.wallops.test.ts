@@ -14,7 +14,14 @@ import ignoreRulesService from './ignoreRulesService.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
 
-type Row = { type: string; target?: string; nick?: string; text?: string; userhost?: string };
+type Row = {
+  type: string;
+  target?: string;
+  nick?: string;
+  text?: string;
+  userhost?: string;
+  notable?: boolean;
+};
 
 describe('WALLOPS', () => {
   let ircd: FakeIrcd | null = null;
@@ -68,6 +75,14 @@ describe('WALLOPS', () => {
     ircd!.sendRaw(t.nick, ':hub.example WALLOPS :netsplit ahead');
     await until(() => t.wallops().length === 1, 5000, 'the wallops');
     expect(t.wallops()[0]).toMatchObject({ target: t.server, nick: 'hub.example' });
+  });
+
+  it('does not count our own, relayed back, as news', async () => {
+    const t = await connect();
+    ircd!.sendRaw(t.nick, `:${t.nick}!u@h WALLOPS :restarting the hub`);
+    ircd!.sendRaw(t.nick, ':oper!o@staff.example WALLOPS :noted');
+    await until(() => t.wallops().length === 2, 5000, 'both');
+    expect(t.wallops().map((e) => e.notable)).toEqual([false, undefined]);
   });
 
   it('is found by a search of the server buffer', async () => {

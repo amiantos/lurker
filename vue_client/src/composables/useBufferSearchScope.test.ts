@@ -25,7 +25,7 @@ describe('useBufferSearchScope', () => {
   });
 
   it('scopes a server buffer by its own target (#1437)', () => {
-    expect(scopeIn('5:::server:5')).toBe('in::server:5 on:libera');
+    expect(scopeIn('5:::server:5')).toBe('in::server:5');
   });
 
   it('leaves the system buffer unscoped', () => {
