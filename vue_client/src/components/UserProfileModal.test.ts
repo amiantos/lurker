@@ -170,7 +170,7 @@ describe('UserProfileModal — local time', () => {
 
   it('takes a zone the user set on them, and has no row without one', () => {
     expect(row(open('bob'), 'Local time')).toBeNull();
-    useNickMetadataStore().applyUpdate(NET, 'bob', { 'lurker.chat/tz': 'Europe/Berlin' });
+    useNickMetadataStore().applyUpdate(NET, 'bob', { timezone: 'Europe/Berlin' });
     expect(row(open('bob'), 'Local time')).toMatch(/\(Europe\/Berlin\)$/);
   });
 });

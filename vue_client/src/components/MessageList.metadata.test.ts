@@ -80,7 +80,7 @@ describe('MessageList — author metadata', () => {
   it('takes a zone the user set on someone, on a network with no metadata', async () => {
     mountChat({});
     expect(timeTitle(2)).toBeUndefined();
-    useNickMetadataStore().applyUpdate(1, 'carol', { 'lurker.chat/tz': 'America/New_York' });
+    useNickMetadataStore().applyUpdate(1, 'carol', { timezone: 'America/New_York' });
     await nextTick();
     expect(timeTitle(2)).toMatch(/^carol's time: Wed.*08:00 \(America\/New_York\)$/);
   });

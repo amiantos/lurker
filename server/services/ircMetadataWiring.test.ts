@@ -115,8 +115,7 @@ describe('subscribing', () => {
         () =>
           me.sent.some(
             (l) =>
-              l ===
-              'METADATA * SUB display-name avatar pronouns homepage status color lurker.chat/tz',
+              l === 'METADATA * SUB display-name avatar pronouns homepage status color timezone',
           ),
         5000,
         'SUB sent',

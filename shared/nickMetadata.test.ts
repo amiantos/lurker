@@ -34,7 +34,7 @@ describe('effectiveMetadata', () => {
   });
 
   it('gives metadata to a nick that has none', () => {
-    expect(effectiveMetadata(null, { 'lurker.chat/tz': 'Europe/Berlin', color: '0' })).toEqual({
+    expect(effectiveMetadata(null, { timezone: 'Europe/Berlin', color: '0' })).toEqual({
       tz: 'Europe/Berlin',
       colorSlot: 0,
     });

@@ -13,7 +13,7 @@
 //   /avatar <url> | off              the avatar key
 //   /displayname <name> | off        the display-name key
 //   /color <#rrggbb> | off           the color key (#1452)
-//   /tz <zone> | off                 the lurker.chat/tz key (#1450)
+//   /tz <zone> | off                 the timezone key (#1450)
 //
 // A change to our own keys says what it writes too (#1189): the server saves
 // it from the answer, and the client refuses it where it can't go.

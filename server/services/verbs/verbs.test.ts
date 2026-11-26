@@ -385,16 +385,16 @@ describe('get_nick_metadata / set_nick_metadata (#1449)', () => {
     expect(values('zed')).toEqual({});
     const set = callVerb('set_nick_metadata', rwCtx(owner.id), {
       ...on('zed'),
-      key: 'lurker.chat/tz',
+      key: 'timezone',
       value: 'europe/berlin',
     }) as { values: unknown };
     // Stored as the wire value would be: in the runtime's spelling.
-    expect(set.values).toEqual({ 'lurker.chat/tz': 'Europe/Berlin' });
+    expect(set.values).toEqual({ timezone: 'Europe/Berlin' });
     callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('zed'), key: 'avatar', value: null });
     callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('zed'), key: 'color', value: '07' });
-    expect(values('zed')).toEqual({ 'lurker.chat/tz': 'Europe/Berlin', avatar: null, color: '7' });
+    expect(values('zed')).toEqual({ timezone: 'Europe/Berlin', avatar: null, color: '7' });
     callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('zed'), key: 'avatar', reset: true });
-    expect(values('zed')).toEqual({ 'lurker.chat/tz': 'Europe/Berlin', color: '7' });
+    expect(values('zed')).toEqual({ timezone: 'Europe/Berlin', color: '7' });
   });
 
   it('refuses what a key cannot take, and saves nothing', () => {
@@ -402,8 +402,8 @@ describe('get_nick_metadata / set_nick_metadata (#1449)', () => {
       { key: 'avatar', value: 'https://example.org/a.png' }, // hide only
       { key: 'color', value: '#ff0000' }, // a slot, never a hex
       { key: 'color', value: null },
-      { key: 'lurker.chat/tz', value: 'Berlin' },
-      { key: 'lurker.chat/tz', value: null },
+      { key: 'timezone', value: 'Berlin' },
+      { key: 'timezone', value: null },
       { key: 'display-name', value: '   ' },
       { key: 'display-name', value: 'x'.repeat(65) },
       { key: 'pronouns', value: 'they/them' }, // not a key set on others

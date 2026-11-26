@@ -34,19 +34,19 @@ describe('metadata set on a nick', () => {
   it('keeps a value, a hidden key and nothing as three different things', () => {
     const at = { userId: user.id, networkId: net.id, nick: 'bob' };
     expect(mod.getNickMetadata(at)).toEqual({});
-    expect(mod.setNickMetadata({ ...at, key: 'lurker.chat/tz', value: 'Europe/Berlin' })).toEqual({
-      'lurker.chat/tz': 'Europe/Berlin',
+    expect(mod.setNickMetadata({ ...at, key: 'timezone', value: 'Europe/Berlin' })).toEqual({
+      timezone: 'Europe/Berlin',
     });
     expect(mod.setNickMetadata({ ...at, key: 'display-name', value: null })).toEqual({
-      'lurker.chat/tz': 'Europe/Berlin',
+      timezone: 'Europe/Berlin',
       'display-name': null,
     });
     expect(mod.setNickMetadata({ ...at, key: 'display-name', value: 'Robert' })).toEqual({
-      'lurker.chat/tz': 'Europe/Berlin',
+      timezone: 'Europe/Berlin',
       'display-name': 'Robert',
     });
     expect(mod.resetNickMetadata({ ...at, key: 'display-name' })).toEqual({
-      'lurker.chat/tz': 'Europe/Berlin',
+      timezone: 'Europe/Berlin',
     });
   });
 
@@ -84,7 +84,7 @@ describe('metadata set on a nick', () => {
     const erin = onNet.filter((e) => e.nick.toLowerCase() === 'erin');
     expect(erin.map((e) => e.values)).toEqual([{ color: '2', avatar: null }]);
     expect(onNet.find((e) => e.nick === 'bob')!.values).toEqual({
-      'lurker.chat/tz': 'Europe/Berlin',
+      timezone: 'Europe/Berlin',
     });
     expect(grouped.get(net2.id)).toEqual([{ nick: 'bob', values: { color: '1' } }]);
   });

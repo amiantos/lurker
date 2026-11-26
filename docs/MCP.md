@@ -92,7 +92,7 @@ Read the metadata you set on a nick: `values` maps a key to its value, or to
 ### `set_nick_metadata` _(read-write)_
 
 Set metadata on somebody else, seen only by you: `display-name`, `color` (a
-slot of your nick palette, such as `"3"`), `lurker.chat/tz` (an IANA zone), or
+slot of your nick palette, such as `"3"`), `timezone` (an IANA zone), or
 `avatar`, which can only be hidden. A `null` value hides theirs
 (`display-name` and `avatar`); `reset: true` goes back to theirs. Works on
 networks without IRCv3 metadata. Writes fan out to open clients.

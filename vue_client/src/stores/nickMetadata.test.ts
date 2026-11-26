@@ -77,7 +77,7 @@ describe('metadata set on other people (#1449)', () => {
   it('gives metadata to a nick on a network that has none', () => {
     const store = useNickMetadataStore();
     const networks = useNetworksStore();
-    store.applyUpdate(7, 'carol', { 'lurker.chat/tz': 'Asia/Tokyo' });
+    store.applyUpdate(7, 'carol', { timezone: 'Asia/Tokyo' });
     expect(networks.metadataFor(7, 'carol')).toEqual({ tz: 'Asia/Tokyo' });
     expect(networks.wireMetadataFor(7, 'carol')).toBeNull();
   });

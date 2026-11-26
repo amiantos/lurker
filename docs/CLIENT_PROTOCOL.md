@@ -456,7 +456,7 @@ theme's nick palette: keep its hue, hold its lightness inside the palette's
 range, and allow no more chroma than the palette's most vivid entry
 (`adaptToPalette` in `shared/colorAdapt.ts` is the reference, with the maths),
 and fall back to the nick's own palette colour when there is none. `tz` (#1450)
-is an IANA zone (`Europe/Berlin`), the `lurker.chat/tz` key on the wire; treat a
+is an IANA zone (`Europe/Berlin`), the `timezone` key on the wire; treat a
 zone your platform doesn't know as absent.
 The snapshot does **not** include network display
 names/hosts — fetch `GET /api/networks` for the roster (the iOS app does this
@@ -563,12 +563,12 @@ per nick, staying with the nick through a rename) and it works on networks
 with no IRCv3 metadata at all. `values` maps a metadata key to a string, or to
 `null`:
 
-| Key              | A string is                                       | `null`      |
-| ---------------- | ------------------------------------------------- | ----------- |
-| `display-name`   | the name to show                                  | hide theirs |
-| `avatar`         | never sent                                        | hide theirs |
-| `color`          | a **slot** of the nick palette (`"3"`), not a hex | never sent  |
-| `lurker.chat/tz` | an IANA zone                                      | never sent  |
+| Key            | A string is                                       | `null`      |
+| -------------- | ------------------------------------------------- | ----------- |
+| `display-name` | the name to show                                  | hide theirs |
+| `avatar`       | never sent                                        | hide theirs |
+| `color`        | a **slot** of the nick palette (`"3"`), not a hex | never sent  |
+| `timezone`     | an IANA zone                                      | never sent  |
 
 A key that is absent leaves the other person's value alone. **The client lays
 these over `userMetadata`** wherever it shows a nick's metadata, in one lookup

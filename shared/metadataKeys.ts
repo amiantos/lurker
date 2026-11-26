@@ -7,10 +7,10 @@
 
 export const METADATA_KEY_RE = /^[a-z0-9_./-]+$/;
 
-// A user's colour (#1452) and time zone (#1450). The zone is Lurker's own key,
-// so it carries a vendor prefix, as the spec asks of a non-standard key.
+// A user's colour (#1452) and time zone (#1450). The zone's key is the one
+// proposed for the IRCv3 registry (ircv3/ircv3.github.io#659).
 export const METADATA_COLOR_KEY = 'color';
-export const METADATA_TZ_KEY = 'lurker.chat/tz';
+export const METADATA_TZ_KEY = 'timezone';
 
 // The keys Lurker shows, in order of preference: a server with a small
 // `max-subs` grants the first. A `color` is never painted as sent (#607: hex

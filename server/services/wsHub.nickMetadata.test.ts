@@ -98,7 +98,7 @@ describe('set-nick-metadata', () => {
           type: 'set-nick-metadata',
           networkId,
           nick: 'bob',
-          key: 'lurker.chat/tz',
+          key: 'timezone',
           value: 'europe/berlin',
         }),
       );
@@ -115,7 +115,7 @@ describe('set-nick-metadata', () => {
         kind: 'nick-metadata-updated',
         networkId,
         nick: 'bob',
-        values: { 'lurker.chat/tz': 'Europe/Berlin', 'display-name': null },
+        values: { timezone: 'Europe/Berlin', 'display-name': null },
       };
       for (const s of [a, b]) {
         await until(() => (updates(s.frames).length >= 2 ? true : undefined), 'two updates');
@@ -146,7 +146,7 @@ describe('set-nick-metadata', () => {
       await until(() => (updates(b.frames).length >= 3 ? true : undefined), 'the reset');
       expect(updates(b.frames)).toHaveLength(3);
       expect(updates(b.frames).at(-1)).toMatchObject({
-        values: { 'lurker.chat/tz': 'Europe/Berlin' },
+        values: { timezone: 'Europe/Berlin' },
       });
     } finally {
       a.ws.close();
@@ -163,9 +163,7 @@ describe('set-nick-metadata', () => {
         | undefined;
       expect(snapshot).toBeDefined();
       const net = snapshot!.networks.find((n) => n.networkId === networkId)!;
-      expect(net.nickMetadata).toEqual([
-        { nick: 'bob', values: { 'lurker.chat/tz': 'Europe/Berlin' } },
-      ]);
+      expect(net.nickMetadata).toEqual([{ nick: 'bob', values: { timezone: 'Europe/Berlin' } }]);
     } finally {
       late.ws.close();
     }

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // A moment as somebody else's clock shows it (#1450): the user's time zone
-// from their metadata (`lurker.chat/tz`), or one set on them (#1449).
+// from their metadata (`timezone`), or one set on them (#1449).
 
 import { normalizeTimeZone } from '../../../shared/metadataKeys.js';
 

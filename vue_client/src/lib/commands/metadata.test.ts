@@ -135,11 +135,11 @@ describe('/color and /tz', () => {
 
   it('sets the time zone in its usual spelling, or clears it', () => {
     expect(parseTzCommand('europe/berlin')).toEqual({
-      line: 'METADATA * SET lurker.chat/tz :Europe/Berlin',
-      write: { key: 'lurker.chat/tz', value: 'Europe/Berlin' },
+      line: 'METADATA * SET timezone :Europe/Berlin',
+      write: { key: 'timezone', value: 'Europe/Berlin' },
     });
     expect(parseTzCommand('Europe/Kyiv')).toMatchObject({
-      line: 'METADATA * SET lurker.chat/tz :Europe/Kyiv',
+      line: 'METADATA * SET timezone :Europe/Kyiv',
     });
     expect(parseTzCommand('OFF')).toMatchObject({ write: { value: null } });
     expect(parseTzCommand('Berlin')).toHaveProperty('error');

@@ -66,7 +66,7 @@ describe('/nickmeta', () => {
     expect(parse('bob tz Europe/Berlin')).toEqual({
       op: 'set',
       nick: 'bob',
-      key: 'lurker.chat/tz',
+      key: 'timezone',
       value: 'Europe/Berlin',
     });
     // In its usual spelling, as the server would store it.
@@ -78,7 +78,7 @@ describe('/nickmeta', () => {
 
   it('resets a field with a leading dash', () => {
     expect(parse('bob -color')).toEqual({ op: 'reset', nick: 'bob', key: 'color' });
-    expect(parse('bob -tz')).toEqual({ op: 'reset', nick: 'bob', key: 'lurker.chat/tz' });
+    expect(parse('bob -tz')).toEqual({ op: 'reset', nick: 'bob', key: 'timezone' });
     expect(parse('bob -shoe')).toHaveProperty('error');
     expect(parse('bob shoe 4')).toHaveProperty('error');
   });
