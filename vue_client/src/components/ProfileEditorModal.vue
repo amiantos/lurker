@@ -493,6 +493,12 @@ label {
   width: 100%;
   box-sizing: border-box;
 }
+/* The time zone field's suggestion list is the browser's own (a datalist),
+   and Chrome draws a drop-down arrow inside the field for it. Typing already
+   opens the list, so the arrow goes. */
+input[list]::-webkit-calendar-picker-indicator {
+  display: none !important;
+}
 .field small {
   color: var(--fg-muted);
 }
