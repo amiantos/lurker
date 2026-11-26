@@ -67,6 +67,12 @@ import {
 } from '../db/nickNotes.js';
 import type { NoteResult } from '../db/nickNotes.js';
 import {
+  listNickMetadataGrouped,
+  setNickMetadata as setNickMetadataRow,
+  resetNickMetadata as resetNickMetadataRow,
+} from '../db/nickMetadata.js';
+import type { NickMetadataValues } from '../../shared/nickMetadata.js';
+import {
   listForUserGrouped as listRelayBotsGrouped,
   setRelayBot as setRelayBotRow,
   removeRelayBot as removeRelayBotRow,
@@ -1710,6 +1716,7 @@ class IrcManager extends EventEmitter {
     const notifyByNetwork = listChannelNotifyForUser(userId);
     const ignoresByNetwork = ignoresGrouped(userId);
     const notesByNetwork = listNickNotesGrouped(userId);
+    const nickMetadataByNetwork = listNickMetadataGrouped(userId);
     const relayBotsByNetwork = listRelayBotsGrouped(userId);
     // Attach the per-network user-preference blobs to a base snapshot. Shared by
     // the live-connection and offline branches so both shapes stay identical.
@@ -1725,6 +1732,9 @@ class IrcManager extends EventEmitter {
         e2eChannels: e2eManager.enabledChannelNames(userId, networkId),
         ignoredMasks: ignoresByNetwork.get(networkId) || [],
         nickNotes: notesByNetwork.get(networkId) || [],
+        // What the user set on other people (#1449); a client lays it over
+        // `userMetadata` (shared/nickMetadata.ts).
+        nickMetadata: nickMetadataByNetwork.get(networkId) || [],
         relayBots: relayBotsByNetwork.get(networkId) || [],
         // ⚠ Here, not in conn.snapshot(), because a DCC chat outlives its
         // connection's place in the map: a user-initiated disconnect drops the
@@ -1836,6 +1846,26 @@ class IrcManager extends EventEmitter {
 
   getNickNote(userId: number, networkId: number, nick: string): NoteResult | null {
     return getNickNoteRow({ userId, networkId, nick });
+  }
+
+  // Metadata set on somebody else (#1449); the value arrives vetted.
+  setNickMetadata(
+    userId: number,
+    networkId: number,
+    nick: string,
+    key: string,
+    value: string | null,
+  ): NickMetadataValues {
+    return setNickMetadataRow({ userId, networkId, nick, key, value });
+  }
+
+  resetNickMetadata(
+    userId: number,
+    networkId: number,
+    nick: string,
+    key: string,
+  ): NickMetadataValues {
+    return resetNickMetadataRow({ userId, networkId, nick, key });
   }
 
   // Mark/unmark a relay bot (#277). Returns the stored row when marked, or null

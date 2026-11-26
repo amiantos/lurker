@@ -106,7 +106,7 @@ const rows = computed<NickRow[]>(() => {
       nick: c.nick,
       lc: c.nick.toLowerCase(),
       recent: c.recent,
-      color: nickColors.color(c.nick),
+      color: nickColors.color(c.nick, networkId),
       ...(c.displayName ? { displayName: c.displayName } : {}),
     }));
 });

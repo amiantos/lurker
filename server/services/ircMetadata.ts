@@ -14,12 +14,21 @@
 
 import { isChannelTarget } from '../../shared/channels.js';
 import {
+  METADATA_COLOR_KEY,
   METADATA_EXTRA_VALUE_MAX_CHARS,
   METADATA_KEY_RE,
+  METADATA_TZ_KEY,
+  normalizeMetadataColor,
+  normalizeTimeZone,
   METADATA_SUB_KEYS,
   METADATA_VALUE_MAX_CHARS,
   type OwnMetadataWrite,
 } from '../../shared/metadataKeys.js';
+import {
+  NICK_METADATA_HIDEABLE,
+  isNickMetadataKey,
+  parseColorSlot,
+} from '../../shared/nickMetadata.js';
 import { stripFormatting } from '../../shared/textMatch.js';
 import { parseLine } from './bouncerClientFilter.js';
 
@@ -161,6 +170,28 @@ export function vetMetadataValue(
   return value;
 }
 
+/**
+ * A value a user sets on somebody else (#1449), as it is stored: `{ value }`
+ * with a string, or with null for "hide theirs", or null when it is refused.
+ * Vetted like the same key off the wire, with two differences: a colour is a
+ * slot of the nick palette, and an avatar can only be hidden.
+ */
+export function vetNickMetadata(key: unknown, raw: string | null): { value: string | null } | null {
+  if (!isNickMetadataKey(key)) return null;
+  if (raw === null) return NICK_METADATA_HIDEABLE.has(key) ? { value: null } : null;
+  if (key === 'avatar') return null;
+  if (key === METADATA_COLOR_KEY) {
+    const slot = parseColorSlot(raw.trim());
+    return slot === null ? null : { value: String(slot) };
+  }
+  if (key === METADATA_TZ_KEY) {
+    const zone = normalizeTimeZone(raw);
+    return zone === null ? null : { value: zone };
+  }
+  const value = vetMetadataValue(key, raw);
+  return value === null ? null : { value };
+}
+
 /** The registry's `{size}` placeholder, filled in. */
 export function sizedAvatarUrl(url: string, size = AVATAR_SIZE): string {
   return url.replace(/\{size\}/g, String(size));
@@ -218,6 +249,11 @@ export interface UserMetadataView {
   pronouns?: string;
   homepage?: string;
   status?: string;
+  // The user's colour as lower-case `#rrggbb` (#1452). Never painted as is: a
+  // client adapts it to its theme's nick palette (shared/colorAdapt.ts).
+  color?: string;
+  // An IANA zone (#1450).
+  tz?: string;
 }
 
 export interface ChannelMetadataView {
@@ -234,6 +270,14 @@ export function userMetadataView(record: MetadataRecord, mint: AvatarMint): User
   if (record.pronouns) view.pronouns = record.pronouns;
   if (record.homepage) view.homepage = record.homepage;
   if (record.status) view.status = record.status;
+  // The record keeps both as the network sent them, which is what a bouncer
+  // client is replayed. A client of ours gets the one spelling it can read
+  // without a parser of its own, or nothing: a colour that isn't hex, a zone
+  // that isn't one.
+  const color = normalizeMetadataColor(record[METADATA_COLOR_KEY]);
+  if (color) view.color = color;
+  const tz = normalizeTimeZone(record[METADATA_TZ_KEY]);
+  if (tz) view.tz = tz;
   return view;
 }
 

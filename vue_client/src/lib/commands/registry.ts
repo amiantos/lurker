@@ -474,6 +474,28 @@ export const COMMANDS = [
   cmd(['avatar'], 'Status', 'your avatar image (an https URL) on networks with IRCv3 metadata', {
     args: [arg('url|off', 'word')],
   }),
+  cmd(
+    ['color'],
+    'Status',
+    'the nick color you ask others to show, on networks with IRCv3 metadata',
+    {
+      args: [arg('#rrggbb|off', 'word')],
+    },
+  ),
+  cmd(['tz'], 'Status', 'your time zone, on networks with IRCv3 metadata', {
+    args: [arg('zone|off', 'word')],
+  }),
+  cmd(['nickmeta'], 'Status', 'metadata you set on someone, seen only by you', {
+    usage: '/nickmeta <nick> [name|avatar|color|tz] [value]',
+    forms: [
+      form([NICK], 'what you set on them'),
+      form([NICK, kw('name', 'displayname'), text('name|hide')], 'a display name, or hide theirs'),
+      form([NICK, kw('avatar'), kw('hide')], 'hide their avatar'),
+      form([NICK, kw('color', 'colour'), arg('n|#hex', 'word')], 'a color of your nick palette'),
+      form([NICK, kw('tz', 'timezone', 'zone'), arg('zone', 'word')], 'their time zone'),
+    ],
+    notes: ['/nickmeta <nick> -<field> goes back to whatever they set'],
+  }),
   cmd(['metadata'], 'Status', 'any IRCv3 metadata key', {
     usage: '/metadata set|del|list|clear',
     forms: [

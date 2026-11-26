@@ -89,8 +89,16 @@ describe('the three line shapes', () => {
 describe('vetting a value', () => {
   it('keeps the keys we show and drops the rest', () => {
     expect(vetMetadataValue('display-name', 'Bob')).toBe('Bob');
-    expect(vetMetadataValue('color', '#ff0000')).toBeNull();
+    expect(vetMetadataValue('city', 'Berlin')).toBeNull();
     expect(vetMetadataValue('bot', 'yes')).toBeNull();
+  });
+  // As sent: a bouncer client is replayed the record, and it asked the network.
+  it('keeps a colour and a time zone as the network sent them', () => {
+    expect(vetMetadataValue('color', '#FF0000')).toBe('#FF0000');
+    expect(vetMetadataValue('color', 'red')).toBe('red');
+    expect(vetMetadataValue('color', 'x'.repeat(65))).toBeNull();
+    expect(vetMetadataValue('lurker.chat/tz', 'europe/berlin')).toBe('europe/berlin');
+    expect(vetMetadataValue('lurker.chat/tz', '+01:00')).toBe('+01:00');
   });
   it('treats an empty or oversized value as unset, never truncated', () => {
     expect(vetMetadataValue('display-name', '')).toBeNull();
@@ -130,6 +138,29 @@ describe('what a client is sent', () => {
       avatarUrl: '/proxied/https%3A%2F%2Fx%2Fc.png',
     });
   });
+  const view = (record: Record<string, string>) => userMetadataView(record, () => null);
+  it('hands a client a colour only as hex, in one spelling (#1452)', () => {
+    expect(view({ color: '#FF0000' })).toEqual({ color: '#ff0000' });
+    expect(view({ color: '#f0a' })).toEqual({ color: '#ff00aa' });
+    for (const color of ['red', 'rgb(255, 0, 0)', '#ff000', '#ff0000aa']) {
+      expect(view({ color })).toEqual({});
+    }
+  });
+  it('hands a client a time zone only when it is one, under the name given (#1450)', () => {
+    const tz = (zone: string) => view({ 'lurker.chat/tz': zone }).tz;
+    expect(tz('europe/berlin')).toBe('Europe/Berlin');
+    expect(tz('America/Los_Angeles')).toBe('America/Los_Angeles');
+    expect(tz('UTC')).toBe('UTC');
+    // Never the runtime's canonical zone: ICU answers a renamed zone with its
+    // OLD name, and an alias with another place.
+    expect(tz('Europe/Kyiv')).toBe('Europe/Kyiv');
+    expect(tz('Asia/Kolkata')).toBe('Asia/Kolkata');
+    expect(tz('EST')).toBe('EST');
+    // An offset is not a zone: it has no DST, and reads as one to Intl.
+    expect(tz('+01:00')).toBeUndefined();
+    expect(tz('Mars/Olympus_Mons')).toBeUndefined();
+    expect(tz('Berlin time')).toBeUndefined();
+  });
   it('says null for an avatar it cannot serve, so the client shows its tile', () => {
     expect(userMetadataView({ avatar: 'https://x/a.png' }, () => null)).toEqual({
       avatarUrl: null,
@@ -145,9 +176,9 @@ describe('what the record may hold', () => {
     expect(vetMetadataValue('display-name', '\x02Bob\x02')).toBe('\x02Bob\x02');
   });
   it('keeps a key a bouncer client asked for, bounded, and no other', () => {
-    const extra = new Set(['color']);
-    expect(vetMetadataValue('color', '#ff0000', extra)).toBe('#ff0000');
-    expect(vetMetadataValue('color', 'x'.repeat(513), extra)).toBeNull();
+    const extra = new Set(['city']);
+    expect(vetMetadataValue('city', 'Berlin', extra)).toBe('Berlin');
+    expect(vetMetadataValue('city', 'x'.repeat(513), extra)).toBeNull();
     expect(vetMetadataValue('bot', 'yes', extra)).toBeNull();
   });
 });
@@ -203,7 +234,10 @@ describe('our own metadata on its way out (#1189)', () => {
     expect(ownMetadataToSave('constructor', 'x'.repeat(513))).toBeUndefined();
     expect(ownMetadataToSave('constructor', 'x'.repeat(512))).toBe('x'.repeat(512));
     // A key Lurker doesn't show is kept, bounded like a status.
-    expect(ownMetadataToSave('color', '#ff0000')).toBe('#ff0000');
+    expect(ownMetadataToSave('city', 'Berlin')).toBe('Berlin');
+    // As typed, whatever a client of ours would make of it.
+    expect(ownMetadataToSave('color', '#FF0000')).toBe('#FF0000');
+    expect(ownMetadataToSave('color', 'red')).toBe('red');
     expect(ownMetadataToSave('status', '')).toBeNull();
     expect(ownMetadataToSave('status', null)).toBeNull();
   });

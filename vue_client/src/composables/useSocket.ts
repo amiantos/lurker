@@ -29,6 +29,7 @@ import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { useE2eChannelsStore } from '../stores/e2eChannels.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
+import { useNickMetadataStore } from '../stores/nickMetadata.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -834,6 +835,7 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   useE2eChannelsStore().applySnapshot(snapshot);
   ignores.applySnapshot(snapshot, globalIgnores);
   nickNotes.applySnapshot(snapshot);
+  useNickMetadataStore().applySnapshot(snapshot);
   relayBots.applySnapshot(snapshot);
   retireStaleDccOfferToasts(snapshot);
   // Highlight rules aren't in the snapshot; load them now so client-side
@@ -1274,6 +1276,10 @@ function handleMessage(raw: string): void {
   if (payload.kind === 'nick-note-updated') {
     const nickNotes = useNickNotesStore();
     nickNotes.applyUpdate(payload.networkId, payload.nick, payload.note || '', payload.updatedAt);
+    return;
+  }
+  if (payload.kind === 'nick-metadata-updated') {
+    useNickMetadataStore().applyUpdate(payload.networkId, payload.nick, payload.values ?? null);
     return;
   }
   if (payload.kind === 'relay-bot-updated') {

@@ -162,11 +162,13 @@
               :title="'Relayed via ' + row.m.relayBot"
               >{{ row.m.relaySource }}</span
             >
-            <span class="time">{{ time(row.m?.time) }}</span>
+            <span class="time" :title="timeTitle(row.m)">{{ time(row.m?.time) }}</span>
           </div>
         </template>
         <template v-else>
-          <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
+          <span class="time" :title="timeTitle(row.m)">{{
+            row.continuationTime ? '' : time(row.m?.time)
+          }}</span>
           <span
             class="prefix"
             :class="prefixClass(row.m)"
@@ -350,6 +352,7 @@
                  branch (see the note below), so it starts a chain of its own. --><span
             v-if="compactMode && !compactHead(row.m) && !row.continuationTime"
             class="time trailing"
+            :title="timeTitle(row.m)"
             >{{ time(row.m?.time) }}</span
           >
           <!-- ⚠ Attachments used to be mounted HERE, outside the chain, and the reason is
@@ -451,6 +454,7 @@ import {
   formatDateTime,
   formatDayLabel,
 } from '../utils/timestamp.js';
+import { is12Hour, theirTimeTitle } from '../utils/timeZone.js';
 import { consolidateRows } from '../utils/consolidate.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
@@ -648,9 +652,8 @@ const threadsHere = computed(
 // the row a `selected` background so users with no hover can see which message
 // the menu targets (#392). Cleared when the menu closes.
 const selectedMessageId = ref<number | null>(null);
-const selfColor = computed<string | null>(
-  () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
-);
+// Own nick: the theme's colour, or the one we published on this network (#1452).
+const selfColor = computed<string | null>(() => nicks.selfColorOn(buffer.value?.networkId) ?? null);
 // Compact mode uses its own format setting so users can run the per-line
 // time column at lower precision (default HH:mm) without affecting their
 // standard-layout timestamps. Note: `tsFormat` is referenced via `time()`
@@ -868,6 +871,18 @@ function time(iso: string | undefined): string {
   if (!t || !dateFmt || !iso) return t;
   if (formatDate(iso) === formatDate(new Date().toISOString())) return t;
   return `${formatTimestamp(iso, dateFmt)} ${t}`;
+}
+
+// A line's time on its author's clock (#1450), where their time zone is known:
+// from their metadata, or one set on them. Not on our own lines, and not on a
+// relayed author's: the zone would be that of whoever shares their nick here.
+function timeTitle(m: ChatMessage | undefined): string | undefined {
+  if (!m?.nick || m.self || m.relaySource) return undefined;
+  if (m.type !== 'message' && m.type !== 'action' && m.type !== 'notice') return undefined;
+  const zone = networks.metadataFor(buffer.value?.networkId, m.nick)?.tz;
+  return zone
+    ? theirTimeTitle(m.nick, m.time, zone, is12Hour(tsFormat.value as string))
+    : undefined;
 }
 
 // Drops the /clear marker for the currently-active buffer. Wired to the
@@ -1897,7 +1912,8 @@ function prefixClass(m: ChatMessage | undefined) {
 function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
   if (m && nickRow(m)) {
     if (m.self) return { color: selfColor.value as string };
-    const c = nicks.color(m.nick ?? '');
+    // A relayed author is someone on another network (see NickRef's `plain`).
+    const c = nicks.color(m.nick ?? '', m.relaySource ? null : buffer.value?.networkId);
     return c ? { color: c } : null;
   }
   // System-buffer lines tied to a network (#355) color the network name with
@@ -1941,7 +1957,12 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     segments = computed(() => {
       // An action's body includes its author, unlike a plain message.
       const text = m.type === 'action' ? `${m.nick} ${m.text || ''}` : m.text || '';
-      return nicks.splitText(text, nickSet.value, selfLower.value) as RenderSegment[];
+      return nicks.splitText(
+        text,
+        nickSet.value,
+        selfLower.value,
+        buffer.value?.networkId,
+      ) as RenderSegment[];
     });
     segmentsByMessage.set(m, segments);
   }

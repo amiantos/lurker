@@ -112,8 +112,8 @@ const isSelf = computed(() => {
   return !!own && !!props.nick && own.toLowerCase() === props.nick.toLowerCase();
 });
 const color = computed(() => {
-  if (isSelf.value) return nicks.selfColor.value;
-  return props.nick ? nicks.color(props.nick) : null;
+  if (isSelf.value) return nicks.selfColorOn(props.networkId);
+  return props.nick ? nicks.color(props.nick, props.plain ? null : props.networkId) : null;
 });
 // What reads on that colour, near-white or near-black: the letter's ink, the
 // silhouette's, a placeholder glyph's. The colour is any CSS the user typed,

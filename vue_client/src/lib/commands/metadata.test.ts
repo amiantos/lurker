@@ -5,8 +5,10 @@ import { describe, expect, it } from 'vitest';
 import {
   ownMetadataRefusal,
   parseAvatarCommand,
+  parseColorCommand,
   parseDisplayNameCommand,
   parseMetadataCommand,
+  parseTzCommand,
 } from './metadata.js';
 
 describe('/metadata', () => {
@@ -114,5 +116,33 @@ describe('where our own metadata can go (#1189)', () => {
         metadataLimits: limits,
       }),
     ).toBeNull();
+  });
+});
+
+describe('/color and /tz', () => {
+  it('sets the colour as lower-case #rrggbb, or clears it', () => {
+    expect(parseColorCommand('#F0A')).toEqual({
+      line: 'METADATA * SET color :#ff00aa',
+      write: { key: 'color', value: '#ff00aa' },
+    });
+    expect(parseColorCommand('off')).toEqual({
+      line: 'METADATA * SET color',
+      write: { key: 'color', value: null },
+    });
+    expect(parseColorCommand('red')).toHaveProperty('error');
+    expect(parseColorCommand('')).toHaveProperty('error');
+  });
+
+  it('sets the time zone in its usual spelling, or clears it', () => {
+    expect(parseTzCommand('europe/berlin')).toEqual({
+      line: 'METADATA * SET lurker.chat/tz :Europe/Berlin',
+      write: { key: 'lurker.chat/tz', value: 'Europe/Berlin' },
+    });
+    expect(parseTzCommand('Europe/Kyiv')).toMatchObject({
+      line: 'METADATA * SET lurker.chat/tz :Europe/Kyiv',
+    });
+    expect(parseTzCommand('OFF')).toMatchObject({ write: { value: null } });
+    expect(parseTzCommand('Berlin')).toHaveProperty('error');
+    expect(parseTzCommand('+02:00')).toHaveProperty('error');
   });
 });

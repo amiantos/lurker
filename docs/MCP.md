@@ -84,6 +84,19 @@ Full-text search across your message history. Free-text `query` runs through
 SQLite FTS5 (multiple terms are ANDed). Optional structured filters:
 `networkId`, `target`, `nick`. Limit defaults to 50, capped at 100.
 
+### `get_nick_metadata` _(read)_
+
+Read the metadata you set on a nick: `values` maps a key to its value, or to
+`null` where you hid the other person's.
+
+### `set_nick_metadata` _(read-write)_
+
+Set metadata on somebody else, seen only by you: `display-name`, `color` (a
+slot of your nick palette, such as `"3"`), `lurker.chat/tz` (an IANA zone), or
+`avatar`, which can only be hidden. A `null` value hides theirs
+(`display-name` and `avatar`); `reset: true` goes back to theirs. Works on
+networks without IRCv3 metadata. Writes fan out to open clients.
+
 ### `get_nick_note` _(read)_
 
 Read your free-form note about a nick on a network. Empty string when no

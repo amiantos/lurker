@@ -506,7 +506,7 @@ const typingNicks = computed(() => {
 });
 
 function nickSeg(nick: string): { text: string; color: string | null } {
-  return { text: nick, color: nickColors.color(nick) };
+  return { text: nick, color: nickColors.color(nick, active.value?.networkId) };
 }
 
 const sep = (s: string): { text: string; color: null } => ({ text: s, color: null });

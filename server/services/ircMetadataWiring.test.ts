@@ -113,7 +113,11 @@ describe('subscribing', () => {
       const me = await ircd.waitForRegistration('subone');
       await until(
         () =>
-          me.sent.some((l) => l === 'METADATA * SUB display-name avatar pronouns homepage status'),
+          me.sent.some(
+            (l) =>
+              l ===
+              'METADATA * SUB display-name avatar pronouns homepage status color lurker.chat/tz',
+          ),
         5000,
         'SUB sent',
         () => me.sent.join('\n'),

@@ -72,6 +72,14 @@ a reason, a message. Escape puts it away until you start another command.
   reaches any key. Lurker remembers what you set per network and sets it again
   each time you connect; the network menu's Edit Profile shows it all, and
   uploads a picture for you, cropped square.
+- `/color <#rrggbb>` and `/tz <zone>` — the nick colour you ask others to show
+  you in, and your time zone (`Europe/Berlin`), on the same networks. `off`
+  clears either. Other people see that colour fitted to their own theme.
+- `/nickmeta <nick>` — what you have set on someone, seen only by you:
+  `/nickmeta bob name Robert` (or `name hide`), `/nickmeta bob avatar hide`,
+  `/nickmeta bob color 3` (a colour of your nick palette, or a `#hex` for the
+  nearest), `/nickmeta bob tz Europe/Berlin`. `/nickmeta bob -color` goes back
+  to whatever they set. Works on any network.
 - `/avatars` — list the tile sets behind generated avatars; `/avatars use <set>`
   picks one, `/avatars delete <set>` removes an upload. The sets live in
   Settings › Appearance › Avatars.

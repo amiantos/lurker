@@ -205,9 +205,14 @@ import { parseRename } from '../lib/commands/rename.js';
 import {
   ownMetadataRefusal,
   parseAvatarCommand,
+  parseColorCommand,
   parseDisplayNameCommand,
   parseMetadataCommand,
+  parseTzCommand,
 } from '../lib/commands/metadata.js';
+import { parseNickMetaCommand } from '../lib/commands/nickMetadata.js';
+import { useNickMetadataStore } from '../stores/nickMetadata.js';
+import { METADATA_COLOR_KEY, normalizeMetadataColor } from '../../../shared/metadataKeys.js';
 import { parseAvatarsCommand } from '../lib/commands/avatars.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
@@ -370,6 +375,7 @@ const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
 const channelModal = useChannelModal();
 const nickColors = useNickColors();
+const nickMetadata = useNickMetadataStore();
 const displayNames = useDisplayNames();
 
 // The ignore rules visible from this network, in /ignore-listing order: globals
@@ -1129,7 +1135,7 @@ function buildNickStripItems(buf: Buffer, networkId: number, prefix: string): Ni
     displayNames.plainDisplayNameFor(networkId, nick),
   )
     .slice(0, 30)
-    .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick) }));
+    .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick, networkId) }));
 }
 
 // Same recency ordering the ChannelPicker uses, so in-place Tab-completion and
@@ -4984,12 +4990,52 @@ function handleCommand(
       const nicks = rest.join(',').split(',').filter(Boolean).join(',');
       return sendRaw(networkId, target, nicks ? `ACCEPT ${nicks}` : 'ACCEPT *', line);
     }
+    // Metadata set on somebody else (#1449): kept by Lurker, never sent to the
+    // network. The server echoes a save to every session.
+    case 'nickmeta': {
+      if (networkId == null) {
+        localInfo(networkId, target, "/nickmeta: there's no network here.");
+        return true;
+      }
+      const palette = settings.effective('look.nick.colors') as string[];
+      const parsed = parseNickMetaCommand(argLine, {
+        paletteSize: palette.length,
+        snap: (hex) => nickColors.slotNearest(normalizeMetadataColor(hex)),
+        isSelf: (nick) => networks.isOwnNick(networkId, nick),
+      });
+      if ('error' in parsed) {
+        localInfo(networkId, target, parsed.error);
+        return true;
+      }
+      if (parsed.op === 'list') {
+        const set = Object.entries(nickMetadata.valuesFor(networkId, parsed.nick) ?? {});
+        localInfo(
+          networkId,
+          target,
+          set.length
+            ? `${parsed.nick}: ${set
+                .map(([key, value]) =>
+                  value === null
+                    ? `${key} hidden`
+                    : `${key} ${key === METADATA_COLOR_KEY ? Number(value) + 1 : value}`,
+                )
+                .join(', ')}`
+            : `You have set nothing on ${parsed.nick}.`,
+        );
+        return true;
+      }
+      if (parsed.op === 'reset') nickMetadata.reset(networkId, parsed.nick, parsed.key);
+      else nickMetadata.set(networkId, parsed.nick, parsed.key, parsed.value);
+      return true;
+    }
     // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
     // echoed by the server where a /command's reply goes. A change is saved
     // per network (#1189): by the server as it goes out, or here by REST when
     // the network isn't connected, to be set at the next connect.
     case 'metadata':
     case 'avatar':
+    case 'color':
+    case 'tz':
     case 'displayname': {
       if (networkId == null) {
         localInfo(
@@ -5004,7 +5050,11 @@ function handleCommand(
           ? parseAvatarCommand(argLine)
           : verb === 'displayname'
             ? parseDisplayNameCommand(argLine)
-            : parseMetadataCommand(argLine);
+            : verb === 'color'
+              ? parseColorCommand(argLine)
+              : verb === 'tz'
+                ? parseTzCommand(argLine)
+                : parseMetadataCommand(argLine);
       if ('error' in parsed) {
         localInfo(networkId, target, parsed.error);
         return true;

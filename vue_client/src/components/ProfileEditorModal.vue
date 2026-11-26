@@ -103,6 +103,80 @@
               autocomplete="off"
             />
           </label>
+          <!-- Not a <label>: it would hand a click on the title to the swatch. -->
+          <div class="field">
+            <span class="title">Nick color</span>
+            <div class="avatar-row">
+              <button
+                ref="swatchEl"
+                type="button"
+                class="swatch"
+                :style="{ background: pickedColor ?? 'transparent' }"
+                :disabled="locked"
+                title="pick a color"
+                aria-label="pick a color"
+                :aria-expanded="pickerOpen"
+                @click="pickerOpen = true"
+              ></button>
+              <input
+                :disabled="locked"
+                :value="form.color"
+                @input="form.color = imeSafeValue($event)"
+                @keydown.enter="blockImeEnter"
+                maxlength="7"
+                placeholder="#rrggbb"
+                aria-label="Nick color"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+              />
+            </div>
+            <!-- Nobody paints the colour as sent (#1452): each client keeps its
+                 hue and fits the rest to its own theme, this one included. -->
+            <small v-if="shownAs">
+              Shows as <span class="swatch chip" :style="{ background: shownAs }"></span> in this
+              theme.
+            </small>
+            <small v-else-if="form.color.trim()">Not a color: use #rrggbb.</small>
+            <ColorPicker
+              v-if="pickerOpen"
+              :value="pickedColor ?? ''"
+              :anchor="swatchEl"
+              @commit="onColorPicked"
+              @close="pickerOpen = false"
+            />
+          </div>
+          <label>
+            <span class="title">Time zone</span>
+            <div class="avatar-row zone-row">
+              <input
+                :disabled="locked"
+                :value="form[TZ]"
+                @input="form[TZ] = imeSafeValue($event)"
+                @keydown.enter="blockImeEnter"
+                :list="zonesId"
+                :maxlength="max(TZ)"
+                placeholder="Europe/Berlin"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+              />
+              <!-- Asked for, never assumed: a zone says roughly where you are. -->
+              <button
+                type="button"
+                class="btn-secondary"
+                :disabled="locked || !deviceZone"
+                @click="form[TZ] = deviceZone ?? ''"
+              >
+                Use this device's
+              </button>
+            </div>
+            <datalist :id="zonesId">
+              <option v-for="z in zoneOptions" :key="z" :value="z"></option>
+            </datalist>
+            <small v-if="zoneTime">{{ zoneTime }} there now.</small>
+            <small v-else-if="form[TZ].trim()">Not a time zone this browser knows.</small>
+          </label>
           <label v-if="otherNetworks.length">
             <span class="title">Copy from</span>
             <select
@@ -133,7 +207,7 @@
         <button
           type="submit"
           class="btn-primary"
-          :disabled="!dirty || !!refusal || saving || uploading"
+          :disabled="!dirty || invalid || !!refusal || saving || uploading"
         >
           Save
         </button>
@@ -143,8 +217,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, useId } from 'vue';
 import AppModal from './AppModal.vue';
+import ColorPicker from './ColorPicker.vue';
 import RenderSegments from './RenderSegments.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useUploadsStore } from '../stores/uploads.js';
@@ -152,7 +227,19 @@ import { useAuthStore } from '../stores/auth.js';
 import { useConfigStore } from '../stores/config.js';
 import { useProfileEditor } from '../composables/useProfileEditor.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
+import { useNickColors } from '../composables/useNickColors.js';
+import { useNow } from '../composables/useNow.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { formattingSegments } from '../utils/nickColor.js';
+import {
+  deviceTimeZone,
+  is12Hour,
+  knownTimeZones,
+  timeInTypedZone,
+  zonesBut,
+} from '../utils/timeZone.js';
+import { toHex } from '../lib/color.js';
+import { resolveCssColor } from '../lib/cssColor.js';
 import { ownMetadataRefusal } from '../lib/commands/metadata.js';
 import {
   clearOwnMetadata,
@@ -163,13 +250,22 @@ import {
 import {
   METADATA_EXTRA_VALUE_MAX_CHARS,
   METADATA_SUB_KEYS,
+  METADATA_TZ_KEY as TZ,
   METADATA_VALUE_MAX_CHARS,
+  normalizeMetadataColor,
 } from '../../../shared/metadataKeys.js';
 
 const props = defineProps<{ networkId: number }>();
 
 // The keys Lurker shows; the template names each.
-type Field = 'display-name' | 'avatar' | 'pronouns' | 'homepage' | 'status';
+type Field =
+  | 'display-name'
+  | 'avatar'
+  | 'pronouns'
+  | 'homepage'
+  | 'status'
+  | 'color'
+  | 'lurker.chat/tz';
 const FIELDS = METADATA_SUB_KEYS as Field[];
 
 const networks = useNetworksStore();
@@ -214,6 +310,45 @@ const preview = computed(() => {
   return url && url === savedAvatar.value ? avatarPreview.value : null;
 });
 const locked = computed(() => !!refusal.value || loading.value);
+
+// The colour (#1452): a free pick, published as #rrggbb. `shownAs` is what
+// this theme makes of it, which is all anyone ever sees of it.
+const nicks = useNickColors();
+const settings = useSettingsStore();
+const pickerOpen = ref(false);
+const swatchEl = ref<HTMLElement | null>(null);
+const pickedColor = computed(() => normalizeMetadataColor(form.color));
+const shownAs = computed(() => nicks.adapted(pickedColor.value));
+// The picker can hand back anything CSS takes (a theme reference); the wire takes hex.
+function onColorPicked(value: string): void {
+  const rgb = resolveCssColor(value, document.body);
+  form.color = rgb ? toHex(rgb) : value;
+}
+
+// The time zone (#1450).
+const now = useNow();
+const zonesId = useId();
+const zones = knownTimeZones();
+// Without the zone already in the field: Chrome would keep offering it, alone,
+// under the field it was just picked into.
+const zoneOptions = computed(() => zonesBut(zones, form[TZ]));
+const deviceZone = deviceTimeZone();
+const zoneTime = computed(() =>
+  timeInTypedZone(
+    now.value,
+    form[TZ],
+    is12Hour(settings.effective('look.buffer.time_format') as string),
+  ),
+);
+// A value the server would drop is not sent: Save waits for a real one. Only
+// a field that was touched counts: a colour saved by an older version as any
+// text (`/metadata set color red`) must not hold every other field's Save.
+const touched = (f: Field) => form[f].trim() !== initial.value[f];
+const invalid = computed(
+  () =>
+    (touched('color') && !!form.color.trim() && !pickedColor.value) ||
+    (touched(TZ) && !!form[TZ].trim() && !zoneTime.value),
+);
 const dirty = computed(() => FIELDS.some((f) => form[f].trim() !== initial.value[f]));
 
 const limitsText = computed(() => {
@@ -226,7 +361,7 @@ const limitsText = computed(() => {
 });
 
 function blank(): Record<Field, string> {
-  return { 'display-name': '', avatar: '', pronouns: '', homepage: '', status: '' };
+  return Object.fromEntries(FIELDS.map((f) => [f, ''])) as Record<Field, string>;
 }
 
 function max(field: Field): number {
@@ -293,7 +428,11 @@ async function save(): Promise<void> {
   // changed it since this opened.
   const values: Record<string, string | null> = {};
   for (const f of FIELDS) {
-    const value = form[f].trim();
+    const typed = form[f].trim();
+    // A colour that was changed goes out in the one spelling every client
+    // reads. One left alone is compared, and kept, as it was saved.
+    const value =
+      (f === 'color' && typed !== initial.value[f] && normalizeMetadataColor(typed)) || typed;
     if (value !== initial.value[f] || (value && !savedKeys.value.has(f))) values[f] = value || null;
   }
   saving.value = true;
@@ -360,6 +499,45 @@ label {
   gap: var(--space-2);
   color: var(--fg-muted);
 }
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+}
+.field input {
+  color: var(--fg);
+  width: 100%;
+  box-sizing: border-box;
+}
+/* The time zone field's suggestion list is the browser's own (a datalist),
+   and Chrome draws a drop-down arrow inside the field for it. Typing already
+   opens the list, so the arrow goes. */
+input[list]::-webkit-calendar-picker-indicator {
+  display: none !important;
+}
+.field small {
+  color: var(--fg-muted);
+}
+.swatch {
+  width: 1.3em;
+  height: 1.3em;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: inline-block;
+  cursor: pointer;
+  flex: none;
+}
+.swatch:disabled {
+  cursor: not-allowed;
+}
+.swatch.chip {
+  width: 0.9em;
+  height: 0.9em;
+  cursor: default;
+  vertical-align: middle;
+}
 .title {
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -384,6 +562,11 @@ label small {
 }
 .avatar-row button {
   flex: none;
+}
+/* The field and its button, one height: the button's padding makes it the
+   taller of the two when each keeps its own. */
+.zone-row {
+  align-items: stretch;
 }
 .file-input {
   display: none;

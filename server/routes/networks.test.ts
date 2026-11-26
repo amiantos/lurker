@@ -1104,8 +1104,10 @@ describe('own metadata (#1189)', () => {
     expect(cleared.body.values).toEqual({});
     expect(cleared.body.unset.toSorted()).toEqual([
       'avatar',
+      'color',
       'display-name',
       'homepage',
+      'lurker.chat/tz',
       'pronouns',
       'status',
     ]);
