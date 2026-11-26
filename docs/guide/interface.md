@@ -88,6 +88,8 @@ on the server ([self-hosting docs](/SELF_HOSTING#link-previews-inline-media)).
   Pictures need the server to run
   [`lurker-previews`](/SELF_HOSTING#link-previews-inline-media); without it
   everyone gets the generated square.
+- **Nick colors.** Coming from The Lounge? You can
+  [keep the colors you had there](/guide/from-thelounge).
 
 ## See also
 

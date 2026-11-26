@@ -3,6 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  nickColor,
   splitTextByTokens,
   segmentInlineStyle,
   segmentHasStyle,
@@ -520,5 +521,70 @@ describe('splitTextByTokens — a trailing ellipsis', () => {
     expect(parse('https://example.com/a…b')).toEqual([
       { text: 'https://example.com/a…b', url: 'https://example.com/a…b' },
     ]);
+  });
+});
+
+describe('nickColor — hash', () => {
+  // Named after The Lounge's classes, so a result reads as the class a nick
+  // gets there: `.user.color-N` is palette slot N - 1.
+  const lounge = Array.from({ length: 32 }, (_, i) => `color-${i + 1}`);
+  const asLounge = (nick: string, stopChars = '') =>
+    nickColor(nick, { palette: lounge, stopChars, hash: 'sum' });
+
+  // Expected values are The Lounge's own arithmetic, worked by hand from
+  // colorClass.ts: 1 + (sum of charCodeAt) % 32.
+  it('sum gives a nick its class from The Lounge', () => {
+    expect(asLounge('alice')).toBe('color-31'); // 510 % 32 = 30
+    expect(asLounge('bob')).toBe('color-20'); // 307 % 32 = 19
+    expect(asLounge('Bob')).toBe('color-20'); // 275 % 32 = 19
+    expect(asLounge('bob_')).toBe('color-19'); // 402 % 32 = 18
+  });
+
+  it('sum does not lowercase past ASCII', () => {
+    // U+0178 is 376, its lowercase U+00FF is 255: slots 24 and 31.
+    expect(asLounge('\u0178')).toBe('color-25');
+    expect(asLounge('\u00ff')).toBe('color-32');
+  });
+
+  // A mention is colored as typed, so `alice: hi` has to land where Alice's
+  // own lines do. At 32 colors that falls out of the arithmetic; at any other
+  // length it needs the ASCII fold. Unfolded, Alice is 478 % 19 = 3.
+  it('sum is ASCII case-insensitive at any palette length', () => {
+    const nineteen = Array.from({ length: 19 }, (_, i) => `slot-${i}`);
+    const at19 = (nick: string) =>
+      nickColor(nick, { palette: nineteen, stopChars: '', hash: 'sum' });
+    expect(at19('alice')).toBe('slot-16'); // 510 % 19 = 16
+    expect(at19('Alice')).toBe('slot-16');
+    expect(at19('ALICE')).toBe('slot-16');
+  });
+
+  it('sum adds UTF-16 code units, not code points', () => {
+    // U+1F600 is D83D + DE00 = 112189, slot 29. The code point alone is slot 0.
+    expect(asLounge('\u{1F600}')).toBe('color-30');
+  });
+
+  it('sum still honours stop chars, so parity needs them cleared', () => {
+    expect(asLounge('bob_', '_|')).toBe('color-20');
+  });
+
+  // Slots worked outside this codebase from weechat's djb2_32 over the
+  // trimmed, lowercased nick, modulo 19. A change to the hash or to the
+  // trim/lowercase order moves these.
+  it('djb2-32 is the default and its slots are pinned', () => {
+    const nineteen = Array.from({ length: 19 }, (_, i) => `slot-${i}`);
+    const at = (nick: string, hash?: 'djb2-32') =>
+      nickColor(nick, { palette: nineteen, stopChars: '_|', hash });
+    expect(at('alice')).toBe('slot-2');
+    expect(at('Alice_')).toBe('slot-2');
+    expect(at('bob')).toBe('slot-0');
+    expect(at('amiantos__')).toBe('slot-9');
+    expect(at('_underscore')).toBe('slot-11');
+    expect(at('bob', 'djb2-32')).toBe('slot-0');
+  });
+
+  it('the registry offers both hashes and defaults to djb2-32', () => {
+    const opt = getOption('look.nick.color_hash');
+    expect(opt?.type === 'enum' && opt.choices).toEqual(['djb2-32', 'sum']);
+    expect(opt?.default).toBe('djb2-32');
   });
 });

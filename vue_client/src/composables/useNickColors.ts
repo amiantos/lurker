@@ -4,7 +4,7 @@
 import type { ComputedRef } from 'vue';
 import { computed } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
-import { nickColor, splitTextByTokens } from '../utils/nickColor.js';
+import { nickColor, splitTextByTokens, type NickColorHash } from '../utils/nickColor.js';
 import { emojiFn } from './useEmoji.js';
 
 export interface NickColorsAPI {
@@ -23,10 +23,15 @@ export function useNickColors(): NickColorsAPI {
 
   const palette = computed(() => settings.effective('look.nick.colors') as string[]);
   const stopChars = computed(() => settings.effective('look.nick.color_stop_chars') as string);
+  const hash = computed(() => settings.effective('look.nick.color_hash') as NickColorHash);
   const selfColor = computed(() => settings.effective('look.nick.self_color') as string);
 
   function color(nick: string): string | null {
-    return nickColor(nick, { palette: palette.value, stopChars: stopChars.value });
+    return nickColor(nick, {
+      palette: palette.value,
+      stopChars: stopChars.value,
+      hash: hash.value,
+    });
   }
 
   function splitText(text: string, nickSet: Set<string>, selfLower: string | null): unknown[] {

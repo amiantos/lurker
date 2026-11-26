@@ -777,9 +777,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'appearance',
     group: 'nicks',
     type: 'enum',
-    choices: ['djb2-32'],
+    choices: ['djb2-32', 'sum'],
+    choiceLabels: { 'djb2-32': 'djb2 (WeeChat)', sum: 'Sum (The Lounge)' },
     default: 'djb2-32',
-    description: 'How a nick is mapped to a palette color.',
+    description:
+      'How a nick is mapped to a palette color. Sum matches The Lounge when the ' +
+      'palette is its 32 colors and no trailing characters are ignored.',
   },
   {
     key: 'look.nick.show_mode_prefix',
