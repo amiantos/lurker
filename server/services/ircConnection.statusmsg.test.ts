@@ -44,6 +44,10 @@ describe('STATUSMSG lines', () => {
     conn.connect();
     await until(() => conn!.state === 'connected', 5000, 'connected');
     await ircd.waitForRegistration(nick);
+    // The 005 follows the welcome: wait for it, or a line sent at once is read
+    // by a network that has not said what its STATUSMSG is yet.
+    if (isupport.some((t) => t.startsWith('STATUSMSG=')))
+      await until(() => !!conn!.statusTarget('@#room'), 5000, 'STATUSMSG known');
     const chat = () =>
       events.filter(
         (e) => ['message', 'notice', 'action'].includes(e.type) && !e.target?.startsWith(':'),
