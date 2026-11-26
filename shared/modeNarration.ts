@@ -133,15 +133,25 @@ function chanSegments(sign: string, letter: string, param?: string): ModeSegment
  * lets the key be dropped here the way it already is everywhere else (#476).
  */
 function rawSegments(modes: readonly ModeChange[]): ModeSegment[] {
-  const parts = modes.map((m) => {
+  // The form an operator would type (#1431): the letters run together under
+  // their sign, then the parameters in order — `+ao alice alice`, `+o-b alice
+  // *!*@host` — rather than each change spelled out with its own sign.
+  let letters = '';
+  let sign = '';
+  const params: string[] = [];
+  for (const m of modes) {
+    const s = m.mode.startsWith('-') ? '-' : '+';
+    if (s !== sign) letters += s;
+    sign = s;
+    const letter = modeLetter(m.mode);
+    letters += letter;
     // The one param that is withheld; the letter still shows, so the reader
     // knows a key was set.
-    if (modeLetter(m.mode) === 'k') return m.mode;
-    return m.param ? `${m.mode} ${m.param}` : m.mode;
-  });
+    if (m.param && letter !== 'k') params.push(m.param);
+  }
   return [
     { t: 'text', text: ' set ' },
-    { t: 'arg', text: parts.join(' ') },
+    { t: 'arg', text: [letters, ...params].join(' ') },
   ];
 }
 

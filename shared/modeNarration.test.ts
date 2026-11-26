@@ -101,14 +101,23 @@ describe('describeMode — channel modes', () => {
 
 describe('describeMode — the fallbacks', () => {
   it('shows a compact mode string when a message carries several changes', () => {
-    expect(say([prefix('+o', 'alice'), list('-b', '*!*@host')])).toBe(' set +o alice -b *!*@host');
+    expect(say([prefix('+o', 'alice'), list('-b', '*!*@host')])).toBe(' set +o-b alice *!*@host');
+  });
+
+  it('runs letters together under their sign, as an operator types them (#1431)', () => {
+    expect(say([prefix('+a', 'alice'), prefix('+o', 'alice')])).toBe(' set +ao alice alice');
+    expect(say([prefix('+o', 'alice'), prefix('-v', 'bob'), prefix('-h', 'bob'), chan('+m')])).toBe(
+      ' set +o-vh+m alice bob bob',
+    );
+    // A parameterless mode among them takes no slot in the parameter list.
+    expect(say([chan('+m'), chan('+l', '50'), prefix('+v', 'carol')])).toBe(' set +mlv 50 carol');
   });
 
   it('withholds the key in the multi-change form too', () => {
     // The row's raw `text` is the wire form and carries the key, which is why
     // this rebuilds from the parsed list instead of reusing it.
     const said = say([chan('+k', 'hunter2'), chan('+m')]);
-    expect(said).toBe(' set +k +m');
+    expect(said).toBe(' set +km');
     expect(said).not.toContain('hunter2');
   });
 
