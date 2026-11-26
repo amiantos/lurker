@@ -87,6 +87,56 @@ describe('profile editor', () => {
     expect(useProfileEditor().networkId.value).toBeNull();
   });
 
+  it('publishes a colour as #rrggbb and shows what this theme makes of it (#1452)', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: {}, unset: [], live: {}, avatarPreview: null };
+    const wrapper = await open();
+    const colour = wrapper.find('input[aria-label="Nick color"]');
+    const save = () => wrapper.find('button[type="submit"]');
+
+    await colour.setValue('red');
+    expect(wrapper.find('.field small').text()).toMatch(/Not a color/);
+    expect(save().attributes('disabled')).toBeDefined();
+
+    await colour.setValue(' #0F0 ');
+    expect(wrapper.find('.field small').text()).toMatch(/^Shows as\s+in this theme\.$/);
+    // Snapped: a colour of the nick palette, not the hex typed.
+    const chip = (wrapper.find('.swatch.chip').element as HTMLElement).style.background;
+    expect(chip).not.toBe('');
+    expect(chip).not.toBe('#00ff00');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(calls.at(-1)?.body).toEqual({ values: { color: '#00ff00' } });
+  });
+
+  it('saves a time zone only when it is one, and never fills it in unasked (#1450)', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: {}, unset: [], live: {}, avatarPreview: null };
+    const wrapper = await open();
+    const zone = input(wrapper, 'Time zone');
+    expect((zone.element as HTMLInputElement).value).toBe('');
+
+    await zone.setValue('Berlin');
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+    await zone.setValue('Europe/Berlin');
+    expect(wrapper.text()).toMatch(/\d:\d\d.* there now\./);
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+    expect(calls.at(-1)?.body).toEqual({ values: { 'lurker.chat/tz': 'Europe/Berlin' } });
+  });
+
+  it("fills in this device's zone when asked", async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: {}, unset: [], live: {}, avatarPreview: null };
+    const wrapper = await open();
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === "Use this device's")!
+      .trigger('click');
+    const value = (input(wrapper, 'Time zone').element as HTMLInputElement).value;
+    expect(value).toBe(new Intl.DateTimeFormat().resolvedOptions().timeZone);
+  });
+
   it('Clear unsets every saved key', async () => {
     setNetwork({ state: 'connected', metadataLimits: LIMITS });
     reply = { values: { 'display-name': 'X' }, unset: [], live: {}, avatarPreview: null };

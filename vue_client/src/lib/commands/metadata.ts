@@ -12,12 +12,18 @@
 //   /metadata clear                  METADATA * CLEAR
 //   /avatar <url> | off              the avatar key
 //   /displayname <name> | off        the display-name key
+//   /color <#rrggbb> | off           the color key (#1452)
+//   /tz <zone> | off                 the lurker.chat/tz key (#1450)
 //
 // A change to our own keys says what it writes too (#1189): the server saves
 // it from the answer, and the client refuses it where it can't go.
 
 import {
+  METADATA_COLOR_KEY,
   METADATA_KEY_RE,
+  METADATA_TZ_KEY,
+  normalizeMetadataColor,
+  normalizeTimeZone,
   ownMetadataRefusal as refusalFor,
   type OwnMetadataWrite,
 } from '../../../../shared/metadataKeys.js';
@@ -96,4 +102,24 @@ export function parseDisplayNameCommand(argLine: string): MetadataCommand {
   if (!value) return { error: 'usage: /displayname <name> · /displayname off' };
   if (value.toLowerCase() === 'off') return setLine('display-name', null);
   return setLine('display-name', value);
+}
+
+/** `/color <#rrggbb>` or `/color off`: the colour we ask other clients to show us in. */
+export function parseColorCommand(argLine: string): MetadataCommand {
+  const value = argLine.trim();
+  if (!value) return { error: 'usage: /color <#rrggbb> · /color off' };
+  if (value.toLowerCase() === 'off') return setLine(METADATA_COLOR_KEY, null);
+  const hex = normalizeMetadataColor(value);
+  return hex ? setLine(METADATA_COLOR_KEY, hex) : { error: 'the color must be a hex: #rrggbb' };
+}
+
+/** `/tz <zone>` or `/tz off`: our time zone, as an IANA name. */
+export function parseTzCommand(argLine: string): MetadataCommand {
+  const value = argLine.trim();
+  if (!value) return { error: 'usage: /tz <zone, like Europe/Berlin> · /tz off' };
+  if (value.toLowerCase() === 'off') return setLine(METADATA_TZ_KEY, null);
+  const zone = normalizeTimeZone(value);
+  return zone
+    ? setLine(METADATA_TZ_KEY, zone)
+    : { error: `"${value}" isn't a time zone (like Europe/Berlin)` };
 }

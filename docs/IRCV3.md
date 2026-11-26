@@ -68,8 +68,20 @@ the profile modal. Set yours with `/displayname` and `/avatar`, or in the
 network menu's Edit Profile. Lurker remembers yours per network and sets it
 again after every connect, since most servers forget it when you disconnect.
 
+A member can also publish a nick colour and a time zone. The colour is shown
+as the nearest colour of your theme's nick palette, never the exact one they
+picked, so it always reads on your theme. The time zone puts their local time
+in their profile and in the tooltip of each of their messages' timestamps.
+Set yours with `/color` and `/tz`, or in Edit Profile.
+
+You can set any of this on someone else, for your eyes only: a display name
+(or hide theirs), hide an avatar, a nick colour from your palette, a time
+zone. Open their profile and choose **Add metadata**, or use `/nickmeta`. It
+works on every network, including those that keep no profile data, and it is
+kept with your notes: per network, per nick.
+
 - **`draft/metadata-2`** — Lurker subscribes to `display-name`, `avatar`,
-  `pronouns`, `homepage` and `status`, keeps a record per nick, and re-syncs
+  `pronouns`, `homepage`, `status`, `color` and `lurker.chat/tz`, keeps a record per nick, and re-syncs
   on every re-attach. A record outlives the nick: someone who signs off keeps
   their last known profile, so the lines they wrote keep their avatar, and it
   is remembered across restarts for as long as they have a line (`user_metadata_cache`).
@@ -84,8 +96,12 @@ again after every connect, since most servers forget it when you disconnect.
   crops it to a square of at most 256 px and caches that (animated GIFs and
   WebPs stay animated unless they're too big, then they're their first frame),
   and only while link previews are configured; otherwise everyone gets a
-  generated tile in their nick colour. `color` is deliberately not read:
-  hex values fight every theme.
+  generated tile in their nick colour. `color` is read only as `#rgb` or
+  `#rrggbb` and is never painted as sent, since a raw hex fights every theme:
+  each client snaps it to the nearest entry of its theme's nick palette (by
+  distance in OKLab). `lurker.chat/tz` is Lurker's own key, vendor-prefixed as
+  the spec asks of a non-standard one: an IANA zone name such as
+  `Europe/Berlin`; anything else is ignored.
 - **Your own metadata** — saved per network when the server accepts a `SET`
   (from the web app, a bouncer client, or `/quote`), so one it refuses isn't
   sent again at every connect. After a fresh registration Lurker
