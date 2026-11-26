@@ -272,7 +272,7 @@ describe('the dropper byte cache, end to end', () => {
 
   it('serves a proxy request for a stored object from the CDN, not the origin', async () => {
     // A client holding a descriptor minted before the store landed still arrives
-    // at the proxy; that read should cost a CDN GET, not another third-party
+    // at the proxy; that read should cost a CDN HEAD and GET, not another third-party
     // fetch. The CDN is global fetch here (config rightly refuses an http public
     // base); the origin path uses node:http, so the spy sees only the cache read.
     servePng();
@@ -282,9 +282,9 @@ describe('the dropper byte cache, end to end', () => {
     expect(originHits).toBe(1);
 
     const key = byteCacheKey(`${base}/reread.png`);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       expect(String(input)).toBe(`${CDN}/${key}`);
-      return new Response(PNG, {
+      return new Response(init?.method === 'HEAD' ? null : PNG, {
         status: 200,
         headers: { 'content-type': 'image/png', 'content-length': String(PNG.length) },
       });
@@ -295,7 +295,8 @@ describe('the dropper byte cache, end to end', () => {
       expect(Buffer.from(second.body).equals(PNG)).toBe(true);
       // ⚠ THE assertion: one origin hit for two reads is the feature.
       expect(originHits).toBe(1);
-      expect(fetchSpy).toHaveBeenCalledOnce();
+      // A HEAD to learn the object is there, then the GET that reads it (see `readDropper`).
+      expect(fetchSpy.mock.calls.map(([, init]) => init?.method)).toEqual(['HEAD', 'GET']);
     } finally {
       fetchSpy.mockRestore();
     }
@@ -430,7 +431,9 @@ describe('resource bounds and diagnostics', () => {
     const { readDropper } = await import('../services/previewCache/dropper.js');
 
     let mode: 'ok' | 'no-length' | 'missing' | 'denied' | 'oversize' = 'ok';
-    const cdn = http.createServer((_req, res) => {
+    const methods: string[] = [];
+    const cdn = http.createServer((req, res) => {
+      methods.push(req.method || '');
       if (mode === 'missing') return void res.writeHead(404).end('no such key');
       if (mode === 'denied') return void res.writeHead(403).end('denied');
       if (mode === 'no-length') {
@@ -457,15 +460,21 @@ describe('resource bounds and diagnostics', () => {
     try {
       const ok = await readDropper(cfg, 'somekey', 1024 * 1024);
       expect(ok.kind === 'ok' && ok.body.equals(PNG)).toBe(true);
+      expect(methods).toEqual(['HEAD', 'GET']);
 
       mode = 'no-length';
       expect((await readDropper(cfg, 'somekey', 1024 * 1024)).kind).toBe('error');
 
       // ⚠⚠ GONE vs BROKEN: only a genuine 404 may forget an index row.
+      // ⚠⚠ And neither a missing nor a refused object is ever asked for with a GET: a
+      // CDN caches the 404 to a GET, and this read runs just before the store that
+      // makes the same URL public.
       mode = 'missing';
+      methods.length = 0;
       expect((await readDropper(cfg, 'somekey', 1024 * 1024)).kind).toBe('missing');
       mode = 'denied';
       expect((await readDropper(cfg, 'somekey', 1024 * 1024)).kind).toBe('error');
+      expect(methods).toEqual(['HEAD', 'HEAD']);
 
       mode = 'oversize';
       const started = Date.now();

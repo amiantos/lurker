@@ -7,7 +7,8 @@
 // CDN in front of that bucket. The cell holds an upload key and nothing else:
 // no bucket credentials, no delete capability, by design. The staging, ceiling
 // and bounded-read machinery is shared with the s3 backend (./remoteWrite.ts,
-// `readRemote`); this module's own parts are the multipart POST and the CDN GET.
+// `readRemote`); this module's own parts are the multipart POST and the CDN read (a HEAD, then
+// the GET).
 //
 // ⚠ The key is the SAME `byteCacheKey` digest every cell computes for a URL, so
 // the cache is shared fleet-wide: cell B re-storing what cell A already stored
@@ -38,12 +39,14 @@ export function publicDropperUrl(cfg: DropperCacheConfig, key: string): string {
 /**
  * Read one object back through the CDN.
  *
- * ⚠ NOT the common path, same as the s3 backend's read: once an object is
- * stored, the descriptor mints its public URL and clients fetch it without
- * touching the cell. This exists for a client holding a descriptor minted
- * BEFORE the store landed — serve them, and on a genuine 404 repair the row
- * that said the object was there. Only a genuine 404 may do that; every other
- * failure is a miss (`readRemote` draws that line).
+ * ⚠ Two callers' worth of work. Once an object is stored, the descriptor mints
+ * its public URL and clients fetch it without touching the cell, so a read of a
+ * STORED object is rare: a client holding a descriptor minted BEFORE the store
+ * landed — serve them, and on a genuine 404 repair the row that said the object
+ * was there. But `lookup` also calls this on an index miss, as the cold probe,
+ * so it runs once for every new image and is answered 404. Only a genuine 404
+ * means gone; every other failure is a miss. That line is drawn twice here, by
+ * the HEAD below and by `readRemote` for the GET.
  *
  * ⚠ `accept-encoding: identity`, unlike the s3 read, because this GET goes
  * through a CDN rather than a bucket API. An edge that compressed the response
@@ -58,7 +61,38 @@ export async function readDropper(
   key: string,
   maxBytes: number,
 ): Promise<S3Read> {
-  return readRemote(publicDropperUrl(cfg, key), { 'accept-encoding': 'identity' }, maxBytes);
+  const url = publicDropperUrl(cfg, key);
+  // ⚠⚠ ASKED WITH A HEAD FIRST, and a GET is sent only for an object the HEAD found.
+  // This read is the cold probe as well (`lookup` on an index miss), so for every new
+  // image it runs BEFORE the first store and its answer is a 404. A CDN caches the 404
+  // to a GET: cdn.lurker.chat kept one for 3 minutes, ignored the query string in its
+  // cache key, and stamped it `max-age=14400` for the client. The store then landed, the
+  // descriptor minted this same URL, and a reader arriving inside those minutes was
+  // handed our own probe's 404 and held it for four hours, with no request reaching the
+  // cell to notice. Measured on the same edge: a HEAD for a missing key is answered
+  // uncached and leaves nothing behind for the GET that follows.
+  // ⚠ Anything but a 2xx or a 404 is an error, not a reason to try the GET anyway: the
+  // GET is the request that can poison the edge, and a miss here is only the proxy path.
+  // ⚠ ONE deadline for both requests. Each with its own 30 s would let a slow edge hold
+  // a `mediaPool` slot for a minute, twice what the pool's sizing assumes.
+  const signal = AbortSignal.timeout(30_000);
+  try {
+    const head = await fetch(url, {
+      method: 'HEAD',
+      headers: { 'accept-encoding': 'identity' },
+      signal,
+    });
+    if (head.status === 404) return { kind: 'missing' };
+    if (!head.ok) {
+      // ⚠ Said out loud, because nothing else would: an edge that refuses HEAD turns
+      // every read into a miss, and a miss looks exactly like a working cache.
+      warnOnce(`CDN answered a HEAD with ${head.status}; reading stored previews needs HEAD`);
+      return { kind: 'error' };
+    }
+  } catch {
+    return { kind: 'error' };
+  }
+  return readRemote(url, { 'accept-encoding': 'identity' }, maxBytes, signal);
 }
 
 /**
