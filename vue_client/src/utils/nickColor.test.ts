@@ -3,6 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  nickColor,
   splitTextByTokens,
   segmentInlineStyle,
   segmentHasStyle,
@@ -520,5 +521,50 @@ describe('splitTextByTokens — a trailing ellipsis', () => {
     expect(parse('https://example.com/a…b')).toEqual([
       { text: 'https://example.com/a…b', url: 'https://example.com/a…b' },
     ]);
+  });
+});
+
+describe('nickColor — hash', () => {
+  // Named after The Lounge's classes, so a result reads as the class a nick
+  // gets there: `.user.color-N` is palette slot N - 1.
+  const lounge = Array.from({ length: 32 }, (_, i) => `color-${i + 1}`);
+  const asLounge = (nick: string, stopChars = '') =>
+    nickColor(nick, { palette: lounge, stopChars, hash: 'sum' });
+
+  // Expected values are The Lounge's own arithmetic, worked by hand from
+  // colorClass.ts: 1 + (sum of charCodeAt) % 32.
+  it('sum gives a nick its class from The Lounge', () => {
+    expect(asLounge('alice')).toBe('color-31'); // 510 % 32 = 30
+    expect(asLounge('bob')).toBe('color-20'); // 307 % 32 = 19
+    expect(asLounge('Bob')).toBe('color-20'); // 275 % 32 = 19
+    expect(asLounge('bob_')).toBe('color-19'); // 402 % 32 = 18
+  });
+
+  it('sum does not lowercase', () => {
+    // U+0178 is 376, its lowercase U+00FF is 255: slots 24 and 31.
+    expect(asLounge('\u0178')).toBe('color-25');
+    expect(asLounge('\u00ff')).toBe('color-32');
+  });
+
+  it('sum adds UTF-16 code units, not code points', () => {
+    // U+1F600 is D83D + DE00 = 112189, slot 29. The code point alone is slot 0.
+    expect(asLounge('\u{1F600}')).toBe('color-30');
+  });
+
+  it('sum still honours stop chars, so parity needs them cleared', () => {
+    expect(asLounge('bob_', '_|')).toBe('color-20');
+  });
+
+  it('djb2-32 is the default and is unchanged by the option', () => {
+    const palette = getOption('look.nick.colors')?.default as string[];
+    const bare = nickColor('Alice_', { palette, stopChars: '_|' });
+    expect(bare).not.toBeNull();
+    expect(nickColor('alice', { palette, stopChars: '_|', hash: 'djb2-32' })).toBe(bare);
+  });
+
+  it('the registry offers both hashes and defaults to djb2-32', () => {
+    const opt = getOption('look.nick.color_hash');
+    expect(opt?.type === 'enum' && opt.choices).toEqual(['djb2-32', 'sum']);
+    expect(opt?.default).toBe('djb2-32');
   });
 });

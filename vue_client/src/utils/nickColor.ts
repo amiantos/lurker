@@ -4,11 +4,17 @@
 import { createUrlRegex } from '../../../shared/urlPattern.js';
 import { shortcodeScanRegex } from './emojiShortcodes.js';
 
-// Deterministic nick coloring. Mirrors weechat's gui_nick_find_color:
-// trim stop chars, lowercase, hash, modulo a palette.
+// Deterministic nick coloring: trim stop chars, hash, modulo a palette.
 //
-// Palette and stop-chars come from settings (look.nick.colors,
-// look.nick.color_stop_chars); see vue_client/src/utils/settingsRegistry.js.
+// Palette, stop-chars and hash come from settings (look.nick.colors,
+// look.nick.color_stop_chars, look.nick.color_hash); see
+// shared/settingsRegistry.ts.
+//
+// Two hashes:
+//   djb2-32  weechat's gui_nick_find_color. The nick is lowercased first.
+//   sum      The Lounge's colorClass: UTF-16 code units added up, and the nick
+//            is NOT lowercased. With The Lounge's 32 colors and no stop chars
+//            a nick gets the color it has there (#1446).
 
 function trimForColor(nick: string, stopChars: string): string {
   let out = '';
@@ -32,20 +38,32 @@ function djb2(str: string): number {
   return h;
 }
 
+// The Lounge walks charCodeAt, so an astral character counts as its two
+// surrogates. Summing code points would move those nicks to another color.
+function sumCodeUnits(str: string): number {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h += str.charCodeAt(i);
+  return h;
+}
+
+export type NickColorHash = 'djb2-32' | 'sum';
+
 interface NickColorOptions {
   palette: string[];
   stopChars: string;
+  hash?: NickColorHash;
 }
 
 export function nickColor(
   nick: string | null | undefined,
-  { palette, stopChars }: NickColorOptions,
+  { palette, stopChars, hash }: NickColorOptions,
 ): string | null {
   if (!nick) return null;
   if (!palette || palette.length === 0) return null;
-  const normalized = trimForColor(nick, stopChars || '').toLowerCase();
-  if (!normalized) return null;
-  return palette[djb2(normalized) % palette.length];
+  const trimmed = trimForColor(nick, stopChars || '');
+  if (!trimmed) return null;
+  const index = hash === 'sum' ? sumCodeUnits(trimmed) : djb2(trimmed.toLowerCase());
+  return palette[index % palette.length];
 }
 
 // Chars that can appear inside an IRC nick (RFC 2812 plus the usual extensions).
