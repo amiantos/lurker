@@ -881,6 +881,8 @@ function extractExtras(event: IrcEvent): Record<string, unknown> | null {
   // the line as sent stays with the row, since the buffer does not say who it
   // was for (sentToOf).
   if (event.type === 'notice' && event.sentTo) extras = { sentTo: event.sentTo };
+  // A line sent to a rank of the channel alone (`@#chan`, #1408): which.
+  if (event.statusmsg) extras = { ...extras, statusmsg: event.statusmsg };
   // RPE2E: persist the lock flag for message/action/notice so the indicator
   // survives a reload and reaches late-attaching clients (round-trips through the
   // `extra` JSON column → rowToEvent's Object.assign).
@@ -2002,6 +2004,7 @@ export class IrcConnection {
   // that stand in for publish stay assignable.
   publish(event: IrcEvent): EnrichedEvent | void {
     if (this.disposed) return;
+    event = this.statusTargeted(event);
     // Once this row is out, whatever becomes of it below.
     if (event.self && this.pendingEchoTimers.size) {
       queueMicrotask(() => this.settlePendingEcho(event));
@@ -2147,6 +2150,28 @@ export class IrcConnection {
 
     this.onEvent(enriched);
     return enriched;
+  }
+
+  // A STATUSMSG target (`@#chan`: the channel's ops and up, #1408) as the
+  // channel its line is shown in and the rank it was for. Null for any other
+  // target, and on a network that advertises no STATUSMSG. A name that is
+  // itself a channel once the prefix is off: `+room` stays the `+room` channel.
+  statusTarget(target: string): { channel: string; prefix: string } | null {
+    const parsed = this.client.network?.extractTargetGroup?.(target);
+    if (!parsed || !isChannelTarget(parsed.target)) return null;
+    return { channel: parsed.target, prefix: parsed.target_group };
+  }
+
+  // Our own line to `@#chan`, as sent: its row is the channel's, marked with
+  // the rank. What the network relays arrives with the prefix already off
+  // (irc-framework's `group`).
+  private statusTargeted(event: IrcEvent): IrcEvent {
+    if (!event.self || event.statusmsg || typeof event.target !== 'string') return event;
+    if (event.type !== 'message' && event.type !== 'notice' && event.type !== 'action') {
+      return event;
+    }
+    const status = this.statusTarget(event.target);
+    return status ? { ...event, target: status.channel, statusmsg: status.prefix } : event;
   }
 
   publishEphemeral(event: IrcEvent): void {
@@ -3628,6 +3653,12 @@ export class IrcConnection {
       // IRCv3 reply (#993): the msgid this line answers, if it's a reply.
       const replyMsgid = replyMsgidFromTags(tags);
       const targetIsChannel = isChannelTarget(eventTarget);
+      // Sent to a rank of the channel alone (`@#chan`): irc-framework takes
+      // the prefix off the target and hands it over as `group` (#1408).
+      const statusmsg =
+        targetIsChannel && typeof event.group === 'string' && event.group
+          ? { statusmsg: event.group }
+          : {};
       const type =
         eventType === 'action' ? 'action' : eventType === 'notice' ? 'notice' : 'message';
 
@@ -3703,6 +3734,7 @@ export class IrcConnection {
           time: event.time,
           msgid: replay && !this.echoActive() ? undefined : msgid,
           replyMsgid,
+          ...statusmsg,
           ...replayFlags,
         });
         // Parity with the optimistic path it replaces: no closed-buffer notice
@@ -3859,6 +3891,7 @@ export class IrcConnection {
         msgid,
         replyMsgid,
         ...(e2eFlag ? { e2e: true } : {}),
+        ...(target === eventTarget ? statusmsg : {}),
         ...replayFlags,
       }) as EnrichedEvent | undefined;
       // If a notice's home buffer is one the user has closed, the wsHub fan-out
@@ -7367,6 +7400,8 @@ export class IrcConnection {
   // An incoming DM (or DM activate) makes this nick a tracked DM peer; presence
   // then rides MONITOR. Returns true on a fresh add.
   trackDmPeer(nick: string | undefined | null): boolean {
+    // `@#chan` is some of a channel, not someone to watch for.
+    if (nick && this.statusTarget(nick)) return false;
     return this.addPeerWatch(nick, 'dm');
   }
 
@@ -9345,6 +9380,8 @@ export class IrcConnection {
     // buffer): what its echo is known by.
     sentTo?: { target: string; text: string },
   ): { wrote(): void; sent(): void; dropped(): void } {
+    // Waiting where its row will be: `@#chan`'s is the channel's.
+    target = this.statusTarget(target)?.channel ?? target;
     let state: 'writing' | 'waiting' | 'over' = 'writing';
     let id = '';
     const end = (sent: boolean) => {
@@ -9576,6 +9613,8 @@ export class IrcConnection {
   // `why` is the reason when it was taken back instead (withdrawQueued).
   private reportNotSent(target: string, text: string, why = 'connection dropped'): void {
     if (this.disposed) return;
+    // Where its row would have been: `@#chan`'s is the channel's.
+    target = this.statusTarget(target)?.channel ?? target;
     // Once a re-attach is over: publish() stores nothing while one replays,
     // and a channel pruned by it (lost while the link was down) takes its
     // waiting messages with it right then.
@@ -13773,6 +13812,8 @@ export class IrcConnection {
   // `shownIn`: it was a notice whose row is the server buffer's
   // (chat.notice_buffer), so that is where a refusal of it is said.
   noteUserSend(target: string, conversational = true, shownIn?: string): void {
+    // To `@#chan` is to the channel: a refusal names the channel.
+    target = this.statusTarget(target)?.channel ?? target;
     const now = Date.now();
     // Prune entries past the attribution window before adding. They can never
     // satisfy recentUserSend again, so keeping them would let the map grow

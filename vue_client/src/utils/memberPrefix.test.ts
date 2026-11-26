@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { prefixOf, prefixClass, prefixRank, splitChannelToken } from './memberPrefix.js';
+import {
+  prefixOf,
+  prefixClass,
+  prefixRank,
+  splitChannelToken,
+  statusAudience,
+  statusmsgChannel,
+} from './memberPrefix.js';
 import { parseModeSpec, type PrefixMode } from '../../../shared/channelModes.js';
 
 // PREFIX as the server hands it over in modeSpec, from the raw 005 token.
@@ -120,5 +127,39 @@ describe('splitChannelToken', () => {
     expect(splitChannelToken('@&ops', null)).toEqual({ prefix: '@', name: '&ops' });
     expect(splitChannelToken('+chan', null)).toEqual({ prefix: '', name: '+chan' });
     expect(splitChannelToken('!chan', WITH_Y)).toEqual({ prefix: '', name: '!chan' });
+  });
+});
+
+describe('statusAudience', () => {
+  it('names the rank a symbol reaches, and that those above it are in', () => {
+    expect(statusAudience('@', null)).toBe('sent only to ops and above');
+    expect(statusAudience('+', null)).toBe('sent only to voiced users and above');
+    expect(statusAudience('%', null)).toBe('sent only to halfops and above');
+  });
+
+  it('has nobody above the top rank', () => {
+    expect(statusAudience('~', null)).toBe('sent only to owners');
+    expect(statusAudience('@', prefixFrom('(ov)@+'))).toBe('sent only to ops');
+  });
+
+  it('falls back to the symbol for a rank it has no word for', () => {
+    expect(statusAudience('!', WITH_Y)).toBe('sent only to !');
+    expect(statusAudience('?', null)).toBe('sent only to ? and above');
+  });
+});
+
+describe('statusmsgChannel', () => {
+  it('reads one of the network’s STATUSMSG symbols in front of a channel', () => {
+    expect(statusmsgChannel('@#chan', '@+')).toBe('#chan');
+    expect(statusmsgChannel('+&local', '@+')).toBe('&local');
+  });
+
+  it('is nothing for a channel, a nick, or a symbol the network does not take', () => {
+    expect(statusmsgChannel('#chan', '@+')).toBeNull();
+    expect(statusmsgChannel('+chan', '@+')).toBeNull();
+    expect(statusmsgChannel('@bob', '@+')).toBeNull();
+    expect(statusmsgChannel('%#chan', '@+')).toBeNull();
+    expect(statusmsgChannel('@#chan', '')).toBeNull();
+    expect(statusmsgChannel('', '@+')).toBeNull();
   });
 });

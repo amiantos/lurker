@@ -40,6 +40,11 @@ export interface ModeSpec {
   maxModes: number | null;
   /** Longest topic the server accepts, in bytes; null = not advertised. */
   topicLen: number | null;
+  /**
+   * STATUSMSG: the rank symbols a channel name may be prefixed with to reach that rank and up
+   * (`@#chan`). Empty when the network advertises none.
+   */
+  statusmsg: string;
 }
 
 export const DEFAULT_CHANMODES: readonly string[] = ['beI', 'k', 'l', 'imnst'];
@@ -112,6 +117,11 @@ export function parseModeSpec(options: Record<string, unknown> | null | undefine
     prefix,
     maxModes: rawModes === true ? null : (positiveInt(rawModes) ?? DEFAULT_MAX_MODES),
     topicLen: positiveInt(opts.TOPICLEN),
+    statusmsg: Array.isArray(opts.STATUSMSG)
+      ? opts.STATUSMSG.filter((s) => typeof s === 'string' && s.length === 1).join('')
+      : typeof opts.STATUSMSG === 'string'
+        ? opts.STATUSMSG
+        : '',
   };
 }
 

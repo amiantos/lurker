@@ -41,8 +41,10 @@ describe('parseModeSpec', () => {
       prefix: QAOHV,
       maxModes: 3,
       topicLen: null,
+      statusmsg: '',
     });
     expect(parseModeSpec(undefined).list).toBe('beI');
+    expect(parseModeSpec({ STATUSMSG: ['@', '+'] }).statusmsg).toBe('@+');
   });
 
   it("reads solanum's groups, keeping q as a list mode", () => {

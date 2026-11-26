@@ -78,6 +78,15 @@ describe('logLine', () => {
     expect(line({ type: 'join', nick: 'alice' }, c)).toBe('[12:04:05] --> alice joined');
   });
 
+  it('names the rank a line was sent to, with the channel (#1408)', () => {
+    const to = { nick: 'alice', statusmsg: '@', target: '#chan' };
+    expect(line({ ...to, text: 'ops only' })).toBe('[12:04:05] <alice:@#chan> ops only');
+    expect(line({ ...to, type: 'notice', text: 'psst' })).toBe('[12:04:05] -alice:@#chan- psst');
+    expect(line({ ...to, text: 'hi' }, ctx({ nickPrefix: () => '+' }))).toBe(
+      '[12:04:05] <+alice:@#chan> hi',
+    );
+  });
+
   it('leaves the brackets off when the reader shows no timestamps', () => {
     expect(line({ nick: 'alice', text: 'hello' }, ctx({ time: () => '' }))).toBe('<alice> hello');
   });

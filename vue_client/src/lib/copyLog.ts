@@ -12,6 +12,7 @@
 //
 //   [12:04:05] <alice> what she said
 //   [12:04:07] <@dave> with mode prefixes shown (#1404)
+//   [12:04:08] <dave:@#chan> to the ops alone (#1408)
 //   [12:04:09] * bob waves
 //   [12:05:00] --> carol joined
 //
@@ -37,6 +38,9 @@ export interface LogMessage {
   modes?: ModeChange[];
   redaction?: Redaction;
   relaySource?: string | null;
+  // Sent to a rank of the channel alone (`@#chan`): the symbol, and the channel.
+  statusmsg?: string;
+  target?: string;
   // The text before the list took the reply address off it (`alice: yes` drawn
   // as `yes` under a quote of alice). A log has no quote, so it writes this.
   addressedText?: string;
@@ -92,7 +96,9 @@ function chatLine<M extends LogMessage>(m: M, ctx: LogContext<M>): string {
     : plainText(m.addressedText ?? m.text ?? '');
   const source = m.relaySource ? `[${m.relaySource}] ` : '';
   const rank = m.type === 'message' ? ctx.nickPrefix(m) : '';
-  return `${open}${rank}${m.nick ?? ''}${close} ${source}${text}`.trimEnd();
+  // To a rank of the channel alone, as irssi writes it: `<nick:@#chan>`.
+  const to = m.statusmsg ? `:${m.statusmsg}${m.target ?? ''}` : '';
+  return `${open}${rank}${m.nick ?? ''}${to}${close} ${source}${text}`.trimEnd();
 }
 
 // An event line's words, as the list prints them after the mark.

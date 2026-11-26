@@ -195,6 +195,14 @@
             :network-id="buffer?.networkId ?? null"
             @jump="onReplyContextClick"
           />
+          <!-- A line sent to a rank of the channel alone (STATUSMSG, #1408). On
+                 every line of a run: each says who could read it. -->
+          <span
+            v-if="row.m?.statusmsg"
+            class="status-to"
+            :title="statusAudience(row.m.statusmsg, memberPrefix)"
+            >{{ row.m.statusmsg }}{{ row.m.target }}</span
+          >
           <span
             v-if="row.m?.relaySource && !row.continuationAuthor && !compactHead(row.m)"
             class="relay-via"
@@ -432,7 +440,7 @@ import { useThreadsStore } from '../stores/threads.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
 import { hiddenAsThreadReply } from '../lib/threadHide.js';
 import { parseUserHost } from '../utils/userhost.js';
-import { prefixOf } from '../utils/memberPrefix.js';
+import { prefixOf, statusAudience } from '../utils/memberPrefix.js';
 import type { ThreadStats } from '../../../shared/replies.js';
 import {
   formatTimestamp,
@@ -530,6 +538,9 @@ interface ChatMessage {
   // These exist only on the per-render display clone, never on the stored row.
   relayBot?: string;
   relaySource?: string | null;
+  // Sent to a rank of the channel alone (`@#chan`, STATUSMSG): the rank's
+  // symbol. The line's target is the channel itself (#1408).
+  statusmsg?: string;
   // MODE rows: the message's change list, each entry carrying the class the
   // server stamped on it (`prefix` / `list` / `chan`). The browser never sees
   // ISUPPORT, so `kind` is the only way to tell op churn from a ban — see
@@ -3099,7 +3110,8 @@ watch(
    text — mirrors how the bot framed the line, so it reads as provenance rather
    than part of the message. Muted, no glyph; font size stays uniform per house
    style. */
-.relay-via {
+.relay-via,
+.status-to {
   color: var(--fg-muted);
   margin-right: 1ch;
   white-space: nowrap;

@@ -273,6 +273,7 @@ import {
 } from '../../../shared/aliases.js';
 import { aliasListLines, parseAliasArgs } from '../lib/commands/alias.js';
 import { ensureChannelPrefix, isChannelTarget } from '../../../shared/channels.js';
+import { statusmsgChannel } from '../utils/memberPrefix.js';
 import { batchModeLines, DEFAULT_MAX_MODES } from '../../../shared/channelModes.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
@@ -4788,6 +4789,8 @@ function handleCommand(
       const [who, ...msgParts] = rest;
       if (!who) return true;
       const body = msgParts.join(' ');
+      // To `@#chan`, the line is the channel's (STATUSMSG, #1408).
+      const channel = statusmsgChannel(who, networks.states[networkId]?.modeSpec?.statusmsg ?? '');
       if (body) {
         if (
           !ackedSend({ type: 'send', networkId, target: who, text: chatBody(body) }, body, {
@@ -4797,7 +4800,9 @@ function handleCommand(
           })
         )
           return false;
-        buffers.activate(networkId, who);
+        buffers.activate(networkId, channel ?? who);
+      } else if (channel) {
+        buffers.activate(networkId, channel);
       } else {
         buffers.openDm(networkId, who);
       }

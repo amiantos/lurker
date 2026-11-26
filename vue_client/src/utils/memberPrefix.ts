@@ -72,3 +72,31 @@ export function splitChannelToken(token: string, prefix: Prefix): { prefix: stri
   }
   return { prefix: '', name: token };
 }
+
+const AUDIENCE_BY_LETTER: Record<string, string> = {
+  q: 'owners',
+  a: 'admins',
+  o: 'ops',
+  h: 'halfops',
+  v: 'voiced users',
+};
+
+// Who a line sent to `@#chan` reached (STATUSMSG, #1408): the rank the symbol
+// names and everyone above it. A symbol the network's PREFIX does not list, or
+// a letter outside q/a/o/h/v, is named by the symbol itself.
+export function statusAudience(symbol: string, prefix: Prefix): string {
+  const list = orDefault(prefix);
+  const i = list.findIndex((p) => p.symbol === symbol);
+  const who = (i === -1 ? undefined : AUDIENCE_BY_LETTER[list[i].mode]) ?? symbol;
+  return i === 0 ? `sent only to ${who}` : `sent only to ${who} and above`;
+}
+
+// The channel a STATUSMSG target (`@#room`) is shown in, or null when `target`
+// is not one on this network. `symbols` is the network's own STATUSMSG
+// (`modeSpec.statusmsg`), as the server reads it: the two must agree on which
+// buffer the line is in.
+export function statusmsgChannel(target: string, symbols: string): string | null {
+  if (!target || !symbols.includes(target[0])) return null;
+  const rest = target.slice(1);
+  return isChannelTarget(rest) ? rest : null;
+}

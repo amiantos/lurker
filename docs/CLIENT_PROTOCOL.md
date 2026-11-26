@@ -417,7 +417,7 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   sendPending: [ { id, target, kind, text, at } ],  // the user's messages held in the send queue (#1326); `send-pending` / `send-pending-done` keep it current
   multilineLimits,
   modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
-              maxModes, topicLen },
+              maxModes, topicLen, statusmsg },
   canReact,                           // legacy: both reaction directions — see below
   canAddReaction, canRemoveReaction,  // reacting / taking yours back
   canReply,                           // a reply carries its tag
@@ -597,6 +597,7 @@ Common fields on every **persisted** event (`db/messages.ts` `rowToEvent` +
   self,                               // you sent it (any of your clients)
   userhost, alt, mirrored, dm,
   sentTo?,                            // { target, text }: a notice of yours kept in :server: (§9.1)
+  statusmsg?,                         // '@', '+', …: sent to that rank of the channel and up (§7.2)
   matched, matchedRuleId,             // highlight decoration
   fromIgnored, notifyAlways, notify,
   msgid?,                             // IRCv3 server message id, when supplied
@@ -974,7 +975,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 
 | `type`                        | P/E | Extra fields / meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `message`                     | P   | PRIVMSG (`kind:'privmsg'` in stored rows)                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `message`                     | P   | PRIVMSG (`kind:'privmsg'` in stored rows). `statusmsg?` on a `message`, `action` or `notice` sent to one rank of a channel and up (IRC STATUSMSG, `NOTICE @#chan`): the rank's symbol. `target` is the channel itself. The user's own line to `@#chan` is filed the same way; send it with `target:'@#chan'`                                                                                                                                                           |
 | `action`                      | P   | `/me`                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `notice`                      | P   | `mirrored:true` on the `:server:` copy of a notice to a closed DM under `chat.notice_buffer` `private`. `sentTo?` on a notice of the user's kept in `:server:` (§9.1)                                                                                                                                                                                                                                                                                                  |
 | `join`                        | P   | `account?`                                                                                                                                                                                                                                                                                                                                                                                                                                                             |

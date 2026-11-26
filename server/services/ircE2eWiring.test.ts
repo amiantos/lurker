@@ -148,6 +148,7 @@ describe('outbound encrypt (ircManager.send)', () => {
       publish,
       client: { user: { nick: 'alice' } },
       outboundBatches: () => null,
+      statusTarget: () => null,
       echoActive: () => false,
       state: 'connected', // the writable gate (#809) refuses anything else
       noteSentCiphertext: () => {},
@@ -365,6 +366,7 @@ describe('egress refuses cleartext actions/notices on an E2E channel (#2)', () =
       notice,
       publish,
       publishEphemeral,
+      statusTarget: () => null,
       echoActive: () => false,
       state: 'connected', // the writable gate (#809) refuses anything else
       client: { user: { nick: 'alice' } },
