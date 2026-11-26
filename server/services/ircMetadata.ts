@@ -14,8 +14,12 @@
 
 import { isChannelTarget } from '../../shared/channels.js';
 import {
+  METADATA_COLOR_KEY,
   METADATA_EXTRA_VALUE_MAX_CHARS,
   METADATA_KEY_RE,
+  METADATA_TZ_KEY,
+  normalizeMetadataColor,
+  normalizeTimeZone,
   METADATA_SUB_KEYS,
   METADATA_VALUE_MAX_CHARS,
   type OwnMetadataWrite,
@@ -158,6 +162,9 @@ export function vetMetadataValue(
     if (!isHttpUrl(sized)) return null;
     return key === 'avatar' ? sized : value;
   }
+  // Kept in the one spelling every client can read without a parser of its own.
+  if (key === METADATA_COLOR_KEY) return normalizeMetadataColor(value);
+  if (key === METADATA_TZ_KEY) return normalizeTimeZone(value);
   return value;
 }
 
@@ -218,6 +225,11 @@ export interface UserMetadataView {
   pronouns?: string;
   homepage?: string;
   status?: string;
+  // `#rrggbb` as the user sent it (#1452). Never painted as is: a client
+  // snaps it to its theme's nick palette.
+  color?: string;
+  // An IANA zone (#1450).
+  tz?: string;
 }
 
 export interface ChannelMetadataView {
@@ -234,6 +246,8 @@ export function userMetadataView(record: MetadataRecord, mint: AvatarMint): User
   if (record.pronouns) view.pronouns = record.pronouns;
   if (record.homepage) view.homepage = record.homepage;
   if (record.status) view.status = record.status;
+  if (record[METADATA_COLOR_KEY]) view.color = record[METADATA_COLOR_KEY];
+  if (record[METADATA_TZ_KEY]) view.tz = record[METADATA_TZ_KEY];
   return view;
 }
 

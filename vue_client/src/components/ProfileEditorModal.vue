@@ -169,7 +169,14 @@ import {
 const props = defineProps<{ networkId: number }>();
 
 // The keys Lurker shows; the template names each.
-type Field = 'display-name' | 'avatar' | 'pronouns' | 'homepage' | 'status';
+type Field =
+  | 'display-name'
+  | 'avatar'
+  | 'pronouns'
+  | 'homepage'
+  | 'status'
+  | 'color'
+  | 'lurker.chat/tz';
 const FIELDS = METADATA_SUB_KEYS as Field[];
 
 const networks = useNetworksStore();
@@ -226,7 +233,7 @@ const limitsText = computed(() => {
 });
 
 function blank(): Record<Field, string> {
-  return { 'display-name': '', avatar: '', pronouns: '', homepage: '', status: '' };
+  return Object.fromEntries(FIELDS.map((f) => [f, ''])) as Record<Field, string>;
 }
 
 function max(field: Field): number {

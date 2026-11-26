@@ -298,12 +298,12 @@ describe('bouncer metadata, the harder cases', () => {
     await b.waitForCommand('771');
     await until(() => me.sent.some((l) => l === 'METADATA * UNSUB bot'), 5000, 'bot off');
 
-    // The fake allows 10; Lurker's five leave room for five more.
-    a.send('METADATA * SUB k1 k2 k3 k4 k5 k6');
+    // The fake allows 10; Lurker's seven leave room for three more.
+    a.send('METADATA * SUB k1 k2 k3 k4');
     // Not waitForCommand: the 770 for `bot` above is already there to match.
     const ok = await a.waitFor((l) => commandOf(l) === '770' && l.includes('k1'), 5000);
-    expect(ok).toContain('770 ' + acct.nick + ' k1 k2 k3 k4 k5');
-    expect(await a.waitForCommand('FAIL')).toContain('FAIL METADATA TOO_MANY_SUBS k6');
+    expect(ok).toContain('770 ' + acct.nick + ' k1 k2 k3');
+    expect(await a.waitForCommand('FAIL')).toContain('FAIL METADATA TOO_MANY_SUBS k4');
     // A client leaving releases what only it held.
     a.close();
     await until(() => me.sent.some((l) => l.startsWith('METADATA * UNSUB k1')), 5000, 'released');

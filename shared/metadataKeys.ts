@@ -7,10 +7,24 @@
 
 export const METADATA_KEY_RE = /^[a-z0-9_./-]+$/;
 
+// A user's colour (#1452) and time zone (#1450). The zone is Lurker's own key,
+// so it carries a vendor prefix, as the spec asks of a non-standard key.
+export const METADATA_COLOR_KEY = 'color';
+export const METADATA_TZ_KEY = 'lurker.chat/tz';
+
 // The keys Lurker shows, in order of preference: a server with a small
-// `max-subs` grants the first. `color` is deliberately absent (#607): hex
-// values fight every theme. The profile editor's fields too (#1189).
-export const METADATA_SUB_KEYS = ['display-name', 'avatar', 'pronouns', 'homepage', 'status'];
+// `max-subs` grants the first. A `color` is never painted as sent (#607: hex
+// values fight every theme); a client snaps it to its theme's nick palette
+// (#1452). The profile editor's fields too (#1189).
+export const METADATA_SUB_KEYS = [
+  'display-name',
+  'avatar',
+  'pronouns',
+  'homepage',
+  'status',
+  METADATA_COLOR_KEY,
+  METADATA_TZ_KEY,
+];
 
 // Values longer than this are dropped rather than truncated: a truncated URL
 // is a different URL, and a truncated name reads as someone else's.
@@ -20,7 +34,39 @@ export const METADATA_VALUE_MAX_CHARS: Readonly<Record<string, number>> = {
   status: 200,
   homepage: 2048,
   avatar: 2048,
+  [METADATA_COLOR_KEY]: 7,
+  [METADATA_TZ_KEY]: 64,
 };
+
+/**
+ * A metadata colour as `#rrggbb`, lower case, or null when it isn't one. Only
+ * the hex forms are read (`#rgb`, `#rrggbb`): a CSS name or `rgb()` some
+ * clients write would need a CSS parser on every platform to mean the same.
+ */
+export function normalizeMetadataColor(value: string | null | undefined): string | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((value ?? '').trim());
+  if (!m) return null;
+  const hex = m[1].toLowerCase();
+  return `#${hex.length === 3 ? [...hex].map((c) => c + c).join('') : hex}`;
+}
+
+// An IANA zone name's alphabet. Checked before Intl sees the value: Intl also
+// takes a bare offset (`+01:00`), which is not a zone and has no DST.
+const TIME_ZONE_RE = /^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+)*$/;
+
+/**
+ * An IANA time zone as this runtime spells it (`europe/berlin` reads as
+ * `Europe/Berlin`), or null when the runtime doesn't know the zone.
+ */
+export function normalizeTimeZone(value: string | null | undefined): string | null {
+  const zone = (value ?? '').trim();
+  if (!zone || zone.length > 64 || !TIME_ZONE_RE.test(zone)) return null;
+  try {
+    return new Intl.DateTimeFormat('en-US', { timeZone: zone }).resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
+}
 
 // A key Lurker doesn't show, bounded like a status.
 export const METADATA_EXTRA_VALUE_MAX_CHARS = 512;
