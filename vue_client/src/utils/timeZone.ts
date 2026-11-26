@@ -70,6 +70,12 @@ export function knownTimeZones(): string[] {
   }
 }
 
+/** The zones to suggest for a field holding `typed`: all but the one it already names. */
+export function zonesBut(zones: readonly string[], typed: string | null | undefined): string[] {
+  const held = (typed ?? '').trim().toLowerCase();
+  return held ? zones.filter((z) => z.toLowerCase() !== held) : [...zones];
+}
+
 /** This device's own zone, or null when the browser won't say. */
 export function deviceTimeZone(): string | null {
   try {

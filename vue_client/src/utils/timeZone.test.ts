@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { is12Hour, theirTimeTitle, timeInZone } from './timeZone.js';
+import { is12Hour, theirTimeTitle, timeInZone, zonesBut } from './timeZone.js';
 
 // Loose on separators and locale spelling, strict on the clock.
 const clock = (s: string | null) => (s ?? '').replace(/ /g, ' ');
@@ -49,5 +49,18 @@ describe('is12Hour', () => {
     expect(is12Hour('HH:mm:ss')).toBe(false);
     expect(is12Hour('h:mm a')).toBe(true);
     expect(is12Hour('')).toBe(false);
+  });
+});
+
+describe('zonesBut', () => {
+  const zones = ['Africa/Kampala', 'Europe/Berlin', 'Etc/UTC', 'UTC'];
+  it('drops the zone the field already holds, whatever its case', () => {
+    expect(zonesBut(zones, ' africa/kampala ')).toEqual(['Europe/Berlin', 'Etc/UTC', 'UTC']);
+    // Only an exact match: another zone that contains the text stays.
+    expect(zonesBut(zones, 'UTC')).toEqual(['Africa/Kampala', 'Europe/Berlin', 'Etc/UTC']);
+  });
+  it('offers everything while the field is empty or mid-word', () => {
+    expect(zonesBut(zones, '')).toEqual(zones);
+    expect(zonesBut(zones, 'Africa/Kam')).toEqual(zones);
   });
 });

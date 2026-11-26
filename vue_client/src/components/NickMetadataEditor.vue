@@ -105,7 +105,7 @@
             spellcheck="false"
           />
           <datalist :id="zonesId">
-            <option v-for="z in zones" :key="z" :value="z"></option>
+            <option v-for="z in zoneOptions" :key="z" :value="z"></option>
           </datalist>
           <small v-if="draftZoneTime"> {{ draftZoneTime }} there, {{ localTime }} here </small>
           <small v-else-if="draft.trim()">Not a time zone this browser knows.</small>
@@ -144,7 +144,7 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useNow } from '../composables/useNow.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
-import { is12Hour, knownTimeZones, timeInZone } from '../utils/timeZone.js';
+import { is12Hour, knownTimeZones, timeInZone, zonesBut } from '../utils/timeZone.js';
 import {
   METADATA_COLOR_KEY as COLOR,
   METADATA_TZ_KEY as TZ,
@@ -217,6 +217,9 @@ const fieldSelect = ref<HTMLSelectElement | null>(null);
 const zonesId = useId();
 // Read once per open form: a few hundred names.
 const zones = computed(() => (editing.value === TZ ? knownTimeZones() : []));
+// Without the zone already in the field: Chrome would keep offering it, alone,
+// under the field it was just picked into.
+const zoneOptions = computed(() => zonesBut(zones.value, draft.value));
 
 const draftZoneTime = computed(() => timeInZone(now.value, draft.value.trim(), hour12.value));
 const localTime = computed(() =>

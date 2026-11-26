@@ -172,7 +172,7 @@
               </button>
             </div>
             <datalist :id="zonesId">
-              <option v-for="z in zones" :key="z" :value="z"></option>
+              <option v-for="z in zoneOptions" :key="z" :value="z"></option>
             </datalist>
             <small v-if="zoneTime">{{ zoneTime }} there now.</small>
             <small v-else-if="form[TZ].trim()">Not a time zone this browser knows.</small>
@@ -231,7 +231,13 @@ import { useNickColors } from '../composables/useNickColors.js';
 import { useNow } from '../composables/useNow.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { formattingSegments } from '../utils/nickColor.js';
-import { deviceTimeZone, is12Hour, knownTimeZones, timeInZone } from '../utils/timeZone.js';
+import {
+  deviceTimeZone,
+  is12Hour,
+  knownTimeZones,
+  timeInZone,
+  zonesBut,
+} from '../utils/timeZone.js';
 import { toHex } from '../lib/color.js';
 import { resolveCssColor } from '../lib/cssColor.js';
 import { ownMetadataRefusal } from '../lib/commands/metadata.js';
@@ -323,6 +329,9 @@ function onColorPicked(value: string): void {
 const now = useNow();
 const zonesId = useId();
 const zones = knownTimeZones();
+// Without the zone already in the field: Chrome would keep offering it, alone,
+// under the field it was just picked into.
+const zoneOptions = computed(() => zonesBut(zones, form[TZ]));
 const deviceZone = deviceTimeZone();
 const zoneTime = computed(() =>
   timeInZone(
