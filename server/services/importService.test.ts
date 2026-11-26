@@ -21,6 +21,7 @@ let insertMessage: typeof import('../db/messages.js').insertMessage;
 let setUserSetting: typeof import('../db/settings.js').setUserSetting;
 let createRule: typeof import('../db/highlightRules.js').createRule;
 let setNote: typeof import('../db/nickNotes.js').setNote;
+let setNickMetadata: typeof import('../db/nickMetadata.js').setNickMetadata;
 let saveNetworkMetadata: typeof import('../db/networkMetadata.js').saveNetworkMetadata;
 let pinBuffer: typeof import('../db/pinnedBuffers.js').pinBuffer;
 let favoriteBuffer: typeof import('../db/favoriteBuffers.js').favoriteBuffer;
@@ -69,6 +70,7 @@ beforeAll(async () => {
   ({ setUserSetting } = await import('../db/settings.js'));
   ({ createRule } = await import('../db/highlightRules.js'));
   ({ setNote } = await import('../db/nickNotes.js'));
+  ({ setNickMetadata } = await import('../db/nickMetadata.js'));
   ({ saveNetworkMetadata } = await import('../db/networkMetadata.js'));
   ({ pinBuffer } = await import('../db/pinnedBuffers.js'));
   ({ favoriteBuffer } = await import('../db/favoriteBuffers.js'));
@@ -170,6 +172,9 @@ function seedAlice(): { alice: User; net: Network; ruleId: number } {
   setUserSetting(alice.id, 'appearance.theme.name', 'dark');
   const rule = createRule(alice.id, { pattern: 'alice', kind: 'plain', case_sensitive: false });
   setNote({ userId: alice.id, networkId: net.id, nick: 'bob', note: 'lives in berlin' });
+  const onBob = { userId: alice.id, networkId: net.id, nick: 'bob' };
+  setNickMetadata({ ...onBob, key: 'lurker.chat/tz', value: 'Europe/Berlin' });
+  setNickMetadata({ ...onBob, key: 'display-name', value: null });
   saveNetworkMetadata(alice.id, net.id, 'display-name', 'Alice A.');
   saveNetworkMetadata(alice.id, net.id, 'status', null);
   addMask({ userId: alice.id, networkId: net.id, mask: 'spammer!*@*' });
@@ -325,6 +330,17 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(bobNotes.length).toBe(1);
     expect(bobNotes[0].nick).toBe('bob');
     expect(bobNotes[0].note).toBe('lives in berlin');
+
+    // What was set on other people (#1449) rides the same rekey, a hidden key included.
+    const bobNickMetadata = db
+      .prepare(
+        'SELECT network_id, nick, key, value FROM user_nick_metadata WHERE user_id = ? ORDER BY key',
+      )
+      .all(bob.id);
+    expect(bobNickMetadata).toEqual([
+      { network_id: bobNets[0].id, nick: 'bob', key: 'display-name', value: null },
+      { network_id: bobNets[0].id, nick: 'bob', key: 'lurker.chat/tz', value: 'Europe/Berlin' },
+    ]);
 
     // Our own metadata (#1189) rides the network rekey, saved unsets and all.
     const bobMetadata = db

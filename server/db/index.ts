@@ -721,6 +721,23 @@ function migrate() {
     CREATE INDEX IF NOT EXISTS idx_user_nick_notes_user_net
       ON user_nick_notes(user_id, network_id);
 
+    -- Metadata a user set on somebody else (#1449): a display name, a colour,
+    -- a time zone, for their own eyes. On a network with IRCv3 metadata it
+    -- stands in front of what that person set; elsewhere it is all there is.
+    -- A NULL value hides theirs. Keyed like a nick note; the PK serves the
+    -- per-user read (user_id first), so there is no second index.
+    CREATE TABLE IF NOT EXISTS user_nick_metadata (
+      user_id INTEGER NOT NULL,
+      network_id INTEGER NOT NULL,
+      nick TEXT NOT NULL COLLATE NOCASE,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (user_id, network_id, nick, key),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+    );
+
     -- Command aliases (#276): a name the user gives to one or more commands.
     -- Per user, not per network. name is stored lower case and without its
     -- slash (shared/aliases.ts), so the key is the word as typed, folded.

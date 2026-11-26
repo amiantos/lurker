@@ -10,6 +10,8 @@ import './recentMessages.js';
 import './searchMessages.js';
 import './getNickNote.js';
 import './setNickNote.js';
+import './getNickMetadata.js';
+import './setNickMetadata.js';
 import './setRelayBot.js';
 import './sendMessage.js';
 import './sendAction.js';

@@ -24,6 +24,11 @@ import {
   METADATA_VALUE_MAX_CHARS,
   type OwnMetadataWrite,
 } from '../../shared/metadataKeys.js';
+import {
+  NICK_METADATA_HIDEABLE,
+  isNickMetadataKey,
+  parseColorSlot,
+} from '../../shared/nickMetadata.js';
 import { stripFormatting } from '../../shared/textMatch.js';
 import { parseLine } from './bouncerClientFilter.js';
 
@@ -166,6 +171,24 @@ export function vetMetadataValue(
   if (key === METADATA_COLOR_KEY) return normalizeMetadataColor(value);
   if (key === METADATA_TZ_KEY) return normalizeTimeZone(value);
   return value;
+}
+
+/**
+ * A value a user sets on somebody else (#1449), as it is stored: `{ value }`
+ * with a string, or with null for "hide theirs", or null when it is refused.
+ * Vetted like the same key off the wire, with two differences: a colour is a
+ * slot of the nick palette, and an avatar can only be hidden.
+ */
+export function vetNickMetadata(key: unknown, raw: string | null): { value: string | null } | null {
+  if (!isNickMetadataKey(key)) return null;
+  if (raw === null) return NICK_METADATA_HIDEABLE.has(key) ? { value: null } : null;
+  if (key === 'avatar') return null;
+  if (key === METADATA_COLOR_KEY) {
+    const slot = parseColorSlot(raw.trim());
+    return slot === null ? null : { value: String(slot) };
+  }
+  const value = vetMetadataValue(key, raw);
+  return value === null ? null : { value };
 }
 
 /** The registry's `{size}` placeholder, filled in. */

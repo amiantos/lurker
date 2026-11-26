@@ -11,6 +11,8 @@ import { api } from '../api.js';
 import { useAuthStore } from './auth.js';
 import { isVirtualKey } from '../lib/virtualBuffers.js';
 import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
+import { effectiveMetadata } from '../../../shared/nickMetadata.js';
+import { useNickMetadataStore } from './nickMetadata.js';
 import type { MultilineLimits } from '../utils/messageSplit.js';
 import { DEFAULT_PREFIX, type ModeSpec, type PrefixMode } from '../../../shared/channelModes.js';
 
@@ -51,6 +53,9 @@ export interface UserMetadataEntry {
   color?: string;
   // An IANA zone (#1450).
   tz?: string;
+  // A slot of the nick palette the user picked for this nick (#1449). Never
+  // from the wire: `effectiveMetadata` sets it, and it is painted ahead of `color`.
+  colorSlot?: number;
 }
 
 export interface MetadataLimits {
@@ -288,8 +293,18 @@ export const useNetworksStore = defineStore('networks', {
         if (!netState.peerAccounts) return undefined;
         return netState.peerAccounts[nick.toLowerCase()] ?? null;
       },
-    // A nick's IRCv3 metadata on a network (#607), or null when none is known.
+    // A nick's metadata on a network as the user sees it, or null when there
+    // is none: what the nick set (#607) with what the user set on them laid
+    // over it (#1449). Everything that shows metadata reads this.
     metadataFor:
+      (state) =>
+      (networkId: number | string | null | undefined, nick: string): UserMetadataEntry | null => {
+        if (networkId == null || !nick) return null;
+        const wire = state.states[networkId]?.userMetadata?.[nick.toLowerCase()] ?? null;
+        return effectiveMetadata(wire, useNickMetadataStore().valuesFor(networkId, nick));
+      },
+    // What the nick set themselves, untouched: "theirs" in the profile view.
+    wireMetadataFor:
       (state) =>
       (networkId: number | string | null | undefined, nick: string): UserMetadataEntry | null => {
         if (networkId == null || !nick) return null;

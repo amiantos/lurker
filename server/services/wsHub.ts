@@ -4382,6 +4382,25 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         }
         break;
       }
+      case 'set-nick-metadata': {
+        // Metadata set on somebody else (#1449). The verb vets the value and
+        // fans the nick's record out; a refused one changes nothing.
+        try {
+          callVerb(
+            'set_nick_metadata',
+            { userId, scope: 'read-write', transport: 'ws' },
+            {
+              networkId: msg.networkId,
+              nick: msg.nick,
+              key: msg.key,
+              ...(msg.reset === true ? { reset: true } : { value: msg.value }),
+            },
+          );
+        } catch (_) {
+          /* a bad key or value: nothing saved, nothing to echo */
+        }
+        break;
+      }
       case 'set-relay-bot': {
         // Relay-bot mark (#277). Same thin-delegator shape as set-nick-note:
         // the verb owns validation, the mark/unmark + custom-pattern logic, and

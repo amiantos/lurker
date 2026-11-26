@@ -376,6 +376,57 @@ describe('search_messages', () => {
   });
 });
 
+describe('get_nick_metadata / set_nick_metadata (#1449)', () => {
+  const on = (nick: string) => ({ networkId: net.id, nick });
+  const values = (nick: string) =>
+    (callVerb('get_nick_metadata', rCtx(owner.id), on(nick)) as { values: unknown }).values;
+
+  it('sets, hides and resets a key, answering the whole record each time', () => {
+    expect(values('zed')).toEqual({});
+    const set = callVerb('set_nick_metadata', rwCtx(owner.id), {
+      ...on('zed'),
+      key: 'lurker.chat/tz',
+      value: 'europe/berlin',
+    }) as { values: unknown };
+    // Stored as the wire value would be: in the runtime's spelling.
+    expect(set.values).toEqual({ 'lurker.chat/tz': 'Europe/Berlin' });
+    callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('zed'), key: 'avatar', value: null });
+    callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('zed'), key: 'color', value: '07' });
+    expect(values('zed')).toEqual({ 'lurker.chat/tz': 'Europe/Berlin', avatar: null, color: '7' });
+    callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('zed'), key: 'avatar', reset: true });
+    expect(values('zed')).toEqual({ 'lurker.chat/tz': 'Europe/Berlin', color: '7' });
+  });
+
+  it('refuses what a key cannot take, and saves nothing', () => {
+    const refused: Array<Record<string, unknown>> = [
+      { key: 'avatar', value: 'https://example.org/a.png' }, // hide only
+      { key: 'color', value: '#ff0000' }, // a slot, never a hex
+      { key: 'color', value: null },
+      { key: 'lurker.chat/tz', value: 'Berlin' },
+      { key: 'lurker.chat/tz', value: null },
+      { key: 'display-name', value: '   ' },
+      { key: 'display-name', value: 'x'.repeat(65) },
+      { key: 'pronouns', value: 'they/them' }, // not a key set on others
+      { key: 'display-name' }, // no value and no reset is not a statement
+    ];
+    for (const input of refused) {
+      expect(() =>
+        callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('yan'), ...input }),
+      ).toThrowError(expect.objectContaining({ code: 'invalid_input' }));
+    }
+    expect(values('yan')).toEqual({});
+  });
+
+  it('needs read-write scope and a nick', () => {
+    expect(() =>
+      callVerb('set_nick_metadata', rCtx(owner.id), { ...on('zed'), key: 'color', value: '1' }),
+    ).toThrowError(expect.objectContaining({ code: 'forbidden' }));
+    expect(() =>
+      callVerb('set_nick_metadata', rwCtx(owner.id), { ...on('  '), key: 'color', value: '1' }),
+    ).toThrowError(expect.objectContaining({ code: 'invalid_input' }));
+  });
+});
+
 describe('get_nick_note / set_nick_note', () => {
   it('get returns an empty note when none is set; set writes and round-trips', () => {
     const empty = callVerb('get_nick_note', rCtx(owner.id), {
