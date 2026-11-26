@@ -22,6 +22,14 @@ import type { MessageReaction } from '../../shared/reactions.js';
 import type { Redaction } from '../../shared/redaction.js';
 import { removeAllReactions } from './reactions.js';
 import {
+  COUNTABLE_TYPES,
+  COUNTABLE_TYPES_SQL,
+  SERVER_COUNTABLE_TYPES,
+  SERVER_COUNTABLE_TYPES_SQL,
+  isServerTarget,
+} from './unreadRule.js';
+import { readUnreadCount } from './unreadCounts.js';
+import {
   REPLY_EXCERPT_MAX,
   REPLY_LINE_TYPES_SQL,
   THREAD_MAX_REPLIES,
@@ -2158,40 +2166,19 @@ export function countOlder(networkId: number, target: string, beforeId: number):
   ).n;
 }
 
-// Types that count as "real content" for the unread badge in a channel or DM.
-// Membership churn (join/part/quit/kick/nick/mode/topic), MOTD, and away markers
-// are persisted for the buffer log but don't bump the badge. `error` is excluded
-// HERE but the `:server:` buffer does count it (see SERVER_COUNTABLE_TYPES /
-// typeCountsForUnread below) — a killed/banned/disconnect line should badge the
-// server tab. The client no longer mirrors any allowlist: unread is driven purely
-// by the server's read-state broadcast (whose trigger uses typeCountsForUnread),
-// so this set only has to stay in sync with the count queries in this file.
-export const COUNTABLE_TYPES = new Set(['message', 'action', 'notice']);
-const COUNTABLE_TYPES_SQL = `('${[...COUNTABLE_TYPES].join("','")}')`;
+// What counts as unread lives in unreadRule.ts, shared with the stored counter
+// (unreadCounts.ts) and the triggers that keep it. Re-exported for the callers
+// that already import it from here.
+export { COUNTABLE_TYPES };
 
-// Unread badges cap their display at ">999" (client BufferList.unreadLabel), so
-// the exact count past that is never shown — yet an unbounded COUNT scans the
-// buffer's ENTIRE unread range (every row with id > the read pointer), which is
-// the dominant per-buffer cost of a connect snapshot on a deep buffer with a low
-// read pointer. Cap the count at UNREAD_COUNT_CAP: the inner ORDER BY id DESC +
-// LIMIT lets SQLite walk idx_messages_unread(network_id, target, id DESC, ...) and
-// stop once that many countable rows are found. Any value >= the cap renders
-// identically (">999"); below the cap it's still exact.
-//
-// NOTE: computeUnreadFor treats a DM's unread AS its highlight count (DMs are
-// inherently mentions), so a DM with >cap unread has its highlight count — and
-// thus its contribution to the PWA app-icon badge total — capped here too. That
-// is intended and invisible: both the sidebar badge and the OS app badge collapse
-// past ~999 anyway, and keeping DM highlights exact would mean reintroducing the
-// unbounded scan for DMs. Channel highlights are exact (their own indexed count).
+// The capped unread walk. Since #1436 a buffer's unread count is stored on its
+// row and kept by triggers (unreadCounts.ts), so this is only what a badge shows
+// while a deep buffer's count is still being built — and the reason it is capped
+// is the reason the stored count exists: an unbounded COUNT scans the buffer's
+// ENTIRE unread range (every row with id > the read pointer). The inner ORDER BY
+// id DESC + LIMIT lets SQLite walk idx_messages_buf_unread and stop once that
+// many countable rows are found. Below the cap it is exact.
 export const UNREAD_COUNT_CAP = 1000;
-
-// The server pseudo-buffer also counts `error` lines (killed/banned/connection
-// failures, and the QUIT-echo disconnect line — all SHOULD badge it), which
-// countNewer's type set omits. Derived from COUNTABLE_TYPES so the paths can't
-// drift.
-const SERVER_COUNTABLE_TYPES = new Set([...COUNTABLE_TYPES, 'error']);
-const SERVER_COUNTABLE_TYPES_SQL = `('${[...SERVER_COUNTABLE_TYPES].join("','")}')`;
 
 // Does an event of `type` count toward `target`'s unread badge? This is the same
 // rule countNewer / countServerBufferUnread apply, exposed so the live read-state
@@ -2200,9 +2187,7 @@ const SERVER_COUNTABLE_TYPES_SQL = `('${[...SERVER_COUNTABLE_TYPES].join("','")}
 // badge wouldn't refresh until the next ordinary countable event landed (a
 // reconnect's "Connecting…" notice), which is the delayed-badge bug (#470).
 export function typeCountsForUnread(target: string, type: string): boolean {
-  return target.startsWith(':server:')
-    ? SERVER_COUNTABLE_TYPES.has(type)
-    : COUNTABLE_TYPES.has(type);
+  return isServerTarget(target) ? SERVER_COUNTABLE_TYPES.has(type) : COUNTABLE_TYPES.has(type);
 }
 
 // Shared unread-count core for countNewer and countServerBufferUnread. Both need
@@ -2267,6 +2252,26 @@ export function countNewer(
     cap,
     !!opts.threadsHidden,
   );
+}
+
+// A buffer's unread count past `afterId`: the stored count when there is one
+// for that pointer (exact, however large), else the capped walk above while
+// the fill builds it (readUnreadCount queues that). With reply threads on, the
+// stored count gives up the replies the channel hides; the walk filters them.
+export function countUnread(
+  networkId: number,
+  target: string,
+  afterId: number,
+  opts: UnreadCountOptions = {},
+): number {
+  const bufferId = resolveBufferIdByNetwork(networkId, target);
+  if (bufferId === undefined) return 0;
+  const server = isServerTarget(target);
+  const stored = readUnreadCount(bufferId, afterId || 0);
+  if (stored) return stored.count - (!server && opts.threadsHidden ? stored.replies : 0);
+  return server
+    ? countServerBufferUnread(networkId, target, afterId)
+    : countNewer(networkId, target, afterId, undefined, opts);
 }
 
 // Unread count for a `:server:` pseudo-buffer (#470). Differs from countNewer in

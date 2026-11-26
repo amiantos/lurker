@@ -100,6 +100,10 @@ const DRAFT_REPLY_SKIPPED = {
   reply_addressed: 'only means anything with reply_message_id',
 };
 
+const UNREAD_COUNT_SKIPPED =
+  'derived: the stored unread count (#1436) is relative to message ids, which an ' +
+  'import renumbers; an imported buffer is counted again when it is first read';
+
 export const EXPORT_TABLES = Object.freeze({
   users: {
     mode: 'partial',
@@ -205,6 +209,10 @@ export const EXPORT_TABLES = Object.freeze({
       merged_into:
         'install-local: set only on a row whose messages a merge is still moving ' +
         '(bufferMergeDrain.ts), and such rows are not exported',
+      unread_after_id: UNREAD_COUNT_SKIPPED,
+      unread_count: UNREAD_COUNT_SKIPPED,
+      unread_replies: UNREAD_COUNT_SKIPPED,
+      unread_fill_id: UNREAD_COUNT_SKIPPED,
     },
     // The +k channel key gates entry to the channel — same credential class as
     // the network secrets, so same at-rest treatment.

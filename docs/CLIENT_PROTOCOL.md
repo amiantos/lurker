@@ -761,6 +761,13 @@ Server-authoritative, per buffer:
 broadcast to **all** the user's sockets after every countable event and every
 mark-read. Never count unread locally (§9.4).
 
+**`unread` is the whole count, however large.** Older servers stopped
+counting at 1000, so `1000` there meant "1000 or more"; render the number so it
+fits (`1.2k`), don't cap it. One exception that needs no handling: the first
+time a buffer with a long unread range is asked about, the server counts it in
+the background and reports at most 1000 until it is done, then sends
+`read-state` again with the whole number.
+
 **A DM's `highlights` equals its `unread`** — every DM line is a mention of
 you — **unless a whole-buffer NOUNREAD rule covers it** (the notification
 menu's Muted rung on that DM, or on its network; §6 `add-ignore`). A muted DM

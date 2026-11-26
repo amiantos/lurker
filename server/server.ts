@@ -32,6 +32,7 @@ import { sweepExpiredPreviews } from './db/linkPreviews.js';
 import { prunePushLog } from './db/pushLog.js';
 import { sweepPreviewCache } from './services/previewCache/index.js';
 import { startRetentionSweeper, onRetentionUserPass } from './services/retentionSweeper.js';
+import { startUnreadFiller } from './services/unreadFiller.js';
 import { kickMergeDrain } from './db/bufferMergeDrain.js';
 import { listGrandfatheredUsernames } from './db/users.js';
 import { backfillEncryptColumns } from './db/secretBackfill.js';
@@ -202,6 +203,8 @@ setInterval(() => void sweepPreviewCache(), 60 * 60 * 1000).unref();
 // pass is one budgeted, yielding walk of owner/cap lookups that drains to
 // nothing, and every tick after it is a no-op over an empty dirty set.
 startRetentionSweeper();
+// Unread counts a previous process was still building (#1436).
+startUnreadFiller();
 // A buffer merge the last process was still moving history for (#1307).
 kickMergeDrain();
 // What a pass took may have been a departed nick's last line (#1246).
