@@ -3,6 +3,7 @@
 
 import db from './index.js';
 import { resolveBuffer } from './bufferResolve.js';
+import { advanceUnreadCount } from './unreadCounts.js';
 
 // buffer_reads is keyed (user_id, buffer_id) since schema 18 — the name lives
 // in `buffers` alone. Exported signatures still take (networkId, target)
@@ -77,7 +78,12 @@ export function setReadState(
   if (!Number.isFinite(id) || id <= 0) return getReadState(userId, networkId, target);
   upsertStmt.run(userId, buffer.id, id);
   const row = getOneStmt.get(userId, buffer.id) as { lastReadId: number } | undefined;
-  return row ? row.lastReadId : 0;
+  const lastReadId = row ? row.lastReadId : 0;
+  // The stored unread count is relative to the pointer, so it moves with it —
+  // here, the pointer's one writer. (A pointer written any other way just
+  // reads as "not counted": see unread_after_id in db/index.ts.)
+  advanceUnreadCount(buffer.id, lastReadId);
+  return lastReadId;
 }
 
 // --- /clear marker state ---------------------------------------------------

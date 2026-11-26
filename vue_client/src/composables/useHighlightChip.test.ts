@@ -70,10 +70,10 @@ describe('useHighlightChip', () => {
     expect(chip.show.value).toBe(false);
   });
 
-  it('caps a four-figure total so the chip cannot stretch its host control', async () => {
+  it('shortens a four-figure total so the chip cannot stretch its host control', async () => {
     const { useHighlightChip } = await load(1500);
     const chip = useHighlightChip();
-    expect(chip.label.value).toBe('>999');
+    expect(chip.label.value).toBe('1.5k');
     expect(chip.show.value).toBe(true);
   });
 });

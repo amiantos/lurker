@@ -46,6 +46,26 @@ describe('unread-count path', () => {
   });
 });
 
+describe('stored unread count walks (#1436)', () => {
+  // The window a fill chunk, a first read and a mark-read all run. In id
+  // order off the per-buffer index with no sort: a sort would read the whole
+  // range before the LIMIT could stop it, which is the cost the LIMIT bounds.
+  it('walk a window of the per-buffer index without a sort', async () => {
+    const { UNREAD_WALK_SQL } = await import('./unreadCounts.js');
+    const detail = (
+      db
+        .prepare(`EXPLAIN QUERY PLAN ${UNREAD_WALK_SQL}`)
+        .all({ bufferId: 1, after: 0, upTo: 10, limit: 5 }) as Array<{ detail: string }>
+    )
+      .map((r) => r.detail)
+      .join(' | ');
+    expect(detail).toMatch(
+      /USING INDEX idx_messages_buf_unread \(buffer_id=\? AND id>\? AND id<\?\)/,
+    );
+    expect(detail).not.toMatch(/TEMP B-TREE/);
+  });
+});
+
 describe('page and probe paths', () => {
   it('the backlog page walks the per-buffer index (listMessages shape)', () => {
     const detail = plan(`SELECT * FROM messages WHERE buffer_id = 1 ORDER BY id DESC LIMIT 50`);

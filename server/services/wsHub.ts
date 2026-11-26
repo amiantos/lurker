@@ -43,8 +43,7 @@ import {
   hasMoreThan,
   hasMessageForTarget,
   listSpeakers,
-  countNewer,
-  countServerBufferUnread,
+  countUnread,
   COUNTABLE_TYPES,
   countHighlightsNewer,
   maxIdByBuffer,
@@ -85,6 +84,7 @@ import {
   foldTargetFor,
 } from '../db/buffers.js';
 import { getBufferById, resolveBuffer, requireBufferForUser } from '../db/bufferResolve.js';
+import { onUnreadFilled } from './unreadFiller.js';
 import { onMergeDrained } from '../db/bufferMergeDrain.js';
 import { getDraftForBuffer } from '../db/drafts.js';
 import type { BufferStateRow } from '../db/buffers.js';
@@ -722,17 +722,15 @@ function computeUnreadFor(
   // With reply threads on, a channel's thread reply counts here only as a
   // highlight (#1225, THREADS_HIDDEN_SQL): the channel hides it, its thread
   // counts it. Threads are a channel feature: a DM keeps every line.
-  const unread = target.startsWith(':server:')
-    ? countServerBufferUnread(nid, target, lastReadId)
-    : countNewer(nid, target, lastReadId, undefined, {
-        threadsHidden: !isDmTarget(target) && threadsHiddenFor(userId),
-      });
+  const unread = countUnread(nid, target, lastReadId, {
+    threadsHidden: !isDmTarget(target) && threadsHiddenFor(userId),
+  });
   // A DM is inherently a mention of you, so — like the system buffer — every
   // unread line counts as a highlight. This lights the buffer-list row up in
   // the highlight color and shows the ● badge, surfacing unread DMs above
   // ordinary channel traffic. Display-only: notification/push decisions are
   // made per-message in highlightEngine and are unaffected. Channels keep their
-  // real mention-only highlight count (an indexed query, no scan cap).
+  // real mention-only highlight count (an indexed query).
   //
   // A MUTED DM is the exception (#1192). Every client renders a muted buffer
   // as "highlights only" — that is what makes a muted channel go quiet while a
@@ -1436,6 +1434,26 @@ onMergeDrained((survivorId) => {
     buf.id,
   );
   scheduleThreadsChanged(buf.userId);
+});
+
+// A deep buffer's unread count has been built (#1436, services/unreadFiller.ts).
+// What its badge showed until now was the capped walk: serve the whole number.
+onUnreadFilled((bufferId) => {
+  const buf = getBufferById(bufferId);
+  if (!buf || !socketsByUser.has(buf.userId)) return;
+  // Not for a closed buffer the sidebar doesn't hold: a client would
+  // re-materialize it from the frame (#319). Closed but still joined is shown.
+  if (buf.state === 'closed') {
+    const conn = ircManager.listConnections(buf.userId).find((c) => c.network.id === buf.networkId);
+    if (!conn?.isChannelJoined(buf.target)) return;
+  }
+  broadcastReadState(
+    buf.userId,
+    buf.networkId,
+    buf.target,
+    getReadState(buf.userId, buf.networkId, buf.target),
+    buf.id,
+  );
 });
 
 function scheduleThreadsChanged(userId: number): void {

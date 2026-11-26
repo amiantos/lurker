@@ -477,6 +477,21 @@ describe('buildBufferShell', () => {
     expect(buildBufferShell(userId, networkId, '#shellchan', false).joined).toBe(false);
   });
 
+  it('counts past the old 1000 cap: the badge is the whole number (#1436)', async () => {
+    const { UNREAD_COUNT_CAP } = await import('../db/messages.js');
+    const lines = UNREAD_COUNT_CAP + 5;
+    let last = 0;
+    dbHandle.transaction(() => {
+      for (let i = 0; i < lines; i += 1) last = seed('#deepshell', `line ${i}`);
+    })();
+    expect(buildBufferShell(userId, networkId, '#deepshell', true).unread).toBe(lines);
+    // A live line moves it by one, with nothing recounted.
+    seed('#deepshell', 'one more');
+    expect(buildBufferShell(userId, networkId, '#deepshell', true).unread).toBe(lines + 1);
+    setReadState(userId, networkId, '#deepshell', last);
+    expect(buildBufferShell(userId, networkId, '#deepshell', true).unread).toBe(1);
+  });
+
   it('resolves its own bufferId, or takes a precomputed one without a lookup', () => {
     seed('#shellid', 'x');
     const row = buffers.getBuffer(userId, networkId, '#shellid')!;

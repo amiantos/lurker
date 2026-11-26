@@ -10,6 +10,13 @@ import fs from 'fs';
 import { isNodeMode } from '../utils/edition.js';
 import { EARLY_PRUNE_TYPES } from '../../shared/eventFilter.js';
 import {
+  SERVER_COUNTABLE_TYPES_SQL,
+  UNREAD_RULE_COLUMNS,
+  countableSql,
+  hiddenReplySql,
+  serverBufferSql,
+} from './unreadRule.js';
+import {
   DEFAULT_AVATAR_SET,
   LEGACY_AVATAR_SET_IDS,
   currentAvatarSetId,
@@ -3547,6 +3554,79 @@ ensureColumn(
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_push_subs_oauth_token ON push_subscriptions(oauth_token_id)`,
 );
+
+// --- The stored unread count (#1436) ------------------------------------------
+//
+// Each buffer row carries its own unread count, kept by triggers on `messages`,
+// so a badge is a row read instead of a walk of the buffer's unread range. That
+// walk ran for every countable line and once per buffer on connect, and was
+// capped at 1000 rows to bound it, which is why a badge could only say ">999".
+//
+//   unread_after_id  the read pointer the count is relative to. A count is
+//                    only used for a caller asking about this same pointer, so
+//                    a pointer moved by anything that doesn't know about the
+//                    count (an import, a merge, an older build after a
+//                    rollback) reads as "not counted", never as a wrong number.
+//   unread_count     countable rows with id > unread_after_id. NULL: not counted.
+//   unread_replies   of those, the replies `chat.threads` hides (unreadRule.ts).
+//   unread_fill_id   set while a count is being built in chunks (see
+//                    unreadCounts.ts): the count then covers only ids up to it.
+//
+// Triggers and not a bump beside insertMessage because rows also arrive by
+// import, leave by retention and move between buffers in a merge; a trigger
+// sees all of them. They are rebuilt when the rule's SQL changes, and every
+// count is dropped with them: a count kept under another rule is not this one.
+ensureColumn('buffers', 'unread_after_id', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('buffers', 'unread_count', 'INTEGER');
+ensureColumn('buffers', 'unread_replies', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('buffers', 'unread_fill_id', 'INTEGER');
+
+const UNREAD_TRIGGERS: Record<string, string> = (() => {
+  // One row's worth, added to or taken from the buffer it sits in. The WHERE is
+  // on the `buffers` row: counted at all, the row is past the pointer, and (in a
+  // fill) inside the part already walked.
+  const apply = (row: 'new' | 'old', sign: '+' | '-') => `
+    UPDATE buffers
+       SET unread_count = unread_count ${sign} 1,
+           unread_replies = unread_replies ${sign} ${hiddenReplySql(row)}
+     WHERE id = ${row}.buffer_id
+       AND unread_count IS NOT NULL
+       AND ${row}.id > unread_after_id
+       AND (unread_fill_id IS NULL OR ${row}.id <= unread_fill_id)
+       AND ${countableSql(row, serverBufferSql(''))};`;
+  // Cheap gate before the `buffers` seek: most rows are membership noise.
+  const mayCount = (row: 'new' | 'old') =>
+    `${row}.from_ignored = 0 AND ${row}.type IN ${SERVER_COUNTABLE_TYPES_SQL}`;
+  const changed = UNREAD_RULE_COLUMNS.map((c) => `old.${c} IS NOT new.${c}`).join(' OR ');
+  return {
+    messages_unread_ai: `CREATE TRIGGER messages_unread_ai AFTER INSERT ON messages WHEN ${mayCount('new')} BEGIN ${apply('new', '+')} END`,
+    messages_unread_ad: `CREATE TRIGGER messages_unread_ad AFTER DELETE ON messages WHEN ${mayCount('old')} BEGIN ${apply('old', '-')} END`,
+    messages_unread_au: `CREATE TRIGGER messages_unread_au AFTER UPDATE ON messages WHEN ${changed} BEGIN ${apply('old', '-')} ${apply('new', '+')} END`,
+  };
+})();
+
+export function ensureUnreadTriggersCurrent(): void {
+  const names = Object.keys(UNREAD_TRIGGERS);
+  const live = new Map(
+    (
+      db
+        .prepare(
+          `SELECT name, sql FROM sqlite_master
+            WHERE type = 'trigger' AND name IN (${names.map(() => '?').join(', ')})`,
+        )
+        .all(...names) as { name: string; sql: string }[]
+    ).map((r) => [r.name, r.sql]),
+  );
+  if (names.every((name) => live.get(name) === UNREAD_TRIGGERS[name])) return;
+  db.transaction(() => {
+    for (const name of names) db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+    // Whatever was counted, it was counted without these triggers watching.
+    db.exec(`UPDATE buffers SET unread_count = NULL, unread_fill_id = NULL
+              WHERE unread_count IS NOT NULL OR unread_fill_id IS NOT NULL`);
+    for (const name of names) db.exec(UNREAD_TRIGGERS[name]!);
+  }).immediate();
+}
+ensureUnreadTriggersCurrent();
 
 // --- end of the migrations: drain the WAL, then the steady-state lock budget --
 //
