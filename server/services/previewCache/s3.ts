@@ -170,7 +170,8 @@ export type S3Read =
  * and headers (SigV4 for the bucket, plain for the CDN); everything about how a
  * response may be trusted lives HERE, once, because the two subtlest guards in
  * this feature are in it and a hand-synced copy is how one of them quietly
- * stops applying.
+ * stops applying. (The dropper backend asks with a HEAD of its own before calling
+ * this, and passes the deadline both requests share — see `readDropper`.)
  *
  * ⚠ `fetch` rather than `node:http` deliberately, unlike the write path. The
  * memory hazard measured in #543 is undici buffering REQUEST bodies; a response
@@ -181,13 +182,10 @@ export async function readRemote(
   url: string,
   headers: Record<string, string>,
   maxBytes: number,
+  signal: AbortSignal = AbortSignal.timeout(30_000),
 ): Promise<S3Read> {
   try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(30_000),
-    });
+    const res = await fetch(url, { method: 'GET', headers, signal });
     if (res.status === 404) {
       await discard(res);
       return { kind: 'missing' };
