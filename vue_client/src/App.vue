@@ -19,6 +19,7 @@ import { useAuthStore } from './stores/auth.js';
 import { useSettingsStore } from './stores/settings.js';
 import { useConfigStore } from './stores/config.js';
 import { useTheme } from './composables/useTheme.js';
+import { usePageTitle } from './composables/usePageTitle.js';
 import ToastContainer from './components/ToastContainer.vue';
 import ContextMenu from './components/ContextMenu.vue';
 import PausedBanner from './components/PausedBanner.vue';
@@ -29,6 +30,7 @@ const settings = useSettingsStore();
 const config = useConfigStore();
 
 useTheme();
+usePageTitle();
 
 onMounted(async () => {
   // /api/config is public, so it can go out immediately.

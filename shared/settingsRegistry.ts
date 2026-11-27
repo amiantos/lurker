@@ -902,6 +902,19 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'is a full-screen sheet.',
   },
 
+  // ─── Browser tab (the page title, #1462) ─────────────────────────────────
+  {
+    key: 'look.title.buffer_names',
+    label: 'Buffer names in the page title',
+    category: 'appearance',
+    group: 'browser-tab',
+    type: 'bool',
+    default: true,
+    description:
+      'Title each page after its channel or DM and network. Titles show in the tab ' +
+      'strip and in browser history. Off titles them all "Lurker".',
+  },
+
   // ─── Events: the filter (#666) ────────────────────────────────────────
   // The primary "how much presence churn do I want to see" choice, and the
   // reason this category exists. Everything in the two groups below is a
@@ -2179,6 +2192,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   nicks: 'Nick coloring',
   'status-bar': 'Status bar',
   panels: 'Panels',
+  'browser-tab': 'Browser tab',
   'event-filter': 'Filter',
   consolidate: 'Consolidation',
   composing: 'Composing',

@@ -342,6 +342,7 @@ describe('pane structure', () => {
       'nicks',
       'status-bar',
       'panels',
+      'browser-tab',
     ]);
   });
 
