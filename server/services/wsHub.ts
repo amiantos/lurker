@@ -3214,6 +3214,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // frame, which a client that was disconnected never received, so every
       // connect restates them and a setting changed elsewhere meanwhile lands.
       settings: getUserSettings(userId),
+      // The saved themes ride beside them, as on the bootstrap and for its
+      // reason: a pointer in `settings` at a theme the client has not fetched
+      // would render as the built-in one until a separate GET answered.
+      themes: themesService.list(userId),
       ...(isFreshConnect ? { cursor } : {}),
     });
     // Measured, because this is ONE WebSocket message and a client may cap

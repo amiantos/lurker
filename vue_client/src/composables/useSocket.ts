@@ -850,14 +850,6 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
   // needs them before the first line is typed. Every (re)connect, since an
   // aliases-changed frame sent while this device was away never arrived.
   useAliasesStore().load();
-  // Saved themes: the only live refresh is the themes-changed frame, which a
-  // disconnected device never received. Refetch on every (re)connect so a
-  // theme edited elsewhere while this device slept doesn't render stale.
-  useThemesStore()
-    .fetchAll()
-    .catch(() => {
-      /* ignore — the bootstrap list (or the last successful fetch) keeps rendering */
-    });
   // Uploaded avatar sets (#607): same reasoning.
   useAvatarSetsStore()
     .fetchAll()
@@ -936,15 +928,28 @@ function handleMessage(raw: string): void {
 
   if (payload.kind === 'snapshot') {
     applySnapshot(payload.networks, payload.globalIgnores || []);
+    // Saved themes: the only live refresh is the themes-changed frame, which a
+    // disconnected device never received, so every (re)connect restates them.
+    // On the snapshot itself since #1464; an older server sends none and gets
+    // the GET it always did. BEFORE the settings below: a pointer there at a
+    // theme this tab has not heard of would render as built-in Dark meanwhile.
+    const themes = useThemesStore();
+    if (Array.isArray(payload.themes)) themes.hydrate(payload.themes);
+    else {
+      themes.fetchAll().catch(() => {
+        /* ignore — the bootstrap list (or the last successful fetch) keeps rendering */
+      });
+    }
     // #1464: the user's settings as stored, so one changed on another device
     // while this one was disconnected lands on reconnect. Only when present: an
     // older server sends none, and absence is not "no overrides". A session
     // whose boot fetch failed has nothing loaded to refresh, so it asks again
     // instead (the store ignores the snapshot until then).
     const settings = useSettingsStore();
+    const stored = payload.settings;
     if (!settings.loaded) settings.fetchAll().catch(() => {});
-    else if (payload.settings && typeof payload.settings === 'object') {
-      settings.applySnapshot(payload.settings);
+    else if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+      settings.applySnapshot(stored);
     }
     // #650: a file over one chunk is sent in chunks. Absent on an older server.
     useUploadsStore().chunkBytes =
