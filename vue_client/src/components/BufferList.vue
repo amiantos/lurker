@@ -1125,6 +1125,13 @@ onBeforeUnmount(() => {
   border-top: 1px solid var(--border);
   margin-top: var(--space-2);
 }
+/* A network showing only its header (closed in accordion mode, or one with no
+   channels): the bottom padding is there to space the rows off the next rule,
+   and with no rows it leaves the header sitting high in its band. Without it
+   the next group's top margin matches the padding above the header. */
+.net:not(.system-net):not(:has(> .channels)) {
+  padding-bottom: 0;
+}
 /* The LURKER row is the sidebar's header — a real fixed header now (#411): it's
    a flex child of the frame that sits above the scroll region and never scrolls,
    the same way the sidebar footer is pinned. Size it to the topic bar beside it:
