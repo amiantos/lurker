@@ -143,9 +143,10 @@ const rows = computed<Row[]>(() => {
   // you may well be looking for the current buffer by name.
   // A query matches on the channel/DM name or the network name, word by word
   // (#1465) — see matchSwitcherRows for why name matches lead.
-  // Tiered smart sort applied AFTER filtering (#393): recent → pinned → unread →
-  // alphabetical, so recency/favourites survive a search instead of collapsing
-  // to plain alphabetical. Reads recent.keys so this recomputes as the MRU moves.
+  // Tiered smart sort applied AFTER filtering (#393), to each group on its own:
+  // recent → pinned → unread → alphabetical, so recency/favourites survive a
+  // search instead of collapsing to plain alphabetical. Reads recent.keys so
+  // this recomputes as the MRU moves.
   const ranks = recent.keys;
   const sort = (list: Row[]) =>
     smartSortRows(list, {
@@ -156,7 +157,11 @@ const rows = computed<Row[]>(() => {
     });
   if (!q) return sort(allRows.value.filter((r) => r.key !== networks.activeKey));
   const { byName, byNetwork } = matchSwitcherRows(allRows.value, q);
-  return [...sort(byName), ...sort(byNetwork)];
+  // The buffer you're in stays findable by its own name, but a network word
+  // isn't a search for it: as the most recent buffer it would lead the network
+  // group, and typing your current network then Enter would go nowhere.
+  const others = byNetwork.filter((r) => r.key !== networks.activeKey);
+  return [...sort(byName), ...sort(others)];
 });
 
 watch(rows, () => {

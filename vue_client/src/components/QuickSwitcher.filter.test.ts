@@ -12,6 +12,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import QuickSwitcher from './QuickSwitcher.vue';
 
 let mounted: VueWrapper[] = [];
@@ -72,6 +73,23 @@ describe('QuickSwitcher query matches network names', () => {
 
   it('narrows within a network with a second word', async () => {
     expect(await type('lib sen')).toEqual(['libera/#senpai']);
+  });
+
+  it('leaves the buffer you are in out of its own network listing', async () => {
+    // The active buffer is always the most recent one, so it would otherwise
+    // sort to row 0 and Enter would land where you already are.
+    const networks = useNetworksStore();
+    const recent = useRecentBuffersStore();
+    recent.record('1::#soju');
+    recent.record('1::#senpai');
+    networks.activeKey = '1::#senpai';
+
+    expect(await type('libera')).toEqual(['libera/#soju', 'libera/[server]']);
+  });
+
+  it('still finds the buffer you are in by its own name', async () => {
+    useNetworksStore().activeKey = '1::#senpai';
+    expect(await type('sen')).toEqual(['libera/#senpai']);
   });
 
   it('still finds a channel by name alone', async () => {
