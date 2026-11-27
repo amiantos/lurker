@@ -19,6 +19,8 @@ import { useSettingsStore } from '../stores/settings.js';
 let wired = false;
 let attended = true;
 let lastInputAt = Date.now();
+let lastInputType = 'start';
+let lastPointer: { x: number; y: number } | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<(attended: boolean) => void>();
 
@@ -46,17 +48,38 @@ function evaluate(): void {
   for (const fn of listeners) fn(next);
 }
 
-function onInput(): void {
+function onInput(e: Event): void {
+  // A browser sends a pointermove when the page moves under a pointer that
+  // didn't: a new line scrolling the list is enough. Only a change of screen
+  // position is the user, and the first event has nothing to compare against,
+  // so it only records where the pointer is.
+  if (e.type === 'pointermove') {
+    const { screenX: x, screenY: y } = e as PointerEvent;
+    const last = lastPointer;
+    lastPointer = { x, y };
+    if (!last || (last.x === x && last.y === y)) return;
+  }
+  noteInput(e.type);
+}
+
+function noteInput(type: string): void {
   lastInputAt = Date.now();
+  lastInputType = type;
   if (!attended) evaluate();
 }
 
 // Coming back to the tab is the user doing something, even before a key.
-function onVisibility(): void {
-  if (visible()) lastInputAt = Date.now();
+function onVisibility(e: Event): void {
+  if (visible()) {
+    lastInputAt = Date.now();
+    lastInputType = e.type;
+  }
   evaluate();
 }
 
+// No 'scroll': the list scrolls itself to the tail on every new line, which
+// would keep an empty room attended for as long as anyone was talking. A
+// person scrolling arrives as wheel, touch, a key or a pointer on the bar.
 const INPUT_EVENTS = ['pointermove', 'pointerdown', 'keydown', 'wheel', 'touchstart'] as const;
 
 export function startAttention(): void {
@@ -65,8 +88,6 @@ export function startAttention(): void {
   for (const type of INPUT_EVENTS) {
     window.addEventListener(type, onInput, { capture: true, passive: true });
   }
-  // Scroll doesn't bubble, so catch it on the way down.
-  document.addEventListener('scroll', onInput, { capture: true, passive: true });
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('focus', onVisibility);
   lastInputAt = Date.now();
@@ -75,6 +96,17 @@ export function startAttention(): void {
 
 export function isAttended(): boolean {
   return attended;
+}
+
+/** Where the tracker stands right now, for the debug readout (AttentionDebug). */
+export function attentionSnapshot() {
+  return {
+    attended,
+    visible: visible(),
+    idleForMs: Date.now() - lastInputAt,
+    limitMs: idleMs(),
+    lastInputType,
+  };
 }
 
 /** Called with the new value on each change. Returns the unsubscribe. */
@@ -94,13 +126,14 @@ export function resetAttentionForTests(): void {
   timer = null;
   if (wired) {
     for (const type of INPUT_EVENTS) window.removeEventListener(type, onInput, { capture: true });
-    document.removeEventListener('scroll', onInput, { capture: true });
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('focus', onVisibility);
   }
   wired = false;
   attended = true;
   lastInputAt = Date.now();
+  lastInputType = 'start';
+  lastPointer = null;
   listeners.clear();
 }
 

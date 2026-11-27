@@ -26,8 +26,15 @@ function setHidden(value: boolean) {
   document.dispatchEvent(new Event('visibilitychange'));
 }
 
+// A pointer that really moved: each call lands somewhere new on the screen.
+let pointerX = 0;
+function movePointer(to = (pointerX += 5)) {
+  window.dispatchEvent(new MouseEvent('pointermove', { screenX: to, screenY: 100 }));
+}
+
 function input(type = 'keydown') {
-  window.dispatchEvent(new Event(type));
+  if (type === 'pointermove') movePointer();
+  else window.dispatchEvent(new Event(type));
 }
 
 describe('useAttention', () => {
@@ -41,6 +48,9 @@ describe('useAttention', () => {
     resetAttentionForTests();
     changes = [];
     startAttention();
+    // The pointer is somewhere already, so the next move has a "before".
+    movePointer(0);
+    pointerX = 0;
     onAttentionChange((a) => changes.push(a));
   });
 
@@ -82,13 +92,36 @@ describe('useAttention', () => {
     },
   );
 
-  it('comes back on a scroll inside the page', () => {
+  // A new line scrolls the list to the tail and slides rows under a parked
+  // pointer. The browser reports both; neither is anyone being here.
+  it('stays unattended through a scroll and a pointermove that went nowhere', () => {
     vi.advanceTimersByTime(10 * MIN);
     const el = document.createElement('div');
     document.body.appendChild(el);
     el.dispatchEvent(new Event('scroll'));
-    expect(isAttended()).toBe(true);
+    movePointer(pointerX);
+    movePointer(pointerX);
+    expect(isAttended()).toBe(false);
     el.remove();
+  });
+
+  it('does not let a stream of them hold off idle either', () => {
+    for (let i = 0; i < 20; i++) {
+      vi.advanceTimersByTime(MIN);
+      document.dispatchEvent(new Event('scroll'));
+      movePointer(pointerX);
+    }
+    expect(isAttended()).toBe(false);
+  });
+
+  it('does not count the first pointermove it ever sees', () => {
+    resetAttentionForTests();
+    startAttention();
+    vi.advanceTimersByTime(10 * MIN);
+    movePointer(40);
+    expect(isAttended()).toBe(false);
+    movePointer(45);
+    expect(isAttended()).toBe(true);
   });
 
   it('is unattended at once when the page is hidden, and back when it shows', () => {
