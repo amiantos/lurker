@@ -149,14 +149,41 @@ describe('useAttention', () => {
     expect(isAttended()).toBe(false);
   });
 
-  it('re-times when the limit changes', () => {
+  it('goes unattended when the limit drops below the time already idle', () => {
     vi.advanceTimersByTime(2 * MIN);
     idleSeconds = 60;
     attentionSettingChanged();
     expect(isAttended()).toBe(false);
-    idleSeconds = 600;
+    expect(changes).toEqual([false]);
+  });
+
+  // The setting can arrive from another device while nobody is at this one.
+  it('does not come back because the limit was raised', () => {
+    vi.advanceTimersByTime(10 * MIN);
+    idleSeconds = 3600;
     attentionSettingChanged();
+    expect(isAttended()).toBe(false);
+    expect(changes).toEqual([false]);
+    input();
     expect(isAttended()).toBe(true);
+  });
+
+  it('survives a limit longer than a timer can hold', () => {
+    idleSeconds = 30 * 24 * 3600;
+    attentionSettingChanged();
+    vi.advanceTimersByTime(60 * MIN);
+    expect(isAttended()).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  // A laptop that slept: the clock jumped, the idle timer never fired.
+  it('answers from the clock when its timer is behind, and reports both changes', () => {
+    vi.setSystemTime(Date.now() + 8 * 60 * MIN);
+    expect(isAttended()).toBe(false);
+    expect(changes).toEqual([]);
+    input();
+    expect(isAttended()).toBe(true);
+    expect(changes).toEqual([false, true]);
   });
 
   it('stops telling a listener that unsubscribed', () => {

@@ -6,6 +6,7 @@ import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
 import { isAttended } from '../composables/useAttention.js';
+import { viewedBuffer } from '../composables/useViewedBuffer.js';
 
 // Buffers whose list this socket has been asked for outright (ensureMembers).
 // Cleared by resetNamesAsked on every socket open: the server's memo of what a
@@ -1688,14 +1689,31 @@ export const useBuffersStore = defineStore('buffers', {
     unclearBuffer(networkId: number | string, target: string) {
       socketSend({ type: 'unclear-buffer', networkId, target, bufferId: idFor(networkId, target) });
     },
+    // Nobody is at this client any more (useAttention). That ends the visit to
+    // the active buffer the way switching away does: the divider drops to the
+    // read pointer, so whatever lands from here on falls under it. Without
+    // this a divider drawn for one absence would stay put through the next.
+    pauseReading() {
+      const networks = useNetworksStore();
+      const key = networks.activeKey;
+      const buf = key ? this.buffers[key] : null;
+      if (!key || !buf || buf.dividerAfterId == null) return;
+      buf.dividerAfterId = buf.lastReadId || 0;
+      setUnreadDividerShown(key, null);
+    },
     // Someone is back at this client (useAttention). Lines that landed in the
     // active buffer while nobody was here were left unread; they are on screen
     // now, so mark them read the way activate() does on entry. The divider is
     // left alone: it sits above those lines, which is the point of it.
     resumeReading() {
       const networks = useNetworksStore();
-      const buf = networks.activeKey ? this.buffers[networks.activeKey] : null;
-      if (!buf) return;
+      const key = networks.activeKey;
+      const buf = key ? this.buffers[key] : null;
+      if (!key || !buf) return;
+      // Only a buffer whose lines are on screen. activeKey lingers on the
+      // Settings route and the mobile lists; the system console draws its own
+      // list and never registers as viewed, so it is taken at its word.
+      if (key !== SYSTEM_KEY && viewedBuffer() !== key) return;
       buf.unread = 0;
       buf.highlighted = 0;
       buf.highlightsCapped = false;
@@ -1787,7 +1805,11 @@ export const useBuffersStore = defineStore('buffers', {
       // up to the stray line would clear unread for messages the user never saw.
       // The reattachToLive fired below does its own mark-read against the real
       // tail once hydrated.
-      if (!buf.detached && !buf.unseeded) {
+      //
+      // And skip with nobody at this client: a route restored in a hidden tab,
+      // or a fallback activation on an idle one, is not someone reading.
+      // resumeReading marks it when they come back.
+      if (!buf.detached && !buf.unseeded && isAttended()) {
         const lastMsg = buf.messages[buf.messages.length - 1];
         const lastId = lastMsg?.id ?? 0;
         if (lastId > buf.lastReadId) {

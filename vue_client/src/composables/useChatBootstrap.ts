@@ -234,13 +234,15 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
     void settingsReady.then(() => onboarding.evaluate());
     startPresenceReporter();
     reportNow();
-    // Back at this client: catch the active buffer's read state up.
+    // Leaving this client ends the visit to the active buffer; coming back
+    // catches its read state up.
     if (!attentionWired) {
       attentionWired = true;
       onAttentionChange((attended) => {
         if (attended) buffers.resumeReading();
+        else buffers.pauseReading();
       });
-      watch(() => settings.effective('away.idle.delay_seconds'), attentionSettingChanged);
+      watch(() => settings.effective('client.idle.delay_seconds'), attentionSettingChanged);
     }
     // Keep the active buffer's message list hydrated across reconnects and
     // send failures (idempotent module singleton, like the presence reporter —

@@ -34,7 +34,12 @@ A notification that never arrived has a trail. Under **Settings → Notification
 - **push log** opens the trail itself, in two parts.
 - **current clients** lists what is connected to your account right now and
   whether it reports itself visible. Push fires only while nothing is visible,
-  so a tab left in front, or the app open on your phone, is the usual reason.
+  so a tab you are using, or the app open on your phone, is the usual reason.
+  A web client stops reporting itself visible once it has sat idle. To watch it
+  decide, run `localStorage.setItem('lurker.debug.attention', '1')` in its
+  browser console and reload: a strip in the corner shows attended or away,
+  seconds idle, the last input it counted, and the open buffer's read pointer.
+  Remove the key to hide it.
 - **recent pushes** is the last week of notifications the server tried to send
   you, each with what happened: _held_ and the rule, _sent_ and the push
   service's answer, or _failed_ and why. A "sent" line means the push service
@@ -70,8 +75,8 @@ server is involved. The usual causes:
   the bouncer, and automatic return. A client's background connection that sends
   `AWAY *` doesn't count. A network you set away yourself keeps that away: auto-away
   skips it, and returning doesn't clear it.
-- An open client stops counting as in front of you after ten minutes without
-  input (`away.idle.delay_seconds`; 0 turns this off), or as soon as its tab is
+- An open client stops counting as in front of you after five minutes without
+  input (`client.idle.delay_seconds`; 0 turns this off), or as soon as its tab is
   hidden. From then on push goes out, auto-away starts counting, and new lines in
   the buffer it has open stay unread until you come back to it.
 

@@ -4,7 +4,7 @@
 // Is someone actually at this client? Visible is not enough: a tab left in
 // front on a machine nobody is sitting at is visible for days (#1402). So
 // "attended" is the page being visible AND having had input within
-// `away.idle.delay_seconds`.
+// `client.idle.delay_seconds`.
 //
 // Two things hang off it. usePresence reports it to the server as this
 // client's presence, which is what holds push and auto-away. And the buffers
@@ -22,6 +22,10 @@ let lastInputAt = Date.now();
 let lastInputType = 'start';
 let lastPointer: { x: number; y: number } | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
+let forced: boolean | null = null;
+// setTimeout's delay is a signed 32-bit count of ms; past it the timer fires
+// at once. A longer limit just re-arms when this runs out.
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 const listeners = new Set<(attended: boolean) => void>();
 
 function visible(): boolean {
@@ -30,19 +34,30 @@ function visible(): boolean {
 
 // 0 turns idle off: the client is attended whenever it is visible.
 function idleMs(): number {
-  const seconds = Number(useSettingsStore().effective('away.idle.delay_seconds'));
+  const seconds = Number(useSettingsStore().effective('client.idle.delay_seconds'));
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0;
 }
 
-function evaluate(): void {
+// The answer from the clock, as of this instant.
+function attendedNow(): boolean {
+  const limit = idleMs();
+  return visible() && (limit === 0 || Date.now() - lastInputAt < limit);
+}
+
+// Bring the flag, its timer and the listeners up to date. `mayReturn` false
+// lets this only notice a departure: a raised limit must not announce someone
+// back who has not touched anything.
+function evaluate(mayReturn = true): void {
   if (timer) clearTimeout(timer);
   timer = null;
   const limit = idleMs();
   const idleFor = Date.now() - lastInputAt;
-  const next = visible() && (limit === 0 || idleFor < limit);
+  const next = attendedNow() && (attended || mayReturn);
   // One timer, due when the current quiet spell would reach the limit. Input
   // only moves lastInputAt; the timer finds out when it fires and re-arms.
-  if (next && limit > 0) timer = setTimeout(evaluate, limit - idleFor);
+  if (next && limit > 0) {
+    timer = setTimeout(() => evaluate(), Math.min(limit - idleFor, MAX_TIMEOUT_MS));
+  }
   if (next === attended) return;
   attended = next;
   for (const fn of listeners) fn(next);
@@ -63,6 +78,10 @@ function onInput(e: Event): void {
 }
 
 function noteInput(type: string): void {
+  // The flag can be behind the clock: a laptop that slept through its idle
+  // timer wakes with the timer still pending. Notice that departure first, so
+  // this input is a return and the listeners hear both.
+  if (attended && !attendedNow()) evaluate();
   lastInputAt = Date.now();
   lastInputType = type;
   if (!attended) evaluate();
@@ -70,11 +89,8 @@ function noteInput(type: string): void {
 
 // Coming back to the tab is the user doing something, even before a key.
 function onVisibility(e: Event): void {
-  if (visible()) {
-    lastInputAt = Date.now();
-    lastInputType = e.type;
-  }
-  evaluate();
+  if (visible()) noteInput(e.type);
+  else evaluate();
 }
 
 // No 'scroll': the list scrolls itself to the tail on every new line, which
@@ -95,13 +111,17 @@ export function startAttention(): void {
 }
 
 export function isAttended(): boolean {
-  return attended;
+  if (forced !== null) return forced;
+  // Not started yet (the first moments of a load): visibility is all there is.
+  if (!wired) return typeof document === 'undefined' || !document.hidden;
+  // Asked of the clock as well as the flag, so a stale flag can't say yes.
+  return attended && attendedNow();
 }
 
 /** Where the tracker stands right now, for the debug readout (AttentionDebug). */
 export function attentionSnapshot() {
   return {
-    attended,
+    attended: isAttended(),
     visible: visible(),
     idleForMs: Date.now() - lastInputAt,
     limitMs: idleMs(),
@@ -115,9 +135,9 @@ export function onAttentionChange(fn: (attended: boolean) => void): () => void {
   return () => listeners.delete(fn);
 }
 
-/** The idle limit changed: re-time from the last input. */
+/** The idle limit changed: re-time from the last input. Never a return. */
 export function attentionSettingChanged(): void {
-  if (wired) evaluate();
+  if (wired) evaluate(false);
 }
 
 /** Tests only: back to an unwired, attended tracker. */
@@ -134,10 +154,11 @@ export function resetAttentionForTests(): void {
   lastInputAt = Date.now();
   lastInputType = 'start';
   lastPointer = null;
+  forced = null;
   listeners.clear();
 }
 
 /** Tests only: set the answer without the DOM or a clock. */
-export function setAttendedForTests(value: boolean): void {
-  attended = value;
+export function setAttendedForTests(value: boolean | null): void {
+  forced = value;
 }
