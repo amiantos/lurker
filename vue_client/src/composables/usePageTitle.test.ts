@@ -9,7 +9,7 @@ import { mount } from '@vue/test-utils';
 import { createRouter, createMemoryHistory, RouterView } from 'vue-router';
 
 interface Buf {
-  id: number;
+  id?: number;
   networkId: number | null;
   kind: string;
   target: string;
@@ -18,6 +18,8 @@ interface Buf {
 const s = reactive({
   settingsLoaded: true,
   bufferNames: true as boolean,
+  isMobile: false,
+  activeKey: null as string | null,
   buffers: [] as Buf[],
   networks: [] as Array<{ id: number; name: string }>,
 });
@@ -25,13 +27,21 @@ const s = reactive({
 vi.mock('../stores/buffers.js', () => ({
   useBuffersStore: () => ({
     byId: (id: number) => s.buffers.find((b) => b.id === id) ?? null,
+    byKey: (key: string) => s.buffers.find((b) => `${b.networkId}::${b.target}` === key) ?? null,
   }),
 }));
 vi.mock('../stores/networks.js', () => ({
   useNetworksStore: () => ({
     networkById: (id: number) => s.networks.find((n) => n.id === id) ?? null,
+    get activeKey() {
+      return s.activeKey;
+    },
   }),
 }));
+vi.mock('./useViewport.js', async () => {
+  const { toRef } = await import('vue');
+  return { useViewport: () => ({ isMobile: toRef(s, 'isMobile') }) };
+});
 
 vi.mock('../stores/settings.js', () => ({
   useSettingsStore: () => ({
@@ -78,6 +88,8 @@ beforeEach(() => {
   document.title = 'stale';
   s.settingsLoaded = true;
   s.bufferNames = true;
+  s.isMobile = false;
+  s.activeKey = null;
   s.buffers = [{ id: 7, networkId: 1, kind: 'channel', target: '#lurker' }];
   s.networks = [{ id: 1, name: 'Libera' }];
 });
@@ -155,6 +167,33 @@ describe('usePageTitle', () => {
     s.settingsLoaded = true;
     await nextTick();
     expect(document.title).toBe('#lurker / Libera - Lurker');
+  });
+
+  // useBufferRoute holds the URL on the previous buffer until the server gives
+  // the new DM an id; both shells show the DM meanwhile.
+  it('titles a DM that has no id yet, not the buffer the route still names', async () => {
+    await mkApp('/buffer/7');
+    s.buffers.push({ networkId: 1, kind: 'dm', target: 'newfriend' });
+    s.activeKey = '1::newfriend';
+    await nextTick();
+    expect(document.title).toBe('newfriend / Libera - Lurker');
+
+    s.isMobile = true;
+    await nextTick();
+    expect(document.title).toBe('newfriend / Libera - Lurker');
+  });
+
+  it('titles the active buffer at / on desktop, where the shell shows it', async () => {
+    s.activeKey = '1::#lurker';
+    await mkApp('/');
+    expect(document.title).toBe('#lurker / Libera - Lurker');
+  });
+
+  it('stays Lurker at / on mobile, where that is the buffer list', async () => {
+    s.isMobile = true;
+    s.activeKey = '1::#lurker';
+    await mkApp('/');
+    expect(document.title).toBe('Lurker');
   });
 
   it('treats a hand-typed non-numeric id as no buffer', async () => {
