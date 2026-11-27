@@ -13,7 +13,7 @@
           @input="onQueryInput"
           class="filter"
           type="text"
-          placeholder="jump to channel or DM…"
+          placeholder="jump to channel, DM or network…"
           autocomplete="off"
           spellcheck="false"
           @keydown="onKeydown"
@@ -164,8 +164,21 @@ const rows = computed<Row[]>(() => {
   return [...sort(byName), ...sort(others)];
 });
 
-watch(rows, () => {
-  selected.value = 0;
+// A new query starts over at the top row. Anything else that rebuilds the list
+// (an unread count moving, a buffer opening or closing) is not the user asking
+// for a different selection, so the highlight stays on the row it was on.
+watch([query, rows], ([q, next], [prevQ, prev]) => {
+  if (q !== prevQ) {
+    selected.value = 0;
+    scrollSelectedIntoView();
+    return;
+  }
+  const key = prev[selected.value]?.key;
+  const at = key === undefined ? -1 : next.findIndex((r) => r.key === key);
+  const to = at !== -1 ? at : Math.max(0, Math.min(selected.value, next.length - 1));
+  if (to === selected.value) return;
+  selected.value = to;
+  scrollSelectedIntoView();
 });
 
 function pick(row: Row) {
@@ -231,7 +244,7 @@ onMounted(() => {
   // Row 0 is the right default: the default (no-query) view excludes the active
   // buffer, so the most-recent remaining entry — your previous buffer — sits at
   // the top, making Cmd+K→Enter a back toggle. selected starts at 0 and the
-  // rows watcher keeps it there as the query changes; just take focus here.
+  // query watcher returns it there on each new query; just take focus here.
   setTimeout(() => inputEl.value?.focus(), 0);
 });
 </script>
