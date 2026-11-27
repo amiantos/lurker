@@ -158,6 +158,56 @@ describe('QuickSwitcher selection', () => {
     expect(selectedRow(wrapper)).toBe('#senpai');
   });
 
+  it('leaves an untouched selection on the top row when the list rebuilds', async () => {
+    // No query: Cmd+K then Enter goes to whatever is first.
+    const { wrapper, input } = await open('');
+    expect(selectedRow(wrapper)).toBe('[server]');
+
+    (useBuffersStore().buffers['1::#soju'] as { unread: number }).unread = 3;
+    await wrapper.vm.$nextTick();
+
+    expect(selectedRow(wrapper)).toBe('#soju');
+    await input.trigger('keydown', { key: 'Enter' });
+    expect(activated).toEqual(['1::#soju']);
+  });
+
+  it('keeps the highlighted row through a trailing space or a change of case', async () => {
+    const { wrapper, input } = await open('lib');
+    await input.trigger('keydown', { key: 'ArrowDown' });
+    await input.trigger('keydown', { key: 'ArrowDown' });
+
+    await input.setValue('lib ');
+    expect(selectedRow(wrapper)).toBe('#senpai');
+    await input.setValue('LIB ');
+    expect(selectedRow(wrapper)).toBe('#senpai');
+  });
+
+  it('does not scroll the list when a rebuild moves the highlighted row', async () => {
+    const { wrapper, input } = await open('lib');
+    await input.trigger('keydown', { key: 'ArrowDown' });
+    await input.trigger('keydown', { key: 'ArrowDown' });
+    await wrapper.vm.$nextTick();
+
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView').mockImplementation(() => {});
+    (useBuffersStore().buffers['1::#soju'] as { unread: number }).unread = 3;
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(selectedRow(wrapper)).toBe('#senpai');
+    expect(scroll).not.toHaveBeenCalled();
+  });
+
+  it('ignores the first pointer event, then follows a real move', async () => {
+    const { wrapper } = await open('lib');
+    const rows = wrapper.findAll('li.row');
+
+    await rows[2].trigger('mousemove', { clientX: 10, clientY: 50 });
+    expect(selectedRow(wrapper)).toBe('#libreoffice');
+
+    await rows[2].trigger('mousemove', { clientX: 10, clientY: 52 });
+    expect(selectedRow(wrapper)).toBe('#senpai');
+  });
+
   it('returns to the top row, scrolled into view, when the query changes', async () => {
     const { wrapper, input } = await open('lib');
     await input.trigger('keydown', { key: 'ArrowDown' });
