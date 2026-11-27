@@ -172,11 +172,9 @@
               :title="`${serverHighlights(net.id)} highlight${serverHighlights(net.id) === 1 ? '' : 's'}`"
               >●</span
             >
-            <span
-              v-if="countFor(serverUnread(net.id), serverHighlights(net.id)) > 0"
-              class="badge"
-              >{{ unreadLabel(countFor(serverUnread(net.id), serverHighlights(net.id))) }}</span
-            >
+            <span v-if="netHeadCount(net.id) > 0" class="badge">{{
+              unreadLabel(netHeadCount(net.id))
+            }}</span>
             <div class="net-actions">
               <button
                 type="button"
@@ -211,7 +209,7 @@
              if the finger moves more than 5px during the delay, so scroll
              intent is recognised early. Desktop mouse drag stays instant. -->
           <draggable
-            v-if="(pinnedBufsByNet[net.id] || []).length"
+            v-if="isNetOpen(net.id) && (pinnedBufsByNet[net.id] || []).length"
             :list="pinnedBufsByNet[net.id]"
             item-key="target"
             tag="ul"
@@ -264,14 +262,20 @@
           </draggable>
 
           <div
-            v-if="(pinnedBufsByNet[net.id] || []).length && unpinnedBufs(net.id).length"
+            v-if="
+              isNetOpen(net.id) &&
+              (pinnedBufsByNet[net.id] || []).length &&
+              unpinnedBufs(net.id).length
+            "
             class="pin-divider"
             aria-hidden="true"
           ></div>
 
-          <ul v-if="unpinnedBufs(net.id).length" class="channels">
+          <!-- Open: the unpinned rows. Closed (accordion mode): only the
+               network's highlighted rows, pinned or not. -->
+          <ul v-if="plainRows(net.id).length" class="channels">
             <li
-              v-for="buf in unpinnedBufs(net.id)"
+              v-for="buf in plainRows(net.id)"
               :key="buf.target"
               :class="rowClasses(buf, net.id)"
               :title="dmTitle(buf)"
@@ -370,6 +374,7 @@ import {
 } from '../utils/peerPresence.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
+import { closedNetworkView, nextOpenNetwork } from '../utils/networkAccordion.js';
 import {
   ChevronsLeftIcon,
   EllipsisVerticalIcon,
@@ -555,6 +560,53 @@ function unpinnedBufs(networkId: number): Buffer[] {
       if (oa !== ob) return oa - ob;
       return sortKey(a.target).localeCompare(sortKey(b.target));
     });
+}
+
+// Accordion mode (#1432): only the network you are in lists its channels. See
+// utils/networkAccordion for the two rules; this is the wiring.
+const accordion = computed(() => !!settings.effective('look.buffer_list.accordion'));
+const openNetworkId = ref<number | null>(null);
+watch(
+  () => networks.activeKey,
+  (key) => {
+    const buf = key ? buffers.byKey(key) : null;
+    openNetworkId.value = nextOpenNetwork(
+      openNetworkId.value,
+      buf ? { networkId: buf.networkId ?? null, favorite: isFavoriteBuf(buf) } : null,
+    );
+  },
+  { immediate: true },
+);
+function isNetOpen(networkId: number): boolean {
+  return !accordion.value || openNetworkId.value === networkId;
+}
+// What each closed network shows, by network id. Absent = open.
+const closedViews = computed(() => {
+  const out = new Map<number, ReturnType<typeof closedNetworkView<Buffer>>>();
+  if (!accordion.value) return out;
+  for (const net of networks.networks) {
+    if (isNetOpen(net.id)) continue;
+    out.set(
+      net.id,
+      closedNetworkView([...(pinnedBufsByNet[net.id] || []), ...unpinnedBufs(net.id)], {
+        count: displayCount,
+        countsAsUnread: (b) => b.unread > 0 && !isChannelMuted(b),
+      }),
+    );
+  }
+  return out;
+});
+// The rows of the plain (undraggable) list under a network's header.
+function plainRows(networkId: number): Buffer[] {
+  return closedViews.value.get(networkId)?.rows ?? unpinnedBufs(networkId);
+}
+// The header's count: the server buffer's own, plus whatever a closed network
+// is not listing.
+function netHeadCount(networkId: number): number {
+  return (
+    countFor(serverUnread(networkId), serverHighlights(networkId)) +
+    (closedViews.value.get(networkId)?.hiddenCount ?? 0)
+  );
 }
 
 // Mirror pins.byNetwork into a local reactive map of concrete buffer objects.
@@ -807,7 +859,8 @@ function dmTitle(buf: Buffer): string | undefined {
 function netHeadClasses(networkId: number): Record<string, boolean> {
   return {
     active: isActive(networkId, serverTarget(networkId)),
-    unread: serverUnread(networkId) > 0,
+    // A closed network's header stands in for the rows it is not listing.
+    unread: serverUnread(networkId) > 0 || !!closedViews.value.get(networkId)?.hiddenUnread,
     highlighted: serverHighlights(networkId) > 0,
   };
 }
