@@ -182,14 +182,14 @@
                 v-if="!accordion"
                 type="button"
                 class="net-action"
-                :title="net.collapsed ? 'Expand network' : 'Collapse network'"
-                :aria-label="net.collapsed ? 'Expand network' : 'Collapse network'"
-                :aria-expanded="!net.collapsed"
-                @click.stop="networks.setCollapsed(net.id, !net.collapsed)"
+                :title="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
+                :aria-label="isNetOpen(net.id) ? 'Collapse network' : 'Expand network'"
+                :aria-expanded="isNetOpen(net.id)"
+                @click.stop="toggleFold(net)"
                 @contextmenu.stop.prevent
               >
-                <ChevronRightIcon v-if="net.collapsed" />
-                <ChevronDownIcon v-else />
+                <ChevronDownIcon v-if="isNetOpen(net.id)" />
+                <ChevronRightIcon v-else />
               </button>
               <button
                 type="button"
@@ -287,7 +287,7 @@
           ></div>
 
           <!-- Open: the unpinned rows. Folded: only the network's highlighted
-               rows and the one you are in, pinned or not. -->
+               rows and, if you folded it while in it, the one you are in. -->
           <ul v-if="plainRows(net.id).length" class="channels">
             <li
               v-for="buf in plainRows(net.id)"
@@ -389,7 +389,12 @@ import {
 } from '../utils/peerPresence.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
-import { closedNetworkView, isNetworkOpen, nextOpenNetwork } from '../utils/networkAccordion.js';
+import {
+  closedNetworkView,
+  isNetworkOpen,
+  stepVisit,
+  type VisitState,
+} from '../utils/networkAccordion.js';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -580,17 +585,16 @@ function unpinnedBufs(networkId: number): Buffer[] {
 }
 
 // Folding networks (#1432): by hand per network, or all of them in accordion
-// mode. A hand-folded one still lists the buffer you are in; accordion mode
-// shows the network you are in fully open. See
-// utils/networkAccordion for the rules; this is the wiring.
+// mode. Going into a folded network opens it for the visit; leaving folds it
+// again. See utils/networkAccordion for the rules; this is the wiring.
 const accordion = computed(() => !!settings.effective('look.buffer_list.accordion'));
-const openNetworkId = ref<number | null>(null);
+const visit = ref<VisitState>({ open: null, last: null });
 watch(
   () => networks.activeKey,
   (key) => {
     const buf = key ? buffers.byKey(key) : null;
-    openNetworkId.value = nextOpenNetwork(
-      openNetworkId.value,
+    visit.value = stepVisit(
+      visit.value,
       buf ? { networkId: buf.networkId ?? null, favorite: isFavoriteBuf(buf) } : null,
     );
   },
@@ -601,8 +605,19 @@ function isNetOpen(networkId: number): boolean {
     id: networkId,
     collapsed: !!networks.networkById(networkId)?.collapsed,
     accordion: accordion.value,
-    openNetworkId: openNetworkId.value,
+    openNetworkId: visit.value.open,
   });
+}
+// The chevron. It shows, and flips, what is on screen: a folded network open
+// for a visit reads as open, and folding it ends the visit, which leaves the
+// header and the one buffer you are in.
+function toggleFold(net: Network): void {
+  if (!isNetOpen(net.id)) {
+    networks.setCollapsed(net.id, false);
+    return;
+  }
+  if (visit.value.open === net.id) visit.value = { ...visit.value, open: null };
+  if (!net.collapsed) networks.setCollapsed(net.id, true);
 }
 // What each closed network shows, by network id. Absent = open.
 const closedViews = computed(() => {
@@ -835,12 +850,11 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
   };
 }
 
-// A click on a network's header opens its server buffer, and unfolds the
-// network if it was folded by hand: clicking a folded network is asking to see
-// it. Only the click does this. Getting there any other way leaves the fold
-// alone, and the chevron folds it again.
+// A click on a network's header opens its server buffer, and always opens the
+// network for the visit: clicking a folded network is asking to see it, even
+// when you were already inside it with the visit ended by the chevron.
 function selectNetHead(net: Network): void {
-  if (!accordion.value && net.collapsed) networks.setCollapsed(net.id, false);
+  visit.value = { open: net.id, last: net.id };
   select(net.id, serverTarget(net.id));
 }
 

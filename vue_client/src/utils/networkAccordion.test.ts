@@ -2,25 +2,41 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { closedNetworkView, isNetworkOpen, nextOpenNetwork } from './networkAccordion.js';
+import { closedNetworkView, isNetworkOpen, stepVisit } from './networkAccordion.js';
 
-describe('nextOpenNetwork', () => {
-  it('opens the network of the buffer you moved to', () => {
-    expect(nextOpenNetwork(null, { networkId: 2, favorite: false })).toBe(2);
-    expect(nextOpenNetwork(1, { networkId: 2, favorite: false })).toBe(2);
+describe('stepVisit', () => {
+  const none = { open: null, last: null };
+  const at = (networkId: number | null, favorite = false) => ({ networkId, favorite });
+
+  it('opens the network you arrive in', () => {
+    expect(stepVisit(none, at(2))).toEqual({ open: 2, last: 2 });
+    expect(stepVisit({ open: 1, last: 1 }, at(2))).toEqual({ open: 2, last: 2 });
   });
 
-  it('keeps the last network open on a favorite, wherever it lives', () => {
-    expect(nextOpenNetwork(1, { networkId: 2, favorite: true })).toBe(1);
+  it('changes nothing on a favorite, wherever it lives', () => {
+    const state = { open: 1, last: 1 };
+    expect(stepVisit(state, at(2, true))).toBe(state);
   });
 
-  it('keeps the last network open on the system buffer or nothing', () => {
-    expect(nextOpenNetwork(1, { networkId: null, favorite: false })).toBe(1);
-    expect(nextOpenNetwork(1, null)).toBe(1);
+  it('changes nothing on the system buffer or with no buffer', () => {
+    const state = { open: 1, last: 1 };
+    expect(stepVisit(state, at(null))).toBe(state);
+    expect(stepVisit(state, null)).toBe(state);
   });
 
   it('opens nothing when you start on a favorite', () => {
-    expect(nextOpenNetwork(null, { networkId: 2, favorite: true })).toBe(null);
+    expect(stepVisit(none, at(2, true))).toEqual(none);
+  });
+
+  // The chevron ended the visit: moving on inside the network is not arriving.
+  it('leaves an ended visit ended while you stay in the network', () => {
+    const ended = { open: null, last: 1 };
+    expect(stepVisit(ended, at(1))).toBe(ended);
+  });
+
+  it('starts a new visit when you come back from another network', () => {
+    const away = stepVisit({ open: null, last: 1 }, at(2));
+    expect(stepVisit(away, at(1))).toEqual({ open: 1, last: 1 });
   });
 });
 
@@ -32,17 +48,16 @@ describe('isNetworkOpen', () => {
     expect(net()).toBe(true);
   });
 
-  it('is closed once folded by hand, even while you are in it', () => {
+  it('is closed once folded by hand', () => {
     expect(net({ collapsed: true })).toBe(false);
     expect(net({ collapsed: true, openNetworkId: 2 })).toBe(false);
-    expect(net({ collapsed: true, openNetworkId: 1 })).toBe(false);
   });
 
-  it('lets accordion mode open a hand-folded network you are in', () => {
-    expect(net({ collapsed: true, accordion: true, openNetworkId: 1 })).toBe(true);
+  it('shows a folded network open for a visit', () => {
+    expect(net({ collapsed: true, openNetworkId: 1 })).toBe(true);
   });
 
-  it('closes every network but yours in accordion mode', () => {
+  it('closes every network but the visited one in accordion mode', () => {
     expect(net({ accordion: true })).toBe(false);
     expect(net({ accordion: true, openNetworkId: 2 })).toBe(false);
     expect(net({ accordion: true, openNetworkId: 1 })).toBe(true);

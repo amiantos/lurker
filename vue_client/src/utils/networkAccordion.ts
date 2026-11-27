@@ -6,12 +6,12 @@
 // so it follows the user between devices), or all at once by accordion mode
 // (`look.buffer_list.accordion`), which treats every network as folded.
 //
-// Neither hides where you are. A network folded by hand still lists the
-// buffer you are in, and only that one, so folding the network you are sitting
-// in visibly does something. Accordion mode goes further and shows the network
-// you are in fully open. Both follow the active buffer and nothing about that
-// is stored, so every way of getting somewhere (a click, Alt+arrow, the quick
-// switcher, a notification) is covered and keyboard order is untouched.
+// Either way, going into a folded network opens it for the visit and leaving
+// folds it again. The visit is not stored: it follows the active buffer, so
+// every way of getting somewhere (a click, Alt+arrow, the quick switcher, a
+// notification) is covered and keyboard order is untouched. Folding a network
+// while in it ends the visit early: it drops to its header and the one buffer
+// you have open.
 //
 // Pure, so the rules stay unit-testable; BufferList supplies the stores.
 
@@ -22,12 +22,22 @@ export interface ActivePlace {
   favorite: boolean;
 }
 
-// Accordion mode: the network to show open after the active buffer changed. A
-// favorite or the system buffer is not "in" any network group, so the last one stays open:
-// stepping through favorites on three networks must not flap the list below.
-export function nextOpenNetwork(prev: number | null, active: ActivePlace | null): number | null {
-  if (!active || active.networkId == null || active.favorite) return prev;
-  return active.networkId;
+export interface VisitState {
+  // The network open for a visit, or null.
+  open: number | null;
+  // The network the active buffer was last in. A visit starts on ARRIVAL, a
+  // change of this, so a visit ended by hand stays ended while you move about
+  // inside the same network.
+  last: number | null;
+}
+
+// The visit after the active buffer changed. A favorite or the system buffer
+// is not "in" any network group, so nothing moves: stepping through favorites
+// on three networks must not flap the list below.
+export function stepVisit(state: VisitState, active: ActivePlace | null): VisitState {
+  if (!active || active.networkId == null || active.favorite) return state;
+  if (active.networkId === state.last) return state;
+  return { open: active.networkId, last: active.networkId };
 }
 
 // Whether a network lists all its channels right now.
@@ -37,13 +47,11 @@ export function isNetworkOpen(net: {
   collapsed: boolean;
   // Accordion mode is on.
   accordion: boolean;
-  // nextOpenNetwork's answer.
+  // VisitState.open.
   openNetworkId: number | null;
 }): boolean {
-  // Accordion mode decides alone: the hand flag has no control there to undo
-  // it with, so it must not hold the network you are in shut.
-  if (net.accordion) return net.openNetworkId === net.id;
-  return !net.collapsed;
+  if (net.openNetworkId === net.id) return true;
+  return !net.collapsed && !net.accordion;
 }
 
 export interface ClosedNetworkView<T> {
