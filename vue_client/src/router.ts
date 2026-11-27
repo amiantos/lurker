@@ -28,8 +28,9 @@ const routes: RouteRecordRaw[] = [
   // survives part/rejoin (closing a buffer flips its state server-side, it
   // doesn't delete the row), so a bookmark keeps resolving. Addressing by name
   // would instead mean percent-encoding every `#&+!` sigil into the path, and
-  // would leak channel and DM names into browser history, PWA recents and
-  // Referer. `/buffer/:id/members` is the mobile member list (#200) — its own
+  // would put channel and DM names in the URL, and so in Referer. (The page
+  // TITLE does name the buffer — usePageTitle, #1462 — which reaches the tab
+  // strip and browser history but can be turned off.) `/buffer/:id/members` is the mobile member list (#200) — its own
   // entry, so the platform back gesture walks members → buffer → list one step
   // at a time. `/buffer/:id/thread/:root` and `/buffer/:id/threads` (#1225)
   // are a reply thread and the buffer's thread list, the same way.
