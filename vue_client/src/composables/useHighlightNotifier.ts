@@ -105,9 +105,11 @@ function throttled(event: NotifyEvent, kind: ToastKind, inView: boolean): boolea
 //     toast/sound only "catch up" when the tab is refocused). The server-side
 //     push owns the hidden case: wsHub.maybePush fires precisely when the user
 //     has no visible client. Letting the in-app path fire here too would just
-//     double up with push, badly. Visibility is the Page Visibility API — the
-//     same signal usePresence reports to the server — so the in-app and push
-//     paths agree on "present" and never both fire for one event.
+//     double up with push, badly. Visibility is the Page Visibility API.
+//     usePresence reports something narrower (visible AND recently used,
+//     useAttention), so a visible tab nobody has touched in a while toasts
+//     here while the server pushes too. Deliberate: someone with no push
+//     device, watching without touching anything, must still get the toast.
 //   - Viewed buffer: the event's buffer is the one whose message list is on
 //     screen right now, so the message is already materializing in plain view
 //     and a toast would be redundant (issue #50) — Discord and Slack mute the

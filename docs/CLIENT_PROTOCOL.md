@@ -1574,6 +1574,11 @@ leaves — **and re-assert after every reconnect**. Presence is what gates push
 bouncer also holds auto-away off, unless it sent `AWAY *`, but never push. An
 open socket is deliberately _not_ presence: a backgrounded phone keeps its socket
 and must still get push.
+"In front of the user" means attended, not merely drawn: the web client also
+sends `visible:false` after `away.idle.delay_seconds` without input, and
+`true` again on the next input. A client on a device that sleeps on its own can
+skip this; one that can sit open and unattended for hours should do the same,
+and should only mark live lines read while it is asserting `visible:true`.
 On mobile, flush `presence:false` before suspension if the platform allows; the
 server's heartbeat reaper (~60 s) is the fallback.
 

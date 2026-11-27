@@ -70,6 +70,10 @@ server is involved. The usual causes:
   the bouncer, and automatic return. A client's background connection that sends
   `AWAY *` doesn't count. A network you set away yourself keeps that away: auto-away
   skips it, and returning doesn't clear it.
+- An open client stops counting as in front of you after ten minutes without
+  input (`away.idle.delay_seconds`; 0 turns this off), or as soon as its tab is
+  hidden. From then on push goes out, auto-away starts counting, and new lines in
+  the buffer it has open stay unread until you come back to it.
 
 ## See also
 
