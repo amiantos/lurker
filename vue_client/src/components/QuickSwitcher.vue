@@ -13,7 +13,7 @@
           @input="onQueryInput"
           class="filter"
           type="text"
-          placeholder="jump to channel or DM…"
+          placeholder="jump to channel, DM or network…"
           autocomplete="off"
           spellcheck="false"
           @keydown="onKeydown"
@@ -135,7 +135,7 @@ const allRows = computed<Row[]>(() => {
 });
 
 const rows = computed<Row[]>(() => {
-  const q = query.value.trim().toLowerCase();
+  const q = normalizedQuery.value;
   // No query: this is the alt-tab view, so drop the buffer you're already in —
   // switching to where you already are is a no-op, and dropping it puts your
   // *previous* buffer at row 0 (and pre-selected), making Cmd+K→Enter a clean
@@ -164,8 +164,30 @@ const rows = computed<Row[]>(() => {
   return [...sort(byName), ...sort(others)];
 });
 
-watch(rows, () => {
-  selected.value = 0;
+// A new query starts over at the top row. Anything else that rebuilds the list
+// (an unread count moving, a buffer opening or closing) is not the user asking
+// for a different selection: a highlight they moved stays on the row it was on,
+// and one they never touched stays the top row, so Cmd+K→Enter keeps meaning
+// "first result". Compared as the list sees the query, so a trailing space or a
+// change of case is not a new query.
+const userMoved = ref(false);
+const normalizedQuery = computed(() => query.value.trim().toLowerCase());
+watch([normalizedQuery, rows], ([q, next], [prevQ, prev]) => {
+  if (q !== prevQ) {
+    userMoved.value = false;
+    selected.value = 0;
+    scrollSelectedIntoView();
+    return;
+  }
+  if (!userMoved.value) {
+    selected.value = 0;
+    return;
+  }
+  // No scroll here: the user may have wheeled away from the highlight to
+  // browse, and a message arriving elsewhere must not yank the list back.
+  const key = prev[selected.value]?.key;
+  const at = key === undefined ? -1 : next.findIndex((r) => r.key === key);
+  selected.value = at !== -1 ? at : Math.max(0, Math.min(selected.value, next.length - 1));
 });
 
 function pick(row: Row) {
@@ -184,13 +206,17 @@ function onPointerMove(e: MouseEvent, i: number) {
   // Coordinate gate first (and update lastPointer regardless of the row) so a
   // later synthetic event at the cursor's true position is still recognised as
   // "no movement" — even when the pointer just slid within the current row.
-  if (lastPointer.value && lastPointer.value.x === e.clientX && lastPointer.value.y === e.clientY)
-    return;
+  const last = lastPointer.value;
+  if (last && last.x === e.clientX && last.y === e.clientY) return;
   lastPointer.value = { x: e.clientX, y: e.clientY };
+  // The first event has nothing to compare against, so it can't be told from a
+  // synthetic one under a parked cursor: it only records where the pointer is.
+  if (!last) return;
   // Only a change of hovered row is worth acting on; skip moves within the
   // already-selected row.
   if (selected.value === i) return;
   selected.value = i;
+  userMoved.value = true;
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -202,11 +228,13 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault();
     if (rows.value.length === 0) return;
     selected.value = (selected.value + 1) % rows.value.length;
+    userMoved.value = true;
     scrollSelectedIntoView();
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
     if (rows.value.length === 0) return;
     selected.value = (selected.value - 1 + rows.value.length) % rows.value.length;
+    userMoved.value = true;
     scrollSelectedIntoView();
   } else if (e.key === 'Enter') {
     e.preventDefault();
@@ -231,7 +259,7 @@ onMounted(() => {
   // Row 0 is the right default: the default (no-query) view excludes the active
   // buffer, so the most-recent remaining entry — your previous buffer — sits at
   // the top, making Cmd+K→Enter a back toggle. selected starts at 0 and the
-  // rows watcher keeps it there as the query changes; just take focus here.
+  // query watcher returns it there on each new query; just take focus here.
   setTimeout(() => inputEl.value?.focus(), 0);
 });
 </script>
