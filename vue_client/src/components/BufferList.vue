@@ -159,7 +159,7 @@
             class="net-head"
             :class="netHeadClasses(net.id)"
             :title="`Open ${net.name} server buffer`"
-            @click="select(net.id, serverTarget(net.id))"
+            @click="selectNetHead(net)"
             @contextmenu.prevent="
               networkActions.onNetworkContextMenu(net, $event.clientX, $event.clientY)
             "
@@ -833,6 +833,15 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
     'peer-away': isPeerAway(buf),
     'peer-offline': isPeerOffline(buf),
   };
+}
+
+// A click on a network's header opens its server buffer, and unfolds the
+// network if it was folded by hand: clicking a folded network is asking to see
+// it. Only the click does this. Getting there any other way leaves the fold
+// alone, and the chevron folds it again.
+function selectNetHead(net: Network): void {
+  if (!accordion.value && net.collapsed) networks.setCollapsed(net.id, false);
+  select(net.id, serverTarget(net.id));
 }
 
 function select(networkId: number, target: string): void {
