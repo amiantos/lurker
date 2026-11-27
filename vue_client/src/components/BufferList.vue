@@ -165,7 +165,10 @@
             "
           >
             <span class="indicator" :class="stateClass(net.id)"></span>
-            <span class="name">{{ net.name }}</span>
+            <span class="name"
+              >{{ net.name
+              }}<ChevronRightIcon v-if="showFoldCue(net)" class="fold-cue" aria-hidden="true"
+            /></span>
             <span
               v-if="serverHighlights(net.id) > 0 && showHighlightBadge"
               class="badge highlight"
@@ -176,6 +179,21 @@
               unreadLabel(netHeadCount(net.id))
             }}</span>
             <div class="net-actions">
+              <!-- Not in accordion mode: every network is folded there, and
+                   which one is open follows where you are. -->
+              <button
+                v-if="!accordion"
+                type="button"
+                class="net-action"
+                :title="net.collapsed ? 'Expand network' : 'Collapse network'"
+                :aria-label="net.collapsed ? 'Expand network' : 'Collapse network'"
+                :aria-expanded="!net.collapsed"
+                @click.stop="networks.setCollapsed(net.id, !net.collapsed)"
+                @contextmenu.stop.prevent
+              >
+                <ChevronRightIcon v-if="net.collapsed" />
+                <ChevronDownIcon v-else />
+              </button>
               <button
                 type="button"
                 class="net-action net-add"
@@ -374,8 +392,10 @@ import {
 } from '../utils/peerPresence.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
-import { closedNetworkView, nextOpenNetwork } from '../utils/networkAccordion.js';
+import { closedNetworkView, isNetworkOpen, nextOpenNetwork } from '../utils/networkAccordion.js';
 import {
+  ChevronDownIcon,
+  ChevronRightIcon,
   ChevronsLeftIcon,
   EllipsisVerticalIcon,
   PencilIcon,
@@ -562,8 +582,9 @@ function unpinnedBufs(networkId: number): Buffer[] {
     });
 }
 
-// Accordion mode (#1432): only the network you are in lists its channels. See
-// utils/networkAccordion for the two rules; this is the wiring.
+// Folding networks (#1432): by hand per network, or all of them in accordion
+// mode, and a folded one shows open while you are in it. See
+// utils/networkAccordion for the rules; this is the wiring.
 const accordion = computed(() => !!settings.effective('look.buffer_list.accordion'));
 const openNetworkId = ref<number | null>(null);
 watch(
@@ -578,12 +599,22 @@ watch(
   { immediate: true },
 );
 function isNetOpen(networkId: number): boolean {
-  return !accordion.value || openNetworkId.value === networkId;
+  return isNetworkOpen({
+    id: networkId,
+    collapsed: !!networks.networkById(networkId)?.collapsed,
+    accordion: accordion.value,
+    openNetworkId: openNetworkId.value,
+  });
+}
+// The mark beside a hand-folded network's name. It stays while the network is
+// showing open for a visit, so it is clear the rows will go when you leave.
+// Accordion mode has no per-network state to mark.
+function showFoldCue(net: Network): boolean {
+  return !accordion.value && !!net.collapsed;
 }
 // What each closed network shows, by network id. Absent = open.
 const closedViews = computed(() => {
   const out = new Map<number, ReturnType<typeof closedNetworkView<Buffer>>>();
-  if (!accordion.value) return out;
   for (const net of networks.networks) {
     if (isNetOpen(net.id)) continue;
     out.set(
@@ -1120,6 +1151,11 @@ onBeforeUnmount(() => {
 }
 .net {
   padding: var(--space-2) 0 var(--space-3);
+}
+.fold-cue {
+  margin-inline-start: var(--space-2);
+  color: var(--fg-muted);
+  vertical-align: middle;
 }
 .net + .net {
   border-top: 1px solid var(--border);

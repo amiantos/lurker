@@ -8,6 +8,7 @@ import {
 } from '../../../shared/casemapping.js';
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
+import { socketSend } from '../composables/useSocket.js';
 import { useAuthStore } from './auth.js';
 import { isVirtualKey } from '../lib/virtualBuffers.js';
 import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
@@ -370,6 +371,17 @@ export const useNetworksStore = defineStore('networks', {
     // Rewrite sidebar order. Server validates the id set; on 409 it echoes the
     // authoritative list, which we apply so the UI snaps back to truth instead
     // of staying out of sync after a concurrent add/delete from another tab.
+    // Fold or unfold a network in the sidebar (#1432). Set here first so the
+    // click answers at once; the server's echo (applyCollapsed) lands on every
+    // tab, this one included.
+    setCollapsed(id: number, collapsed: boolean) {
+      this.applyCollapsed(id, collapsed);
+      socketSend({ type: 'set-network-collapsed', networkId: id, collapsed });
+    },
+    applyCollapsed(id: number, collapsed: boolean) {
+      const net = this.networks.find((n) => n.id === id);
+      if (net) net.collapsed = collapsed;
+    },
     async reorder(ids: number[]) {
       try {
         const { networks } = await api('/api/networks/reorder', {

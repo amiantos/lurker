@@ -120,7 +120,7 @@ import {
   setPresenceSource,
 } from './presence.js';
 import { isValidTimeZone, wallClockParts } from '../utils/timeZone.js';
-import { ownsNetwork, listNetworksForUser } from '../db/networks.js';
+import { ownsNetwork, listNetworksForUser, setNetworkCollapsed } from '../db/networks.js';
 import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject, validate } from './settingsRegistry.js';
@@ -4283,6 +4283,16 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           bufferId: addr?.bufferId ?? resolveBuffer(userId, networkId, target)?.id ?? null,
           collapsed,
         });
+        break;
+      }
+      case 'set-network-collapsed': {
+        // Sidebar view state (#1432), synced so a folded network is folded on
+        // every device. The UPDATE is its own ownership check.
+        const networkId = Number(msg.networkId);
+        if (!Number.isInteger(networkId)) break;
+        const collapsed = !!msg.collapsed;
+        if (!setNetworkCollapsed(networkId, userId, collapsed)) break;
+        fanOut(userId, { kind: 'network-collapsed-changed', networkId, collapsed });
         break;
       }
       case 'set-channel-notify-always': {

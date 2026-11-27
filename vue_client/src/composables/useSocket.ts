@@ -1267,6 +1267,10 @@ function handleMessage(raw: string): void {
     useFavoritesStore().apply((payload.favorites as FavoriteEntry[]) || []);
     return;
   }
+  if (payload.kind === 'network-collapsed-changed') {
+    useNetworksStore().applyCollapsed(Number(payload.networkId), !!payload.collapsed);
+    return;
+  }
   if (payload.kind === 'nicklist-collapsed-changed') {
     const nicklistCollapse = useNicklistCollapseStore();
     nicklistCollapse.applyChange(payload.networkId, payload.target, !!payload.collapsed);

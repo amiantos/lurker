@@ -85,6 +85,10 @@ export interface Network {
    *  flood clock (#1193); 1 unless the user turned it off for a network whose
    *  server exempts them. Applies live: the connection reads it per line. */
   flood_protection: number;
+  /** Folded down to its header in the sidebar (#1432). View state only: 1 or 0.
+   *  Optional because nothing on the IRC side reads it, so a hand-built row
+   *  (the connection tests) need not carry it. */
+  collapsed?: number;
   created_at: string;
 }
 
@@ -291,6 +295,15 @@ export function setNetworkClientCert(
 }
 
 /** Store the user modes replayed after registration (#1181), or clear them. */
+/** Fold or unfold a network in the sidebar (#1432). False when it isn't theirs. */
+export function setNetworkCollapsed(id: number, userId: number, collapsed: boolean): boolean {
+  return (
+    db
+      .prepare('UPDATE networks SET collapsed = ? WHERE id = ? AND user_id = ?')
+      .run(collapsed ? 1 : 0, id, userId).changes > 0
+  );
+}
+
 export function setNetworkUserModes(id: number, userId: number, modes: string | null): void {
   db.prepare('UPDATE networks SET user_modes = ? WHERE id = ? AND user_id = ?').run(
     modes,

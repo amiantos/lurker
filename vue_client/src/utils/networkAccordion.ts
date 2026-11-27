@@ -1,14 +1,17 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Accordion mode for the sidebar (#1432, `look.buffer_list.accordion`): only
-// the network you are in lists its channels; every other network is its header
-// row. Nothing is stored and nothing is toggled by hand. Which network is open
-// follows the active buffer, so every way of getting somewhere (a click,
-// Alt+arrow, the quick switcher, a notification) opens the network it lands in
-// and closes the one it left, and keyboard order is untouched.
+// Folding networks in the sidebar (#1432). A network can be folded down to its
+// header row two ways: by hand, per network (`collapsed`, stored on the server
+// so it follows the user between devices), or all at once by accordion mode
+// (`look.buffer_list.accordion`), which treats every network as folded.
 //
-// Pure, so the two rules stay unit-testable; BufferList supplies the stores.
+// Either way a folded network shows open while you are in it. That part is
+// not stored: it follows the active buffer, so every way of getting somewhere
+// (a click, Alt+arrow, the quick switcher, a notification) opens the network
+// it lands in and closes the one it left, and keyboard order is untouched.
+//
+// Pure, so the rules stay unit-testable; BufferList supplies the stores.
 
 export interface ActivePlace {
   // null for the system buffer, which belongs to no network.
@@ -23,6 +26,20 @@ export interface ActivePlace {
 export function nextOpenNetwork(prev: number | null, active: ActivePlace | null): number | null {
   if (!active || active.networkId == null || active.favorite) return prev;
   return active.networkId;
+}
+
+// Whether a network lists its channels right now.
+export function isNetworkOpen(net: {
+  id: number;
+  // Folded by hand.
+  collapsed: boolean;
+  // Accordion mode is on.
+  accordion: boolean;
+  // nextOpenNetwork's answer.
+  openNetworkId: number | null;
+}): boolean {
+  if (net.openNetworkId === net.id) return true;
+  return !net.collapsed && !net.accordion;
 }
 
 export interface ClosedNetworkView<T> {

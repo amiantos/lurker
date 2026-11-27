@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { closedNetworkView, nextOpenNetwork } from './networkAccordion.js';
+import { closedNetworkView, isNetworkOpen, nextOpenNetwork } from './networkAccordion.js';
 
 describe('nextOpenNetwork', () => {
   it('opens the network of the buffer you moved to', () => {
@@ -21,6 +21,30 @@ describe('nextOpenNetwork', () => {
 
   it('opens nothing when you start on a favorite', () => {
     expect(nextOpenNetwork(null, { networkId: 2, favorite: true })).toBe(null);
+  });
+});
+
+describe('isNetworkOpen', () => {
+  const net = (over: Partial<Parameters<typeof isNetworkOpen>[0]> = {}) =>
+    isNetworkOpen({ id: 1, collapsed: false, accordion: false, openNetworkId: null, ...over });
+
+  it('is open by default', () => {
+    expect(net()).toBe(true);
+  });
+
+  it('is closed once folded by hand, wherever you are', () => {
+    expect(net({ collapsed: true })).toBe(false);
+    expect(net({ collapsed: true, openNetworkId: 2 })).toBe(false);
+  });
+
+  it('shows a folded network open while you are in it', () => {
+    expect(net({ collapsed: true, openNetworkId: 1 })).toBe(true);
+  });
+
+  it('closes every network but yours in accordion mode', () => {
+    expect(net({ accordion: true })).toBe(false);
+    expect(net({ accordion: true, openNetworkId: 2 })).toBe(false);
+    expect(net({ accordion: true, openNetworkId: 1 })).toBe(true);
   });
 });
 
