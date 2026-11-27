@@ -165,10 +165,7 @@
             "
           >
             <span class="indicator" :class="stateClass(net.id)"></span>
-            <span class="name"
-              >{{ net.name
-              }}<ChevronRightIcon v-if="showFoldCue(net)" class="fold-cue" aria-hidden="true"
-            /></span>
+            <span class="name">{{ net.name }}</span>
             <span
               v-if="serverHighlights(net.id) > 0 && showHighlightBadge"
               class="badge highlight"
@@ -605,12 +602,6 @@ function isNetOpen(networkId: number): boolean {
     accordion: accordion.value,
     openNetworkId: openNetworkId.value,
   });
-}
-// The mark beside a hand-folded network's name. It stays while the network is
-// showing open for a visit, so it is clear the rows will go when you leave.
-// Accordion mode has no per-network state to mark.
-function showFoldCue(net: Network): boolean {
-  return !accordion.value && !!net.collapsed;
 }
 // What each closed network shows, by network id. Absent = open.
 const closedViews = computed(() => {
@@ -1151,11 +1142,6 @@ onBeforeUnmount(() => {
 }
 .net {
   padding: var(--space-2) 0 var(--space-3);
-}
-.fold-cue {
-  margin-inline-start: var(--space-2);
-  color: var(--fg-muted);
-  vertical-align: middle;
 }
 .net + .net {
   border-top: 1px solid var(--border);
