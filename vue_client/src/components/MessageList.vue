@@ -493,6 +493,7 @@ import {
   focusComposer,
 } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
+import { isAttended, onAttentionChange } from '../composables/useAttention.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
 import { folderFor, sameName } from '../utils/foldName.js';
 import ReactionRow from './ReactionRow.vue';
@@ -706,6 +707,9 @@ function clearUnreadExpiry(): void {
 }
 
 function evaluateUnread(entry: IntersectionObserverEntry): void {
+  // Nobody is at this client: a divider that mounts in view has not been seen
+  // by anyone. checkUnreadOnReturn settles it when they come back.
+  if (!isAttended()) return;
   if (entry.isIntersecting) {
     unreadSeen = true;
     clearUnreadExpiry();
@@ -742,6 +746,27 @@ function seedUnreadSeen(): void {
     clearUnreadExpiry();
     setUnreadAnchor(null);
   }
+}
+
+// Someone is back at this client (useAttention). Lines that landed while they
+// were gone drew a divider nobody saw, and may have pushed it off screen, so
+// the visit's seen/expired state starts over and the button gets its run.
+function checkUnreadOnReturn(): void {
+  unreadSeen = false;
+  unreadExpired = false;
+  clearUnreadExpiry();
+  const el = scroller.value;
+  const divider = unreadDividerEl;
+  if (!el || !divider) return;
+  const er = el.getBoundingClientRect();
+  const dr = divider.getBoundingClientRect();
+  if (dr.bottom > er.top && dr.top < er.bottom) {
+    unreadSeen = true;
+    setUnreadAnchor(null);
+    return;
+  }
+  setUnreadAnchor(dr.top < er.top ? 'up' : 'down');
+  startUnreadExpiry();
 }
 
 // Vue function ref on the unread divider: called with the element when it
@@ -2753,10 +2778,16 @@ onMounted(() => {
     now.value = Date.now();
   }, 60_000);
   document.addEventListener('copy', onDocumentCopy);
+  stopAttention = onAttentionChange((attended) => {
+    if (attended) void nextTick(checkUnreadOnReturn);
+  });
 });
+
+let stopAttention: (() => void) | null = null;
 
 onBeforeUnmount(() => {
   setViewedBuffer(null);
+  stopAttention?.();
   document.removeEventListener('copy', onDocumentCopy);
   if (scrollerObserver) {
     scrollerObserver.disconnect();

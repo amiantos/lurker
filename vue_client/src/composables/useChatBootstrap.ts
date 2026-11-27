@@ -1,13 +1,14 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { onBeforeUnmount, onMounted } from 'vue';
+import { onBeforeUnmount, onMounted, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useOnboarding } from './useOnboarding.js';
 import { startPresenceReporter, reportNow } from './usePresence.js';
+import { attentionSettingChanged, onAttentionChange } from './useAttention.js';
 import { registerSW, onSWPushMessage } from './usePush.js';
 import { onJumpIntent } from './useJumpIntent.js';
 import { connected } from './useSocket.js';
@@ -17,6 +18,10 @@ import { whenReady } from './deferredReady.js';
 import type { Router } from 'vue-router';
 import { useRouter } from 'vue-router';
 import type { JumpTarget } from './useJumpToMessage.js';
+
+// Module singleton, like the presence reporter: wired once across the
+// Desktop<->Mobile shell swap.
+let attentionWired = false;
 
 // The bus/notification payload is a jump target plus a `kind` discriminator
 // shared with the service-worker message channel; it IS what jump() consumes.
@@ -229,6 +234,16 @@ export function useChatBootstrap({ onJump }: ChatBootstrapOptions = {}): void {
     void settingsReady.then(() => onboarding.evaluate());
     startPresenceReporter();
     reportNow();
+    // Leaving this client ends the visit to the active buffer; coming back
+    // catches its read state up.
+    if (!attentionWired) {
+      attentionWired = true;
+      onAttentionChange((attended) => {
+        if (attended) buffers.resumeReading();
+        else buffers.pauseReading();
+      });
+      watch(() => settings.effective('client.idle.delay_seconds'), attentionSettingChanged);
+    }
     // Keep the active buffer's message list hydrated across reconnects and
     // send failures (idempotent module singleton, like the presence reporter —
     // survives the Desktop<->Mobile shell swap without double-registering).

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { nextTick, watch } from 'vue';
 import { setActivePinia, createPinia } from 'pinia';
 
@@ -45,6 +45,8 @@ import {
 } from './buffers.js';
 import { useSettingsStore } from './settings.js';
 import { socketSend } from '../composables/useSocket.js';
+import { setAttendedForTests } from '../composables/useAttention.js';
+import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
 
 // The store always seeds the app-scoped system buffer (#355). These tests assert
@@ -313,6 +315,141 @@ describe('a status line at the tail', () => {
     expect(store.pushLive(chanLine(11) as never)).toBe('replay');
     expect(store.pushLive(chanLine(12) as never)).toBe('shown');
     expect(ids(store)).toEqual([10, 11, 'status', 12]);
+  });
+});
+
+// Nobody at this client (useAttention): a hidden tab, or a visible one left
+// untouched. The active buffer stops counting as being read (#1402).
+describe('the active buffer with nobody at the client', () => {
+  function sittingIn() {
+    const store = useBuffersStore();
+    store.replaceBacklog(1, '#chan', [chanLine(10), chanLine(11)], undefined, undefined, undefined);
+    h.activeKey = '1::#chan';
+    const buf = store.byKey('1::#chan')!;
+    buf.lastReadId = 11;
+    buf.dividerAfterId = 11; // caught up: the divider is tracking the tail
+    setUnreadDividerShown('1::#chan', false);
+    setViewedBuffer('1::#chan');
+    vi.mocked(socketSend).mockClear();
+    return { store, buf };
+  }
+  const markReads = () =>
+    vi
+      .mocked(socketSend)
+      .mock.calls.map(([p]) => p as { type: string; messageId?: number })
+      .filter((p) => p.type === 'mark-read')
+      .map((p) => p.messageId);
+
+  afterEach(() => {
+    setAttendedForTests(null);
+    setViewedBuffer(null);
+  });
+
+  it('marks a live line read while someone is here', () => {
+    const { store, buf } = sittingIn();
+    store.pushMessage(chanLine(12));
+    expect(markReads()).toEqual([12]);
+    expect(buf.dividerAfterId).toBe(12);
+  });
+
+  it('leaves a live line unread, under the divider', () => {
+    const { store, buf } = sittingIn();
+    setAttendedForTests(false);
+    store.pushMessage(chanLine(12));
+    store.pushMessage(chanLine(13));
+    expect(markReads()).toEqual([]);
+    expect(buf.lastReadId).toBe(11);
+    expect(buf.dividerAfterId).toBe(11);
+  });
+
+  it('shows the active buffer its unread count', () => {
+    const { store, buf } = sittingIn();
+    setAttendedForTests(false);
+    store.applyReadState(1, '#chan', { lastReadId: 11, unread: 2, highlights: 1 });
+    expect(buf.unread).toBe(2);
+    expect(buf.highlighted).toBe(1);
+  });
+
+  it('catches up when they come back, keeping the divider', () => {
+    const { store, buf } = sittingIn();
+    setAttendedForTests(false);
+    store.pushMessage(chanLine(12));
+    store.pushMessage(chanLine(13));
+    store.applyReadState(1, '#chan', { lastReadId: 11, unread: 2, highlights: 1 });
+
+    setAttendedForTests(true);
+    store.resumeReading();
+
+    expect(markReads()).toEqual([13]);
+    expect(buf.lastReadId).toBe(13);
+    expect(buf.unread).toBe(0);
+    expect(buf.highlighted).toBe(0);
+    expect(buf.dividerAfterId).toBe(11);
+  });
+
+  it('does not mark a detached slice read on coming back', () => {
+    const { store, buf } = sittingIn();
+    setAttendedForTests(false);
+    store.pushMessage(chanLine(12));
+    buf.detached = true;
+    setAttendedForTests(true);
+    store.resumeReading();
+    expect(markReads()).toEqual([]);
+  });
+
+  it('does not mark a buffer read whose lines are not on screen', () => {
+    // activeKey lingers on the Settings route; nothing is being read there.
+    const { store, buf } = sittingIn();
+    setAttendedForTests(false);
+    store.pushMessage(chanLine(12));
+    setViewedBuffer(null);
+    setAttendedForTests(true);
+    store.resumeReading();
+    expect(markReads()).toEqual([]);
+    expect(buf.lastReadId).toBe(11);
+  });
+
+  // A second absence in the same sitting gets its own divider, not the first's.
+  it('moves the divider to the read pointer each time they leave', () => {
+    const { store, buf } = sittingIn();
+    setAttendedForTests(false);
+    store.pauseReading();
+    store.pushMessage(chanLine(12));
+    setAttendedForTests(true);
+    store.resumeReading();
+    setUnreadDividerShown('1::#chan', true); // the list is drawing it, above 12
+    store.pushMessage(chanLine(13));
+    expect(buf.dividerAfterId).toBe(11);
+
+    setAttendedForTests(false);
+    store.pauseReading();
+    expect(buf.dividerAfterId).toBe(13);
+    expect(unreadDividerShown('1::#chan')).toBe(null);
+    store.pushMessage(chanLine(14));
+    expect(buf.dividerAfterId).toBe(13);
+  });
+
+  it('does not mark a buffer read that is activated with nobody here', () => {
+    const { store } = sittingIn();
+    store.replaceBacklog(
+      1,
+      '#other',
+      [chanLine(20), chanLine(21)],
+      undefined,
+      undefined,
+      undefined,
+    );
+    vi.mocked(socketSend).mockClear();
+    setAttendedForTests(false);
+    store.activate(1, '#other');
+    expect(markReads()).toEqual([]);
+  });
+
+  it('does nothing on coming back with no buffer open', () => {
+    const { store } = sittingIn();
+    h.activeKey = null;
+    store.resumeReading();
+    expect(markReads()).toEqual([]);
   });
 });
 

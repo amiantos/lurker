@@ -5,6 +5,8 @@ import { defineStore } from 'pinia';
 import { useNetworksStore } from './networks.js';
 import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
+import { isAttended } from '../composables/useAttention.js';
+import { viewedBuffer } from '../composables/useViewedBuffer.js';
 
 // Buffers whose list this socket has been asked for outright (ensureMembers).
 // Cleared by resetNamesAsked on every socket open: the server's memo of what a
@@ -738,7 +740,13 @@ export const useBuffersStore = defineStore('buffers', {
         // the divider/read-sync below silently skips (#327). Mirrors the same
         // resolve-then-compare applyReadState does.
         const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
-        if (isActive) {
+        // Only while someone is at this client (useAttention). A line that
+        // lands on a hidden tab, or a visible one nobody has touched in a
+        // while, was not read: the divider stays where it is, so the line
+        // falls under it, and the server's pointer stays put, so the line is
+        // unread on every other device and may push. resumeReading catches up
+        // when they come back.
+        if (isActive && isAttended()) {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
           // visible (i.e. they entered with unread and may not have caught
@@ -1203,9 +1211,11 @@ export const useBuffersStore = defineStore('buffers', {
       // We're back on live: advance the read pointer to the new tail in the
       // same way activate() does on focus-in. Server clamps with MAX(), so
       // sending mark-read against the latest known id is idempotent.
+      // Not with nobody at this client: a reconnect on an unattended tab
+      // refetches the tail, and that is not someone reading it.
       const lastMsg = buf.messages[buf.messages.length - 1];
       const lastId = lastMsg?.id ?? 0;
-      if (lastId > buf.lastReadId) {
+      if (lastId > buf.lastReadId && isAttended()) {
         buf.lastReadId = lastId;
         socketSend({
           type: 'mark-read',
@@ -1615,7 +1625,9 @@ export const useBuffersStore = defineStore('buffers', {
       // differently-cased) broadcast target, so badge suppression tracks the
       // buffer the user is actually sitting in. bufferKey() also yields the bare
       // sentinel for the app-scoped system buffer (networkId null).
-      const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target);
+      // Sitting in it means someone is here too: with nobody at this client
+      // the active buffer's lines go unread, and its badge says so.
+      const isActive = networks.activeKey === bufferKey(buf.networkId, buf.target) && isAttended();
       // Suppress the unread badge for the buffer the user is sitting in.
       // A read-state broadcast can briefly carry a non-zero unread for the
       // active buffer when an IRC event lands before the mark-read echo;
@@ -1676,6 +1688,48 @@ export const useBuffersStore = defineStore('buffers', {
     // "Show earlier messages" affordance on the divider and by `/clear off`.
     unclearBuffer(networkId: number | string, target: string) {
       socketSend({ type: 'unclear-buffer', networkId, target, bufferId: idFor(networkId, target) });
+    },
+    // Nobody is at this client any more (useAttention). That ends the visit to
+    // the active buffer the way switching away does: the divider drops to the
+    // read pointer, so whatever lands from here on falls under it. Without
+    // this a divider drawn for one absence would stay put through the next.
+    pauseReading() {
+      const networks = useNetworksStore();
+      const key = networks.activeKey;
+      const buf = key ? this.buffers[key] : null;
+      if (!key || !buf || buf.dividerAfterId == null) return;
+      buf.dividerAfterId = buf.lastReadId || 0;
+      setUnreadDividerShown(key, null);
+    },
+    // Someone is back at this client (useAttention). Lines that landed in the
+    // active buffer while nobody was here were left unread; they are on screen
+    // now, so mark them read the way activate() does on entry. The divider is
+    // left alone: it sits above those lines, which is the point of it.
+    resumeReading() {
+      const networks = useNetworksStore();
+      const key = networks.activeKey;
+      const buf = key ? this.buffers[key] : null;
+      if (!key || !buf) return;
+      // Only a buffer whose lines are on screen. activeKey lingers on the
+      // Settings route and the mobile lists; the system console draws its own
+      // list and never registers as viewed, so it is taken at its word.
+      if (key !== SYSTEM_KEY && viewedBuffer() !== key) return;
+      buf.unread = 0;
+      buf.highlighted = 0;
+      buf.highlightsCapped = false;
+      // Same two exceptions as activate(): a detached slice's tail is history,
+      // and an unseeded shell's tail is one stray line.
+      if (buf.detached || buf.unseeded) return;
+      const lastId = buf.messages[buf.messages.length - 1]?.id ?? 0;
+      if (lastId <= buf.lastReadId) return;
+      buf.lastReadId = lastId;
+      socketSend({
+        type: 'mark-read',
+        bufferId: buf.id,
+        networkId: buf.networkId,
+        target: buf.target,
+        messageId: lastId,
+      });
     },
     // Switch to a buffer. We mark the entered buffer read on focus-IN (not
     // on focus-OUT of the previous one) so that a tab close / reload / lost
@@ -1751,7 +1805,11 @@ export const useBuffersStore = defineStore('buffers', {
       // up to the stray line would clear unread for messages the user never saw.
       // The reattachToLive fired below does its own mark-read against the real
       // tail once hydrated.
-      if (!buf.detached && !buf.unseeded) {
+      //
+      // And skip with nobody at this client: a route restored in a hidden tab,
+      // or a fallback activation on an idle one, is not someone reading.
+      // resumeReading marks it when they come back.
+      if (!buf.detached && !buf.unseeded && isAttended()) {
         const lastMsg = buf.messages[buf.messages.length - 1];
         const lastId = lastMsg?.id ?? 0;
         if (lastId > buf.lastReadId) {

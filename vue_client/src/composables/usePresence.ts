@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { socketSend, onSocketOpen } from './useSocket.js';
+import { isAttended, onAttentionChange, startAttention } from './useAttention.js';
 
 let wired = false;
 let lastVisible: boolean | null = null;
 
+// "Visible" on the wire means someone is at this client: the page is showing
+// and has had recent input (useAttention). A tab left in front on a machine
+// nobody is at stops claiming it, so push and auto-away stop waiting on it.
 function currentVisible() {
   if (typeof document === 'undefined') return false;
-  return !document.hidden;
+  return isAttended();
 }
 
 function report() {
@@ -21,9 +25,8 @@ function report() {
 export function startPresenceReporter(): void {
   if (wired || typeof document === 'undefined') return;
   wired = true;
-  document.addEventListener('visibilitychange', report);
-  window.addEventListener('focus', report);
-  window.addEventListener('blur', report);
+  startAttention();
+  onAttentionChange(report);
   // The server forgets per-socket presence when a WS closes. Re-report on
   // every fresh socket open so reconnects don't leave the user appearing
   // hidden when they're actually looking at the page.

@@ -11,6 +11,7 @@
   <ToastContainer />
   <ContextMenu />
   <SheepOverlay />
+  <AttentionDebug v-if="attentionDebug" />
 </template>
 
 <script setup lang="ts">
@@ -24,10 +25,20 @@ import ToastContainer from './components/ToastContainer.vue';
 import ContextMenu from './components/ContextMenu.vue';
 import PausedBanner from './components/PausedBanner.vue';
 import SheepOverlay from './components/SheepOverlay.vue';
+import AttentionDebug from './components/AttentionDebug.vue';
 
 const auth = useAuthStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
+
+// A readout of the idle tracker, for QA. In the browser console:
+//   localStorage.setItem('lurker.debug.attention', '1')   then reload.
+let attentionDebug = false;
+try {
+  attentionDebug = localStorage.getItem('lurker.debug.attention') === '1';
+} catch {
+  // No storage: no readout.
+}
 
 useTheme();
 usePageTitle();

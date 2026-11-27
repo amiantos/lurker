@@ -241,6 +241,12 @@ These are the non-obvious constraints that have bitten changes before:
   notifications, away state — anything that must stay consistent across a user's
   tabs and devices lives in the server + WS fan-out, not client-only state.
   (Render-time _display_ filters can be client-side.)
+- **Presence is "attended", not "visible".** The web client reports itself
+  present, and marks live lines read, only while its page is visible and has
+  had input within `client.idle.delay_seconds`
+  (`vue_client/src/composables/useAttention.ts`). A scroll event is not input:
+  the list scrolls itself on every new line. To see the tracker live, set
+  `localStorage['lurker.debug.attention'] = '1'` and reload (`AttentionDebug.vue`).
 - **Settings are registry-driven.** Add new user settings to
   [`shared/settingsRegistry.ts`](shared/settingsRegistry.ts) (data-only, imported
   by both sides) — don't scatter setting definitions across server and client.

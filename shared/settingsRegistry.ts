@@ -1293,6 +1293,24 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description: 'Seconds to wait after the last client leaves before setting away.',
   },
   {
+    // Client-side: each web client times its own input and stops reporting
+    // itself present once this long has passed (useAttention). The server only
+    // ever sees the presence frame. 0 = a visible client always counts.
+    // Listed with auto-away because that is where people look for it, but it
+    // is about the client, not IRC away: it drives push and read state too.
+    key: 'client.idle.delay_seconds',
+    label: 'Idle after (seconds)',
+    category: 'away',
+    group: 'auto-away',
+    type: 'int',
+    min: 0,
+    default: 300,
+    description:
+      'Seconds without input before an open client stops counting as in front ' +
+      'of you. Push and auto-away then treat it as gone, and new lines stay ' +
+      'unread. 0 turns this off.',
+  },
+  {
     key: 'away.auto.message',
     label: 'Auto-away message',
     category: 'away',
