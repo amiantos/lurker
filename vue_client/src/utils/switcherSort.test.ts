@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { smartSortRows, type SwitcherItem } from './switcherSort.js';
+import { matchSwitcherRows, smartSortRows, type SwitcherItem } from './switcherSort.js';
 
 // Build a switcher item; sortKey is derived the way QuickSwitcher does
 // (bufferSortKey: leading '#' stripped, lowercased) so alpha tie-breaks read
@@ -93,5 +93,51 @@ describe('smartSortRows alphabetical tier', () => {
     const rows = [item('1::#Beta'), item('1::alpha'), item('1::#Gamma')];
     const out = smartSortRows(rows, { recencyRank: ranker() });
     expect(keys(out)).toEqual(['1::alpha', '1::#Beta', '1::#Gamma']);
+  });
+});
+
+describe('matchSwitcherRows', () => {
+  const row = (networkName: string, label: string) => ({ networkName, label });
+  const rows = [
+    row('libera', '#senpai'),
+    row('libera', '#soju'),
+    row('libera', '[server]'),
+    row('oftc', '#libreoffice'),
+    row('oftc', '#debian'),
+    row('Rizon', 'Liberty'),
+  ];
+  const names = (list: { networkName: string; label: string }[]) =>
+    list.map((r) => `${r.networkName}/${r.label}`);
+
+  it('a network word lists that network, behind rows matching by name', () => {
+    const { byName, byNetwork } = matchSwitcherRows(rows, 'lib');
+    expect(names(byName)).toEqual(['oftc/#libreoffice', 'Rizon/Liberty']);
+    expect(names(byNetwork)).toEqual(['libera/#senpai', 'libera/#soju', 'libera/[server]']);
+  });
+
+  it('every word must match, each against name or network', () => {
+    const { byName, byNetwork } = matchSwitcherRows(rows, 'lib sen');
+    expect(names(byName)).toEqual([]);
+    expect(names(byNetwork)).toEqual(['libera/#senpai']);
+  });
+
+  it('word order and extra spaces do not matter', () => {
+    expect(names(matchSwitcherRows(rows, 'sen   lib').byNetwork)).toEqual(['libera/#senpai']);
+  });
+
+  it('a row matching by name alone stays a name match', () => {
+    const { byName, byNetwork } = matchSwitcherRows(rows, 'deb');
+    expect(names(byName)).toEqual(['oftc/#debian']);
+    expect(names(byNetwork)).toEqual([]);
+  });
+
+  it('matches a mixed-case network name', () => {
+    expect(names(matchSwitcherRows(rows, 'riz').byNetwork)).toEqual(['Rizon/Liberty']);
+  });
+
+  it('matches nothing when a word is found nowhere', () => {
+    const { byName, byNetwork } = matchSwitcherRows(rows, 'lib nope');
+    expect(byName).toEqual([]);
+    expect(byNetwork).toEqual([]);
   });
 });
