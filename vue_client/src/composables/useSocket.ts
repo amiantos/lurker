@@ -936,6 +936,16 @@ function handleMessage(raw: string): void {
 
   if (payload.kind === 'snapshot') {
     applySnapshot(payload.networks, payload.globalIgnores || []);
+    // #1464: the user's settings as stored, so one changed on another device
+    // while this one was disconnected lands on reconnect. Only when present: an
+    // older server sends none, and absence is not "no overrides". A session
+    // whose boot fetch failed has nothing loaded to refresh, so it asks again
+    // instead (the store ignores the snapshot until then).
+    const settings = useSettingsStore();
+    if (!settings.loaded) settings.fetchAll().catch(() => {});
+    else if (payload.settings && typeof payload.settings === 'object') {
+      settings.applySnapshot(payload.settings);
+    }
     // #650: a file over one chunk is sent in chunks. Absent on an older server.
     useUploadsStore().chunkBytes =
       typeof payload.uploadChunkBytes === 'number' ? payload.uploadChunkBytes : null;

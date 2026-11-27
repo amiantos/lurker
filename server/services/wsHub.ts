@@ -3209,6 +3209,11 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       jitsiUrl: instanceJitsiUrl(),
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
+      // #1464: the user's stored setting overrides, the `values` of
+      // GET /api/settings/bootstrap. The only other carrier is the `settings`
+      // frame, which a client that was disconnected never received, so every
+      // connect restates them and a setting changed elsewhere meanwhile lands.
+      settings: getUserSettings(userId),
       ...(isFreshConnect ? { cursor } : {}),
     });
     // Measured, because this is ONE WebSocket message and a client may cap

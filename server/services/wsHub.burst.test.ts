@@ -219,6 +219,22 @@ describe('connect burst terminator (#635)', () => {
     }
   });
 
+  // #1464: a `settings` frame never reaches a disconnected client, so every
+  // connect restates the stored overrides.
+  it("carries the user's stored settings on the snapshot frame", async () => {
+    const { setUserSetting, deleteUserSetting } = await import('../db/settings.js');
+    try {
+      expect((await collectBurst())[0]).toMatchObject({ kind: 'snapshot', settings: {} });
+      setUserSetting(userId, 'look.title.buffer_names', false);
+      expect((await collectBurst())[0]).toMatchObject({
+        kind: 'snapshot',
+        settings: { 'look.title.buffer_names': false },
+      });
+    } finally {
+      deleteUserSetting(userId, 'look.title.buffer_names');
+    }
+  });
+
   // #872: the image dimension rides beside the cap, for the same reason.
   it('carries the effective static-image dimension on the snapshot frame', async () => {
     const { setUserSetting } = await import('../db/settings.js');
