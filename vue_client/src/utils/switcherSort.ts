@@ -55,3 +55,37 @@ export function smartSortRows<T extends SwitcherItem>(rows: T[], opts: SmartSort
     return a.sortKey.localeCompare(b.sortKey);
   });
 }
+
+export interface SwitcherMatchable {
+  // What the row shows: the channel / DM name, or '[server]'.
+  label: string;
+  networkName: string;
+}
+
+// Narrow the switcher's rows to a typed query (#1465). The query splits on
+// whitespace and every word must appear in the row's name or its network's
+// name, so "lib" lists everything on Libera and "lib sen" picks #senpai there.
+// `q` arrives trimmed and lowercased.
+//
+// Returns two groups rather than one list: a row every word finds by name
+// alone is a name match, the rest needed the network to get in. The caller
+// sorts each and shows name matches first, so a network that happens to share
+// a word with a channel never buries the channel you typed.
+export function matchSwitcherRows<T extends SwitcherMatchable>(
+  rows: T[],
+  q: string,
+): { byName: T[]; byNetwork: T[] } {
+  const words = q.split(/\s+/).filter(Boolean);
+  const byName: T[] = [];
+  const byNetwork: T[] = [];
+  for (const r of rows) {
+    const label = r.label.toLowerCase();
+    if (words.every((w) => label.includes(w))) {
+      byName.push(r);
+      continue;
+    }
+    const net = r.networkName.toLowerCase();
+    if (words.every((w) => label.includes(w) || net.includes(w))) byNetwork.push(r);
+  }
+  return { byName, byNetwork };
+}

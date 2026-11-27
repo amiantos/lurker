@@ -51,7 +51,7 @@ import { useFavoritesStore } from '../stores/favorites.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { flattenBufferOrder, bufferSortKey } from '../utils/bufferOrder.js';
-import { smartSortRows } from '../utils/switcherSort.js';
+import { matchSwitcherRows, smartSortRows } from '../utils/switcherSort.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { isImeKey, useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { XIcon } from '@lucide/vue';
@@ -141,22 +141,22 @@ const rows = computed<Row[]>(() => {
   // *previous* buffer at row 0 (and pre-selected), making Cmd+K→Enter a clean
   // back toggle. With a query it's a search: keep everything matchable, since
   // you may well be looking for the current buffer by name.
-  // Match only on the channel/DM label, not the network name — a bare network
-  // keyword ("libera") surfacing every buffer in that network is noise, and
-  // there's no multi-keyword "libera amiantos" syntax to make it useful (#153).
-  const filtered = q
-    ? allRows.value.filter((r) => r.label.toLowerCase().includes(q))
-    : allRows.value.filter((r) => r.key !== networks.activeKey);
+  // A query matches on the channel/DM name or the network name, word by word
+  // (#1465) — see matchSwitcherRows for why name matches lead.
   // Tiered smart sort applied AFTER filtering (#393): recent → pinned → unread →
   // alphabetical, so recency/favourites survive a search instead of collapsing
   // to plain alphabetical. Reads recent.keys so this recomputes as the MRU moves.
   const ranks = recent.keys;
-  return smartSortRows(filtered, {
-    recencyRank: (key) => {
-      const i = ranks.indexOf(key);
-      return i === -1 ? Infinity : i;
-    },
-  });
+  const sort = (list: Row[]) =>
+    smartSortRows(list, {
+      recencyRank: (key) => {
+        const i = ranks.indexOf(key);
+        return i === -1 ? Infinity : i;
+      },
+    });
+  if (!q) return sort(allRows.value.filter((r) => r.key !== networks.activeKey));
+  const { byName, byNetwork } = matchSwitcherRows(allRows.value, q);
+  return [...sort(byName), ...sort(byNetwork)];
 });
 
 watch(rows, () => {
