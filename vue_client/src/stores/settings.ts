@@ -128,6 +128,16 @@ export const useSettingsStore = defineStore('settings', {
       });
       this.values = { ...values };
     },
+    // The override map restated on a connect snapshot (#1464): a `settings`
+    // frame sent while this device was disconnected never arrived, so the
+    // snapshot is what catches it up. Only once the bootstrap has LANDED. Before
+    // that it answers a question nobody asked yet: the bootstrap brings the
+    // saved themes with the values, so the resolver never sees a pointer at a
+    // theme still in flight, and values alone here would break that.
+    applySnapshot(values: Record<string, SettingValue>) {
+      if (!this.loaded) return;
+      this.values = { ...values };
+    },
     applyRemote({
       changes,
       resets,

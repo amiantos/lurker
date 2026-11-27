@@ -219,6 +219,40 @@ describe('connect burst terminator (#635)', () => {
     }
   });
 
+  // #1464: a `settings` frame never reaches a disconnected client, so every
+  // connect restates the stored overrides.
+  it("carries the user's stored settings on the snapshot frame", async () => {
+    const { setUserSetting, deleteUserSetting } = await import('../db/settings.js');
+    try {
+      const stored = async () => ((await collectBurst())[0] as { settings?: unknown }).settings;
+      // toEqual, not toMatchObject: `{}` as a subset would match any map.
+      expect(await stored()).toEqual({});
+      setUserSetting(userId, 'look.title.buffer_names', false);
+      expect(await stored()).toEqual({ 'look.title.buffer_names': false });
+    } finally {
+      deleteUserSetting(userId, 'look.title.buffer_names');
+    }
+  });
+
+  // The saved themes ride beside the settings, so a theme pointer among them
+  // never names a theme the client has not been given.
+  it("carries the user's saved themes on the snapshot frame", async () => {
+    const { default: themesService } = await import('./themesService.js');
+    const themes = async () => ((await collectBurst())[0] as { themes?: unknown }).themes;
+    expect(await themes()).toEqual([]);
+    const made = themesService.create(userId, {
+      name: 'Snapshot theme',
+      values: { 'look.color.fg': '#eeeeee' },
+    });
+    if (!made.ok) throw new Error(made.error);
+    try {
+      expect(await themes()).toEqual(themesService.list(userId));
+      expect(await themes()).toHaveLength(1);
+    } finally {
+      themesService.remove(userId, made.theme.id);
+    }
+  });
+
   // #872: the image dimension rides beside the cap, for the same reason.
   it('carries the effective static-image dimension on the snapshot frame', async () => {
     const { setUserSetting } = await import('../db/settings.js');
