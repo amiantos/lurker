@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { closedNetworkView, isNetworkOpen, nextOpenNetwork } from './networkAccordion.js';
 
 describe('nextOpenNetwork', () => {
@@ -32,13 +32,14 @@ describe('isNetworkOpen', () => {
     expect(net()).toBe(true);
   });
 
-  it('is closed once folded by hand, wherever you are', () => {
+  it('is closed once folded by hand, even while you are in it', () => {
     expect(net({ collapsed: true })).toBe(false);
     expect(net({ collapsed: true, openNetworkId: 2 })).toBe(false);
+    expect(net({ collapsed: true, openNetworkId: 1 })).toBe(false);
   });
 
-  it('shows a folded network open while you are in it', () => {
-    expect(net({ collapsed: true, openNetworkId: 1 })).toBe(true);
+  it('lets accordion mode open a hand-folded network you are in', () => {
+    expect(net({ collapsed: true, accordion: true, openNetworkId: 1 })).toBe(true);
   });
 
   it('closes every network but yours in accordion mode', () => {
@@ -58,10 +59,13 @@ describe('closedNetworkView', () => {
   type B = ReturnType<typeof buf>;
   // The list's "full" display mode: a muted row counts highlights only and
   // never colours as unread.
+  let active = '';
   const rules = {
     count: (b: B) => (b.muted ? b.highlighted : b.unread),
     countsAsUnread: (b: B) => b.unread > 0 && !b.muted,
+    isActive: (b: B) => b.target === active,
   };
+  beforeEach(() => (active = ''));
   const targets = (rows: B[]) => rows.map((r) => r.target);
 
   it('lists nothing and adds nothing for a quiet network', () => {
@@ -79,6 +83,13 @@ describe('closedNetworkView', () => {
   it('lists a highlighted buffer and leaves it out of the roll-up', () => {
     const view = closedNetworkView([buf('#a', 3), buf('#b', 5, 1), buf('bob', 2, 2)], rules);
     expect(targets(view.rows)).toEqual(['#b', 'bob']);
+    expect(view.hiddenCount).toBe(3);
+  });
+
+  it('lists the buffer you are in, alone', () => {
+    active = '#b';
+    const view = closedNetworkView([buf('#a', 3), buf('#b'), buf('#c')], rules);
+    expect(targets(view.rows)).toEqual(['#b']);
     expect(view.hiddenCount).toBe(3);
   });
 

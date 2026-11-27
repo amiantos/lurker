@@ -286,8 +286,8 @@
             aria-hidden="true"
           ></div>
 
-          <!-- Open: the unpinned rows. Closed (accordion mode): only the
-               network's highlighted rows, pinned or not. -->
+          <!-- Open: the unpinned rows. Folded: only the network's highlighted
+               rows and the one you are in, pinned or not. -->
           <ul v-if="plainRows(net.id).length" class="channels">
             <li
               v-for="buf in plainRows(net.id)"
@@ -580,7 +580,8 @@ function unpinnedBufs(networkId: number): Buffer[] {
 }
 
 // Folding networks (#1432): by hand per network, or all of them in accordion
-// mode, and a folded one shows open while you are in it. See
+// mode. A hand-folded one still lists the buffer you are in; accordion mode
+// shows the network you are in fully open. See
 // utils/networkAccordion for the rules; this is the wiring.
 const accordion = computed(() => !!settings.effective('look.buffer_list.accordion'));
 const openNetworkId = ref<number | null>(null);
@@ -613,6 +614,7 @@ const closedViews = computed(() => {
       closedNetworkView([...(pinnedBufsByNet[net.id] || []), ...unpinnedBufs(net.id)], {
         count: displayCount,
         countsAsUnread: (b) => b.unread > 0 && !isChannelMuted(b),
+        isActive: (b) => isActive(net.id, b.target),
       }),
     );
   }
