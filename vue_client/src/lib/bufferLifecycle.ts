@@ -54,6 +54,12 @@ const participants: Array<() => BufferLifecycleParticipant> = [
   () => useChannelNotifyStore(),
 ];
 
+// Participants whose state outlives a close, because the server's does: a
+// channel's notify flag is still set when the reader leaves and rejoins
+// (#1421). They stay in the list above for the rename sweep, and for a buffer
+// a merge absorbed, which is not coming back.
+const keptOnClose: Array<() => BufferLifecycleParticipant> = [() => useChannelNotifyStore()];
+
 // Most participants key exact `${networkId}::${target}` strings, but the
 // server can hand us a divergently-cased name (#289/#327). The buffers store
 // resolves case-insensitively — so resolve through it ONCE and sweep every
@@ -62,8 +68,19 @@ function canonicalTarget(networkId: number | string | null, target: string): str
   return useBuffersStore().findByTarget(networkId, target)?.target ?? target;
 }
 
-/** The buffer is gone (buffer-closed): sweep every participating store. */
+/** The buffer is gone (buffer-closed): sweep every participating store but
+ *  the ones the server keeps state for across a close. */
 export function bufferClosed(networkId: number | string | null, target: string): void {
+  const canonical = canonicalTarget(networkId, target);
+  const kept = new Set(keptOnClose.map((get) => get()));
+  for (const get of participants) {
+    const store = get();
+    if (!kept.has(store)) store.dropBuffer(networkId, canonical);
+  }
+}
+
+/** The buffer was absorbed by a merge: sweep every participating store. */
+function bufferAbsorbed(networkId: number | string | null, target: string): void {
   const canonical = canonicalTarget(networkId, target);
   for (const get of participants) get().dropBuffer(networkId, canonical);
 }
@@ -116,7 +133,7 @@ export function applyBufferRenamed(payload: {
     const absorbedKey = mergedFromBufferId != null ? bufferKeyForId(mergedFromBufferId) : undefined;
     const absorbed = absorbedKey ? buffers.byKey(absorbedKey) : null;
     if (absorbed) {
-      bufferClosed(absorbed.networkId, absorbed.target);
+      bufferAbsorbed(absorbed.networkId, absorbed.target);
     } else {
       // Absorbed id unknown locally (optimistically-created row merged before
       // any id-carrying frame): fall back to the DM orientation — but never
@@ -124,7 +141,7 @@ export function applyBufferRenamed(payload: {
       // surviving id.
       const atTo = buffers.findByTarget(networkId, to);
       if (atTo && !(typeof bufferId === 'number' && atTo.id === bufferId)) {
-        bufferClosed(networkId, to);
+        bufferAbsorbed(networkId, to);
       }
     }
   }
