@@ -85,8 +85,13 @@ describe('bufferClosed', () => {
       pin: false,
       favorite: false,
       nicklist: false,
-      notify: false,
+      // The notify preference is kept on purpose: the server keeps it across a
+      // leave and rejoin (#1421).
+      notify: true,
     });
+    // Rejoin: the buffer comes back and the ladder still reads All messages.
+    useBuffersStore().ensure(NET, TARGET, 42);
+    expect(useChannelNotifyStore().notifyAlways(NET, TARGET)).toBe(true);
     // Neighbors survive the sweep.
     expect(useNavHistoryStore().stack).toEqual([`${NET}::#other`]);
     expect(usePinsStore().byNetwork[NET]).toEqual(['#other']);

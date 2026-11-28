@@ -27,7 +27,6 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNicklistCollapseStore } from '../stores/nicklistCollapse.js';
-import { useChannelNotifyStore } from '../stores/channelNotify.js';
 
 export interface BufferLifecycleParticipant {
   /** Remove every trace of (networkId, target) from this store. */
@@ -51,7 +50,6 @@ const participants: Array<() => BufferLifecycleParticipant> = [
   () => usePinsStore(),
   () => useFavoritesStore(),
   () => useNicklistCollapseStore(),
-  () => useChannelNotifyStore(),
 ];
 
 // Most participants key exact `${networkId}::${target}` strings, but the

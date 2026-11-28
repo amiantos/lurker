@@ -71,12 +71,9 @@ export const useChannelNotifyStore = defineStore('channelNotify', {
         bufferId: idFor(networkId, target),
       });
     },
-    // Lifecycle hooks (lib/bufferLifecycle.ts).
-    dropBuffer(networkId: number | string | null, target: string) {
-      if (networkId == null) return;
-      const map = this.byNetwork[networkId];
-      if (map && target in map) delete map[target];
-    },
+    // Lifecycle hook (lib/bufferLifecycle.ts). Deliberately no dropBuffer: the
+    // server keeps the flag across a leave and rejoin (#1421), so closing a
+    // buffer must not forget it.
     rekeyBuffer(networkId: number | string | null, from: string, to: string) {
       if (networkId == null) return;
       const map = this.byNetwork[networkId];
