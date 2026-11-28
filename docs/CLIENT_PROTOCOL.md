@@ -901,7 +901,7 @@ and rename-proof.
 | `send`             | `networkId, target, text, clientId?, replyTo?`     | PRIVMSG. Ack via `send-result` iff `clientId` present. `replyTo` is the `id` of a stored line in the same buffer this answers: the first line out carries `+reply`/`+draft/reply` with its msgid. Ignored — the text still goes, as a plain line — when that line has no msgid, is in another buffer, the network can't carry the tags, or the channel is E2E                                                                                                                                                                     |
 | `action`           | `networkId, target, text, clientId?, replyTo?`     | CTCP ACTION (`/me`). `replyTo` as for `send`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `notice`           | `networkId, target, text, clientId?`               | NOTICE                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `raw`              | `networkId, line, issuingTarget?`                  | Raw IRC line — the escape hatch for `/mode`, `/kick`, `/whois`, unknown commands. `issuingTarget` (2.7.0) is the buffer the user typed it in: an error that names no channel or nick is then also said there (§7.3). Send it for anything typed or tapped in a buffer                                                                                                                                                                                                                                                             |
+| `raw`              | `networkId, line, issuingTarget?, profile?`        | Raw IRC line — the escape hatch for `/mode`, `/kick`, `/whois`, unknown commands. `issuingTarget` (2.7.0) is the buffer the user typed it in: an error that names no channel or nick is then also said there (§7.3). Send it for anything typed or tapped in a buffer. `profile` (2.8.0): see §7.5                                                                                                                                                                                                                                |
 | `ctcp`             | `networkId, target, ctcpType, args, issuingTarget` | CTCP request (`/ping`, `/version` at a user)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `flush-send-queue` | `networkId, clientId?`                             | `/flushq`: drops the user's chat messages (messages, notices, `/me`) still waiting in that network's send queue, leaving raw lines, CTCP and XDCC requests and Lurker's own lines, so the `send-queue` count need not reach 0. Each dropped message arrives as an `error` line in its buffer, `not sent (send queue cleared): <text>`. The ACK's `data` is `{ ok, dropped }`, how many messages went                                                                                                                              |
 | `save-login`       | `networkId, issuingTarget?`                        | `/save` (2.7.3): after the user gives NickServ a password by hand (`IDENTIFY`, `REGISTER`) and the network confirms the login (900, or an `ACCOUNT` for our own nick), the server offers it as a `notice` from `lurker` where they typed. Only on a network that advertises SASL, which is what logs in with it. This frame writes the offered login to the network (`sasl_account`, `sasl_password`) and says so in `issuingTarget`; with nothing on offer it answers there with an `error` line. The offer ends with the socket |
@@ -1186,29 +1186,36 @@ silently — which iOS did, for its whole life, until lurker-ios#12.
 
 Ask with the ordinary `raw` verb — `WHOIS <nick>`. There is no dedicated verb.
 The network's raw numerics _also_ render into `:server:` through the default-show
-`raw` path (§7.3); both happen, and this event is not a substitute for that.
+`raw` path (§7.3), **unless the `raw` frame carries `profile: true`** (2.8.0): a
+client that shows the whole reply itself asks that way, and the lines of that
+WHOIS are kept out of `:server:`. Only an error (a 401) is still said there.
+Send it only once the screen shows every field below, `other` included, and
+only for `WHOIS <nick>`: one nick, no server argument. Anything else ignores it.
 
 **The `whois` object is passed through from irc-framework verbatim**, which
 aggregates RPL_WHOIS\* (311/312/317/319/330/…) and emits once at
 RPL_ENDOFWHOIS. The server does not reshape it, so the field names are
 irc-framework's:
 
-| field                                          | meaning                                                |
-| ---------------------------------------------- | ------------------------------------------------------ |
-| `nick`                                         | always present, on a miss too                          |
-| `ident`, `hostname`                            | the two halves of the hostmask                         |
-| `real_name`                                    | GECOS                                                  |
-| `actual_hostname`, `actual_ip`                 | RPL_WHOISACTUALLY — opers and self only                |
-| `server`, `server_info`                        | which server they're on                                |
-| `account`                                      | services account (RPL_WHOISACCOUNT)                    |
-| `channels`                                     | see below                                              |
-| `modes`                                        | user modes, when disclosed                             |
-| `operator`, `helpop`, `bot`, `registered_nick` | the numeric's trailing **text**, not a boolean         |
-| `secure`                                       | boolean `true` — the one genuinely boolean flag        |
-| `certfp`                                       | certificate fingerprint                                |
-| `away`                                         | away reason, only if they were away when the whois ran |
-| `idle`, `logon`                                | see below                                              |
-| `error`                                        | `'not_found'` — see below                              |
+| field                                          | meaning                                                                                                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `nick`                                         | always present, on a miss too                                                                                                                                                                          |
+| `ident`, `hostname`                            | the two halves of the hostmask                                                                                                                                                                         |
+| `real_name`                                    | GECOS                                                                                                                                                                                                  |
+| `actual_hostname`, `actual_ip`                 | RPL_WHOISACTUALLY — opers and self only                                                                                                                                                                |
+| `server`, `server_info`                        | which server they're on                                                                                                                                                                                |
+| `account`                                      | services account (RPL_WHOISACCOUNT)                                                                                                                                                                    |
+| `channels`                                     | see below                                                                                                                                                                                              |
+| `modes`                                        | user modes, when disclosed: the numeric's trailing text                                                                                                                                                |
+| `operator`, `helpop`, `bot`, `registered_nick` | the numeric's trailing **text**, not a boolean                                                                                                                                                         |
+| `secure`                                       | boolean `true` — the one genuinely boolean flag                                                                                                                                                        |
+| `certfp`, `certfps`                            | the 276 line's trailing text; `certfps` is every one, an array                                                                                                                                         |
+| `special`                                      | array: each RPL_WHOISSPECIAL (320) line's text                                                                                                                                                         |
+| `country`, `asn`                               | the 344 and 569 lines' trailing text                                                                                                                                                                   |
+| `other`                                        | array, Lurker's own, only on a `profile` WHOIS: the text of each line of the reply that irc-framework has no field for (an ircd's own numerics), without the leading nicks. Absent when there are none |
+| `away`                                         | away reason, only if they were away when the whois ran                                                                                                                                                 |
+| `idle`, `logon`                                | see below                                                                                                                                                                                              |
+| `error`                                        | `'not_found'` — see below                                                                                                                                                                              |
 
 ⚠⚠ **`channels` is one space-separated string**, not an array:
 `"@#foo +#bar #baz"`, accumulated across repeated numerics. Peel the membership

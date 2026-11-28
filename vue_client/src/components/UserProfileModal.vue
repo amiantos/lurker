@@ -100,6 +100,14 @@
             <dt>Signed on</dt>
             <dd>{{ signonLabel }}</dd>
           </template>
+          <template v-if="alsoLines.length">
+            <dt>Also</dt>
+            <dd class="also">
+              <span v-for="(segments, i) in alsoLines" :key="i"
+                ><RenderSegments :segments="segments"
+              /></span>
+            </dd>
+          </template>
           <template v-if="channelsList.length">
             <dt>Channels</dt>
             <dd class="channels">
@@ -122,22 +130,21 @@
         </div>
       </section>
 
-      <!-- What you keep on them: your note, and the metadata you set on them
-           (#1449), one list. A divider sets it off from the details above (only
-           when there are details to divide from). Your own profile keeps the
-           note alone; Edit Profile is the door to the rest. -->
-      <section class="section note-section" :class="{ divided: hasDetails }">
-        <NickMetadataEditor :network-id="networkId" :nick="nick" :metadata="!isSelf" />
-      </section>
-
       <!-- One status line, chosen in `statusLine` — see the note there for why
            the miss has to be said out loud rather than left to the header
-           dot (#818). -->
+           dot (#818). Above the note: it stands where the details would be. -->
       <section v-if="statusLine === 'not-found'" class="section status">
         <p class="muted"><CircleQuestionMarkIcon /> {{ nick }} isn't on this network.</p>
       </section>
       <section v-else-if="statusLine === 'waiting'" class="section status">
         <p class="muted"><LoaderCircleIcon class="icon-spin" /> Waiting for whois reply…</p>
+      </section>
+      <!-- What you keep on them: your note, and the metadata you set on them
+           (#1449), one list. A divider sets it off from the details or the status
+           line above (only when there is one to divide from). Your own profile keeps the
+           note alone; Edit Profile is the door to the rest. -->
+      <section class="section note-section" :class="{ divided: hasDetails || !!statusLine }">
+        <NickMetadataEditor :network-id="networkId" :nick="nick" :metadata="!isSelf" />
       </section>
     </div>
 
@@ -349,6 +356,27 @@ const chips = computed<Chip[]>(() => {
   return out;
 });
 
+// What the server says of them that has no row of its own, in its own words:
+// the operator line (the chip says only that they are one), user modes,
+// certificate fingerprints, the "special" lines, country, ASN, and any line an
+// ircd adds that irc-framework has no field for (`other`). The profile's WHOIS
+// is kept out of the server buffer, so this is the only place they show.
+const alsoLines = computed(() => {
+  const w = whois.value;
+  if (!w) return [];
+  const list = (v: unknown): string[] =>
+    (Array.isArray(v) ? v : v ? [v] : []).map((x) => String(x).trim()).filter(Boolean);
+  return [
+    ...list(w.operator),
+    ...list(w.modes),
+    ...list(w.certfps ?? w.certfp),
+    ...list(w.special),
+    ...list(w.country),
+    ...list(w.asn),
+    ...list(w.other),
+  ].map((line) => formattingSegments(line));
+});
+
 const idleLabel = computed(() => {
   const idle = whois.value?.idle;
   if (idle == null) return '';
@@ -432,6 +460,7 @@ const hasDetails = computed(
         whois.value.server ||
         idleLabel.value ||
         signonLabel.value ||
+        alsoLines.value.length ||
         channelsList.value.length)
     ),
 );
@@ -518,7 +547,12 @@ function onChannelClick(channel: string) {
 }
 
 function onRefresh() {
-  socketSend({ type: 'raw', networkId: props.networkId, line: `WHOIS ${props.nick}` });
+  socketSend({
+    type: 'raw',
+    networkId: props.networkId,
+    line: `WHOIS ${props.nick}`,
+    profile: true,
+  });
 }
 
 function copyHostmask() {
@@ -643,6 +677,11 @@ code {
   color: var(--warn);
 }
 
+.also {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
 .channels {
   display: flex;
   flex-wrap: wrap;
@@ -674,9 +713,5 @@ code {
 }
 .link.inline:hover {
   text-decoration: underline;
-}
-
-.status {
-  padding: var(--space-6) 0;
 }
 </style>

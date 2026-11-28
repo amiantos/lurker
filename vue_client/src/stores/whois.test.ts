@@ -119,7 +119,12 @@ describe('whois store — DCC chat targets', () => {
   it('looks up the peer, never the =nick buffer name', () => {
     const store = useWhoisStore();
     store.openViewer(1, '=bob');
-    expect(send).toHaveBeenCalledWith({ type: 'raw', networkId: 1, line: 'WHOIS bob' });
+    expect(send).toHaveBeenCalledWith({
+      type: 'raw',
+      networkId: 1,
+      line: 'WHOIS bob',
+      profile: true,
+    });
     expect(store.viewer.nick).toBe('bob');
   });
 
@@ -132,6 +137,11 @@ describe('whois store — DCC chat targets', () => {
 
   it('leaves an ordinary nick alone', () => {
     useWhoisStore().openViewer(1, 'alice');
-    expect(send).toHaveBeenCalledWith({ type: 'raw', networkId: 1, line: 'WHOIS alice' });
+    expect(send).toHaveBeenCalledWith({
+      type: 'raw',
+      networkId: 1,
+      line: 'WHOIS alice',
+      profile: true,
+    });
   });
 });

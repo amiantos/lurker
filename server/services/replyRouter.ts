@@ -66,6 +66,8 @@ export type Written = SendHandle;
  *  query ended, if the line is one. */
 export type SendOptions = Pick<WriteOptions, 'onSent' | 'onDropped' | 'priority' | 'unpaced'> & {
   onEnd?: (how: QueryEnd) => void;
+  /** The asker's own mark on this query, read back as `lineTag`. */
+  tag?: string;
 };
 
 export interface ReplyRouterOptions {
@@ -136,8 +138,8 @@ const NOT_WHOIS = new Set([
   '368',
   '369',
 ]);
-// WHOIS lines outside 3xx: certfp, TLS, metadata.
-const WHOIS_OTHER_REPLIES = new Set(['276', '671', '760']);
+// WHOIS lines outside 3xx: certfp, ASN, TLS, metadata.
+const WHOIS_OTHER_REPLIES = new Set(['276', '569', '671', '760']);
 
 function isWhoisReply(command: string): boolean {
   return (/^3\d\d$/.test(command) && !NOT_WHOIS.has(command)) || WHOIS_OTHER_REPLIES.has(command);
@@ -289,6 +291,7 @@ interface Query extends Spec {
   onDropped: (() => void) | undefined;
   priority: SendPriority | undefined;
   onEnd: ((how: QueryEnd) => void) | undefined;
+  tag: string | undefined;
   /** Past the send queue's clock (sendPacer.ts): the replies pace this one. */
   unpaced: boolean | undefined;
 }
@@ -355,6 +358,12 @@ export class ReplyRouter {
    * returned, by a caller that says "the list is empty" (#315).
    */
   endedEmpty = false;
+  /**
+   * The `tag` of the query the line just given to noteServerLine is part of
+   * the reply to, its end included (and the end that follows an error, not the
+   * error itself). Read beside the owner, by a caller that marked a query.
+   */
+  lineTag: string | null = null;
   // Batches whose query timed out before they closed, by reference, with the
   // asker: a late line inside one is still that asker's (a history page's
   // lines must never become someone's live traffic), until its BATCH -.
@@ -375,7 +384,7 @@ export class ReplyRouter {
    * first.
    */
   send(asker: Asker, line: string, build?: () => string, opts: SendOptions = {}): void {
-    const { onSent, onDropped, priority, onEnd, unpaced } = opts;
+    const { onSent, onDropped, priority, onEnd, unpaced, tag } = opts;
     const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
     if (!found) {
@@ -395,6 +404,7 @@ export class ReplyRouter {
       onDropped,
       priority: lane,
       onEnd,
+      tag,
       unpaced,
     });
   }
@@ -406,13 +416,18 @@ export class ReplyRouter {
     // the lines tagged with ITS batch, not whatever arrives while it's open.
     this.lineBatch = batchTagOf(line);
     this.endedEmpty = false;
+    this.lineTag = null;
     let owner: ReplyOwner | undefined;
     // This is the line the last query's end was waiting on, or the wait is over.
     const settle = this.settle;
     if (settle) {
       if (settle.timer) clearTimeout(settle.timer);
       this.settle = null;
-      if (this.settles(settle, command, params)) owner = settle.query.asker ?? 'nobody';
+      if (this.settles(settle, command, params)) {
+        owner = settle.query.asker ?? 'nobody';
+        // The 318 that follows a WHOIS's 401, say.
+        this.lineTag = settle.query.tag ?? null;
+      }
     }
     owner ??= this.claimOrphan(command, params);
     owner ??= this.claim(command, params);
@@ -634,6 +649,7 @@ export class ReplyRouter {
       if (!role) continue;
       query.heardAt = Date.now();
       if (role === 'end' && !query.started) this.endedEmpty = true;
+      this.lineTag = query.tag ?? null;
       query.started = true;
       if (role === 'end') {
         this.finish(

@@ -108,7 +108,11 @@ export const useWhoisStore = defineStore('whois', {
       // never left wedges the same way a never-cleared one did — no reply is
       // coming to free it, so reopening declines to retry forever.
       if (this.refreshingKey !== k) {
-        if (socketSend({ type: 'raw', networkId, line: `WHOIS ${nick}` })) this.refreshingKey = k;
+        // `profile`: the modal shows the whole reply, so the server keeps its
+        // lines out of the server buffer.
+        if (socketSend({ type: 'raw', networkId, line: `WHOIS ${nick}`, profile: true })) {
+          this.refreshingKey = k;
+        }
       }
     },
     closeViewer() {
