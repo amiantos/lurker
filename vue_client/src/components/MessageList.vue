@@ -7,7 +7,7 @@
   <div
     ref="scroller"
     class="message-list"
-    :class="{ compact: compactMode, avatars: showAvatars }"
+    :class="{ compact: compactMode, avatars: showAvatars, 'nick-max': nickColumnMax > 0 }"
     :style="nickColumnFloor ? { '--nick-col-floor': `${nickColumnFloor}px` } : undefined"
     @scroll="onScroll"
     @wheel="onWheel"
@@ -186,16 +186,22 @@
             class="prefix"
             :class="prefixClass(row.m)"
             :style="row.continuationAuthor || row.m?.type === 'message' ? null : prefixStyle(row.m)"
-            ><template v-if="row.m?.type === 'message' && !row.continuationAuthor"
-              ><NickRef
-                :nick="row.m?.nick ?? ''"
-                :modes="authorModes(row.m)"
-                :show-prefix="showModePrefix"
-                :prefix="memberPrefix"
-                :plain="!!row.m?.relaySource"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
-            ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
+            ><!-- The cell's text in a box of its own, so a maximum nick column
+                 (#1405) can cut it short and leave the cell's padding for the
+                 mark that says so. --><span class="prefix-text"
+              ><template v-if="row.m?.type === 'message' && !row.continuationAuthor"
+                ><NickRef
+                  :nick="row.m?.nick ?? ''"
+                  :modes="authorModes(row.m)"
+                  :show-prefix="showModePrefix"
+                  :prefix="memberPrefix"
+                  :plain="!!row.m?.relaySource"
+                  interactive
+                  @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
+              ><template v-else>{{
+                row.continuationAuthor ? '' : prefixText(row.m)
+              }}</template></span
+            ></span
           >
         </template>
         <!-- One body for both layouts: the per-type chain below is the only
@@ -701,6 +707,38 @@ const stickToBottom = ref(true);
 const nickColumnFloor = ref(0);
 // The font the floor was measured in: pixels from another size mean nothing.
 let nickColumnFont = '';
+// The reader's own limits on the column (WeeChat's prefix_align_min/max), in
+// characters, 0 for none. useTheme hands them to the stylesheet; here they
+// say when to look for nicks the maximum cut short, and when a floor measured
+// under other limits is void.
+const nickColumnMax = computed(
+  () => Number(settings.effective('look.message.traditional.nick_column_max')) || 0,
+);
+const nickColumnMin = computed(
+  () => Number(settings.effective('look.message.traditional.nick_column_min')) || 0,
+);
+
+// Mark the cells whose text the maximum cut short, for the stylesheet's `+`.
+// Only layout knows which those are: a display name, a mode glyph and the
+// font all change how wide a nick draws. Every read before any write, so the
+// pass costs one layout however many rows are loaded.
+function markClippedNicks() {
+  const el = scroller.value;
+  if (!el || compactMode.value || nickColumnMax.value <= 0) return;
+  const texts = Array.from(el.querySelectorAll<HTMLElement>('.line > .prefix > .prefix-text'));
+  const clipped = texts.map((text) => text.scrollWidth > text.clientWidth);
+  texts.forEach((text, i) => {
+    const cell = text.parentElement;
+    if (!cell || 'clipped' in cell.dataset === clipped[i]) return;
+    if (clipped[i]) cell.dataset.clipped = '';
+    else delete cell.dataset.clipped;
+  });
+}
+
+function afterDraw() {
+  measureNickColumn();
+  markClippedNicks();
+}
 
 function measureNickColumn() {
   const el = scroller.value;
@@ -1898,13 +1936,22 @@ const renderRows = computed((): RenderRow[] => {
 });
 
 // After every draw: a wider nick may have widened the column.
-watch(renderRows, measureNickColumn, { flush: 'post' });
-onMounted(measureNickColumn);
+watch(renderRows, afterDraw, { flush: 'post' });
+onMounted(afterDraw);
 // A font change draws no row, and a floor in the old font's pixels is wrong
 // from that moment.
 watch(
   () => [settings.effective('look.font.family'), settings.effective('look.font.size')],
-  () => void nextTick(measureNickColumn),
+  () => void nextTick(afterDraw),
+  { flush: 'post' },
+);
+// New limits: the widest the column has been was under the old ones.
+watch(
+  () => [nickColumnMin.value, nickColumnMax.value],
+  () => {
+    nickColumnFloor.value = 0;
+    void nextTick(afterDraw);
+  },
   { flush: 'post' },
 );
 
@@ -3130,9 +3177,12 @@ watch(
   /* The nick column fits the widest nick drawn (#1405), so the widest sits
      one character from the time. --nick-col-floor is the widest it has been
      while this buffer is open (measureNickColumn): it grows and never
-     shrinks, so lines are not rewrapped as nicks come and go. */
+     shrinks, so lines are not rewrapped as nicks come and go.
+     --nick-col-min is the reader's own floor under it
+     (look.message.traditional.nick_column_min). */
   grid-template-columns:
-    max-content minmax(var(--nick-col-floor, 0px), max-content)
+    max-content
+    minmax(max(var(--nick-col-floor, 0px), var(--nick-col-min, 0px)), max-content)
     minmax(0, 1fr);
   grid-auto-rows: min-content;
   align-content: start;
@@ -3285,6 +3335,25 @@ watch(
 }
 .prefix.italic {
   font-style: italic;
+}
+/* A maximum nick column (look.message.traditional.nick_column_max): a cell's
+   text is cut at that many characters, and a `+` in the cell's padding says
+   so, as WeeChat's prefix_align_max does. Which cells were cut is layout's to
+   say (markClippedNicks). Scoped to .nick-max so a reader with no maximum
+   gets none of this. */
+.message-list.nick-max:not(.compact) .line > .prefix {
+  position: relative;
+}
+.message-list.nick-max:not(.compact) .line > .prefix > .prefix-text {
+  display: block;
+  max-width: var(--nick-col-max, none);
+  overflow: hidden;
+}
+.message-list.nick-max:not(.compact) .line > .prefix[data-clipped]::after {
+  content: '+';
+  position: absolute;
+  right: 0;
+  color: var(--fg-muted);
 }
 .prefix.action-marker {
   color: var(--fg-muted);

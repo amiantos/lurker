@@ -522,6 +522,38 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'always use the menu.',
   },
 
+  // ─── Traditional layout: the nick column (#1405) ──────────────────────
+  // WeeChat's prefix_align_min / prefix_align_max. The column fits the widest
+  // nick by default; these hold it open, or cap it and cut longer nicks short.
+  // The same number in both is a fixed column.
+  {
+    key: 'look.message.traditional.nick_column_min',
+    label: 'Nick column minimum (chars)',
+    category: 'appearance',
+    group: 'traditional-layout',
+    type: 'int',
+    min: 0,
+    max: 64,
+    default: 0,
+    description:
+      'Narrowest the nick column gets in the traditional layout, in characters. ' +
+      '0 fits it to the widest nick shown.',
+  },
+  {
+    key: 'look.message.traditional.nick_column_max',
+    label: 'Nick column maximum (chars)',
+    category: 'appearance',
+    group: 'traditional-layout',
+    type: 'int',
+    min: 0,
+    max: 64,
+    default: 0,
+    description:
+      'Widest the nick column gets in the traditional layout, in characters. A ' +
+      'longer nick is cut short and marked with a +. 0 is no limit. Set both to ' +
+      'the same number for a fixed column.',
+  },
+
   // ─── Modern layout density (#1186) ───────────────────────────────────
   // Themed like the fonts: how tight the rows sit is part of a look. The
   // phone apps, where compact is the default, are meant to read the same
@@ -2203,6 +2235,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   fonts: 'Fonts',
   palette: 'Colors',
   messages: 'Message rows',
+  'traditional-layout': 'Traditional layout',
   'modern-layout': 'Modern layout',
   timestamps: 'Timestamps',
   members: 'Member prefixes',

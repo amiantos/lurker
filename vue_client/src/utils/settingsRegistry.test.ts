@@ -335,6 +335,7 @@ describe('pane structure', () => {
       'fonts',
       'palette',
       'messages',
+      'traditional-layout',
       'modern-layout',
       'timestamps',
       'members',

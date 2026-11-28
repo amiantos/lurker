@@ -202,13 +202,14 @@ function time(at: Date, key: string): string {
 }
 
 /* Traditional: time | nick | text. The nick column fits the widest nick, as
-   the list's does, nicks set against its right edge. The gaps are each
-   cell's padding, with a separator down the text column's left edge,
-   continuous from row to row. */
+   the list's does, and keeps the reader's minimum for it (--nick-col-min);
+   a maximum is not drawn here, the sample nicks being short. Nicks are set
+   against the column's right edge. The gaps are each cell's padding, with a
+   separator down the text column's left edge, continuous from row to row. */
 .sample.traditional {
   display: grid;
   min-height: 0;
-  grid-template-columns: max-content max-content minmax(0, 1fr);
+  grid-template-columns: max-content minmax(var(--nick-col-min, 0px), max-content) minmax(0, 1fr);
   align-content: center;
   column-gap: 0;
   line-height: 1.55;

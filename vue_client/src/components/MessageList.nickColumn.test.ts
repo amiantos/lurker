@@ -14,6 +14,7 @@ import MessageList from './MessageList.vue';
 import messageListSource from './MessageList.vue?raw';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useSettingsStore } from '../stores/settings.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -62,11 +63,17 @@ const floor = (w: VueWrapper) =>
 describe('MessageList — the nick column in the stylesheet', () => {
   const css = messageListSource.split('<style scoped>')[1].replace(/\s+/g, ' ');
 
-  it('floors the column at the measured width and nothing wider', () => {
+  it("floors the column at the measured width or the reader's minimum, and nothing wider", () => {
     expect(css).toContain(
-      'grid-template-columns: max-content minmax(var(--nick-col-floor, 0px), max-content) minmax(0, 1fr);',
+      'grid-template-columns: max-content minmax(max(var(--nick-col-floor, 0px), var(--nick-col-min, 0px)), max-content) minmax(0, 1fr);',
     );
     expect(css).not.toMatch(/minmax\(\d+ch, max-content\)/);
+  });
+
+  it("cuts a cell at the reader's maximum only while one is set", () => {
+    expect(css).toContain(
+      '.message-list.nick-max:not(.compact) .line > .prefix > .prefix-text { display: block; max-width: var(--nick-col-max, none); overflow: hidden; }',
+    );
   });
 });
 
@@ -180,6 +187,53 @@ describe('MessageList — the nick column', () => {
     await w.vm.$nextTick();
     await w.vm.$nextTick();
     expect(writes).toBe(0);
+  });
+
+  describe('with a maximum set', () => {
+    // The stubbed layout: a cell is cut when its nick is longer than 6.
+    function stubWidths(w: VueWrapper) {
+      for (const text of w.findAll('.line > .prefix > .prefix-text')) {
+        const el = text.element as HTMLElement;
+        Object.defineProperty(el, 'clientWidth', { get: () => 60, configurable: true });
+        Object.defineProperty(el, 'scrollWidth', {
+          get: () => (el.textContent ?? '').length * 10,
+          configurable: true,
+        });
+      }
+    }
+    const marked = (w: VueWrapper, id: number) =>
+      'clipped' in (w.find(`[data-msg-id="${id}"] > .prefix`).element as HTMLElement).dataset;
+
+    it('marks the nicks it cut short, and only those', async () => {
+      useSettingsStore().values['look.message.traditional.nick_column_max'] = 6;
+      const b = open('#chan', 9, [line('bob'), line('averylongnickname')]);
+      const w = (wrapper = mount(MessageList, { attachTo: document.body }));
+      await w.vm.$nextTick();
+      expect(w.find('.message-list').classes()).toContain('nick-max');
+      stubWidths(w);
+
+      b.messages = [...b.messages, line('carol')] as never;
+      await w.vm.$nextTick();
+      expect(marked(w, 1)).toBe(false);
+      expect(marked(w, 2)).toBe(true);
+    });
+
+    it('marks nothing, and measures the column again, once the maximum is lifted', async () => {
+      const settings = useSettingsStore();
+      settings.values['look.message.traditional.nick_column_max'] = 6;
+      open('#chan', 9, [line('bob')]);
+      const w = (wrapper = mount(MessageList, { attachTo: document.body }));
+      await w.vm.$nextTick();
+      expect(floor(w)).toBe('80px');
+
+      tracks = '60px 140px 340px';
+      settings.values['look.message.traditional.nick_column_max'] = 0;
+      await w.vm.$nextTick();
+      await w.vm.$nextTick();
+      await w.vm.$nextTick();
+      expect(w.find('.message-list').classes()).not.toContain('nick-max');
+      expect(floor(w)).toBe('140px');
+    });
   });
 
   it('measures again when the font changes', async () => {
