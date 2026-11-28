@@ -13,6 +13,9 @@ import { defineConfig } from 'vitest/config';
 // plain TS, vitest's defaults found them all, and nothing needed a Vue plugin.
 export default defineConfig({
   test: {
+    // CI's coverage job is not a gate (test.yml), so one failed test must not
+    // cost the commit its report.
+    coverage: { reportOnFailure: true },
     projects: [
       {
         test: {

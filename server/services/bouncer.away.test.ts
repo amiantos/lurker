@@ -590,12 +590,22 @@ describe('draft/pre-away', () => {
   it('takes AWAY * after registration from a client without the cap', async () => {
     const acct = await seedAccount();
     fastAutoAway(acct);
+    // Half a second, not 50 ms: room for the PONG below to come first.
+    settings.setUserSetting(acct.userId, 'away.auto.delay_seconds', 0.5);
     const c = await attach(acct, 'neta');
     const mark = c.lines.length;
 
+    // Its reply is what comes before the PONG written right behind it. Read
+    // after a `settle` instead, the auto-away below had sometimes come
+    // already, with a 306 of its own (#1474).
     c.send('AWAY *');
+    c.send('PING awaystar');
+    const pong = await c.waitFor((l) => commandOf(l) === 'PONG' && l.endsWith(':awaystar'));
+    const before = c.lines.slice(mark, c.lines.indexOf(pong));
+    expect(before.filter((l) => ['305', '306'].includes(commandOf(l)))).toEqual([
+      expect.stringMatching(/ 306 /),
+    ]);
     await settle(acct, [c]);
-    expect(awayReplies(c, mark)).toEqual([expect.stringMatching(/ 306 /)]);
 
     // Nothing counts as the user now, so auto-away comes, with its own message.
     await until(() => acct.nets.every(isAway), 2000, 'auto-away');

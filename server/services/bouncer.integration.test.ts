@@ -443,8 +443,11 @@ describe('live relay', () => {
     c.send('@+typing=active TAGMSG #chan');
     c.send('@+draft/reply=m1;+draft/react=👍 TAGMSG #chan');
     c.send('@+example=1 TOPIC #chan');
-    // The TOPIC after them went out, so the TAGMSGs were handled before it.
+    c.send('PING tagmsgs');
+    // The TOPIC after them went out, so the TAGMSGs were handled before it,
+    // and the PONG behind it says the client has read what they drew (#1474).
     await until(() => acct.upstream.rawSent.includes('TOPIC #chan'), 5000, 'TOPIC relayed');
+    await c.waitFor((l) => l.includes('PONG') && l.endsWith(':tagmsgs'));
     // The reaction says it didn't go; typing is quiet about it.
     expect(c.lines.filter((l) => l.includes('NOTICE')).map((l) => l.split(' :')[1])).toEqual([
       'Reaction not sent to #chan',

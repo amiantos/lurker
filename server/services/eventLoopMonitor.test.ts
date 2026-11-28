@@ -31,8 +31,14 @@ async function stallReport(context?: () => string | null): Promise<string> {
   // baseline and records nothing for it, so a block that starts before that
   // tick (20 ms resolution) is invisible. Let it pass.
   await new Promise((r) => setTimeout(r, 50));
-  block(BLOCK_MS);
-  await until(() => warn.mock.calls.length > 0, 3000, 'a stall report');
+  // On a loaded machine that tick can still be to come 50 ms on, and the
+  // block was then the baseline: no report, ever (#1474). Nothing here can
+  // see the tick, so a block that drew no report is made again.
+  for (let attempt = 0; attempt < 5 && warn.mock.calls.length === 0; attempt++) {
+    block(BLOCK_MS);
+    await until(() => warn.mock.calls.length > 0, 300, 'a stall report').catch(() => {});
+  }
+  expect(warn, 'a stall report').toHaveBeenCalled();
   return String(warn.mock.calls[0][0]);
 }
 

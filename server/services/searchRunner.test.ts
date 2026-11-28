@@ -120,6 +120,9 @@ describe('runSearchQuery', () => {
   it('stops a statement that runs past the time limit', async () => {
     process.env.LURKER_SEARCH_TIME_LIMIT_MS = '150';
     expect(await codeOf(runSearchQuery(ENDLESS, []))).toBe('search_timeout');
+    // The next search needs a new process, and forking one can take longer
+    // than 150 ms on a busy machine (#1474): it is asked under the real limit.
+    delete process.env.LURKER_SEARCH_TIME_LIMIT_MS;
     expect(await runSearchQuery('SELECT 2 AS two', [])).toEqual([{ two: 2 }]);
   });
 
@@ -239,7 +242,7 @@ describe('the search process', () => {
       '-e',
       [
         `const { fork } = require('node:child_process');
-         const child = fork(${JSON.stringify(entry)}, [${JSON.stringify(DATABASE_FILE)}]);
+         const child = fork(${JSON.stringify(entry)}, [${JSON.stringify(DATABASE_FILE)}, String(process.pid)]);
          child.send({ id: 1, sql: ${JSON.stringify(ENDLESS)}, params: [] });
          process.send(child.pid);
          setInterval(() => {}, 1000);`,
@@ -264,5 +267,28 @@ describe('the search process', () => {
     const survived = alive();
     if (survived) process.kill(pid, 'SIGKILL');
     expect(survived).toBe(false);
+  }, 15_000);
+
+  it('goes by the parent it was told of, not the one it finds when it starts', async () => {
+    // A server that died while this process was starting has already been
+    // replaced as its parent by the time it looks, and one read then never
+    // changes (#1474). Started here with a parent that is not ours: the same
+    // thing, from where the process stands.
+    const entry = fileURLToPath(new URL('../searchProcess.ts', import.meta.url));
+    const child = fork(entry, [DATABASE_FILE, String(process.ppid)], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    child.send({ id: 1, sql: ENDLESS, params: [] });
+    // Ours, if the watchdog's never comes.
+    let gaveUp = false;
+    const timer = setTimeout(() => {
+      gaveUp = true;
+      child.kill('SIGKILL');
+    }, 8000);
+    await exited;
+    clearTimeout(timer);
+    expect(gaveUp).toBe(false);
+    expect(child.signalCode).toBe('SIGKILL');
   }, 15_000);
 });

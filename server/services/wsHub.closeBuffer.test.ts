@@ -26,6 +26,7 @@ import {
   ensureOpen,
   close as closeRow,
   invalidateCasemappingCache,
+  networkCasemapping,
 } from '../db/buffers.js';
 import db from '../db/index.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
@@ -171,10 +172,17 @@ describe('closeBuffer parts only a channel we are on', () => {
     ensureOpen(userId, network.id, '#marked', { kind: 'channel' });
     closeRow(userId, network.id, '#marked');
 
+    // The JOIN above is on the wire too, so its echo is coming, and then the
+    // PART's. The ircd having the PART says nothing of where those echoes are:
+    // read between the two, the map says joined (#1474). The first real 'part'
+    // is the second of them.
+    let partEchoed = false;
+    conn.client.once('part', () => (partEchoed = true));
     conn.restoring = true;
     conn.client.emit('join', { channel: '#marked', nick: conn.currentNick });
     conn.restoring = false;
     await until(() => partsSent('closereplaymark').length > 0, 5000, 'replay parted it');
+    await until(() => partEchoed, 5000, 'the PART echoed');
 
     expect(conn.isChannelJoined('#marked')).toBe(false);
     expect(conn.mayBeJoined('#marked')).toBe(false);
@@ -518,6 +526,9 @@ describe('closeBuffer parts only a channel we are on', () => {
     await until(() => conn.state === 'connected', 5000, 'connected');
     // After registration: the connection captures ISUPPORT CASEMAPPING on the
     // way in, and the fake ircd declares `ascii`, which would overwrite this.
+    // 'connected' is the 001, and the 005 can be a read behind it (#1474), so
+    // wait for the capture itself.
+    await until(() => networkCasemapping(network.id) === 'ascii', 5000, 'CASEMAPPING captured');
     db.prepare('UPDATE networks SET casemapping = ? WHERE id = ?').run('rfc1459', network.id);
     invalidateCasemappingCache(network.id);
     ircManager.joinChannel(userId, network.id, '#foo[bar]');
