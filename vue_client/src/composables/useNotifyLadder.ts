@@ -11,6 +11,17 @@
 //   Network:  Highlights only (default) · Nothing · Muted  (no "All" — a network
 //             firehose makes no sense)
 //
+// Beside the ladder, channels and networks get a "Suppress Highlights" box
+// (#1414): on any rung, nothing said there highlights. Muted alone still
+// badges a highlight, which is the point of muting a room you follow; the box
+// is for a room where a mention of your nick is noise too. Not on the DM menu,
+// where the conversation itself is the signal, not a matched word.
+//
+// The box is an ignore rule of its own (NOHIGHLIGHT, same scope), beside the
+// rung's rule and never merged into it: ticking it rewrites nothing. The
+// server stamps a highlight as a line arrives, so counts already on a buffer
+// stay; the message list reads today's rules, so the tint goes at once.
+//
 // Under the hood the suppressor rungs are ignore rules: "Nothing" = a NONOTIFY
 // rule, "Muted" = NONOTIFY + NOUNREAD, both scoped to the buffer (channel/DM
 // target) or the whole network. "All messages" is the channel-only notify_always
@@ -18,7 +29,7 @@
 // from the menu; if a hand-typed /ignore contradicts, the ignore veto wins.
 
 import { CircleDotIcon, CircleIcon } from '@lucide/vue';
-import type { ContextMenuItem } from './useContextMenu.js';
+import { checkboxItem, type ContextMenuItem } from './useContextMenu.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
 import { canonicalizeLevels, type IgnoreRule } from '../utils/ignoreMatch.js';
@@ -83,6 +94,31 @@ export function useNotifyLadder() {
     }
   }
 
+  // The Suppress Highlights box: add the rule, or remove the one that is there
+  // now, from the scope it is in. `find` runs at the tap (#1136).
+  function suppressItem(
+    networkId: number,
+    find: () => { id: number; networkId: number | null } | null,
+    channels: string[] | null,
+  ): ContextMenuItem {
+    return checkboxItem('Suppress Highlights', !!find(), (next) => {
+      const existing = find();
+      if (next && !existing) {
+        ignores.addRule(networkId, {
+          mask: null,
+          channels,
+          pattern: null,
+          patternKind: 'substr',
+          levels: ['NOHIGHLIGHT'],
+          isExcept: false,
+          expiresAt: null,
+        });
+      } else if (!next && existing) {
+        ignores.removeRule(existing.networkId, { id: existing.id });
+      }
+    });
+  }
+
   // ---- Channel: 4 rungs (notify_always + buffer mute rule) ------------------
   function channelItems(networkId: number, target: string): ContextMenuItem[] {
     const notifyAlways = channelNotify.notifyAlways(networkId, target);
@@ -104,6 +140,9 @@ export function useNotifyLadder() {
       rungItem('Highlights only', current === 'highlights', () => set('highlights')),
       rungItem('Nothing', current === 'nothing', () => set('nothing')),
       rungItem('Muted', current === 'muted', () => set('muted')),
+      suppressItem(networkId, () => ignores.bufferSuppressRule(networkId, target), [
+        target.toLowerCase(),
+      ]),
     ];
   }
 
@@ -134,6 +173,7 @@ export function useNotifyLadder() {
       rungItem('Highlights only', current === 'highlights', () => set('highlights')),
       rungItem('Nothing', current === 'nothing', () => set('nothing')),
       rungItem('Muted', current === 'muted', () => set('muted')),
+      suppressItem(networkId, () => ignores.networkSuppressRule(networkId), null),
     ];
   }
 

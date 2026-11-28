@@ -18,6 +18,9 @@ How Lurker keeps you informed across all your devices.
   stays) and **Muted** (no alerts and no unread count; a highlight still badges).
   Underneath they are ignore rules, so they appear in `/ignore`'s list and
   follow you to every device.
+- Channels and networks also have **Suppress Highlights** in the same menu:
+  nothing said there highlights, whatever the level. A highlight count already
+  on the channel stays until you read it.
 
 ## Web push
 

@@ -109,6 +109,29 @@ describe('NOHIGHLIGHT', () => {
   });
 });
 
+// The rule the Suppress Highlights box writes (#1414): no mask, one channel.
+describe('NOHIGHLIGHT for a whole channel', () => {
+  it('stops anyone highlighting there, and nowhere else', () => {
+    const added = ignoreRulesService.add(user.id, net!.id, {
+      mask: null,
+      channels: ['#quiet'],
+      pattern: null,
+      patternKind: 'substr',
+      levels: ['NOHIGHLIGHT'],
+      isExcept: false,
+      expiresAt: null,
+    });
+    expect(added.ok).toBe(true);
+
+    const there = stamp({ type: 'message', nick: 'carol', target: '#Quiet', text: 'hello!' });
+    expect(there.matchedRuleId).toBeNull();
+    expect(there.fromIgnored).toBe(false);
+
+    const elsewhere = stamp({ type: 'message', nick: 'carol', target: '#loud', text: 'hello!' });
+    expect(elsewhere.matchedRuleId).not.toBeNull();
+  });
+});
+
 describe('PUBLIC hide', () => {
   it('stamps from_ignored and drops from unread', () => {
     expect(addRule('spammer', ['PUBLIC']).ok).toBe(true);
