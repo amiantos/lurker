@@ -89,6 +89,31 @@ function onWindowPointerDown(e: PointerEvent): void {
   // reopen the menu — pointerdown can't cancel the click that follows.
   if (state.triggerEl && state.triggerEl.contains(e.target as Node)) return;
   menu.close();
+  if (e.pointerType === 'touch') swallowTap();
+}
+
+// On touch, the tap that dismisses the menu does nothing else (#1492): without
+// this the same tap's click reaches whatever is under the finger, so tapping a
+// second message closed one menu and opened the next, and there was no way to
+// just get rid of it. Cancelling the touchend is what stops the browser from
+// synthesizing the mousedown/click (and the focus that rides on them); a click
+// listener would be too late for the focus. A drag ends in a touchend that
+// can't be cancelled and has no click behind it, so scrolling is unaffected.
+// Mouse and pen never arm this: a click outside acts as it always has.
+let disarmSwallow: (() => void) | null = null;
+function swallowTap(): void {
+  disarmSwallow?.();
+  const onEnd = (e: TouchEvent): void => {
+    if (e.type === 'touchend' && e.cancelable) e.preventDefault();
+    disarmSwallow?.();
+  };
+  window.addEventListener('touchend', onEnd, { capture: true, passive: false });
+  window.addEventListener('touchcancel', onEnd, true);
+  disarmSwallow = () => {
+    window.removeEventListener('touchend', onEnd, true);
+    window.removeEventListener('touchcancel', onEnd, true);
+    disarmSwallow = null;
+  };
 }
 function onWindowKey(e: KeyboardEvent): void {
   if (state.open && e.key === 'Escape') menu.close();
@@ -141,6 +166,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  disarmSwallow?.();
   window.removeEventListener('pointerdown', onWindowPointerDown, true);
   window.removeEventListener('keydown', onWindowKey);
   window.removeEventListener('resize', onWindowResize);
