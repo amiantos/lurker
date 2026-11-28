@@ -886,6 +886,8 @@ function rowClasses(buf: Buffer, networkId: number): Record<string, boolean> {
     // light the row up in the highlight color.
     unread: buf.unread > 0 && !isChannelMuted(buf),
     highlighted: buf.highlighted > 0,
+    // The resting states (#1433), each with a colour of its own.
+    muted: isChannelMuted(buf),
     'not-joined': isUnjoined(buf, networkId),
     'peer-away': isPeerAway(buf),
     'peer-offline': isPeerOffline(buf),
@@ -1476,6 +1478,22 @@ onBeforeUnmount(() => {
   background: var(--bg-soft);
   border-left-color: var(--accent);
 }
+/* A row's name at rest, then the states that recolour it (#1433), each a
+   themed colour. Later rules win, so the order is the precedence: a muted
+   row, a channel that is not joined, then anything new in the row. */
+.channels li .label {
+  color: var(--buffer-name);
+}
+.channels li.muted .label {
+  color: var(--buffer-muted);
+}
+/* Parted/disconnected channels are a history view rather than a live buffer:
+   a colour of their own, and italics, the same tell an offline DM peer has.
+   The label alone, not the row: fading the row faded its tree guides too. */
+.channels li.not-joined .label {
+  color: var(--buffer-not-joined);
+  font-style: italic;
+}
 .channels li.unread .label {
   color: var(--buffer-unread);
 }
@@ -1487,12 +1505,6 @@ onBeforeUnmount(() => {
 .buffer-list.unread-bold .channels li.unread .label,
 .buffer-list.unread-bold .channels li.highlighted .label {
   font-weight: 600;
-}
-/* Parted/disconnected channels render as a history view rather than a live
-   buffer. Apply opacity to the whole row so badges, labels, and tree guides
-   all dim together; unread/highlight colors still come through. */
-.channels li.not-joined {
-  opacity: 0.5;
 }
 /* DM peer state. Both away and offline render in muted gray (matching
    away members in the channel nicklist); offline is additionally italicized,

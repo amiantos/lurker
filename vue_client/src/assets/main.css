@@ -23,6 +23,9 @@
      look.color.buffer.* once the settings store loads. */
   --buffer-unread: var(--accent);
   --buffer-highlight: var(--warn);
+  --buffer-name: var(--fg);
+  --buffer-muted: var(--fg-muted);
+  --buffer-not-joined: var(--fg-muted);
 
   /* Member-list mode prefix colors */
   --member-owner: #ed6c89;
