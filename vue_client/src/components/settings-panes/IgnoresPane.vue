@@ -176,9 +176,13 @@
               {{ mod }}
             </button>
           </div>
+          <span class="field-hint">
+            The line stays, but is never a highlight, adds no unread count, or sends no
+            notification. With event types picked above, only those are silenced.
+          </span>
         </div>
 
-        <!-- Modifiers -->
+        <!-- Options: exception, expiry -->
         <div class="field">
           <span class="field-label">Options</span>
           <label class="ck">
@@ -401,8 +405,9 @@ function buildRule(): IgnoreRule | null {
   const levels = buildLevels();
   // An empty selection is now reachable (ALL is a toggle), so it has to be
   // answered here — visibly — instead of buildLevels quietly turning it back into
-  // "hide everything". Pick a modifier and it IS a valid rule: hide nothing,
-  // suppress this nick's highlights. That is the rule #775 was about.
+  // "hide everything". Pick a silencing option and it IS a valid rule: hide
+  // nothing, and (with NOHIGHLIGHT) suppress this nick's highlights, the rule
+  // #775 was about.
   if (levels.length === 0) {
     formError.value =
       'pick at least one event type to hide, or a silencing option — as written this rule would do nothing.';
@@ -427,18 +432,22 @@ function buildRule(): IgnoreRule | null {
   // every highlight on every network, and the list shows it as nothing but `*  NOHIGHLIGHT`.
   // Two clicks away from the default form, which is exactly why it needs saying out loud.
   //
-  // NOHIGHLIGHT only, as before the modifiers had a row of their own: an
-  // unscoped NOUNREAD/NONOTIFY rule is a mute, which the menus write. And only
-  // for every network: scoped to one, it is that network's Suppress Highlights
-  // box (#1414), which has to open and save here like any rule.
-  if (
-    unscoped &&
-    scopeMode.value === 'global' &&
-    !useAll.value &&
-    form.levels.length === 0 &&
-    form.modifiers.includes('NOHIGHLIGHT')
-  ) {
-    formError.value = 'that would silence every highlight — add a mask, channel, or text pattern.';
+  // Any modifier, not NOHIGHLIGHT alone: with no who/where/what, NONOTIFY ends
+  // every notification and NOUNREAD every unread count. And only for every
+  // network. Scoped to one, it is what that network's menu writes (its level,
+  // and its Suppress Highlights box, #1414), which has to open and save here
+  // like any rule.
+  if (unscoped && scopeMode.value === 'global' && !useAll.value && form.levels.length === 0) {
+    formError.value =
+      'that would silence every network — add a mask, channel, or text pattern, or scope it to one network.';
+    return null;
+  }
+  // NOUNREAD mutes a whole buffer's count; nothing counts unread per sender or
+  // per phrase (shared/ignoreMatch channelMutesUnread). Saved with one of
+  // these it would sit in the list and do nothing.
+  if (form.modifiers.includes('NOUNREAD') && (mask || pattern || form.isExcept)) {
+    formError.value =
+      'NOUNREAD mutes a whole channel, DM or network — it does nothing with a mask, text pattern or exception.';
     return null;
   }
   let expiresAt: string | null = null;
@@ -464,6 +473,10 @@ function resetForm() {
   form.isExcept = false;
   form.expiry = '';
   useAll.value = true;
+  // Global is the default scope; an edit of a network's rule must not leave
+  // the next "add ignore" scoped to that network.
+  scopeMode.value = 'global';
+  scopeNetworkId.value = null;
   editing.value = null;
   editingExpiresAt.value = null;
 }
@@ -557,6 +570,10 @@ function onRemove(entry: IgnoreEntryWithNetwork) {
 }
 .field-label {
   color: var(--fg-muted);
+}
+.field-hint {
+  color: var(--fg-muted);
+  font-size: 0.9em;
 }
 .row {
   display: flex;
