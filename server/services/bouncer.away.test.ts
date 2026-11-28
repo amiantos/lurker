@@ -590,11 +590,13 @@ describe('draft/pre-away', () => {
   it('takes AWAY * after registration from a client without the cap', async () => {
     const acct = await seedAccount();
     fastAutoAway(acct);
+    // Half a second, not 50 ms: room for the PONG below to come first.
+    settings.setUserSetting(acct.userId, 'away.auto.delay_seconds', 0.5);
     const c = await attach(acct, 'neta');
     const mark = c.lines.length;
 
     // Its reply is what comes before the PONG written right behind it. Read
-    // after a `settle` instead, the 50 ms auto-away below had sometimes come
+    // after a `settle` instead, the auto-away below had sometimes come
     // already, with a 306 of its own (#1474).
     c.send('AWAY *');
     c.send('PING awaystar');

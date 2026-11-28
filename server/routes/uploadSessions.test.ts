@@ -12,6 +12,7 @@ import sharp from 'sharp';
 import type { Express } from 'express';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import { setupTestDb, createTestApp, createAuthedAgent } from '../test-utils/testApp.js';
+import { until } from '../test-utils/until.js';
 import type { UploadSource } from '../services/uploadProviders/source.js';
 import type { ContentClass } from '../services/uploadProviders/types.js';
 
@@ -120,8 +121,8 @@ describe('/api/upload-sessions', () => {
 
     // The file is handed on and gone; the session keeps the answer, for a
     // client whose connection dropped before it arrived.
-    await new Promise((r) => setTimeout(r, 20)); // the unlink is fire-and-forget
-    expect(fs.existsSync(sessions.uploadSessionPath(id))).toBe(false);
+    // The unlink is fire-and-forget.
+    await until(() => !fs.existsSync(sessions.uploadSessionPath(id)), 5000, 'the file gone');
     const after = await alice.get(`/api/upload-sessions/${id}`);
     expect(after.body).toMatchObject({ state: 'done', offset: file.length });
     expect(after.body.result).toEqual({ status: 200, body: done.body });
@@ -251,8 +252,8 @@ describe('/api/upload-sessions', () => {
     await put(id, 0, Buffer.alloc(CHUNK, 97));
     expect((await alice.delete(`/api/upload-sessions/${id}`)).body).toEqual({ ok: true });
     expect((await alice.get(`/api/upload-sessions/${id}`)).status).toBe(404);
-    await new Promise((r) => setTimeout(r, 20)); // the unlink is fire-and-forget
-    expect(fs.existsSync(sessions.uploadSessionPath(id))).toBe(false);
+    // The unlink is fire-and-forget.
+    await until(() => !fs.existsSync(sessions.uploadSessionPath(id)), 5000, 'the file gone');
   });
 
   it('400s a session it cannot make sense of', async () => {

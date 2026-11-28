@@ -268,4 +268,27 @@ describe('the search process', () => {
     if (survived) process.kill(pid, 'SIGKILL');
     expect(survived).toBe(false);
   }, 15_000);
+
+  it('goes by the parent it was told of, not the one it finds when it starts', async () => {
+    // A server that died while this process was starting has already been
+    // replaced as its parent by the time it looks, and one read then never
+    // changes (#1474). Started here with a parent that is not ours: the same
+    // thing, from where the process stands.
+    const entry = fileURLToPath(new URL('../searchProcess.ts', import.meta.url));
+    const child = fork(entry, [DATABASE_FILE, String(process.ppid)], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    child.send({ id: 1, sql: ENDLESS, params: [] });
+    // Ours, if the watchdog's never comes.
+    let gaveUp = false;
+    const timer = setTimeout(() => {
+      gaveUp = true;
+      child.kill('SIGKILL');
+    }, 8000);
+    await exited;
+    clearTimeout(timer);
+    expect(gaveUp).toBe(false);
+    expect(child.signalCode).toBe('SIGKILL');
+  }, 15_000);
 });
