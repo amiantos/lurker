@@ -27,11 +27,6 @@ function chip(wrapper: VueWrapper, label: string) {
   return found;
 }
 
-// The NOHIGHLIGHT modifier is the only checkbox in the "Event types" field.
-function noHighlightBox(wrapper: VueWrapper) {
-  return wrapper.find('.field .ck input[type="checkbox"]');
-}
-
 // The form lives in a modal: its footer button is the form's submit.
 function submit(wrapper: VueWrapper) {
   return wrapper.find('.modal form').trigger('submit');
@@ -94,7 +89,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   // anything, and /ignore bob NOHIGHLIGHT makes one happily.
   it('builds a NOHIGHLIGHT-only rule when ALL is switched off', async () => {
     await setMask(wrapper, 'bob');
-    await noHighlightBox(wrapper).setValue(true);
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['NOHIGHLIGHT']);
@@ -108,7 +103,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
-    expect(wrapper.find('.form-error').text()).toContain('Suppress highlights only');
+    expect(wrapper.find('.form-error').text()).toContain('Without hiding');
   });
 
   it('keeps a granular selection selectable and clearable', async () => {
@@ -139,7 +134,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   // network while the list shows it as nothing but `*  NOHIGHLIGHT`. The pane already refuses
   // the ALL-shaped version of the same mistake.
   it('refuses an unscoped highlight-suppression rule', async () => {
-    await noHighlightBox(wrapper).setValue(true);
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
     await chip(wrapper, 'ALL').trigger('click');
     await submit(wrapper);
     expect(sentRule()).toBeNull();
@@ -149,7 +144,7 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
   it('combines hide levels with the modifier — the pairing the fix must not lose', async () => {
     await setMask(wrapper, 'bob');
     await chip(wrapper, 'JOINS').trigger('click');
-    await noHighlightBox(wrapper).setValue(true);
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['JOINS', 'NOHIGHLIGHT']);
   });
@@ -185,5 +180,44 @@ describe('IgnoresPane — the ALL chip and the NOHIGHLIGHT-only rule (#775)', ()
     expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('true');
     await submit(wrapper);
     expect(sentRule()?.levels).toEqual(['ALL']);
+  });
+
+  // The modifiers are chips of their own, apart from the event types: ALL does
+  // not clear them, and they are not cleared by it on the way back in.
+  it('keeps a modifier when ALL is switched on after it', async () => {
+    await setMask(wrapper, 'bob');
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NONOTIFY').trigger('click');
+    await chip(wrapper, 'ALL').trigger('click');
+    expect(chip(wrapper, 'NONOTIFY').attributes('aria-pressed')).toBe('true');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['ALL', 'NONOTIFY']);
+  });
+
+  it('round-trips an ALL rule that carries modifiers', async () => {
+    seedEntry({ levels: ['ALL', 'NOUNREAD', 'NONOTIFY'] });
+    await wrapper.vm.$nextTick();
+    await wrapper.find('.device .btn-bar button').trigger('click');
+    expect(chip(wrapper, 'ALL').attributes('aria-pressed')).toBe('true');
+    expect(chip(wrapper, 'NOUNREAD').attributes('aria-pressed')).toBe('true');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['ALL', 'NOUNREAD', 'NONOTIFY']);
+  });
+
+  it('sends the modifiers in canonical order, whatever order they were clicked in', async () => {
+    await setMask(wrapper, 'bob');
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NONOTIFY').trigger('click');
+    await chip(wrapper, 'NOHIGHLIGHT').trigger('click');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['NOHIGHLIGHT', 'NONOTIFY']);
+  });
+
+  it('builds a mute with no mask, as the notification menus do', async () => {
+    await chip(wrapper, 'ALL').trigger('click');
+    await chip(wrapper, 'NOUNREAD').trigger('click');
+    await chip(wrapper, 'NONOTIFY').trigger('click');
+    await submit(wrapper);
+    expect(sentRule()?.levels).toEqual(['NOUNREAD', 'NONOTIFY']);
   });
 });

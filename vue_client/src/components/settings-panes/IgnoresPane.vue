@@ -157,10 +157,25 @@
               {{ lvl }}
             </button>
           </div>
-          <label class="ck">
-            <input v-model="form.noHighlight" type="checkbox" />
-            <span>Suppress highlights only (don't hide) — NOHIGHLIGHT</span>
-          </label>
+        </div>
+
+        <!-- Which (modifiers): what a matching line loses while staying visible -->
+        <div class="field">
+          <span class="field-label">Without hiding</span>
+          <div class="chips">
+            <button
+              v-for="mod in MODIFIER_LEVELS"
+              :key="mod"
+              type="button"
+              class="chip"
+              :class="{ active: form.modifiers.includes(mod) }"
+              :aria-pressed="form.modifiers.includes(mod)"
+              :title="MODIFIER_HINTS[mod]"
+              @click="toggleModifier(mod)"
+            >
+              {{ mod }}
+            </button>
+          </div>
         </div>
 
         <!-- Modifiers -->
@@ -201,10 +216,21 @@ import { durationToExpiry, type IgnorePatternKind } from '../../../../shared/par
 import { CANONICAL_ORDER } from '../../../../shared/ignoreLevels.js';
 import { PenIcon, TrashIcon } from '@lucide/vue';
 
+// The modifier levels: they hide nothing, they take something away from a
+// line that stays visible. A row of their own, apart from the event types,
+// because they are not event types and ALL must not clear them: `ALL NONOTIFY`
+// is a rule /ignore accepts.
+const MODIFIER_LEVELS = ['NOHIGHLIGHT', 'NOUNREAD', 'NONOTIFY'];
+const MODIFIER_HINTS: Record<string, string> = {
+  NOHIGHLIGHT: 'Never a highlight',
+  NOUNREAD: 'No unread count for the channel or DM',
+  NONOTIFY: 'No notification or sound',
+};
+
 // Granular event types for the chip row: every level except the special ALL,
-// the never-surfaced CTCPS, and NOHIGHLIGHT (its own modifier checkbox).
+// the never-surfaced CTCPS, and the modifiers.
 const GRANULAR_LEVELS = CANONICAL_ORDER.filter(
-  (l) => l !== 'ALL' && l !== 'CTCPS' && l !== 'NOHIGHLIGHT',
+  (l) => l !== 'ALL' && l !== 'CTCPS' && !MODIFIER_LEVELS.includes(l),
 );
 
 // Mirrors MAX_PATTERN_LENGTH in server/services/ignoreRulesService.ts.
@@ -284,8 +310,9 @@ const form = reactive({
   channels: '',
   pattern: '',
   patternKind: 'substr' as IgnorePatternKind,
+  // Hide levels only; the modifiers are kept apart.
   levels: [] as string[],
-  noHighlight: false,
+  modifiers: [] as string[],
   isExcept: false,
   expiry: '',
 });
@@ -325,6 +352,12 @@ function toggleLevel(lvl: string) {
   else form.levels.push(lvl);
 }
 
+function toggleModifier(mod: string) {
+  const i = form.modifiers.indexOf(mod);
+  if (i >= 0) form.modifiers.splice(i, 1);
+  else form.modifiers.push(mod);
+}
+
 function parseChannels(s: string): string[] | null {
   const list = s
     .split(/[\s,]+/)
@@ -339,8 +372,8 @@ function parseChannels(s: string): string[] | null {
 // genuinely empty rule instead, where the user can see it happen.
 function buildLevels(): string[] {
   const out: string[] = useAll.value ? ['ALL'] : [...form.levels];
-  if (form.noHighlight) out.push('NOHIGHLIGHT');
-  return out;
+  // In canonical order, whatever order they were clicked in.
+  return [...out, ...MODIFIER_LEVELS.filter((m) => form.modifiers.includes(m))];
 }
 
 function buildRule(): IgnoreRule | null {
@@ -368,11 +401,11 @@ function buildRule(): IgnoreRule | null {
   const levels = buildLevels();
   // An empty selection is now reachable (ALL is a toggle), so it has to be
   // answered here — visibly — instead of buildLevels quietly turning it back into
-  // "hide everything". Tick the modifier and it IS a valid rule: hide nothing,
+  // "hide everything". Pick a modifier and it IS a valid rule: hide nothing,
   // suppress this nick's highlights. That is the rule #775 was about.
   if (levels.length === 0) {
     formError.value =
-      'pick at least one event type, or tick “Suppress highlights only” — as written this rule would do nothing.';
+      'pick at least one event type, or one of the “Without hiding” options — as written this rule would do nothing.';
     return null;
   }
   // Guard the footgun rules a GUI shouldn't make easy. A rule with no who/where/
@@ -393,7 +426,18 @@ function buildRule(): IgnoreRule | null {
   // evaluateIgnores' no-applies branch is unbounded for a non-hiding rule — so it silently kills
   // every highlight on every network, and the list shows it as nothing but `*  NOHIGHLIGHT`.
   // Two clicks away from the default form, which is exactly why it needs saying out loud.
-  if (unscoped && !useAll.value && form.levels.length === 0) {
+  //
+  // NOHIGHLIGHT only, as before the modifiers had a row of their own: an
+  // unscoped NOUNREAD/NONOTIFY rule is a mute, which the menus write. And only
+  // for every network: scoped to one, it is that network's Suppress Highlights
+  // box (#1414), which has to open and save here like any rule.
+  if (
+    unscoped &&
+    scopeMode.value === 'global' &&
+    !useAll.value &&
+    form.levels.length === 0 &&
+    form.modifiers.includes('NOHIGHLIGHT')
+  ) {
     formError.value = 'that would silence every highlight — add a mask, channel, or text pattern.';
     return null;
   }
@@ -416,7 +460,7 @@ function resetForm() {
   form.pattern = '';
   form.patternKind = 'substr';
   form.levels = [];
-  form.noHighlight = false;
+  form.modifiers = [];
   form.isExcept = false;
   form.expiry = '';
   useAll.value = true;
@@ -457,10 +501,12 @@ function startEdit(entry: IgnoreEntryWithNetwork) {
   // into "hide bob entirely". That is the "they get the ALL option added by
   // default" half of #775, and it silently rewrote rules people had already made
   // with /ignore.
-  const hideLevels = lv.filter((l) => l !== 'NOHIGHLIGHT');
+  // The same goes for every modifier: read apart from the hide levels, they
+  // also survive an ALL rule, which used to drop NOUNREAD/NONOTIFY on save.
+  const hideLevels = lv.filter((l) => !MODIFIER_LEVELS.includes(l));
   useAll.value = hideLevels.includes('ALL');
   form.levels = useAll.value ? [] : hideLevels;
-  form.noHighlight = lv.includes('NOHIGHLIGHT');
+  form.modifiers = lv.filter((l) => MODIFIER_LEVELS.includes(l));
   if (entry.networkId == null) {
     scopeMode.value = 'global';
   } else {
