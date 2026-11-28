@@ -569,6 +569,10 @@ export class ReplyRouter {
   private answerFromCache(query: Query): boolean {
     if (query.form !== 'mode' || !isClient(query.asker)) return false;
     if (!this.opts.isJoined(query.channel)) return false;
+    // A MODE for this channel has its 324 and may still be owed the 329, a
+    // read behind it: answered now, the client would get half the reply. It
+    // waits for that line (mustWait) and is answered from here after it.
+    if (this.settle && this.blocks(this.settle.query, query)) return false;
     const cached = this.modes.get(this.opts.fold(query.channel));
     if (!cached) return false;
     query.asker.replyFromCache(cached.created ? [cached.mode, cached.created] : [cached.mode]);

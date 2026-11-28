@@ -179,8 +179,11 @@ describe('DccSender', () => {
     const { sender, client } = await socketPair();
     // Kill the receiver almost immediately.
     client.on('data', () => client.destroy());
+    // Which error depends on where the close catches the sender: our own
+    // 'close' handler, a reset, or a write after the receiver's FIN (node's
+    // "This socket has been ended by the other party", seen on CI, #1474).
     await expect(run({ socket: sender, filePath, size: data.length })).rejects.toThrow(
-      /closed|reset|ECONNRESET|EPIPE/,
+      /closed|reset|ECONNRESET|EPIPE|ended by the other party/,
     );
   });
 

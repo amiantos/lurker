@@ -73,9 +73,17 @@ jobs:
       - name: Check formatting
         run: npm run format:check
 
-  test:
-    name: Test
+  # The suite is one worker per test file, 600+ files, on a 4-core runner, so it
+  # is split across runners (#1474). Each shard takes every third file.
+  test-shard:
+    name: Test shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest
+    strategy:
+      # A red shard does not stop the others: the whole list of what failed is
+      # worth more than the minute saved.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -93,7 +101,41 @@ jobs:
         run: npm ci --prefix vue_client
 
       - name: Run tests
-        run: npm test
+        run: npm test -- --shard=${{ matrix.shard }}/3
+
+  # Branch protection requires a check named "Test", so this job keeps the name
+  # and stands for the shards. `always()` because a job whose `needs` failed is
+  # otherwise SKIPPED, and a skipped required check counts as passing.
+  test:
+    name: Test
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every shard passed
+        run: test "${{ needs.test-shard.result }}" = "success"
+
+  # Its own job, beside the shards and not after them: it runs the whole suite
+  # again under instrumentation, which used to double the Test job. Not a
+  # required check, and a failure here never fails the run.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install client dependencies
+        run: npm ci --prefix vue_client
 
       - name: Generate coverage report
         run: npm run test:coverage

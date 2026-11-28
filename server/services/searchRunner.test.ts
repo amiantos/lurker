@@ -120,6 +120,9 @@ describe('runSearchQuery', () => {
   it('stops a statement that runs past the time limit', async () => {
     process.env.LURKER_SEARCH_TIME_LIMIT_MS = '150';
     expect(await codeOf(runSearchQuery(ENDLESS, []))).toBe('search_timeout');
+    // The next search needs a new process, and forking one can take longer
+    // than 150 ms on a busy machine (#1474): it is asked under the real limit.
+    delete process.env.LURKER_SEARCH_TIME_LIMIT_MS;
     expect(await runSearchQuery('SELECT 2 AS two', [])).toEqual([{ two: 2 }]);
   });
 

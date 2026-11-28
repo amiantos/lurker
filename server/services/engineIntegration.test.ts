@@ -170,6 +170,11 @@ describe('IrcConnection through the engine', () => {
     sentBeforeDetach = sentBy('lurk').length;
     conn.detach();
     await until(() => conn.state === 'disconnected', 5000, 'detached');
+    // And the engine has read the detach. The link is ordered, so every ack
+    // this process sent is in by then: the next test counts what the engine
+    // buffers from here, and an ack still crossing took lines back out from
+    // under that count (#1474).
+    await until(() => engine.info(engineId)?.attached === false, 5000, 'the engine saw the detach');
     expect(engine.held()).toContain(engineId);
     expect(ircd.client('lurk')).toBeDefined();
     // Nothing more went to the wire from the dead process — in particular no QUIT.

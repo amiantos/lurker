@@ -828,6 +828,20 @@ describe('MODE #chan from cache', () => {
     expect(writes).toEqual(['MODE #c']);
   });
 
+  it('holds a client that asks between the 324 and its 329 until the 329 is in', () => {
+    // The two lines are written together but can be read apart. Answered at
+    // the 324, the client got no creation time (#1474).
+    const { router, writes, hear } = setup({ joined: ['#c'] });
+    const a = new Client();
+    router.send('lurker', 'MODE #c');
+    expect(hear(MODE_IS)).toBe('lurker');
+    router.send(a, 'MODE #c');
+    expect(a.cached).toEqual([]);
+    expect(hear(CREATED)).toBe('lurker');
+    expect(a.cached).toEqual([[MODE_IS, CREATED]]);
+    expect(writes).toEqual(['MODE #c']);
+  });
+
   it('asks the network again after a change a 324 shows', () => {
     const { router, writes, hear } = setup({ joined: ['#c'] });
     hear(MODE_IS);

@@ -301,6 +301,10 @@ describe('replies go only to whoever asked', () => {
     erin.send('AWAY :out to lunch');
     await erin.waitFor(/ 306 /);
     live.conn.raw(`PRIVMSG ${nick} :\u0001VERSION\u0001`);
+    // The sentinel only follows what the network has already sent, and the 301
+    // is sent when the PRIVMSG is read: without this wait the sentinel could be
+    // written first, and under load the row was not there yet (#1474).
+    await until(() => sentBy(live).some((l) => l.startsWith(`PRIVMSG ${nick} `)), 5000, 'the CTCP');
     await sentinel(live, []);
     expect(serverRows(live).filter((t) => t.includes('out to lunch'))).toHaveLength(1);
   });

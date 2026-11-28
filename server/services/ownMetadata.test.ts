@@ -161,6 +161,12 @@ describe('saving', () => {
       `onServer=${JSON.stringify(conn.ownMetadataOnServer())} saved=${JSON.stringify(saved(network))}`;
     try {
       await until(() => conn.ownMetadataOnServer()?.status === 'old', 5000, 'listed', wire);
+      // The fake answers the SUB with a 774 pointing at `*ALL SYNC`, and the
+      // sync's batch replays its store. Under load that landed AFTER the read
+      // injected below and put `old` back, so the wait for it timed out
+      // (#1474). The fake answers a SYNC as it reads it, so once it has the
+      // line, anything injected follows the replay.
+      await until(() => me.sent.includes('METADATA *ALL SYNC'), 5000, 'synced', wire);
       // A batched 761 is a read (a burst, a LIST): not saved.
       ircd.inject('mirror', ':fake.server BATCH +r1 metadata mirror');
       ircd.inject('mirror', '@batch=r1 :fake.server 761 mirror mirror status * :from a batch');

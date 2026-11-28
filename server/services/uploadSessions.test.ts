@@ -23,6 +23,7 @@ vi.mock('../utils/diskSpace.js', () => ({
 
 import db from '../db/index.js';
 import { createUser } from '../db/users.js';
+import { until } from '../test-utils/until.js';
 import { setUploadChunkBytesForTests } from './uploadLimits.js';
 import {
   abortUploadSession,
@@ -53,7 +54,8 @@ describe('a chunk', () => {
     const body = new PassThrough();
     const pending = appendUploadChunk(user.id, id, '0', 64, body);
     body.write(Buffer.from('hello'));
-    await new Promise((r) => setTimeout(r, 20));
+    // On disk first: cut off before the write landed, the offset is 0 (#1474).
+    await until(() => uploadSessionOffset(id) === 5, 5000, 'hello on disk');
     body.destroy(new Error('socket hang up'));
     await expect(pending).rejects.toMatchObject({
       status: 400,
@@ -68,7 +70,7 @@ describe('a chunk', () => {
     const first = new PassThrough();
     const pending = appendUploadChunk(user.id, id, '0', 10, first);
     first.write(Buffer.from('12345'));
-    await new Promise((r) => setTimeout(r, 20));
+    await until(() => uploadSessionOffset(id) === 5, 5000, 'the first chunk on disk');
     await expect(
       appendUploadChunk(user.id, id, '0', 5, PassThrough.from([Buffer.from('xxxxx')])),
     ).rejects.toMatchObject({ status: 409, extra: { code: 'session_busy' } });
@@ -97,8 +99,7 @@ describe('a chunk', () => {
     const body = new PassThrough();
     const pending = appendUploadChunk(user.id, id, '10', null, body);
     body.write(Buffer.alloc(60, 98));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(uploadSessionOffset(id)).toBe(70);
+    await until(() => uploadSessionOffset(id) === 70, 5000, 'the 60 bytes on disk');
     body.end(Buffer.alloc(10, 98));
     await expect(pending).rejects.toMatchObject({
       status: 413,
@@ -230,7 +231,8 @@ describe('sweepUploadSessions', () => {
     fs.utimesSync(uploadSessionPath(fresh), old, old);
 
     await sweepUploadSessions();
-    await new Promise((r) => setTimeout(r, 20)); // a session's unlink is fire-and-forget
+    // A session's unlink is fire-and-forget.
+    await until(() => !fs.existsSync(uploadSessionPath(idle)), 5000, 'the idle file gone');
 
     expect(() => uploadSessionStatus(user.id, idle)).toThrow(/no such upload session/);
     expect(fs.existsSync(uploadSessionPath(idle))).toBe(false);
