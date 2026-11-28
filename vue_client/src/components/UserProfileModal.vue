@@ -130,22 +130,21 @@
         </div>
       </section>
 
-      <!-- What you keep on them: your note, and the metadata you set on them
-           (#1449), one list. A divider sets it off from the details above (only
-           when there are details to divide from). Your own profile keeps the
-           note alone; Edit Profile is the door to the rest. -->
-      <section class="section note-section" :class="{ divided: hasDetails }">
-        <NickMetadataEditor :network-id="networkId" :nick="nick" :metadata="!isSelf" />
-      </section>
-
       <!-- One status line, chosen in `statusLine` — see the note there for why
            the miss has to be said out loud rather than left to the header
-           dot (#818). -->
+           dot (#818). Above the note: it stands where the details would be. -->
       <section v-if="statusLine === 'not-found'" class="section status">
         <p class="muted"><CircleQuestionMarkIcon /> {{ nick }} isn't on this network.</p>
       </section>
       <section v-else-if="statusLine === 'waiting'" class="section status">
         <p class="muted"><LoaderCircleIcon class="icon-spin" /> Waiting for whois reply…</p>
+      </section>
+      <!-- What you keep on them: your note, and the metadata you set on them
+           (#1449), one list. A divider sets it off from the details or the status
+           line above (only when there is one to divide from). Your own profile keeps the
+           note alone; Edit Profile is the door to the rest. -->
+      <section class="section note-section" :class="{ divided: hasDetails || !!statusLine }">
+        <NickMetadataEditor :network-id="networkId" :nick="nick" :metadata="!isSelf" />
       </section>
     </div>
 
@@ -714,9 +713,5 @@ code {
 }
 .link.inline:hover {
   text-decoration: underline;
-}
-
-.status {
-  padding: var(--space-6) 0;
 }
 </style>
