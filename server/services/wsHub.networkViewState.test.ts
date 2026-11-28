@@ -124,3 +124,52 @@ describe('set-network-collapsed', () => {
     }
   });
 });
+
+describe('set-network-hide-muted', () => {
+  const hideChanges = (frames: Frame[]) =>
+    frames.filter((f) => f.kind === 'network-hide-muted-changed');
+
+  it('stores the flag and tells every socket the user has open', async () => {
+    const a = await connect(userId);
+    const b = await connect(userId);
+    try {
+      a.ws.send(JSON.stringify({ type: 'set-network-hide-muted', networkId, hideMuted: true }));
+      await a.barrier();
+      await b.barrier();
+
+      const expected = [{ kind: 'network-hide-muted-changed', networkId, hideMuted: true }];
+      expect(hideChanges(a.frames)).toEqual(expected);
+      expect(hideChanges(b.frames)).toEqual(expected);
+      expect(networksDb.getNetwork(networkId, userId)!.hide_muted).toBe(1);
+
+      a.ws.send(JSON.stringify({ type: 'set-network-hide-muted', networkId, hideMuted: false }));
+      await a.barrier();
+      expect(networksDb.getNetwork(networkId, userId)!.hide_muted).toBe(0);
+    } finally {
+      await a.close();
+      await b.close();
+    }
+  });
+
+  it("does nothing to someone else's network", async () => {
+    const a = await connect(userId);
+    try {
+      a.ws.send(
+        JSON.stringify({
+          type: 'set-network-hide-muted',
+          networkId: otherNetworkId,
+          hideMuted: true,
+        }),
+      );
+      a.ws.send(
+        JSON.stringify({ type: 'set-network-hide-muted', networkId: 'x', hideMuted: true }),
+      );
+      await a.barrier();
+
+      expect(hideChanges(a.frames)).toEqual([]);
+      expect(networksDb.getNetwork(otherNetworkId, otherUserId)!.hide_muted).toBe(0);
+    } finally {
+      await a.close();
+    }
+  });
+});

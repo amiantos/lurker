@@ -5,11 +5,13 @@ import { onBeforeUnmount, onMounted, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { usePinsStore } from '../stores/pins.js';
+import { useIgnoresStore } from '../stores/ignores.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { socketSend } from './useSocket.js';
 import { flattenBufferOrder, flattenUnreadOrder } from '../utils/bufferOrder.js';
+import { hidesMutedRow } from '../utils/mutedRows.js';
 
 export interface KeyboardShortcutsOptions {
   onOpenSwitcher?: () => void;
@@ -52,6 +54,7 @@ export function useKeyboardShortcuts({
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
   const pins = usePinsStore();
+  const ignores = useIgnoresStore();
   const favorites = useFavoritesStore();
   const navHistory = useNavHistoryStore();
   const recentBuffers = useRecentBuffersStore();
@@ -106,6 +109,25 @@ export function useKeyboardShortcuts({
     buffers.activate(entry.networkId, entry.target);
   }
 
+  // A muted row the sidebar is hiding (the network's "Hide Muted Channels") is walked past
+  // too: stepping into it would pop it into the list for one keypress.
+  function isHiddenRow(entry: {
+    networkId: string | number;
+    target: string;
+    key: string;
+    groupId: string | number;
+  }): boolean {
+    if (!networks.networkById(Number(entry.networkId))?.hideMuted) return false;
+    return hidesMutedRow({
+      hideMuted: true,
+      muted: ignores.bufferMutesUnread(entry.networkId, entry.target),
+      highlighted: buffers.byKey(entry.key)?.highlighted ?? 0,
+      active: entry.key === networks.activeKey,
+      // Under FRIENDS / FAVORITES (a section group, not its network), or pinned.
+      kept: entry.groupId !== entry.networkId || pins.isPinned(entry.networkId, entry.target),
+    });
+  }
+
   function step(delta: number, scope: 'all' | 'unread'): void {
     // Both Alt+Arrow (all buffers) and Shift+Alt+Arrow (unread only) walk the
     // full sidebar order across every network — neither is scoped to the
@@ -114,7 +136,8 @@ export function useKeyboardShortcuts({
     // own section in sidebar order rather than jumping to the top of the list;
     // isNavTarget then walks past them to a real buffer.
     const list = scope === 'unread' ? unreadOrder() : order();
-    if (!list.some(isNavTarget)) return;
+    const lands = (e: (typeof list)[number]) => isNavTarget(e) && !isHiddenRow(e);
+    if (!list.some(lands)) return;
     const activeKey = networks.activeKey;
     let idx = list.findIndex((e) => e.key === activeKey);
     if (idx === -1) {
@@ -124,10 +147,10 @@ export function useKeyboardShortcuts({
       idx = delta > 0 ? -1 : list.length;
     }
     // Advance to the next landable buffer in the requested direction, skipping
-    // server consoles and wrapping around.
+    // server consoles and hidden muted rows, and wrapping around.
     for (let i = 0; i < list.length; i++) {
       idx = (idx + delta + list.length) % list.length;
-      if (isNavTarget(list[idx])) {
+      if (lands(list[idx])) {
         activateEntry(list[idx]);
         return;
       }

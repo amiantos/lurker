@@ -89,6 +89,7 @@ export interface Network {
    *  Optional because nothing on the IRC side reads it, so a hand-built row
    *  (the connection tests) need not carry it. */
   collapsed?: number;
+  hide_muted?: number;
   created_at: string;
 }
 
@@ -294,13 +295,21 @@ export function setNetworkClientCert(
   return getNetwork(id, userId);
 }
 
-/** Store the user modes replayed after registration (#1181), or clear them. */
 /** Fold or unfold a network in the sidebar (#1432). False when it isn't theirs. */
 export function setNetworkCollapsed(id: number, userId: number, collapsed: boolean): boolean {
   return (
     db
       .prepare('UPDATE networks SET collapsed = ? WHERE id = ? AND user_id = ?')
       .run(collapsed ? 1 : 0, id, userId).changes > 0
+  );
+}
+
+/** Hide or show a network's muted channels in the sidebar (#1034). False when it isn't theirs. */
+export function setNetworkHideMuted(id: number, userId: number, hideMuted: boolean): boolean {
+  return (
+    db
+      .prepare('UPDATE networks SET hide_muted = ? WHERE id = ? AND user_id = ?')
+      .run(hideMuted ? 1 : 0, id, userId).changes > 0
   );
 }
 

@@ -382,6 +382,16 @@ export const useNetworksStore = defineStore('networks', {
       const net = this.networks.find((n) => n.id === id);
       if (net) net.collapsed = collapsed;
     },
+    // Hide or show a network's muted channels in the sidebar (#1034). Same
+    // shape as the fold: set here, echoed to every tab.
+    setHideMuted(id: number, hideMuted: boolean) {
+      this.applyHideMuted(id, hideMuted);
+      socketSend({ type: 'set-network-hide-muted', networkId: id, hideMuted });
+    },
+    applyHideMuted(id: number, hideMuted: boolean) {
+      const net = this.networks.find((n) => n.id === id);
+      if (net) net.hideMuted = hideMuted;
+    },
     async reorder(ids: number[]) {
       try {
         const { networks } = await api('/api/networks/reorder', {

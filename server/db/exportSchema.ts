@@ -184,6 +184,7 @@ export const EXPORT_TABLES = Object.freeze({
       'flood_protection',
       // Which networks the user folded away in the sidebar (#1432).
       'collapsed',
+      'hide_muted',
     ],
   },
 

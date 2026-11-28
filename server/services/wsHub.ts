@@ -120,7 +120,12 @@ import {
   setPresenceSource,
 } from './presence.js';
 import { isValidTimeZone, wallClockParts } from '../utils/timeZone.js';
-import { ownsNetwork, listNetworksForUser, setNetworkCollapsed } from '../db/networks.js';
+import {
+  ownsNetwork,
+  listNetworksForUser,
+  setNetworkCollapsed,
+  setNetworkHideMuted,
+} from '../db/networks.js';
 import * as chanlistDb from '../db/chanlist.js';
 import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject, validate } from './settingsRegistry.js';
@@ -4293,6 +4298,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const collapsed = !!msg.collapsed;
         if (!setNetworkCollapsed(networkId, userId, collapsed)) break;
         fanOut(userId, { kind: 'network-collapsed-changed', networkId, collapsed });
+        break;
+      }
+      case 'set-network-hide-muted': {
+        // Sidebar view state (#1034), synced like the fold above.
+        const networkId = Number(msg.networkId);
+        if (!Number.isInteger(networkId)) break;
+        const hideMuted = !!msg.hideMuted;
+        if (!setNetworkHideMuted(networkId, userId, hideMuted)) break;
+        fanOut(userId, { kind: 'network-hide-muted-changed', networkId, hideMuted });
         break;
       }
       case 'set-channel-notify-always': {

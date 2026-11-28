@@ -1,7 +1,16 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { HashIcon, PlugIcon, PlusIcon, SettingsIcon, UnplugIcon, UserPenIcon } from '@lucide/vue';
+import {
+  EyeIcon,
+  EyeOffIcon,
+  HashIcon,
+  PlugIcon,
+  PlusIcon,
+  SettingsIcon,
+  UnplugIcon,
+  UserPenIcon,
+} from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useChannelListModal } from './useChannelListModal.js';
@@ -70,6 +79,7 @@ export function useNetworkActions() {
   function buildItems(net: Network): ContextMenuItem[] {
     const state = networks.states[net.id]?.state;
     const isConnected = state === 'connected';
+    const hidesMuted = !!net.hideMuted;
     // Join stays on isConnected, the question of whether there's a socket to send JOIN on;
     // Disconnect is a different one (connectionItem).
     return [
@@ -106,6 +116,14 @@ export function useNetworkActions() {
       // every buffer on the network.
       { divider: true },
       ...notify.networkItems(net.id),
+      // Per network (#1034). Acts on the state it was labelled from, like the
+      // connection item above.
+      { divider: true },
+      {
+        label: hidesMuted ? 'Show Muted Channels' : 'Hide Muted Channels',
+        icon: hidesMuted ? EyeIcon : EyeOffIcon,
+        onClick: () => networks.setHideMuted(net.id, !hidesMuted),
+      },
     ];
   }
 

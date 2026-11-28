@@ -395,6 +395,7 @@ import {
   stepVisit,
   type VisitState,
 } from '../utils/networkAccordion.js';
+import { hidesMutedRow } from '../utils/mutedRows.js';
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -571,11 +572,30 @@ function isFavoriteBuf(b: Buffer): boolean {
   );
 }
 
+// "Hide Muted Channels" (#1034), a per-network switch in the network's menu.
+// Only ever asked of unpinned, unfavorited rows; see utils/mutedRows.
+function isHiddenMuted(networkId: number, buf: Buffer): boolean {
+  const hideMuted = !!networks.networkById(networkId)?.hideMuted;
+  return hidesMutedRow({
+    hideMuted,
+    muted: hideMuted && isChannelMuted(buf),
+    highlighted: buf.highlighted,
+    active: isActive(networkId, buf.target),
+    kept: false,
+  });
+}
+
 function unpinnedBufs(networkId: number): Buffer[] {
   const pinnedSet = new Set(pins.forNetwork(networkId));
   return buffers
     .forNetwork(networkId)
-    .filter((b) => !isServerBuffer(b) && !pinnedSet.has(b.target) && !isFavoriteBuf(b))
+    .filter(
+      (b) =>
+        !isServerBuffer(b) &&
+        !pinnedSet.has(b.target) &&
+        !isFavoriteBuf(b) &&
+        !isHiddenMuted(networkId, b),
+    )
     .toSorted((a, b) => {
       const oa = bufferOrder(a);
       const ob = bufferOrder(b);
