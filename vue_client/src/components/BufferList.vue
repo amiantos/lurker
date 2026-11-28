@@ -1480,18 +1480,19 @@ onBeforeUnmount(() => {
 }
 /* A row's name at rest, then the states that recolour it (#1433), each a
    themed colour. Later rules win, so the order is the precedence: a muted
-   row, a channel that is not joined, then anything new in the row. */
+   row, an offline one, then anything new in the row. */
 .channels li .label {
   color: var(--buffer-name);
 }
 .channels li.muted .label {
   color: var(--buffer-muted);
 }
-/* Parted/disconnected channels are a history view rather than a live buffer:
-   a colour of their own, and italics, the same tell an offline DM peer has.
-   The label alone, not the row: fading the row faded its tree guides too. */
+/* Offline: a parted or disconnected channel is a history view rather than a
+   live buffer. A colour of its own and italics, which an offline DM peer's
+   row shares (below). The label alone, not the row: fading the row faded its
+   tree guides too. */
 .channels li.not-joined .label {
-  color: var(--buffer-not-joined);
+  color: var(--buffer-offline);
   font-style: italic;
 }
 .channels li.unread .label {
@@ -1506,14 +1507,14 @@ onBeforeUnmount(() => {
 .buffer-list.unread-bold .channels li.highlighted .label {
   font-weight: 600;
 }
-/* DM peer state. Both away and offline render in muted gray (matching
-   away members in the channel nicklist); offline is additionally italicized,
-   which is the offline tell. */
-.channels li.peer-away .label,
-.channels li.peer-offline .label {
+/* DM peer state. Away renders in muted gray (matching away members in the
+   channel nicklist). Offline is the buffer list's offline colour, the one a
+   not-joined channel has (#1433), and italicized, which is the offline tell. */
+.channels li.peer-away .label {
   color: var(--fg-muted);
 }
 .channels li.peer-offline .label {
+  color: var(--buffer-offline);
   font-style: italic;
 }
 .label {

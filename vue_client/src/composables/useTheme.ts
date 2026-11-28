@@ -30,7 +30,7 @@ export const COLOR_VARS: Record<string, string> = {
   'look.color.buffer.highlight': '--buffer-highlight',
   'look.color.buffer.name': '--buffer-name',
   'look.color.buffer.muted': '--buffer-muted',
-  'look.color.buffer.not_joined': '--buffer-not-joined',
+  'look.color.buffer.offline': '--buffer-offline',
   'look.color.member.owner': '--member-owner',
   'look.color.member.admin': '--member-admin',
   'look.color.member.op': '--member-op',

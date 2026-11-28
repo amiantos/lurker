@@ -729,8 +729,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description: 'Rows with highlights.',
   },
   // The resting colours (#1433). An unread or highlighted row takes its own
-  // colour over all three; a row that is both muted and not joined is drawn
-  // as not joined.
+  // colour over all three; a row that is both muted and offline is drawn as
+  // offline.
   {
     key: 'look.color.buffer.name',
     label: 'Buffer name color',
@@ -752,16 +752,16 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description: 'Channels and DMs you have muted.',
   },
   {
-    key: 'look.color.buffer.not_joined',
-    label: 'Not-joined row color',
+    key: 'look.color.buffer.offline',
+    label: 'Offline row color',
     category: 'appearance',
     group: 'buffer-list',
     themed: true,
     type: 'color',
     default: 'var(--fg-muted)',
     description:
-      'Channels you are not in, or whose network is disconnected. These rows are ' +
-      'also in italics.',
+      'Channels you are not in or whose network is disconnected, and DMs with ' +
+      'someone who is offline. These rows are also in italics.',
   },
   {
     key: 'look.buffer_list.unread_bold',

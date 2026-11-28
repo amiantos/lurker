@@ -108,11 +108,15 @@ describe('BufferList row states', () => {
     const order = [
       '.channels li .label {\n  color: var(--buffer-name);',
       '.channels li.muted .label {\n  color: var(--buffer-muted);',
-      '.channels li.not-joined .label {\n  color: var(--buffer-not-joined);\n  font-style: italic;',
+      '.channels li.not-joined .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
       '.channels li.unread .label {\n  color: var(--buffer-unread);',
       '.channels li.highlighted .label {\n  color: var(--buffer-highlight);',
     ].map(at);
     expect(order).toEqual([...order].toSorted((a, b) => a - b));
+    // An offline DM peer's row takes the same colour.
+    expect(css).toContain(
+      '.channels li.peer-offline .label {\n  color: var(--buffer-offline);\n  font-style: italic;',
+    );
     // The row itself is no longer faded: that took the tree guides with it.
     expect(css).not.toMatch(/\.channels li\.not-joined \{\s*opacity/);
   });
