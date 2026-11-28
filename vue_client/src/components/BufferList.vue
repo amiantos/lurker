@@ -575,7 +575,7 @@ function isFavoriteBuf(b: Buffer): boolean {
 // "Hide Muted Channels" (#1034), a per-network switch in the network's menu.
 // Only ever asked of unpinned, unfavorited rows; see utils/mutedRows.
 function isHiddenMuted(networkId: number, buf: Buffer): boolean {
-  const hideMuted = !!networks.networkById(networkId)?.hideMuted;
+  const hideMuted = !!networks.networkById(networkId)?.hide_muted;
   return hidesMutedRow({
     hideMuted,
     muted: hideMuted && isChannelMuted(buf),
@@ -607,11 +607,22 @@ function unpinnedBufs(networkId: number): Buffer[] {
 // Folding networks (#1432): by hand per network, or all of them in accordion
 // mode. Going into a folded network opens it for the visit; leaving folds it
 // again. See utils/networkAccordion for the rules; this is the wiring.
+//
+// The phone layout passes `no-fold`: it has no chevron, and a network folded
+// on the desktop would arrive there with no way to open it for good.
+const props = defineProps<{ noFold?: boolean }>();
 const accordion = computed(() => !!settings.effective('look.buffer_list.accordion'));
 const visit = ref<VisitState>({ open: null, last: null });
+// Where you are: the active buffer, and whether it is listed as a favorite.
+// Both, because favorites load after the first buffer is active, and a buffer
+// can be favorited while you are in it; either moves it out of its network.
+const activeIsFavorite = computed(() => {
+  const buf = networks.activeKey ? buffers.byKey(networks.activeKey) : null;
+  return !!buf && isFavoriteBuf(buf);
+});
 watch(
-  () => networks.activeKey,
-  (key) => {
+  [() => networks.activeKey, activeIsFavorite],
+  ([key]) => {
     const buf = key ? buffers.byKey(key) : null;
     // A key with no buffer behind it yet still says where you are: the system
     // buffer's has no network id in front, every other one does.
@@ -626,6 +637,7 @@ watch(
   { immediate: true },
 );
 function isNetOpen(networkId: number): boolean {
+  if (props.noFold) return true;
   return isNetworkOpen({
     id: networkId,
     collapsed: !!networks.networkById(networkId)?.collapsed,

@@ -190,7 +190,7 @@ function networkPayload(
     autoconnect: !!network.autoconnect,
     flood_protection: !!network.flood_protection,
     collapsed: !!network.collapsed,
-    hideMuted: !!network.hide_muted,
+    hide_muted: !!network.hide_muted,
     has_password: !!server_password,
     has_sasl_password: !!sasl_password,
     // CertFP (#459). Neither PEM is in the payload: the key is a secret, and the

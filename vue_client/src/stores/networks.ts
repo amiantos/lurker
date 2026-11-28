@@ -368,30 +368,34 @@ export const useNetworksStore = defineStore('networks', {
       if (idx >= 0) this.networks[idx] = network;
       return network as Network;
     },
-    // Rewrite sidebar order. Server validates the id set; on 409 it echoes the
-    // authoritative list, which we apply so the UI snaps back to truth instead
-    // of staying out of sync after a concurrent add/delete from another tab.
-    // Fold or unfold a network in the sidebar (#1432). Set here first so the
-    // click answers at once; the server's echo (applyCollapsed) lands on every
-    // tab, this one included.
+    // Fold or unfold a network in the sidebar (#1432). Set here as it is sent,
+    // so the click answers at once; the server's echo (applyCollapsed) lands
+    // on every tab, this one included. With the socket down nothing is sent
+    // and nothing changes: a fold the server never heard of would be gone on
+    // the next load.
     setCollapsed(id: number, collapsed: boolean) {
-      this.applyCollapsed(id, collapsed);
-      socketSend({ type: 'set-network-collapsed', networkId: id, collapsed });
+      if (socketSend({ type: 'set-network-collapsed', networkId: id, collapsed })) {
+        this.applyCollapsed(id, collapsed);
+      }
     },
     applyCollapsed(id: number, collapsed: boolean) {
       const net = this.networks.find((n) => n.id === id);
       if (net) net.collapsed = collapsed;
     },
     // Hide or show a network's muted channels in the sidebar (#1034). Same
-    // shape as the fold: set here, echoed to every tab.
+    // shape as the fold.
     setHideMuted(id: number, hideMuted: boolean) {
-      this.applyHideMuted(id, hideMuted);
-      socketSend({ type: 'set-network-hide-muted', networkId: id, hideMuted });
+      if (socketSend({ type: 'set-network-hide-muted', networkId: id, hideMuted })) {
+        this.applyHideMuted(id, hideMuted);
+      }
     },
     applyHideMuted(id: number, hideMuted: boolean) {
       const net = this.networks.find((n) => n.id === id);
-      if (net) net.hideMuted = hideMuted;
+      if (net) net.hide_muted = hideMuted;
     },
+    // Rewrite sidebar order. Server validates the id set; on 409 it echoes the
+    // authoritative list, which we apply so the UI snaps back to truth instead
+    // of staying out of sync after a concurrent add/delete from another tab.
     async reorder(ids: number[]) {
       try {
         const { networks } = await api('/api/networks/reorder', {
@@ -504,6 +508,15 @@ export const useNetworksStore = defineStore('networks', {
         };
       }
       this.states = map;
+      // Sidebar view state rides the snapshot too, so a change made while
+      // this client was away arrives on reconnect. Only when the server says
+      // so: an older one sends neither field.
+      for (const snap of networks as Array<NetworkState & Record<string, unknown>>) {
+        if (typeof snap.collapsed === 'boolean')
+          this.applyCollapsed(snap.networkId, snap.collapsed);
+        if (typeof snap.hideMuted === 'boolean')
+          this.applyHideMuted(snap.networkId, snap.hideMuted);
+      }
     },
     applyState(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

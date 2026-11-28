@@ -117,7 +117,7 @@ export function useKeyboardShortcuts({
     key: string;
     groupId: string | number;
   }): boolean {
-    if (!networks.networkById(Number(entry.networkId))?.hideMuted) return false;
+    if (!networks.networkById(Number(entry.networkId))?.hide_muted) return false;
     return hidesMutedRow({
       hideMuted: true,
       muted: ignores.bufferMutesUnread(entry.networkId, entry.target),

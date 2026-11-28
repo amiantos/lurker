@@ -173,3 +173,45 @@ describe('set-network-hide-muted', () => {
     }
   });
 });
+
+describe('network view state', () => {
+  const blob = (frames: Frame[]) => {
+    const snaps = frames.filter((f) => f.kind === 'snapshot');
+    const nets = (
+      snaps[snaps.length - 1] as unknown as { networks: Array<Record<string, unknown>> }
+    ).networks;
+    return nets.find((n) => n.networkId === networkId)!;
+  };
+
+  it('ignores a frame that does not carry the value', async () => {
+    const a = await connect(userId);
+    try {
+      a.ws.send(JSON.stringify({ type: 'set-network-collapsed', networkId, collapsed: true }));
+      a.ws.send(JSON.stringify({ type: 'set-network-hide-muted', networkId, hideMuted: true }));
+      await a.barrier();
+      a.ws.send(JSON.stringify({ type: 'set-network-collapsed', networkId }));
+      a.ws.send(JSON.stringify({ type: 'set-network-hide-muted', networkId, hideMuted: 'false' }));
+      await a.barrier();
+
+      const row = networksDb.getNetwork(networkId, userId)!;
+      expect([row.collapsed, row.hide_muted]).toEqual([1, 1]);
+    } finally {
+      await a.close();
+    }
+  });
+
+  it('rides the snapshot, for a client that was away for the change', async () => {
+    networksDb.setNetworkCollapsed(networkId, userId, true);
+    networksDb.setNetworkHideMuted(networkId, userId, false);
+    const a = await connect(userId);
+    try {
+      expect(blob(a.frames)).toMatchObject({ collapsed: true, hideMuted: false });
+      networksDb.setNetworkCollapsed(networkId, userId, false);
+      networksDb.setNetworkHideMuted(networkId, userId, true);
+      await a.barrier();
+      expect(blob(a.frames)).toMatchObject({ collapsed: false, hideMuted: true });
+    } finally {
+      await a.close();
+    }
+  });
+});

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // "Hide Muted Channels" (#1034), switched per network from its menu and
-// stored on the server (`hideMuted` on the network): a muted channel or DM
+// stored on the server (`hide_muted` on the network): a muted channel or DM
 // leaves the sidebar until something highlights it. The buffer
 // you are in always stays, and so does anything pinned or favorited: those
 // were put where they are on purpose.

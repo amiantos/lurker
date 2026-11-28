@@ -19,6 +19,7 @@ vi.mock('../composables/useSocket.js', async (importOriginal) => ({
 
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useFavoritesStore } from '../stores/favorites.js';
 import { useKeyboardShortcuts } from '../composables/useKeyboardShortcuts.js';
 import BufferList from './BufferList.vue';
 
@@ -141,5 +142,46 @@ describe('BufferList folding', () => {
     up();
     await nextTick();
     expect(rows()[2]).toBe('beta:');
+  });
+
+  it('folds the network when the buffer you are in turns out to be a favorite', async () => {
+    // Favorites arrive after the first buffer is active on a cold load.
+    down();
+    await nextTick();
+    expect(rows()[2]).toBe('beta: #b1 #b2');
+
+    useFavoritesStore().entries = [{ networkId: 2, target: '#b1' }] as never;
+    await nextTick();
+    // By name: the FAVORITES section now sits above the networks.
+    expect(rows().find((r) => r.startsWith('beta'))).toBe('beta:');
+  });
+});
+
+describe('BufferList with no-fold (the phone layout)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    const networks = useNetworksStore();
+    networks.networks = [{ id: 2, name: 'beta', collapsed: true }] as never;
+    networks.states = { 2: { state: 'connected' } } as never;
+    for (const target of ['#b1', '#b2']) {
+      useBuffersStore().buffers[`2::${target}`] = {
+        networkId: 2,
+        target,
+        members: [],
+        messages: [],
+        unread: 0,
+        highlighted: 0,
+        joined: true,
+      } as never;
+    }
+    wrapper = mount(BufferList, { props: { noFold: true }, attachTo: document.body });
+  });
+  afterEach(() => {
+    wrapper?.unmount();
+    wrapper = null;
+  });
+
+  it('lists a folded network in full', () => {
+    expect(rows()[1]).toBe('beta: #b1 #b2');
   });
 });

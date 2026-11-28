@@ -4295,7 +4295,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // every device. The UPDATE is its own ownership check.
         const networkId = Number(msg.networkId);
         if (!Number.isInteger(networkId)) break;
-        const collapsed = !!msg.collapsed;
+        // A frame without the value says nothing; it must not unfold.
+        if (typeof msg.collapsed !== 'boolean') break;
+        const collapsed = msg.collapsed;
         if (!setNetworkCollapsed(networkId, userId, collapsed)) break;
         fanOut(userId, { kind: 'network-collapsed-changed', networkId, collapsed });
         break;
@@ -4304,7 +4306,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // Sidebar view state (#1034), synced like the fold above.
         const networkId = Number(msg.networkId);
         if (!Number.isInteger(networkId)) break;
-        const hideMuted = !!msg.hideMuted;
+        if (typeof msg.hideMuted !== 'boolean') break;
+        const hideMuted = msg.hideMuted;
         if (!setNetworkHideMuted(networkId, userId, hideMuted)) break;
         fanOut(userId, { kind: 'network-hide-muted-changed', networkId, hideMuted });
         break;

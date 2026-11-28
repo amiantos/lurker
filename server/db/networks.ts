@@ -313,6 +313,7 @@ export function setNetworkHideMuted(id: number, userId: number, hideMuted: boole
   );
 }
 
+/** Store the user modes replayed after registration (#1181), or clear them. */
 export function setNetworkUserModes(id: number, userId: number, modes: string | null): void {
   db.prepare('UPDATE networks SET user_modes = ? WHERE id = ? AND user_id = ?').run(
     modes,

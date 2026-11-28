@@ -706,7 +706,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description: 'Bold the names of rows with unread messages or highlights.',
   },
   {
-    // Desktop sidebar only. Which network is open is not stored: it follows
+    // Desktop layout only (the phone layout mounts BufferList with no-fold).
+    // Which network is open is not stored: it follows
     // the active buffer (utils/networkAccordion).
     key: 'look.buffer_list.accordion',
     label: 'Collapse other networks',
