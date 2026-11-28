@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import webpush from 'web-push';
+import * as webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
 import { prepareNotification, type PushPayload } from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';

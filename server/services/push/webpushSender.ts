@@ -9,7 +9,7 @@
 // measured against: it went first through the seam precisely to check the seam
 // could hold something real.
 
-import webpush from 'web-push';
+import * as webpush from 'web-push';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
 import {
   PUSH_TTL_SECONDS,
