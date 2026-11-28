@@ -171,7 +171,9 @@ function candidates(prefix: string): string[] {
     if (v.root) add(String(v.root.nick ?? ''));
     for (const r of v.replies) add(String(r.nick ?? ''));
   }
-  return out;
+  // Your own nick last, as in the channel composer (#1496).
+  const own = (nick: string) => networks.isOwnNick(buffer.value?.networkId, nick);
+  return [...out.filter((n) => !own(n)), ...out.filter(own)];
 }
 
 function completeNick(): void {

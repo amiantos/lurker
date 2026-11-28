@@ -59,9 +59,8 @@ const ackedSends = () =>
     .filter((f) => !String(f.type).startsWith('draft-'));
 
 const CHANNELS = ['#apple', '#mango', '#zebra'];
-// `mallory` exists so the self-exclusion test has a positive control: without a
-// second m-nick, "your own nick isn't offered" and "completion did nothing at
-// all" produce identical text and the assertion can't tell them apart.
+// `mallory` is a second m-nick beside your own, so the own-nick test can see
+// the order the two come in.
 const MEMBERS = ['alice', 'alexis', 'bob', 'mallory', 'me'];
 
 function seedStores(activeTarget = '#zebra', recent: string[] = []) {
@@ -394,18 +393,22 @@ describe('MessageInput Tab-completion', () => {
       expect(el.value).toBe('bob ');
     });
 
-    it('never offers your own nick', async () => {
-      // Both m-nicks match "@m"; only mallory may be offered. The positive half
-      // of this assertion matters as much as the negative one — with `me` as the
-      // sole m-nick, "self was correctly skipped" and "completion did nothing"
-      // would leave identical text.
+    it('offers your own nick last', async () => {
+      // Both m-nicks match "@m": mallory is the first hit and `me` the next
+      // (#1496). The ordering rule itself is covered in nickCompletion.test.ts.
       seedStores('#zebra');
       const { el } = await mountComposer();
 
       await type(el, '@m');
+      // The picker's own rows; it lists bottom-up, nearest the input first.
+      const rows = [...document.querySelectorAll('.vertical-popover .row')]
+        .map((r) => r.textContent?.replace(/\s+/g, ' ').trim() ?? '')
+        .toReversed();
+      expect(rows).toEqual(['mallory', 'me']);
       await tab(el);
-
       expect(el.value).toBe('mallory: ');
+      await tab(el);
+      expect(el.value).toBe('me: ');
     });
 
     it('completes an @-token in place once the picker is dismissed', async () => {
