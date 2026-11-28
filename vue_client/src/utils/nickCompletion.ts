@@ -7,7 +7,10 @@ import { isChannelTarget } from '../../../shared/channels.js';
 // MessageInput and the @-triggered NickPicker. Returns nicks matching `prefix`
 // (case-insensitive), with `recent: true` marking entries that come from the
 // speakers map (reverse-chronological) and `recent: false` marking remaining
-// channel members (alphabetical). The caller's own nick is excluded.
+// channel members (alphabetical). The caller's own nick comes last, whatever
+// it said and wherever it sorts (#1496): completing your own name is the
+// unlikely case, so it never takes a Tab hit from anyone else, but it is
+// there (WeeChat, HexChat and Quassel order it the same way).
 //
 // Membership filter: for channel buffers, speakers that are no longer present
 // (parted/quit) are dropped so completion only surfaces people who can still
@@ -74,7 +77,9 @@ export function buildNickCandidates(
   if (!buf) return [];
   const lower = (prefix || '').toLowerCase();
   const seen = new Set<string>();
-  if (selfNick) seen.add(selfNick.toLowerCase());
+  // Held out of both passes below and added at the end.
+  const selfLc = selfNick ? selfNick.toLowerCase() : null;
+  if (selfLc) seen.add(selfLc);
   const nameOf = (nick: string) => displayNameOf?.(nick) ?? null;
 
   const memberNames = (buf.members || [])
@@ -117,6 +122,15 @@ export function buildNickCandidates(
     if (isIgnored && isIgnored(n, memberUserhost(n))) continue;
     seen.add(lc);
     out.push({ nick: n, recent: false, ...(name ? { displayName: name } : {}) });
+  }
+
+  if (selfNick && selfLc) {
+    // The member list's spelling where it has one; a DM has no list.
+    const self = memberNames.find((n) => n.toLowerCase() === selfLc) ?? selfNick;
+    const name = nameOf(self);
+    if (matches(lower, self, name)) {
+      out.push({ nick: self, recent: false, ...(name ? { displayName: name } : {}) });
+    }
   }
 
   return out;
