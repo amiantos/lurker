@@ -8,7 +8,6 @@
     ref="scroller"
     class="message-list"
     :class="{ compact: compactMode, avatars: showAvatars, 'nick-max': nickColumnMax > 0 }"
-    :style="nickColumnFloor ? { '--nick-col-floor': `${nickColumnFloor}px` } : undefined"
     @scroll="onScroll"
     @wheel="onWheel"
   >
@@ -705,8 +704,17 @@ const stickToBottom = ref(true);
 // shrank would rewrap every line each time the widest nick's row left the
 // loaded window, and again when that nick next spoke. This is the widest the
 // column has been for this buffer, in px, handed back to the grid as its
-// floor (--nick-col-floor); 0 is no floor yet.
-const nickColumnFloor = ref(0);
+// floor (--nick-col-floor); 0 is no floor yet. Written to the element by
+// hand, not bound: a bound style would draw the whole list a second time for
+// every buffer opened, to add one property.
+let nickColumnFloor = 0;
+function setNickColumnFloor(px: number) {
+  nickColumnFloor = px;
+  const el = scroller.value;
+  if (!el) return;
+  if (px > 0) el.style.setProperty('--nick-col-floor', `${px}px`);
+  else el.style.removeProperty('--nick-col-floor');
+}
 // The font the floor was measured in: pixels from another size mean nothing.
 let nickColumnFont = '';
 // The reader's own limits on the column (WeeChat's prefix_align_min/max), in
@@ -731,10 +739,13 @@ function markClippedNicks() {
   // A cut cell's text has already given a character up to its `+`, so what it
   // is measured against is the room both have together. Measured against its
   // own box, a name that came to fit exactly would stay cut forever.
+  // These widths are whole pixels and a character is not, so two rounded
+  // parts can come to a pixel less than the rounded whole: a pixel over is
+  // still a fit.
   const clipped = texts.map((text) => {
     const more = text.nextElementSibling as HTMLElement | null;
     const room = text.clientWidth + (more ? more.offsetWidth : 0);
-    return text.scrollWidth > room;
+    return text.scrollWidth > room + 1;
   });
   texts.forEach((text, i) => {
     const cell = text.parentElement;
@@ -753,23 +764,45 @@ function measureNickColumn() {
   const el = scroller.value;
   if (!el || compactMode.value) return;
   const cs = getComputedStyle(el);
-  const font = `${cs.fontSize} ${cs.fontFamily}`;
+  const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
   if (font !== nickColumnFont) {
     nickColumnFont = font;
-    if (nickColumnFloor.value !== 0) {
-      // Drop the stale floor, and measure the column it leaves once drawn.
-      nickColumnFloor.value = 0;
-      void nextTick(measureNickColumn);
-      return;
-    }
+    // Drop the stale floor; the read below is of the column it leaves.
+    if (nickColumnFloor !== 0) setNickColumnFloor(0);
   }
   // The grid's resolved tracks: time, nick, text. A phone's width has two
   // and no floor to keep.
   const tracks = (cs.gridTemplateColumns ?? '').split(' ');
   if (tracks.length !== 3) return;
   const width = parseFloat(tracks[1]);
-  if (Number.isFinite(width) && width > nickColumnFloor.value + 0.5) nickColumnFloor.value = width;
+  if (Number.isFinite(width) && width > nickColumnFloor + 0.5) setNickColumnFloor(width);
 }
+
+// A nick's cell can change width with no row drawn: a display name or a
+// member's rank arriving after the lines did. Those are changes inside the
+// list's own DOM, so watch that, and look again once per frame at most.
+let nickColumnObserver: MutationObserver | null = null;
+let nickColumnFrame = 0;
+function scheduleAfterDraw() {
+  if (nickColumnFrame) return;
+  nickColumnFrame = requestAnimationFrame(() => {
+    nickColumnFrame = 0;
+    afterDraw();
+  });
+}
+onMounted(() => {
+  if (typeof MutationObserver === 'undefined' || !scroller.value) return;
+  nickColumnObserver = new MutationObserver(scheduleAfterDraw);
+  nickColumnObserver.observe(scroller.value, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+});
+onBeforeUnmount(() => {
+  nickColumnObserver?.disconnect();
+  if (nickColumnFrame) cancelAnimationFrame(nickColumnFrame);
+});
 
 // Consolidated runs the reader has opened (#1430): one set per run, of the
 // row keys of its events. A run is open while ANY of its rows is in one. A
@@ -1950,7 +1983,11 @@ onMounted(afterDraw);
 // A font change draws no row, and a floor in the old font's pixels is wrong
 // from that moment.
 watch(
-  () => [settings.effective('look.font.family'), settings.effective('look.font.size')],
+  () => [
+    settings.effective('look.font.family'),
+    settings.effective('look.font.size'),
+    settings.effective('look.font.weight'),
+  ],
   () => void nextTick(afterDraw),
   { flush: 'post' },
 );
@@ -1958,7 +1995,7 @@ watch(
 watch(
   () => [nickColumnMin.value, nickColumnMax.value],
   () => {
-    nickColumnFloor.value = 0;
+    setNickColumnFloor(0);
     void nextTick(afterDraw);
   },
   { flush: 'post' },
@@ -2763,7 +2800,10 @@ watch(
       // The traditional layout anchors on the row at the top of the view, not
       // the new front one: a nick that widens the nick column (#1405) rewraps
       // the lines between the two, and only the nearer row accounts for those.
-      const anchorId = (compactMode.value ? null : topVisibleMessageId(el)) ?? newFirstId;
+      // Unless that row is the one being evicted: then the new front row, as
+      // before.
+      const top = compactMode.value ? null : topVisibleMessageId(el);
+      const anchorId = top != null && top !== oldFirstId ? top : newFirstId;
       await pinAnchorRow(el, anchorId, false);
       maybeBumpNewBelow();
       ensureViewportFilled();
@@ -2840,7 +2880,7 @@ watch(
   () => networks.activeKey,
   async () => {
     // Another buffer, another set of nicks: its column starts from nothing.
-    nickColumnFloor.value = 0;
+    setNickColumnFloor(0);
     stickToBottom.value = true;
     unreadSeen = false;
     unreadExpired = false;
@@ -3371,6 +3411,7 @@ watch(
   width: 1ch;
   color: var(--fg-muted);
   /* Not part of the nick: copying the cell copies the name alone. */
+  -webkit-user-select: none;
   user-select: none;
 }
 .prefix.action-marker {

@@ -151,7 +151,7 @@ describe('MessageList — the nick column', () => {
     const el = scroller.element as HTMLElement;
     const anchor = w.find(`[data-msg-id="${anchorId}"]`).element as HTMLElement;
     Object.defineProperty(anchor, 'offsetTop', { get: top, configurable: true });
-    document.elementFromPoint = () => anchor;
+    vi.spyOn(document, 'elementFromPoint').mockReturnValue(anchor);
     el.scrollTop = 40;
     await scroller.trigger('wheel', { deltaY: -10 });
     return el;
