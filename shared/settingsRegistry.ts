@@ -2054,6 +2054,16 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // the registry default, so a true default would be unstorable.
     description: 'Set once the first-run flow is finished or skipped.',
   },
+  {
+    key: 'hints.commands_seen',
+    label: 'Commands hint seen',
+    category: 'system',
+    group: 'hints',
+    type: 'bool',
+    default: false,
+    // The input bar says "try /commands" until this is set (#1494).
+    description: 'Set once /commands has been run.',
+  },
 
   // ─── Data / retention ─────────────────────────────────────────────────
   // How much stored history to keep, per buffer (lurker-dev/RETENTION_PLAN.md).

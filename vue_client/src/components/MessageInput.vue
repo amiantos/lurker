@@ -35,6 +35,7 @@
       rows="1"
       :value="text"
       :placeholder="placeholder"
+      aria-label="Message"
       :disabled="(!active && !isSystemBuffer) || isPaused"
       :spellcheck="systemFeatures.spellcheck"
       :autocorrect="systemFeatures.autocorrect"
@@ -570,25 +571,31 @@ const canCompose = computed(() => sendable.value || (isSystemBuffer.value && !is
 // non-whitespace in the composer (slash commands count). Mirrors submit()'s own
 // `!raw.trim()` bail; canCompose gates buffer/pause state on top of this.
 const hasComposerContent = computed(() => text.value.trim().length > 0);
+const COMMANDS_SEEN_SETTING = 'hints.commands_seen';
+// "try /commands" is there to be discovered once (#1494): it shows until the
+// account has run /commands, on any device, and never again. Only once the
+// settings have landed, so someone who ran it long ago doesn't see the hint
+// flash on every boot.
+const commandsHint = computed(() =>
+  settings.loaded && settings.effective(COMMANDS_SEEN_SETTING) !== true ? 'try /commands' : '',
+);
 const placeholder = computed(() => {
   if (isPaused.value) return 'Account paused — read only';
-  if (isSystemBuffer.value) return 'try /commands';
+  if (isSystemBuffer.value) return commandsHint.value;
   const a = active.value;
   if (!a) return 'Select a buffer';
-  // `/raw <line>` was cryptic; `/commands` is the discoverable entry point and
-  // the server buffer is exactly where someone goes looking for it.
-  if (isServer.value) return 'try /commands';
   // Mobile shows network/channel in the compact status bar now, so the
   // placeholder carries the self identity (nick + channel-prefix) instead, with
   // the away marker appended when set. User modes are dropped here to match the
   // compact status bar hiding channel modes on narrow screens; the desktop
-  // prompt still renders them. Desktop keeps `try /commands` since the prompt
-  // already shows the identity there.
-  if (isMobile.value) {
+  // prompt still renders them. Desktop has only the hint to show, since the
+  // prompt already carries the identity there. The server buffer leads with
+  // the hint on mobile too: it is exactly where someone goes looking for it.
+  if (isMobile.value && !(isServer.value && commandsHint.value)) {
     const self = promptLabelNoModes.value;
     return awayLabel.value ? `${self} ${awayLabel.value}` : self;
   }
-  return 'try /commands';
+  return commandsHint.value;
 });
 // HTML attribute values for the system text features. spellcheck is the only
 // one the browser parses as a boolean; the others take "on"/"off" or an enum.
@@ -4616,6 +4623,12 @@ function handleCommand(
   switch (verb) {
     case 'commands':
       for (const commandLine of helpLines()) localInfo(networkId, target, commandLine);
+      // The input bar's "try /commands" has done its job (#1494). Best-effort:
+      // a failed write leaves the hint up until the next run. Not held for the
+      // settings to load: writing it twice is harmless, missing it is not.
+      if (settings.effective(COMMANDS_SEEN_SETTING) !== true) {
+        settings.setValue(COMMANDS_SEEN_SETTING, true).catch(() => {});
+      }
       return true;
     case 'away':
     case 'back': {
