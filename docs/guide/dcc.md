@@ -12,9 +12,11 @@ receive files and send files. See [DCC and XDCC](/SELF_HOSTING#dcc-and-xdcc)
 in the self-hosting guide.
 :::
 
-Once you have any part of it, a **DCC** button appears next to **Shares**: at
-the foot of the buffer list on a computer, at the top on a phone. It opens the DCC window, and it turns the warning colour while
-an offer is waiting for you. **Settings → DCC** shows which parts you have, the
+Once you have any part of it, a **DCC** button appears next to **Shares** at
+the foot of the buffer list on a computer. On a phone, **DCC** is in the ⋮
+menu at the top of the buffer list, beside **Shares**. It opens the DCC window,
+and the button (on a phone, the ⋮) turns the warning colour while an offer is
+waiting for you. **Settings → DCC** shows which parts you have, the
 space your files use, and the limits the admin set.
 
 ## The DCC window

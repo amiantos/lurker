@@ -359,6 +359,12 @@ export const useDccStore = defineStore('dcc', {
       const a = s.account;
       return !!(a && (a.chat || a.receive || a.send)) || this.hasAny;
     },
+    // Whether the way into the DCC window is offered: the desktop's DCC button
+    // and the phone's menu row. While the window is open too, so it is not
+    // left with nothing that opened it.
+    entryShown(): boolean {
+      return this.hasDcc || this.panelOpen;
+    },
     // Unsolicited offers awaiting a decision — the urgent, you-must-act count
     // that warn-colors the affordance.
     pendingCount: (s): number => s.transfers.filter((t) => t.state === 'pending_approval').length,

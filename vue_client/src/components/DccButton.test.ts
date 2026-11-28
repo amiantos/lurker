@@ -2,8 +2,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// The DCC button (#1085), one component for the desktop rail and the mobile
-// top bar. It opens the DCC window, shows for an account with DCC, and warns
+// The DCC button (#1085), in the desktop rail. It opens the DCC window, shows for an account with DCC, and warns
 // while an offer waits for an answer.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
