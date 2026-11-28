@@ -34,9 +34,9 @@ async function stallReport(context?: () => string | null): Promise<string> {
   // On a loaded machine that tick can still be to come 50 ms on, and the
   // block was then the baseline: no report, ever (#1474). Nothing here can
   // see the tick, so a block that drew no report is made again.
-  for (let attempt = 0; attempt < 8 && warn.mock.calls.length === 0; attempt++) {
+  for (let attempt = 0; attempt < 5 && warn.mock.calls.length === 0; attempt++) {
     block(BLOCK_MS);
-    await until(() => warn.mock.calls.length > 0, 400, 'a stall report').catch(() => {});
+    await until(() => warn.mock.calls.length > 0, 300, 'a stall report').catch(() => {});
   }
   expect(warn, 'a stall report').toHaveBeenCalled();
   return String(warn.mock.calls[0][0]);

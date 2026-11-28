@@ -37,16 +37,17 @@ const send = (reply: unknown) =>
 // orphan is re-parented) and ends the process, statement and all. Plain
 // JavaScript, evaluated: a worker file would need the TypeScript loader.
 //
-// The parent is read HERE and handed over, not read by the thread: a thread
-// takes a while to start, a statement can be running by then, and a server
-// that died in between would be read as the parent we already have — the
-// orphan's new one — and never be seen to change (#1474).
+// The parent is the pid the server gave us, not one read here: this process
+// and its thread take a while to start, a statement can be queued by then,
+// and a server that died in between would be read as the parent we already
+// have — the orphan's new one — and never be seen to change (#1474).
+const server = Number(process.argv[3]) || process.ppid;
 const watchdog = new Worker(
   `const parent = require('node:worker_threads').workerData;
    setInterval(() => {
      if (process.ppid !== parent) process.kill(process.pid, 'SIGKILL');
    }, 1000);`,
-  { eval: true, workerData: process.ppid },
+  { eval: true, workerData: server },
 );
 watchdog.unref();
 

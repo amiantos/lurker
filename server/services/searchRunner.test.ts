@@ -242,7 +242,7 @@ describe('the search process', () => {
       '-e',
       [
         `const { fork } = require('node:child_process');
-         const child = fork(${JSON.stringify(entry)}, [${JSON.stringify(DATABASE_FILE)}]);
+         const child = fork(${JSON.stringify(entry)}, [${JSON.stringify(DATABASE_FILE)}, String(process.pid)]);
          child.send({ id: 1, sql: ${JSON.stringify(ENDLESS)}, params: [] });
          process.send(child.pid);
          setInterval(() => {}, 1000);`,

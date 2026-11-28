@@ -74,7 +74,8 @@ jobs:
         run: npm run format:check
 
   # The suite is one worker per test file, 600+ files, on a 4-core runner, so it
-  # is split across runners (#1474). Each shard takes every third file.
+  # is split across runners (#1474). Each shard takes a third of the files,
+  # picked by a hash of the path.
   test-shard:
     name: Test shard ${{ matrix.shard }}/3
     runs-on: ubuntu-latest

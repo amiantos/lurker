@@ -156,7 +156,7 @@ function start(): ChildProcess {
       child?.kill('SIGKILL');
     });
   }
-  const proc = fork(CHILD_ENTRY, [DATABASE_FILE], {
+  const proc = fork(CHILD_ENTRY, [DATABASE_FILE, String(process.pid)], {
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   // Idle, it is never the reason this process stays up; with a search
