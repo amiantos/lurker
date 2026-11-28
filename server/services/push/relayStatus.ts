@@ -8,7 +8,7 @@
 // Only ever called once the admin has opted in, or when they ask for it: the
 // opt-in (§5a) means this server doesn't contact the relay on its own.
 
-import webpush from 'web-push';
+import * as webpush from 'web-push';
 import { vapidCredentials } from '../pushService.js';
 import { RELAY_ORIGIN } from './relayOrigin.js';
 import type { RelayStatus } from '../../../shared/relayStatus.js';

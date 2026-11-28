@@ -15,11 +15,9 @@ process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 // handling without making network calls or needing real VAPID infrastructure.
 const sendNotification = vi.fn<(...args: unknown[]) => unknown>();
 vi.mock('web-push', () => ({
-  default: {
-    generateVAPIDKeys: () => ({ publicKey: 'fake-pub', privateKey: 'fake-priv' }),
-    setVapidDetails: () => {},
-    sendNotification: (...args: unknown[]) => sendNotification(...args),
-  },
+  generateVAPIDKeys: () => ({ publicKey: 'fake-pub', privateKey: 'fake-priv' }),
+  setVapidDetails: () => {},
+  sendNotification: (...args: unknown[]) => sendNotification(...args),
 }));
 
 let pushService: typeof import('./pushService.js');

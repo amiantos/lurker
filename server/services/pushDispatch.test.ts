@@ -58,11 +58,9 @@ vi.mock('./push/index.js', () => ({
 }));
 
 vi.mock('web-push', () => ({
-  default: {
-    generateVAPIDKeys: () => ({ publicKey: 'pub', privateKey: 'priv' }),
-    setVapidDetails: () => {},
-    sendNotification: async () => {},
-  },
+  generateVAPIDKeys: () => ({ publicKey: 'pub', privateKey: 'priv' }),
+  setVapidDetails: () => {},
+  sendNotification: async () => {},
 }));
 
 let pushService: typeof import('./pushService.js');

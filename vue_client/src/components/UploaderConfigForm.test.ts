@@ -37,8 +37,10 @@ async function saveAfterClearing(key: string): Promise<Record<string, string>> {
   const input = wrapper.findAll('input')[index];
   await input.setValue('');
   await wrapper.find('form').trigger('submit');
-  const [[event]] = wrapper.emitted('save') as [[{ values: Record<string, string> }]];
+  // @vue/test-utils 2.6 types emitted() from the component's own emits.
+  const event = wrapper.emitted('save')?.[0]?.[0];
   wrapper.unmount();
+  if (!event) throw new Error('the form did not emit save');
   return event.values;
 }
 

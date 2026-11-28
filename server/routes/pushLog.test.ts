@@ -22,11 +22,9 @@ const ctx = setupTestDb('routes-push-log');
 // network; what the stub answers is what the log should record.
 const sendNotification = vi.fn<(...args: unknown[]) => unknown>();
 vi.mock('web-push', () => ({
-  default: {
-    generateVAPIDKeys: () => ({ publicKey: 'fake-pub', privateKey: 'fake-priv' }),
-    setVapidDetails: () => {},
-    sendNotification: (...args: unknown[]) => sendNotification(...args),
-  },
+  generateVAPIDKeys: () => ({ publicKey: 'fake-pub', privateKey: 'fake-priv' }),
+  setVapidDetails: () => {},
+  sendNotification: (...args: unknown[]) => sendNotification(...args),
 }));
 
 let app: Express;

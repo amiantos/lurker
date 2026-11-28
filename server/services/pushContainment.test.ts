@@ -23,11 +23,9 @@ const sendNotification = vi.fn<(...args: unknown[]) => Promise<{ statusCode: num
   async () => ({ statusCode: 201 }),
 );
 vi.mock('web-push', () => ({
-  default: {
-    generateVAPIDKeys: () => ({ publicKey: 'pub', privateKey: 'priv' }),
-    setVapidDetails: () => {},
-    sendNotification: (...args: unknown[]) => sendNotification(...(args as [])),
-  },
+  generateVAPIDKeys: () => ({ publicKey: 'pub', privateKey: 'priv' }),
+  setVapidDetails: () => {},
+  sendNotification: (...args: unknown[]) => sendNotification(...(args as [])),
 }));
 
 let pushService: typeof import('./pushService.js');
