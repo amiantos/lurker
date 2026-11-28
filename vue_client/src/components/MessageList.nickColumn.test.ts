@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import MessageList from './MessageList.vue';
+import messageListSource from './MessageList.vue?raw';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 
@@ -54,6 +55,20 @@ function open(target: string, bufferId: number, messages: Record<string, unknown
 
 const floor = (w: VueWrapper) =>
   (w.find('.message-list').element as HTMLElement).style.getPropertyValue('--nick-col-floor');
+
+// The other half of the floor: the list's grid has to read the property the
+// script writes, and nothing else may hold the column open. No layout here to
+// measure it with, so the stylesheet's own words.
+describe('MessageList — the nick column in the stylesheet', () => {
+  const css = messageListSource.split('<style scoped>')[1].replace(/\s+/g, ' ');
+
+  it('floors the column at the measured width and nothing wider', () => {
+    expect(css).toContain(
+      'grid-template-columns: max-content minmax(var(--nick-col-floor, 0px), max-content) minmax(0, 1fr);',
+    );
+    expect(css).not.toMatch(/minmax\(\d+ch, max-content\)/);
+  });
+});
 
 describe('MessageList — the nick column', () => {
   beforeEach(() => {

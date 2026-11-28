@@ -2671,7 +2671,12 @@ watch(
     // the same set of [data-msg-id] elements with stable identity above
     // and below the prepend boundary.
     if (firstChanged && !lastChanged && grew && oldFirstId != null) {
-      await pinAnchorRow(el, oldFirstId, true);
+      // In the traditional layout, the row at the top of the view when there
+      // is one: an older page can bring a nick that widens the nick column
+      // (#1405), and the lines between the old first row and the reader's
+      // rewrap with it.
+      const anchorId = (compactMode.value ? null : topVisibleMessageId(el)) ?? oldFirstId;
+      await pinAnchorRow(el, anchorId, true);
       ensureViewportFilled();
       return;
     }
